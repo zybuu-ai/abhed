@@ -1371,7 +1371,7 @@ func userCmd(workspace string, args []string) int {
 		}
 		fmt.Printf("created %s (tenant %s)\n", username, u.Tenant)
 		if *admin {
-			fmt.Println("  administrator — can manage settings, users and invites")
+			fmt.Println("  administrator — can manage settings and users")
 		}
 
 	case "list":

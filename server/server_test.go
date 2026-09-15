@@ -296,9 +296,10 @@ func TestAuthRoutesAnswerWhenAuthIsDisabled(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "not configured") {
 			t.Errorf("%s should say why it does nothing", path)
 		}
-		// The explanation must show how to fix it, not just state the problem.
-		if !strings.Contains(rec.Body.String(), "auth") ||
-			!strings.Contains(rec.Body.String(), "issuer") {
+		// The explanation must show how to fix it, not just state the problem:
+		// the mode to set and the command that issues an account.
+		if !strings.Contains(rec.Body.String(), `"mode": "local"`) ||
+			!strings.Contains(rec.Body.String(), "abhed user add") {
 			t.Errorf("%s should show the config needed to enable sign-in", path)
 		}
 	}
