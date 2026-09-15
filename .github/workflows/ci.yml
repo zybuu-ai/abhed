@@ -35,7 +35,7 @@ jobs:
           go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet -fmt json -no-fail -out gosec.json ./... || true
           python3 deploy/ci/gosec-gate.py gosec.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
 
