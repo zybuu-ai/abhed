@@ -79,7 +79,7 @@ bind mount has no route to the host filesystem.
 tool in the server process makes the request, not the sandboxed shell, so a
 compromised session cannot turn it into an arbitrary outbound connection. It
 is off by default (`web_search.enabled: false` in
-`internal/config/config.go`'s defaults) and is a separate capability from
+`config/config.go`'s defaults) and is a separate capability from
 shell networking — enabling one does not enable the other.
 
 **The model endpoint the operator configured.** Prompts and context go to
@@ -131,7 +131,7 @@ verification against the JWKS, PKCE, single-use `state`, browser sessions —
 is part of the Enterprise Edition and documented with it.
 
 - **Local accounts use bcrypt** at the library default cost
-  (`internal/auth/local.go`, `internal/auth/filestore.go`). A wrong password
+  (`auth/local.go`, `auth/filestore.go`). A wrong password
   and an unknown username return the same error in the same time — a missing
   user is still run through bcrypt against a dummy hash — specifically to
   prevent timing-based username enumeration, with a test asserting it.
@@ -142,7 +142,7 @@ is part of the Enterprise Edition and documented with it.
   administrator puts it in the admin group (`-admin`). Invites, access
   requests and grants are part of the Enterprise Edition.
 - **Sign-in is rate-limited** for anonymous callers (`throttle` in
-  `internal/server/server.go`).
+  `server/server.go`).
 
 ## Container hardening
 
@@ -168,7 +168,7 @@ container, which should be the only route to the published port.
 
 ## Telemetry
 
-**Off, and not shipped in this edition.** `internal/config/config.go`'s
+**Off, and not shipped in this edition.** `config/config.go`'s
 `TelemetryConfig.Enabled` is a bare `bool` with no default set, so it is
 `false` unless explicitly turned on, and the Community Edition contains
 nothing that sends telemetry anywhere. The OpenTelemetry exporter is part of

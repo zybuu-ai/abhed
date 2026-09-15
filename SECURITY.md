@@ -73,7 +73,7 @@ In scope:
 
 - **The harness** — everything under `cmd/`, `internal/`, and `sdk/`: the
   agent loop, the policy engine (`internal/policy`), the sandbox
-  (`internal/sandbox`), the MCP gateway, the auth layer (`internal/auth`),
+  (`internal/sandbox`), the MCP gateway, the auth layer (`auth`),
   the Postgres store (`store`), and the server (`server`).
 - **The console** — the web UI served by `abhed serve`.
 - **The hosted console and site** — the hosted console at `abhed.zybuu.com`

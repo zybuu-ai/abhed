@@ -39,7 +39,7 @@ subagent's summary and, for each worktree, what changed and how to take it:
 <summary>
 
 Worktree .abhed/worktrees/k3f9q2 (branch abhed/k3f9q2): 3 file(s) changed, UNCOMMITTED.
- internal/auth/local.go | 12 ++++---
+ auth/local.go | 12 ++++---
  …
 To take these changes: review with `git -C .abhed/worktrees/k3f9q2 diff`, commit
 there, then `git merge abhed/k3f9q2` from the main tree. To discard:

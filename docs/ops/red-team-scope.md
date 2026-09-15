@@ -32,8 +32,8 @@ that reaches a code-execution primitive.**
 | Policy engine | `internal/policy` | Ordered evaluation, deny rules |
 | Sandbox | `internal/sandbox` | Seatbelt / bubblewrap / OCI / gVisor |
 | MCP gateway | `internal/mcp` | Third-party tool servers |
-| HTTP API + console | `internal/server` | Multi-tenant, SSE |
-| Auth | `internal/auth` | Local accounts, proxy identity, session middleware |
+| HTTP API + console | `server` | Multi-tenant, SSE |
+| Auth | `auth` | Local accounts, proxy identity, session middleware |
 | Store | `store` | Postgres, RLS, append-only |
 
 Deploy with `sandbox.min_tier = container`, authentication on, and Postgres
