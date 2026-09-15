@@ -1776,18 +1776,13 @@ a{color:#4C8FD6}
     Sign-in is not configured</h1>
   <p>This Abhed server runs with <code>auth.mode: none</code> — a single-tenant
      setup with no user accounts, so there is nobody to sign in or out as.</p>
-  <p>To enable sign-in, add an identity provider to your config:</p>
+  <p>To enable sign-in with local accounts, set the mode and issue an account:</p>
   <pre>{
-  "auth": {
-    "mode": "oidc",
-    "issuer": "https://idp.internal/realms/engineering",
-    "audience": "abhed",
-    "client_id": "abhed-console",
-    "client_secret_env": "ABHED_OIDC_SECRET",
-    "redirect_url": "http://localhost:8420/auth/callback",
-    "tenant_claim": "org_id"
-  }
-}</pre>
-  <p>See <code>docs/ops/enabling-auth.md</code> for per-provider settings.</p>
+  "auth": { "mode": "local" }
+}
+
+$ abhed user add alice -admin</pre>
+  <p>See <code>docs/ops/enabling-auth.md</code>. Sign-in through an identity
+     provider (OIDC) is part of the Enterprise Edition.</p>
   <p><a href="/">← Back to Abhed</a></p>
 </div>`
