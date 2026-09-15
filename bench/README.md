@@ -208,7 +208,7 @@ compaction, no permission policy, calling Ollama's
 ### 9. Run everything
 
 ```
-cd /Users/yuvrajsingh/titan
+cd abhed
 nohup <scratch>/venv/bin/python bench/run_bench.py --date YYYY-MM-DD \
   > bench/logs/run_YYYY-MM-DD.log 2>&1 &
 ```
