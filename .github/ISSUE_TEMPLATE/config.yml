@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/yuvrajsingh/titan/security/policy
+    url: https://github.com/zybuu-ai/abhed/security/policy
     about: >-
       Do not file a public issue for a security report. See SECURITY.md and
       email security@zybuu.com (fallback: support@zybuu.com).

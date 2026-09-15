@@ -34,7 +34,7 @@ that reaches a code-execution primitive.**
 | MCP gateway | `internal/mcp` | Third-party tool servers |
 | HTTP API + console | `internal/server` | Multi-tenant, SSE |
 | Auth | `internal/auth` | Local accounts, proxy identity, session middleware |
-| Store | `internal/store` | Postgres, RLS, append-only |
+| Store | `store` | Postgres, RLS, append-only |
 
 Deploy with `sandbox.min_tier = container`, authentication on, and Postgres
 storage. Provide the team two tenants and three users at differing
@@ -123,6 +123,6 @@ black-box test models the wrong attacker.
 
 ## Current automated coverage
 
-`internal/redteam` covers 16 attacks across the areas above, all currently
+`internal/redteam` covers 24 attacks across the areas above, all currently
 blocked. Treat that as the regression floor: **anything it catches is already
 fixed, so the engagement should start where it stops.**

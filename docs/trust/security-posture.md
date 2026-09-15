@@ -58,7 +58,7 @@ enforced the same way a deny rule is — it can turn an `allow` into a `deny`,
 never the reverse. `internal/extension/extension_test.go` asserts this
 directly (an extension can force `Decision: Deny`).
 
-**Tool output is tagged untrusted at ingest.** `internal/store/schema.sql`'s
+**Tool output is tagged untrusted at ingest.** `store/schema.sql`'s
 `events` table carries a `trust` column (`CHECK (trust IN ('trusted',
 'untrusted'))`) on every event, so provenance travels with the data rather
 than being inferred later. File contents, tool output, and MCP responses are
@@ -91,7 +91,7 @@ configuration, not a promise Abhed makes about every deployment.
 
 ## Storage
 
-**Postgres**, with a schema in `internal/store/schema.sql`. Two properties
+**Postgres**, with a schema in `store/schema.sql`. Two properties
 the schema comment states directly: events are append-only (no `UPDATE`, no
 `DELETE`), and tenant isolation is enforced by row-level security, not only
 by query construction.
@@ -120,7 +120,7 @@ role, and an application role (`NOSUPERUSER NOBYPASSRLS NOCREATEROLE
 NOCREATEDB`) that owns the application's tables and is the only one in the
 server's DSN. On connect, Abhed checks `rolsuper OR rolbypassrls` on the role
 it connected as and **refuses to start** if that role is privileged
-(`internal/store/postgres.go`).
+(`store/postgres.go`).
 
 ## Authentication
 

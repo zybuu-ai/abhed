@@ -5,7 +5,7 @@ do about it.
 
 ## What Abhed stores
 
-From `internal/store/schema.sql`, on the Postgres storage driver:
+From `store/schema.sql`, on the Postgres storage driver:
 
 | Table | Contents |
 |---|---|
@@ -39,7 +39,7 @@ transcripts do not (`docs/ops/enabling-auth.md`, "Where accounts live";
 
 ## Retention
 
-**Indefinite by default.** Nothing in `internal/store/schema.sql` expires a
+**Indefinite by default.** Nothing in `store/schema.sql` expires a
 row. The schema comment says retention is "handled by dropping partitions or
 by a privileged archival role, never by mutating rows in place" — that
 mechanism is not implemented in this repository today; there is no scheduled
@@ -47,7 +47,7 @@ job that drops old partitions. Rows persist until an operator does something
 about it at the database level.
 
 **Deleting a session marks it; the rows stay.** Schema version 3 in
-`internal/store/schema.sql` adds `sessions.deleted_at` and `deleted_by`.
+`store/schema.sql` adds `sessions.deleted_at` and `deleted_by`.
 The comment is explicit about what this does and does not do: "Events are
 append-only by trigger, so a delete cannot remove the transcript rows and
 does not try. It marks the session; every read path treats a marked session

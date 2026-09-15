@@ -125,7 +125,7 @@ asserted. Current state:
 - [x] **Cross-tenant leakage** — session list and replay isolated (`internal/server`)
 - [x] **MCP tool poisoning** — descriptions sanitized before reaching the model
       (`internal/mcp`)
-- [x] **Automated adversarial suite** — 16 attacks in `internal/redteam`, each written
+- [x] **Automated adversarial suite** — 24 attacks in `internal/redteam`, each written
       from the attacker's side so it fails when the attack succeeds: path traversal (9
       forms), symlink escape, blind overwrite, policy bypass (11 destructive commands),
       deny escalation across all modes, managed-policy override, scope widening, sandbox

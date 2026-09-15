@@ -118,9 +118,9 @@ go build -o abhed-bench ./cmd/abhed-bench
 | **Postgres store** — append-only + row-level security | ✅ integration-tested |
 | **Local accounts** — bcrypt, timing-safe sign-in, proxy-header identity | ✅ tested |
 | **Eval harness** — assertions + behavioural flags | ✅ tested |
-| **Adversarial suite** — 16 attacks | ✅ all blocked |
+| **Adversarial suite** — 24 attacks | ✅ all blocked |
 
-`go test ./... -short` — 13 packages, 190+ tests. Drop `-short` for the slow
+`make check` — 29 packages, 531 test functions. Drop `-short` for the slow
 network-exfiltration checks; set `ABHED_TEST_DSN` for the Postgres integration tests.
 
 ## Architecture
@@ -197,7 +197,7 @@ so per-file verification could never pass. Each was found by a test written to
 attack the thing rather than confirm it.
 
 **Sandboxing evidence was refuted, not confirmed** — so isolation is proven by an
-adversarial suite of 16 attacks rather than assumption (see
+adversarial suite of 24 attacks rather than assumption (see
 [validation status](docs/architecture/03-security.md)). That suite proves the
 controls resist the attacks in it; it cannot prove a determined attacker fails,
 because it only tries what its author thought of. **A human red-team engagement

@@ -29,18 +29,18 @@ Some tests need more:
 - `go test ./... -short` skips the slower network-exfiltration checks; drop
   `-short` to run them.
 - Postgres integration tests need `ABHED_TEST_DSN` pointed at a real database
-  (`internal/store`).
+  (`store`).
 
 ## How this repository actually works
 
 These aren't aspirational — they're enforced, in the sense that a PR
 violating them gets asked to fix it before merge.
 
-**Comments explain why, not what.** Read `internal/store/schema.sql` or
-`internal/store/postgres.go` for the tone: a comment exists to record a
+**Comments explain why, not what.** Read `store/schema.sql` or
+`store/postgres.go` for the tone: a comment exists to record a
 decision or a bug that was found and fixed (see the `FORCE ROW LEVEL
-SECURITY` comment in `internal/store/schema.sql`, or the comment in
-`internal/store/postgres.go` on why a superuser connection is refused). A
+SECURITY` comment in `store/schema.sql`, or the comment in
+`store/postgres.go` on why a superuser connection is refused). A
 comment that restates the line below it is worse than no comment — it's
 something else to go stale.
 
