@@ -30,7 +30,7 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 ┌───────────────────────────────────────────────▼──────┐  ┌──────▼────────┐
 │  INFERENCE PLANE                                     │  │ EXECUTION     │
 │  OpenAI-compatible gateway                           │  │ PLANE         │
-│  ├ vLLM / SGLang / TensorRT-LLM  (GPU tiers)         │  │ microVM pool  │
+│  ├ vLLM / SGLang / TensorRT-LLM  (GPU tiers)         │  │ sandbox pool  │
 │  ├ prefix cache (load-bearing, P8)                   │  │ per-session   │
 │  ├ guided decoding + per-family tool-call parsers    │  │ FS + net scope│
 │  └ embedding + rerank endpoints                      │  │ no egress     │
@@ -180,7 +180,7 @@ consistency benchmark is Abhed's differentiating asset.
 
 ```
  tenant ─┬─▶ access (authn/authz) ─┬─▶ control (policy) ─┬─▶ tools ─┬─▶ execution
-         │   OIDC, tenant scope     │   6-step ordered    │  MCP     │  microVM
+         │   OIDC, tenant scope     │   6-step ordered    │  MCP     │  sandbox
          │                          │   deny is absolute  │  gateway │  no egress
          └──────────────────────────┴─────────────────────┴──────────┴─ audit (all)
 ```
