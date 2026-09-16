@@ -6,24 +6,42 @@ The answer to the first question every buyer and every investor asks.
 
 Every enterprise is going to run AI agents: software that reads, decides,
 acts and reports across the code, tickets, records and systems the business
-runs on. The market is selling that capability one way — as a vendor's cloud,
-running the vendor's model, on the vendor's terms, with the organisation's
-data leaving the building on every turn.
+runs on.
 
-A large part of the economy cannot buy it that way. Banks and insurers,
-hospitals, defence and government, utilities, and every company with a
-data-residency clause in a customer contract are offered a choice between
-waiting, accepting a weaker product, or building the whole thing themselves.
-Most are building. Most of what they build is the same thing, badly: a loop, a
-sandbox that is not quite one, a log that is not quite complete, an approval
-prompt that only works when a person happens to be watching.
+**Running the model privately is a solved problem.** Open-weight models on
+your own GPUs through vLLM or SGLang, a cloud vendor's enterprise tier with
+contractual no-retention terms, a model served inside your own account on
+Bedrock, Vertex or Azure — these are real, mature, and widely deployed. Large
+enterprises run them today. We are not claiming otherwise, and a company that
+has already solved model hosting has solved a genuinely hard thing.
 
-**Zybuu builds the infrastructure that lets an organisation run AI workloads
-under its own control** — SaaS, privately hosted, or fully air-gapped — with
-the same guarantees at every tier. The vision is not a better chatbot. It is
-the layer underneath: the part that decides what a model may do, does it
-safely, records it, and can prove afterwards what happened. That layer is what
-an enterprise actually has to trust, and today almost nobody sells it.
+**The harness around that model is the part still being improvised.** An
+agent is not a model call; it is a loop that reads files, runs commands,
+edits systems and decides what to do next. Private inference answers where
+the weights live. It does not answer what the agent is allowed to do, what
+happens when there is no human to approve a command, whether a run can be
+replayed a year later for an auditor, or whether a deny rule survives a
+bypass flag. Those questions belong to a different layer, and most teams are
+building that layer themselves, in-house, alongside their real work.
+
+**What they build is usually the same thing, in the same order:** a loop, a
+sandbox that is not quite one, a log that describes a run but cannot
+reproduce it, and an approval that only works when somebody happens to be
+watching. It works until the day it has to be explained to a regulator, an
+auditor, or an incident review.
+
+**Zybuu builds that layer as a product** — the part that decides what a model
+may do, does it inside a boundary, records it, and can prove afterwards what
+happened — so it can be adopted rather than rebuilt. It runs where the
+organisation needs it: privately hosted, or fully air-gapped, with the same
+guarantees at both tiers.
+
+Two honest qualifications. Good open-source harnesses exist, and we name the
+closest ones below. And for an organisation whose data can go to a vendor's
+cloud, the vendors' own agent products are mature, well-funded, and often the
+better purchase. Our claim is narrower: for the buyer who needs the harness
+itself to be auditable, self-hosted, and provable, the options thin out
+quickly — and that is the buyer we build for.
 
 ## Abhed is the first product
 
