@@ -42,6 +42,12 @@ import (
 // small enough that a session directory cannot fill the disk.
 const maxUploadBytes = 32 << 20 // 32 MiB
 
+// uploadDirName is the workspace-relative directory that holds attachments.
+// It is deliberately not a dot-directory: a hidden name invites exactly the
+// kind of blanket deny rule that broke uploads, and there is nothing secret
+// about a file the user attached on purpose.
+const uploadDirName = "uploads"
+
 // uploadResponse tells the caller where the file landed, so the UI can name
 // the path in the message it sends and the model can read it.
 type uploadResponse struct {
@@ -109,7 +115,21 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := safeUploadName(header.Filename)
-	dir := filepath.Join(s.opts.Workspace, ".abhed", "uploads", sessionID)
+	// Uploads live in their own top-level directory, NOT under .abhed/.
+	//
+	// They were written to <workspace>/.abhed/uploads/<session> until a
+	// deployment whose policy denied read(**/.abhed/**) — the ordinary rule
+	// that keeps the agent out of Abhed's own config and users.json — refused
+	// every file the user attached. The agent reported "denied by rule" for a
+	// document the user had just handed it deliberately, which is exactly
+	// backwards: .abhed/ holds things the agent must not read, and an upload
+	// is the opposite of that.
+	//
+	// Keeping them inside the workspace preserves the property the rest of
+	// this file depends on: the file is read with the ordinary read tool,
+	// under the same boundary as any other workspace file, with no special
+	// case in the policy engine.
+	dir := filepath.Join(s.opts.Workspace, uploadDirName, sessionID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		WriteError(w, http.StatusInternalServerError, "create upload directory: "+err.Error())
 		return

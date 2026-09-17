@@ -88,3 +88,25 @@ func TestFirstLinesIsBounded(t *testing.T) {
 		t.Errorf("preview is %d chars, want it bounded", len(long))
 	}
 }
+
+// TestUploadIsNotWrittenToADeniedPath pins where attachments land.
+//
+// Uploads were written to <workspace>/.abhed/uploads/<session>. Any deployment
+// carrying the ordinary secret-protection rule read(**/.abhed/**) — which
+// exists to keep the agent away from Abhed's own config and users.json — then
+// refused every file a user attached, and the model reported "denied by rule"
+// for a document it had just been handed on purpose.
+//
+// The deny rule was right; the location was wrong. This test fails if an
+// upload is ever put back under a dot-directory, where a blanket rule can
+// swallow it.
+func TestUploadIsNotWrittenToADeniedPath(t *testing.T) {
+	if strings.HasPrefix(uploadDirName, ".") {
+		t.Fatalf("uploads go to %q: a dot-directory invites a blanket deny rule "+
+			"like read(**/.abhed/**), which is what broke attachments before", uploadDirName)
+	}
+	if strings.Contains(uploadDirName, "abhed") {
+		t.Fatalf("uploads go to %q, inside Abhed's own state directory: that tree "+
+			"holds users.json and is legitimately denied to the agent", uploadDirName)
+	}
+}
