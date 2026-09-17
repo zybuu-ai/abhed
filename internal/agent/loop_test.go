@@ -670,3 +670,69 @@ func TestNormalAnswerStillTerminatesAtOnce(t *testing.T) {
 		t.Errorf("turns = %d, want 1 — a normal answer must not be nudged", got)
 	}
 }
+
+// countingAdapter reports a fixed context size and a usage figure per turn, so
+// a test can tell the two token numbers apart.
+type countingAdapter struct {
+	scriptedAdapter
+	window    int
+	ctxTokens int
+	perTurn   int
+}
+
+func (c *countingAdapter) Profile() model.Profile {
+	return model.Profile{ContextWindow: c.window}
+}
+func (c *countingAdapter) CountTokens(model.Request) (int, error) { return c.ctxTokens, nil }
+
+func (c *countingAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 4)
+	ch <- model.Chunk{Type: model.ChunkText, Text: "ok"}
+	ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: c.perTurn}}
+	close(ch)
+	return ch, nil
+}
+
+// TestSessionEndedSeparatesContextFromCumulative pins the distinction the
+// console was getting wrong.
+//
+// TokensIn is a running sum across turns: it grows every turn and never
+// shrinks, because it is what the session COST. ContextTokens is what the next
+// turn would send, which is what says how full the window is. Reporting the
+// first as though it were the second made a session sitting at 13,982 of a
+// 32,768 window read as 138,048 — apparently four times over a limit it was in
+// fact half under.
+func TestSessionEndedSeparatesContextFromCumulative(t *testing.T) {
+	l, store, _ := harness(t, nil, policy.ModeDefault, true)
+	l.Adapter = &countingAdapter{window: 32768, ctxTokens: 13982, perTurn: 13000}
+	if l.Compactor != nil {
+		l.Compactor.Adapter = l.Adapter
+	}
+
+	if _, err := l.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	evs, _ := store.Events("sess1")
+	var got SessionEnded
+	for _, e := range evs {
+		if e.Type == EvSessionEnded {
+			b, _ := json.Marshal(e.Payload)
+			_ = json.Unmarshal(b, &got)
+		}
+	}
+
+	if got.ContextWindow != 32768 {
+		t.Errorf("context window: want 32768, got %d", got.ContextWindow)
+	}
+	if got.ContextTokens != 13982 {
+		t.Errorf("context tokens: want the measured 13982, got %d", got.ContextTokens)
+	}
+	if got.ContextTokens == got.TokensIn && got.TokensIn != 0 {
+		t.Errorf("context and cumulative must be distinct quantities; both are %d", got.TokensIn)
+	}
+	if got.ContextTokens >= got.ContextWindow {
+		t.Errorf("a session under the window must report under it: %d of %d",
+			got.ContextTokens, got.ContextWindow)
+	}
+}

@@ -160,6 +160,21 @@ type SessionEnded struct {
 	TokensOut    int            `json:"tokens_out"`
 	TokensCached int            `json:"tokens_cached"`
 	Compactions  int            `json:"compactions"`
+
+	// ContextTokens is what the NEXT turn would send: the system prompt, the
+	// conversation as it now stands, and the tool definitions. TokensIn above
+	// is a different quantity — the running sum of every turn's prompt, which
+	// only ever grows and says nothing about how full the window is.
+	//
+	// Both are worth reporting and they were being conflated. A ten-turn
+	// session reading one 9,800-token document reached 138,048 TokensIn while
+	// never exceeding 13,982 in context, and the cumulative figure read as a
+	// session about to overflow a 32,768 window that was in fact half empty.
+	ContextTokens int `json:"context_tokens,omitempty"`
+	// ContextWindow is the model's limit, so a reader can see the ratio
+	// without knowing which model answered. Zero when the adapter does not
+	// report one, which is also when compaction never fires.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // Todo is one item in the agent's task list.

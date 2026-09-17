@@ -657,15 +657,42 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 
 func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	l.usage.Turns = l.turns
+	ctxTokens, window := l.contextSize()
 	l.record(EvSessionEnded, ActorSystem, SessionEnded{
-		Reason:       reason,
-		Turns:        l.turns,
-		TokensIn:     l.usage.InputTokens,
-		TokensOut:    l.usage.OutputTokens,
-		TokensCached: l.usage.CachedTokens,
-		Compactions:  l.usage.Compactions,
+		Reason:        reason,
+		Turns:         l.turns,
+		TokensIn:      l.usage.InputTokens,
+		TokensOut:     l.usage.OutputTokens,
+		TokensCached:  l.usage.CachedTokens,
+		Compactions:   l.usage.Compactions,
+		ContextTokens: ctxTokens,
+		ContextWindow: window,
 	})
 	return reason
+}
+
+// contextSize measures the conversation as it now stands, which is what the
+// next turn would send. It is deliberately separate from l.usage.InputTokens:
+// that is a cumulative cost counter, this is an occupancy reading.
+//
+// Errors are swallowed to zero rather than returned. This runs while a session
+// is ending, often because something already went wrong, and a token estimate
+// that cannot be produced is not a reason to fail the termination that reports
+// the real problem. Zero reads as "not measured" at every consumer.
+func (l *Loop) contextSize() (used, window int) {
+	if l.Adapter == nil {
+		return 0, 0
+	}
+	window = l.Adapter.Profile().ContextWindow
+	n, err := l.Adapter.CountTokens(model.Request{
+		System:   l.Config.SystemPrompt,
+		Messages: l.messages,
+		Tools:    toolDefs(l.Tools),
+	})
+	if err != nil {
+		return 0, window
+	}
+	return n, window
 }
 
 func (l *Loop) Usage() Usage { return l.usage }

@@ -636,7 +636,7 @@ let live = false;        // is the viewed session still running
 let approvals = new Map();
 let turnEl = null;       // current turn container
 const calls = new Map(); // call_id -> DOM node, to attach observations
-const stats = {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0};
+const stats = {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0, ctx:0, ctxWindow:0};
 
 /* ------------------------------------------------------------------ api */
 async function api(path, opts){
@@ -888,7 +888,7 @@ function openSession(id, state){
   streamEl = null; streamBody = null;
   calls.clear();
   approvals.clear();
-  Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0});
+  Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0, ctx:0, ctxWindow:0});
 
   $('tx').textContent = '';
   $('sid').textContent = id;
@@ -1150,11 +1150,23 @@ function render(ev){
       stats.tout = p.tokens_out || stats.tout;
       stats.cached = p.tokens_cached || stats.cached;
       stats.compactions = p.compactions || stats.compactions;
+      stats.ctx = p.context_tokens || stats.ctx;
+      stats.ctxWindow = p.context_window || stats.ctxWindow;
 
       const n = node('note');
-      n.append(kv('ended', p.reason), kv('turns', p.turns),
-               kv('tokens', (p.tokens_in||0).toLocaleString() + ' in / ' +
-                            (p.tokens_out||0).toLocaleString() + ' out'));
+      n.append(kv('ended', p.reason), kv('turns', p.turns));
+
+      // Context first, because it is the number that answers "how much room is
+      // left". tokens_in beside it is a running total across every turn, so it
+      // grows forever and looked like a session filling up when it was not.
+      if (p.context_tokens) {
+        n.append(kv('context', p.context_window
+          ? p.context_tokens.toLocaleString() + ' / ' + p.context_window.toLocaleString() +
+            ' (' + Math.round(p.context_tokens / p.context_window * 100) + '%)'
+          : p.context_tokens.toLocaleString()));
+      }
+      n.append(kv('total cost', (p.tokens_in||0).toLocaleString() + ' in / ' +
+                                (p.tokens_out||0).toLocaleString() + ' out'));
       tx.appendChild(n);
       refresh();
       break;
@@ -1555,7 +1567,7 @@ function newChat(){
   calls.clear();
   approvals.clear();
   pending = []; renderFiles();
-  Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0});
+  Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0, ctx:0, ctxWindow:0});
   $('sid').textContent = 'new chat';
   $('stop').hidden = true;
   closeDrawer();
