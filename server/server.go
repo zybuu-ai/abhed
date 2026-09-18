@@ -174,22 +174,22 @@ type Server struct {
 }
 
 type liveSession struct {
-	ID        string
-	User      string
-	Tenant    string
-	Loop      *agent.Loop
-	Cancel    context.CancelFunc
-	Created   time.Time
-	Prompt    string
-	State     string // running | waiting_approval | done
-	Turns     int    // exchanges in this conversation
-	cancel    context.CancelFunc
+	ID      string
+	User    string
+	Tenant  string
+	Loop    *agent.Loop
+	Cancel  context.CancelFunc
+	Created time.Time
+	Prompt  string
+	State   string // running | waiting_approval | done
+	Turns   int    // exchanges in this conversation
+	cancel  context.CancelFunc
 	// cancelCause ends the run with a stated reason, so shutdown is not
 	// recorded as a user interrupt.
 	cancelCause context.CancelCauseFunc
 	approvals   chan approvalReply
-	pending   *pendingApproval
-	mu        sync.Mutex
+	pending     *pendingApproval
+	mu          sync.Mutex
 }
 
 type pendingApproval struct {
