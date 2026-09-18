@@ -102,7 +102,7 @@ go build -o abhed-bench ./cmd/abhed-bench
 
 | Area | Status |
 |---|---|
-| Event-sourced loop, 8 terminal reasons | ✅ tested |
+| Event-sourced loop, 8 emitted terminal reasons | ✅ tested |
 | Tools: read, write, edit, glob, grep, bash, task | ✅ tested |
 | Read-before-edit, exact-match, near-miss recovery | ✅ tested |
 | Ordered policy engine, absolute deny, always-confirm destructive | ✅ tested |

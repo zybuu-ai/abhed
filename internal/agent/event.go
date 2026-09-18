@@ -66,9 +66,11 @@ const (
 type TerminalReason string
 
 const (
-	TermCompleted      TerminalReason = "completed"
-	TermMaxTurns       TerminalReason = "max_turns"
-	TermMaxBudget      TerminalReason = "max_budget"
+	TermCompleted TerminalReason = "completed"
+	TermMaxTurns  TerminalReason = "max_turns"
+	TermMaxBudget TerminalReason = "max_budget"
+	// Reserved, not emitted: a denial is fed back to the model as a recoverable
+	// error so it can choose another approach, rather than ending the session.
 	TermPolicyDenied   TerminalReason = "policy_denied"
 	TermUserInterrupt  TerminalReason = "user_interrupt"
 	TermError          TerminalReason = "error"

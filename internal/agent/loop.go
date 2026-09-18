@@ -14,6 +14,19 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
+// ErrShutdown, given as a context cancel cause, marks a session ended by the
+// server stopping rather than by the user interrupting.
+var ErrShutdown = errors.New("server shutdown")
+
+// terminalForCancel distinguishes the two ways a run is cancelled. The audit
+// log has to tell "someone stopped this" from "the process went away".
+func terminalForCancel(ctx context.Context) TerminalReason {
+	if errors.Is(context.Cause(ctx), ErrShutdown) {
+		return TermShutdown
+	}
+	return TermUserInterrupt
+}
+
 // Approver decides on a tool call that policy routed to Ask. Returning false
 // feeds a denial back to the model so it can adapt rather than retry.
 type Approver interface {
@@ -52,6 +65,10 @@ type Loop struct {
 	Recorder  *Recorder
 	Config    Config
 	Compactor *Compactor
+
+	// Budget caps total token spend across the parent and its subagents.
+	// Nil means no cap.
+	Budget *Budget
 
 	messages []model.Message
 	usage    Usage
@@ -202,13 +219,18 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 
 	for {
 		if ctx.Err() != nil {
-			return l.finish(TermUserInterrupt), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 		}
 		if err := l.recordFailure(); err != nil {
 			return TermError, err
 		}
 		if l.turns >= l.Config.MaxTurns {
 			return l.finish(TermMaxTurns), nil
+		}
+		// At the turn boundary, not mid-turn: cutting a turn short would leave
+		// a tool result the model never sees.
+		if l.Budget.Exhausted() {
+			return l.finish(TermMaxBudget), nil
 		}
 		// Steering is applied before the turn is counted, so a redirection
 		// never costs the user a turn from the budget.
@@ -401,6 +423,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				l.usage.OutputTokens += chunk.Usage.OutputTokens
 				l.usage.CachedTokens += chunk.Usage.CachedInputTokens
 				l.usage.ColdPrefillTokens += chunk.Usage.InputTokens - chunk.Usage.CachedInputTokens
+				l.Budget.Spend(chunk.Usage.InputTokens + chunk.Usage.OutputTokens)
 			}
 		}
 	}
@@ -418,7 +441,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	if ctx.Err() != nil {
-		return TermUserInterrupt, true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 	}
 
 	// A malformed tool call is recoverable: tell the model what was wrong and
