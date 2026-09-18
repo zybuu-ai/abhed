@@ -54,6 +54,11 @@ func (s Style) Yellow(t string) string { return s.wrap("33", t) }
 func (s Style) Blue(t string) string   { return s.wrap("34", t) }
 func (s Style) Cyan(t string) string   { return s.wrap("36", t) }
 
+// Reverse swaps foreground and background, which is how a selected row in a
+// list reads as selected on every terminal theme — a colour chosen for a dark
+// background disappears on a light one.
+func (s Style) Reverse(t string) string { return s.wrap("7", t) }
+
 type Renderer struct {
 	w     io.Writer
 	s     Style

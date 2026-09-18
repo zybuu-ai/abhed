@@ -420,6 +420,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	go func() {
 		for {
 			line, err := editor.ReadLine()
+			if ui.ErrInterrupted(err) {
+				// Ctrl-C abandons the line being typed; it does not end the
+				// session. Ctrl-D on an empty line is what exits.
+				continue
+			}
 			if err != nil {
 				close(readErr)
 				return
