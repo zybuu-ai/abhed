@@ -736,3 +736,36 @@ func TestSessionEndedSeparatesContextFromCumulative(t *testing.T) {
 			got.ContextTokens, got.ContextWindow)
 	}
 }
+
+// A run cancelled by shutdown must not be recorded as a user interrupt: the
+// audit log has to tell the two apart.
+func TestShutdownIsNotAUserInterrupt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  TerminalReason
+	}{
+		{"user", nil, TermUserInterrupt},
+		{"shutdown", ErrShutdown, TermShutdown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turns := make([]scriptedTurn, 10)
+			for i := range turns {
+				turns[i] = scriptedTurn{calls: []model.ToolCall{
+					{ID: fmt.Sprintf("c%d", i), Name: "read", Args: []byte(`{"path":"x"}`)},
+				}}
+			}
+			l, _, _ := harness(t, turns, policy.ModeDefault, true)
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(tc.cause)
+
+			reason, err := l.Run(ctx, "go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reason != tc.want {
+				t.Errorf("cause %v gave %s, want %s", tc.cause, reason, tc.want)
+			}
+		})
+	}
+}

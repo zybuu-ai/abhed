@@ -14,6 +14,19 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
+// ErrShutdown, given as a context cancel cause, marks a session ended by the
+// server stopping rather than by the user interrupting.
+var ErrShutdown = errors.New("server shutdown")
+
+// terminalForCancel distinguishes the two ways a run is cancelled. The audit
+// log has to tell "someone stopped this" from "the process went away".
+func terminalForCancel(ctx context.Context) TerminalReason {
+	if errors.Is(context.Cause(ctx), ErrShutdown) {
+		return TermShutdown
+	}
+	return TermUserInterrupt
+}
+
 // Approver decides on a tool call that policy routed to Ask. Returning false
 // feeds a denial back to the model so it can adapt rather than retry.
 type Approver interface {
@@ -202,7 +215,7 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 
 	for {
 		if ctx.Err() != nil {
-			return l.finish(TermUserInterrupt), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 		}
 		if err := l.recordFailure(); err != nil {
 			return TermError, err
@@ -418,7 +431,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	if ctx.Err() != nil {
-		return TermUserInterrupt, true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 	}
 
 	// A malformed tool call is recoverable: tell the model what was wrong and

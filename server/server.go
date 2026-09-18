@@ -184,7 +184,10 @@ type liveSession struct {
 	State     string // running | waiting_approval | done
 	Turns     int    // exchanges in this conversation
 	cancel    context.CancelFunc
-	approvals chan approvalReply
+	// cancelCause ends the run with a stated reason, so shutdown is not
+	// recorded as a user interrupt.
+	cancelCause context.CancelCauseFunc
+	approvals   chan approvalReply
 	pending   *pendingApproval
 	mu        sync.Mutex
 }
@@ -683,9 +686,11 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		return "", err
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancelCause := context.WithCancelCause(context.Background())
+	cancel := func() { cancelCause(nil) }
 	live.Cancel = cancel
 	live.cancel = cancel
+	live.cancelCause = cancelCause
 	live.Turns = 1
 
 	s.mu.Lock()
@@ -1669,6 +1674,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	go func() {
 		<-ctx.Done()
+		// End in-flight runs with a stated cause first, so they record as
+		// shutdown rather than as a user interrupt.
+		s.mu.Lock()
+		for _, live := range s.running {
+			if live.cancelCause != nil {
+				live.cancelCause(agent.ErrShutdown)
+			}
+		}
+		s.mu.Unlock()
+
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
