@@ -123,3 +123,47 @@ func TestEditingKeysBehave(t *testing.T) {
 		t.Errorf("Ctrl-W gave %q, want 'go test '", line)
 	}
 }
+
+// TestQuietSuppressesThePrompt pins the stacked-glyph bug.
+//
+// The reader goroutine keeps reading during a turn so a steering message can
+// be typed. It must not paint a prompt while doing so: every write during a
+// turn repainted one, which stacked a column of prompt glyphs under each
+// answer and painted over the thinking indicator.
+func TestQuietSuppressesThePrompt(t *testing.T) {
+	var out bytes.Buffer
+	e := newEditor(strings.NewReader(""), &out, "PROMPT> ")
+	e.reading = true
+
+	e.setQuiet(true)
+	out.Reset()
+	e.redraw()
+	if strings.Contains(out.String(), "PROMPT>") {
+		t.Error("the prompt was painted while a turn owns the screen")
+	}
+
+	e.setQuiet(false)
+	if !strings.Contains(out.String(), "PROMPT>") {
+		t.Error("the prompt did not come back when the turn finished")
+	}
+}
+
+// TestWritePassesThroughOutsideAnEdit: while no line is being edited the
+// editor must not erase and repaint anything, or it overwrites the output it
+// was asked to print.
+func TestWritePassesThroughOutsideAnEdit(t *testing.T) {
+	var out bytes.Buffer
+	e := newEditor(strings.NewReader(""), &out, "> ")
+	e.reading = false // no line in progress, as during a turn
+
+	if _, err := e.write([]byte("spinner frame")); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "\033[J") {
+		t.Error("write erased the screen while no line was being edited")
+	}
+	if !strings.Contains(got, "spinner frame") {
+		t.Error("write dropped its output")
+	}
+}

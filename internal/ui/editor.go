@@ -36,6 +36,17 @@ type editor struct {
 	hpos    int    // index into history while browsing; len(history) means "current"
 	saved   string // the in-progress line, kept while browsing history
 
+	// quiet suppresses the prompt and menu while a turn is running. The reader
+	// goroutine keeps reading so a steering message can be typed mid-run, but
+	// it must not paint a prompt over the turn's output — that is what stacked
+	// a column of prompt glyphs under each answer.
+	quiet bool
+
+	// reading is true only between the start of readLine and the line being
+	// submitted. Outside that window the editor draws nothing, so a turn's
+	// output — and its thinking indicator — has the screen to itself.
+	reading bool
+
 	// menu state
 	menu     []Command
 	menuSel  int // -1 when nothing is selected
@@ -72,7 +83,18 @@ func (e *editor) readLine() (string, error) {
 	e.pos = 0
 	e.hpos = len(e.history)
 	e.menuSel = -1
+	e.mu.Lock()
+	e.reading = true
+	e.mu.Unlock()
 	e.redraw()
+
+	// Whatever ends the read — Enter, Ctrl-C, Ctrl-D, an error — the editor
+	// stops owning the line.
+	defer func() {
+		e.mu.Lock()
+		e.reading = false
+		e.mu.Unlock()
+	}()
 
 	var buf [1]byte
 	for {
@@ -386,6 +408,9 @@ const menuMax = 8
 func (e *editor) redraw() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.quiet {
+		return // a turn owns the screen
+	}
 
 	var b strings.Builder
 	b.WriteString("\r\033[J") // column 0, erase to end of screen
@@ -467,6 +492,19 @@ func (e *editor) clearMenu() {
 	e.menuRows = 0
 }
 
+// setQuiet suspends or resumes prompt drawing. Resuming repaints, so the
+// prompt reappears as soon as the turn that borrowed the screen is done.
+func (e *editor) setQuiet(q bool) {
+	e.mu.Lock()
+	was := e.quiet
+	e.quiet = q
+	reading := e.reading
+	e.mu.Unlock()
+	if was && !q && reading {
+		e.redraw()
+	}
+}
+
 // setPrompt changes the prompt; the next redraw picks it up.
 func (e *editor) setPrompt(p string) {
 	e.mu.Lock()
@@ -476,18 +514,27 @@ func (e *editor) setPrompt(p string) {
 
 // write prints output above the line being edited.
 //
-// The prompt, the typed text and the menu all live below the cursor, so
-// anything printed while a line is in progress has to erase that block, write,
-// and repaint it. Writing straight to the file interleaves with the prompt and
-// leaves fragments of both.
+// Only while a line is ACTUALLY being edited does this erase and repaint the
+// prompt. While a turn is running the editor is not reading, and repainting
+// there was actively harmful: the thinking indicator rewrites one line many
+// times a second, and every frame was followed by a repainted prompt — which
+// both hid the animation and left a column of stranded prompt glyphs behind.
+//
+// When no line is in progress this is a plain pass-through, which is what the
+// renderer needs to own the screen for the duration of a turn.
 func (e *editor) write(p []byte) (int, error) {
 	e.mu.Lock()
-	fmt.Fprint(e.out, "\r\033[J") // drop the prompt and menu
+	editing := e.reading
+	if editing {
+		fmt.Fprint(e.out, "\r\033[J") // drop the prompt and menu
+	}
 	e.mu.Unlock()
 
 	n, err := rawWriter{e.out}.Write(p)
 
-	e.redraw() // and put them back
+	if editing {
+		e.redraw() // and put them back
+	}
 	return n, err
 }
 

@@ -59,6 +59,14 @@ func (l *LineReader) ReadLine() (string, error) {
 // when it is not.
 func (l *LineReader) Raw() bool { return l.raw }
 
+// Quiet suspends the prompt while a turn is running, so the reader can stay
+// live for steering without painting over the turn's output.
+func (l *LineReader) Quiet(q bool) {
+	if l.raw {
+		l.ed.setQuiet(q)
+	}
+}
+
 // SetPrompt changes the prompt shown before the cursor.
 func (l *LineReader) SetPrompt(p string) {
 	if l.raw {

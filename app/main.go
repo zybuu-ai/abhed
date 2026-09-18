@@ -457,6 +457,12 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if line == "" {
 			continue
 		}
+		// "exit" and "quit" without a slash are commands too. They were sent to
+		// the model as prompts, which replied "Goodbye!" while the session
+		// stayed open — the CLI ignoring the one word everyone tries first.
+		if bare := strings.ToLower(strings.TrimSpace(line)); bare == "exit" || bare == "quit" {
+			line = "/" + bare
+		}
 		if strings.HasPrefix(line, "/") {
 			if quit := handleCommand(ctx, line, r, pol, sess, sessionState); quit {
 				return 0
@@ -502,6 +508,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// output arrives. A cold local model can take thirty seconds to its
 		// first token, and an unmoving prompt in that window is
 		// indistinguishable from a hang.
+		// The turn owns the screen: the reader stays live for steering, but
+		// stops painting a prompt over the output.
+		editor.Quiet(true)
 		r.StartThinking()
 		go func() {
 			_, err := loop.Run(taskCtx, line)
@@ -552,6 +561,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		cancelTask()
 		r.StopThinking() // every exit path converges here
+		editor.Quiet(false)
 		sessionState.accumulate(loop.Usage())
 
 		store.Unsubscribe(sessionID, events)
@@ -877,7 +887,12 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 		// text on for the session.
 		r.Reasoning = !r.Reasoning
 		if r.Reasoning {
-			fmt.Println(s.Dim("  reasoning shown in full"))
+			// Show the block the user just saw collapsed, not only the next
+			// one. A toggle that takes effect a turn later reads as broken to
+			// someone looking at a summary line right now.
+			if !r.ShowLastReasoning() {
+				fmt.Println(s.Dim("  reasoning shown in full from the next turn"))
+			}
 		} else {
 			fmt.Println(s.Dim("  reasoning collapsed to a summary line"))
 		}

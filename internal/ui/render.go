@@ -75,6 +75,12 @@ type Renderer struct {
 	// a spinner character stranded in the transcript.
 	think *Thinking
 
+	// lastReasoning is the most recent reasoning block, kept so /think can
+	// print the one the user just saw collapsed. Toggling a flag that only
+	// affects the NEXT turn is not what someone means when they ask to see the
+	// reasoning in front of them.
+	lastReasoning string
+
 	// Reasoning is shown in full when true. Off by default: on a model that
 	// reasons at length it buries the answer, and it is the answer the user
 	// asked for. /think toggles it, and a summary line always appears so the
@@ -148,6 +154,20 @@ func (r *Renderer) StartThinking() {
 
 // StopThinking ends it, at the end of a turn or on interrupt.
 func (r *Renderer) StopThinking() { r.think.Stop() }
+
+// ShowLastReasoning prints the most recent reasoning block in full, and
+// reports whether there was one. This is what /think shows immediately,
+// rather than only affecting turns that have not happened yet.
+func (r *Renderer) ShowLastReasoning() bool {
+	if strings.TrimSpace(r.lastReasoning) == "" {
+		return false
+	}
+	fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
+	for _, line := range strings.Split(r.lastReasoning, "\n") {
+		fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(line))
+	}
+	return true
+}
 
 // PauseThinking clears the indicator so a caller can write a line, reporting
 // whether it was running so the caller can restart it.
@@ -230,10 +250,11 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 		r.pause()
 		text := strings.TrimSpace(m.Text)
+		r.lastReasoning = text
 		if !r.Reasoning {
 			fmt.Fprintf(r.w, "%s %s\n",
 				r.s.Dim("▸"),
-				r.s.Dim(fmt.Sprintf("reasoning · %d words · /think to show", len(strings.Fields(text)))))
+				r.s.Dim(fmt.Sprintf("reasoning · %d words · type /think to expand", len(strings.Fields(text)))))
 			return
 		}
 		fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
