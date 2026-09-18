@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"io"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -58,7 +57,14 @@ func (t *Thinking) Start() {
 	go func(end, done chan struct{}) {
 		defer close(done)
 		started := time.Now()
-		verb := thinkingVerbs[rand.Intn(len(thinkingVerbs))]
+		// Walk the list rather than sampling it. Random choice needed a PRNG,
+		// which gosec flags as a weak generator — a fair complaint to raise
+		// even when the stake is only which word appears, because a reader
+		// cannot tell from the call site that the stake is low. Walking also
+		// behaves better: sampling repeats itself on a long wait, and the same
+		// verb twice running reads as a stuck frame.
+		vi := int(time.Now().UnixNano() % int64(len(thinkingVerbs)))
+		verb := thinkingVerbs[vi]
 		tick := time.NewTicker(90 * time.Millisecond)
 		defer tick.Stop()
 		i := 0
@@ -71,7 +77,8 @@ func (t *Thinking) Start() {
 				// A new verb every ~4s: enough to show progress, slow enough
 				// not to jitter.
 				if i%44 == 0 {
-					verb = thinkingVerbs[rand.Intn(len(thinkingVerbs))]
+					vi = (vi + 1) % len(thinkingVerbs)
+					verb = thinkingVerbs[vi]
 				}
 				frame := spinFrames[i%len(spinFrames)]
 				el := ""
