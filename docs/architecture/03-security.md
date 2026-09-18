@@ -37,7 +37,7 @@ the architecture assumes injection *sometimes succeeds* and constrains blast rad
 ```
  L1  Provenance      every observation tagged trusted | untrusted at ingest
  L2  Policy          evaluated on the ACTION, never on the text that motivated it
- L3  Isolation       microVM per session; assume code inside is hostile
+ L3  Isolation       strongest available tier per session; assume code inside is hostile
  L4  Egress          default-deny network; broker is the only path out
  L5  Detection       log inspection + anomaly detection on action streams
  L6  Recovery        event-sourced replay; deterministic incident reconstruction
@@ -54,16 +54,31 @@ agent still cannot exceed its granted authority.
 |---|---|---|---|---|
 | I0 | Process + seccomp/Landlock | Weak | ~0 | Never for untrusted code |
 | I1 | Container (OCI) | Namespace | Low | Trusted internal only |
-| I2 | **gVisor** | Userspace kernel | ~10-20% | Default for tool execution |
-| I3 | **Firecracker / Kata microVM** | Hardware virt | ~50-150 ms boot | **Default for sessions** |
+| I2 | **gVisor (runsc)** | Userspace kernel | ~10-20% | **What `vm` builds today** |
+| I3 | Firecracker / Kata microVM | Hardware virt | ~50-150 ms boot | Target, not shipped |
 | I4 | Dedicated node | Physical | High | Classified / cross-tenant-sensitive |
 
-**Abhed default: I3 per session, I2 per tool invocation within it.** A microVM per session
-gives a hardware-enforced boundary at a boot cost small relative to agent turn latency.
-Container-only isolation (I1) is *not* sufficient for agent-generated code — a container
-shares the host kernel, and kernel escape is a realistic threat from arbitrary code.
+**What ships today.** The four configurable tiers are `none`, `process`, `container` and
+`vm`. `process` is bubblewrap on Linux and the Seatbelt sandbox on macOS; `container` is an
+OCI container through the host's engine; `vm` is that same container pinned to the gVisor
+`runsc` runtime, which is I2 above — a userspace kernel intercepting syscalls, not a
+hardware-virtualised microVM. `internal/sandbox` contains exactly two backends, `process.go`
+and `container.go`; there is no Firecracker or Kata implementation, and the tier refuses to
+start if `runsc` is not registered with the container engine rather than silently running
+without it.
 
-Each session VM gets: scoped filesystem (workspace only, no host mounts), no network by
+**Why the naming, and what it costs you.** `vm` names the strongest tier the harness can
+select, so configuration does not have to change when a hardware-virtualised backend lands;
+the name is a slot, not a promise about the mechanism. A reviewer comparing boundaries
+should read it as gVisor. Container-only isolation (I1) remains *not* sufficient for
+agent-generated code — a container shares the host kernel — which is why `vm` exists as a
+distinct tier and why `min_tier` is the setting that matters.
+
+**I3 is on the roadmap, and is not implemented.** A microVM per session would give a
+hardware-enforced boundary at a boot cost small relative to agent turn latency. Until it
+exists, this document says gVisor.
+
+Each sandboxed session gets: scoped filesystem (workspace only, no host mounts), no network by
 default, CPU/memory/PID/disk quotas, wall-clock lifetime cap, and destruction on session end.
 **VMs are never reused across tenants** — reuse is how T6 happens.
 
