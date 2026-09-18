@@ -736,3 +736,93 @@ func TestSessionEndedSeparatesContextFromCumulative(t *testing.T) {
 			got.ContextTokens, got.ContextWindow)
 	}
 }
+
+// budgetAdapter reports a fixed spend per turn, delegating the rest.
+type budgetAdapter struct {
+	scripted model.Adapter
+	perTurn  int
+}
+
+func (b *budgetAdapter) Name() string                           { return "budget" }
+func (b *budgetAdapter) Profile() model.Profile                 { return model.Profile{ContextWindow: 200000} }
+func (b *budgetAdapter) CountTokens(model.Request) (int, error) { return 100, nil }
+
+func (b *budgetAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	src, err := b.scripted.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan model.Chunk, 16)
+	go func() {
+		defer close(out)
+		for c := range src {
+			if c.Type == model.ChunkDone {
+				c.Usage = &model.Usage{InputTokens: b.perTurn}
+			}
+			out <- c
+		}
+	}()
+	return out, nil
+}
+
+// max_budget_tokens reached only the subagent factory, so a single-agent
+// session ran to MaxTurns whatever it spent.
+func TestSessionBudgetStopsThePrimaryAgent(t *testing.T) {
+	// Keep calling a tool so the run continues until something stops it.
+	turns := make([]scriptedTurn, 40)
+	for i := range turns {
+		turns[i] = scriptedTurn{calls: []model.ToolCall{
+			{ID: fmt.Sprintf("c%d", i), Name: "read", Args: []byte(`{"path":"x"}`)},
+		}}
+	}
+	l, _, _ := harness(t, turns, policy.ModeDefault, true)
+	l.Adapter = &budgetAdapter{scripted: l.Adapter, perTurn: 500}
+	if l.Compactor != nil {
+		l.Compactor.Adapter = l.Adapter
+	}
+	// Far more turns than the budget allows, so MaxTurns cannot be what stops it.
+	l.Config.MaxTurns = 50
+	l.Budget = NewBudget(1200, 4, false)
+
+	reason, err := l.Run(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason != TermMaxBudget {
+		t.Fatalf("want %s, got %s (spent %d of 1200)", TermMaxBudget, reason, l.Budget.Spent())
+	}
+	if l.Budget.Spent() < 1200 {
+		t.Errorf("stopped at %d tokens, before the 1200 budget was reached", l.Budget.Spent())
+	}
+	if l.turns >= 50 {
+		t.Errorf("ran to the turn limit (%d); the budget should have stopped it first", l.turns)
+	}
+}
+
+// A nil or zero budget must not cap anything.
+func TestNoBudgetMeansNoCap(t *testing.T) {
+	for name, b := range map[string]*Budget{"nil": nil, "zero": NewBudget(0, 4, false)} {
+		t.Run(name, func(t *testing.T) {
+			turns := make([]scriptedTurn, 10)
+			for i := range turns {
+				turns[i] = scriptedTurn{calls: []model.ToolCall{
+					{ID: fmt.Sprintf("c%d", i), Name: "read", Args: []byte(`{"path":"x"}`)},
+				}}
+			}
+			l, _, _ := harness(t, turns, policy.ModeDefault, true)
+			l.Adapter = &budgetAdapter{scripted: l.Adapter, perTurn: 5000}
+			if l.Compactor != nil {
+				l.Compactor.Adapter = l.Adapter
+			}
+			l.Config.MaxTurns = 3
+			l.Budget = b
+			reason, err := l.Run(context.Background(), "go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reason == TermMaxBudget {
+				t.Errorf("a %s budget must not cap the session", name)
+			}
+		})
+	}
+}
