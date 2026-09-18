@@ -27,8 +27,24 @@ CREATE TABLE IF NOT EXISTS sessions (
   tokens_cached   BIGINT      NOT NULL DEFAULT 0,
   compactions     INT         NOT NULL DEFAULT 0,
   gpu_seconds     NUMERIC     NOT NULL DEFAULT 0,
-  cost_usd        NUMERIC     NOT NULL DEFAULT 0
+  cost_usd        NUMERIC     NOT NULL DEFAULT 0,
+  -- How full the window was when the session ended, as distinct from what it
+  -- cost. tokens_in above is a running sum across turns and only ever grows;
+  -- these two say whether there was room left. Nullable rather than defaulted
+  -- to zero: a session recorded before this column existed, or one whose
+  -- adapter reports no window, has no measurement — and zero would read as an
+  -- empty context rather than an absent reading.
+  context_tokens  BIGINT,
+  context_window  BIGINT
 );
+
+-- Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
+-- existing table untouched, so a new column in the definition above never
+-- reaches a database that already has the table. These statements are what
+-- actually migrate one, and they are idempotent for the same reason the rest
+-- of this file is: it runs on every start.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_tokens BIGINT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_window BIGINT;
 
 CREATE INDEX IF NOT EXISTS sessions_tenant_started_idx
   ON sessions (tenant_id, started_at DESC);

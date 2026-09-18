@@ -190,6 +190,10 @@ type SessionRecord struct {
 	TokensOut      int64
 	TokensCached   int64
 	Compactions    int
+	// Nil when the session predates these columns or the adapter reports no
+	// window. See the note in schema.sql: absent is not the same as zero.
+	ContextTokens *int64
+	ContextWindow *int64
 }
 
 // CreateSubSession records a subagent's session row. Subagents are sessions in
@@ -242,12 +246,26 @@ func (p *Postgres) finalizeSession(ctx context.Context, ev agent.Event) {
 	if err := jsonUnmarshal(ev.Payload, &ended); err != nil {
 		return
 	}
+	// Written as NULL when the loop could not measure, so "not recorded" stays
+	// distinguishable from "the context was empty". Zero is a real reading for
+	// neither.
+	var ctxTokens, ctxWindow *int64
+	if ended.ContextTokens > 0 {
+		v := int64(ended.ContextTokens)
+		ctxTokens = &v
+	}
+	if ended.ContextWindow > 0 {
+		v := int64(ended.ContextWindow)
+		ctxWindow = &v
+	}
 	_, _ = p.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = $2, terminal_reason = $3, turns = $4,
-		       tokens_in = $5, tokens_out = $6, tokens_cached = $7, compactions = $8
+		       tokens_in = $5, tokens_out = $6, tokens_cached = $7, compactions = $8,
+		       context_tokens = $9, context_window = $10
 		WHERE id = $1`,
 		ev.SessionID, ev.CreatedAt, string(ended.Reason), ended.Turns,
-		ended.TokensIn, ended.TokensOut, ended.TokensCached, ended.Compactions)
+		ended.TokensIn, ended.TokensOut, ended.TokensCached, ended.Compactions,
+		ctxTokens, ctxWindow)
 }
 
 // truncatePrompt bounds what goes in the label column.
@@ -306,7 +324,8 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
-		       turns, tokens_in, tokens_out, tokens_cached, compactions
+		       turns, tokens_in, tokens_out, tokens_cached, compactions,
+		       context_tokens, context_window
 		FROM sessions WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -318,7 +337,8 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 		var s SessionRecord
 		if err := rows.Scan(&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt,
 			&s.StartedAt, &s.EndedAt, &s.TerminalReason,
-			&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions); err != nil {
+			&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
+			&s.ContextTokens, &s.ContextWindow); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -331,11 +351,13 @@ func (p *Postgres) GetSession(ctx context.Context, id string) (SessionRecord, er
 	err := p.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
-		       turns, tokens_in, tokens_out, tokens_cached, compactions
+		       turns, tokens_in, tokens_out, tokens_cached, compactions,
+		       context_tokens, context_window
 		FROM sessions WHERE id = $1 AND deleted_at IS NULL`, id).Scan(
 		&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt,
 		&s.StartedAt, &s.EndedAt, &s.TerminalReason,
-		&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions)
+		&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
+		&s.ContextTokens, &s.ContextWindow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s, ErrNotFound
 	}
