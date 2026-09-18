@@ -66,6 +66,10 @@ type Loop struct {
 	Config    Config
 	Compactor *Compactor
 
+	// Budget caps total token spend across the parent and its subagents.
+	// Nil means no cap.
+	Budget *Budget
+
 	messages []model.Message
 	usage    Usage
 	turns    int
@@ -222,6 +226,11 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 		}
 		if l.turns >= l.Config.MaxTurns {
 			return l.finish(TermMaxTurns), nil
+		}
+		// At the turn boundary, not mid-turn: cutting a turn short would leave
+		// a tool result the model never sees.
+		if l.Budget.Exhausted() {
+			return l.finish(TermMaxBudget), nil
 		}
 		// Steering is applied before the turn is counted, so a redirection
 		// never costs the user a turn from the budget.
@@ -414,6 +423,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				l.usage.OutputTokens += chunk.Usage.OutputTokens
 				l.usage.CachedTokens += chunk.Usage.CachedInputTokens
 				l.usage.ColdPrefillTokens += chunk.Usage.InputTokens - chunk.Usage.CachedInputTokens
+				l.Budget.Spend(chunk.Usage.InputTokens + chunk.Usage.OutputTokens)
 			}
 		}
 	}

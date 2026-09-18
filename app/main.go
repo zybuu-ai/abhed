@@ -339,6 +339,15 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, todos, extHost)
 }
 
+// sessionBudget is the one allowance the parent loop and its subagents share.
+func sessionBudget(cfg config.Config) *agent.Budget {
+	return agent.NewBudget(
+		int64(cfg.Limits.MaxBudgetTokens),
+		cfg.Limits.MaxSubagents,
+		cfg.Limits.NestedSubagents,
+	)
+}
+
 func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonOut bool,
 	adapter model.Adapter, registry *tools.Registry, pol *policy.Engine,
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
@@ -363,6 +372,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	}()
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	loop.Budget = sessionBudget(appCfg)
 	holder.Set(loop)
 	setPrompt(prompt)
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
@@ -433,6 +443,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 	}()
 	turn := 0
+	// Outside the turn loop: a fresh Loop is built per turn, and a budget
+	// built with it would reset the allowance every time.
+	turnBudget := sessionBudget(appCfg)
 	// Session-level state the slash commands operate on.
 	undo := agent.NewUndoLog()
 	sess.Checkpoint = undo.Record
@@ -491,6 +504,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// at startup, or a /model switch is silently reverted on the next turn.
 		active := sessionState.adapter
 		loop := agent.NewLoop(active, registry, pol, approver, sess, rec, cfg)
+		loop.Budget = turnBudget
 		loop.Compactor = agent.NewCompactor(active, cfg.CompactAt)
 		attachExtensionSummarizer(loop.Compactor, extHost, sessionID)
 		todos.Set(loop)
