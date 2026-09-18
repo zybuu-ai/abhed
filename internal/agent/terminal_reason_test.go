@@ -9,59 +9,52 @@ import (
 )
 
 // The README named a count that drifted from the code: it claimed 8 while 9
-// were defined and 6 reachable. Every defined reason must be emitted somewhere
-// in live code, or carry a comment saying it is reserved.
+// were defined and 6 reachable. Every defined reason must be emitted in live
+// code, or carry a "Reserved, not emitted" comment.
 func TestEveryTerminalReasonIsEmittedOrReserved(t *testing.T) {
-	root := filepath.Join("..", "..")
-	src, err := os.ReadFile(filepath.Join("event.go"))
+	src, err := os.ReadFile("event.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defined := regexp.MustCompile(`(?m)^\s*(?://[^\n]*\n\s*)*(Term[A-Za-z]+)\s+TerminalReason\s*=`).
-		FindAllStringSubmatch(string(src), -1)
-	if len(defined) == 0 {
-		t.Fatal("no terminal reasons found")
-	}
 
-	reserved := map[string]bool{}
-	for _, line := range strings.Split(string(src), "\n") {
-		if strings.Contains(line, "Reserved, not emitted") {
-			reserved["pending"] = true
-		}
-		if m := regexp.MustCompile(`(Term[A-Za-z]+)\s+TerminalReason`).FindStringSubmatch(line); m != nil && reserved["pending"] {
-			reserved[m[1]] = true
-			delete(reserved, "pending")
-		}
-	}
+	// A reason is reserved when the comment block above it says so.
+	block := regexp.MustCompile(`(?m)((?:^\s*//[^\n]*\n)*)\s*(Term[A-Za-z]+)\s+TerminalReason\s*=`)
+	live := liveSource(t)
 
-	for _, d := range defined {
-		name := d[1]
-		if reserved[name] {
+	for _, m := range block.FindAllStringSubmatch(string(src), -1) {
+		comment, name := m[1], m[2]
+		if strings.Contains(comment, "Reserved, not emitted") {
 			continue
 		}
-		if !emittedSomewhere(t, root, name) {
+		if !strings.Contains(live, name) {
 			t.Errorf("%s is defined but never emitted; wire it or mark it reserved", name)
 		}
 	}
 }
 
-func emittedSomewhere(t *testing.T, root, name string) bool {
+// liveSource is every non-test Go file outside the two that only declare or
+// re-export the reasons.
+func liveSource(t *testing.T) string {
 	t.Helper()
-	found := false
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || found || info.IsDir() || !strings.HasSuffix(path, ".go") {
+	var b strings.Builder
+	err := filepath.Walk(filepath.Join("..", ".."), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil //nolint:nilerr // an unreadable file is not this test's concern
+		}
+		switch {
+		case strings.HasSuffix(path, "_test.go"),
+			strings.HasSuffix(filepath.Join("internal", "agent", "event.go"), path),
+			strings.HasSuffix(path, filepath.Join("internal", "agent", "event.go")),
+			strings.HasSuffix(path, filepath.Join("sdk", "record.go")):
 			return nil
 		}
-		if strings.HasSuffix(path, "_test.go") ||
-			strings.HasSuffix(path, "internal/agent/event.go") ||
-			strings.HasSuffix(path, "sdk/record.go") {
-			return nil
-		}
-		b, err := os.ReadFile(path)
-		if err == nil && strings.Contains(string(b), name) {
-			found = true
+		if data, readErr := os.ReadFile(path); readErr == nil {
+			b.Write(data)
 		}
 		return nil
 	})
-	return found
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
 }
