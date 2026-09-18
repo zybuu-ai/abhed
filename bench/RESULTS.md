@@ -21,6 +21,30 @@ Raw data: [`bench/results/2026-09-14/results.json`](results/2026-09-14/results.j
 | aider | 19/24 (79%) | 106.4 | 4,761 | n/a (aider doesn't report turns) | 0/24 |
 | bare | 22/24 (92%) | 125.1 | 17,350 | 7.2 | 0/24 |
 
+### Reading the token column
+
+Tokens are not cost. On a hosted per-token API they are; on the owned GPUs
+this targets, cost is GPU-seconds, and the two diverge because input and
+output tokens are not the same kind of work.
+
+| System | Mean input | Mean output | Output share |
+|---|---|---|---|
+| abhed | 55,535 | 4,071 | 6.8% |
+| bare | 14,805 | 2,544 | 14.7% |
+
+Input tokens are prefill: parallel, and a stable prefix across turns that a
+prefix cache can serve. Output tokens are decode: serial, uncacheable, and
+what actually occupies a GPU. 93% of Abhed's tokens are the cheap kind, so
+the 3.4× token ratio against the bare loop is not a 3.4× cost ratio.
+
+What these runs do **not** measure is cache hit rate — the harness did not
+record it, so the prefill saving is unquantified here rather than assumed.
+Wall time is the honest proxy in this table, and on that measure the three
+systems are within 30% of each other while pass rates differ by 21 points.
+
+aider reports no token split, so it is absent from the second table rather
+than estimated.
+
 Zero runs across all 72 timed out, zero hit a harness error, and zero touched
 any file outside `<slug>.py`. Every failure recorded below is a genuine test
 failure after the agent believed it was done (or gave up), not a crash, a
