@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -27,6 +28,12 @@ type LineReader struct {
 	state   *term.State
 	fallbck *bufio.Reader
 	raw     bool
+
+	// menu is the suggestion list currently drawn below the prompt, kept so a
+	// redraw with identical content can be skipped (it would flicker) and so
+	// the right number of lines get erased.
+	menu      string
+	menuLines int
 }
 
 // NewLineReader prepares stdin for editing where that is possible.
@@ -43,7 +50,85 @@ func NewLineReader(prompt string) *LineReader {
 		io.Reader
 		io.Writer
 	}{os.Stdin, os.Stdout}, prompt)
-	return &LineReader{term: t, fd: fd, state: state, raw: true}
+	l := &LineReader{term: t, fd: fd, state: state, raw: true}
+
+	// Slash commands complete and preview as they are typed.
+	//
+	// The callback fires on every keypress, so it does two jobs: Tab completes
+	// as far as the candidates unambiguously allow, and any other key redraws
+	// the menu underneath the prompt. Without this a user has to know the
+	// command list by heart or break flow to run /help — and the list already
+	// existed, it just was not reachable from the place people look for it.
+	t.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
+		// Only while the line IS a slash command being typed: a "/" inside a
+		// sentence or a path is not a command and must not pop a menu.
+		word := strings.TrimSpace(line)
+		if !strings.HasPrefix(word, "/") || strings.ContainsAny(word, " \t") {
+			l.clearMenu()
+			return "", 0, false
+		}
+		matches := MatchCommands(word)
+
+		if key == '\t' {
+			l.clearMenu()
+			if len(matches) == 0 {
+				return "", 0, false
+			}
+			// One match completes fully and adds a space when it takes an
+			// argument; several complete to their shared stem.
+			if len(matches) == 1 {
+				out := matches[0].Name
+				if matches[0].Args != "" {
+					out += " "
+				}
+				return out, len([]rune(out)), true
+			}
+			if p := CommonPrefix(matches); len(p) > len(word) {
+				return p, len([]rune(p)), true
+			}
+			return "", 0, false
+		}
+
+		l.showMenu(matches)
+		return "", 0, false
+	}
+	return l
+}
+
+// showMenu draws the candidate list below the prompt and returns the cursor to
+// where it was, so typing continues uninterrupted. Redrawing in place rather
+// than scrolling is what keeps the conversation above it from jumping.
+func (l *LineReader) showMenu(cs []Command) {
+	menu := SuggestionMenu(NewStyle(os.Stdout), cs, 8)
+	if menu == l.menu {
+		return // unchanged: redrawing would flicker
+	}
+	l.clearMenu()
+	if menu == "" {
+		return
+	}
+	lines := strings.Count(menu, "\n")
+	// Save cursor, draw below, restore. \r\n rather than \n because the
+	// terminal is in raw mode and a bare newline would not return the column.
+	fmt.Fprint(os.Stdout, "\0337\r\n"+strings.ReplaceAll(menu, "\n", "\r\n")+"\0338")
+	l.menu = menu
+	l.menuLines = lines
+}
+
+// clearMenu erases a previously drawn menu.
+func (l *LineReader) clearMenu() {
+	if l.menuLines == 0 {
+		return
+	}
+	var b strings.Builder
+	b.WriteString("\0337")
+	for i := 0; i < l.menuLines; i++ {
+		b.WriteString("\r\n\033[2K")
+	}
+	b.WriteString("\0338")
+	fmt.Fprint(os.Stdout, b.String())
+	l.menu = ""
+	l.menuLines = 0
 }
 
 // ReadLine returns the next line. In raw mode it supports Left and Right to
@@ -52,6 +137,9 @@ func NewLineReader(prompt string) *LineReader {
 func (l *LineReader) ReadLine() (string, error) {
 	if l.raw {
 		line, err := l.term.ReadLine()
+		// The menu belongs to the line being typed. Leaving it on screen after
+		// Enter would strand a stale command list above the answer.
+		l.clearMenu()
 		return line, err
 	}
 	line, err := l.fallbck.ReadString('\n')

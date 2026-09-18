@@ -17,17 +17,19 @@ import (
 // Rendered in three sizes because a mark has to survive both places it lives:
 // a single terminal cell and a 128px browser header.
 
-// MarkLarge is the startup banner: the unbroken wall with the point inside
-// it, the same construction as brand/abhed-mark.svg. Eight lines, because Banner lays
-// the run facts beside it and both columns have to end together.
-const MarkLarge = ` ▗▄▄▄▄▄▄▄▄▖ 
-▗▛        ▜▖
-▌   ▄██▄   ▐
-▌  ██████  ▐
-▌  ██████  ▐
-▌   ▀██▀   ▐
-▝▙        ▟▘
- ▝▀▀▀▀▀▀▀▀▘ `
+// MarkLarge is the startup banner: a frame that is OPEN on the right, at the
+// point's eye line, with the model as a single point inside it.
+//
+// The previous form drew a closed eight-line box with a filled blob at the
+// centre, which read as a sealed container with something trapped in it —
+// the opposite of the idea, and two lines taller than the facts beside it
+// needed. Five lines, and the gap is the whole point: a harness is something
+// a model is placed into, not a box it is sealed in.
+const MarkLarge = ` ▄▄▄▄▄▄▄
+▐       ▘
+▐   ◆
+▐       ▖
+ ▀▀▀▀▀▀▀`
 
 // MarkSmall is the two-line form for a compact header.
 const MarkSmall = `▗▛●▜▖
@@ -49,14 +51,16 @@ func Banner(s Style, version, model, workspace, sandbox, storage string) string 
 	col := strings.Split(MarkLarge, "\n")
 	// Facts sit beside the mark rather than beneath it, so the block stays
 	// seven lines instead of twelve.
+	// Five rows, matching the mark's height so both columns end together.
+	// Model and sandbox are what change between runs and what a reader checks;
+	// the rest is one line of identity.
 	rows := []string{
 		s.Bold("ABHED") + "  " + s.Dim(version),
-		s.Dim("deep agent harness · on-prem"),
-		"",
+
+		s.Dim("storage  ") + storage,
 		s.Dim("model    ") + model,
 		s.Dim("work     ") + workspace,
 		s.Dim("sandbox  ") + sandbox,
-		s.Dim("storage  ") + storage,
 	}
 
 	// Pad by RUNE count: the box-drawing characters are multi-byte, so %-11s

@@ -64,6 +64,17 @@ type Renderer struct {
 	streaming bool
 	pending   strings.Builder
 	table     []string
+
+	// think animates while the model works. Every write path stops it first
+	// and the turn restarts it, so a frame can never land mid-line and leave
+	// a spinner character stranded in the transcript.
+	think *Thinking
+
+	// Reasoning is shown in full when true. Off by default: on a model that
+	// reasons at length it buries the answer, and it is the answer the user
+	// asked for. /think toggles it, and a summary line always appears so the
+	// reasoning is known to exist rather than silently dropped.
+	Reasoning bool
 }
 
 // flushLines renders every complete line held in the buffer.
@@ -117,7 +128,34 @@ func (r *Renderer) endStream() {
 }
 
 func NewRenderer(w io.Writer, quiet bool) *Renderer {
-	return &Renderer{w: w, s: NewStyle(w), quiet: quiet}
+	r := &Renderer{w: w, s: NewStyle(w), quiet: quiet}
+	r.think = NewThinking(w, r.s)
+	return r
+}
+
+// StartThinking begins the indicator for a turn. The renderer stops it before
+// any output, so a caller only has to start it once per turn.
+func (r *Renderer) StartThinking() {
+	if !r.quiet {
+		r.think.Start()
+	}
+}
+
+// StopThinking ends it, at the end of a turn or on interrupt.
+func (r *Renderer) StopThinking() { r.think.Stop() }
+
+// PauseThinking clears the indicator so a caller can write a line, reporting
+// whether it was running so the caller can restart it.
+func (r *Renderer) PauseThinking() bool { return r.pause() }
+
+// pause clears the indicator before writing. Returns whether it was running,
+// so a caller that wants it back can restart it.
+func (r *Renderer) pause() bool {
+	if r.think.Active() {
+		r.think.Stop()
+		return true
+	}
+	return false
 }
 
 func (r *Renderer) Style() Style { return r.s }
@@ -145,6 +183,7 @@ func (r *Renderer) Event(ev agent.Event) {
 			return
 		}
 		if !r.streaming {
+			r.pause() // the answer has started; the indicator has done its job
 			fmt.Fprint(r.w, "\n")
 			r.streaming = true
 		}
@@ -169,6 +208,34 @@ func (r *Renderer) Event(ev agent.Event) {
 			fmt.Fprintf(r.w, "\n%s\n", Markdown(r.s, m.Text))
 		}
 
+	case agent.EvAgentReasoning:
+		// The model's thinking. The CLI dropped this entirely while the console
+		// showed it, so the same session looked like it reasoned in one place
+		// and not the other.
+		//
+		// Collapsed to a word count by default and expanded by /think: on a
+		// model that reasons at length, printing it in full buries the answer
+		// the user actually asked for.
+		if r.quiet {
+			return
+		}
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) != nil || strings.TrimSpace(m.Text) == "" {
+			return
+		}
+		r.pause()
+		text := strings.TrimSpace(m.Text)
+		if !r.Reasoning {
+			fmt.Fprintf(r.w, "%s %s\n",
+				r.s.Dim("▸"),
+				r.s.Dim(fmt.Sprintf("reasoning · %d words · /think to show", len(strings.Fields(text)))))
+			return
+		}
+		fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
+		for _, line := range strings.Split(text, "\n") {
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(line))
+		}
+
 	case agent.EvActionRequested:
 		if r.quiet {
 			return
@@ -177,6 +244,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &a) != nil {
 			return
 		}
+		r.pause()
 		fmt.Fprintf(r.w, "%s %s %s\n",
 			r.s.Cyan("●"), r.s.Bold(a.Tool), r.s.Dim(summarizeArgs(a.Tool, a.Args)))
 
@@ -185,6 +253,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &o) != nil {
 			return
 		}
+		r.pause()
 		// Errors always show; successful output stays collapsed unless it is
 		// the kind of result the user needs to see.
 		if o.IsError {
@@ -207,12 +276,14 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 
 	case agent.EvActionDenied:
+		r.pause()
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
 			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(m["reason"]))
 		}
 
 	case agent.EvSessionEnded:
+		r.StopThinking()
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) != nil || r.quiet {
 			return
