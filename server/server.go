@@ -770,6 +770,11 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	}
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
+	loop.Budget = agent.NewBudget(
+		int64(s.opts.Config.Limits.MaxBudgetTokens),
+		s.opts.Config.Limits.MaxSubagents,
+		s.opts.Config.Limits.NestedSubagents,
+	)
 	live.Loop = loop
 	return live, loop, nil
 }
