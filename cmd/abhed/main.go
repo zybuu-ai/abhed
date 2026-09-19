@@ -10,14 +10,19 @@ import (
 	"github.com/zybuu-ai/abhed/app"
 )
 
-// version is set by the release build (-ldflags "-X main.version=v0.1.0").
-// A `go install .../cmd/abhed@v0.1.0` build has no ldflags, but the module
+// devVersion is what an unstamped build reports. Compared against rather than
+// repeated as a literal: the same string appeared twice and a release bump
+// silently broke the check.
+const devVersion = "dev"
+
+// version is set by the release build (-ldflags "-X main.version=v0.2.0").
+// A `go install .../cmd/abhed@v0.2.0` build has no ldflags, but the module
 // system records the version it resolved, so the binary reads that instead
 // of reporting itself as a development build it is not.
-var version = "0.1.0-dev"
+var version = devVersion
 
 func main() {
-	if version == "0.1.0-dev" {
+	if version == devVersion {
 		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 			version = bi.Main.Version
 		}

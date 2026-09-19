@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
 ### Security
 
 - Uploads no longer land in `.abhed/`, the directory the agent is denied. A
@@ -47,6 +49,13 @@ All notable changes to Abhed are recorded here. The format follows
   Nine were defined, six reachable, and the README claimed eight.
 - `exit` and `quit` end an interactive CLI session. Without a leading slash
   they were sent to the model as a prompt.
+
+### Changed
+
+- CI gates on CVEs, coverage and the adversarial suite. Scans cover the built
+  binary and the container image, not only the source, and a scan that does
+  not run fails the build rather than reading as clean. Coverage may not drop
+  below the recorded floor.
 
 ### Documentation
 

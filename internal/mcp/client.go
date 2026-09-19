@@ -50,6 +50,10 @@ type rpcError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// mcpClientVersion is what Abhed reports to an MCP server. It tracks the
+// protocol client, not the release, so it moves only when that handshake does.
+const mcpClientVersion = "0.1.0"
+
 func (e *rpcError) Error() string { return fmt.Sprintf("%s (code %d)", e.Message, e.Code) }
 
 // ToolDef is a tool as advertised by an MCP server.
@@ -106,7 +110,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	params, _ := json.Marshal(map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{"tools": map[string]any{}},
-		"clientInfo":      map[string]any{"name": "abhed", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "abhed", "version": mcpClientVersion},
 	})
 	if _, err := c.call(ctx, "initialize", params); err != nil {
 		return fmt.Errorf("initialize %s: %w", c.name, err)
