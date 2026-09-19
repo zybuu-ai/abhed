@@ -103,7 +103,7 @@ jobs:
 
       # Dependency and OS package CVEs in the tree.
       - name: Trivy filesystem
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -118,7 +118,7 @@ jobs:
 
       # The shipped artefact, not just the source it was built from.
       - name: Trivy image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: abhed:scan
