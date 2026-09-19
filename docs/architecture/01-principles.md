@@ -34,6 +34,9 @@ Observationally, the same effect appears in public leaderboards: Claude Opus 4.5
 > May 2026 paper, though a verifier independently re-derived every number from its
 > published table, and three independent studies corroborate the direction.
 
+Source: [Stop Comparing LLM Agents Without Disclosing the Harness](https://arxiv.org/abs/2605.23950),
+Table 2. The authors say plainly that they do not claim the ratio is universal.
+
 **Consequence for Abhed:** the harness is a separately engineered, separately versioned,
 separately evaluated layer. This is what makes "better model → better agent" true rather
 than aspirational: the harness is the constant that lets model quality show through.
