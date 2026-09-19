@@ -42,7 +42,7 @@ type Option func(*App)
 
 func newApp(opts ...Option) *App {
 	a := &App{
-		version:  "0.1.0-dev",
+		version:  "dev",
 		edition:  "Community Edition",
 		auth:     map[string]AuthBuilder{},
 		features: map[string]bool{},
