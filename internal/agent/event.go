@@ -124,6 +124,12 @@ type ActionRequested struct {
 	Args             json.RawMessage `json:"args"`
 	RequiresApproval bool            `json:"requires_approval"`
 	Reason           string          `json:"reason,omitempty"`
+	// Scope is the narrow "always allow" rule policy suggests for this call,
+	// e.g. `bash(npm install *)`. Carried on the event so a reviewer in the
+	// web console can choose to allow the rule for the rest of the session,
+	// the way the CLI's [A] option does — without it, default mode re-prompts
+	// for every mutating call with no way to stop.
+	Scope string `json:"scope,omitempty"`
 }
 
 type Observation struct {

@@ -189,7 +189,12 @@ type liveSession struct {
 	cancelCause context.CancelCauseFunc
 	approvals   chan approvalReply
 	pending     *pendingApproval
-	mu          sync.Mutex
+	// allowed holds scopes the reviewer chose to "always allow" for this
+	// session, so default mode stops re-prompting for the same kind of call.
+	// It mirrors the CLI's session AllowList; without it the console asked
+	// again on every mutating tool with no way to say "don't ask again".
+	allowed map[string]bool
+	mu      sync.Mutex
 }
 
 type pendingApproval struct {
@@ -751,6 +756,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
 		approvals: make(chan approvalReply, 1),
+		allowed:   map[string]bool{},
 	}
 
 	cfg := agent.DefaultConfig()
@@ -1590,6 +1596,17 @@ func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
 // pending request and blocks until a reviewer answers or the session is
 // cancelled. This is what enables headless runs with a human gate.
 func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
+	// Already allowed for this session: a reviewer chose "always allow" for
+	// this scope earlier, so proceed without asking again.
+	if res.Scope != "" {
+		l.mu.Lock()
+		remembered := l.allowed[res.Scope]
+		l.mu.Unlock()
+		if remembered {
+			return true, nil
+		}
+	}
+
 	l.mu.Lock()
 	l.State = "waiting_approval"
 	l.pending = &pendingApproval{Tool: tool, Args: args, Reason: res.Reason, Scope: res.Scope}
@@ -1606,6 +1623,13 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	case <-ctx.Done():
 		return false, ctx.Err()
 	case reply := <-l.approvals:
+		// "Always allow" carries the scope back; remember it so the next call
+		// matching the same rule is not re-prompted.
+		if reply.Approved && reply.Scope != "" {
+			l.mu.Lock()
+			l.allowed[reply.Scope] = true
+			l.mu.Unlock()
+		}
 		return reply.Approved, nil
 	case <-time.After(30 * time.Minute):
 		// Fail closed: an unanswered approval must not become an approval.

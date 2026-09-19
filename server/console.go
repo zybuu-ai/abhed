@@ -403,6 +403,16 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   font-weight:600;cursor:pointer;border:1px solid var(--line)}
 .approve .yes{background:var(--accent);border-color:var(--accent);color:var(--btn-ink,#04121F);box-shadow:var(--glow)}
 .approve .no{background:var(--surface)}
+.approve .always{background:var(--surface)}
+
+/* The decision, pinned to the tool row it belongs to and kept visible when the
+   row collapses — so "approved" is never a gray line floating away from the
+   command it approved. */
+.call .verdict{margin-left:auto;font-family:var(--mono);font-size:10px;flex:none;
+  border-radius:10px;padding:0 8px;border:1px solid var(--waiting);color:var(--waiting)}
+.call .verdict.ok{border-color:var(--done);color:var(--done)}
+.call .verdict.no{border-color:var(--error);color:var(--error)}
+.call .verdict ~ .ms{margin-left:8px}
 
 .note{font-family:var(--mono);font-size:10.5px;color:var(--muted);
   border-top:1px dashed var(--line);padding-top:9px;margin:14px 0 4px;
@@ -1116,12 +1126,12 @@ function render(ev){
     }
 
     case 'action.approved': {
-      resolveApproval(p.call_id, 'approved');
+      resolveApproval(p.call_id, 'approved', 'ok');
       break;
     }
 
     case 'action.denied': {
-      resolveApproval(p.call_id, 'rejected');
+      resolveApproval(p.call_id, 'rejected', 'no');
       const wrap = calls.get(p.call_id) || turnEl || newTurn();
       wrap.classList.add('err');
       wrap.appendChild(node('out err', 'denied — ' + (p.reason || 'no reason given')));
@@ -1363,12 +1373,23 @@ function approval(p){
   const row = node('row');
   const yes = Object.assign(document.createElement('button'), {className:'yes', textContent:'Approve'});
   const no  = Object.assign(document.createElement('button'), {className:'no',  textContent:'Reject'});
-  const decide = ok => async () => {
-    yes.disabled = no.disabled = true;
+  // "Always allow" carries the policy scope back so default mode stops
+  // re-prompting for the same kind of call this session — the console
+  // equivalent of the CLI's [A] option. Only shown when policy suggests a
+  // scope narrow enough to be safe to remember.
+  const always = p.scope
+    ? Object.assign(document.createElement('button'),
+        {className:'no', textContent:'Always allow', title: p.scope})
+    : null;
+  const buttons = always ? [yes, no, always] : [yes, no];
+  const decide = (ok, scope) => async () => {
+    buttons.forEach(b => { b.disabled = true; });
     try{
+      const body = scope ? {approved: ok, scope} : {approved: ok};
       await api('/v1/sessions/' + current + '/approve',
-        {method:'POST', body: JSON.stringify({approved: ok})});
-      resolveApproval(p.call_id, ok ? 'approved' : 'rejected');
+        {method:'POST', body: JSON.stringify(body)});
+      if(scope) resolveApproval(p.call_id, 'always allowed', 'ok', scope);
+      else resolveApproval(p.call_id, ok ? 'approved' : 'rejected', ok ? 'ok' : 'no');
     }catch(e){
       // A 409 means the session already moved on — the decision was made
       // elsewhere, or this is a replay of a finished session. Say so and
@@ -1380,13 +1401,17 @@ function approval(p){
         return;
       }
       card.appendChild(node('note', e.message));
-      yes.disabled = no.disabled = false;
+      buttons.forEach(b => { b.disabled = false; });
     }
   };
   yes.onclick = decide(true); no.onclick = decide(false);
-  row.append(yes, no);
+  if(always) always.onclick = decide(true, p.scope);
+  row.append(...buttons);
   card.appendChild(row);
-  ($('tx')).appendChild(card);
+  // Attach the prompt to the tool row it is about, not the bottom of the
+  // transcript, so the buttons — and later the verdict — sit with the command.
+  const host = (p.call_id && calls.get(p.call_id)) || $('tx');
+  host.appendChild(card);
   if(p.call_id) approvals.set(p.call_id, card);
 }
 
@@ -1397,11 +1422,28 @@ function approval(p){
 // action.requested, so without this the UI rebuilt a live-looking prompt for a
 // decision made yesterday: clicking it POSTed to a session with nothing
 // pending, the server answered 409, and the card sat there absorbing clicks.
-function resolveApproval(callID, outcome){
+function resolveApproval(callID, outcome, kind, title){
+  // Only calls that actually raised a prompt have a card. Read-only tools are
+  // auto-allowed and still emit action.approved, so without this guard every
+  // read row would get a redundant "approved" tag — the clutter we are fixing.
   const card = approvals.get(callID);
   if(!card) return;
   approvals.delete(callID);
-  if(card.isConnected) card.replaceWith(node('note', outcome));
+  if(card.isConnected) card.remove();
+  // Prefer a pill on the tool row's header: it names the decision next to the
+  // command and survives the row collapsing. Only when there is no row to pin
+  // it to does it fall back to a standalone note.
+  const row = calls.get(callID);
+  const hdr = row && row.classList.contains('call') ? row.querySelector('.hdr') : null;
+  if(hdr){
+    if(!hdr.querySelector('.verdict')){
+      const pill = node('verdict' + (kind ? ' ' + kind : ''), outcome);
+      if(title) pill.title = title;
+      hdr.appendChild(pill);
+    }
+  }else{
+    tx.appendChild(node('note', outcome));
+  }
 }
 
 /* ------------------------------------------------------------------ actions */

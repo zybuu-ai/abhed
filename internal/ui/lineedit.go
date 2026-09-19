@@ -59,6 +59,24 @@ func (l *LineReader) ReadLine() (string, error) {
 // when it is not.
 func (l *LineReader) Raw() bool { return l.raw }
 
+// BeginApproval routes the next decision keypresses to the returned channel
+// instead of the edit line, so an approval prompt is answered by a single key
+// through the one reader the editor owns. EndApproval restores normal editing.
+// Only meaningful in raw mode; returns nil otherwise.
+func (l *LineReader) BeginApproval() <-chan rune {
+	if !l.raw {
+		return nil
+	}
+	return l.ed.beginApproval()
+}
+
+// EndApproval restores normal line editing after BeginApproval.
+func (l *LineReader) EndApproval() {
+	if l.raw {
+		l.ed.endApproval()
+	}
+}
+
 // Quiet suspends the prompt while a turn is running, so the reader can stay
 // live for steering without painting over the turn's output.
 func (l *LineReader) Quiet(q bool) {

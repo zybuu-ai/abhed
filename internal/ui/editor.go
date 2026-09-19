@@ -53,6 +53,37 @@ type editor struct {
 	menuRows int // rows currently drawn, so they can be erased
 
 	mu sync.Mutex
+
+	// approveCh, when non-nil, receives each decision keypress instead of the
+	// key being applied to the line. An approval prompt sets it through
+	// beginApproval, so the one reader the editor owns also answers approvals —
+	// a single keypress, like Claude Code — rather than a second reader racing
+	// it for stdin and waiting on an Enter raw mode delivers as "\r".
+	approveMu sync.Mutex
+	approveCh chan rune
+}
+
+// beginApproval routes subsequent decision keys to the returned channel until
+// endApproval. Letters and Enter are delivered; arrows and other escape
+// sequences are swallowed, so an Up arrow ("\x1b[A") can never read as "A".
+func (e *editor) beginApproval() <-chan rune {
+	ch := make(chan rune, 1)
+	e.approveMu.Lock()
+	e.approveCh = ch
+	e.approveMu.Unlock()
+	return ch
+}
+
+func (e *editor) endApproval() {
+	e.approveMu.Lock()
+	e.approveCh = nil
+	e.approveMu.Unlock()
+}
+
+func (e *editor) approvalChan() chan rune {
+	e.approveMu.Lock()
+	defer e.approveMu.Unlock()
+	return e.approveCh
 }
 
 func newEditor(in io.Reader, out io.Writer, prompt string) *editor {
@@ -107,6 +138,23 @@ func (e *editor) readLine() (string, error) {
 			continue
 		}
 		k := rune(buf[0])
+
+		// While an approval is waiting, decision keys go to it and nothing is
+		// applied to the line. This is what makes a single keypress answer the
+		// prompt without racing a second reader, and keeps the answer off the
+		// line the user is composing.
+		if ch := e.approvalChan(); ch != nil {
+			switch {
+			case k == keyEsc:
+				e.discardEscape() // swallow arrows so "[A" cannot read as "A"
+			case k == keyEnter || (k >= 'a' && k <= 'z') || (k >= 'A' && k <= 'Z'):
+				select {
+				case ch <- k:
+				default:
+				}
+			}
+			continue
+		}
 
 		switch k {
 		case keyEnter:
@@ -228,6 +276,27 @@ func (e *editor) escape() {
 		var t [1]byte
 		_, _ = e.in.Read(t[:])
 		e.deleteForward()
+	}
+}
+
+// discardEscape consumes the rest of an escape sequence without acting on it.
+// Used during an approval so the bytes of an arrow key ("\x1b[A", "\x1b[B")
+// are not mistaken for decision letters.
+func (e *editor) discardEscape() {
+	var b [1]byte
+	if n, err := e.in.Read(b[:]); err != nil || n == 0 {
+		return
+	}
+	if b[0] != '[' && b[0] != 'O' {
+		return
+	}
+	if n, err := e.in.Read(b[:]); err != nil || n == 0 {
+		return
+	}
+	// Sequences like Delete ("\x1b[3~") carry a trailing '~' after a digit.
+	if b[0] >= '0' && b[0] <= '9' {
+		var t [1]byte
+		_, _ = e.in.Read(t[:])
 	}
 }
 

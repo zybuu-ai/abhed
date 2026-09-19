@@ -327,7 +327,12 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		// same rejected command.
 		approver = agent.AutoApprove{Yes: false}
 	} else {
-		approver = ui.NewApprover(os.Stdout)
+		// LazyStdout, not os.Stdout: the approver is built before
+		// editor.Capture() replaces os.Stdout with the raw-mode pipe that adds
+		// the carriage return \n needs. A writer bound to the original file
+		// here writes bare \n into a raw terminal and staircases the prompt —
+		// the same reason the renderer above resolves os.Stdout at write time.
+		approver = ui.NewApprover(ui.LazyStdout{})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -424,6 +429,47 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// print in the program would otherwise staircase down the screen.
 	restoreStreams := editor.Capture()
 	defer restoreStreams()
+
+	// Approval input rides the one stdin reader the editor owns. Without this
+	// the approver opened a second reader on stdin, racing the editor for each
+	// keystroke and waiting for a "\n" raw mode never sends. Prepare also
+	// pauses the thinking indicator so its animation does not overwrite the
+	// prompt — the reason the [a]ccept/[r]eject line was never visible.
+	prompter := ui.NewPrompter()
+	defer prompter.Close()
+	if ap, ok := approver.(*ui.Approver); ok {
+		ap.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
+			wasThinking := r.PauseThinking()
+			if editor.Raw() {
+				// Raw TTY: answer with a single keypress, like Claude Code.
+				keys := editor.BeginApproval()
+				read := func() (string, bool) {
+					select {
+					case k := <-keys:
+						return string(k), true
+					case <-ctx.Done():
+						return "", false
+					}
+				}
+				cleanup := func() {
+					editor.EndApproval()
+					if wasThinking {
+						r.StartThinking()
+					}
+				}
+				return read, cleanup
+			}
+			// Piped stdin: the answer arrives as a line on the lines channel,
+			// handed over by the steering loop's prompter.Deliver.
+			read := func() (string, bool) { return prompter.Await(ctx) }
+			cleanup := func() {
+				if wasThinking {
+					r.StartThinking()
+				}
+			}
+			return read, cleanup
+		}
+	}
 
 	lines := make(chan string)
 	readErr := make(chan struct{})
@@ -549,7 +595,15 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				// discarded the commands that were meant to follow it.
 				readErr = nil // stop selecting on a closed channel
 				eof = true
+				// No more input can arrive, so a pending approval must stop
+				// waiting and refuse rather than hang the turn forever.
+				prompter.Close()
 			case msg := <-lines:
+				// A line typed while an approval is waiting is the answer to it,
+				// not a steering message. Deliver it there first.
+				if prompter.Deliver(msg) {
+					continue
+				}
 				if msg == "" {
 					continue
 				}
@@ -802,9 +856,17 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			fmt.Printf("  configured providers: %s\n", strings.Join(names, ", "))
 			return false
 		}
-		p, found := st.appCfg.Model.Providers[fields[1]]
-		if !found {
+		if _, found := st.appCfg.Model.Providers[fields[1]]; !found {
 			fmt.Printf("  %s no provider %q in config\n", s.Red("✕"), fields[1])
+			return false
+		}
+		// Resolve through ProviderNamed so the selected provider's api_key_env
+		// is read into APIKey. A raw map lookup skips that step, so any
+		// provider other than the default (whose key applyEnv injects) would
+		// build an adapter with no credential and fail the first call with 401.
+		p, resolveErr := st.appCfg.ProviderNamed(fields[1])
+		if resolveErr != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), resolveErr)
 			return false
 		}
 		next, buildErr := p.Adapter()

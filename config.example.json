@@ -1,0 +1,103 @@
+{
+  "model": {
+    "default": "proxy",
+    "providers": {
+      "proxy": {
+        "type": "openai-compatible",
+        "base_url": "<proxy_url>",
+        "model": "claude-sonnet-4.6",
+        "api_key_env": "ABHED_API_KEY",
+        "context_window": 200000,
+        "extra": { "user": "<sso>" },
+        "params": {}
+      },
+      "sonnet5": {
+        "type": "openai-compatible",
+        "base_url": "<proxy_url>",
+        "model": "claude-sonnet-5",
+        "api_key_env": "ABHED_API_KEY",
+        "context_window": 200000,
+        "extra": { "user": "<sso>" },
+        "params": {}
+      },
+      "haiku": {
+        "type": "openai-compatible",
+        "base_url": "<proxy_url>",
+        "model": "claude-haiku-4.5",
+        "api_key_env": "ABHED_API_KEY",
+        "context_window": 200000,
+        "extra": { "user": "<sso>" },
+        "params": {}
+      }
+    }
+  },
+  "permissions": {
+    "mode": "default",
+    "deny": [
+      "bash(rm -rf /*)",
+      "bash(*mkfs*)",
+      "bash(*shutdown*)",
+      "write(/etc/**)"
+    ],
+    "ask": null,
+    "allow": [
+      "bash(git status*)",
+      "bash(git diff*)",
+      "bash(git log*)",
+      "bash(ls*)",
+      "bash(pwd)",
+      "bash(cat *)"
+    ]
+  },
+  "context": {
+    "compact_at": 0.9,
+    "memory_files": [
+      "ABHED.md",
+      "ABHED.local.md"
+    ]
+  },
+  "rag": {},
+  "skills": {},
+  "k8s": {
+    "enabled": false
+  },
+  "ssh": {
+    "enabled": false
+  },
+  "limits": {
+    "max_turns": 100,
+    "max_tokens": 8192,
+    "max_budget_tokens": 0,
+    "max_subagents": 20,
+    "nested_subagents": false
+  },
+  "sandbox": {
+    "min_tier": "process",
+    "allow_network": false,
+    "max_memory_mb": 4096,
+    "max_procs": 512
+  },
+  "mcp": {},
+  "retrieval": {
+    "enabled": false,
+    "embed": false
+  },
+  "web_search": {
+    "enabled": false,
+    "provider": "duckduckgo",
+    "max_results": 5
+  },
+  "storage": {
+    "driver": "memory",
+    "tenant": "default",
+    "max_conns": 10
+  },
+  "server": {},
+  "telemetry": {
+    "enabled": false
+  },
+  "auth": {
+    "mode": "none",
+    "cookie_secure": true
+  }
+}

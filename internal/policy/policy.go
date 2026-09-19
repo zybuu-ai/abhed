@@ -153,13 +153,27 @@ func addAll(dst *[]Rule, patterns []string) error {
 }
 
 // Subject extracts the string a rule matches against: the command for bash,
-// the path for file tools. This is what makes scoping per-command.
+// the path for file tools, and — for the higher-privilege tools whose
+// security-relevant argument is named differently — the verb or target they
+// act on. This is what makes scoping per-command rather than per-tool.
+//
+// The extra keys are not cosmetic. With only command/path/pattern, a tool like
+// k8s_get (whose target is `resource`) or k8s_apply (whose verb is `action`)
+// produced an empty subject, so an argument-scoped rule against it could never
+// match: an operator's `deny k8s_get(secrets*)` compiled and then silently
+// never fired — the same "a rule that can never match" failure ParseRule
+// refuses for bash. The list is priority order, most security-relevant first;
+// the first key present wins, so a single subject string is returned as before.
+//
+// ssh takes both `command` and `host`; command wins here because it is the more
+// consequential field and ssh already asks unconditionally. Scoping ssh by host
+// needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
 func Subject(tool string, args json.RawMessage) string {
 	var m map[string]any
 	if err := json.Unmarshal(args, &m); err != nil {
 		return ""
 	}
-	for _, key := range []string{"command", "path", "pattern"} {
+	for _, key := range []string{"command", "path", "pattern", "action", "resource", "host", "namespace"} {
 		if v, found := m[key]; found {
 			if s, isStr := v.(string); isStr {
 				return s

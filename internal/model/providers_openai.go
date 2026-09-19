@@ -86,6 +86,7 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 		a := NewOpenAICompatible(base, key, s.Model, profile)
 		a.Defaults = s.Params
 		a.Think = s.Params.Think
+		a.User = s.Get("user")
 		if len(s.ReasoningTags) == 2 {
 			a.ReasoningTags = [2]string{s.ReasoningTags[0], s.ReasoningTags[1]}
 		}

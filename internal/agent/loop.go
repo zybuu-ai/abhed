@@ -574,6 +574,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		Args:             call.Args,
 		RequiresApproval: decision.Decision == policy.Ask,
 		Reason:           decision.Reason,
+		Scope:            decision.Scope,
 	}); err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 	}

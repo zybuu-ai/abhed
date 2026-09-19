@@ -34,6 +34,11 @@ type OpenAICompatible struct {
 	// Reasoning must never reach tool-argument parsing.
 	ReasoningTags [2]string
 
+	// User is sent as the request's "user" field when set. Some gateways
+	// (a LiteLLM proxy with enforce_user_param) require it; a plain endpoint
+	// treats it as an optional hint. Configured via the provider's extra.user.
+	User string
+
 	// Defaults are the operator's configured sampling parameters. A request
 	// may override any of them; anything it leaves unset comes from here.
 	Defaults Params
@@ -111,6 +116,13 @@ type wireRequest struct {
 	Stream           bool          `json:"stream"`
 	StreamOptions    *streamOpts   `json:"stream_options,omitempty"`
 	ReasoningEffort  string        `json:"reasoning_effort,omitempty"`
+
+	// User identifies the end user to the endpoint. OpenAI treats it as an
+	// optional abuse-tracking hint, but a LiteLLM proxy configured with
+	// enforce_user_param rejects any request without it ("You must pass a
+	// 'user' json field"). Sent only when configured, so a plain endpoint
+	// never sees it.
+	User string `json:"user,omitempty"`
 
 	// Sampler knobs an OpenAI-shaped API does not define, which local servers
 	// (vLLM, Ollama, llama.cpp, TGI) accept and hosted ones ignore. They are
@@ -248,6 +260,7 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 	}
 	return wireRequest{
 		Model:             c.Model,
+		User:              c.User,
 		Messages:          msgs,
 		Tools:             tools,
 		MaxTokens:         sp.MaxTokens,

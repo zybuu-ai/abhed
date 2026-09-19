@@ -23,6 +23,9 @@ __pycache__/
 bench/.scratch/
 bench/logs/
 
+# Runtime uploads from the web console: user data, never part of the product
+uploads/
+
 # Editor, assistant and OS files: not part of the product
 .claude/
 .DS_Store

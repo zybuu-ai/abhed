@@ -90,6 +90,49 @@ export ABHED_MODEL=Qwen/Qwen3-32B
 ./abhed doctor
 ```
 
+### Running against an LLM proxy or a hosted key
+
+For a gateway that authenticates with an API key — LiteLLM, OpenRouter, a company
+proxy, or any hosted OpenAI-compatible API — declare a named provider in
+`.abhed/config.json` and keep the key in the environment, never in the file:
+
+```json
+{
+  "model": {
+    "default": "proxy",
+    "providers": {
+      "proxy": {
+        "type": "openai-compatible",
+        "base_url": "https://your-proxy.example.com/v1",
+        "model": "claude-sonnet-4.6",
+        "api_key_env": "ABHED_API_KEY",
+        "context_window": 200000,
+        "extra": { "user": "your-sso-id" }
+      }
+    }
+  }
+}
+```
+
+```bash
+export ABHED_API_KEY=sk_...            # resolved via api_key_env, never written to disk
+./abhed doctor                         # confirms the endpoint answers and tool-calling works
+./abhed                                # interactive CLI
+./abhed serve -addr 127.0.0.1:8090     # web console + API on http://127.0.0.1:8090
+```
+
+- **`api_key_env`** names the variable holding the key, so the secret stays out of
+  the config and out of version control (`.abhed/` is git-ignored). Export it in
+  every shell that runs `abhed`, or add it to your shell profile.
+- **`extra.user`** is sent as the request's `user` field. Some proxies (LiteLLM
+  among them) reject a call without it with `400 … must pass a 'user' field`; set
+  it to your SSO/user id. Omit the line for endpoints that do not require it.
+- **Multiple models:** add more named providers (each a different `model`, even on
+  the same `base_url`) and switch live with `/model <name>` in the CLI or the model
+  picker in the console. `default` selects the one used at startup.
+- A self-signed or internal-CA proxy works as long as its CA is in the OS trust
+  store; Abhed uses the system roots.
+
 Measure whether your serving stack actually caches prefixes — the assumption the
 whole capacity model rests on:
 

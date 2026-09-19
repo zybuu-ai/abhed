@@ -166,6 +166,38 @@ func TestAutoModeApprovesEditsButNotBash(t *testing.T) {
 	}
 }
 
+// Higher-privilege tools name their security-relevant argument differently from
+// bash. Before Subject learned those keys an argument-scoped rule against them
+// produced an empty subject and could never match — a deny an operator wrote
+// but that silently never fired.
+func TestArgumentScopingForNonBashTools(t *testing.T) {
+	// k8s_get's target is its `resource`: a deny on reading secrets must fire,
+	// even though the tool is read-only and would otherwise auto-approve.
+	e := New(ModeAuto)
+	if err := e.AddDeny("k8s_get(secrets*)"); err != nil {
+		t.Fatal(err)
+	}
+	deny := e.Evaluate("k8s_get", false, args(map[string]string{"resource": "secrets", "namespace": "prod"}))
+	if deny.Decision != Deny {
+		t.Fatalf("deny k8s_get(secrets*) must fire; got %s (%s)", deny.Decision, deny.Reason)
+	}
+	// A different resource is unaffected.
+	if ok := e.Evaluate("k8s_get", false, args(map[string]string{"resource": "pods"})); ok.Decision == Deny {
+		t.Fatal("denying secrets must not deny reading pods")
+	}
+
+	// k8s_apply's verb is its `action`: an operator can block deletes while
+	// leaving ordinary applies to the normal mutation flow.
+	e2 := New(ModeAuto)
+	if err := e2.AddDeny("k8s_apply(delete*)"); err != nil {
+		t.Fatal(err)
+	}
+	del := e2.Evaluate("k8s_apply", true, args(map[string]string{"action": "delete", "resource": "deployment"}))
+	if del.Decision != Deny {
+		t.Fatalf("deny k8s_apply(delete*) must fire; got %s", del.Decision)
+	}
+}
+
 // A malformed rule must be refused rather than becoming a rule that matches
 // nothing. Silently accepting a deny rule that can never fire tells an operator
 // they are protected when they are not.
