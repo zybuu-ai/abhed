@@ -124,6 +124,32 @@ decision the model can get wrong.
 Abhed ships a deliberately small native tool set — read, write, edit, glob, grep, bash,
 task/subagent, plan — and everything else arrives through the reviewed MCP gateway.
 
+### Opt-in tools execute outside the sandbox
+
+`bash` runs inside the configured sandbox tier. The opt-in network tools — `ssh`, the
+`k8s_*` tools, `websearch` and remote RAG — do not: they run in the host process with host
+network, so the Seatbelt, bubblewrap or gVisor boundary that contains `bash` does not
+contain them.
+
+All four are disabled unless configured, so the default posture of no egress is intact.
+Enabling one is a deliberate decision to move that execution and its egress outside the
+boundary, and the consequences are worth stating plainly:
+
+| Tool | Mediation once enabled |
+|---|---|
+| `ssh` | Always asks — it reports `Mutates() = true`, so no mode auto-approves it |
+| `k8s_get`, `websearch` | Read-only, so **auto mode approves them without a prompt** |
+| `k8s_apply` | Mutating, so it asks |
+
+The read-only pair is the sharp edge: in an unattended or `auto` deployment, an injected
+instruction in untrusted content can drive them to read and to reach the network with no
+sandbox boundary in the way. Argument-scoped policy rules (`deny k8s_get(secrets*)`) are
+the control that applies, and they work — but whole-tool policy is otherwise the only
+thing mediating these tools.
+
+Routing network-bound tools through a broker egress path, so egress stays default-deny and
+auditable even when a tool is enabled, is tracked as outstanding work rather than shipped.
+
 ## 7. Validation status
 
 Since nothing here is research-backed, isolation is *demonstrated* by tests rather than

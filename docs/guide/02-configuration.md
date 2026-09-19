@@ -75,8 +75,11 @@ simply stops fitting once a long session fills it.
 }
 ```
 
-Subagents share the parent's budget, so a fan-out cannot multiply spend
-invisibly.
+`max_budget_tokens` caps the whole session: the primary agent and every
+subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
+invisibly. A session that exhausts it ends with the terminal reason
+`max_budget`, checked at a turn boundary so a turn already in flight
+finishes. Zero means no cap.
 
 ## Sandbox
 

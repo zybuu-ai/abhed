@@ -379,7 +379,7 @@ findings are genuine, if minor, misses.
 |---|---|---|
 | internal/auth/filestore.go:53,89,92 | Read/write/rename of the local-auth `users.json` (3 sites) | False positive — `f.path` is the fixed, operator-configured location set at startup, never request-derived |
 | internal/k8s/client.go:136 | Kubeconfig read | False positive — same as the G304 finding at this line, env/operator-controlled |
-| internal/server/upload.go:113 | `os.MkdirAll` for `<workspace>/.abhed/uploads/<sessionID>` | False positive — `sessionID` is validated by `validSessionID()` before use |
+| internal/server/upload.go:113 | `os.MkdirAll` for `<workspace>/uploads/<sessionID>` | False positive — `sessionID` is validated by `validSessionID()` before use |
 | internal/server/upload.go:118 | `os.WriteFile` at `dir/safeUploadName(header.Filename)` | False positive — `safeUploadName` (upload.go:162) strips path separators, control characters, and leading dots, and appends a random suffix; verified it cannot produce a traversal segment |
 
 #### G306 — WriteFile permissions looser than 0600 (6 findings, MEDIUM)

@@ -28,7 +28,17 @@ jobs:
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
 
       - name: go test
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -coverprofile=coverage.out
+
+      # A ratchet, not a target: a PR may not lower coverage below what the
+      # tree already achieves. Raising the floor is a deliberate commit.
+      - name: Coverage floor
+        run: python3 scripts/ci/coverage-gate.py coverage.out
+
+      # The adversarial suite runs above as part of ./..., but name it here so
+      # a failure reads as "an attack succeeded" rather than a generic test.
+      - name: Adversarial suite
+        run: go test ./internal/redteam/ -count=1 -v
 
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
@@ -65,3 +75,71 @@ jobs:
         run: docker build -t abhed:ci -f Dockerfile .
       - name: The image runs and reports its version
         run: docker run --rm --entrypoint /usr/local/bin/abhed abhed:ci -version
+
+  security:
+    name: CVE scans and report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Embed the documentation
+        run: python3 scripts/docsite/build.py --embed-only
+
+      - name: Build the binary to scan
+        run: go build -o abhed-scan ./cmd/abhed
+
+      - name: Prepare
+        run: mkdir -p scans
+
+      # Source and binary reachability. A CVE this code can actually call
+      # blocks; one present in a required module but never reached is
+      # reported and does not fail the build.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest -format json ./... > scans/govulncheck.json
+
+      # Dependency and OS package CVEs in the tree.
+      - name: Trivy filesystem
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: scans/trivy-fs.json
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Build the image to scan
+        run: docker build -t abhed:scan .
+
+      # The shipped artefact, not just the source it was built from.
+      - name: Trivy image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: abhed:scan
+          format: json
+          output: scans/trivy-image.json
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      # One report over every scan. Fails on a reachable CVE, on a HIGH or
+      # CRITICAL in the tree or image, and on any scan that did not run —
+      # a scanner that failed to execute must not read as a clean result.
+      - name: Consolidate and gate
+        run: python3 scripts/ci/security-report.py scans --out scans/report.md
+
+      - name: Publish the report
+        if: always()
+        run: cat scans/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-scans
+          path: scans/
