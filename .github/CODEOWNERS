@@ -1,0 +1,22 @@
+# Review assignment. Branch protection requires a code owner's review on
+# main, and without this file that rule matched nobody and assigned nobody.
+#
+# Last match wins, so the specific entries below override the catch-all.
+
+* @yuvraj-singh79
+
+# The security boundary. A change here is the one most worth a second pair
+# of eyes: the policy engine, the sandbox tiers, and the adversarial suite
+# that exists to attack both.
+/internal/policy/    @yuvraj-singh79
+/internal/sandbox/   @yuvraj-singh79
+/internal/redteam/   @yuvraj-singh79
+
+# The audit record. Append-only enforcement and row-level security live in
+# the schema; a change to either is a change to what the product promises.
+/store/              @yuvraj-singh79
+
+# Anything that decides what ships, or what the build is allowed to let
+# through.
+/.github/            @yuvraj-singh79
+/scripts/            @yuvraj-singh79
