@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -272,7 +273,11 @@ func (p *Postgres) finalizeSession(ctx context.Context, ev agent.Event) {
 func truncatePrompt(s string) string {
 	const max = 300
 	if len(s) > max {
-		return s[:max] + "…"
+		end := max
+		for !utf8.RuneStart(s[end]) {
+			end--
+		}
+		return s[:end] + "…"
 	}
 	return s
 }
