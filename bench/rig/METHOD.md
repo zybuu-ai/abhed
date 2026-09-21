@@ -26,6 +26,17 @@ rules and its sandbox, because that is what the product is.
 
 pi and OpenHands read configuration from the home directory, so each run gets
 a throwaway `HOME`. The operator's own settings are never read or written.
+Both are installed under the rig's cache (`.cache/tools`), not globally.
+
+Every harness runs with **stdin closed**. pi merges piped stdin into its
+prompt, so with an inherited stdin it waits for input that never comes and
+never calls the model. The first `doctor` run on pi sat for ten minutes that
+way with the model idle — a rig fault that would otherwise have been recorded
+as thirty-minute timeouts against pi.
+
+Verified on 21 Sep 2026 with `gemma4:26b`: Abhed 0.2.1-dev, pi 0.73.1 and
+OpenHands CLI 1.16.0 each passed `doctor`. The OpenHands and pi invocations
+above are the documented ones and needed no change.
 
 **`rig.py doctor --harness X` must pass before `run` will include X.** It asks
 the harness to create one file on the benchmark model. A harness that cannot
