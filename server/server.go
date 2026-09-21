@@ -837,6 +837,12 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		Skills:        s.skillListing(skillReg),
 	})
 	cfg.MaxTurns = s.opts.Config.Limits.MaxTurns
+	// The server built its loops on the defaults and ignored the operator's
+	// context settings; the CLI has always honoured them.
+	if at := s.opts.Config.Context.CompactAt; at > 0 {
+		cfg.CompactAt = at
+	}
+	cfg.OffloadAt = s.opts.Config.Context.OffloadFraction()
 
 	var approver agent.Approver = live
 	if spec.Unattended {

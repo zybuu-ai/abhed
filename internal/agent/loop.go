@@ -41,16 +41,19 @@ func (a AutoApprove) Approve(context.Context, string, json.RawMessage, policy.Re
 }
 
 type Config struct {
-	MaxTurns     int
-	MaxTokens    int
-	CompactAt    float64 // fraction of the context window
+	MaxTurns  int
+	MaxTokens int
+	CompactAt float64 // fraction of the context window
+	// OffloadAt is the fraction of the window at which old tool results move
+	// out to the record. Zero turns offloading off.
+	OffloadAt    float64
 	SystemPrompt string
 	Temperature  *float64
 	Effort       model.EffortLevel
 }
 
 func DefaultConfig() Config {
-	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90}
+	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
 }
 
 // Loop is the agent's execution loop: a turn-based cycle that terminates
@@ -65,6 +68,9 @@ type Loop struct {
 	Recorder  *Recorder
 	Config    Config
 	Compactor *Compactor
+	// Offloader moves old tool results out of the window and into the
+	// record before compaction is needed. Nil leaves the window alone.
+	Offloader *Offloader
 
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
@@ -187,10 +193,21 @@ func (u Usage) PrefillSavings() float64 {
 
 func NewLoop(a model.Adapter, reg *tools.Registry, pol *policy.Engine,
 	appr Approver, sess *tools.Session, rec *Recorder, cfg Config) *Loop {
-	return &Loop{
+	l := &Loop{
 		Adapter: a, Tools: reg, Policy: pol, Approver: appr,
 		Session: sess, Recorder: rec, Config: cfg,
 	}
+	if cfg.OffloadAt > 0 {
+		l.Offloader = NewOffloader(cfg.OffloadAt)
+	}
+	// recall is bound to this session's record, so it goes on a copy: a server
+	// shares one registry across sessions, and adding it there would hand
+	// every session the tool that reads the last one's record.
+	if reg != nil && rec != nil && rec.store != nil {
+		l.Tools = reg.Clone()
+		l.Tools.Add(Recall{Store: rec.store, SessionID: rec.sessionID})
+	}
+	return l
 }
 
 // Continue runs another exchange on the SAME conversation.
@@ -247,6 +264,9 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 		}
 		l.turns++
 
+		// Offload first: it is free and lossless, and often leaves compaction
+		// with nothing to do.
+		l.offloadIfNeeded()
 		if err := l.maybeCompact(ctx); err != nil {
 			// Compaction failure is not fatal on its own; the turn may still
 			// fit. If it does not, the model call will say so.

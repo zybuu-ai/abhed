@@ -42,6 +42,9 @@ const (
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
 	EvModelCall EventType = "model.call"
+	// EvContextOffloaded marks old tool results leaving the window for the
+	// record, where recall can reach them.
+	EvContextOffloaded EventType = "context.offloaded"
 )
 
 type Actor string

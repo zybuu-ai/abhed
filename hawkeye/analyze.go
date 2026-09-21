@@ -108,6 +108,11 @@ func Analyze(sessionID string, events []agent.Event) Report {
 				})
 			}
 
+		case agent.EvContextOffloaded:
+			var o agent.Offloaded
+			_ = json.Unmarshal(e.Payload, &o)
+			r.Offloads = append(r.Offloads, Offload{Seq: e.Seq, Results: o.Results, Before: o.BeforeTokens, After: o.AfterTokens})
+
 		case agent.EvSubagentSpawned:
 			var p struct {
 				Description string `json:"description"`
@@ -159,6 +164,9 @@ func (r *Report) totals(ended agent.SessionEnded) {
 	t.ToolCalls = len(r.Calls)
 	for _, c := range r.Calls {
 		t.ToolMS += c.DurationMS
+		if c.Tool == "recall" {
+			t.Recalls++
+		}
 		switch c.Decision {
 		case "allowed":
 			r.Policy.Allowed++

@@ -23,6 +23,7 @@ type Report struct {
 	Calls       []Call       `json:"calls"`
 	Policy      PolicyStats  `json:"policy"`
 	Compactions []Compaction `json:"compactions,omitempty"`
+	Offloads    []Offload    `json:"offloads,omitempty"`
 	Subagents   []Subagent   `json:"subagents,omitempty"`
 	Files       []FileTouch  `json:"files,omitempty"`
 	Findings    []Finding    `json:"findings"`
@@ -46,6 +47,9 @@ type Totals struct {
 	PeakContext int `json:"peak_context"`
 	Window      int `json:"context_window"`
 	Untrusted   int `json:"untrusted_observations"`
+	// Recalls counts reads of the session's own record — the agent fetching
+	// back something that had left the window.
+	Recalls int `json:"recalls"`
 }
 
 // Turn is one round trip to the model.
@@ -96,6 +100,15 @@ type Compaction struct {
 	Trigger string `json:"trigger"`
 	Before  int    `json:"before_tokens"`
 	After   int    `json:"after_tokens"`
+}
+
+// Offload is one pass that moved old tool results out of the window and into
+// the record. Nothing is lost by it; Recalls says how often the agent went back.
+type Offload struct {
+	Seq     int64 `json:"seq"`
+	Results int   `json:"results"`
+	Before  int   `json:"before_tokens"`
+	After   int   `json:"after_tokens"`
 }
 
 type Subagent struct {

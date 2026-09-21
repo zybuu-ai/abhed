@@ -135,3 +135,27 @@ func TestDrainSecondsRoundTrips(t *testing.T) {
 		t.Fatalf("an unset drain_seconds became %d", d.Server.DrainSeconds)
 	}
 }
+
+// Unset and zero mean different things for offload_at: the default, and off.
+func TestOffloadAtDistinguishesUnsetFromOff(t *testing.T) {
+	var unset, off, custom Config
+	_ = json.Unmarshal([]byte(`{"context":{"compact_at":0.9}}`), &unset)
+	_ = json.Unmarshal([]byte(`{"context":{"compact_at":0.9,"offload_at":0}}`), &off)
+	_ = json.Unmarshal([]byte(`{"context":{"compact_at":0.9,"offload_at":0.45}}`), &custom)
+	if got := unset.Context.OffloadFraction(); got != 0.60 {
+		t.Errorf("unset = %v, want the 0.60 default", got)
+	}
+	if got := off.Context.OffloadFraction(); got != 0 {
+		t.Errorf("explicit 0 = %v, want off", got)
+	}
+	if got := custom.Context.OffloadFraction(); got != 0.45 {
+		t.Errorf("custom = %v, want 0.45", got)
+	}
+
+	bad := Default()
+	v := 0.95
+	bad.Context.OffloadAt = &v
+	if err := bad.Validate(); err == nil {
+		t.Error("offload_at above compact_at was accepted: compaction would always run first")
+	}
+}

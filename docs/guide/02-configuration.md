@@ -46,12 +46,36 @@ starter file; everything below is optional and has a default.
 
 ```json
 "context": {
+  "offload_at": 0.60,
   "compact_at": 0.80,
   "memory_files": ["ABHED.md"]
 }
 ```
 
-`compact_at` is the fraction of the window at which history is summarized. The
+Two things happen as the window fills, in this order.
+
+**`offload_at` — nothing is lost.** Past this fraction, old and large tool
+results are replaced *in the window* by a short stub: what the call was, how
+the result began, and its `call_id`. The full text is already in the session
+record and stays there. The agent gets it back with the `recall` tool — by
+`call_id` for one result in full, or by `query` to search everything said and
+returned in the session. The four most recent results are never touched, and
+neither is anything under 2,000 characters, since a stub costs about as much.
+It costs no model call, and it all happens in one pass per crossing, because
+rewriting old messages invalidates the endpoint's prefix cache and that is
+worth paying once rather than every turn. `0` turns it off; unset means 0.60.
+
+This matters most on a local model with a 16–32k window, where a few file
+reads fill the context and the alternative is to compact early and often. A
+session that offloads well may never need to compact at all.
+
+What this is and is not: nothing is lost from the record, and anything dropped
+from the window can be retrieved. It is not "lossless context" — the window is
+still finite, and the model still cannot see everything at once. `recall` reads
+this session's record and no other; the session is fixed when the tool is
+built, not passed as an argument.
+
+**`compact_at` — the summary.** At this fraction the history is summarized. The
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable

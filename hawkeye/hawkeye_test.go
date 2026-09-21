@@ -224,3 +224,24 @@ func TestTextReportLeadsWithTheSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestOffloadsAndRecallsAreReported(t *testing.T) {
+	r := (&rec{}).user("x").model(20000, 0, 32768).
+		add(agent.EvContextOffloaded, agent.ActorSystem, agent.Trusted, agent.Offloaded{Results: 5, BeforeTokens: 20000, AfterTokens: 6000}).
+		model(6200, 0, 32768).
+		call("c1", "recall", `{"call_id":"c0"}`, "default", "Record #4 — …", false).
+		end(agent.TermCompleted)
+	got := Analyze("s-test", r.evs)
+	if len(got.Offloads) != 1 || got.Offloads[0].Results != 5 || got.Offloads[0].After != 6000 {
+		t.Fatalf("offloads = %+v", got.Offloads)
+	}
+	if got.Totals.Recalls != 1 {
+		t.Fatalf("recalls = %d, want 1", got.Totals.Recalls)
+	}
+	if out := Text(got); !strings.Contains(out, "offloads 1") || !strings.Contains(out, "recalls 1") {
+		t.Fatalf("the summary does not mention them:\n%s", out)
+	}
+	if page, err := HTML(got); err != nil || !strings.Contains(page, "offloaded 5 results") {
+		t.Fatalf("the chart does not mark the offload (err %v)", err)
+	}
+}
