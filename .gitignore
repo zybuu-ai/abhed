@@ -35,3 +35,6 @@ uploads/
 # Internal notes and raw research are not published
 docs/internal/
 docs/research/
+
+# benchmark rig: datasets, clones and virtualenvs
+bench/rig/.cache/

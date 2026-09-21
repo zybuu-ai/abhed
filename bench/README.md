@@ -1,5 +1,12 @@
 # Abhed vs. aider vs. a bare agent loop — a reproducible local benchmark
 
+> **A second, stronger rig lives in [`rig/`](rig/METHOD.md).** This suite is 24
+> single-file tasks, one run, against aider and a bare loop. The rig runs
+> several harnesses on one local model over multi-file SWE-bench Verified
+> instances, three runs each, with paired intervals — and checks itself with a
+> harness that must score 0 and one that must score 100. Use it for any claim
+> about how Abhed compares with another agent.
+
 This directory holds a small, honest benchmark comparing three coding-agent
 harnesses driven by the **same local model**, so what's being measured is the
 harness, not the model:

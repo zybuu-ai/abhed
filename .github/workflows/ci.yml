@@ -47,6 +47,11 @@ jobs:
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
 
+      # The benchmark rig's statistics and parsing: wrong here means every
+      # published number is wrong, and nothing else would notice.
+      - name: Benchmark rig self-checks
+        run: python3 bench/rig/test_rig.py
+
       - name: go vet
         run: go vet ./...
 
