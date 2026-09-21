@@ -16,6 +16,7 @@ import (
 //
 // Found by running the USAGE.md quickstart end to end.
 func TestSandboxAllowsToolchainTempDir(t *testing.T) {
+	requireNetNS(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("TMPDIR handling is macOS-specific")
 	}
@@ -38,6 +39,7 @@ func TestSandboxAllowsToolchainTempDir(t *testing.T) {
 
 // The real check: a Go build must actually work inside the sandbox.
 func TestSandboxAllowsGoBuild(t *testing.T) {
+	requireNetNS(t)
 	if testing.Short() {
 		t.Skip("slow")
 	}

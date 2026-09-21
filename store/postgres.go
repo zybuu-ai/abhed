@@ -8,7 +8,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -379,6 +381,104 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// randomID is the unguessable half of an approval id. An id that appears in
+// a URL should not be derivable from the session it belongs to.
+func randomID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// A weaker id is not an acceptable fallback: the id is the capability
+		// to answer the approval, so failing to generate one fails the request.
+		return "", fmt.Errorf("generate approval id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// Approval is a request for a human decision, and the decision when it comes.
+type Approval struct {
+	ID         string
+	SessionID  string
+	Tool       string
+	Args       []byte
+	Reason     string
+	Scope      string
+	AskedAt    time.Time
+	Answered   bool
+	Approved   bool
+	AnsweredBy string
+}
+
+// AskApproval records a pending approval and returns its id.
+func (p *Postgres) AskApproval(ctx context.Context, a Approval) (string, error) {
+	id := a.ID
+	if id == "" {
+		r, err := randomID()
+		if err != nil {
+			return "", err
+		}
+		id = "ap-" + r
+	}
+	args := a.Args
+	if len(args) == 0 {
+		args = []byte("{}")
+	}
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO approvals (id, session_id, tenant_id, tool, args, reason, scope)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		id, a.SessionID, p.tenant, a.Tool, args, a.Reason, a.Scope)
+	if err != nil {
+		return "", fmt.Errorf("ask approval for %s: %w", a.SessionID, err)
+	}
+	return id, nil
+}
+
+// AnswerApproval records a reviewer's decision. It reports false when the
+// approval is unknown or already answered, so a second click cannot overturn
+// the first and a stale browser cannot answer a question that has moved on.
+func (p *Postgres) AnswerApproval(ctx context.Context, id string, approved bool, by string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE approvals SET answered_at = now(), approved = $2, answered_by = $3
+		WHERE id = $1 AND answered_at IS NULL`, id, approved, by)
+	if err != nil {
+		return false, fmt.Errorf("answer approval %s: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// PendingApproval returns the session's unanswered approval, if any.
+func (p *Postgres) PendingApproval(ctx context.Context, sessionID string) (Approval, bool, error) {
+	var a Approval
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, session_id, tool, args, reason, scope, asked_at
+		FROM approvals
+		WHERE session_id = $1 AND answered_at IS NULL
+		ORDER BY asked_at DESC LIMIT 1`, sessionID).
+		Scan(&a.ID, &a.SessionID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Approval{}, false, nil
+	}
+	if err != nil {
+		return Approval{}, false, fmt.Errorf("pending approval for %s: %w", sessionID, err)
+	}
+	return a, true, nil
+}
+
+// ApprovalResult reports a decision once one exists.
+func (p *Postgres) ApprovalResult(ctx context.Context, id string) (approved, answered bool, err error) {
+	var ans *bool
+	e := p.pool.QueryRow(ctx,
+		`SELECT approved FROM approvals WHERE id = $1 AND answered_at IS NOT NULL`, id).Scan(&ans)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if e != nil {
+		return false, false, fmt.Errorf("approval result %s: %w", id, e)
+	}
+	if ans == nil {
+		return false, false, nil
+	}
+	return *ans, true, nil
 }
 
 // ClaimNode records that this node holds the session's turn in flight, so a

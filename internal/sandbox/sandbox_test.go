@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -42,7 +43,29 @@ func processSandbox(t *testing.T, ws string, allowNet bool) Sandbox { //nolint:u
 	return s
 }
 
+// Denying network unshares the net namespace, and a runner without
+// CAP_NET_ADMIN cannot bring up loopback inside one, so bwrap fails before the
+// command runs. That is the environment's limit rather than a broken boundary,
+// so a test that needs it skips — never by letting the network through, which
+// is the downgrade Select refuses. Tracked in #44.
+func requireNetNS(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bwrap", "--unshare-net",
+		"--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
+		"--ro-bind", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
+		"/bin/true").CombinedOutput()
+	if err != nil {
+		t.Skipf("this environment cannot unshare the network namespace: %v\n%s", err, out)
+	}
+}
+
 func TestProcessSandboxAllowsWorkspaceWrite(t *testing.T) {
+	requireNetNS(t)
 	ws := workspace(t)
 	s := processSandbox(t, ws, false)
 
@@ -57,6 +80,9 @@ func TestProcessSandboxAllowsWorkspaceWrite(t *testing.T) {
 
 // The core containment property: no writing outside the workspace.
 func TestProcessSandboxBlocksWriteOutsideWorkspace(t *testing.T) {
+	// Without this the test passes when bwrap cannot start at all: the write
+	// does not happen, but nothing was contained either.
+	requireNetNS(t)
 	ws := workspace(t)
 	s := processSandbox(t, ws, false)
 
@@ -75,6 +101,7 @@ func TestProcessSandboxBlocksWriteOutsideWorkspace(t *testing.T) {
 }
 
 func TestProcessSandboxBlocksSystemPathWrite(t *testing.T) {
+	requireNetNS(t)
 	ws := workspace(t)
 	s := processSandbox(t, ws, false)
 
@@ -125,6 +152,7 @@ func TestProcessSandboxBlocksCredentialRead(t *testing.T) {
 }
 
 func TestSandboxReportsItsOwnTier(t *testing.T) {
+	requireNetNS(t)
 	ws := workspace(t)
 	s := processSandbox(t, ws, false)
 	out, err := runIn(t, s, ws, "echo $ABHED_SANDBOX")

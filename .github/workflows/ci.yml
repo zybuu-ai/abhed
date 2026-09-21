@@ -11,12 +11,38 @@ jobs:
   test:
     name: Vet, lint, test, vulnerabilities
     runs-on: ubuntu-latest
+
+    # The store's tests are the only check on the append-only triggers, the
+    # row-level security policies and the tenant isolation they enforce. They
+    # skip without a database, so CI provides one rather than leaving the
+    # whole store untested.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: abhed
+          POSTGRES_PASSWORD: abhed
+          POSTGRES_DB: abhed_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U abhed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+
+      # The process tier is bubblewrap on Linux. Without it the sandbox tests
+      # skip, and the filesystem, egress and credential boundaries the trust
+      # docs call verified would go unexercised on the platform that ships.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
 
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
@@ -27,7 +53,20 @@ jobs:
       - name: golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
 
+      # The store refuses to connect as a superuser, because FORCE ROW LEVEL
+      # SECURITY does not apply to one: the isolation tests would pass without
+      # proving anything. The suite gets its own unprivileged role.
+      - name: Create the unprivileged test role
+        env:
+          PGPASSWORD: abhed
+        run: |
+          psql -h localhost -U abhed -d abhed_test \
+            -c "CREATE ROLE abhed_app LOGIN PASSWORD 'abhed';" \
+            -c "GRANT ALL ON SCHEMA public TO abhed_app;"
+
       - name: go test
+        env:
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
         run: go test ./... -count=1 -coverprofile=coverage.out
 
       # A ratchet, not a target: a PR may not lower coverage below what the
@@ -39,6 +78,25 @@ jobs:
       # a failure reads as "an attack succeeded" rather than a generic test.
       - name: Adversarial suite
         run: go test ./internal/redteam/ -count=1 -v
+
+      # A skipped boundary test reads exactly like a passing one, and the trust
+      # docs cite these by name. Two reasons are expected here: the hosted
+      # runner cannot unshare a network namespace (#44), and two assertions are
+      # written for the Seatbelt backend. A skip for any other reason means a
+      # boundary stopped being checked, so the build fails rather than let the
+      # count drift.
+      - name: Sandbox boundary tests actually ran
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|verified for the Seatbelt backend" sandbox.log || true)
+          if [ "$skipped" -ne "$expected" ]; then
+            echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
+            grep -B3 -- "--- SKIP" sandbox.log
+            exit 1
+          fi
+          echo "$(grep -c -- "--- PASS" sandbox.log || true) sandbox tests ran, $skipped skipped for known reasons"
 
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

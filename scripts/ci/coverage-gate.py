@@ -5,6 +5,11 @@ A ratchet, not a target. The floor is what the tree already achieves, so a PR
 cannot quietly remove tests, and raising it is a deliberate commit rather than
 a number somebody has to argue for.
 
+The floor is CI's number, not a developer's. The sandbox has a different
+backend per platform — Seatbelt on macOS, bubblewrap on Linux — so a Mac and
+the runner legitimately cover different statements, and a floor set from a
+laptop fails the next honest build.
+
 Usage: coverage-gate.py <coverage.out> [--update]
 """
 import pathlib
@@ -13,9 +18,6 @@ import subprocess
 import sys
 
 FLOOR = pathlib.Path(__file__).with_name("coverage-floor.txt")
-# Coverage varies slightly between runs when a test races or a build tag
-# changes what compiles; a small margin stops that flapping the build.
-TOLERANCE = 0.5
 
 
 def total(profile: str) -> float:
@@ -42,7 +44,10 @@ def main() -> int:
         sys.exit(f"no coverage floor recorded; run with --update to set it to {now:.1f}%")
     floor = float(FLOOR.read_text().strip())
 
-    if now + TOLERANCE < floor:
+    # Compare at the precision the floor is stored in, so a run that reads
+    # 54.09% against a 54.1% floor is a match rather than a failure. Anything
+    # below that is a real drop: the floor is where the tree already is.
+    if round(now, 1) < floor:
         print(f"FAIL: coverage {now:.1f}% is below the {floor:.1f}% floor")
         print("Add tests for what this change touches, or lower the floor in")
         print("scripts/ci/coverage-floor.txt as a deliberate, reviewable commit.")
