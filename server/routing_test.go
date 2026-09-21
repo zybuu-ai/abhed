@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +119,7 @@ func discardLogger() *slog.Logger {
 // fakeApprovals stands in for the durable store.
 type fakeApprovals struct {
 	EventStore
+	mu        sync.Mutex
 	pending   map[string]store.Approval
 	answered  map[string]bool
 	askErr    error
@@ -125,11 +127,19 @@ type fakeApprovals struct {
 	asked     int
 }
 
+func (f *fakeApprovals) askedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.asked
+}
+
 func newFakeApprovals() *fakeApprovals {
 	return &fakeApprovals{pending: map[string]store.Approval{}, answered: map[string]bool{}}
 }
 
 func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.askErr != nil {
 		return "", f.askErr
 	}
@@ -140,6 +150,8 @@ func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string
 }
 
 func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bool, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.answerErr != nil {
 		return false, f.answerErr
 	}
@@ -151,11 +163,15 @@ func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bo
 }
 
 func (f *fakeApprovals) ApprovalResult(_ context.Context, id string) (bool, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, ok := f.answered[id]
 	return a, ok, nil
 }
 
 func (f *fakeApprovals) PendingApproval(_ context.Context, sessionID string) (store.Approval, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	a, ok := f.pending[sessionID]
 	return a, ok, nil
 }
@@ -186,7 +202,7 @@ func TestApprovalIsRecordedDurably(t *testing.T) {
 	}
 	// Answer immediately through the durable path so Approve returns.
 	go func() {
-		for f.asked == 0 {
+		for f.askedCount() == 0 {
 			time.Sleep(time.Millisecond)
 		}
 		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "reviewer")
@@ -200,8 +216,8 @@ func TestApprovalIsRecordedDurably(t *testing.T) {
 	if !ok {
 		t.Fatal("an approval answered through the store was not honoured")
 	}
-	if f.asked != 1 {
-		t.Fatalf("asked %d times, want 1 durable record", f.asked)
+	if f.askedCount() != 1 {
+		t.Fatalf("asked %d times, want 1 durable record", f.askedCount())
 	}
 }
 
@@ -230,7 +246,7 @@ func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
 		allowed: map[string]bool{}, durable: f,
 	}
 	go func() {
-		for f.asked == 0 {
+		for f.askedCount() == 0 {
 			time.Sleep(time.Millisecond)
 		}
 		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "reviewer")

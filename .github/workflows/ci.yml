@@ -79,6 +79,14 @@ jobs:
       - name: Adversarial suite
         run: go test ./internal/redteam/ -count=1 -v
 
+      # Draining, sticky routing and durable approvals are all concurrent, and
+      # a race there loses a turn rather than crashing. The whole tree is
+      # race-clean, so this gates the lot rather than a chosen few.
+      - name: Race detector
+        env:
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
+        run: go test ./... -race -count=1
+
       # A skipped boundary test reads exactly like a passing one, and the trust
       # docs cite these by name. Two reasons are expected here: the hosted
       # runner cannot unshare a network namespace (#44), and two assertions are
