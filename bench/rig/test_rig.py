@@ -73,6 +73,21 @@ class Conditions(unittest.TestCase):
         self.assertNotIn("psf/requests", rig.POOL)
 
 
+class Gate(unittest.TestCase):
+    def test_target_tests_must_run_and_fail_at_base(self):
+        f2p = ["t.py::a", "t.py::b"]
+        self.assertTrue(rig.fair_at_base({"t.py::a": "FAILED", "t.py::b": "FAILED"}, f2p))
+        # Not collected at all: the test file could not be imported. This is
+        # pylint-4604, whose tests import a constant only the reference patch
+        # adds, and which took half of the first pilot.
+        self.assertFalse(rig.fair_at_base({}, f2p))
+        self.assertFalse(rig.fair_at_base({"t.py::a": "FAILED"}, f2p))
+        self.assertFalse(rig.fair_at_base({"t.py::a": "ERROR", "t.py::b": "FAILED"}, f2p))
+        # Already passing is not a task either.
+        self.assertFalse(rig.fair_at_base({"t.py::a": "PASSED", "t.py::b": "FAILED"}, f2p))
+        self.assertFalse(rig.fair_at_base({}, []))
+
+
 class Watch(unittest.TestCase):
     def test_snapshot_counts_progress_and_passes(self):
         import json
