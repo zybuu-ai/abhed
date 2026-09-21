@@ -27,6 +27,27 @@ type Tool interface {
 	Run(ctx context.Context, sess *Session, args json.RawMessage) Result
 }
 
+// Prechecker is an optional check that needs no side effect to make. The loop
+// runs it before asking a person, so nobody approves a call that cannot succeed.
+type Prechecker interface {
+	Precheck(sess *Session, args json.RawMessage) error
+}
+
+// precheckPath is the shared check for tools whose target is a "path" argument.
+func precheckPath(s *Session, raw json.RawMessage) error {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if s == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return fmt.Errorf("invalid arguments: %w", err)
+	}
+	_, err := s.Resolve(a.Path)
+	return err
+}
+
 // Result is what the model sees. Content is rendered into the transcript, so
 // it is written for the model to act on.
 type Result struct {
