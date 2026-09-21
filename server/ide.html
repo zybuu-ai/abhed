@@ -714,7 +714,9 @@ function askApproval(p){
       try{ await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(scope ? {approved:ok, scope} : {approved:ok})}); }
       catch(e){ a.appendChild(el('p', '', e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope, '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
-  a.appendChild(btns); add(a); btns.firstChild.focus();
+  a.appendChild(btns); add(a); btns.firstChild.focus({preventScroll:true});
+  // A pending question is never left half off screen, wherever the reader had scrolled to.
+  requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
 }
 function settleAsk(callID, how){
   for(const a of tx().querySelectorAll('.ask')){ if(a.dataset.call !== callID) continue;
