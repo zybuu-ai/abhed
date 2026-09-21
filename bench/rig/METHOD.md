@@ -66,9 +66,18 @@ Left out, and why:
   Python 2 bugs that do not reproduce on a current interpreter.
 
 **An instance enters the suite only if it behaves here** (`rig.py validate`):
-at the base commit the FAIL_TO_PASS tests must fail, and with the gold patch
-every FAIL_TO_PASS test must pass. Anything else is dropped and the reason kept
-in `invalid.json`.
+at the base commit the FAIL_TO_PASS tests must **run and fail**, and with the
+gold patch every FAIL_TO_PASS test must pass. Anything else is dropped and the
+reason kept in `invalid.json`.
+
+"Run and fail" is stricter than "not pass", and the difference cost half of the
+first pilot. `pylint-4604`'s hidden test file imports `IS_PYPY` from
+`pylint.constants` — a constant the reference patch adds and the issue never
+mentions. Without it the file cannot be imported, so all 21 target tests score
+zero for any fix that does not invent the same name in the same place. One
+harness edited the right file and still scored 0 of 21. Such an instance
+measures guessing, not fixing; it is excluded. Of 19 instances that passed the
+first gate, this was the only one.
 
 **One stated deviation.** Dependencies are not pinned to the versions the
 dataset was built with, so a few PASS_TO_PASS tests fail from drift alone. A
@@ -80,7 +89,7 @@ instance is dropped. Which tests were set aside, per instance, is written to
 
 The suite is therefore whatever survives on the machine that runs it. On the
 machine this was built on (macOS arm64, 21 Sep 2026): 30 instances in the
-pool, 29 built, **19 valid** — 15 from pytest and 4 from pylint — of which 8
+pool, 29 built, **18 valid** — 15 from pytest and 3 from pylint — of which 8
 had between one and five drifted tests set aside. flask's single instance
 fails on dependency drift and is out.
 

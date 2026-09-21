@@ -202,6 +202,18 @@ def apply_patch(ws, patch):
 P2P_FLOOR = 0.90
 
 
+def fair_at_base(status, f2p):
+    """Do the target tests run and fail at the base commit, or fail to load?
+
+    A test file that imports a name the reference patch introduces cannot be
+    collected without it. Such an instance scores zero for any fix that does
+    not happen to invent the same name in the same place — it measures
+    guessing, not fixing — so it has no business in a comparison. The target
+    tests must be collected and FAIL; being absent or erroring is not enough.
+    """
+    return bool(f2p) and all(status.get(t) == "FAILED" for t in f2p)
+
+
 def score(iid, ws, inst, skip=()):
     """Restore the gold tests over the agent's, run them, apply the SWE-bench rule."""
     files = re.findall(r"^diff --git a/(\S+) b/", inst["test_patch"], flags=re.M)
@@ -234,6 +246,7 @@ def score(iid, ws, inst, skip=()):
         "f2p": f"{len(f2p_ok)}/{len(f2p)}", "p2p": f"{len(p2p_ok)}/{len(p2p)}",
         "f2p_fraction": len(f2p_ok) / max(len(f2p), 1),
         "p2p_failed": [t for t in p2p if t not in p2p_ok],
+        "f2p_ran_and_failed": fair_at_base(status, f2p),
         "tail": out[-1500:],
     }
 
@@ -253,7 +266,7 @@ def validate(_):
 
         n_p2p = len(json.loads(inst["PASS_TO_PASS"]))
         drift = gold.get("p2p_failed", [])
-        good = (not base["resolved"] and base.get("f2p_fraction", 1) < 1
+        good = (not base["resolved"] and base.get("f2p_ran_and_failed", False)
                 and gold.get("f2p_fraction") == 1 and "reason" not in gold
                 and len(drift) <= (1 - P2P_FLOOR) * n_p2p)
         note = f"  ({len(drift)} drifted test(s) excluded)" if good and drift else ""
@@ -502,7 +515,11 @@ def run(args):
     for n in names:
         if n not in ("null", "gold") and not (CACHE / f"doctor-{n}.ok").exists():
             sys.exit(f"{n} has not passed `rig.py doctor --harness {n}`; an unchecked setup is not a measurement")
-    tasks = sorted(suite())[: args.limit] if args.limit else sorted(suite())
+    tasks = sorted(suite())
+    if args.limit:
+        # A sample, not the first N: sorted order puts one repository first,
+        # and a pilot drawn from a single corner of the suite says little.
+        tasks = sorted(random.Random(args.seed).sample(tasks, min(args.limit, len(tasks))))
     # Interleave so a slow afternoon or a thermal throttle lands on every
     # harness rather than on whichever ran last.
     plan = [(r, iid, cond, n) for r in range(1, args.runs + 1) for iid in tasks
