@@ -256,7 +256,7 @@ finding, or a new one once it has been triaged here, is followed by
 | G115 | 8 | Integer overflow on type conversion |
 | G703 | 6 | Path traversal (taint analysis) |
 | G306 | 6 | File written with permissions looser than 0600 |
-| G118 | 5 | Goroutine uses `context.Background`/`TODO` where a request context is available |
+| G118 | 6 | Goroutine uses `context.Background`/`TODO` where a request context is available |
 | G301 | 5 | Directory created with permissions looser than 0750 |
 | G124 | 4 | Cookie missing Secure/HttpOnly/SameSite |
 | G122 | 2 | Filesystem op inside a `Walk`/`WalkDir` callback is TOCTOU-prone |
@@ -403,10 +403,10 @@ risk as long as the *files* inside are correctly permissioned, which is the
 G306 finding above (the one that actually matters for the config-directory
 case).
 
-#### G118 — goroutine uses `context.Background`/`TODO` (5 findings, HIGH by gosec default)
+#### G118 — goroutine uses `context.Background`/`TODO` (6 findings, HIGH by gosec default)
 
-All five are **false positives**: each is a deliberately detached background
-task with its own independent timeout, and three of the five carry an
+All six are **false positives**: each is a deliberately detached background
+task with its own independent timeout, and most carry an
 explicit comment saying so — `internal/mcp/client.go:104`'s connection-lifetime
 read loop, `internal/mcp/http.go:293`'s SSE reader ("a slow tool call [should
 not be] aborted when the triggering request context ends"),
@@ -416,6 +416,16 @@ notice must not leave the account still working"),
 definition runs after the request/server context is already done), and
 `internal/server/settings.go:267`'s reindex goroutine ("client disconnecting
 must not abandon a half-built index").
+
+The sixth is `server/server.go`'s node heartbeat. The goroutine's own lifetime
+is bound to the turn — it returns on `ctx.Done()` — and only the individual
+claim refresh is detached, with a five-second timeout. It has to be: at the end
+of a turn the run's context is already cancelled, so refreshing with it would
+fail at exactly the moment the node is still alive and holding the session,
+which is the failure the heartbeat exists to prevent.
+`TestHeartbeatGoroutineDoesNotLeak` asserts the goroutine count is unchanged
+across fifty heartbeats, so "detached write" does not quietly become
+"leaked goroutine".
 
 #### G124 — cookie missing Secure/HttpOnly/SameSite (4 findings, MEDIUM)
 
