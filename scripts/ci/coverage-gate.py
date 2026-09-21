@@ -5,6 +5,11 @@ A ratchet, not a target. The floor is what the tree already achieves, so a PR
 cannot quietly remove tests, and raising it is a deliberate commit rather than
 a number somebody has to argue for.
 
+The floor is CI's number, not a developer's. The sandbox has a different
+backend per platform — Seatbelt on macOS, bubblewrap on Linux — so a Mac and
+the runner legitimately cover different statements, and a floor set from a
+laptop fails the next honest build.
+
 Usage: coverage-gate.py <coverage.out> [--update]
 """
 import pathlib

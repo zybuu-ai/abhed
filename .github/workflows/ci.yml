@@ -79,6 +79,25 @@ jobs:
       - name: Adversarial suite
         run: go test ./internal/redteam/ -count=1 -v
 
+      # A skipped boundary test reads exactly like a passing one, and the trust
+      # docs cite these by name. Two reasons are expected here: the hosted
+      # runner cannot unshare a network namespace (#44), and two assertions are
+      # written for the Seatbelt backend. A skip for any other reason means a
+      # boundary stopped being checked, so the build fails rather than let the
+      # count drift.
+      - name: Sandbox boundary tests actually ran
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|verified for the Seatbelt backend" sandbox.log || true)
+          if [ "$skipped" -ne "$expected" ]; then
+            echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
+            grep -B3 -- "--- SKIP" sandbox.log
+            exit 1
+          fi
+          echo "$(grep -c -- "--- PASS" sandbox.log || true) sandbox tests ran, $skipped skipped for known reasons"
+
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
