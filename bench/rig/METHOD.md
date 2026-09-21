@@ -136,6 +136,29 @@ found in OpenHands' CLI documentation; it runs on its defaults.
   (10,000 resamples, fixed seed). An interval that spans zero is reported as
   not a difference, in those words.
 
+## Choosing the model
+
+The model has to be one that **every** harness can drive, or the comparison
+collapses into that one fact. `models --base X` records the base and clears
+every `doctor` pass, so a harness is re-checked on each model.
+
+On the machine this was built on (M3 Pro, 36 GB, Ollama, 21 Sep 2026):
+
+| Model | Generation | Abhed | pi 0.73.1 | OpenHands 1.16.0 |
+|---|---|---|---|---|
+| `gemma4:26b` | 45 tok/s | passes | passes | passes |
+| `qwen3-coder:30b` | 49 tok/s | passes | **fails** | **fails** |
+| `qwen3.8:27b` | 6 tok/s | passes | passes | passes |
+
+`qwen3-coder:30b` emitted its tool call as text in its own XML form
+(`<function=write><parameter=path>…`) with a malformed wrapper, so Ollama did
+not turn it into a structured call. pi and OpenHands received a plain reply and
+stopped; Abhed recovers calls written as text and carried on. That is a real
+difference between the harnesses, and it is reported here rather than in the
+results table: a suite on which two of three harnesses cannot call a tool
+would measure nothing else. `qwen3.8:27b` is a dense model and too slow for a
+thirty-minute session on this hardware. The runs use `gemma4:26b`.
+
 ## Watching a run
 
 `rig.py watch --date <date>` from another terminal: sessions finished of the

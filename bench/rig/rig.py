@@ -456,7 +456,7 @@ def one_run(hname, iid, cond, out_path):
     # The agent's change, as a patch, before the gold tests are laid over it.
     sh(["git", "add", "-A"], cwd=ws)
     _, diff = sh(["git", "diff", "--cached", "HEAD", "--", ".", ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
-    result = {"harness": hname, "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
+    result = {"harness": hname, "base_model": base_model(), "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
               "wall_sec": round(elapsed, 1), "patch_bytes": len(diff), "patch": diff[-20000:],
               "usage": h.usage(output), "output_tail": output[-3000:],
               "score": score(iid, ws, inst, skip=suite().get(iid, []))}
@@ -480,9 +480,21 @@ def selftest(_):
     print("\nself-test passed: doing nothing scores 0, the reference patch scores 100")
 
 
+def base_model():
+    """The model behind the benchmark variants, as `models` last set it."""
+    p = CACHE / "base-model.txt"
+    return p.read_text().strip() if p.exists() else "unknown"
+
+
 def models(args):
     d = CACHE / "modelfiles"
     d.mkdir(parents=True, exist_ok=True)
+    # The variants keep one name whatever they are built from, so the base is
+    # written down: a result that does not say which model produced it is not
+    # a result, and a doctor pass on one model says nothing about another.
+    (CACHE / "base-model.txt").write_text(args.base + "\n")
+    for p in CACHE.glob("doctor-*.ok"):
+        p.unlink()
     for cond, ctx in CONDITIONS.items():
         (d / f"{cond}.Modelfile").write_text(f"FROM {args.base}\nPARAMETER num_ctx {ctx}\n")
         print(f"ollama create {model_name(cond)} -f {d / f'{cond}.Modelfile'}")
@@ -506,7 +518,7 @@ def doctor(args):
     print(out[-1200:])
     if not made:
         sys.exit(f"\n{args.harness}: exit {rc}, and hello.txt was not written. Fix the setup before benchmarking.")
-    (CACHE / f"doctor-{args.harness}.ok").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+    (CACHE / f"doctor-{args.harness}.ok").write_text(f"{base_model()} {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
     print(f"\n{args.harness}: ok — it used a tool on this model")
 
 
@@ -530,7 +542,7 @@ def run(args):
     (RESULTS / args.date / "rig").mkdir(parents=True, exist_ok=True)
     (RESULTS / args.date / "rig" / "suite.json").write_text(json.dumps(suite(), indent=1))
     (RESULTS / args.date / "rig" / "plan.json").write_text(json.dumps(
-        {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT,
+        {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT, "base_model": base_model(),
          "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
     for i, (r, iid, cond, n) in enumerate(plan, 1):
         out = RESULTS / args.date / "rig" / n / cond / f"run{r}" / f"{iid}.json"
@@ -566,7 +578,7 @@ def snapshot(date):
     total = len(plan["sessions"]) if plan else None
     alive = subprocess.run(["pgrep", "-f", f"rig.py run --date {date}"], stdout=subprocess.PIPE).returncode == 0
 
-    out = [f"rig · {date} · {'running' if alive else 'not running'}", ""]
+    out = [f"rig · {date} · {(plan or {}).get('base_model', base_model())} · {'running' if alive else 'not running'}", ""]
     bar = ""
     if total:
         filled = 30 * len(done) // total
