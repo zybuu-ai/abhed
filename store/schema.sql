@@ -131,6 +131,20 @@ DROP TRIGGER IF EXISTS events_no_delete ON events;
 CREATE TRIGGER events_no_delete BEFORE DELETE ON events
   FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
 
+-- TRUNCATE fires no row trigger, so without this the two above were bypassed
+-- by one statement that removes every row.
+DROP TRIGGER IF EXISTS events_no_truncate ON events;
+CREATE TRIGGER events_no_truncate BEFORE TRUNCATE ON events
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+
+-- These triggers stop an UPDATE, DELETE or TRUNCATE. They do not stop the
+-- role that OWNS this table: an owner may disable a trigger or drop the table,
+-- and no trigger can prevent that. The record is protected against the running
+-- application only when the application connects as a role that does not own
+-- it and holds INSERT and SELECT alone. `abhed migrate` sets that up, and the
+-- store refuses to start otherwise unless storage.single_role says the
+-- operator has chosen to go without.
+
 -- Checkpoints back /undo: the content of a file immediately before the agent
 -- changed it. NULL `before` means the file did not previously exist.
 CREATE TABLE IF NOT EXISTS checkpoints (

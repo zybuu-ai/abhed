@@ -65,7 +65,7 @@ existing accounts across — Postgres simply starts empty, with no error. Import
 them:
 
 ```bash
-export ABHED_DATABASE_URL='postgres://abhed_app:...@db.internal:5432/abhed'
+export ABHED_DATABASE_URL='postgres://abhed_runtime:...@db.internal:5432/abhed'
 abhed -C /srv/abhed user import
 ```
 

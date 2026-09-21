@@ -31,6 +31,8 @@ var schemaSQL string
 type Postgres struct {
 	pool   *pgxpool.Pool
 	tenant string
+	// protected is true when the connected role cannot alter the event record.
+	protected bool
 
 	// Subscribers receive events for live streaming. The database is the
 	// durable record; this is the notification path for SSE.
@@ -53,6 +55,12 @@ type Config struct {
 	MaxConns         int32
 	ConnectTimeout   time.Duration
 	StatementTimeout time.Duration
+	// SingleRole accepts a connection that owns the tables, and applies the
+	// schema through it. It is the simple setup and the weaker one: that role
+	// can disable the append-only triggers, so the record is protected against
+	// mistakes and not against whoever holds the server's credentials. Off by
+	// default; an operator turns it on knowing that.
+	SingleRole bool
 }
 
 func DefaultConfig(dsn string) Config {
@@ -120,12 +128,41 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 	}
 
 	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event)}
-	if err := p.Migrate(ctx); err != nil {
+	if cfg.SingleRole {
+		if err := p.Migrate(ctx); err != nil {
+			pool.Close()
+			return nil, err
+		}
+		return p, nil
+	}
+
+	// The same reasoning as the superuser check above, one level down: a role
+	// that can alter the record makes "append-only" a statement about the
+	// application's manners rather than about the database.
+	exposure, err := recordExposure(ctx, pool)
+	switch {
+	case errors.Is(err, errNoSchema):
+		pool.Close()
+		return nil, errors.New("the database has no Abhed schema yet. Apply it as the owning role with " +
+			"`abhed migrate` (see docs/guide/02-configuration.md), or set storage.single_role " +
+			"to let this connection own the tables")
+	case err != nil:
 		pool.Close()
 		return nil, err
+	case exposure != "":
+		pool.Close()
+		return nil, fmt.Errorf("refusing to start: the connected role %s, so the audit record "+
+			"is not protected from this server's own credentials. Run `abhed migrate` with an owner role "+
+			"and connect as a separate runtime role, or set storage.single_role to accept the weaker "+
+			"guarantee (see docs/guide/02-configuration.md)", exposure)
 	}
+	p.protected = true
 	return p, nil
 }
+
+// RecordProtected reports whether the connected role is unable to alter the
+// event record: it neither owns the table nor holds a privilege to change it.
+func (p *Postgres) RecordProtected() bool { return p.protected }
 
 // Migrate applies the schema. Idempotent, so it is safe on every start —
 // which matters for an air-gapped install where a separate migration step is

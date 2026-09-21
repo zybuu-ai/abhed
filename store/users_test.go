@@ -19,7 +19,7 @@ func TestMigrateUsersRunsOnce(t *testing.T) {
 		t.Skip("set ABHED_TEST_DSN to run store integration tests")
 	}
 	ctx := context.Background()
-	pg, err := Open(ctx, DefaultConfig(dsn))
+	pg, err := Open(ctx, singleRoleConfig(dsn))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestUserRoundTrip(t *testing.T) {
 		t.Skip("set ABHED_TEST_DSN to run store integration tests")
 	}
 	ctx := context.Background()
-	pg, err := Open(ctx, DefaultConfig(dsn))
+	pg, err := Open(ctx, singleRoleConfig(dsn))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

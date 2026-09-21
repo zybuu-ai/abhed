@@ -22,8 +22,10 @@ need:
 "storage": { "driver": "postgres", "dsn": "postgres://...", "tenant": "default" }
 ```
 
-The event table is append-only, enforced by a database trigger rather than by
-convention. Tenants are isolated by row-level security, enforced at the data
+The event table is append-only: database triggers refuse an update, a delete or
+a truncate. Against the server's own credentials that holds only when the
+server runs as a role that does not own the table — see
+[two roles, not one](02-configuration.md). Tenants are isolated by row-level security, enforced at the data
 layer as well as in the application — a boundary that exists in only one place
 is not a boundary.
 

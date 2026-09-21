@@ -127,14 +127,46 @@ This is a boundary, not a jail: it is not sufficient for genuinely hostile code.
 `memory` (the default) loses sessions when the process exits. `postgres` makes
 them durable and replayable, and is what `/sessions`, `/resume` and audit need.
 
-**Do not connect as a superuser.** Row-level security is what isolates tenants,
-and Postgres does not apply it to a superuser or a `BYPASSRLS` role, not even
-with `FORCE`. Abhed checks the role it connected as and **refuses to start** if
-it is privileged, because a control that is silently off is worse than one
-that is visibly missing. Provision two roles for this reason: a superuser used
-only to create the database and the application role, and a plain application
-role (`NOSUPERUSER NOBYPASSRLS`) that owns the tables and is the only one in the
-server's DSN. Abhed applies its schema on connect as that role.
+**Two roles, not one.** The audit record is only as protected as the role that
+writes it. Database triggers refuse an `UPDATE`, a `DELETE` or a `TRUNCATE` on
+`events` — but the role that *owns* a table may disable its triggers or drop
+it, and nothing inside the database can stop an owner. So:
+
+```sql
+CREATE ROLE abhed_owner   LOGIN PASSWORD '…' NOSUPERUSER NOBYPASSRLS;  -- owns the tables
+CREATE ROLE abhed_runtime LOGIN PASSWORD '…' NOSUPERUSER NOBYPASSRLS;  -- the server runs as this
+GRANT ALL ON SCHEMA public TO abhed_owner;
+```
+
+```bash
+# Once, and after each upgrade — ideally from somewhere other than the server host:
+ABHED_MIGRATE_DATABASE_URL='postgres://abhed_owner:…@db/abhed' abhed migrate
+
+# The server only ever sees the runtime role:
+ABHED_DATABASE_URL='postgres://abhed_runtime:…@db/abhed' abhed serve
+```
+
+`abhed migrate` applies the schema as the owner and grants the runtime role
+exactly what the server uses: `INSERT` and `SELECT` on `events`, and nothing
+that changes or removes one. Keep the owner's credentials off the host that
+runs the server; whoever holds them can alter the record.
+
+**Abhed refuses to start** if the role in `storage.dsn` could alter the record
+— if it owns `events`, or holds `UPDATE`, `DELETE` or `TRUNCATE` on it — and
+says which. It asks the database what the connection can do rather than
+trusting the configuration.
+
+**`"single_role": true`** turns that refusal off: the server connects as the
+role that owns the tables and applies the schema itself, as every version up to
+0.2 did. It is the simple setup for a laptop or a trial. It is also weaker, and
+the difference is exact: the record is then protected against application bugs
+and stray statements, and **not** against anyone holding the server's database
+credentials. `abhed doctor` and the startup banner say which mode is in force.
+
+**Do not connect as a superuser,** in either mode. Row-level security is what
+isolates tenants, and Postgres does not apply it to a superuser or a
+`BYPASSRLS` role, not even with `FORCE`. Abhed checks and refuses, because a
+control that is silently off is worse than one that is visibly missing.
 
 ## Where settings come from
 

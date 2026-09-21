@@ -233,6 +233,17 @@ type StorageConfig struct {
 	// Tenant scopes every row; row-level security enforces it.
 	Tenant   string `json:"tenant,omitempty"`
 	MaxConns int    `json:"max_conns,omitempty"`
+	// MigrateDSN connects as the role that OWNS the tables. Only `abhed
+	// migrate` uses it; the server never does. It may come from
+	// ABHED_MIGRATE_DATABASE_URL instead, and is best kept off the host that
+	// runs the server: whoever holds it can disable the append-only triggers.
+	MigrateDSN string `json:"migrate_dsn,omitempty"`
+	// SingleRole lets the server connect as the role that owns the tables and
+	// apply the schema itself. Simpler, and weaker: that role can disable the
+	// append-only triggers, so the audit record is protected against mistakes
+	// and not against the server's own credentials. The server refuses such a
+	// connection unless this is set.
+	SingleRole bool `json:"single_role,omitempty"`
 }
 
 // ServerConfig holds the settings that only matter once `abhed serve` is
@@ -547,6 +558,9 @@ func applyEnv(cfg *Config) {
 	}
 	cfg.Model.Providers[name] = p
 
+	if v := os.Getenv("ABHED_MIGRATE_DATABASE_URL"); v != "" {
+		cfg.Storage.MigrateDSN = v
+	}
 	if v := os.Getenv("ABHED_DATABASE_URL"); v != "" {
 		cfg.Storage.DSN = v
 		if cfg.Storage.Driver == "" || cfg.Storage.Driver == "memory" {

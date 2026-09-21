@@ -96,10 +96,28 @@ the schema comment states directly: events are append-only (no `UPDATE`, no
 `DELETE`), and tenant isolation is enforced by row-level security, not only
 by query construction.
 
-**Append-only by trigger, not convention.** `abhed_events_immutable()` is a
-trigger that raises an exception on any `UPDATE` or `DELETE` against
-`events` — the database itself refuses the operation, regardless of what the
-application code does or how it is compromised.
+**Append-only by trigger and by privilege.** `abhed_events_immutable()` raises
+on any `UPDATE`, `DELETE` or `TRUNCATE` against `events`. On its own that stops
+a bug or a stray statement; it does not stop the role that owns the table,
+which may disable a trigger or drop the table outright. So the schema is
+applied by an owner role through `abhed migrate`, and the server runs as a
+separate role holding `INSERT` and `SELECT` on `events` and owning nothing. The
+server **refuses to start** as a role that could alter the record, asking the
+database what the connection can do rather than trusting configuration.
+`TestRuntimeRoleCannotAlterTheRecord` tries thirteen routes as the runtime role
+— rewrite, delete, truncate, disabling or dropping the triggers, replacing the
+trigger function, `session_replication_role`, taking ownership, dropping the
+table, granting itself the privilege — and CI fails if that test skips.
+
+*This paragraph used to claim the database refused "regardless of how the
+application is compromised". That was wrong until 0.3: the application role
+owned the tables, so it could truncate them or switch the triggers off. With
+`storage.single_role` set it is still the case, by the operator's choice.*
+
+**What is not covered.** The owner role and any database superuser can still
+alter the record; that is what owning a database means. Keep those credentials
+off the server host. Detecting tampering by them needs a hash chain over the
+events with the head stored elsewhere, which is not built.
 
 **`FORCE ROW LEVEL SECURITY`**, not just `ENABLE`. The schema comment explains
 why this specific word matters: a table's owner bypasses ordinary RLS, and

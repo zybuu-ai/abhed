@@ -14,7 +14,7 @@ func approvalStore(t *testing.T, tenant string) (*Postgres, context.Context) {
 		t.Skip("set ABHED_TEST_DSN to run approval tests")
 	}
 	ctx := context.Background()
-	cfg := DefaultConfig(dsn)
+	cfg := singleRoleConfig(dsn)
 	cfg.Tenant = tenant
 	pg, err := Open(ctx, cfg)
 	if err != nil {
