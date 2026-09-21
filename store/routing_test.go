@@ -106,3 +106,38 @@ func TestUnclaimedSessionHasNoNode(t *testing.T) {
 		t.Fatalf("NodeFor = %q, want empty", got)
 	}
 }
+
+// A refreshed claim stays findable past the staleness window; an abandoned one
+// does not. This is the difference between a healthy node holding a long turn
+// and a node that died.
+func TestRefreshedClaimSurvivesTheStalenessWindow(t *testing.T) {
+	dsn := os.Getenv("ABHED_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ABHED_TEST_DSN to run routing tests")
+	}
+	p := openStore(t, "t-beat")
+	ctx := context.Background()
+
+	id := testID(t, "sess-beat-")
+	newSession(t, p, id, "t-beat")
+	if err := p.ClaimNode(ctx, id, "node-a"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	// Age the claim past the window, as an unrefreshed one would.
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE sessions SET node_seen_at = now() - interval '3 minutes' WHERE id = $1`, id); err != nil {
+		t.Fatalf("age: %v", err)
+	}
+	if n, err := p.NodeFor(ctx, id, 2*time.Minute); err != nil || n != "" {
+		t.Fatalf("a stale claim resolved to %q (err %v) — a dead node would keep the session", n, err)
+	}
+
+	// A heartbeat is the same call again: it must bring the claim back.
+	if err := p.ClaimNode(ctx, id, "node-a"); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if n, err := p.NodeFor(ctx, id, 2*time.Minute); err != nil || n != "node-a" {
+		t.Fatalf("after a refresh NodeFor = %q (err %v), want node-a", n, err)
+	}
+}

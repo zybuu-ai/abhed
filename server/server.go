@@ -95,6 +95,10 @@ const approvalPoll = 2 * time.Second
 // sessions for long.
 const nodeStale = 2 * time.Minute
 
+// nodeHeartbeat refreshes the claim well inside nodeStale, so a slow write or
+// a missed tick does not make a healthy node look dead.
+const nodeHeartbeat = 30 * time.Second
+
 // Mount registers routes on the server's mux. It runs after the built-in
 // routes and before the middleware wraps the mux, so the handlers it
 // registers are authenticated and logged like any other; a route that must
@@ -759,10 +763,12 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	s.running[sessionID] = live
 	s.mu.Unlock()
 	s.claimNode(ctx, sessionID)
+	stopBeat := s.heartbeatNode(runCtx, sessionID)
 
 	go func() {
 		defer cancel()
 		reason, err := loop.Run(runCtx, spec.Prompt)
+		stopBeat()
 		live.mu.Lock()
 		live.State = "done"
 		live.mu.Unlock()
@@ -1693,6 +1699,40 @@ func (s *Server) claimNode(ctx context.Context, sessionID string) {
 	if err := r.ClaimNode(ctx, sessionID, s.opts.NodeID); err != nil {
 		s.log.Warn("could not claim session for this node", "session", sessionID, "err", err)
 	}
+}
+
+// heartbeatNode keeps this node's claim on the session fresh while the turn
+// runs. Without it a claim ages out of the staleness window and a healthy node
+// stops being found, so the turns most likely to need an approval — the long
+// ones — are exactly the ones whose approvals get misrouted.
+//
+// The returned function stops the heartbeat; it is safe to call more than once.
+func (s *Server) heartbeatNode(ctx context.Context, sessionID string) func() {
+	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat)
+}
+
+func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every time.Duration) func() {
+	if _, ok := s.router(); !ok {
+		return func() {}
+	}
+	ctx, stop := context.WithCancel(ctx)
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				// Its own context: the run's may be seconds from cancellation,
+				// and a refresh that fails then would look like a dead node.
+				beat, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				s.claimNode(beat, sessionID)
+				cancel()
+			}
+		}
+	}()
+	return stop
 }
 
 // releaseNode clears the claim when a turn finishes. It uses its own context:

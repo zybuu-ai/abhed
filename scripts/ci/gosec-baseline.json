@@ -23,7 +23,7 @@
  "G115 internal/agent/id.go": 6,
  "G118 internal/mcp/client.go": 1,
  "G118 internal/mcp/http.go": 1,
- "G118 server/server.go": 1,
+ "G118 server/server.go": 2,
  "G118 server/settings.go": 1,
  "G120 server/upload.go": 1,
  "G122 internal/index/index.go": 1,

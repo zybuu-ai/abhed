@@ -263,3 +263,94 @@ func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
 		t.Fatal("the scope was not remembered, so the next matching call re-prompts")
 	}
 }
+
+// countingRouter records how often a session's claim is refreshed.
+type countingRouter struct {
+	EventStore
+	mu     sync.Mutex
+	claims int
+}
+
+func (c *countingRouter) ClaimNode(context.Context, string, string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.claims++
+	return nil
+}
+func (c *countingRouter) ReleaseNode(context.Context, string, string) error { return nil }
+func (c *countingRouter) NodeFor(context.Context, string, time.Duration) (string, error) {
+	return "", nil
+}
+func (c *countingRouter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.claims
+}
+
+// A claim that is never refreshed ages out of nodeStale while the node is
+// still healthy, and the session stops being routable. The heartbeat is what
+// keeps a long turn reachable.
+func TestHeartbeatRefreshesTheClaim(t *testing.T) {
+	r := &countingRouter{}
+	s := &Server{
+		store:   r,
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		running: map[string]*liveSession{},
+		opts:    Options{NodeID: "node-a"},
+	}
+
+	// A tick faster than the real 30s keeps the test quick; the mechanism is
+	// identical.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := s.heartbeatNodeEvery(ctx, "s-beat", 20*time.Millisecond)
+	defer stop()
+
+	// Wait for refreshes rather than for a duration: under -race the build is
+	// slow enough that a fixed window makes this flaky.
+	deadline := time.After(5 * time.Second)
+	for r.count() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("claim refreshed only %d times — a long turn would go stale", r.count())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	stop()
+	// One tick may already be in flight when stop lands; what matters is that
+	// the beating ends, not the exact count at the instant of stopping.
+	time.Sleep(80 * time.Millisecond)
+	settled := r.count()
+	time.Sleep(120 * time.Millisecond)
+	if after := r.count(); after != settled {
+		t.Fatalf("heartbeat kept beating after stop: %d -> %d", settled, after)
+	}
+}
+
+// Stopping twice must not panic: the run goroutine stops it, and the deferred
+// stop runs too.
+func TestHeartbeatStopIsIdempotent(t *testing.T) {
+	s := &Server{
+		store:   &countingRouter{},
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		running: map[string]*liveSession{},
+		opts:    Options{NodeID: "node-a"},
+	}
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Hour)
+	stop()
+	stop()
+}
+
+// Without a router there is nothing to refresh, and the heartbeat must not
+// start a goroutine that calls into a nil store.
+func TestHeartbeatIsInertWithoutARouter(t *testing.T) {
+	s := &Server{
+		store:   memoryOnly{},
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		running: map[string]*liveSession{},
+	}
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	stop()
+}
