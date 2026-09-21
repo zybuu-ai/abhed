@@ -64,6 +64,10 @@ POOL = {
 # minimum; a condition a harness says it cannot work in measures nothing.
 CONDITIONS = {"full": 32768, "tight": 24576}
 
+# Harnesses installed for the benchmark live under the cache, so the operator's
+# own tools and global package directories are left alone.
+os.environ["PATH"] = f"{CACHE / 'tools' / 'bin'}:{os.environ['PATH']}"
+
 RUN_TIMEOUT = int(os.environ.get("ABHED_BENCH_TIMEOUT", "1800"))
 TEST_TIMEOUT = int(os.environ.get("ABHED_BENCH_TEST_TIMEOUT", "300"))
 
@@ -77,7 +81,10 @@ the issue is resolved. The project's Python environment is already on PATH.
 
 
 def sh(cmd, cwd=None, env=None, timeout=None, check=False):
-    p = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, text=True,
+    # stdin is closed on purpose. pi merges piped stdin into its prompt, so a
+    # harness that inherits an open stdin waits on it for ever and never calls
+    # the model — which is how the first doctor run on pi spent ten minutes.
+    p = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, text=True, stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{p.stdout[-2000:]}")
@@ -377,6 +384,22 @@ class Pi(Harness):
         env = dict(env, HOME=str(home))
         return sh(["pi", "--provider", "bench", "--model", model_name(cond), "--mode", "json", "-p", prompt],
                   cwd=ws, env=env, timeout=RUN_TIMEOUT)
+
+
+    def usage(self, output):
+        """Sum the usage pi reports on each finished assistant message."""
+        tin = tout = turns = 0
+        for line in output.splitlines():
+            if '"message_end"' not in line or '"assistant"' not in line:
+                continue
+            try:
+                u = json.loads(line)["message"].get("usage") or {}
+            except (ValueError, KeyError):
+                continue
+            tin += u.get("input", 0) + u.get("cacheRead", 0)
+            tout += u.get("output", 0)
+            turns += 1
+        return {"turns": turns, "tokens_in": tin, "tokens_out": tout} if turns else {}
 
 
 class OpenHands(Harness):

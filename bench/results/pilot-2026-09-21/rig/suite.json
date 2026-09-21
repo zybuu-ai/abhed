@@ -1,0 +1,56 @@
+{
+ "pylint-dev__pylint-4604": [],
+ "pylint-dev__pylint-4970": [],
+ "pylint-dev__pylint-6386": [],
+ "pylint-dev__pylint-8898": [
+  "tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,"
+ ],
+ "pytest-dev__pytest-10051": [],
+ "pytest-dev__pytest-10081": [
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip.py-1",
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip_class.py-1",
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip_module.py-1"
+ ],
+ "pytest-dev__pytest-5631": [],
+ "pytest-dev__pytest-5787": [
+  "testing/code/test_excinfo.py::TestFormattedExcinfo::test_exc_chain_repr_without_traceback[cause-The",
+  "testing/code/test_excinfo.py::TestFormattedExcinfo::test_exc_chain_repr_without_traceback[context-During"
+ ],
+ "pytest-dev__pytest-5809": [],
+ "pytest-dev__pytest-5840": [],
+ "pytest-dev__pytest-6197": [
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-TypeError-*1",
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[(AttributeError,",
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexError-*1",
+  "testing/test_skipping.py::TestSkipif::test_skipif_reporting[\"hasattr(sys,",
+  "testing/test_skipping.py::TestSkipif::test_skipif_reporting[True,"
+ ],
+ "pytest-dev__pytest-6202": [],
+ "pytest-dev__pytest-7205": [],
+ "pytest-dev__pytest-7236": [
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip.py-1",
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip_class.py-1",
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip_module.py-1"
+ ],
+ "pytest-dev__pytest-7432": [
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-TypeError-*1",
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[(AttributeError,",
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexError-*1",
+  "testing/test_skipping.py::TestSkipif::test_skipif_reporting[\"hasattr(sys,",
+  "testing/test_skipping.py::TestSkipif::test_skipif_reporting[True,"
+ ],
+ "pytest-dev__pytest-7490": [
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-TypeError-*1",
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[(AttributeError,",
+  "testing/test_skipping.py::TestXFail::test_xfail_raises[TypeError-IndexError-*1",
+  "testing/test_skipping.py::TestSkipif::test_skipif_reporting[\"hasattr(sys,",
+  "testing/test_skipping.py::TestSkipif::test_skipif_reporting[True,"
+ ],
+ "pytest-dev__pytest-7571": [],
+ "pytest-dev__pytest-7982": [],
+ "pytest-dev__pytest-8399": [
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip.py-1",
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip_class.py-1",
+  "testing/test_unittest.py::test_setup_inheritance_skipping[test_setup_skip_module.py-1"
+ ]
+}
