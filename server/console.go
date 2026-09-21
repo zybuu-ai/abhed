@@ -174,6 +174,60 @@ button,select,textarea,input{font:inherit;color:inherit}
   font-family:var(--mono);font-size:10.5px;color:var(--accent);cursor:pointer}
 .openfile:hover{border-color:var(--accent);background:var(--accent-soft)}
 
+/* ------------------------------------------------------------ workbench */
+/* The workspace, read-only: a tree or the list of changed files on the left,
+   the file or its diff on the right. It borrows the drawer's column and takes
+   most of the width, because code needs more room than a tool result does. */
+@media (min-width:1181px){
+  .shell.open.wide{grid-template-columns:var(--rail) minmax(360px,32%) minmax(0,1fr)}
+}
+/* Between a phone and a wide screen there is room for the conversation or the
+   code, not both: squeezed beside it, the transcript wrapped a path one letter
+   to a line. The panel takes the stage's place until it is closed. */
+@media (min-width:761px) and (max-width:1180px){
+  .shell.open.wide{grid-template-columns:var(--rail) minmax(0,1fr)}
+  .shell.open.wide .stage{display:none}
+}
+.wbtabs{display:flex;gap:4px;flex:none}
+.wbtabs[hidden]{display:none}
+.wbtabs button[aria-selected="true"]{background:var(--accent-soft);
+  border-color:var(--accent);color:var(--accent)}
+.wb{display:grid;grid-template-columns:minmax(150px,32%) minmax(0,1fr);height:100%;min-height:0}
+.wb-side{overflow:auto;min-height:0;padding:6px 0;border-right:1px solid var(--line)}
+.wb-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.wb-view{flex:1;overflow:auto;min-height:0}
+.wb-bar{display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 12px;flex:none;
+  border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted)}
+.wb-bar .nm{flex:1;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wb-back{display:none}
+.wb-row{display:flex;align-items:center;gap:6px;width:100%;background:none;border:0;
+  text-align:left;padding:3px 10px;font-family:var(--mono);font-size:11.5px;
+  color:var(--ink-2);cursor:pointer;white-space:nowrap}
+.wb-row:hover{background:var(--sunken)}
+.wb-row[aria-current="true"]{background:var(--accent-soft);color:var(--accent)}
+.wb-row .tw{width:10px;flex:none;color:var(--muted)}
+.wb-row .nm{overflow:hidden;text-overflow:ellipsis}
+.wb-row .ct{margin-left:auto;flex:none;font-size:10.5px;color:var(--muted)}
+.wb-row .plus{color:var(--done)}
+.wb-row .minus{color:var(--error)}
+.wb-note{padding:10px 14px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.diff{padding:8px 0;font-family:var(--mono);font-size:11.5px;line-height:1.6;min-width:max-content}
+.diff div{padding:0 16px;white-space:pre;tab-size:4;color:var(--ink-2)}
+.diff .add{background:var(--done-bg);color:var(--done)}
+.diff .del{background:var(--error-bg);color:var(--error)}
+.diff .hunk{background:var(--accent-soft);color:var(--accent)}
+.diff .meta{color:var(--muted)}
+/* Two columns do not fit a phone, so it shows one at a time: the list, then
+   the file with a way back. */
+@media (max-width:760px){
+  .wb{grid-template-columns:minmax(0,1fr)}
+  .wb-side{border-right:0}
+  .wb-row{padding-top:9px;padding-bottom:9px;font-size:13px}
+  .wb .wb-main,.wb.viewing .wb-side{display:none}
+  .wb.viewing .wb-main{display:flex}
+  .wb-back{display:inline-block}
+}
+
 /* ---------------------------------------------------------------- composer */
 .composer{padding:11px;border-bottom:1px solid var(--line);flex:none}
 
@@ -282,7 +336,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .stage-head{height:38px;display:flex;align-items:center;gap:10px;padding:0 18px;
   border-bottom:1px solid var(--line);background:var(--surface);flex:none;
   font-family:var(--mono);font-size:11px;color:var(--muted)}
-.stage-head .id{color:var(--ink-2)}
+.stage-head .id{color:var(--ink-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stage-head .ghost{flex:none}
 .stage-head .spacer{flex:1}
 .ghost{background:none;border:1px solid var(--line);border-radius:5px;
   padding:3px 9px;font-family:var(--mono);font-size:10.5px;color:var(--ink-2);cursor:pointer}
@@ -583,6 +638,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     <div class="stage-head">
       <span class="id" id="sid">new chat</span>
       <span class="spacer"></span>
+      <button class="ghost" id="wbfiles" type="button" hidden>Files</button>
+      <button class="ghost" id="wbchanges" type="button" hidden>Changes</button>
       <button class="ghost" id="stop" hidden>Interrupt</button>
     </div>
     <div class="transcript" id="tx">
@@ -623,6 +680,11 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   <aside class="drawer" id="drawer" aria-hidden="true">
     <div class="drawer-head">
       <span class="name" id="dname"></span>
+      <span class="wbtabs" id="wbtabs" role="tablist" hidden>
+        <button class="ghost" id="tabfiles" type="button" role="tab">Files</button>
+        <button class="ghost" id="tabchanges" type="button" role="tab">Changes</button>
+        <button class="ghost" id="wbreload" type="button" title="Reload">&#8635;</button>
+      </span>
       <span class="kind" id="dkind"></span>
       <button class="x" id="dclose" type="button" title="Close" aria-label="Close">×</button>
     </div>
@@ -903,6 +965,10 @@ function openSession(id, state){
   $('tx').textContent = '';
   $('sid').textContent = id;
   $('stop').hidden = false;
+  $('wbfiles').hidden = $('wbchanges').hidden = false;
+  // The panel shows one session's workspace and changes, so it follows the
+  // session rather than going on showing the last one's.
+  if(wb.open) openWorkbench(wb.tab);
   refresh();
   connect(id);
 }
@@ -921,6 +987,7 @@ function connect(id){
     if(ev.seq <= lastSeq) return;
     lastSeq = ev.seq;
     render(ev);
+    workbenchSaw(ev);
     };
 
   es.onerror = () => {
@@ -1612,6 +1679,7 @@ function newChat(){
   Object.assign(stats, {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compactions:0, ctx:0, ctxWindow:0});
   $('sid').textContent = 'new chat';
   $('stop').hidden = true;
+  $('wbfiles').hidden = $('wbchanges').hidden = true;
   closeDrawer();
   drawEmpty();
   refresh();
@@ -1629,6 +1697,7 @@ $('q').addEventListener('input', autogrow);
 
 /* ---------------------------------------------------------------- drawer */
 function openDrawer(name, kind, body, numbered){
+  leaveWorkbench();
   $('dname').textContent = name;
   $('dkind').textContent = kind || '';
   const pre = document.createElement('pre');
@@ -1656,11 +1725,234 @@ function openDrawer(name, kind, body, numbered){
 }
 
 function closeDrawer(){
+  leaveWorkbench();
   document.querySelector('.shell').classList.remove('open');
   $('drawer').setAttribute('aria-hidden','true');
 }
 $('dclose').onclick = closeDrawer;
 document.addEventListener('keydown', e => { if(e.key === 'Escape') closeDrawer(); });
+
+/* ------------------------------------------------------------- workbench */
+// The workspace as the agent left it: the tree, one file, what changed.
+// Read-only. A file's content is whatever the agent or a cloned repository
+// put there, so it only ever reaches the page as text nodes.
+const wb = {open:false, tab:'files', timer:null};
+
+function wbURL(what, path){
+  return '/v1/sessions/' + encodeURIComponent(current) + '/' + what +
+    (path === undefined ? '' : '?path=' + encodeURIComponent(path));
+}
+
+function leaveWorkbench(){
+  wb.open = false;
+  clearTimeout(wb.timer);
+  $('wbtabs').hidden = true;
+  document.querySelector('.shell').classList.remove('wide');
+}
+
+function openWorkbench(tab){
+  if(!current) return;
+  wb.open = true; wb.tab = tab;
+  $('dname').textContent = 'Workspace';
+  $('dkind').textContent = '';
+  $('wbtabs').hidden = false;
+  $('tabfiles').setAttribute('aria-selected', String(tab === 'files'));
+  $('tabchanges').setAttribute('aria-selected', String(tab === 'changes'));
+
+  const frame = node('wb'), side = node('wb-side'), main = node('wb-main');
+  frame.id = 'wb'; side.id = 'wbside'; main.id = 'wbmain';
+  frame.append(side, main);
+  main.appendChild(node('wb-note', tab === 'files'
+    ? 'Pick a file to read it.' : 'Pick a file to see what the agent changed.'));
+  const host = $('dbody');
+  host.textContent = '';
+  host.appendChild(frame);
+  document.querySelector('.shell').classList.add('open', 'wide');
+  $('drawer').setAttribute('aria-hidden', 'false');
+  if(tab === 'files') loadDir('', side, 0); else loadChanges();
+}
+$('wbfiles').onclick = () => openWorkbench('files');
+$('wbchanges').onclick = () => openWorkbench('changes');
+$('tabfiles').onclick = () => openWorkbench('files');
+$('tabchanges').onclick = () => openWorkbench('changes');
+$('wbreload').onclick = () => openWorkbench(wb.tab);
+
+// While the agent works, the list of changes goes stale with every edit.
+// Reloading on a tool result keeps it honest; the delay folds a burst of
+// edits into one request.
+function workbenchSaw(ev){
+  if(!wb.open || wb.tab !== 'changes') return;
+  if(ev.type !== 'observation' && ev.type !== 'session.ended') return;
+  clearTimeout(wb.timer);
+  wb.timer = setTimeout(() => { if(wb.open && wb.tab === 'changes') loadChanges(); }, 600);
+}
+
+function wbRow(depth, twisty, name){
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'wb-row';
+  b.style.paddingLeft = (10 + depth * 12) + 'px';
+  const tw = document.createElement('span'); tw.className = 'tw'; tw.textContent = twisty;
+  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name;
+  b.append(tw, nm);
+  return b;
+}
+
+function wbSelect(row){
+  for(const el of document.querySelectorAll('#wbside .wb-row[aria-current]')) el.removeAttribute('aria-current');
+  row.setAttribute('aria-current', 'true');
+}
+
+// One directory per request, fetched when it is first opened.
+async function loadDir(path, host, depth){
+  const session = current;
+  let listing;
+  try{ listing = await api(wbURL('tree', path)); }
+  catch(e){ host.appendChild(node('wb-note', e.message)); return; }
+  if(session !== current || !host.isConnected) return;
+  if(!listing.entries.length && depth === 0) host.appendChild(node('wb-note', 'The workspace is empty.'));
+  for(const e of listing.entries){
+    const row = wbRow(depth, e.dir ? '▸' : '', e.name);
+    host.appendChild(row);
+    if(!e.dir){
+      row.title = e.path + ' · ' + fmtSize(e.size);
+      row.onclick = () => { wbSelect(row); viewFile(e.path); };
+      continue;
+    }
+    const kids = node('');
+    kids.hidden = true;
+    host.appendChild(kids);
+    let loaded = false;
+    row.setAttribute('aria-expanded', 'false');
+    row.onclick = () => {
+      kids.hidden = !kids.hidden;
+      row.firstChild.textContent = kids.hidden ? '▸' : '▾';
+      row.setAttribute('aria-expanded', String(!kids.hidden));
+      if(!loaded){ loaded = true; loadDir(e.path, kids, depth + 1); }
+    };
+  }
+  if(listing.truncated){
+    const note = node('wb-note', 'Only the first ' + listing.entries.length + ' entries are listed.');
+    note.style.paddingLeft = (10 + depth * 12) + 'px';
+    host.appendChild(note);
+  }
+}
+
+function fmtSize(n){
+  if(n < 1024) return n + ' B';
+  if(n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+
+// wbShow puts a titled view in the main pane and returns the element to fill.
+function wbShow(name, meta){
+  const main = $('wbmain');
+  if(!main) return null;
+  main.textContent = '';
+  const bar = node('wb-bar');
+  const back = document.createElement('button');
+  back.type = 'button'; back.className = 'ghost wb-back'; back.textContent = '← Back';
+  back.onclick = () => $('wb').classList.remove('viewing');
+  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; nm.title = name;
+  const mt = document.createElement('span'); mt.textContent = meta || '';
+  bar.append(back, nm, mt);
+  const view = node('wb-view');
+  main.append(bar, view);
+  $('wb').classList.add('viewing');
+  return view;
+}
+
+async function viewFile(path){
+  const session = current;
+  let f;
+  try{ f = await api(wbURL('file', path)); }
+  catch(e){
+    const view = wbShow(path, '');
+    if(view) view.appendChild(node('wb-note', e.message));
+    return;
+  }
+  if(session === current) showFile(f);
+}
+
+function showFile(f){
+  const view = wbShow(f.path, fmtSize(f.size));
+  if(!view) return;
+  if(f.binary){
+    view.appendChild(node('wb-note', 'Binary file. It is not shown here.'));
+    return;
+  }
+  if(f.truncated){
+    view.appendChild(node('wb-note', 'This file is ' + fmtSize(f.size) +
+      '. Only the first ' + fmtSize(f.content.length) + ' are shown.'));
+  }
+  const pre = document.createElement('pre');
+  const lines = f.content.split('\n');
+  if(lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  lines.forEach((line, i) => {
+    const g = document.createElement('span');
+    g.className = 'ln'; g.textContent = String(i + 1);
+    pre.append(g, document.createTextNode(line + '\n'));
+  });
+  view.appendChild(pre);
+}
+
+async function loadChanges(){
+  const session = current;
+  const side = $('wbside');
+  if(!side) return;
+  let res;
+  try{ res = await api(wbURL('changes')); }
+  catch(e){ side.textContent = ''; side.appendChild(node('wb-note', e.message)); return; }
+  if(session !== current || !side.isConnected) return;
+  const selected = (side.querySelector('.wb-row[aria-current]') || {}).title;
+  side.textContent = '';
+  if(!res.available){
+    side.appendChild(node('wb-note', 'Changes are kept while a session is live on this ' +
+      'server. This one was opened from its record, so there is nothing to compare against.'));
+    return;
+  }
+  if(!res.files.length){
+    side.appendChild(node('wb-note', 'The agent has not changed any files in this session.'));
+    return;
+  }
+  for(const f of res.files){
+    const mark = {added:'A', deleted:'D'}[f.status] || 'M';
+    const row = wbRow(0, mark, f.path);
+    row.title = f.path;
+    const ct = document.createElement('span'); ct.className = 'ct';
+    const plus = document.createElement('span'); plus.className = 'plus'; plus.textContent = '+' + f.added;
+    const minus = document.createElement('span'); minus.className = 'minus'; minus.textContent = '−' + f.removed;
+    ct.append(plus, document.createTextNode(' '), minus);
+    row.appendChild(ct);
+    row.onclick = () => { wbSelect(row); viewDiff(f); };
+    side.appendChild(row);
+    // A reload keeps the file being read open, with its diff brought up to date.
+    if(f.path === selected){ wbSelect(row); viewDiff(f); }
+  }
+}
+
+function viewDiff(f){
+  const view = wbShow(f.path, f.status);
+  if(!view) return;
+  if(!f.diff){
+    view.appendChild(node('wb-note', f.note ? 'No diff: ' + f.note + '.' : 'No textual change.'));
+    return;
+  }
+  const box = node('diff');
+  f.diff.replace(/\n$/, '').split('\n').forEach((line, i) => {
+    // The two header lines are told apart by position: a removed line that
+    // itself starts with "--" looks exactly like one.
+    box.appendChild(node(i < 2 ? 'meta' : diffClass(line), line));
+  });
+  view.appendChild(box);
+}
+
+function diffClass(line){
+  if(line.startsWith('\\')) return 'meta';
+  if(line.startsWith('@@')) return 'hunk';
+  if(line.startsWith('+')) return 'add';
+  if(line.startsWith('-')) return 'del';
+  return '';
+}
 
 // The empty state is authored once, in the page markup, and captured here so
 // "New chat" restores exactly what the page loaded with — the same mark, the

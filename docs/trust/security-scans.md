@@ -254,7 +254,7 @@ finding, or a new one once it has been triaged here, is followed by
 | G304 | 24 | Potential file inclusion via variable |
 | G204 | 12 | Subprocess launched with a variable |
 | G115 | 8 | Integer overflow on type conversion |
-| G703 | 6 | Path traversal (taint analysis) |
+| G703 | 7 | Path traversal (taint analysis) |
 | G306 | 6 | File written with permissions looser than 0600 |
 | G118 | 6 | Goroutine uses `context.Background`/`TODO` where a request context is available |
 | G301 | 5 | Directory created with permissions looser than 0750 |
@@ -374,6 +374,18 @@ findings are genuine, if minor, misses.
 |---|---|---|
 | cmd/abhed/main.go:1665, :1769 | `int32(cfg.Storage.MaxConns)` (2 call sites) | False positive — small operator-set config integer, no realistic overflow path |
 | internal/agent/id.go:46-51 | `byte(ms >> N)` truncating a millisecond timestamp into an ID (6 call sites) | False positive — deliberate, documented bit-packing to build a sortable ID |
+
+#### G703 in the console's file viewer (`server/workbench.go`, `resolve`)
+
+gosec flags `os.Stat(real)` because `real` derives from a request parameter.
+**False positive.** The stat is the last thing `resolve` does, after the path
+has gone through `tools.Session.Resolve`, had its symlinks followed, and been
+checked with `filepath.IsLocal` against the resolved workspace root, and after
+`.git`, `node_modules` and `.abhed` have been refused. It only asks whether the
+path is a directory so the policy check can be put correctly. The read itself
+goes through `os.Root`, which refuses a path that escapes even if a link is
+swapped in after the check. `TestWorkbenchRefusesPathsOutsideTheWorkspace`
+covers `../`, an absolute path outside, and a symlinked file and directory.
 
 #### HawkEYE — three findings from the session report (G203, G304, G705)
 

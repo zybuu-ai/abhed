@@ -45,6 +45,9 @@ func NewUndoLog() *UndoLog { return &UndoLog{} }
 // of edits rather than one file at a time. A model that edits four files to
 // make one change should undo as one change.
 func (u *UndoLog) BeginTurn() {
+	if u == nil {
+		return
+	}
 	u.mu.Lock()
 	u.turn++
 	u.mu.Unlock()

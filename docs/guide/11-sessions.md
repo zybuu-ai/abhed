@@ -95,6 +95,40 @@ ends, is recorded as interrupted, and the session can be continued from
 there. High availability of *sessions* is this; high availability of
 *turns in flight* is not something Abhed claims.
 
+## Reading the workspace and what changed
+
+With a chat open, **Files** and **Changes** in the console open a panel beside
+the conversation: the workspace as a tree, any file in it, and a diff of every
+file the agent has changed in this session against what it held before the
+first edit. The same is available over the API:
+
+```bash
+curl -s "$B/v1/sessions/$SID/tree?path=cmd"        # one directory, folders first
+curl -s "$B/v1/sessions/$SID/file?path=cmd/main.go"
+curl -s  $B/v1/sessions/$SID/changes               # unified diffs
+```
+
+It is read-only. Nothing can be edited or saved from the browser: a change to
+the workspace that no event accounts for would make the record incomplete.
+
+What it will not show:
+
+- anything outside the workspace, by `..`, by an absolute path, or through a
+  symlink. The answer is `404`, the same as for a file that is not there.
+- anything a `deny` or `ask` rule on `read` covers — `read(**/.env)`,
+  `read(**/.ssh/**)`. The viewer is held to the rules the agent is; those
+  files are left out of the tree and refused with `403`.
+- `.git`, `node_modules`, and `.abhed`, which holds the server's own
+  configuration and password hashes.
+- more than 512 KB of one file (`truncated` is set), or a binary file's bytes
+  (`binary` is set and there is no content).
+
+**Changes** covers edits made with the `write` and `edit` tools. A file the
+agent changed through `bash` is not listed. The originals are kept in memory
+with the running session, so a session reopened from its record after a
+restart reports `"available": false` rather than an empty list, and once it is
+continued it lists changes from that point on.
+
 ## Deleting a chat
 
 In the console, hover a chat in the list (or focus it with the keyboard) and

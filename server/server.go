@@ -253,7 +253,10 @@ type liveSession struct {
 	// It mirrors the CLI's session AllowList; without it the console asked
 	// again on every mutating tool with no way to say "don't ask again".
 	allowed map[string]bool
-	mu      sync.Mutex
+	// undo holds each file's content from before the agent first changed it,
+	// which is what the console's changes view diffs against.
+	undo *agent.UndoLog
+	mu   sync.Mutex
 }
 
 type pendingApproval struct {
@@ -315,6 +318,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/events", s.streamEvents)
 	mux.HandleFunc("GET /v1/sessions/{id}/replay", s.replaySession)
 	mux.HandleFunc("GET /v1/sessions/{id}/hawkeye", s.hawkeyeSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/tree", s.treeSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/file", s.fileSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/changes", s.changesSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -769,6 +775,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 
 	go func() {
 		defer cancel()
+		live.undo.BeginTurn()
 		reason, err := loop.Run(runCtx, spec.Prompt)
 		stopBeat()
 		live.mu.Lock()
@@ -825,6 +832,8 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	}
 
 	pol := s.newPolicy(policy.Mode(mode))
+	undo := agent.NewUndoLog()
+	sess.Checkpoint = undo.Record
 
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
@@ -832,6 +841,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approvals: make(chan approvalReply, 1),
 		allowed:   map[string]bool{},
 		durable:   s.approvalStore(),
+		undo:      undo,
 	}
 
 	cfg := agent.DefaultConfig()
@@ -1320,6 +1330,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
+		live.undo.BeginTurn()
 		reason, err := live.Loop.Continue(ctx, req.Prompt)
 		live.mu.Lock()
 		live.State = "done"
