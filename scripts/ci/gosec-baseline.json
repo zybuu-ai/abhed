@@ -64,6 +64,7 @@
  "G703 auth/filestore.go": 3,
  "G703 internal/k8s/client.go": 1,
  "G703 server/upload.go": 2,
+ "G703 server/workbench.go": 1,
  "G704 internal/remote/ssh.go": 1,
  "G705 server/server.go": 1,
  "G710 server/security.go": 1
