@@ -38,6 +38,12 @@ jobs:
         with:
           go-version: "1.26"
 
+      # The process tier is bubblewrap on Linux. Without it the sandbox tests
+      # skip, and the filesystem, egress and credential boundaries the trust
+      # docs call verified would go unexercised on the platform that ships.
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
 

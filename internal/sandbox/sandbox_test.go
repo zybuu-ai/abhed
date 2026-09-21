@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -39,7 +40,31 @@ func processSandbox(t *testing.T, ws string, allowNet bool) Sandbox { //nolint:u
 	if ok, why := s.Available(); !ok {
 		t.Skipf("process sandbox unavailable: %s", why)
 	}
+	if !allowNet {
+		requireNetNS(t)
+	}
 	return s
+}
+
+// A sandbox that denies network unshares the net namespace, and a container
+// without CAP_NET_ADMIN cannot bring up loopback inside one. That is the
+// environment's limit, not a broken boundary, so the test skips rather than
+// reporting a failure the sandbox did not cause. It must never be answered by
+// letting the network through: that is the downgrade Select refuses.
+func requireNetNS(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bwrap", "--unshare-net",
+		"--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
+		"--ro-bind", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
+		"/bin/true").CombinedOutput()
+	if err != nil {
+		t.Skipf("this environment cannot unshare the network namespace: %v\n%s", err, out)
+	}
 }
 
 func TestProcessSandboxAllowsWorkspaceWrite(t *testing.T) {
