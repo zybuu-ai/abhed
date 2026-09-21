@@ -21,6 +21,7 @@ nothing must score 0 and one that applies the gold patch must score 100
     rig.py models --base gemma4:26b   write the Ollama variants per condition
     rig.py doctor --harness abhed     can this harness use a tool on this model?
     rig.py run --date 2026-10-01 --runs 3
+    rig.py watch --date 2026-10-01    live progress, from another terminal
     rig.py summarize --date 2026-10-01
 
 Standard library only, so it runs wherever Python does.
@@ -442,7 +443,7 @@ def one_run(hname, iid, cond, out_path):
     # The agent's change, as a patch, before the gold tests are laid over it.
     sh(["git", "add", "-A"], cwd=ws)
     _, diff = sh(["git", "diff", "--cached", "HEAD", "--", ".", ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
-    result = {"harness": hname, "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
+    result = {"harness": hname, "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
               "wall_sec": round(elapsed, 1), "patch_bytes": len(diff), "patch": diff[-20000:],
               "usage": h.usage(output), "output_tail": output[-3000:],
               "score": score(iid, ws, inst, skip=suite().get(iid, []))}
@@ -511,12 +512,95 @@ def run(args):
     # results: which instances, and which drifted tests were set aside.
     (RESULTS / args.date / "rig").mkdir(parents=True, exist_ok=True)
     (RESULTS / args.date / "rig" / "suite.json").write_text(json.dumps(suite(), indent=1))
+    (RESULTS / args.date / "rig" / "plan.json").write_text(json.dumps(
+        {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT,
+         "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
     for i, (r, iid, cond, n) in enumerate(plan, 1):
         out = RESULTS / args.date / "rig" / n / cond / f"run{r}" / f"{iid}.json"
         if out.exists() and not args.force:
             continue
         res = one_run(n, iid, cond, out)
         print(f"[{i}/{len(plan)}] {n:9} {cond:5} run{r} {iid}  resolved={res['score']['resolved']}  {res['wall_sec']}s", flush=True)
+
+
+# ---------------------------------------------------------------- watch
+
+def _hms(sec):
+    sec = int(sec)
+    return f"{sec // 3600}h{sec % 3600 // 60:02d}m" if sec >= 3600 else f"{sec // 60}m{sec % 60:02d}s"
+
+
+def _current():
+    """The session in flight, read from the scratch directory it works in."""
+    scratch = CACHE / "scratch"
+    names = "|".join(sorted(HARNESSES, key=len, reverse=True))
+    conds = "|".join(CONDITIONS)
+    for d in sorted(scratch.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
+        m = re.fullmatch(rf"({names})-({conds})-(.+)", d.name)
+        if m and d.is_dir():
+            return d, m.group(1), m.group(2), m.group(3)
+    return None
+
+
+def snapshot(date):
+    root = RESULTS / date / "rig"
+    done = [json.loads(p.read_text()) for p in root.glob("*/*/run*/*.json")]
+    plan = json.loads((root / "plan.json").read_text()) if (root / "plan.json").exists() else None
+    total = len(plan["sessions"]) if plan else None
+    alive = subprocess.run(["pgrep", "-f", f"rig.py run --date {date}"], stdout=subprocess.PIPE).returncode == 0
+
+    out = [f"rig · {date} · {'running' if alive else 'not running'}", ""]
+    bar = ""
+    if total:
+        filled = 30 * len(done) // total
+        bar = f"  [{'█' * filled}{'·' * (30 - filled)}]"
+    out.append(f"  sessions  {len(done)}{f' of {total}' if total else ''} finished{bar}")
+    if done:
+        walls = [r["wall_sec"] for r in done]
+        out.append(f"  timing    mean {_hms(statistics.mean(walls))} · longest {_hms(max(walls))} · "
+                   f"{sum(r['timed_out'] for r in done)} timed out")
+        if total and alive:
+            out.append(f"  remaining about {_hms(statistics.mean(walls) * (total - len(done)))} at this pace")
+
+    cur = _current() if alive else None
+    if cur:
+        d, h, cond, iid = cur
+        out += ["", f"  now       {h} · {cond} · {iid}   ({_hms(time.time() - d.stat().st_ctime)} of {_hms(RUN_TIMEOUT)} allowed)"]
+        _, diff = sh(["git", "diff", "--stat", "HEAD"], cwd=d, timeout=20)
+        changed = [ln.strip() for ln in diff.strip().splitlines() if "|" in ln]
+        out.append(f"  editing   {', '.join(c.split('|')[0].strip() for c in changed[:4]) or 'nothing changed yet'}")
+
+    if done:
+        cells = {}
+        for r in done:
+            c = cells.setdefault((r["harness"], r["condition"]), [0, 0, 0.0])
+            c[0] += r["score"]["resolved"]
+            c[1] += 1
+            c[2] += r["wall_sec"]
+        out += ["", "  harness    window  resolved   mean time"]
+        for (h, cond), (ok, n, wall) in sorted(cells.items()):
+            out.append(f"  {h:10} {cond:6}  {ok:>3} / {n:<3}   {_hms(wall / n)}")
+        out += ["", "  last finished"]
+        for r in sorted(done, key=lambda r: r.get("finished", ""))[-5:]:
+            mark = "✓" if r["score"]["resolved"] else ("⏱" if r["timed_out"] else "✗")
+            out.append(f"  {mark} {r['harness']:10} {r['condition']:6} {r['instance']:32} {_hms(r['wall_sec'])}  "
+                       f"f2p {r['score'].get('f2p', '-')}")
+        out += ["", "  Counts from a few sessions are not a result. `summarize` reports intervals."]
+    return "\n".join(out)
+
+
+def watch(args):
+    if args.once:
+        print(snapshot(args.date))
+        return
+    try:
+        while True:
+            text = snapshot(args.date)
+            sys.stdout.write("\033[2J\033[H" + text + f"\n\n  refreshing every {args.every}s · ctrl-c to leave (the run carries on)\n")
+            sys.stdout.flush()
+            time.sleep(args.every)
+    except KeyboardInterrupt:
+        print()
 
 
 # ---------------------------------------------------------------- statistics
@@ -603,6 +687,9 @@ def main():
     p.add_argument("--limit", type=int); p.add_argument("--seed", type=int, default=1); p.add_argument("--force", action="store_true")
     p.set_defaults(fn=run)
     p = sub.add_parser("summarize"); p.add_argument("--date", required=True); p.set_defaults(fn=summarize)
+    p = sub.add_parser("watch", help="live progress of a run")
+    p.add_argument("--date", required=True); p.add_argument("--every", type=int, default=10)
+    p.add_argument("--once", action="store_true", help="print one snapshot and exit"); p.set_defaults(fn=watch)
     args = ap.parse_args()
     args.fn(args)
 
