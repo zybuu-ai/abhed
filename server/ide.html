@@ -807,7 +807,9 @@ function drawPal(){
   const words = $('palq').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const order = {file:0, command:1, session:2};
   palHits = palItems().filter(i => words.every(w => (i.l + ' ' + i.h + ' ' + i.k).toLowerCase().includes(w)));
-  if(words.length) palHits.sort((a, b) => order[a.k] - order[b.k]);
+  // A match in the file's own name beats one somewhere up its path.
+  const inName = i => i.k === 'file' && words.every(w => i.l.split('/').pop().toLowerCase().includes(w)) ? 0 : 1;
+  if(words.length) palHits.sort((a, b) => order[a.k] - order[b.k] || inName(a) - inName(b));
   palHits = palHits.slice(0, 60);
   palSel = Math.min(palSel, Math.max(0, palHits.length - 1)); const box = $('pall'); clear(box);
   palHits.forEach((i, n) => { const b = el('button'); b.type = 'button'; b.setAttribute('aria-selected', String(n === palSel));
