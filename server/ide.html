@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Abhed</title>
+<style>
+:root{
+  --bg:#F4F6FA; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#E9EDF4; --chrome:#EDF1F7;
+  --line:#DCE3EC; --line-strong:#C4CFDD;
+  --ink:#0F141B; --ink-2:#3A4757; --muted:#697786;
+  --accent:#0F63C4; --accent-soft:#E2EDFB;
+  --ok:#1A7F4B; --ok-bg:#E3F3EA; --warn:#9A6A16; --warn-bg:#FAF0DC; --bad:#C0392F; --bad-bg:#FBE9E7;
+  --add:#1A7F4B; --add-bg:#E6F4EC; --del:#B3362C; --del-bg:#FBEAE8; --hunk-bg:#E8F0FB;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,Roboto,sans-serif;
+  --side:280px; --agent:420px; --panel:220px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#070B12; --surface:#0C121C; --raised:#141D2B; --sunken:#080D15; --chrome:#0A0F18;
+    --line:#1E2633; --line-strong:#303B4C;
+    --ink:#E8EDF4; --ink-2:#BAC6D4; --muted:#7F8C9E;
+    --accent:#3BA9FF; --accent-soft:#0B2540;
+    --ok:#3FAF6C; --ok-bg:#0F2419; --warn:#D4A03C; --warn-bg:#241C0C; --bad:#E05A52; --bad-bg:#2A1412;
+    --add:#56C486; --add-bg:#0E2418; --del:#F0736A; --del-bg:#2A1311; --hunk-bg:#0C2038;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#070B12; --surface:#0C121C; --raised:#141D2B; --sunken:#080D15; --chrome:#0A0F18;
+  --line:#1E2633; --line-strong:#303B4C;
+  --ink:#E8EDF4; --ink-2:#BAC6D4; --muted:#7F8C9E;
+  --accent:#3BA9FF; --accent-soft:#0B2540;
+  --ok:#3FAF6C; --ok-bg:#0F2419; --warn:#D4A03C; --warn-bg:#241C0C; --bad:#E05A52; --bad-bg:#2A1412;
+  --add:#56C486; --add-bg:#0E2418; --del:#F0736A; --del-bg:#2A1311; --hunk-bg:#0C2038;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+button:focus-visible,[tabindex]:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+[hidden]{display:none!important}
+.mono{font-family:var(--mono)}
+.dim{color:var(--muted)}
+
+/* ------------------------------------------------------------ shell */
+#app{display:grid;height:100%;grid-template-rows:38px minmax(0,1fr) 24px;
+  grid-template-columns:48px var(--side) 4px minmax(0,1fr) 4px var(--agent)}
+#app.noside{grid-template-columns:48px 0 0 minmax(0,1fr) 4px var(--agent)}
+#app.noside #side,#app.noside #split-side{display:none}
+#title{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--chrome);border-bottom:1px solid var(--line)}
+#title .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.01em}
+#title .brand svg{width:18px;height:18px;color:var(--accent)}
+#title .ws{font:12px var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#palette-open{margin:0 auto;display:flex;align-items:center;gap:8px;min-width:0;width:min(440px,40vw);height:26px;padding:0 10px;
+  border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--muted);font-size:12px}
+#palette-open kbd{margin-left:auto}
+kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);border-radius:4px;color:var(--muted);background:var(--sunken)}
+#title .right{display:flex;align-items:center;gap:10px;font:12px var(--mono);color:var(--muted)}
+#title a{color:var(--muted);text-decoration:none}#title a:hover{color:var(--ink)}
+
+#act{grid-row:2;background:var(--chrome);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:6px 0;gap:2px}
+#act button{width:40px;height:40px;display:grid;place-items:center;border-radius:6px;color:var(--muted);position:relative}
+#act button svg{width:20px;height:20px}
+#act button:hover{color:var(--ink);background:var(--sunken)}
+#act button[aria-pressed="true"]{color:var(--accent)}
+#act button[aria-pressed="true"]::before{content:"";position:absolute;left:-4px;top:8px;bottom:8px;width:2px;background:var(--accent);border-radius:2px}
+#act .badge{position:absolute;right:3px;top:4px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--accent);color:#fff;font:600 10px/15px var(--sans);text-align:center}
+#act .badge.warn{background:var(--warn)}
+#act .grow{flex:1}
+
+#side{grid-row:2;min-width:0;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+.view{display:flex;flex-direction:column;min-height:0;flex:1}
+.vhead{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;font:600 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);flex:none}
+.vhead .sp{flex:1}
+.vhead button{font:12px var(--sans);text-transform:none;letter-spacing:0;color:var(--muted);padding:2px 6px;border-radius:4px}
+.vhead button:hover{background:var(--sunken);color:var(--ink)}
+.vbody{overflow:auto;flex:1;min-height:0;padding-bottom:12px}
+.group{padding:10px 12px 4px;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);display:flex;gap:6px;align-items:baseline}
+.group .n{font-weight:400;letter-spacing:0}
+.row{display:flex;align-items:center;gap:8px;width:100%;padding:4px 12px;text-align:left;min-height:26px}
+.row:hover{background:var(--sunken)}
+.row[aria-current="true"]{background:var(--accent-soft)}
+.row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .meta{font:11px var(--mono);color:var(--muted);flex:none}
+.tree .row{font-family:var(--mono);font-size:12px}
+.tw{width:10px;flex:none;color:var(--muted);font-size:9px}
+.st{width:14px;flex:none;font:600 11px var(--mono);text-align:center}
+.st.M{color:var(--warn)}.st.A{color:var(--add)}.st.D{color:var(--del)}
+.plus{color:var(--add)}.minus{color:var(--del)}
+.dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.dot.running{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}
+.card{margin:6px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
+.card .t{display:flex;gap:8px;align-items:baseline}
+.card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
+.card p{margin:4px 0 0;color:var(--ink-2);font-size:12px;overflow-wrap:anywhere}
+.pill{font:10px/1 var(--mono);padding:3px 6px;border-radius:10px;border:1px solid var(--line-strong);color:var(--muted);white-space:nowrap;flex:none}
+.pill.mut{color:var(--warn);border-color:var(--warn)}.pill.ro{color:var(--ok);border-color:var(--ok)}
+.pill.on{color:var(--ok);border-color:var(--ok)}
+.rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
+.rules div{padding:2px 0}.rules .k{display:inline-block;width:44px;color:var(--muted)}
+.empty{margin:8px 12px;padding:10px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--muted);font-size:12px}
+.empty code{font:11px var(--mono);color:var(--ink-2)}
+.primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:#fff;font-weight:600;flex:none}
+.primary:hover{filter:brightness(1.08)}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:1px;margin:6px 12px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--line)}
+.kv div{background:var(--raised);padding:7px 9px}.kv dt{font:10px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.kv dd{margin:2px 0 0;font:500 14px var(--mono);font-variant-numeric:tabular-nums}
+.finding{margin:6px 12px;padding:8px 10px;border-left:3px solid var(--muted);background:var(--raised);border-radius:0 6px 6px 0}
+.finding.warn{border-color:var(--warn)}.finding.critical{border-color:var(--bad)}
+.finding b{font-size:12px}.finding p{margin:3px 0 0;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.pbody .finding{margin:0 0 8px;font-family:var(--sans)}
+
+.split{grid-row:2;cursor:col-resize;background:transparent}
+.split:hover,.split.drag{background:var(--accent)}
+#split-panel{height:4px;cursor:row-resize;flex:none}
+
+/* ------------------------------------------------------------ centre */
+#center{grid-row:2;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+#tabs{display:flex;height:34px;flex:none;background:var(--chrome);border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tab{display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border-right:1px solid var(--line);font:12px var(--mono);color:var(--muted);white-space:nowrap;max-width:240px;cursor:pointer}
+.tab .nm{overflow:hidden;text-overflow:ellipsis}
+.tab[aria-selected="true"]{background:var(--bg);color:var(--ink);box-shadow:inset 0 2px 0 var(--accent)}
+.tab .x{width:16px;height:16px;border-radius:3px;display:grid;place-items:center;color:var(--muted);font-size:14px;line-height:1}
+.tab .x:hover{background:var(--sunken);color:var(--ink)}
+.tab .k{font-size:10px;padding:1px 4px;border-radius:3px;background:var(--hunk-bg);color:var(--accent)}
+#crumbs{height:24px;flex:none;display:flex;align-items:center;gap:6px;padding:0 14px;font:11px var(--mono);color:var(--muted);border-bottom:1px solid var(--line);background:var(--bg);white-space:nowrap;overflow:hidden}
+#crumbs .sp{flex:1}
+#editor{flex:1;min-height:0;overflow:auto;background:var(--bg)}
+.code{display:grid;grid-template-columns:auto minmax(0,1fr);font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
+.code .ln{padding:0 12px 0 16px;text-align:right;color:var(--muted);user-select:none;font-variant-numeric:tabular-nums;opacity:.7;white-space:pre}
+.code .tx{padding-right:24px;white-space:pre;tab-size:4}
+.diff{font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
+.diff div{padding:0 16px;white-space:pre;tab-size:4}
+.diff .add{background:var(--add-bg);color:var(--add)}.diff .del{background:var(--del-bg);color:var(--del)}
+.diff .hunk{background:var(--hunk-bg);color:var(--accent);margin-top:6px}.diff .hdr{color:var(--muted)}
+.note{margin:24px;color:var(--muted)}
+#welcome{max-width:620px;margin:0 auto;padding:56px 24px;color:var(--ink-2)}
+#welcome h1{font:600 22px/1.2 var(--sans);color:var(--ink);margin:0 0 6px;text-wrap:balance}
+#welcome p{margin:0 0 22px;max-width:60ch}
+#welcome dl{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;margin:0;font-size:12.5px}
+#welcome dt{display:flex;gap:4px;justify-content:flex-end}#welcome dd{margin:0}
+
+#panel{flex:none;height:var(--panel);display:flex;flex-direction:column;border-top:1px solid var(--line);background:var(--surface);min-height:0}
+#app.nopanel #panel,#app.nopanel #split-panel{display:none}
+#ptabs{display:flex;align-items:center;gap:2px;height:30px;flex:none;padding:0 8px;border-bottom:1px solid var(--line)}
+#ptabs button{padding:4px 10px;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid transparent;height:30px}
+#ptabs button[aria-selected="true"]{color:var(--ink);border-color:var(--accent)}
+#ptabs .sp{flex:1}#ptabs .n{font-weight:400;letter-spacing:0;margin-left:4px}
+.pbody{flex:1;min-height:0;overflow:auto;font:12px/1.55 var(--mono);padding:8px 12px}
+.cmd{margin:0 0 10px}.cmd .p{color:var(--accent);white-space:pre-wrap;overflow-wrap:anywhere}
+.cmd .p::before{content:"$ ";color:var(--muted)}
+.cmd .o{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink-2);max-height:260px;overflow:auto}
+.cmd .o.err{color:var(--bad)}.cmd .x{color:var(--muted);font-size:11px}
+.evt{display:grid;grid-template-columns:44px 150px minmax(0,1fr);gap:10px;padding:1px 0}
+.evt .s{color:var(--muted);text-align:right}.evt .ty{color:var(--accent)}.evt .d{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.evt.untrusted .ty{color:var(--warn)}
+
+/* ------------------------------------------------------------ agent */
+#agent{grid-row:2;min-width:0;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--line)}
+#ahead{display:flex;align-items:center;gap:8px;height:34px;flex:none;padding:0 10px 0 12px;border-bottom:1px solid var(--line)}
+#ahead .ttl{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#ahead button{font-size:12px;padding:3px 8px;border:1px solid var(--line-strong);border-radius:5px;color:var(--ink-2)}
+#ahead button:hover{background:var(--sunken)}
+#ahead #stop{color:var(--bad);border-color:var(--bad)}
+#tx{flex:1;min-height:0;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.msg{padding:9px 11px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user{background:var(--accent-soft);border:1px solid var(--accent);align-self:flex-end;max-width:92%}
+.msg.agent{background:var(--raised);border:1px solid var(--line)}
+.msg .who{display:block;font:600 10px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.think{font-size:12px;color:var(--muted)}
+.think summary{cursor:pointer;list-style:none}.think summary::-webkit-details-marker{display:none}
+.think pre{margin:6px 0 0;white-space:pre-wrap;font:12px/1.5 var(--mono);overflow-wrap:anywhere}
+.call{border:1px solid var(--line);border-radius:6px;background:var(--bg);overflow:hidden;flex:none}
+.call summary{display:flex;align-items:center;gap:8px;padding:6px 9px;cursor:pointer;list-style:none;font:12px var(--mono)}
+.call summary::-webkit-details-marker{display:none}
+.call .tool{font-weight:600;color:var(--accent)}
+.call .subj{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.call .res{flex:none;font-size:11px;color:var(--muted)}
+.call.err{border-color:var(--bad)}.call.err .tool{color:var(--bad)}
+.call.denied{border-color:var(--bad);background:var(--bad-bg)}
+.call pre{margin:0;padding:8px 10px;border-top:1px solid var(--line);font:11.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;color:var(--ink-2)}
+.call .why{padding:5px 10px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
+.ask{border:1px solid var(--warn);background:var(--warn-bg);border-radius:6px;padding:9px 10px;flex:none}
+.ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.ask .btns{display:flex;flex-wrap:wrap;gap:6px}
+.ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
+.ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
+.ask button.no{color:var(--bad);border-color:var(--bad)}
+.ask .done{font:12px var(--mono);color:var(--muted)}
+.todo{border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;flex:none}
+.todo h4{margin:0 0 5px;font:600 10px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.todo div{display:flex;gap:7px;padding:1px 0}.todo .done{color:var(--muted);text-decoration:line-through}
+.todo .in_progress{color:var(--accent);font-weight:600}
+.sys{font:11.5px var(--mono);color:var(--muted);text-align:center;padding:2px 0;flex:none}
+.sys.bad{color:var(--bad)}
+#composer{flex:none;border-top:1px solid var(--line);padding:9px 10px;position:relative}
+#q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
+#crow{display:flex;align-items:center;gap:8px;margin-top:7px}
+#crow select{font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line-strong);border-radius:5px;padding:3px 6px}
+#crow .hint{flex:1;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#send{height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:#fff;font-weight:600}
+#send:disabled{opacity:.5;cursor:default}
+#slash{position:absolute;left:10px;right:10px;bottom:100%;margin-bottom:4px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+#slash button{display:flex;gap:10px;width:100%;padding:6px 10px;text-align:left}
+#slash button[aria-selected="true"]{background:var(--accent-soft)}
+#slash b{font:600 12px var(--mono);min-width:88px}#slash span{color:var(--muted);font-size:12px}
+
+/* ------------------------------------------------------------ status, palette */
+#status{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 10px;background:var(--chrome);border-top:1px solid var(--line);font:11px var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden}
+#status .sp{flex:1}#status .on{color:var(--ok)}#status .off{color:var(--bad)}#status button{font:inherit;color:var(--warn)}
+#status button:hover{color:var(--ink)}
+#meter{display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--line-strong);vertical-align:1px;margin:0 6px;overflow:hidden}
+#meter i{display:block;height:100%;width:0;background:var(--ok)}#meter i.hot{background:var(--warn)}#meter i.full{background:var(--bad)}
+#pal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:grid;place-items:start center;padding-top:12vh;z-index:10}
+#pal .box{width:min(560px,92vw);background:var(--raised);border:1px solid var(--line-strong);border-radius:9px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.4)}
+#palq{width:100%;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);font:14px var(--sans);padding:12px 14px}
+#palq:focus-visible{outline:none}
+#pall{max-height:46vh;overflow:auto;padding:4px}
+#pall button{display:flex;gap:10px;align-items:baseline;width:100%;padding:7px 10px;border-radius:5px;text-align:left}
+#pall button[aria-selected="true"]{background:var(--accent-soft)}
+#pall .k{font:10px var(--mono);color:var(--muted);width:56px;flex:none;text-transform:uppercase}
+#pall .l{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#pall .h{font:11px var(--mono);color:var(--muted)}
+
+@media (max-width:900px){
+  #app,#app.noside{grid-template-columns:48px minmax(0,1fr)}
+  #side,#center,#agent{grid-column:2;grid-row:2}
+  .split{display:none}
+  #app[data-pane="side"] #center,#app[data-pane="side"] #agent,
+  #app[data-pane="center"] #side,#app[data-pane="center"] #agent,
+  #app[data-pane="agent"] #side,#app[data-pane="agent"] #center{display:none}
+  #app.noside #side{display:flex}
+  #palette-open,#title .ws{display:none}
+}
+@media (prefers-reduced-motion:no-preference){.dot.running{animation:pulse 1.6s ease-in-out infinite}}
+@keyframes pulse{50%{opacity:.45}}
+</style>
+</head>
+<body>
+<div id="app" data-pane="agent">
+  <header id="title">
+    <span class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8.2 2.5h7.6l5.7 5.7v7.6l-5.7 5.7H8.2l-5.7-5.7V8.2z"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
+      Abhed
+    </span>
+    <span class="ws" id="wsname"></span>
+    <button id="palette-open" type="button" aria-label="Open the command palette">Go to file, run a command… <kbd id="palkey">⌘K</kbd></button>
+    <span class="right"><span id="who"></span><a href="/console">classic console</a><a href="/docs">docs</a></span>
+  </header>
+
+  <nav id="act" aria-label="Views">
+    <button type="button" data-view="sessions" title="Sessions" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
+    <button type="button" data-view="explorer" title="Explorer" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h7l2 2h9v11H3z"/></svg></button>
+    <button type="button" data-view="changes" title="Changes" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 7.2v9.6M18 11.2c0 4-12 1.5-12 5.6"/></svg><span class="badge" id="b-changes" hidden></span></button>
+    <button type="button" data-view="tools" title="Tools and permissions" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3 18l3 3 6.2-6.2a4 4 0 0 0 5.3-5.3l-2.6 2.6-2.4-.6-.6-2.4z"/></svg></button>
+    <button type="button" data-view="extensions" title="Extensions, MCP servers and skills" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h7v7H4zM13 13h7v7h-7zM4 13h7v7H4zM16.5 3.5l4 4-4 4-4-4z"/></svg></button>
+    <button type="button" data-view="hawkeye" title="HawkEYE" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg><span class="badge warn" id="b-hawk" hidden></span></button>
+    <span class="grow"></span>
+    <button type="button" id="theme" title="Light or dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></button>
+  </nav>
+
+  <aside id="side" aria-label="Side panel">
+    <section class="view" id="v-sessions" hidden>
+      <div class="vhead">Sessions<span class="sp"></span></div>
+      <button class="primary" id="new" type="button">New session</button>
+      <div class="vbody" id="sessions"></div>
+    </section>
+    <section class="view" id="v-explorer">
+      <div class="vhead">Explorer<span class="sp"></span><button type="button" id="tree-reload" title="Reload">reload</button></div>
+      <div class="vbody tree" id="tree"></div>
+    </section>
+    <section class="view" id="v-changes" hidden>
+      <div class="vhead">Changes<span class="sp"></span><button type="button" id="changes-reload">reload</button></div>
+      <div class="vbody" id="changes"></div>
+    </section>
+    <section class="view" id="v-tools" hidden>
+      <div class="vhead">Tools and permissions</div>
+      <div class="vbody" id="tools"></div>
+    </section>
+    <section class="view" id="v-extensions" hidden>
+      <div class="vhead">Extensions</div>
+      <div class="vbody" id="extensions"></div>
+    </section>
+    <section class="view" id="v-hawkeye" hidden>
+      <div class="vhead">HawkEYE<span class="sp"></span><button type="button" id="hawk-open">full report</button></div>
+      <div class="vbody" id="hawkeye"></div>
+    </section>
+  </aside>
+  <div class="split" id="split-side" role="separator" aria-orientation="vertical"></div>
+
+  <main id="center">
+    <div id="tabs" role="tablist"></div>
+    <div id="crumbs"><span id="crumb"></span><span class="sp"></span><span id="crumb-meta"></span></div>
+    <div id="editor"></div>
+    <div id="split-panel" class="split" role="separator" aria-orientation="horizontal"></div>
+    <section id="panel">
+      <div id="ptabs" role="tablist">
+        <button type="button" data-p="terminal" aria-selected="true">Terminal<span class="n" id="n-term"></span></button>
+        <button type="button" data-p="problems" aria-selected="false">Problems<span class="n" id="n-prob"></span></button>
+        <button type="button" data-p="events" aria-selected="false">Events<span class="n" id="n-evt"></span></button>
+        <span class="sp"></span>
+      </div>
+      <div class="pbody" id="p-terminal"></div>
+      <div class="pbody" id="p-problems" hidden></div>
+      <div class="pbody" id="p-events" hidden></div>
+    </section>
+  </main>
+  <div class="split" id="split-agent" role="separator" aria-orientation="vertical"></div>
+
+  <section id="agent" aria-label="Agent">
+    <div id="ahead"><span class="ttl" id="attl">New session</span><button type="button" id="stop" hidden>Stop</button></div>
+    <div id="tx" aria-live="polite"></div>
+    <form id="composer">
+      <div id="slash" hidden></div>
+      <textarea id="q" placeholder="Describe a change, or type / for commands" aria-label="Message the agent"></textarea>
+      <div id="crow">
+        <select id="mode" aria-label="Permission mode">
+          <option value="default">default</option><option value="plan">plan</option>
+          <option value="accept-edits">accept-edits</option><option value="auto">auto</option>
+        </select>
+        <span class="hint" id="hint">Enter sends · Shift+Enter for a new line</span>
+        <button id="send" type="submit">Send</button>
+      </div>
+    </form>
+  </section>
+
+  <footer id="status">
+    <span id="s-conn" class="off">● offline</span>
+    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span>
+    <span class="sp"></span>
+    <span id="s-ctx" hidden>context<span id="meter"><i></i></span><span id="s-ctxn"></span></span>
+    <span id="s-tok"></span>
+    <button type="button" id="s-find" hidden></button>
+  </footer>
+</div>
+
+<div id="pal" hidden><div class="box" role="dialog" aria-label="Command palette"><input id="palq" placeholder="Type a command, a file or a session" autocomplete="off" spellcheck="false"><div id="pall"></div></div></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+// Everything drawn from the server goes in as text. File contents, tool output
+// and session titles are untrusted, so no markup is ever assembled from them.
+const el = (tag, cls, text) => { const n = document.createElement(tag); if(cls) n.className = cls; if(text != null) n.textContent = text; return n; };
+const clear = n => { while(n.firstChild) n.removeChild(n.firstChild); };
+const store = { get(k, d){ try{ const v = localStorage.getItem('abhed.ide.' + k); return v == null ? d : v; }catch{ return d; } },
+                set(k, v){ try{ localStorage.setItem('abhed.ide.' + k, v); }catch{} } };
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const fmt = n => (n || 0).toLocaleString('en-US');
+
+async function api(path, opts){
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts});
+  if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} throw new Error(m); }
+  return r.status === 204 ? null : r.json();
+}
+
+/* ---------------------------------------------------------------- state */
+let current = null, live = false, es = null, lastSeq = 0;
+let caps = null, streaming = null, todoNode = null, thinkingNode = null;
+const calls = new Map();            // call_id -> {node, res, tool, subject}
+const tabs = [];                    // {id, kind:'file'|'diff', path, label}
+let active = null;
+const known = new Set();            // file paths seen in the tree, for the palette
+let sessionList = [];
+const stat = { tin:0, tout:0, turns:0, ctx:0, window:0 };
+let termN = 0, evtN = 0, hawkTimer = null, changesTimer = null;
+
+/* ---------------------------------------------------------------- chrome */
+function setView(name){
+  document.querySelectorAll('#act button[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === name)));
+  document.querySelectorAll('#side .view').forEach(v => { v.hidden = v.id !== 'v-' + name; });
+  $('app').classList.remove('noside'); $('app').dataset.pane = 'side';
+  store.set('view', name);
+  if(name === 'changes') loadChanges();
+  if(name === 'hawkeye') loadHawkeye();
+  if(name === 'explorer' && !$('tree').firstChild) loadTree('', $('tree'), 0);
+}
+document.querySelectorAll('#act button[data-view]').forEach(b => b.addEventListener('click', () => {
+  const same = b.getAttribute('aria-pressed') === 'true' && !$('app').classList.contains('noside');
+  if(same && window.innerWidth > 900) $('app').classList.add('noside'); else setView(b.dataset.view);
+}));
+function setPanel(name){
+  document.querySelectorAll('#ptabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.p === name)));
+  ['terminal','problems','events'].forEach(p => { $('p-' + p).hidden = p !== name; });
+  $('app').classList.remove('nopanel');
+}
+document.querySelectorAll('#ptabs button').forEach(b => b.addEventListener('click', () => setPanel(b.dataset.p)));
+
+function applyTheme(t){ if(t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
+applyTheme(store.get('theme', ''));
+$('theme').addEventListener('click', () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches;
+  const next = dark ? 'light' : 'dark'; applyTheme(next); store.set('theme', next);
+});
+
+function dragSplit(handle, cssVar, axis, sign, min, max){
+  handle.addEventListener('pointerdown', e => {
+    e.preventDefault(); handle.classList.add('drag'); handle.setPointerCapture(e.pointerId);
+    const start = axis === 'x' ? e.clientX : e.clientY;
+    const from = parseInt(getComputedStyle(document.documentElement).getPropertyValue(cssVar), 10);
+    const move = ev => {
+      const d = ((axis === 'x' ? ev.clientX : ev.clientY) - start) * sign;
+      const v = Math.max(min, Math.min(max(), from + d));
+      document.documentElement.style.setProperty(cssVar, v + 'px'); store.set(cssVar, v);
+    };
+    const up = () => { handle.classList.remove('drag'); handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); };
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up);
+  });
+  const saved = parseInt(store.get(cssVar, ''), 10);
+  if(saved) document.documentElement.style.setProperty(cssVar, saved + 'px');
+}
+dragSplit($('split-side'), '--side', 'x', 1, 180, () => window.innerWidth * .4);
+dragSplit($('split-agent'), '--agent', 'x', -1, 300, () => window.innerWidth * .55);
+dragSplit($('split-panel'), '--panel', 'y', -1, 90, () => window.innerHeight * .7);
+
+/* ---------------------------------------------------------------- tabs + editor */
+function openTab(t){
+  let have = tabs.find(x => x.id === t.id);
+  if(!have){ tabs.push(t); have = t; }
+  active = have.id; drawTabs(); showTab(have);
+  if(window.innerWidth <= 900) $('app').dataset.pane = 'center';
+}
+function closeTab(id){
+  const i = tabs.findIndex(x => x.id === id); if(i < 0) return;
+  tabs.splice(i, 1);
+  if(active === id){ const n = tabs[i] || tabs[i-1]; active = n ? n.id : null; if(n) showTab(n); else welcome(); }
+  drawTabs();
+}
+function drawTabs(){
+  const bar = $('tabs'); clear(bar);
+  for(const t of tabs){
+    const b = el('div', 'tab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t.id === active)); b.tabIndex = 0;
+    if(t.kind === 'diff') b.appendChild(el('span', 'k', 'diff'));
+    b.appendChild(el('span', 'nm', t.label)); b.title = t.path || t.label;
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.label);
+    x.addEventListener('click', e => { e.stopPropagation(); closeTab(t.id); });
+    b.appendChild(x);
+    b.addEventListener('click', () => { active = t.id; drawTabs(); showTab(t); });
+    b.addEventListener('keydown', e => { if(e.key === 'Enter') b.click(); });
+    bar.appendChild(b);
+  }
+}
+function crumbs(path, meta){ $('crumbs').hidden = !path; $('crumb').textContent = path ? path.split('/').join('  ›  ') : ''; $('crumb-meta').textContent = meta || ''; }
+
+function welcome(){
+  crumbs('', ''); const ed = $('editor'); clear(ed);
+  const w = el('div'); w.id = 'welcome';
+  w.appendChild(el('h1', '', 'The agent works on the right. You read along here.'));
+  w.appendChild(el('p', '', 'Open a file from the Explorer, or let the agent make a change and review it under Changes. Everything it runs shows in the Terminal below, and every step is recorded.'));
+  const dl = el('dl'); const mod = isMac ? '⌘' : 'Ctrl';
+  [[[mod,'K'],'Command palette: files, sessions, commands'],[[mod,'B'],'Toggle the side panel'],[[mod,'J'],'Toggle the terminal panel'],
+   [[mod,'L'],'Focus the agent'],[['/'],'In the composer: slash commands']].forEach(([keys, what]) => {
+    const dt = el('dt'); keys.forEach(k => dt.appendChild(el('kbd', '', k))); dl.appendChild(dt); dl.appendChild(el('dd', '', what));
+  });
+  w.appendChild(dl); ed.appendChild(w);
+}
+async function showTab(t){
+  const ed = $('editor'); clear(ed); ed.scrollTop = 0;
+  crumbs(t.path, 'loading…');
+  try{
+    if(t.kind === 'file'){
+      const f = await api('/v1/sessions/' + current + '/file?path=' + encodeURIComponent(t.path));
+      if(active !== t.id) return;
+      if(f.binary){ crumbs(t.path, fmt(f.size) + ' B · binary'); ed.appendChild(el('p', 'note', 'Binary file — not shown.')); return; }
+      crumbs(t.path, fmt(f.size) + ' B' + (f.truncated ? ' · truncated' : ''));
+      const lines = f.content.split('\n'); if(lines[lines.length-1] === '') lines.pop();
+      const g = el('div', 'code');
+      g.appendChild(el('div', 'ln', lines.map((_, i) => i + 1).join('\n')));
+      g.appendChild(el('div', 'tx', lines.join('\n')));
+      ed.appendChild(g);
+    }else{
+      const res = await api('/v1/sessions/' + current + '/changes');
+      if(active !== t.id) return;
+      const c = (res.files || []).find(x => x.path === t.path);
+      if(!c){ crumbs(t.path, ''); ed.appendChild(el('p', 'note', 'No recorded change to this file.')); return; }
+      crumbs(t.path, c.status + ' · +' + c.added + ' −' + c.removed);
+      if(!c.diff){ ed.appendChild(el('p', 'note', c.note || 'No diff available.')); return; }
+      const d = el('div', 'diff');
+      for(const line of c.diff.replace(/\n$/, '').split('\n')){
+        const cls = line.startsWith('@@') ? 'hunk' : (line.startsWith('+++') || line.startsWith('---')) ? 'hdr' : line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : '';
+        d.appendChild(el('div', cls, line || ' '));
+      }
+      ed.appendChild(d);
+    }
+  }catch(e){ crumbs(t.path, ''); ed.appendChild(el('p', 'note', e.message)); }
+}
+const openFile = path => openTab({id:'f:' + path, kind:'file', path, label:path.split('/').pop()});
+const openDiff = path => openTab({id:'d:' + path, kind:'diff', path, label:path.split('/').pop()});
+
+/* ---------------------------------------------------------------- explorer + changes */
+async function loadTree(path, into, depth){
+  if(!current){ clear(into); into.appendChild(el('div', 'empty', 'Start or open a session to browse its workspace.')); return; }
+  let res; try{ res = await api('/v1/sessions/' + current + '/tree?path=' + encodeURIComponent(path)); }
+  catch(e){ clear(into); into.appendChild(el('div', 'empty', e.message)); return; }
+  clear(into);
+  for(const e of res.entries){
+    const row = el('button', 'row'); row.type = 'button'; row.style.paddingLeft = (12 + depth * 14) + 'px';
+    row.appendChild(el('span', 'tw', e.dir ? '▸' : '')); row.appendChild(el('span', 'name', e.name));
+    into.appendChild(row);
+    if(e.dir){
+      const kids = el('div'); kids.hidden = true; into.appendChild(kids);
+      row.addEventListener('click', () => {
+        kids.hidden = !kids.hidden; row.firstChild.textContent = kids.hidden ? '▸' : '▾';
+        if(!kids.hidden && !kids.firstChild) loadTree(e.path, kids, depth + 1);
+      });
+    }else{ known.add(e.path); row.addEventListener('click', () => openFile(e.path)); }
+  }
+  if(res.truncated) into.appendChild(el('div', 'empty', 'This folder has more entries than are listed.'));
+  if(!res.entries.length) into.appendChild(el('div', 'empty', 'Empty.'));
+}
+$('tree-reload').addEventListener('click', () => loadTree('', $('tree'), 0));
+
+async function loadChanges(){
+  const box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
+  let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
+  clear(box); const files = res.files || [];
+  $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
+  if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
+  if(!files.length){ box.appendChild(el('div', 'empty', 'The agent has not changed any files in this session. Edits made through write and edit appear here; changes made by shell commands do not.')); return; }
+  for(const f of files){
+    const row = el('button', 'row'); row.type = 'button';
+    row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
+    row.appendChild(el('span', 'name mono', f.path));
+    const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
+    row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
+  }
+}
+$('changes-reload').addEventListener('click', loadChanges);
+const changesSoon = () => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t) showTab(t); }, 500); };
+
+/* ---------------------------------------------------------------- tools + extensions */
+function drawCaps(){
+  const c = caps, t = $('tools'), x = $('extensions'); clear(t); clear(x);
+  t.appendChild(el('div', 'group', 'Permissions'));
+  const r = el('div', 'rules');
+  const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
+  line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
+  line('deny', c.permissions.deny.join('   ') || '—'); line('ask', c.permissions.ask.join('   ') || '—'); line('allow', c.permissions.allow.join('   ') || '—');
+  t.appendChild(r);
+  t.appendChild(el('div', 'empty', 'A deny rule holds in every mode, including auto. Rules are set in the server configuration.'));
+  const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
+  [['builtin','Built in'],['mcp','From MCP servers'],['skill','Skills']].forEach(([k, title]) => {
+    if(!by[k].length) return;
+    const g = el('div', 'group', title); g.appendChild(el('span', 'n', String(by[k].length))); t.appendChild(g);
+    for(const o of by[k]){
+      const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', o.name));
+      top.appendChild(el('span', 'pill ' + (o.mutates ? 'mut' : 'ro'), o.mutates ? 'asks first' : 'read-only'));
+      card.appendChild(top); if(o.description) card.appendChild(el('p', '', o.description)); t.appendChild(card);
+    }
+  });
+
+  const sect = (title, items, draw, emptyText, emptyCode) => {
+    const g = el('div', 'group', title); g.appendChild(el('span', 'n', String(items.length))); x.appendChild(g);
+    if(!items.length){ const e = el('div', 'empty', emptyText + ' '); e.appendChild(el('code', '', emptyCode)); x.appendChild(e); return; }
+    items.forEach(i => x.appendChild(draw(i)));
+  };
+  sect('Extensions', c.extensions, e => {
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', e.name)); top.appendChild(el('span', 'pill on', 'active'));
+    card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (e.events.join(', ') || 'all events'))); return card;
+  }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
+  sect('MCP servers', c.mcp, m => {
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', m.name)); top.appendChild(el('span', 'pill on', m.status)); card.appendChild(top); return card;
+  }, 'No MCP servers connected. Add one under', 'mcp.servers');
+  sect('Skills', c.skills, s => {
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', s.name));
+    if(s.has_pipeline) top.appendChild(el('span', 'pill', 'pipeline')); card.appendChild(top);
+    if(s.description) card.appendChild(el('p', '', s.description)); return card;
+  }, 'No skills loaded. Put a SKILL.md under', '.abhed/skills/<name>/');
+}
+
+/* ---------------------------------------------------------------- hawkeye */
+async function loadHawkeye(){
+  const box = $('hawkeye'), prob = $('p-problems');
+  if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
+  let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
+  clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
+  [['Outcome', r.outcome],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
+   ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
+   ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'],['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
+   .forEach(([k, v]) => { const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', String(v))); dl.appendChild(d); });
+  box.appendChild(dl);
+  const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => k + ' ' + v).join(' · ');
+  if(steps){ box.appendChild(el('div', 'group', 'Policy steps')); box.appendChild(el('div', 'rules', steps)); }
+  const fs = r.findings || []; const loud = fs.filter(f => f.severity !== 'info').length;
+  $('b-hawk').hidden = !loud; $('b-hawk').textContent = loud;
+  $('n-prob').textContent = fs.length ? ' ' + fs.length : '';
+  $('s-find').hidden = !fs.length; $('s-find').textContent = fs.length + (fs.length === 1 ? ' finding' : ' findings');
+  box.appendChild(el('div', 'group', 'Findings'));
+  if(!fs.length){ box.appendChild(el('div', 'empty', 'Nothing in this record needs a second look.')); prob.appendChild(el('div', 'dim', 'No findings.')); }
+  for(const f of fs){
+    const mk = () => { const n = el('div', 'finding ' + f.severity); n.appendChild(el('b', '', f.title + (f.seq ? '  #' + f.seq : ''))); n.appendChild(el('p', '', f.detail)); return n; };
+    box.appendChild(mk()); prob.appendChild(mk());
+  }
+}
+const hawkSoon = () => { clearTimeout(hawkTimer); hawkTimer = setTimeout(loadHawkeye, 900); };
+$('hawk-open').addEventListener('click', () => { if(current) window.open('/v1/sessions/' + current + '/hawkeye?format=html', '_blank', 'noopener'); });
+$('s-find').addEventListener('click', () => setPanel('problems'));
+
+/* ---------------------------------------------------------------- sessions */
+async function loadSessions(){
+  try{ sessionList = await api('/v1/sessions'); }catch{ sessionList = []; }
+  const box = $('sessions'); clear(box);
+  if(!sessionList.length){ box.appendChild(el('div', 'empty', 'No sessions yet. Ask the agent for something on the right.')); return; }
+  for(const s of sessionList){
+    const row = el('button', 'row'); row.type = 'button'; row.setAttribute('aria-current', String(s.id === current));
+    row.appendChild(el('span', 'dot ' + s.state)); row.appendChild(el('span', 'name', s.prompt || s.id));
+    row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
+  }
+}
+function resetSession(){
+  if(es){ es.close(); es = null; }
+  current = null; live = false; lastSeq = 0; streaming = null; todoNode = null; thinkingNode = null; calls.clear();
+  Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
+  clear($('tx')); clear($('p-terminal')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
+  $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
+  tabs.length = 0; active = null; drawTabs(); welcome(); known.clear(); indexedFor = null;
+  $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
+  clear($('hawkeye')); clear($('changes'));
+  $('attl').textContent = 'New session'; $('stop').hidden = true; drawStatus();
+}
+function openSession(id, state){
+  resetSession(); current = id; live = state === 'running' || state === 'waiting_approval';
+  const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? s.prompt : id; $('stop').hidden = !live;
+  clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
+  connect(id); loadChanges(); loadSessions();
+  if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
+}
+$('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
+
+function connect(id){
+  if(es) es.close();
+  es = new EventSource('/v1/sessions/' + id + '/events');
+  es.onopen = () => setConn(true);
+  es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
+  es.onerror = () => { if(!es) return; es.close(); es = null;
+    if(live && current === id) setTimeout(() => { if(current === id && !es) connect(id); }, 1500);
+    else if(current === id) loadHawkeye(); };
+}
+function setConn(on){ const n = $('s-conn'); n.className = on ? 'on' : 'off'; n.textContent = on ? '● connected' : '● offline'; }
+
+/* ---------------------------------------------------------------- transcript */
+const tx = () => $('tx');
+function add(n){ const box = tx(), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80; box.appendChild(n); if(stick) box.scrollTop = box.scrollHeight; return n; }
+// An absolute path is mostly prefix. The end of it is what a person reads.
+function tail(p){ const parts = p.split('/').filter(Boolean); return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : p; }
+function subjectOf(tool, args){
+  if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
+  if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
+  if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
+  const s = JSON.stringify(args); return s === '{}' ? '' : s;
+}
+function thinking(on, text){
+  if(!on){ if(thinkingNode){ thinkingNode.remove(); thinkingNode = null; } return; }
+  if(!thinkingNode) thinkingNode = add(el('div', 'sys')); else tx().appendChild(thinkingNode);
+  thinkingNode.textContent = text || 'working…';
+}
+function bubble(cls, who, text){ const m = el('div', 'msg ' + cls); m.appendChild(el('span', 'who', who)); m.appendChild(document.createTextNode(text || '')); return m; }
+function render(ev){
+  const p = ev.payload || {};
+  logEvent(ev, p);
+  switch(ev.type){
+  case 'user.message': thinking(false); add(bubble('user', 'you', p.text)); if(live) thinking(true, 'waiting for the model…'); break;
+  case 'agent.delta': thinking(false); if(!streaming) streaming = add(bubble('agent', 'abhed', '')); streaming.lastChild.textContent += p.text || ''; tx().scrollTop = tx().scrollHeight; break;
+  case 'agent.message': thinking(false); if(streaming){ streaming.lastChild.textContent = p.text || ''; streaming = null; } else add(bubble('agent', 'abhed', p.text)); break;
+  case 'agent.reasoning': { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + (p.text || '').split(/\s+/).length + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); break; }
+  case 'action.requested': {
+    thinking(false); streaming = null;
+    const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
+    s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
+    d.appendChild(s); d.appendChild(el('pre', '', JSON.stringify(p.args, null, 2)));
+    add(d); calls.set(p.call_id, {node:d, res, tool:p.tool, subject:subj});
+    if(p.tool === 'todo' && p.args && Array.isArray(p.args.items)) drawPlan(p.args.items);
+    if(p.requires_approval && live) askApproval(p);
+    break; }
+  case 'action.approved': { const c = calls.get(p.call_id);
+    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
+    settleAsk(p.call_id, 'approved'); if(live) thinking(true, 'running ' + (c ? c.tool : 'tool') + '…'); break; }
+  case 'action.denied': { const c = calls.get(p.call_id);
+    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }
+    settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
+  case 'observation': {
+    thinking(false); const c = calls.get(p.call_id); const body = p.content || '';
+    if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
+      c.node.appendChild(el('pre', '', body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''))); }
+    if(p.tool === 'bash') logTerminal(c ? c.subject : '', p);
+    if(p.tool === 'write' || p.tool === 'edit') changesSoon();
+    if(live) thinking(true, 'thinking…'); hawkSoon(); break; }
+  case 'todo.updated': drawPlan(p.items || []); break;
+  case 'model.call': stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
+    if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
+  case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
+  case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); break;
+  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
+  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  case 'session.ended': { thinking(false); live = false; $('stop').hidden = true; const bad = !['completed','user_interrupt'].includes(p.reason);
+    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns')); loadSessions(); loadChanges(); loadHawkeye(); break; }
+  }
+}
+// One plan block, moved to the end each time it changes, so the current
+// state of the work is always the last thing above the composer.
+function drawPlan(items){
+  if(!todoNode) todoNode = el('div', 'todo'); clear(todoNode); todoNode.appendChild(el('h4', '', 'Plan'));
+  items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', i.text)); todoNode.appendChild(r); });
+  add(todoNode);
+}
+function askApproval(p){
+  const a = el('div', 'ask'); a.dataset.call = p.call_id;
+  a.appendChild(el('b', '', 'Allow ' + p.tool + '?')); a.appendChild(el('p', '', (subjectOf(p.tool, p.args) || '') + (p.reason ? '  —  ' + p.reason : '')));
+  const btns = el('div', 'btns');
+  const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';
+    b.addEventListener('click', async () => { btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
+      try{ await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(scope ? {approved:ok, scope} : {approved:ok})}); }
+      catch(e){ a.appendChild(el('p', '', e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
+  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope, '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
+  a.appendChild(btns); add(a); btns.firstChild.focus();
+}
+function settleAsk(callID, how){
+  for(const a of tx().querySelectorAll('.ask')){ if(a.dataset.call !== callID) continue;
+    const b = a.querySelector('.btns'); if(b) b.remove(); if(!a.querySelector('.done')) a.appendChild(el('div', 'done', how)); }
+}
+
+function logTerminal(cmd, p){
+  const box = $('p-terminal'), c = el('div', 'cmd'); c.appendChild(el('div', 'p', cmd));
+  if(p.content) c.appendChild(el('div', 'o' + (p.is_error ? ' err' : ''), p.content.slice(0, 8000)));
+  c.appendChild(el('div', 'x', (p.duration_ms || 0) + 'ms' + (caps ? ' · sandbox tier: ' + caps.sandbox.tier : '')));
+  box.appendChild(c); box.scrollTop = box.scrollHeight; $('n-term').textContent = ' ' + (++termN);
+}
+function logEvent(ev, p){
+  if(ev.type === 'agent.delta') return;
+  const box = $('p-events'), r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
+  r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
+  r.appendChild(el('span', 'd', p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || '').slice(0, 160)));
+  box.appendChild(r); $('n-evt').textContent = ' ' + (++evtN); if(!box.hidden) box.scrollTop = box.scrollHeight;
+}
+function drawStatus(){
+  const has = stat.window > 0 && stat.ctx > 0; $('s-ctx').hidden = !has;
+  if(has){ const pct = Math.min(100, Math.round(stat.ctx * 100 / stat.window)); const bar = $('meter').firstChild; bar.style.width = pct + '%';
+    bar.className = pct >= 85 ? 'full' : pct >= 60 ? 'hot' : ''; $('s-ctxn').textContent = pct + '% of ' + fmt(stat.window); }
+  $('s-tok').textContent = stat.turns ? stat.turns + ' turns · ' + fmt(stat.tin) + ' in · ' + fmt(stat.tout) + ' out' : '';
+}
+
+/* ---------------------------------------------------------------- composer + slash */
+const SLASH = [
+  ['/files', 'Browse the workspace', () => setView('explorer')],
+  ['/changes', 'Review what the agent changed', () => setView('changes')],
+  ['/tools', 'Tools and permission rules', () => setView('tools')],
+  ['/extensions', 'Extensions, MCP servers, skills', () => setView('extensions')],
+  ['/hawkeye', 'What this session did, and findings', () => setView('hawkeye')],
+  ['/terminal', 'Commands the agent ran', () => setPanel('terminal')],
+  ['/events', 'The raw event record', () => setPanel('events')],
+  ['/report', 'Open the full HawkEYE report', () => $('hawk-open').click()],
+  ['/stop', 'Interrupt the running turn', () => $('stop').click()],
+  ['/new', 'Start a new session', () => $('new').click()],
+];
+let slashSel = 0;
+function drawSlash(){
+  const v = $('q').value, box = $('slash'); const on = v.startsWith('/') && !v.includes(' ') && !v.includes('\n');
+  const hits = on ? SLASH.filter(s => s[0].startsWith(v.toLowerCase())) : [];
+  box.hidden = !hits.length; clear(box); slashSel = Math.min(slashSel, Math.max(0, hits.length - 1));
+  hits.forEach((s, i) => { const b = el('button'); b.type = 'button'; b.setAttribute('aria-selected', String(i === slashSel)); b.appendChild(el('b', '', s[0])); b.appendChild(el('span', '', s[1]));
+    b.addEventListener('click', () => runSlash(s)); box.appendChild(b); });
+  return hits;
+}
+function runSlash(s){ $('q').value = ''; $('slash').hidden = true; s[2](); }
+$('q').addEventListener('input', () => { slashSel = 0; drawSlash(); const q = $('q'); q.style.height = 'auto'; q.style.height = Math.min(200, q.scrollHeight) + 'px'; });
+$('q').addEventListener('keydown', e => {
+  const hits = $('slash').hidden ? [] : drawSlash();
+  if(hits.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')){ e.preventDefault(); slashSel = (slashSel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length; drawSlash(); return; }
+  if(hits.length && (e.key === 'Enter' || e.key === 'Tab')){ e.preventDefault(); runSlash(hits[slashSel]); return; }
+  if(e.key === 'Escape'){ $('slash').hidden = true; return; }
+  if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
+});
+$('composer').addEventListener('submit', e => { e.preventDefault(); send(); });
+async function send(){
+  const prompt = $('q').value.trim(); if(!prompt || $('send').disabled) return;
+  $('send').disabled = true;
+  try{
+    if(current){
+      await api('/v1/sessions/' + current + '/messages', {method:'POST', body: JSON.stringify({prompt})});
+      if(!live){ live = true; $('stop').hidden = false; if(!es) connect(current); }
+    }else{
+      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt, mode: $('mode').value})});
+      sessionList.unshift({id:r.session_id, prompt, state:'running'}); openSession(r.session_id, 'running');
+    }
+    $('q').value = ''; $('q').style.height = 'auto';
+  }catch(e){ add(el('div', 'sys bad', e.message)); }
+  finally{ $('send').disabled = false; }
+}
+$('stop').addEventListener('click', async () => { if(current) try{ await api('/v1/sessions/' + current + '/interrupt', {method:'POST'}); }catch{} });
+$('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
+
+/* ---------------------------------------------------------------- palette + keys */
+let palSel = 0, palHits = [];
+function palItems(){
+  const out = [], mod = isMac ? '⌘' : 'Ctrl+';
+  SLASH.forEach(s => out.push({k:'command', l:s[1], h:s[0], run:s[2]}));
+  out.push({k:'command', l:'Toggle the side panel', h:mod + 'B', run:() => $('app').classList.toggle('noside')});
+  out.push({k:'command', l:'Toggle the terminal panel', h:mod + 'J', run:() => $('app').classList.toggle('nopanel')});
+  out.push({k:'command', l:'Switch light / dark', h:'', run:() => $('theme').click()});
+  [...known].sort().forEach(p => out.push({k:'file', l:p, h:'', run:() => openFile(p)}));
+  sessionList.forEach(s => out.push({k:'session', l:s.prompt || s.id, h:s.state, run:() => openSession(s.id, s.state)}));
+  return out;
+}
+function drawPal(){
+  const words = $('palq').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const order = {file:0, command:1, session:2};
+  palHits = palItems().filter(i => words.every(w => (i.l + ' ' + i.h + ' ' + i.k).toLowerCase().includes(w)));
+  if(words.length) palHits.sort((a, b) => order[a.k] - order[b.k]);
+  palHits = palHits.slice(0, 60);
+  palSel = Math.min(palSel, Math.max(0, palHits.length - 1)); const box = $('pall'); clear(box);
+  palHits.forEach((i, n) => { const b = el('button'); b.type = 'button'; b.setAttribute('aria-selected', String(n === palSel));
+    b.appendChild(el('span', 'k', i.k)); b.appendChild(el('span', 'l', i.l)); b.appendChild(el('span', 'h', i.h));
+    b.addEventListener('click', () => { closePal(); i.run(); }); box.appendChild(b); });
+  if(!palHits.length) box.appendChild(el('div', 'empty', 'Nothing matches. Open a folder in the Explorer to make its files searchable here.'));
+  const sel = box.querySelector('[aria-selected="true"]'); if(sel) sel.scrollIntoView({block:'nearest'});
+}
+// "Go to file" has to find a file nobody has expanded a folder for. The tree is
+// walked breadth-first once per session, with a ceiling on both requests and
+// files, so a huge repository costs a bounded amount and the rest stays
+// reachable through the Explorer.
+let indexedFor = null;
+async function indexFiles(){
+  if(!current || indexedFor === current) return; indexedFor = current;
+  const mine = current, queue = ['']; let requests = 0;
+  while(queue.length && requests < 40 && known.size < 2000 && current === mine){
+    const dir = queue.shift(); requests++;
+    let res; try{ res = await api('/v1/sessions/' + mine + '/tree?path=' + encodeURIComponent(dir)); }catch{ continue; }
+    for(const e of res.entries){ if(e.dir) queue.push(e.path); else known.add(e.path); }
+    if(!$('pal').hidden) drawPal();
+  }
+}
+function openPal(){ $('pal').hidden = false; $('palq').value = ''; palSel = 0; drawPal(); $('palq').focus(); indexFiles(); }
+function closePal(){ $('pal').hidden = true; }
+$('palette-open').addEventListener('click', openPal);
+$('palq').addEventListener('input', () => { palSel = 0; drawPal(); });
+$('palq').addEventListener('keydown', e => {
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){ e.preventDefault(); if(palHits.length){ palSel = (palSel + (e.key === 'ArrowDown' ? 1 : palHits.length - 1)) % palHits.length; drawPal(); } }
+  else if(e.key === 'Enter'){ e.preventDefault(); const i = palHits[palSel]; if(i){ closePal(); i.run(); } }
+  else if(e.key === 'Escape') closePal();
+});
+$('pal').addEventListener('pointerdown', e => { if(e.target === $('pal')) closePal(); });
+document.addEventListener('keydown', e => {
+  const mod = isMac ? e.metaKey : e.ctrlKey; if(!mod) return; const k = e.key.toLowerCase();
+  if(k === 'k' || k === 'p'){ e.preventDefault(); if($('pal').hidden) openPal(); else closePal(); }
+  else if(k === 'b'){ e.preventDefault(); $('app').classList.toggle('noside'); }
+  else if(k === 'j'){ e.preventDefault(); $('app').classList.toggle('nopanel'); }
+  else if(k === 'l'){ e.preventDefault(); $('app').dataset.pane = 'agent'; $('q').focus(); }
+});
+$('palkey').textContent = isMac ? '⌘K' : 'Ctrl K';
+
+/* ---------------------------------------------------------------- boot */
+(async () => {
+  welcome();
+  try{ caps = await api('/v1/capabilities'); setConn(true); }
+  catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + e.message)); return; }
+  stat.window = caps.model.context_window; drawCaps();
+  $('s-sandbox').textContent = 'sandbox ' + caps.sandbox.tier + (caps.sandbox.network ? ' · network on' : ' · no network');
+  $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode; $('s-mode').textContent = 'mode ' + caps.permissions.mode;
+  try{ const me = await api('/v1/whoami'); $('who').textContent = me.user || ''; }catch{}
+  await loadSessions();
+  setView(store.get('view', 'explorer')); $('app').dataset.pane = 'agent';
+  const last = sessionList[0]; if(last) openSession(last.id, last.state); else loadTree('', $('tree'), 0);
+})();
+</script>
+</body>
+</html>
