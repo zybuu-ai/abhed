@@ -256,7 +256,11 @@ type liveSession struct {
 	// undo holds each file's content from before the agent first changed it,
 	// which is what the console's changes view diffs against.
 	undo *agent.UndoLog
-	mu   sync.Mutex
+	// manual is the tool session of the person at the workbench, and manualMu
+	// runs their calls one at a time so two commands never share a cd.
+	manual   *tools.Session
+	manualMu sync.Mutex
+	mu       sync.Mutex
 }
 
 type pendingApproval struct {
@@ -321,6 +325,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/tree", s.treeSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/file", s.fileSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/changes", s.changesSession)
+	mux.HandleFunc("PUT /v1/sessions/{id}/file", s.saveFile)
+	mux.HandleFunc("POST /v1/sessions/{id}/exec", s.execCommand)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder

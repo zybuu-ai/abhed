@@ -235,6 +235,8 @@ type fileResponse struct {
 	Content   string `json:"content"`
 	Binary    bool   `json:"binary"`
 	Truncated bool   `json:"truncated"`
+	// Hash names the content an editor loaded, so a save can tell it is stale.
+	Hash string `json:"hash,omitempty"`
 }
 
 // fileSession returns one file as JSON. Never as a document of its own type:
@@ -271,6 +273,9 @@ func (s *Server) fileSession(w http.ResponseWriter, r *http.Request) {
 	if int64(len(data)) < size {
 		out.Truncated = true
 		data = trimPartialRune(data)
+	}
+	if !out.Truncated {
+		out.Hash = contentHash(data)
 	}
 	out.Content = string(data)
 	WriteJSON(w, http.StatusOK, out)
