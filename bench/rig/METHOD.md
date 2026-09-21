@@ -127,6 +127,15 @@ found in OpenHands' CLI documentation; it runs on its defaults.
   (10,000 resamples, fixed seed). An interval that spans zero is reported as
   not a difference, in those words.
 
+## Watching a run
+
+`rig.py watch --date <date>` from another terminal: sessions finished of the
+total, the session in flight and what it has changed so far, the count per
+harness and window, and an estimate of what is left. Leaving it does not stop
+the run; `pkill -f "rig.py run"` does, and re-running the same command skips
+what is finished. The per-harness counts it shows mid-run are progress, not a
+result — `summarize` is what reports intervals.
+
 ## Known limits
 
 - A small suite from two or three repositories. It says nothing about

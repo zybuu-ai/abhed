@@ -73,5 +73,35 @@ class Conditions(unittest.TestCase):
         self.assertNotIn("psf/requests", rig.POOL)
 
 
+class Watch(unittest.TestCase):
+    def test_snapshot_counts_progress_and_passes(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            old, rig.RESULTS = rig.RESULTS, Path(tmp)
+            try:
+                root = Path(tmp) / "d1" / "rig"
+                plan = [{"run": 1, "instance": f"t{i}", "condition": "full", "harness": h}
+                        for i in range(2) for h in ("abhed", "pi")]
+                root.mkdir(parents=True)
+                (root / "plan.json").write_text(json.dumps({"sessions": plan}))
+                for h, iid, ok, to in (("abhed", "t0", True, False), ("pi", "t0", False, True)):
+                    p = root / h / "full" / "run1" / f"{iid}.json"
+                    p.parent.mkdir(parents=True)
+                    p.write_text(json.dumps({"harness": h, "condition": "full", "instance": iid, "wall_sec": 90,
+                                             "timed_out": to, "finished": "2026-01-01 00:00:0" + ("1" if ok else "2"),
+                                             "score": {"resolved": ok, "f2p": "1/1"}}))
+                text = rig.snapshot("d1")
+            finally:
+                rig.RESULTS = old
+        self.assertIn("2 of 4 finished", text)
+        self.assertIn("1 timed out", text)
+        self.assertIn("not running", text)
+        # One row per harness, with its own count — not a pooled number.
+        self.assertRegex(text, r"abhed\s+full\s+1 / 1")
+        self.assertRegex(text, r"pi\s+full\s+0 / 1")
+        self.assertIn("not a result", text)
+
+
 if __name__ == "__main__":
     unittest.main()
