@@ -381,6 +381,74 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 	return tag.RowsAffected() == 1, nil
 }
 
+// ClaimNode records that this node holds the session's turn in flight, so a
+// request about that session can be routed back to the process that has it.
+//
+// Claiming is unconditional by design: the caller has already decided to run
+// the turn here, and the node that ran it last is the one whose memory the
+// live session is in. A stale claim from a node that died is handled by the
+// staleness window in NodeFor, not by refusing the claim.
+func (p *Postgres) ClaimNode(ctx context.Context, sessionID, nodeID string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_id = $2, node_seen_at = now()
+		WHERE id = $1 AND deleted_at IS NULL`, sessionID, nodeID)
+	if err != nil {
+		return fmt.Errorf("claim node for %s: %w", sessionID, err)
+	}
+	return nil
+}
+
+// ReleaseNode clears the claim when a turn finishes, so the session is free
+// for any node to pick up next time.
+func (p *Postgres) ReleaseNode(ctx context.Context, sessionID, nodeID string) error {
+	// Scoped to this node: a slow release must not clear a claim another
+	// node has since taken.
+	_, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_id = NULL, node_seen_at = NULL
+		WHERE id = $1 AND node_id = $2`, sessionID, nodeID)
+	if err != nil {
+		return fmt.Errorf("release node for %s: %w", sessionID, err)
+	}
+	return nil
+}
+
+// NodeFor reports which node holds a session, or "" when none does.
+//
+// A claim older than stale is treated as absent: the node that made it is
+// presumed gone, and refusing to serve the session because a dead process
+// once held it would be worse than serving it here.
+func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Duration) (string, error) {
+	// Staleness is decided in the database, against the same clock that wrote
+	// node_seen_at. Comparing a database timestamp to this process's clock
+	// makes the answer depend on how well two machines agree, which is not a
+	// property worth having in a routing decision.
+	var node *string
+	err := p.pool.QueryRow(ctx, `
+		SELECT node_id FROM sessions
+		WHERE id = $1 AND deleted_at IS NULL
+		  AND node_seen_at IS NOT NULL
+		  AND node_seen_at > now() - $2::interval`,
+		sessionID, stale.String()).Scan(&node)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Either no such session, or its claim is stale. Tell those apart so
+		// a caller is not told a live session does not exist.
+		var exists bool
+		if e := p.pool.QueryRow(ctx,
+			`SELECT true FROM sessions WHERE id = $1 AND deleted_at IS NULL`,
+			sessionID).Scan(&exists); e != nil {
+			return "", ErrNotFound
+		}
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("node for %s: %w", sessionID, err)
+	}
+	if node == nil {
+		return "", nil
+	}
+	return *node, nil
+}
+
 // DeleteSession marks a session deleted. The transcript rows stay — the events
 // table refuses DELETE by trigger, and that refusal is a property the
 // deployment promised — but Events, ListSessions and GetSession all treat a
