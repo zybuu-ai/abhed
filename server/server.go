@@ -383,6 +383,8 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /", s.serveLanding)
 	mux.HandleFunc("GET /console", s.serveConsole)
+	mux.HandleFunc("GET /ide", s.serveIDE)
+	mux.HandleFunc("GET /v1/capabilities", s.getCapabilities)
 
 	// Documentation, when it was embedded at build time. An air-gapped
 	// install has no route to the public copy, so the binary carries its own;

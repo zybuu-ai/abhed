@@ -29,6 +29,7 @@ model you point it at, and records everything it does.
 | [RPC and headless](10-automation.md) | driving Abhed from another language, or from CI |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
+| [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 

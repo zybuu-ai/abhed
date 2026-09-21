@@ -1,0 +1,128 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/tools"
+)
+
+// The page draws file contents, tool output and session titles, all of which
+// are untrusted. It may never build markup from a string, and it may never
+// load anything from another host: it has to open on an air-gapped network.
+func TestIDEPageNeverAssemblesMarkupOrLoadsRemotely(t *testing.T) {
+	for _, bad := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"} {
+		if strings.Contains(ideHTML, bad) {
+			t.Errorf("the IDE page uses %s; untrusted text must go in as textContent", bad)
+		}
+	}
+	if m := regexp.MustCompile(`(?i)(src|href)\s*=\s*["']?(https?:)?//`).FindString(ideHTML); m != "" {
+		t.Errorf("the IDE page references a remote resource: %q", m)
+	}
+	if strings.Contains(ideHTML, "@import") || regexp.MustCompile(`url\(\s*["']?https?:`).MatchString(ideHTML) {
+		t.Error("the IDE page pulls a remote stylesheet or font")
+	}
+}
+
+func TestIDEIsServedUnderTheConsolesPolicy(t *testing.T) {
+	rec := httptest.NewRecorder()
+	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/ide", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /ide = %d", rec.Code)
+	}
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q is missing %q", csp, want)
+		}
+	}
+	if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "http") {
+		t.Errorf("CSP was loosened: %q", csp)
+	}
+}
+
+// The Tools and Extensions panels show what the agent can really reach. An
+// extension's command and environment are the operator's, and may hold
+// credentials, so only its name and events leave the server.
+func TestCapabilitiesReportsToolsAndWithholdsExtensionSecrets(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions.Deny = append(cfg.Permissions.Deny, "read(**/.env)")
+	cfg.Extensions = []config.ExtensionConfig{{
+		Name: "scanner", Command: "/opt/scan --token=sk-live-123", Events: []string{"tool_call"},
+		Env: map[string]string{"SCANNER_KEY": "hunter2"},
+	}}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/capabilities", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	for _, leak := range []string{"sk-live-123", "hunter2", "/opt/scan", "SCANNER_KEY"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Fatalf("capabilities leaked %q from an extension's configuration", leak)
+		}
+	}
+	var c capabilities
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		t.Fatal(err)
+	}
+	mutates := map[string]bool{}
+	for _, tool := range c.Tools {
+		mutates[tool.Name] = tool.Mutates
+	}
+	if mutates["read"] || !mutates["write"] || !mutates["bash"] {
+		t.Errorf("mutation flags are wrong: %v", mutates)
+	}
+	if _, ok := mutates["recall"]; !ok {
+		t.Error("recall is missing: every session has it, though the shared registry does not")
+	}
+	if len(c.Extensions) != 1 || c.Extensions[0].Name != "scanner" || c.Extensions[0].Events[0] != "tool_call" {
+		t.Errorf("extensions = %+v", c.Extensions)
+	}
+	if !strings.Contains(strings.Join(c.Permissions.Deny, " "), "read(**/.env)") {
+		t.Errorf("deny rules = %v", c.Permissions.Deny)
+	}
+	// Empty lists must be [] and not null, or the page throws on .length.
+	if !strings.Contains(rec.Body.String(), `"mcp":[]`) || !strings.Contains(rec.Body.String(), `"skills":[]`) {
+		t.Errorf("empty lists are not arrays: %s", rec.Body)
+	}
+}
+
+// An MCP tool is attributed to its server, which is how the panel groups them.
+func TestCapabilitiesAttributesMCPTools(t *testing.T) {
+	if got := firstSentence("Read a file. It must exist. More detail follows here."); got != "Read a file." {
+		t.Errorf("firstSentence = %q", got)
+	}
+	long := strings.Repeat("अभेद ", 80)
+	if got := firstSentence(long); !strings.HasSuffix(got, "…") || strings.ContainsRune(got, '�') {
+		t.Errorf("a long description was cut inside a character: %q", got)
+	}
+}
+
+// Neither the page nor what it reads is public. With sign-in on, an anonymous
+// caller must not learn which tools, rules and extensions this server has.
+// /console is the control: it is known to be protected, so if it answered 200
+// here the fixture would be enforcing nothing and the test proving nothing.
+func TestIDEAndCapabilitiesNeedSignIn(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}),
+		Auth:     &auth.Middleware{Providers: []auth.Provider{local}, PublicPaths: []string{"/", "/login"}}})
+	for _, path := range []string{"/console", "/ide", "/v1/capabilities"} {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code == http.StatusOK {
+			t.Errorf("GET %s answered 200 to an anonymous caller", path)
+		}
+	}
+}
