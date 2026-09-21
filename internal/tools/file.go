@@ -88,7 +88,7 @@ func (r Read) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 		extracted = kind
 	}
 
-	if isBinary(data) {
+	if IsBinary(data) {
 		return errf("%s appears to be a binary file (%d bytes). Abhed does not read binary content; use bash with an appropriate tool if you need to inspect it.", a.Path, len(data))
 	}
 
@@ -146,10 +146,17 @@ func (r Read) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	return Result{Content: b.String(), Truncated: truncated}
 }
 
-func isBinary(data []byte) bool {
+// IsBinary reports whether data looks like something other than text: a NUL
+// byte or invalid UTF-8 in the first 8000 bytes.
+func IsBinary(data []byte) bool {
 	n := len(data)
 	if n > 8000 {
 		n = 8000
+		// The cut can land inside a multi-byte character, which is not
+		// evidence of binary: step back to where that character starts.
+		for i := 0; i < utf8.UTFMax && n > 0 && !utf8.RuneStart(data[n]); i++ {
+			n--
+		}
 	}
 	head := data[:n]
 	if !utf8.Valid(head) {
