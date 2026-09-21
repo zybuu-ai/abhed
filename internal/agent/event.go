@@ -39,6 +39,9 @@ const (
 	EvPlanUpdated     EventType = "plan.updated"
 	EvTodoUpdated     EventType = "todo.updated"
 	EvSessionEnded    EventType = "session.ended"
+	// EvModelCall closes one round trip to the model. The session total says
+	// what a run cost; this says where it went.
+	EvModelCall EventType = "model.call"
 )
 
 type Actor string
@@ -159,6 +162,23 @@ type Delta struct {
 type Reasoning struct {
 	Text string `json:"text"`
 	Turn int    `json:"turn"`
+}
+
+// ModelCall is the accounting for one round trip to the model.
+type ModelCall struct {
+	Turn         int `json:"turn"`
+	TokensIn     int `json:"tokens_in"`
+	TokensOut    int `json:"tokens_out"`
+	TokensCached int `json:"tokens_cached"`
+	// ContextWindow is the model's limit, zero when the adapter reports none.
+	ContextWindow int `json:"context_window,omitempty"`
+	// FirstTokenMS is how long the model took to start answering; LatencyMS is
+	// the whole round trip. The gap between them is generation, the first is
+	// prefill — and prefill is what a cache miss costs.
+	FirstTokenMS int64  `json:"first_token_ms"`
+	LatencyMS    int64  `json:"latency_ms"`
+	ToolCalls    int    `json:"tool_calls"`
+	Error        string `json:"error,omitempty"`
 }
 
 type SessionEnded struct {

@@ -29,6 +29,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/eval"
@@ -96,6 +97,8 @@ func Main(args []string, opts ...Option) int {
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
+	case "hawkeye":
+		return hawkeyeCmd(workspace, fs.Args()[1:])
 	case "rpc":
 		// Line-delimited JSON on stdin and stdout, so a caller in any language
 		// can drive Abhed as a subprocess without running a server.
@@ -927,6 +930,23 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 		st.loop.Restore(msgs)
 		fmt.Printf("  %s\n", s.Dim(fmt.Sprintf(
 			"forked at step %d — %d messages kept; the next thing you type continues from there", seq, len(msgs))))
+
+	case "/hawkeye":
+		// The summary goes to the terminal; a path writes the full report.
+		events, err := st.store.Events(st.sessionID)
+		if err != nil || len(events) == 0 {
+			fmt.Println(s.Dim("  nothing recorded yet"))
+			return false
+		}
+		rep := hawkeye.Analyze(st.sessionID, events)
+		fmt.Print(hawkeye.Text(rep))
+		if len(fields) > 1 {
+			if err := writeHawkeye(fields[1], rep); err != nil {
+				fmt.Printf("  %s %v\n", s.Red("✕"), err)
+				return false
+			}
+			fmt.Printf("\n  wrote %s\n", fields[1])
+		}
 
 	case "/export":
 		// HTML by default, because a transcript that needs a parser before a
@@ -2475,4 +2495,86 @@ func attachExtensionSummarizer(c *agent.Compactor, h *extension.Host, sessionID 
 		}
 		return h.OnBeforeCompact(context.Background(), sessionID, out)
 	}
+}
+
+// hawkeyeCmd reports on a finished session: from an exported events file, or
+// by id from the durable store. It never needs a model or a network.
+func hawkeyeCmd(workspace string, args []string) int {
+	fl := flag.NewFlagSet("hawkeye", flag.ExitOnError)
+	out := fl.String("o", "", "write the report here (.html or .json); the summary still prints")
+	fl.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: abhed hawkeye [-o report.html] <events.json | session-id>")
+	}
+	_ = fl.Parse(args)
+	if fl.NArg() != 1 {
+		fl.Usage()
+		return 2
+	}
+	target := fl.Arg(0)
+
+	var events []agent.Event
+	id := target
+	if data, err := os.ReadFile(target); err == nil { //nolint:gosec // the operator names the file
+		if err := json.Unmarshal(data, &events); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %s is not an exported events file: %v\n", target, err)
+			return 1
+		}
+		if len(events) > 0 {
+			id = events[0].SessionID
+		}
+	} else {
+		cfg, err := config.Load(workspace)
+		if err != nil {
+			fail(err)
+		}
+		if cfg.Storage.Driver != "postgres" {
+			fmt.Fprintf(os.Stderr, "abhed: %q is not a file, and there is no durable store to look it up in.\n"+
+				"Export a session with /export session.json, or configure storage.driver.\n", target)
+			return 1
+		}
+		st, closeStore, err := openStore(context.Background(), cfg)
+		if err != nil {
+			fail(err)
+		}
+		defer closeStore()
+		if events, err = st.Events(target); err != nil {
+			fail(err)
+		}
+	}
+	if len(events) == 0 {
+		fmt.Fprintf(os.Stderr, "abhed: no events for %s\n", target)
+		return 1
+	}
+
+	rep := hawkeye.Analyze(id, events)
+	fmt.Print(hawkeye.Text(rep))
+	if *out != "" {
+		if err := writeHawkeye(*out, rep); err != nil {
+			fail(err)
+		}
+		fmt.Printf("\n  wrote %s\n", *out)
+	}
+	// A record with holes in it is an exit code a pipeline can act on.
+	for _, f := range rep.Findings {
+		if f.Severity == hawkeye.Critical {
+			return 3
+		}
+	}
+	return 0
+}
+
+func writeHawkeye(path string, rep hawkeye.Report) error {
+	var data []byte
+	var err error
+	if strings.HasSuffix(path, ".json") {
+		data, err = json.MarshalIndent(rep, "", "  ")
+	} else {
+		var page string
+		page, err = hawkeye.HTML(rep)
+		data = []byte(page)
+	}
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }

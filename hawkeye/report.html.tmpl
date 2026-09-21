@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HawkEYE · {{.SessionID}}</title>
+<style>
+:root{
+  --ground:#f3f5f1;--panel:#fbfcfa;--ink:#15201d;--dim:#5d6b66;--rule:#d6dcd6;
+  --accent:#0e5f63;--ok:#1f7a4d;--warn:#a2600c;--crit:#b3261e;
+  --cold:#0e5f63;--warm:#9cc9c4;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --ground:#0f1614;--panel:#151e1b;--ink:#e3ebe7;--dim:#8fa19a;--rule:#27332f;
+  --accent:#6fc4bf;--ok:#5cc391;--warn:#e0a44a;--crit:#f0776d;--cold:#6fc4bf;--warm:#2f5b58;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.5 var(--sans)}
+main{max-width:1080px;margin:0 auto;padding-block:28px 64px;padding-inline:20px;display:grid;gap:28px}
+header h1{font:600 13px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+header .id{font:500 22px/1.2 var(--mono);overflow-wrap:anywhere}
+header p{color:var(--dim);margin:8px 0 0;max-width:70ch;overflow-wrap:anywhere}
+h2{font:600 12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));margin:0;background:var(--panel);border:1px solid var(--rule);border-width:1px 0 0 1px}
+.facts div{padding:12px 14px;border:1px solid var(--rule);border-width:0 1px 1px 0}
+.facts dt{font:11px/1 var(--mono);color:var(--dim);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+.facts dd{margin:0;font:500 18px/1.2 var(--mono);font-variant-numeric:tabular-nums}
+.facts small{display:block;font:12px/1.3 var(--sans);color:var(--dim);margin-top:4px}
+.out-completed{color:var(--ok)}.out-bad{color:var(--warn)}
+.finding{display:grid;grid-template-columns:84px 1fr;gap:12px;padding:12px 0;border-top:1px solid var(--rule)}
+.finding:first-of-type{border-top:0}
+.sev{font:600 11px/1.6 var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.sev.info{color:var(--dim)}.sev.warn{color:var(--warn)}.sev.critical{color:var(--crit)}
+.finding b{font-weight:600}.finding p{margin:2px 0 0;color:var(--dim);overflow-wrap:anywhere}
+.seq{font:12px var(--mono);color:var(--dim)}
+.none{color:var(--ok)}
+svg{width:100%;height:auto;display:block}
+svg .cold{fill:var(--cold)}svg .warm{fill:var(--warm)}
+svg .lim{stroke:var(--crit);stroke-width:1;stroke-dasharray:4 3}
+svg .cut{stroke:var(--warn);stroke-width:1.5}
+svg .ax{font:10px var(--mono);fill:var(--dim)}
+.legend{font:12px var(--mono);color:var(--dim);margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 18px}
+.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font:13px/1.4 var(--mono);font-variant-numeric:tabular-nums}
+th{font-weight:500;color:var(--dim);text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+th,td{padding:7px 10px 7px 0;border-bottom:1px solid var(--rule);vertical-align:top;white-space:nowrap}
+td.wide{white-space:normal;overflow-wrap:anywhere;min-width:260px}
+td.r,th.r{text-align:right}
+summary .step{white-space:nowrap}
+.allowed{color:var(--ok)}.denied{color:var(--crit)}.pending{color:var(--dim)}.err{color:var(--warn)}
+details{border-top:1px solid var(--rule)}
+details:last-of-type{border-bottom:1px solid var(--rule)}
+summary{cursor:pointer;padding:8px 0;display:grid;grid-template-columns:56px 64px minmax(0,1fr) 116px 64px;gap:10px;font:13px/1.4 var(--mono);list-style:none}
+summary::-webkit-details-marker{display:none}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+summary .subj{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.body{padding:4px 0 14px 66px;display:grid;gap:8px}
+.body p{margin:0;color:var(--dim)}
+pre{margin:0;padding:10px 12px;background:var(--panel);border:1px solid var(--rule);font:12px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
+.tag{font:11px var(--mono);color:var(--warn);letter-spacing:.06em;text-transform:uppercase}
+footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-top:14px}
+@media (max-width:640px){summary{grid-template-columns:44px 52px 1fr}summary .step,summary .t{display:none}.body{padding-left:0}.finding{grid-template-columns:1fr;gap:2px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>HawkEYE · session report</h1>
+  <div class="id">{{.SessionID}}</div>
+  <p>{{.Prompt}}</p>
+</header>
+
+<section>
+  <dl class="facts">
+    <div><dt>Outcome</dt><dd class="{{if eq .Outcome "completed"}}out-completed{{else}}out-bad{{end}}">{{.Outcome}}</dd><small>{{clock .Started}}</small></div>
+    <div><dt>Duration</dt><dd>{{ms .Totals.DurationMS}}</dd><small>model {{ms .Totals.ModelMS}} · tools {{ms .Totals.ToolMS}}</small></div>
+    <div><dt>Turns</dt><dd>{{.Totals.Turns}}</dd><small>{{.Totals.ToolCalls}} tool calls · {{.Totals.Events}} events</small></div>
+    <div><dt>Tokens in</dt><dd>{{n .Totals.TokensIn}}</dd><small>{{pct .Totals.CacheHitRate}} cached · {{n .Totals.TokensOut}} out</small></div>
+    <div><dt>Peak context</dt><dd>{{n .Totals.PeakContext}}</dd><small>{{if .Totals.Window}}of {{n .Totals.Window}} window · {{end}}{{len .Compactions}} compactions</small></div>
+    <div><dt>Policy</dt><dd>{{.Policy.Allowed}} / {{.Policy.Denied}}</dd><small>allowed / denied · {{.Policy.Reviewer}} asked a reviewer</small></div>
+    <div><dt>Record</dt><dd class="{{if .Integrity.Gaps}}denied{{else}}allowed{{end}}">{{if .Integrity.Gaps}}gaps{{else}}whole{{end}}</dd><small>#{{.Integrity.FirstSeq}}–#{{.Integrity.LastSeq}} · {{.Totals.Untrusted}} untrusted observations</small></div>
+  </dl>
+</section>
+
+<section>
+  <h2>Findings</h2>
+  {{if not .Findings}}<p class="none">Nothing in this record needs a second look.</p>{{end}}
+  {{range .Findings}}
+  <div class="finding">
+    <span class="sev {{.Severity}}">{{.Severity}}</span>
+    <div><b>{{.Title}}</b>{{if .Seq}} <span class="seq">#{{.Seq}}</span>{{end}}<p>{{.Detail}}</p></div>
+  </div>
+  {{end}}
+</section>
+
+{{if .Turns}}
+<section>
+  <h2>Context sent to the model, per turn</h2>
+  {{chart .}}
+  <div class="legend">
+    <span><i style="background:var(--cold)"></i>read cold</span>
+    <span><i style="background:var(--warm)"></i>served from cache</span>
+    <span><i style="background:var(--crit);height:2px;vertical-align:3px"></i>window</span>
+    <span><i style="background:var(--warn);width:2px"></i>compaction</span>
+  </div>
+</section>
+{{end}}
+
+{{if .Calls}}
+<section>
+  <h2>Calls · policy steps: {{steps .Policy.ByStep}}</h2>
+  {{range .Calls}}
+  <details>
+    <summary>
+      <span class="seq">#{{.Seq}}</span>
+      <span>{{.Tool}}</span>
+      <span class="subj">{{.Subject}}</span>
+      <span class="step {{.Decision}}">{{.Decision}}{{if .IsError}} <span class="err">· err</span>{{end}}</span>
+      <span class="t seq">{{ms .DurationMS}}</span>
+    </summary>
+    <div class="body">
+      <p>{{.Decision}} at step <b>{{.Step}}</b>{{if .By}} by {{.By}}{{end}} — {{.Reason}}</p>
+      <pre>{{.Args}}</pre>
+      {{if .Ran}}<p><span class="tag">untrusted output</span> · {{n .OutputLen}} bytes{{if .Truncated}} · truncated before the model saw it{{end}}{{if .ExitCode}} · {{exit .ExitCode}}{{end}}</p><pre>{{.Output}}</pre>{{end}}
+    </div>
+  </details>
+  {{end}}
+</section>
+{{end}}
+
+{{if .Turns}}
+<section>
+  <h2>Turns</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th class="r">tokens in</th><th class="r">cached</th><th class="r">out</th><th class="r">first token</th><th class="r">total</th><th class="r">calls</th><th>error</th></tr>
+    {{range .Turns}}<tr><td>{{.N}}</td><td class="r">{{n .TokensIn}}</td><td class="r">{{n .TokensCached}}</td><td class="r">{{n .TokensOut}}</td><td class="r">{{ms .FirstTokenMS}}</td><td class="r">{{ms .LatencyMS}}</td><td class="r">{{.ToolCalls}}</td><td class="wide err">{{.Error}}</td></tr>{{end}}
+  </table></div>
+</section>
+{{end}}
+
+{{if .Files}}
+<section>
+  <h2>Files touched by the file tools</h2>
+  <div class="scroll"><table>
+    <tr><th>path</th><th class="r">reads</th><th class="r">writes</th></tr>
+    {{range .Files}}<tr><td class="wide">{{.Path}}</td><td class="r">{{.Reads}}</td><td class="r">{{.Writes}}</td></tr>{{end}}
+  </table></div>
+</section>
+{{end}}
+
+{{if .Subagents}}
+<section>
+  <h2>Subagents</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>task</th><th>type</th><th class="r">depth</th><th class="r">turns</th><th class="r">tokens in</th><th>ended</th></tr>
+    {{range .Subagents}}<tr><td class="seq">#{{.Seq}}</td><td class="wide">{{.Description}}</td><td>{{.Type}}</td><td class="r">{{.Depth}}</td><td class="r">{{.Turns}}</td><td class="r">{{n .TokensIn}}</td><td>{{if .Returned}}{{.Reason}}{{else}}<span class="err">never returned</span>{{end}}</td></tr>{{end}}
+  </table></div>
+</section>
+{{end}}
+
+<footer>
+  Derived from the session's event record alone: no model was called and nothing was fetched to produce this page.
+  Tool output shown here is untrusted content, rendered as text. Findings are rules over the record and name their
+  evidence by sequence number; they are prompts to look, not verdicts.
+</footer>
+</main>
+</body>
+</html>

@@ -22,6 +22,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/index"
@@ -313,6 +314,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/events", s.streamEvents)
 	mux.HandleFunc("GET /v1/sessions/{id}/replay", s.replaySession)
+	mux.HandleFunc("GET /v1/sessions/{id}/hawkeye", s.hawkeyeSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -1189,6 +1191,41 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, events)
+}
+
+// hawkeyeSession reports on a session: JSON by default, the full page with
+// ?format=html. It reads the same record replay does, so it answers to the
+// same ownership check — a report carries every tool result in the session.
+func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !s.mayAccess(r, id) {
+		WriteError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	events, err := s.store.Events(id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(events) == 0 {
+		WriteError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	rep := hawkeye.Analyze(id, events)
+	if r.URL.Query().Get("format") != "html" {
+		WriteJSON(w, http.StatusOK, rep)
+		return
+	}
+	page, err := hawkeye.HTML(rep)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "could not render the report")
+		return
+	}
+	// The page embeds untrusted tool output. It is escaped, and this makes
+	// sure that stays true even if a future template change gets it wrong.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(page))
 }
 
 // postMessage continues an existing conversation.

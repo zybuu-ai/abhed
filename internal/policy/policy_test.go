@@ -119,7 +119,7 @@ func TestHookShortCircuits(t *testing.T) {
 	e := New(ModeBypass)
 	e.Hooks = append(e.Hooks, func(tool string, _ json.RawMessage) *Result {
 		if tool == "bash" {
-			return &Result{Deny, "blocked by hook", ""}
+			return &Result{Decision: Deny, Reason: "blocked by hook"}
 		}
 		return nil
 	})
@@ -220,5 +220,46 @@ func TestParseRuleRejectsUnbalancedParentheses(t *testing.T) {
 		if _, err := ParseRule(s); err != nil {
 			t.Errorf("ParseRule(%q) = %v, want it accepted", s, err)
 		}
+	}
+}
+
+// Every decision names the stage that made it, so a reviewer can see which
+// part of the order is doing the work rather than parsing the reason.
+func TestResultNamesTheDecidingStep(t *testing.T) {
+	deny, err := ParseRule("bash(rm *)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := ParseRule("bash(go test*)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Mode: ModeDefault, Deny: []Rule{deny}, Allow: []Rule{allow}}
+
+	cases := []struct {
+		tool    string
+		mutates bool
+		args    string
+		want    string
+	}{
+		{"bash", true, `{"command":"rm -rf build"}`, "deny"},
+		{"bash", true, `{"command":"go test ./..."}`, "allow"},
+		{"read", false, `{"path":"a.go"}`, "default"},
+		{"write", true, `{"path":"a.go"}`, "default"},
+	}
+	for _, c := range cases {
+		got := e.Evaluate(c.tool, c.mutates, []byte(c.args))
+		if got.Step != c.want {
+			t.Errorf("%s %s: step = %q, want %q (reason %q)", c.tool, c.args, got.Step, c.want, got.Reason)
+		}
+	}
+
+	e.Mode = ModePlan
+	if got := e.Evaluate("write", true, []byte(`{"path":"a.go"}`)); got.Step != "mode" {
+		t.Errorf("plan mode: step = %q, want mode", got.Step)
+	}
+	e.Hooks = []Hook{func(string, json.RawMessage) *Result { return &Result{Decision: Deny, Reason: "no"} }}
+	if got := e.Evaluate("read", false, []byte(`{}`)); got.Step != "hook" {
+		t.Errorf("hook: step = %q, want hook", got.Step)
 	}
 }

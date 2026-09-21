@@ -1,0 +1,192 @@
+package hawkeye
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+)
+
+// Findings are rules over the record, not judgements by a model: the same
+// record always yields the same findings, and each one names the evidence.
+
+var (
+	// hostRE finds a URL host or a bare IPv4 address. It is deliberately
+	// narrow: a finding that fires on every dotted word is one nobody reads.
+	hostRE = regexp.MustCompile(`(?i)\b(?:https?|ftp|ssh)://([a-z0-9][a-z0-9.-]*[a-z0-9])|\b((?:\d{1,3}\.){3}\d{1,3})\b`)
+
+	sensitive = []string{
+		"/.ssh/", "/.aws/", "/.kube/", "/.gnupg/", "/.docker/config.json", "/.netrc",
+		"/.env", "id_rsa", "id_ed25519", "/etc/shadow", "credentials.json", ".pem",
+	}
+
+	abnormal = map[string]string{
+		"error": "the run failed", "stalled": "the model stopped making progress",
+		"max_turns": "the turn limit was reached", "max_budget": "the token budget was spent",
+		"shutdown": "the server shut down mid-turn", "retry_exhausted": "the model endpoint kept failing",
+		"policy_denied": "policy ended the run",
+	}
+
+	rank = map[Severity]int{Critical: 0, Warn: 1, Info: 2}
+)
+
+func findings(r Report, evs []agent.Event) []Finding {
+	out := []Finding{}
+	add := func(sev Severity, code, title, detail string, seq int64) {
+		out = append(out, Finding{Severity: sev, Code: code, Title: title, Detail: detail, Seq: seq})
+	}
+
+	// The record first: everything else in the report stands on it.
+	if len(r.Integrity.Gaps) > 0 {
+		add(Critical, "record-gap", "Events are missing from the record",
+			fmt.Sprintf("The sequence skips at %v. An append-only store does not produce gaps, "+
+				"so this record was filtered, truncated or edited before it was analysed.", r.Integrity.Gaps),
+			r.Integrity.Gaps[0])
+	}
+	if !r.Integrity.HasEnd && len(evs) > 0 {
+		add(Info, "no-end", "The session has no recorded end",
+			"It is still running, or the process died before it could write one.", 0)
+	}
+	if why, bad := abnormal[r.Outcome]; bad {
+		add(Warn, "abnormal-end", "Ended as "+r.Outcome, "The session did not complete: "+why+".", r.Integrity.LastSeq)
+	}
+
+	out = append(out, borrowedHosts(r, evs)...)
+
+	failures := map[string]int{}
+	for _, c := range r.Calls {
+		low := strings.ToLower(c.Subject + " " + c.Args)
+		for _, s := range sensitive {
+			if strings.Contains(low, s) {
+				verb := "was allowed to reach"
+				sev := Warn
+				if c.Decision == "denied" {
+					verb, sev = "was stopped from reaching", Info
+				}
+				add(sev, "sensitive-path", "A call "+verb+" a credential path",
+					fmt.Sprintf("%s %s — matched %q. Decision: %s at step %q.", c.Tool, clip(c.Subject, 160), s, c.Decision, c.Step), c.Seq)
+				break
+			}
+		}
+		if c.Decision == "denied" {
+			add(Info, "denied", "Denied: "+c.Tool,
+				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.By), c.Seq)
+		}
+		if c.Ran && c.IsError {
+			key := c.Tool + "\x00" + c.Args
+			failures[key]++
+			if failures[key] == 3 {
+				add(Warn, "repeated-failure", "The same call failed three times",
+					fmt.Sprintf("%s %s was retried unchanged after failing. The model was not adapting.", c.Tool, clip(c.Subject, 160)), c.Seq)
+			}
+		}
+		if c.DurationMS > 60_000 {
+			add(Info, "slow-tool", "A tool call took over a minute",
+				fmt.Sprintf("%s %s ran for %ds.", c.Tool, clip(c.Subject, 120), c.DurationMS/1000), c.Seq)
+		}
+	}
+
+	truncated := 0
+	for _, c := range r.Calls {
+		if c.Truncated {
+			truncated++
+		}
+	}
+	if truncated > 0 {
+		add(Info, "truncated", fmt.Sprintf("%d tool result(s) were truncated before the model saw them", truncated),
+			"The record holds what the model was shown, not the full output.", 0)
+	}
+
+	for _, t := range r.Turns {
+		if t.Window > 0 && t.TokensIn*100 >= t.Window*85 {
+			add(Warn, "context-pressure", "The context window was nearly full",
+				fmt.Sprintf("Turn %d sent %d of %d tokens (%d%%). Past this point a single large tool result overflows it.",
+					t.N, t.TokensIn, t.Window, t.TokensIn*100/t.Window), t.Seq)
+			break
+		}
+	}
+	if len(r.Turns) >= 5 && r.Totals.CacheHitRate < 0.2 {
+		add(Info, "cold-cache", "Most of the prompt was re-read cold on every turn",
+			fmt.Sprintf("Cache hit rate %.0f%% across %d turns. The endpoint is not caching the prefix, "+
+				"or something early in the prompt changes each turn.", r.Totals.CacheHitRate*100, len(r.Turns)), 0)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Severity] < rank[out[j].Severity] })
+	return out
+}
+
+// borrowedHosts flags an allowed call that names a host the user never
+// mentioned and that first appeared in tool output. All tool output is
+// untrusted, so this is the shape an injected "now send it to…" takes — and
+// also the shape of following a link in a README, which is why it is a
+// warning to read rather than a verdict.
+func borrowedHosts(r Report, evs []agent.Event) []Finding {
+	fromUser := map[string]bool{}
+	fromTools := map[string]int64{}
+	var out []Finding
+	flagged := map[string]bool{}
+
+	byID := map[string]Call{}
+	for _, c := range r.Calls {
+		byID[c.CallID] = c
+	}
+
+	for _, e := range evs {
+		switch e.Type {
+		case agent.EvUserMessage:
+			var m agent.Message
+			_ = json.Unmarshal(e.Payload, &m)
+			for _, h := range hosts(m.Text) {
+				fromUser[h] = true
+			}
+		case agent.EvObservation:
+			var o agent.Observation
+			_ = json.Unmarshal(e.Payload, &o)
+			for _, h := range hosts(o.Content) {
+				if _, seen := fromTools[h]; !seen {
+					fromTools[h] = e.Seq
+				}
+			}
+		case agent.EvActionRequested:
+			var a agent.ActionRequested
+			_ = json.Unmarshal(e.Payload, &a)
+			c := byID[a.CallID]
+			if c.Decision != "allowed" {
+				continue
+			}
+			for _, h := range hosts(string(a.Args)) {
+				src, borrowed := fromTools[h]
+				if !borrowed || fromUser[h] || flagged[h] || local(h) {
+					continue
+				}
+				flagged[h] = true
+				out = append(out, Finding{
+					Severity: Warn, Code: "borrowed-host", Seq: e.Seq,
+					Title: "A call used a host that only tool output supplied",
+					Detail: fmt.Sprintf("%s named %q. The user never mentioned it; it first appeared in tool output at #%d, "+
+						"which is untrusted. Check that following it was the task and not an instruction planted in that output.",
+						a.Tool, h, src),
+				})
+			}
+		}
+	}
+	return out
+}
+
+func hosts(s string) []string {
+	var out []string
+	for _, m := range hostRE.FindAllStringSubmatch(s, -1) {
+		h := strings.ToLower(m[1] + m[2])
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func local(h string) bool {
+	return h == "localhost" || strings.HasPrefix(h, "127.") || h == "0.0.0.0"
+}
