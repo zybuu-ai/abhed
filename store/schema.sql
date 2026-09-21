@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- adapter reports no window, has no measurement — and zero would read as an
   -- empty context rather than an absent reading.
   context_tokens  BIGINT,
-  context_window  BIGINT
+  context_window  BIGINT,
+  -- Which node holds this session's turn in flight. A turn lives in one
+  -- process's memory, so a request about it has to reach that process;
+  -- NULL means no node holds it and any node may claim it.
+  node_id         TEXT,
+  node_seen_at    TIMESTAMPTZ
 );
 
 -- Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
@@ -45,6 +50,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- of this file is: it runs on every start.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_tokens BIGINT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_window BIGINT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS node_id TEXT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS node_seen_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS sessions_tenant_started_idx
   ON sessions (tenant_id, started_at DESC);

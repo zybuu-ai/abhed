@@ -56,6 +56,27 @@ type SessionResumer interface {
 	ClaimResume(ctx context.Context, sessionID string) (bool, error)
 }
 
+// SessionRouter is implemented by stores that can record which node holds a
+// session's turn in flight.
+//
+// A turn lives in one process's memory — the loop, its cancel function and
+// the channel a pending approval waits on — so a request about a running
+// session has to reach that process. Behind one server this is free; behind
+// several it is the difference between an approval arriving and vanishing.
+//
+// Optional: without it the server behaves exactly as before, which is correct
+// for a single node.
+type SessionRouter interface {
+	ClaimNode(ctx context.Context, sessionID, nodeID string) error
+	ReleaseNode(ctx context.Context, sessionID, nodeID string) error
+	NodeFor(ctx context.Context, sessionID string, stale time.Duration) (string, error)
+}
+
+// nodeStale is how long a claim survives without being refreshed. Longer than
+// any turn boundary, short enough that a node which died does not strand its
+// sessions for long.
+const nodeStale = 2 * time.Minute
+
 // Mount registers routes on the server's mux. It runs after the built-in
 // routes and before the middleware wraps the mux, so the handlers it
 // registers are authenticated and logged like any other; a route that must
@@ -90,6 +111,10 @@ type TenantResolver interface {
 type Options struct {
 	Addr      string
 	Workspace string
+	// NodeID identifies this process among several behind a load balancer.
+	// Empty means a single-node deployment: nothing is claimed and routing
+	// stays off, which is the right default.
+	NodeID string
 	// HomeURL, when set, is linked from the console and the sign-in page as
 	// the way back to whoever operates this deployment.
 	//
@@ -701,6 +726,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	s.mu.Lock()
 	s.running[sessionID] = live
 	s.mu.Unlock()
+	s.claimNode(ctx, sessionID)
 
 	go func() {
 		defer cancel()
@@ -708,6 +734,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		live.mu.Lock()
 		live.State = "done"
 		live.mu.Unlock()
+		s.releaseNode(sessionID)
 		if spec.OnEnd != nil {
 			spec.OnEnd(string(reason), err)
 		}
@@ -1226,6 +1253,16 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
+		// The approval a reviewer just sent is the request that must not be
+		// lost, so this path says where the session actually is rather than
+		// reporting it absent. A proxy reads the header; a person reads the
+		// message.
+		if node := s.elsewhere(r.Context(), id); node != "" {
+			w.Header().Set("Abhed-Session-Node", node)
+			WriteError(w, http.StatusMisdirectedRequest,
+				"this session is running on another node; route by session id")
+			return
+		}
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -1582,6 +1619,44 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 //
 // A caller who is not the owner gets the same "not found" as a caller who
 // invented the ID, so the lookup does not confirm that a session exists.
+// claimNode records that this process holds the session, when the deployment
+// is configured for several. A failure is logged and ignored: routing is an
+// optimisation, and refusing to start a turn because a bookkeeping write
+// failed would be a worse outcome than a misrouted request.
+func (s *Server) claimNode(ctx context.Context, sessionID string) {
+	r, ok := s.router()
+	if !ok {
+		return
+	}
+	if err := r.ClaimNode(ctx, sessionID, s.opts.NodeID); err != nil {
+		s.log.Warn("could not claim session for this node", "session", sessionID, "err", err)
+	}
+}
+
+// releaseNode clears the claim when a turn finishes. It uses its own context:
+// the run's context is cancelled by the time this is reached.
+func (s *Server) releaseNode(sessionID string) {
+	r, ok := s.router()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.ReleaseNode(ctx, sessionID, s.opts.NodeID); err != nil {
+		s.log.Warn("could not release session claim", "session", sessionID, "err", err)
+	}
+}
+
+// router reports the routing store, and whether routing applies at all.
+// Both a node identity and a store that can record one are required.
+func (s *Server) router() (SessionRouter, bool) {
+	if s.opts.NodeID == "" {
+		return nil, false
+	}
+	r, ok := s.store.(SessionRouter)
+	return r, ok
+}
+
 func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1590,6 +1665,24 @@ func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
 		return nil, false
 	}
 	return live, true
+}
+
+// elsewhere reports the node holding a session that this process does not,
+// so a caller can be told where to go rather than told it does not exist.
+//
+// Returns "" when routing is off, when no node holds the session, or when
+// this node is the holder — all of which mean "the ordinary not-found answer
+// is the right one".
+func (s *Server) elsewhere(ctx context.Context, sessionID string) string {
+	r, ok := s.router()
+	if !ok {
+		return ""
+	}
+	node, err := r.NodeFor(ctx, sessionID, nodeStale)
+	if err != nil || node == "" || node == s.opts.NodeID {
+		return ""
+	}
+	return node
 }
 
 // Approve implements agent.Approver for a server session: it publishes the
