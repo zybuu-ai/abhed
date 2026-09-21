@@ -32,6 +32,7 @@ var Commands = []Command{
 	{"/tree", "", "show the session's steps, with the numbers /fork takes"},
 	{"/fork", "[step]", "rebuild the conversation up to a step and continue from it"},
 	{"/export", "[path]", "write the transcript (.html by default, .json for events)"},
+	{"/hawkeye", "[path]", "what this session did: tokens, policy decisions, findings"},
 	{"/think", "", "show or collapse the model's reasoning"},
 	{"/cwd", "", "show the workspace root"},
 	{"/help", "", "this list"},

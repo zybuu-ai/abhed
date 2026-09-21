@@ -43,6 +43,10 @@ type Result struct {
 	Reason string
 	// Scope is the suggested "always allow" rule, e.g. `bash(npm install *)`.
 	Scope string
+	// Step is which stage of the evaluation order decided: hook, deny, ask,
+	// mode, allow or default. The reason is prose for a person; this is what
+	// lets a reviewer count how often each stage is doing the work.
+	Step string
 }
 
 // Rule matches a tool call. Patterns are `tool` or `tool(arg-glob)`.
@@ -190,6 +194,9 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
 	for _, h := range e.Hooks {
 		if res := h(tool, args); res != nil {
+			if res.Step == "" {
+				res.Step = "hook"
+			}
 			return *res
 		}
 	}
@@ -197,7 +204,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// 2. Deny rules — absolute, survive every mode including bypass.
 	for _, r := range e.Deny {
 		if r.Matches(tool, subject) {
-			return Result{Deny, fmt.Sprintf("denied by rule %s", r), ""}
+			return Result{Decision: Deny, Reason: fmt.Sprintf("denied by rule %s", r), Scope: "", Step: "deny"}
 		}
 	}
 
@@ -205,14 +212,14 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// undo for these, so no mode auto-approves them (docs P7, §06).
 	if tool == "bash" {
 		if what, destructive := tools.IsDestructive(subject); destructive {
-			return Result{Ask, fmt.Sprintf("%s — always requires confirmation", what), ""}
+			return Result{Decision: Ask, Reason: fmt.Sprintf("%s — always requires confirmation", what), Scope: "", Step: "destructive"}
 		}
 	}
 
 	// 3. Ask rules — force a prompt even if a later allow would match.
 	for _, r := range e.Ask {
 		if r.Matches(tool, subject) {
-			return Result{Ask, fmt.Sprintf("matched ask rule %s", r), suggestScope(tool, subject)}
+			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: suggestScope(tool, subject), Step: "ask"}
 		}
 	}
 
@@ -220,42 +227,42 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	switch e.Mode {
 	case ModePlan:
 		if mutates {
-			return Result{Deny, "plan mode is read-only; no changes are applied", ""}
+			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 		}
-		return Result{Allow, "read-only tool in plan mode", ""}
+		return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
 	case ModeBypass:
 		if e.Managed {
-			return Result{Ask, "bypass mode is disabled by organization policy", ""}
+			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy", Scope: "", Step: "mode"}
 		}
-		return Result{Allow, "bypass mode", ""}
+		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode"}
 	case ModeAcceptEdits:
 		if tool == "edit" || tool == "write" {
-			return Result{Allow, "edits auto-approved in accept-edits mode", ""}
+			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode"}
 		}
 	case ModeAuto:
 		if !mutates {
-			return Result{Allow, "read-only tool in auto mode", ""}
+			return Result{Decision: Allow, Reason: "read-only tool in auto mode", Scope: "", Step: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
 		// and deny checks above still stand, so the dangerous cases never reach
 		// here. bash keeps asking because its blast radius is unbounded.
 		if tool == "edit" || tool == "write" {
-			return Result{Allow, "file edit auto-approved in auto mode", ""}
+			return Result{Decision: Allow, Reason: "file edit auto-approved in auto mode", Scope: "", Step: "mode"}
 		}
 	}
 
 	// 5. Allow rules.
 	for _, r := range e.Allow {
 		if r.Matches(tool, subject) {
-			return Result{Allow, fmt.Sprintf("matched allow rule %s", r), ""}
+			return Result{Decision: Allow, Reason: fmt.Sprintf("matched allow rule %s", r), Scope: "", Step: "allow"}
 		}
 	}
 
 	// 6. Default: read-only tools proceed, mutations ask.
 	if !mutates {
-		return Result{Allow, "read-only tool", ""}
+		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
 	}
-	return Result{Ask, "mutating tool requires approval", suggestScope(tool, subject)}
+	return Result{Decision: Ask, Reason: "mutating tool requires approval", Scope: suggestScope(tool, subject), Step: "default"}
 }
 
 // suggestScope proposes a narrow "always allow" rule for the approval prompt.

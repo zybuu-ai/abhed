@@ -251,7 +251,7 @@ finding, or a new one once it has been triaged here, is followed by
 | Rule | Count | What it checks |
 |---|---|---|
 | G104 | 61 | Unchecked error return |
-| G304 | 23 | Potential file inclusion via variable |
+| G304 | 24 | Potential file inclusion via variable |
 | G204 | 12 | Subprocess launched with a variable |
 | G115 | 8 | Integer overflow on type conversion |
 | G703 | 6 | Path traversal (taint analysis) |
@@ -260,6 +260,8 @@ finding, or a new one once it has been triaged here, is followed by
 | G301 | 5 | Directory created with permissions looser than 0750 |
 | G124 | 4 | Cookie missing Secure/HttpOnly/SameSite |
 | G122 | 2 | Filesystem op inside a `Walk`/`WalkDir` callback is TOCTOU-prone |
+| G203 | 1 | `template.HTML` used without escaping |
+| G705 | 1 | XSS via a response write |
 | G404, G402, G704, G106, G120, G302 | 1 each | Weak RNG, insecure TLS config, SSRF heuristic, insecure SSH host-key check, unbounded form parsing, loose file permission |
 
 **Triage counts across all 138:**
@@ -270,7 +272,7 @@ finding, or a new one once it has been triaged here, is followed by
 | Accepted with reason | 67 |
 | To fix | 8 |
 
-#### G304 — potential file inclusion via variable (23 findings)
+#### G304 — potential file inclusion via variable (24 findings)
 
 Abhed is an agentic coding harness: the model is expected to name files to
 read and write, so a "variable" reaching a file-path call is the product's
@@ -372,6 +374,18 @@ findings are genuine, if minor, misses.
 |---|---|---|
 | cmd/abhed/main.go:1665, :1769 | `int32(cfg.Storage.MaxConns)` (2 call sites) | False positive — small operator-set config integer, no realistic overflow path |
 | internal/agent/id.go:46-51 | `byte(ms >> N)` truncating a millisecond timestamp into an ID (6 call sites) | False positive — deliberate, documented bit-packing to build a sortable ID |
+
+#### HawkEYE — three findings from the session report (G203, G304, G705)
+
+HawkEYE renders a session's record as a page, and that record contains tool
+output, which is untrusted by definition. So these three were read as "could
+injected content run in a reviewer's browser", not as boilerplate.
+
+| file | Rule | Triage |
+|---|---|---|
+| `hawkeye/render.go` (`chart`) | G203 — `template.HTML` bypasses escaping | **False positive.** The function builds an SVG from integers and floats through `%d`/`%.1f` and from `commas()`, which formats an `int`. No string from the record reaches it. Everything else on the page goes through `html/template`'s contextual escaping |
+| `server/server.go` (`hawkeyeSession`) | G705 — XSS via response write | **False positive.** The bytes written are `html/template` output. The handler also sends `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, so a future template mistake still cannot execute script or load anything. `TestHTMLEscapesHostileToolOutput` feeds the renderer `<script>` and `onerror` payloads in the session id, the prompt, the arguments and the tool output, and fails if any arrives unescaped |
+| `app/main.go` (`hawkeyeCmd`) | G304 — file inclusion via variable | **Accepted.** `abhed hawkeye <file>` reads the events file the operator named on their own command line, with their own permissions. It is not model- or request-controlled |
 
 #### G703 — path traversal via taint analysis (6 findings, all HIGH by gosec default)
 

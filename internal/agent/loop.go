@@ -369,10 +369,16 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		Effort:      l.Config.Effort,
 	}
 
+	callStart := time.Now()
 	stream, err := l.Adapter.Complete(ctx, req)
 	if err != nil {
+		l.record(EvModelCall, ActorSystem, ModelCall{
+			Turn: l.turns, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
+		})
 		return TermError, true, fmt.Errorf("model call failed: %w", err)
 	}
+	var firstToken time.Duration
+	var callUsage model.Usage
 
 	var text strings.Builder
 	var reasoning strings.Builder
@@ -383,6 +389,9 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	var streamErr error
 
 	for chunk := range stream {
+		if firstToken == 0 && chunk.Type != model.ChunkDone {
+			firstToken = time.Since(callStart)
+		}
 		switch chunk.Type {
 		case model.ChunkText:
 			text.WriteString(chunk.Text)
@@ -419,6 +428,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			streamErr = chunk.Err
 		case model.ChunkDone:
 			if chunk.Usage != nil {
+				callUsage = *chunk.Usage
 				l.usage.InputTokens += chunk.Usage.InputTokens
 				l.usage.OutputTokens += chunk.Usage.OutputTokens
 				l.usage.CachedTokens += chunk.Usage.CachedInputTokens
@@ -434,6 +444,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			Delta{Text: pending.String(), Seq: deltaN})
 		pending.Reset()
 	}
+
+	mc := ModelCall{
+		Turn: l.turns, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
+		TokensCached: callUsage.CachedInputTokens, ContextWindow: l.Adapter.Profile().ContextWindow,
+		FirstTokenMS: firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
+		ToolCalls: len(calls),
+	}
+	if streamErr != nil {
+		mc.Error = streamErr.Error()
+	}
+	l.record(EvModelCall, ActorSystem, mc)
 
 	if think := strings.TrimSpace(reasoning.String()); think != "" {
 		l.record(EvAgentReasoning, ActorAgent,
@@ -582,7 +603,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	switch decision.Decision {
 	case policy.Deny:
 		l.record(EvActionDenied, ActorSystem, map[string]string{
-			"call_id": call.ID, "reason": decision.Reason,
+			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step,
 		})
 		// Feed the denial back so the model can choose another approach.
 		return false, tools.Result{
@@ -600,7 +621,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}
 		if !approved {
 			l.record(EvActionDenied, ActorUser, map[string]string{
-				"call_id": call.ID, "reason": "rejected: " + decision.Reason,
+				"call_id": call.ID, "reason": "rejected: " + decision.Reason, "step": decision.Step,
 			})
 			// Say WHY, and name the rule that would have allowed it. A bare
 			// "rejected" makes the model re-phrase the same command forever:
@@ -620,8 +641,13 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}
 	}
 
+	// by says who let it through: the policy on its own, or a person asked.
+	by := "policy"
+	if decision.Decision == policy.Ask {
+		by = "reviewer"
+	}
 	l.record(EvActionApproved, ActorSystem, map[string]string{
-		"call_id": call.ID, "reason": decision.Reason,
+		"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": by,
 	})
 	return true, tools.Result{}, ""
 }
