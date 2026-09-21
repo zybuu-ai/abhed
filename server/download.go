@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"mime"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // downloadEntry is one file a session produced.
@@ -49,10 +51,9 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	abs, err := s.resolveInWorkspace(rel)
-	if err != nil {
-		// The same message whether the path escaped or simply is not there:
-		// a distinct "outside the workspace" reply would confirm what exists
-		// on the other side of the boundary.
+	// The same message whether the path escaped, is withheld or simply is not
+	// there: a distinct reply would confirm what exists behind the boundary.
+	if err != nil || !s.mayServe(abs) {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -86,6 +87,33 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// mayServe decides whether a file inside the workspace may be handed to a
+// person. Being inside the workspace was the only test, which let any signed-in
+// user fetch .abhed/users.json — the password hashes — and any file a deny
+// rule kept from the agent.
+//
+// abs is already symlink-resolved, so a link is judged by what it points at.
+func (s *Server) mayServe(abs string) bool {
+	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	// The server's own state is never a deliverable, whatever the rules say.
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == ".abhed" {
+			return false
+		}
+	}
+	// Then the operator's rules, asked the way the agent's read is asked.
+	// Anything short of allow is a refusal: nobody can answer a prompt here.
+	args, _ := json.Marshal(map[string]string{"path": abs})
+	return s.newPolicy(policy.ModeDefault).Evaluate("read", false, args).Decision == policy.Allow
 }
 
 // resolveInWorkspace turns a client-supplied path into an absolute one that is
