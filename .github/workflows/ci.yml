@@ -11,6 +11,26 @@ jobs:
   test:
     name: Vet, lint, test, vulnerabilities
     runs-on: ubuntu-latest
+
+    # The store's tests are the only check on the append-only triggers, the
+    # row-level security policies and the tenant isolation they enforce. They
+    # skip without a database, so CI provides one rather than leaving the
+    # whole store untested.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: abhed
+          POSTGRES_PASSWORD: abhed
+          POSTGRES_DB: abhed_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U abhed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +47,20 @@ jobs:
       - name: golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
 
+      # The store refuses to connect as a superuser, because FORCE ROW LEVEL
+      # SECURITY does not apply to one: the isolation tests would pass without
+      # proving anything. The suite gets its own unprivileged role.
+      - name: Create the unprivileged test role
+        env:
+          PGPASSWORD: abhed
+        run: |
+          psql -h localhost -U abhed -d abhed_test \
+            -c "CREATE ROLE abhed_app LOGIN PASSWORD 'abhed';" \
+            -c "GRANT ALL ON SCHEMA public TO abhed_app;"
+
       - name: go test
+        env:
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
         run: go test ./... -count=1 -coverprofile=coverage.out
 
       # A ratchet, not a target: a PR may not lower coverage below what the

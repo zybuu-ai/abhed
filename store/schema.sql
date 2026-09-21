@@ -50,6 +50,39 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- of this file is: it runs on every start.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_tokens BIGINT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_window BIGINT;
+-- A pending approval, durable so the answer can arrive at any node.
+--
+-- The request lives in the memory of the node running the turn, and the
+-- reviewer's answer may land anywhere behind a load balancer. Keeping the
+-- exchange here means a misrouted answer is still delivered, and a node that
+-- dies leaves a visible record rather than a turn waiting on a channel
+-- nobody will ever write to.
+CREATE TABLE IF NOT EXISTS approvals (
+  id          TEXT        PRIMARY KEY,
+  session_id  TEXT        NOT NULL,
+  tenant_id   TEXT        NOT NULL,
+  tool        TEXT        NOT NULL,
+  args        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  reason      TEXT        NOT NULL DEFAULT '',
+  scope       TEXT        NOT NULL DEFAULT '',
+  asked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- NULL until a reviewer answers. Answered rows are kept: who allowed what,
+  -- and when, is part of the record the deployment promised.
+  answered_at TIMESTAMPTZ,
+  approved    BOOLEAN,
+  answered_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS approvals_session ON approvals (tenant_id, session_id, asked_at DESC);
+CREATE INDEX IF NOT EXISTS approvals_open    ON approvals (tenant_id, session_id) WHERE answered_at IS NULL;
+
+ALTER TABLE approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE approvals FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS approvals_tenant_isolation ON approvals;
+CREATE POLICY approvals_tenant_isolation ON approvals
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS node_id TEXT;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS node_seen_at TIMESTAMPTZ;
 

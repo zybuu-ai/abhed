@@ -72,6 +72,23 @@ type SessionRouter interface {
 	NodeFor(ctx context.Context, sessionID string, stale time.Duration) (string, error)
 }
 
+// ApprovalStore is implemented by stores that can hold a pending approval
+// durably, so a reviewer's answer reaches the waiting turn from any node.
+//
+// Without it the exchange stays in memory, which is correct for one server
+// and loses the answer behind a load balancer.
+type ApprovalStore interface {
+	AskApproval(ctx context.Context, a store.Approval) (string, error)
+	AnswerApproval(ctx context.Context, id string, approved bool, by string) (bool, error)
+	ApprovalResult(ctx context.Context, id string) (approved, answered bool, err error)
+	PendingApproval(ctx context.Context, sessionID string) (store.Approval, bool, error)
+}
+
+// approvalPoll is how often a waiting turn checks the database for an answer.
+// Short enough that a reviewer does not notice the delay, long enough that a
+// thirty-minute wait is not thousands of queries.
+const approvalPoll = 2 * time.Second
+
 // nodeStale is how long a claim survives without being refreshed. Longer than
 // any turn boundary, short enough that a node which died does not strand its
 // sessions for long.
@@ -214,6 +231,10 @@ type liveSession struct {
 	cancelCause context.CancelCauseFunc
 	approvals   chan approvalReply
 	pending     *pendingApproval
+	// durable, when set, records the approval so an answer arriving at
+	// another node still reaches this turn. Nil keeps the in-memory
+	// behaviour, which is right for a single server.
+	durable ApprovalStore
 	// allowed holds scopes the reviewer chose to "always allow" for this
 	// session, so default mode stops re-prompting for the same kind of call.
 	// It mirrors the CLI's session AllowList; without it the console asked
@@ -784,6 +805,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
 		approvals: make(chan approvalReply, 1),
 		allowed:   map[string]bool{},
+		durable:   s.approvalStore(),
 	}
 
 	cfg := agent.DefaultConfig()
@@ -1253,10 +1275,13 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
-		// The approval a reviewer just sent is the request that must not be
-		// lost, so this path says where the session actually is rather than
-		// reporting it absent. A proxy reads the header; a person reads the
-		// message.
+		// The session is not here. If the store holds the approval, answer it
+		// anyway: the waiting node polls for the result, so the reviewer's
+		// decision still arrives. This is the case sticky routing exists to
+		// avoid and the one durability exists to survive when it does not.
+		if s.answerElsewhere(w, r, id) {
+			return
+		}
 		if node := s.elsewhere(r.Context(), id); node != "" {
 			w.Header().Set("Abhed-Session-Node", node)
 			WriteError(w, http.StatusMisdirectedRequest,
@@ -1270,6 +1295,14 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+	// Record the decision where the waiting node can see it, whichever node
+	// that is. Harmless when it is this one: the channel below answers first
+	// and the second write finds the row already answered.
+	if d := s.approvalStore(); d != nil {
+		if pending, found, err := d.PendingApproval(r.Context(), id); err == nil && found {
+			_, _ = d.AnswerApproval(r.Context(), pending.ID, req.Approved, UserOf(r.Context()))
+		}
 	}
 
 	select {
@@ -1647,6 +1680,48 @@ func (s *Server) releaseNode(sessionID string) {
 	}
 }
 
+// answerElsewhere records a decision for a session this node is not running,
+// and reports whether it did. The node that is waiting polls for the result,
+// so the answer is delivered without the request ever reaching it.
+func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+	d := s.approvalStore()
+	if d == nil {
+		return false
+	}
+	pending, found, err := d.PendingApproval(r.Context(), sessionID)
+	if err != nil || !found {
+		return false
+	}
+	var req approveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return true
+	}
+	answered, err := d.AnswerApproval(r.Context(), pending.ID, req.Approved, UserOf(r.Context()))
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "could not record the decision")
+		return true
+	}
+	if !answered {
+		WriteError(w, http.StatusConflict, "this approval was already answered")
+		return true
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+// approvalStore reports the store when it can hold approvals durably, and
+// nil when it cannot. Unlike routing this does not need a node id: recording
+// the exchange is worth doing on one node too, because it makes a pending
+// approval visible in the record rather than only in memory.
+func (s *Server) approvalStore() ApprovalStore {
+	a, ok := s.store.(ApprovalStore)
+	if !ok {
+		return nil
+	}
+	return a
+}
+
 // router reports the routing store, and whether routing applies at all.
 // Both a node identity and a store that can record one are required.
 func (s *Server) router() (SessionRouter, bool) {
@@ -1712,21 +1787,65 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 		l.mu.Unlock()
 	}()
 
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case reply := <-l.approvals:
-		// "Always allow" carries the scope back; remember it so the next call
-		// matching the same rule is not re-prompted.
-		if reply.Approved && reply.Scope != "" {
-			l.mu.Lock()
-			l.allowed[reply.Scope] = true
-			l.mu.Unlock()
+	// Record it durably where the store can. The answer may arrive at
+	// another node, and a channel in this process is not reachable from
+	// there. A failure to record is not a reason to refuse the turn: the
+	// in-memory path below still works for an answer that lands here.
+	var durableID string
+	if l.durable != nil {
+		id, err := l.durable.AskApproval(ctx, store.Approval{
+			SessionID: l.ID, Tool: tool, Args: args,
+			Reason: res.Reason, Scope: res.Scope,
+		})
+		if err == nil {
+			durableID = id
 		}
-		return reply.Approved, nil
-	case <-time.After(30 * time.Minute):
-		// Fail closed: an unanswered approval must not become an approval.
-		return false, nil
+	}
+
+	// Poll only when there is something to poll for.
+	var poll <-chan time.Time
+	if durableID != "" {
+		t := time.NewTicker(approvalPoll)
+		defer t.Stop()
+		poll = t.C
+	}
+
+	// Started once, outside the loop: time.After inside it would restart the
+	// deadline on every poll tick and never fire.
+	deadline := time.NewTimer(30 * time.Minute)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+
+		case <-poll:
+			approved, answered, err := l.durable.ApprovalResult(ctx, durableID)
+			if err != nil || !answered {
+				continue
+			}
+			if approved && res.Scope != "" {
+				l.mu.Lock()
+				l.allowed[res.Scope] = true
+				l.mu.Unlock()
+			}
+			return approved, nil
+
+		case reply := <-l.approvals:
+			// "Always allow" carries the scope back; remember it so the next call
+			// matching the same rule is not re-prompted.
+			if reply.Approved && reply.Scope != "" {
+				l.mu.Lock()
+				l.allowed[reply.Scope] = true
+				l.mu.Unlock()
+			}
+			return reply.Approved, nil
+
+		case <-deadline.C:
+			// Fail closed: an unanswered approval must not become an approval.
+			return false, nil
+		}
 	}
 }
 

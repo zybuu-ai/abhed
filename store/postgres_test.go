@@ -328,7 +328,7 @@ func TestDSNRedaction(t *testing.T) {
 func TestScanStreamsWindowInOrder(t *testing.T) {
 	p := openStore(t, "t-scan")
 	other := openStore(t, "t-scan-other")
-	id := "sess-scan-" + t.Name()
+	id := testID(t, "sess-scan-")
 	newSession(t, p, id, "t-scan")
 	newSession(t, other, id+"-other", "t-scan-other")
 
@@ -360,10 +360,17 @@ func TestScanStreamsWindowInOrder(t *testing.T) {
 		t.Errorf("scan returned seqs %v, want [1 2 3]", seen)
 	}
 
-	// A window before anything was written is empty, not an error.
+	// A window that closes before this session was written holds none of its
+	// events. Other sessions in the same tenant may sit in that window, so the
+	// count is scoped to this one.
 	n := 0
 	if err := p.Scan(context.Background(), before.Add(-time.Hour), before,
-		func(agent.Event) error { n++; return nil }); err != nil || n != 0 {
-		t.Errorf("empty window: n=%d err=%v", n, err)
+		func(e agent.Event) error {
+			if e.SessionID == id {
+				n++
+			}
+			return nil
+		}); err != nil || n != 0 {
+		t.Errorf("window closing before the session was written: n=%d err=%v", n, err)
 	}
 }

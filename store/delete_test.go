@@ -16,7 +16,7 @@ import (
 func TestDeleteSessionHidesEverywhereButKeepsRows(t *testing.T) {
 	p := openStore(t, "t-del")
 	ctx := context.Background()
-	id := "sess-del-" + t.Name()
+	id := testID(t, "sess-del-")
 	newSession(t, p, id, "t-del")
 	if err := p.Append(ev(id, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "secret"})); err != nil {
 		t.Fatalf("append: %v", err)
@@ -70,7 +70,7 @@ func TestDeleteSessionHidesEverywhereButKeepsRows(t *testing.T) {
 func TestClaimResumeIsExclusive(t *testing.T) {
 	p := openStore(t, "t-claim")
 	ctx := context.Background()
-	id := "sess-claim-" + t.Name()
+	id := testID(t, "sess-claim-")
 	newSession(t, p, id, "t-claim")
 
 	if ok, _ := p.ClaimResume(ctx, id); ok {

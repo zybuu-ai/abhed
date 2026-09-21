@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // fakeRouter records what the server asked it, so the decision logic can be
@@ -110,4 +113,137 @@ type memoryOnly struct{ EventStore }
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// fakeApprovals stands in for the durable store.
+type fakeApprovals struct {
+	EventStore
+	pending   map[string]store.Approval
+	answered  map[string]bool
+	askErr    error
+	answerErr error
+	asked     int
+}
+
+func newFakeApprovals() *fakeApprovals {
+	return &fakeApprovals{pending: map[string]store.Approval{}, answered: map[string]bool{}}
+}
+
+func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string, error) {
+	if f.askErr != nil {
+		return "", f.askErr
+	}
+	f.asked++
+	a.ID = "ap-test"
+	f.pending[a.SessionID] = a
+	return a.ID, nil
+}
+
+func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bool, _ string) (bool, error) {
+	if f.answerErr != nil {
+		return false, f.answerErr
+	}
+	if _, already := f.answered[id]; already {
+		return false, nil
+	}
+	f.answered[id] = approved
+	return true, nil
+}
+
+func (f *fakeApprovals) ApprovalResult(_ context.Context, id string) (bool, bool, error) {
+	a, ok := f.answered[id]
+	return a, ok, nil
+}
+
+func (f *fakeApprovals) PendingApproval(_ context.Context, sessionID string) (store.Approval, bool, error) {
+	a, ok := f.pending[sessionID]
+	return a, ok, nil
+}
+
+// A store that cannot hold approvals leaves the in-memory path alone, which
+// is correct for a single node.
+func TestApprovalStoreIsOptional(t *testing.T) {
+	s := &Server{store: memoryOnly{}}
+	if s.approvalStore() != nil {
+		t.Fatal("a store that cannot hold approvals was treated as if it could")
+	}
+}
+
+func TestApprovalStoreDetected(t *testing.T) {
+	s := &Server{store: newFakeApprovals()}
+	if s.approvalStore() == nil {
+		t.Fatal("a store that can hold approvals was not detected")
+	}
+}
+
+// The durable record is what lets an answer arrive anywhere. Recording it
+// must not be skipped when the store supports it.
+func TestApprovalIsRecordedDurably(t *testing.T) {
+	f := newFakeApprovals()
+	l := &liveSession{
+		ID: "s-1", approvals: make(chan approvalReply, 1),
+		allowed: map[string]bool{}, durable: f,
+	}
+	// Answer immediately through the durable path so Approve returns.
+	go func() {
+		for f.asked == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "reviewer")
+	}()
+
+	ok, err := l.Approve(context.Background(), "bash",
+		[]byte(`{"command":"ls"}`), policy.Result{Reason: "mutating"})
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if !ok {
+		t.Fatal("an approval answered through the store was not honoured")
+	}
+	if f.asked != 1 {
+		t.Fatalf("asked %d times, want 1 durable record", f.asked)
+	}
+}
+
+// A store that cannot record the request must not block the turn: the
+// in-memory channel still answers for a single node.
+func TestApproveStillWorksWhenRecordingFails(t *testing.T) {
+	f := newFakeApprovals()
+	f.askErr = errors.New("database is down")
+	l := &liveSession{
+		ID: "s-2", approvals: make(chan approvalReply, 1),
+		allowed: map[string]bool{}, durable: f,
+	}
+	l.approvals <- approvalReply{Approved: true}
+
+	ok, err := l.Approve(context.Background(), "bash", []byte(`{}`), policy.Result{})
+	if err != nil || !ok {
+		t.Fatalf("Approve = %v, %v — a failed durable write must not lose the answer", ok, err)
+	}
+}
+
+// An "always allow" scope is remembered whichever path answered.
+func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
+	f := newFakeApprovals()
+	l := &liveSession{
+		ID: "s-3", approvals: make(chan approvalReply, 1),
+		allowed: map[string]bool{}, durable: f,
+	}
+	go func() {
+		for f.asked == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "reviewer")
+	}()
+
+	if _, err := l.Approve(context.Background(), "bash", []byte(`{}`),
+		policy.Result{Scope: "bash(go test*)"}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	l.mu.Lock()
+	remembered := l.allowed["bash(go test*)"]
+	l.mu.Unlock()
+	if !remembered {
+		t.Fatal("the scope was not remembered, so the next matching call re-prompts")
+	}
 }
