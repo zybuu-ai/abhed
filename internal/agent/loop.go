@@ -609,15 +609,27 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 
 	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
 
+	// Only an Ask is short-circuited: a deny is still recorded as a deny.
+	var doomed error
+	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision == policy.Ask {
+		doomed = pc.Precheck(l.Session, call.Args)
+	}
+	if doomed != nil {
+		decision.Reason = "refused before approval: the call could not succeed"
+	}
+
 	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
 		Tool:             call.Name,
 		Args:             call.Args,
-		RequiresApproval: decision.Decision == policy.Ask,
+		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
 		Scope:            decision.Scope,
 	}); err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	if doomed != nil {
+		return false, tools.Result{Content: doomed.Error(), IsError: true}, ""
 	}
 
 	switch decision.Decision {

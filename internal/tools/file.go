@@ -197,6 +197,9 @@ type writeArgs struct {
 	Content string `json:"content"`
 }
 
+// Precheck refuses a path the write could never use, before anyone is asked.
+func (Write) Precheck(s *Session, raw json.RawMessage) error { return precheckPath(s, raw) }
+
 func (Write) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	var a writeArgs
 	if err := json.Unmarshal(raw, &a); err != nil {

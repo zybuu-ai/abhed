@@ -46,6 +46,9 @@ type editArgs struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
+// Precheck refuses a path the edit could never use, before anyone is asked.
+func (Edit) Precheck(s *Session, raw json.RawMessage) error { return precheckPath(s, raw) }
+
 func (Edit) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	var a editArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
