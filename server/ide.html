@@ -131,6 +131,13 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .code{display:grid;grid-template-columns:auto minmax(0,1fr);font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
 .code .ln{padding:0 12px 0 16px;text-align:right;color:var(--muted);user-select:none;font-variant-numeric:tabular-nums;opacity:.7;white-space:pre}
 .code .tx{padding-right:24px;white-space:pre;tab-size:4}
+.code textarea.tx{font:inherit;color:inherit;background:transparent;border:0;outline:0;resize:none;overflow:hidden;width:100%;min-width:60ch;margin:0;padding:0 24px 0 0;display:block}
+.tab .dot{color:var(--warn,#e0a23b);margin-left:2px}
+#term-in{flex:none;display:flex;gap:8px;align-items:center;padding:6px 12px;border-top:1px solid var(--line);font:12px/1.5 var(--mono)}
+#term-in label{color:var(--muted);white-space:nowrap}
+#term-in input{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:0;outline:0}
+.cmd .who{color:var(--muted);font-size:11px;margin-left:6px}
+.call .mine{flex:none;color:var(--muted);font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 5px}
 .diff{font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
 .diff div{padding:0 16px;white-space:pre;tab-size:4}
 .diff .add{background:var(--add-bg);color:var(--add)}.diff .del{background:var(--del-bg);color:var(--del)}
@@ -303,6 +310,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
         <span class="sp"></span>
       </div>
       <div class="pbody" id="p-terminal"></div>
+      <form id="term-in" autocomplete="off"><label for="term-q" id="term-cwd">$</label><input id="term-q" spellcheck="false" aria-label="Run a command in the session sandbox" placeholder="Run a command in the sandbox — same rules as the agent, and recorded"></form>
       <div class="pbody" id="p-problems" hidden></div>
       <div class="pbody" id="p-events" hidden></div>
     </section>
@@ -384,6 +392,7 @@ document.querySelectorAll('#act button[data-view]').forEach(b => b.addEventListe
 function setPanel(name){
   document.querySelectorAll('#ptabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.p === name)));
   ['terminal','problems','events'].forEach(p => { $('p-' + p).hidden = p !== name; });
+  $('term-in').hidden = name !== 'terminal';
   $('app').classList.remove('nopanel');
 }
 document.querySelectorAll('#ptabs button').forEach(b => b.addEventListener('click', () => setPanel(b.dataset.p)));
@@ -434,8 +443,9 @@ function drawTabs(){
     const b = el('div', 'tab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t.id === active)); b.tabIndex = 0;
     if(t.kind === 'diff') b.appendChild(el('span', 'k', 'diff'));
     b.appendChild(el('span', 'nm', t.label)); b.title = t.path || t.label;
+    if(t.dirty) b.appendChild(el('span', 'dot', '●'));
     const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.label);
-    x.addEventListener('click', e => { e.stopPropagation(); closeTab(t.id); });
+    x.addEventListener('click', e => { e.stopPropagation(); if(t.dirty && !x.dataset.sure){ x.dataset.sure = '1'; x.textContent = 'discard?'; return; } closeTab(t.id); });
     b.appendChild(x);
     b.addEventListener('click', () => { active = t.id; drawTabs(); showTab(t); });
     b.addEventListener('keydown', e => { if(e.key === 'Enter') b.click(); });
@@ -447,8 +457,8 @@ function crumbs(path, meta){ $('crumbs').hidden = !path; $('crumb').textContent 
 function welcome(){
   crumbs('', ''); const ed = $('editor'); clear(ed);
   const w = el('div'); w.id = 'welcome';
-  w.appendChild(el('h1', '', 'The agent works on the right. You read along here.'));
-  w.appendChild(el('p', '', 'Open a file from the Explorer, or let the agent make a change and review it under Changes. Everything it runs shows in the Terminal below, and every step is recorded.'));
+  w.appendChild(el('h1', '', 'The agent works on the right. You work here.'));
+  w.appendChild(el('p', '', 'Open a file to edit it, run commands in the Terminal below, or let the agent make a change and review it under Changes. Your edits and commands pass the same policy and sandbox as the agent, and land in the same record.'));
   const dl = el('dl'); const mod = isMac ? '⌘' : 'Ctrl';
   [[[mod,'K'],'Command palette: files, sessions, commands'],[[mod,'B'],'Toggle the side panel'],[[mod,'J'],'Toggle the terminal panel'],
    [[mod,'L'],'Focus the agent'],[['/'],'In the composer: slash commands']].forEach(([keys, what]) => {
@@ -465,11 +475,17 @@ async function showTab(t){
       if(active !== t.id) return;
       if(f.binary){ crumbs(t.path, fmt(f.size) + ' B · binary'); ed.appendChild(el('p', 'note', 'Binary file — not shown.')); return; }
       crumbs(t.path, fmt(f.size) + ' B' + (f.truncated ? ' · truncated' : ''));
-      const lines = f.content.split('\n'); if(lines[lines.length-1] === '') lines.pop();
-      const g = el('div', 'code');
-      g.appendChild(el('div', 'ln', lines.map((_, i) => i + 1).join('\n')));
-      g.appendChild(el('div', 'tx', lines.join('\n')));
-      ed.appendChild(g);
+      if(f.truncated || !f.hash){
+        // Part of a file cannot be saved without losing the rest, so it stays read-only.
+        const lines = f.content.split('\n'); if(lines[lines.length-1] === '') lines.pop();
+        const g = el('div', 'code');
+        g.appendChild(el('div', 'ln', lines.map((_, i) => i + 1).join('\n')));
+        g.appendChild(el('div', 'tx', lines.join('\n')));
+        ed.appendChild(g); return;
+      }
+      if(!t.dirty){ t.text = f.content; t.base = f.hash; }
+      else if(t.base !== f.hash) crumbs(t.path, 'changed on disk since you opened it · your edits are unsaved');
+      drawEditor(t, ed);
     }else{
       const res = await api('/v1/sessions/' + current + '/changes');
       if(active !== t.id) return;
@@ -485,6 +501,26 @@ async function showTab(t){
       ed.appendChild(d);
     }
   }catch(e){ crumbs(t.path, ''); ed.appendChild(el('p', 'note', e.message)); }
+}
+function drawEditor(t, ed){
+  const g = el('div', 'code'), ln = el('div', 'ln'), ta = el('textarea', 'tx');
+  ta.value = t.text; ta.spellcheck = false; ta.wrap = 'off'; ta.setAttribute('aria-label', 'Editing ' + t.path);
+  const fit = () => { const n = ta.value.split('\n').length; ln.textContent = Array.from({length:n}, (_, i) => i + 1).join('\n'); ta.rows = n; };
+  ta.addEventListener('input', () => { t.text = ta.value; if(!t.dirty){ t.dirty = true; drawTabs(); } fit(); crumbs(t.path, 'unsaved · ' + (isMac ? '⌘S' : 'Ctrl S') + ' to save'); });
+  ta.addEventListener('keydown', e => {
+    if(e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault(); ta.setRangeText('\t', ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input'));
+  });
+  g.appendChild(ln); g.appendChild(ta); ed.appendChild(g); fit();
+}
+async function saveActive(){
+  const t = tabs.find(x => x.id === active); if(!t || t.kind !== 'file' || !t.dirty || t.saving) return;
+  t.saving = true; crumbs(t.path, 'saving…');
+  try{
+    const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.text, base:t.base})});
+    t.base = r.hash; t.dirty = false; drawTabs(); crumbs(t.path, 'saved · recorded as your change'); changesSoon(); hawkSoon();
+  }catch(e){ crumbs(t.path, 'not saved — ' + e.message); }
+  t.saving = false;
 }
 const openFile = path => openTab({id:'f:' + path, kind:'file', path, label:path.split('/').pop()});
 const openDiff = path => openTab({id:'d:' + path, kind:'diff', path, label:path.split('/').pop()});
@@ -518,7 +554,7 @@ async function loadChanges(){
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
-  if(!files.length){ box.appendChild(el('div', 'empty', 'The agent has not changed any files in this session. Edits made through write and edit appear here; changes made by shell commands do not.')); return; }
+  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save and edits the agent makes through write and edit appear here; changes made by shell commands do not.')); return; }
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
@@ -528,7 +564,7 @@ async function loadChanges(){
   }
 }
 $('changes-reload').addEventListener('click', loadChanges);
-const changesSoon = () => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t) showTab(t); }, 500); };
+const changesSoon = () => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !(t.kind === 'file' && (t.dirty || document.activeElement.tagName === 'TEXTAREA'))) showTab(t); }, 500); };
 
 /* ---------------------------------------------------------------- tools + extensions */
 function drawCaps(){
@@ -666,27 +702,28 @@ function render(ev){
   case 'agent.message': thinking(false); if(streaming){ streaming.lastChild.textContent = p.text || ''; streaming = null; } else add(bubble('agent', 'abhed', p.text)); break;
   case 'agent.reasoning': { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + (p.text || '').split(/\s+/).length + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); break; }
   case 'action.requested': {
-    thinking(false); streaming = null;
+    const mine = ev.actor === 'user'; if(!mine){ thinking(false); streaming = null; }
     const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
+    if(mine) s.appendChild(el('span', 'mine', 'you'));
     s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s); d.appendChild(el('pre', '', JSON.stringify(p.args, null, 2)));
-    add(d); calls.set(p.call_id, {node:d, res, tool:p.tool, subject:subj});
+    add(d); calls.set(p.call_id, {node:d, res, tool:p.tool, subject:subj, mine});
     if(p.tool === 'todo' && p.args && Array.isArray(p.args.items)) drawPlan(p.args.items);
     if(p.requires_approval && live) askApproval(p);
     break; }
   case 'action.approved': { const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live) thinking(true, 'running ' + (c ? c.tool : 'tool') + '…'); break; }
+    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : p.by === 'user' ? ' · your own action' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
+    settleAsk(p.call_id, 'approved'); if(live && !(c && c.mine)) thinking(true, 'running ' + (c ? c.tool : 'tool') + '…'); break; }
   case 'action.denied': { const c = calls.get(p.call_id);
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }
     settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
   case 'observation': {
-    thinking(false); const c = calls.get(p.call_id); const body = p.content || '';
+    const c = calls.get(p.call_id), mine = !!(c && c.mine); const body = p.content || ''; if(!mine) thinking(false);
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
       c.node.appendChild(el('pre', '', body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''))); }
-    if(p.tool === 'bash') logTerminal(c ? c.subject : '', p);
+    if(p.tool === 'bash') logTerminal(c ? c.subject : '', p, mine ? 'you' : 'agent');
     if(p.tool === 'write' || p.tool === 'edit') changesSoon();
-    if(live) thinking(true, 'thinking…'); hawkSoon(); break; }
+    if(live && !mine) thinking(true, 'thinking…'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
   case 'model.call': stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
     if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
@@ -723,12 +760,29 @@ function settleAsk(callID, how){
     const b = a.querySelector('.btns'); if(b) b.remove(); if(!a.querySelector('.done')) a.appendChild(el('div', 'done', how)); }
 }
 
-function logTerminal(cmd, p){
-  const box = $('p-terminal'), c = el('div', 'cmd'); c.appendChild(el('div', 'p', cmd));
+function logTerminal(cmd, p, who){
+  const box = $('p-terminal'), c = el('div', 'cmd'), head = el('div', 'p', cmd);
+  head.appendChild(el('span', 'who', who || 'agent')); c.appendChild(head);
   if(p.content) c.appendChild(el('div', 'o' + (p.is_error ? ' err' : ''), p.content.slice(0, 8000)));
   c.appendChild(el('div', 'x', (p.duration_ms || 0) + 'ms' + (caps ? ' · sandbox tier: ' + caps.sandbox.tier : '')));
   box.appendChild(c); box.scrollTop = box.scrollHeight; $('n-term').textContent = ' ' + (++termN);
 }
+const termHist = []; let termAt = 0;
+$('term-in').addEventListener('submit', async e => {
+  e.preventDefault(); const q = $('term-q'), cmd = q.value.trim(); if(!cmd) return;
+  if(!current){ logTerminal(cmd, {content:'Start or open a session first: commands run in its sandbox.', is_error:true}, 'you'); return; }
+  termHist.push(cmd); termAt = termHist.length; q.value = ''; q.disabled = true;
+  try{
+    const r = await api('/v1/sessions/' + current + '/exec', {method:'POST', body: JSON.stringify({command:cmd})});
+    $('term-cwd').textContent = (r.cwd && r.cwd !== '.' ? r.cwd + ' ' : '') + '$';
+    changesSoon(); hawkSoon();
+  }catch(err){ logTerminal(cmd, {content:err.message, is_error:true}, 'you'); }
+  q.disabled = false; q.focus();
+});
+$('term-q').addEventListener('keydown', e => {
+  if(e.key === 'ArrowUp' && termAt > 0){ e.preventDefault(); $('term-q').value = termHist[--termAt]; }
+  else if(e.key === 'ArrowDown' && termAt < termHist.length){ e.preventDefault(); $('term-q').value = termHist[++termAt] || ''; }
+});
 function logEvent(ev, p){
   if(ev.type === 'agent.delta') return;
   const box = $('p-events'), r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
@@ -848,6 +902,7 @@ $('pal').addEventListener('pointerdown', e => { if(e.target === $('pal')) closeP
 document.addEventListener('keydown', e => {
   const mod = isMac ? e.metaKey : e.ctrlKey; if(!mod) return; const k = e.key.toLowerCase();
   if(k === 'k' || k === 'p'){ e.preventDefault(); if($('pal').hidden) openPal(); else closePal(); }
+  else if(k === 's'){ e.preventDefault(); saveActive(); }
   else if(k === 'b'){ e.preventDefault(); $('app').classList.toggle('noside'); }
   else if(k === 'j'){ e.preventDefault(); $('app').classList.toggle('nopanel'); }
   else if(k === 'l'){ e.preventDefault(); $('app').dataset.pane = 'agent'; $('q').focus(); }

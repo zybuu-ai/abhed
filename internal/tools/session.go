@@ -75,6 +75,21 @@ func NewSession(root string) (*Session, error) {
 		reads: make(map[string]string)}, nil
 }
 
+// Fork returns a session over the same roots with its own working directory
+// and read tracking. The workbench gives one to the person at the keyboard, so
+// a cd in their terminal never moves the agent, and changes still checkpoint.
+func (s *Session) Fork() *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &Session{
+		Root: s.Root, Cwd: s.Root, rawRoot: s.rawRoot,
+		rawRoots:   append([]string(nil), s.rawRoots...),
+		Roots:      append([]string(nil), s.Roots...),
+		Checkpoint: s.Checkpoint,
+		reads:      make(map[string]string),
+	}
+}
+
 // AddRoot grants access to another directory. Called from config or a CLI
 // flag at startup; there is deliberately no tool that reaches this.
 func (s *Session) AddRoot(dir string) error {
