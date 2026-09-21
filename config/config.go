@@ -145,7 +145,13 @@ type PermissionsConfig struct {
 }
 
 type ContextConfig struct {
-	CompactAt   float64  `json:"compact_at"`
+	CompactAt float64 `json:"compact_at"`
+	// OffloadAt is the fraction of the context window at which old, large
+	// tool results are replaced in the window by a stub; the full text stays
+	// in the session record and the recall tool reads it back. It should sit
+	// well below compact_at, so the free and lossless step runs first. Zero
+	// turns it off; unset means 0.60.
+	OffloadAt   *float64 `json:"offload_at,omitempty"`
 	MemoryFiles []string `json:"memory_files"`
 }
 
@@ -638,6 +644,9 @@ func (c Config) Validate() error {
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
 	}
+	if o := c.Context.OffloadAt; o != nil && (*o < 0 || *o >= c.Context.CompactAt) {
+		return fmt.Errorf("context.offload_at must be 0 (off) or below compact_at (%v), got %v", c.Context.CompactAt, *o)
+	}
 	switch c.Auth.Mode {
 	case "none", "proxy", "oidc", "local", "":
 	default:
@@ -717,4 +726,13 @@ type ScheduleConfig struct {
 	Mode     string `json:"mode,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Disabled bool   `json:"disabled,omitempty"`
+}
+
+// OffloadFraction resolves context.offload_at: unset is the default, an
+// explicit zero is off. A pointer because those two have to stay different.
+func (c ContextConfig) OffloadFraction() float64 {
+	if c.OffloadAt == nil {
+		return 0.60
+	}
+	return *c.OffloadAt
 }

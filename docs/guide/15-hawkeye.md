@@ -42,7 +42,7 @@ refuse a record that is not whole.
 |---|---|
 | Summary | outcome, wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
 | Findings | rules over the record, each naming its evidence by sequence number |
-| Context per turn | what each turn sent to the model, how much of it was served from cache, where compaction cut |
+| Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through, duration, exit code, output |
 | Turns | per-turn tokens, time to first token, total latency |
 | Files | what the file tools read and wrote |

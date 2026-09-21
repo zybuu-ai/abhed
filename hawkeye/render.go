@@ -51,8 +51,8 @@ func Text(r Report) string {
 	fmt.Fprintf(&b, "  turns     %d   tool calls %d   events %d\n", t.Turns, t.ToolCalls, t.Events)
 	fmt.Fprintf(&b, "  tokens    %s in · %s out · %.0f%% cached\n", commas(t.TokensIn), commas(t.TokensOut), t.CacheHitRate*100)
 	if t.Window > 0 {
-		fmt.Fprintf(&b, "  context   peak %s of %s (%d%%)   compactions %d\n",
-			commas(t.PeakContext), commas(t.Window), t.PeakContext*100/t.Window, len(r.Compactions))
+		fmt.Fprintf(&b, "  context   peak %s of %s (%d%%)   compactions %d   offloads %d   recalls %d\n",
+			commas(t.PeakContext), commas(t.Window), t.PeakContext*100/t.Window, len(r.Compactions), len(r.Offloads), t.Recalls)
 	}
 	fmt.Fprintf(&b, "  policy    %d allowed · %d denied · %d asked a reviewer   %s\n",
 		r.Policy.Allowed, r.Policy.Denied, r.Policy.Reviewer, steps(r.Policy.ByStep))
@@ -159,6 +159,15 @@ func chart(r Report) template.HTML {
 			if t.Seq > c.Seq {
 				fmt.Fprintf(&b, `<line x1="%.1f" y1="0" x2="%.1f" y2="%.0f" class="cut"><title>compaction: %s → %s</title></line>`,
 					pad+float64(i)*bw, pad+float64(i)*bw, h, commas(c.Before), commas(c.After))
+				break
+			}
+		}
+	}
+	for _, o := range r.Offloads {
+		for i, t := range r.Turns {
+			if t.Seq > o.Seq {
+				fmt.Fprintf(&b, `<line x1="%.1f" y1="0" x2="%.1f" y2="%.0f" class="off"><title>offloaded %d results: %s → %s</title></line>`,
+					pad+float64(i)*bw, pad+float64(i)*bw, h, o.Results, commas(o.Before), commas(o.After))
 				break
 			}
 		}

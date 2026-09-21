@@ -288,6 +288,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	loopCfg.MaxTurns = cfg.Limits.MaxTurns
 	loopCfg.MaxTokens = cfg.Limits.MaxTokens
 	loopCfg.CompactAt = cfg.Context.CompactAt
+	loopCfg.OffloadAt = cfg.Context.OffloadFraction()
 
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Tools: registry, Policy: pol,

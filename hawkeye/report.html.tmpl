@@ -40,6 +40,7 @@ svg{width:100%;height:auto;display:block}
 svg .cold{fill:var(--cold)}svg .warm{fill:var(--warm)}
 svg .lim{stroke:var(--crit);stroke-width:1;stroke-dasharray:4 3}
 svg .cut{stroke:var(--warn);stroke-width:1.5}
+svg .off{stroke:var(--ok);stroke-width:1.5;stroke-dasharray:3 2}
 svg .ax{font:10px var(--mono);fill:var(--dim)}
 .legend{font:12px var(--mono);color:var(--dim);margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 18px}
 .legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
@@ -79,7 +80,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
     <div><dt>Duration</dt><dd>{{ms .Totals.DurationMS}}</dd><small>model {{ms .Totals.ModelMS}} · tools {{ms .Totals.ToolMS}}</small></div>
     <div><dt>Turns</dt><dd>{{.Totals.Turns}}</dd><small>{{.Totals.ToolCalls}} tool calls · {{.Totals.Events}} events</small></div>
     <div><dt>Tokens in</dt><dd>{{n .Totals.TokensIn}}</dd><small>{{pct .Totals.CacheHitRate}} cached · {{n .Totals.TokensOut}} out</small></div>
-    <div><dt>Peak context</dt><dd>{{n .Totals.PeakContext}}</dd><small>{{if .Totals.Window}}of {{n .Totals.Window}} window · {{end}}{{len .Compactions}} compactions</small></div>
+    <div><dt>Peak context</dt><dd>{{n .Totals.PeakContext}}</dd><small>{{if .Totals.Window}}of {{n .Totals.Window}} window · {{end}}{{len .Compactions}} compactions · {{len .Offloads}} offloads · {{.Totals.Recalls}} recalls</small></div>
     <div><dt>Policy</dt><dd>{{.Policy.Allowed}} / {{.Policy.Denied}}</dd><small>allowed / denied · {{.Policy.Reviewer}} asked a reviewer</small></div>
     <div><dt>Record</dt><dd class="{{if .Integrity.Gaps}}denied{{else}}allowed{{end}}">{{if .Integrity.Gaps}}gaps{{else}}whole{{end}}</dd><small>#{{.Integrity.FirstSeq}}–#{{.Integrity.LastSeq}} · {{.Totals.Untrusted}} untrusted observations</small></div>
   </dl>
@@ -105,6 +106,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
     <span><i style="background:var(--warm)"></i>served from cache</span>
     <span><i style="background:var(--crit);height:2px;vertical-align:3px"></i>window</span>
     <span><i style="background:var(--warn);width:2px"></i>compaction</span>
+    <span><i style="background:var(--ok);width:2px"></i>offload (nothing lost)</span>
   </div>
 </section>
 {{end}}
