@@ -315,7 +315,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
 		}
 		data, rerr := os.ReadFile(path)
-		if rerr != nil || isBinary(data) {
+		if rerr != nil || IsBinary(data) {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
 		}
 
