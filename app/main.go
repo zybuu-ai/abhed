@@ -1170,6 +1170,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Gateway:       gateway,
 		Index:         searchIndex,
 		IndexOptions:  indexOptions(cfg),
+		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 	}
 	for _, h := range a.serverOpts {
 		if err := h(cfg, &opts); err != nil {

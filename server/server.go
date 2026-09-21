@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/auth"
@@ -190,6 +191,10 @@ type Options struct {
 	// Index backs the retrieval tool, for a reindex triggered from settings.
 	Index        *index.Index
 	IndexOptions index.BuildOptions
+	// DrainTimeout is how long a shutdown waits for running turns to finish
+	// before cancelling them. Zero keeps the old behaviour of ending them at
+	// once, which is what a single-node deployment with no balancer wants.
+	DrainTimeout time.Duration
 }
 
 // Server holds live sessions and serves the API.
@@ -200,6 +205,9 @@ type Server struct {
 	log      *slog.Logger
 	mu       sync.RWMutex
 	running  map[string]*liveSession
+	// draining is set once shutdown starts: running turns finish, new ones
+	// are refused so a balancer sends them to a node that can take them.
+	draining atomic.Bool
 
 	// Throttles for the endpoints reachable before authentication succeeds.
 	signinLimiter  *limiter
@@ -744,6 +752,9 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	live.cancelCause = cancelCause
 	live.Turns = 1
 
+	if s.draining.Load() {
+		return "", errDraining
+	}
 	s.mu.Lock()
 	s.running[sessionID] = live
 	s.mu.Unlock()
@@ -844,6 +855,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 // sequence as the old ones. This is what lets a session outlive the process
 // that started it — and, behind a load balancer, the node.
 func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, tenant string) (*liveSession, error) {
+	if s.draining.Load() {
+		return nil, errDraining
+	}
 	events, err := s.store.Events(id)
 	if err != nil {
 		return nil, fmt.Errorf("read record: %w", err)
@@ -911,6 +925,12 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	live.State = "done"
 
 	s.mu.Lock()
+	// Re-checked under the lock: a drain that began while the record was
+	// being read must not leave a turn running on a node that is exiting.
+	if s.draining.Load() {
+		s.mu.Unlock()
+		return nil, errDraining
+	}
 	if _, already := s.running[id]; already {
 		s.mu.Unlock()
 		return nil, errBusySession
@@ -924,6 +944,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 var (
 	errNoSession   = errors.New("session not found")
 	errBusySession = errors.New("session is already running")
+	// errDraining means this node is shutting down. It is not a failure: the
+	// caller should be sent to a node that is still accepting work.
+	errDraining = errors.New("server is draining")
 )
 
 type sessionSummary struct {
@@ -1196,6 +1219,12 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		case errors.Is(err, errBusySession):
 			WriteError(w, http.StatusConflict, "session is being continued elsewhere")
+			return
+		case errors.Is(err, errDraining):
+			// 503 with Retry-After is what a balancer reads as "take me out
+			// of rotation", rather than as an error to show the user.
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 			return
 		case err != nil:
 			s.log.Error("resume failed", "session", id, "error", err)
@@ -1915,15 +1944,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	go func() {
 		<-ctx.Done()
-		// End in-flight runs with a stated cause first, so they record as
-		// shutdown rather than as a user interrupt.
-		s.mu.Lock()
-		for _, live := range s.running {
-			if live.cancelCause != nil {
-				live.cancelCause(agent.ErrShutdown)
-			}
-		}
-		s.mu.Unlock()
+		s.drain()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -1933,6 +1954,67 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}()
 	s.log.Info("abhed server listening", "addr", s.opts.Addr, "workspace", s.opts.Workspace)
 	return srv.ListenAndServe()
+}
+
+// drain stops this node taking new turns and gives the running ones until
+// DrainTimeout to finish. What is still running when the budget runs out is
+// cancelled with a stated cause, so it records as a shutdown rather than as a
+// user interrupt and can be resumed on another node.
+//
+// With no budget configured this is the old behaviour: end everything at once.
+func (s *Server) drain() {
+	s.draining.Store(true)
+
+	if s.opts.DrainTimeout > 0 {
+		deadline := time.NewTimer(s.opts.DrainTimeout)
+		defer deadline.Stop()
+		poll := time.NewTicker(100 * time.Millisecond)
+		defer poll.Stop()
+
+		if n := s.runningCount(); n > 0 {
+			s.log.Info("draining", "turns", n, "budget", s.opts.DrainTimeout)
+		}
+		for s.runningCount() > 0 {
+			select {
+			case <-deadline.C:
+				s.log.Warn("drain budget spent, ending turns still running",
+					"turns", s.runningCount())
+				s.cancelRunning()
+				return
+			case <-poll.C:
+			}
+		}
+		s.log.Info("drained with no turns left running")
+		return
+	}
+	s.cancelRunning()
+}
+
+func (s *Server) runningCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, live := range s.running {
+		live.mu.Lock()
+		state := live.State
+		live.mu.Unlock()
+		// A session sitting at "done" is resumable but not working; it holds
+		// no turn, so waiting on it would spend the whole budget for nothing.
+		if state != "done" {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Server) cancelRunning() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, live := range s.running {
+		if live.cancelCause != nil {
+			live.cancelCause(agent.ErrShutdown)
+		}
+	}
 }
 
 // tapStore forwards to the real store and hands each appended event to a

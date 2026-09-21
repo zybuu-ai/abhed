@@ -47,6 +47,13 @@ Policy reads it; the context assembler renders it in a distinct structural block
 depend on distinguishing them (§09):
 `completed · max_turns · max_budget · policy_denied · user_interrupt · error · shutdown · retry_exhausted`
 
+`shutdown` means the node exited while the turn was running, and it is
+deliberately distinct from `user_interrupt`: nobody asked for it to stop, so it
+is a turn to resume rather than a decision to respect. With `server.drain_seconds`
+set, a shutdown first stops accepting turns — new requests get 503 with
+`Retry-After` so a balancer moves on — and waits for the running ones, so a
+rolling deploy records no `shutdown` at all unless a turn outlives the budget.
+
 ## 2. Schema
 
 ```sql

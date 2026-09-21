@@ -263,6 +263,15 @@ type ServerConfig struct {
 	// Empty means "answer on whatever host the request names", which is the
 	// only workable default for a laptop or an air-gapped install.
 	CanonicalHost string `json:"canonical_host,omitempty"`
+	// DrainSeconds is how long a shutdown lets running turns finish before
+	// ending them. Behind a load balancer this is what makes a rolling deploy
+	// stop interrupting work: the node refuses new turns with a 503 and exits
+	// once the ones in flight are done.
+	//
+	// Zero ends turns at once, which is right for a single node with nowhere
+	// to drain to. Turns still running when the budget is spent are recorded
+	// as a shutdown and can be resumed elsewhere.
+	DrainSeconds int `json:"drain_seconds,omitempty"`
 }
 
 // RetrievalConfig controls the on-prem index. Retrieval is an accelerator over

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,5 +112,26 @@ func TestWriteDefaultRoundTrips(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("written default must validate: %v", err)
+	}
+}
+
+// The drain budget has to survive a round trip through the config file, or a
+// deployment sets it and the node still ends turns at once.
+func TestDrainSecondsRoundTrips(t *testing.T) {
+	var c Config
+	if err := json.Unmarshal([]byte(`{"server":{"drain_seconds":45}}`), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if c.Server.DrainSeconds != 45 {
+		t.Fatalf("drain_seconds = %d, want 45", c.Server.DrainSeconds)
+	}
+
+	// Absent means zero, which is the documented "end turns at once".
+	var d Config
+	if err := json.Unmarshal([]byte(`{"server":{}}`), &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if d.Server.DrainSeconds != 0 {
+		t.Fatalf("an unset drain_seconds became %d", d.Server.DrainSeconds)
 	}
 }
