@@ -318,14 +318,21 @@ replayed — which is what audit requires.
 
 ```bash
 createdb abhed
-psql -d abhed -c "CREATE ROLE abhed_app LOGIN PASSWORD 'changeme';"
-psql -d abhed -c "GRANT ALL ON SCHEMA public TO abhed_app;"
+psql -d abhed -c "CREATE ROLE abhed_owner   LOGIN PASSWORD 'changeme';"   # owns the tables
+psql -d abhed -c "CREATE ROLE abhed_runtime LOGIN PASSWORD 'changeme';"   # what abhed runs as
+psql -d abhed -c "GRANT ALL ON SCHEMA public TO abhed_owner;"
 
-export ABHED_DATABASE_URL="postgres://abhed_app:changeme@localhost:5432/abhed"
-abhed doctor     # confirms "postgres (durable...)"
+export ABHED_DATABASE_URL="postgres://abhed_runtime:changeme@localhost:5432/abhed"
+ABHED_MIGRATE_DATABASE_URL="postgres://abhed_owner:changeme@localhost:5432/abhed" abhed migrate
+abhed doctor     # confirms "postgres (durable…" and "record protected"
 ```
 
-The schema applies automatically on first start. Then:
+Two roles because the one that owns a table can switch off the triggers that
+make the record append-only. `abhed migrate` applies the schema as the owner
+and gives the runtime role only what the server uses. For a quick trial, one
+role and `"storage": {"single_role": true}` works too — with the weaker
+guarantee the [configuration guide](docs/guide/02-configuration.md) spells out.
+Then:
 
 ```
 › /sessions

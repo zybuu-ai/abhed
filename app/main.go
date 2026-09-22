@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/hawkeye"
@@ -99,6 +100,8 @@ func Main(args []string, opts ...Option) int {
 		return providersCmd()
 	case "hawkeye":
 		return hawkeyeCmd(workspace, fs.Args()[1:])
+	case "migrate":
+		return migrateCmd(workspace)
 	case "rpc":
 		// Line-delimited JSON on stdin and stdout, so a caller in any language
 		// can drive Abhed as a subprocess without running a server.
@@ -1111,9 +1114,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 			fmt.Printf("            UNAVAILABLE — %v\n", err)
 		} else {
 			if pg, ok := st.(*store.Postgres); ok {
-				if sessions, events, err := pg.Stats(context.Background()); err == nil {
-					fmt.Printf("            %d sessions · %d events persisted\n", sessions, events)
-				}
+				printStoreStatus(pg)
 			}
 			closeFn()
 		}
@@ -1795,14 +1796,7 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 	if cfg.Storage.Driver != "postgres" {
 		return agent.NewMemStore(), func() {}, nil
 	}
-	sc := store.DefaultConfig(cfg.Storage.DSN)
-	if cfg.Storage.Tenant != "" {
-		sc.Tenant = cfg.Storage.Tenant
-	}
-	if cfg.Storage.MaxConns > 0 {
-		sc.MaxConns = int32(cfg.Storage.MaxConns)
-	}
-	pg, err := store.Open(ctx, sc)
+	pg, err := store.Open(ctx, storeConfig(cfg))
 	if err != nil {
 		return nil, nil, fmt.Errorf("open event store: %w", err)
 	}
@@ -1811,7 +1805,13 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 
 func storageLabel(cfg config.Config) string {
 	if cfg.Storage.Driver == "postgres" {
-		return "postgres (durable, tenant=" + orDefault(cfg.Storage.Tenant, "default") + ")"
+		// Only what configuration says. Whether the record is protected is a
+		// fact about the connection, and doctor reports it after asking.
+		label := "postgres (durable, tenant=" + orDefault(cfg.Storage.Tenant, "default")
+		if cfg.Storage.SingleRole {
+			label += "; single_role: the server's role can alter the record"
+		}
+		return label + ")"
 	}
 	return "memory (sessions do not survive restart)"
 }
@@ -1900,6 +1900,7 @@ func userStore(cfg config.Config, workspace string) (auth.UserStore, error) {
 
 func storeConfig(cfg config.Config) store.Config {
 	sc := store.DefaultConfig(cfg.Storage.DSN)
+	sc.SingleRole = cfg.Storage.SingleRole
 	if cfg.Storage.Tenant != "" {
 		sc.Tenant = cfg.Storage.Tenant
 	}
@@ -2235,9 +2236,7 @@ func (a *App) doctor(workspace string) int {
 			fmt.Printf("            UNAVAILABLE — %v\n", err)
 		} else {
 			if pg, ok := st.(*store.Postgres); ok {
-				if sessions, events, err := pg.Stats(context.Background()); err == nil {
-					fmt.Printf("            %d sessions · %d events persisted\n", sessions, events)
-				}
+				printStoreStatus(pg)
 			}
 			closeFn()
 		}
@@ -2578,4 +2577,47 @@ func writeHawkeye(path string, rep hawkeye.Report) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+// migrateCmd applies the schema as the owning role and grants the runtime role
+// what the server needs. It is the one place the owner's credentials are used.
+func migrateCmd(workspace string) int {
+	cfg, err := config.Load(workspace)
+	if err != nil {
+		fail(err)
+	}
+	if cfg.Storage.Driver != "postgres" {
+		fmt.Fprintln(os.Stderr, "abhed: storage.driver is not postgres; there is nothing to migrate")
+		return 2
+	}
+	if cfg.Storage.MigrateDSN == "" {
+		fmt.Fprintln(os.Stderr, "abhed: no owner connection. Set ABHED_MIGRATE_DATABASE_URL (or storage.migrate_dsn) to the role\n"+
+			"that should own the tables. It must differ from the role in storage.dsn, which the server runs as.")
+		return 2
+	}
+	runtime, err := pgx.ParseConfig(cfg.Storage.DSN)
+	if err != nil {
+		fail(fmt.Errorf("storage.dsn: %w", err))
+	}
+	if err := store.Provision(context.Background(), store.ProvisionConfig{
+		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User,
+	}); err != nil {
+		fail(err)
+	}
+	fmt.Printf("Schema applied. %q may insert and read events and cannot change or remove them.\n"+
+		"Keep the owner's credentials off the host that runs the server.\n", runtime.User)
+	return 0
+}
+
+// printStoreStatus reports what the connection found, not what the config
+// hoped for: how much is stored, and whether this role could alter it.
+func printStoreStatus(pg *store.Postgres) {
+	if sessions, events, err := pg.Stats(context.Background()); err == nil {
+		fmt.Printf("            %d sessions · %d events persisted\n", sessions, events)
+	}
+	if pg.RecordProtected() {
+		fmt.Println("            record protected — this role cannot change or remove events")
+		return
+	}
+	fmt.Println("            record NOT protected from this server's credentials (storage.single_role)")
 }

@@ -44,6 +44,11 @@ CREATE INDEX IF NOT EXISTS users_email_idx  ON users (email) WHERE email <> '';
 // against a table that already existed.
 func (p *Postgres) MigrateUsers(ctx context.Context) error {
 	p.usersOnce.Do(func() {
+		// A runtime role owns nothing and cannot create a table; Provision
+		// made this one alongside the rest.
+		if p.protected {
+			return
+		}
 		if _, err := p.pool.Exec(ctx, usersSchema); err != nil {
 			p.usersErr = fmt.Errorf("apply users schema: %w", err)
 		}

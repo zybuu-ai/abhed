@@ -67,12 +67,30 @@ jobs:
         run: |
           psql -h localhost -U abhed -d abhed_test \
             -c "CREATE ROLE abhed_app LOGIN PASSWORD 'abhed';" \
-            -c "GRANT ALL ON SCHEMA public TO abhed_app;"
+            -c "GRANT ALL ON SCHEMA public TO abhed_app;" \
+            -c "CREATE ROLE abhed_runtime LOGIN PASSWORD 'abhed';"
 
       - name: go test
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
         run: go test ./... -count=1 -coverprofile=coverage.out
+
+      # abhed_app owns the tables; abhed_runtime is what a server should run
+      # as. These tests are the evidence that the audit record cannot be
+      # altered with the server's credentials, and they skip without the second
+      # role — so a skip here fails the build rather than reading as a pass.
+      - name: The audit record's privilege separation was actually tested
+        env:
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused' > record.log 2>&1 || { cat record.log; exit 1; }
+          for t in TestRuntimeRoleCannotAlterTheRecord TestRuntimeRoleCanDoItsJob TestOpenRefusesARoleThatCanAlterTheRecord TestTruncateIsRefused; do
+            grep -q -- "--- PASS: $t" record.log || { echo "$t did not run and pass:"; grep -- "$t" record.log || true; exit 1; }
+          done
+          echo "all four ran and passed"
 
       # A ratchet, not a target: a PR may not lower coverage below what the
       # tree already achieves. Raising the floor is a deliberate commit.
@@ -90,6 +108,7 @@ jobs:
       - name: Race detector
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
         run: go test ./... -race -count=1
 
       # A skipped boundary test reads exactly like a passing one, and the trust

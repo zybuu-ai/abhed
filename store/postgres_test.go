@@ -25,7 +25,7 @@ func testDSN(t *testing.T) string {
 
 func openStore(t *testing.T, tenant string) *Postgres {
 	t.Helper()
-	cfg := DefaultConfig(testDSN(t))
+	cfg := singleRoleConfig(testDSN(t))
 	cfg.Tenant = tenant
 	p, err := Open(context.Background(), cfg)
 	if err != nil {

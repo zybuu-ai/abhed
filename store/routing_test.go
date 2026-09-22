@@ -14,7 +14,7 @@ func routingStore(t *testing.T) (*Postgres, context.Context) {
 		t.Skip("set ABHED_TEST_DSN to run routing tests")
 	}
 	ctx := context.Background()
-	pg, err := Open(ctx, DefaultConfig(dsn))
+	pg, err := Open(ctx, singleRoleConfig(dsn))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
