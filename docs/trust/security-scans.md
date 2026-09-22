@@ -252,7 +252,7 @@ finding, or a new one once it has been triaged here, is followed by
 |---|---|---|
 | G104 | 61 | Unchecked error return |
 | G304 | 24 | Potential file inclusion via variable |
-| G204 | 12 | Subprocess launched with a variable |
+| G204 | 13 | Subprocess launched with a variable |
 | G115 | 8 | Integer overflow on type conversion |
 | G703 | 7 | Path traversal (taint analysis) |
 | G306 | 6 | File written with permissions looser than 0600 |
@@ -261,7 +261,7 @@ finding, or a new one once it has been triaged here, is followed by
 | G124 | 4 | Cookie missing Secure/HttpOnly/SameSite |
 | G122 | 2 | Filesystem op inside a `Walk`/`WalkDir` callback is TOCTOU-prone |
 | G203 | 1 | `template.HTML` used without escaping |
-| G705 | 1 | XSS via a response write |
+| G705 | 2 | XSS via a response write |
 | G404, G402, G704, G106, G120, G302 | 1 each | Weak RNG, insecure TLS config, SSRF heuristic, insecure SSH host-key check, unbounded form parsing, loose file permission |
 
 **Triage counts across all 138:**
@@ -309,7 +309,7 @@ inside the configured workspace root(s) — or `Server.resolveInWorkspace`
 | Medium | internal/tools/session.go:55 | `os.ReadFile` in `recordChange` | False positive — internal helper called only with pre-resolved paths |
 | Medium | internal/tools/session.go:252 | `os.ReadFile` in `ChangedSinceRead` | False positive — same |
 
-#### G204 — subprocess launched with a variable (12 findings)
+#### G204 — subprocess launched with a variable (13 findings)
 
 | Severity | file:line | Finding | Triage |
 |---|---|---|---|
@@ -324,6 +324,7 @@ inside the configured workspace root(s) — or `Server.resolveInWorkspace`
 | High | internal/sandbox/container.go:195 | `exec.CommandContext(ctx, c.runtime, ..., "/bin/sh", "-c", command)` — the model's shell command reaching a shell inside the container sandbox | Accepted with reason — this is the sandbox's actual job; the Dockerfile's own top comment states the in-process path check "is not a boundary against an attacker who reaches the process" and that the container is what makes the boundary real. Isolation is enforced by the container profile (verified below in §6), not by refusing this call |
 | High | internal/sandbox/process.go:157 | same pattern for the macOS `sandbox-exec` / Linux `bwrap` backends | Accepted with reason — same, isolation enforced by the seatbelt profile / bwrap namespace flags |
 | Low | internal/sandbox/process.go:243 | `exec.CommandContext(ctx, "bash", "-c", command)` in the `None` (no-isolation) tier | Accepted with reason — tier is explicitly named and self-describes as `"NO ISOLATION — commands run directly on the host. Trusted repositories only."` The risk is disclosed by the tier's own `Describe()`, not hidden |
+| High | server/pty.go:125 | `exec.CommandContext(ctx, "bash", "-c", req.Command)` — a line typed into the workbench terminal, when no `Sandbox` function is configured | Accepted with reason — the same fallback as bash.go:151, for the person at the keyboard rather than the model. The line has already passed the policy engine as a `bash` call (`ManualAuthorize`), is recorded, and normally runs through the sandbox's own command builder; the fallback is the same `Sandbox == nil` deployment concern flagged below |
 | High | internal/tools/bash.go:151 | `exec.CommandContext(runCtx, "bash", "-c", a.Command)` — the fallback when no `Sandbox` function is configured at all | Accepted with reason for the exec call itself (same "the bash tool runs shell commands" design). **The real risk is upstream**: whether a deployment can reach production with `b.Sandbox == nil`. Flagged in Recommended fixes below |
 
 #### G104 — unchecked errors (61 findings, all LOW)
@@ -396,6 +397,7 @@ injected content run in a reviewer's browser", not as boilerplate.
 | file | Rule | Triage |
 |---|---|---|
 | `hawkeye/render.go` (`chart`) | G203 — `template.HTML` bypasses escaping | **False positive.** The function builds an SVG from integers and floats through `%d`/`%.1f` and from `commas()`, which formats an `int`. No string from the record reaches it. Everything else on the page goes through `html/template`'s contextual escaping |
+| `server/capabilities.go` (`serveIDEVendor`) | G705 — XSS via response write | **False positive.** The bytes written are files compiled into the binary with `go:embed` (the editor and terminal components under `server/ide/vendor`), chosen by a path that is looked up in that embedded tree and never read from disk or from the request beyond the file name. They are served with an explicit content type and `nosniff`; `TestIDEVendorServesOnlyEmbeddedFiles` asks for a path outside the tree and fails if anything but 404 comes back |
 | `server/server.go` (`hawkeyeSession`) | G705 — XSS via response write | **False positive.** The bytes written are `html/template` output. The handler also sends `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, so a future template mistake still cannot execute script or load anything. `TestHTMLEscapesHostileToolOutput` feeds the renderer `<script>` and `onerror` payloads in the session id, the prompt, the arguments and the tool output, and fails if any arrives unescaped |
 | `app/main.go` (`hawkeyeCmd`) | G304 — file inclusion via variable | **Accepted.** `abhed hawkeye <file>` reads the events file the operator named on their own command line, with their own permissions. It is not model- or request-controlled |
 

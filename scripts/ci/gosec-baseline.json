@@ -38,6 +38,7 @@
  "G204 internal/sandbox/container.go": 3,
  "G204 internal/sandbox/process.go": 2,
  "G204 internal/tools/bash.go": 1,
+ "G204 server/pty.go": 1,
  "G301 config/config.go": 1,
  "G301 internal/agent/parallel.go": 2,
  "G301 internal/eval/eval.go": 2,
@@ -66,6 +67,7 @@
  "G703 server/upload.go": 2,
  "G703 server/workbench.go": 1,
  "G704 internal/remote/ssh.go": 1,
+ "G705 server/capabilities.go": 1,
  "G705 server/server.go": 1,
  "G710 server/security.go": 1
 }

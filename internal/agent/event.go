@@ -38,7 +38,10 @@ const (
 	EvCompactDone     EventType = "compaction.completed"
 	EvPlanUpdated     EventType = "plan.updated"
 	EvTodoUpdated     EventType = "todo.updated"
-	EvSessionEnded    EventType = "session.ended"
+	// EvChangeAccepted marks a person keeping a change after review, which
+	// moves the file's baseline in the changes view.
+	EvChangeAccepted EventType = "change.accepted"
+	EvSessionEnded   EventType = "session.ended"
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
 	EvModelCall EventType = "model.call"

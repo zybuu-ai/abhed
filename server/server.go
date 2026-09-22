@@ -260,7 +260,9 @@ type liveSession struct {
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
 	manualMu sync.Mutex
-	mu       sync.Mutex
+	// ptys are the person's commands running on a terminal.
+	ptys map[string]*ptyRun
+	mu   sync.Mutex
 }
 
 type pendingApproval struct {
@@ -327,6 +329,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/changes", s.changesSession)
 	mux.HandleFunc("PUT /v1/sessions/{id}/file", s.saveFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/exec", s.execCommand)
+	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
+	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
+	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
+	mux.HandleFunc("GET /v1/sessions/{id}/pty/{pty}", s.streamPTY)
+	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/input", s.writePTY)
+	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/resize", s.resizePTY)
+	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -390,6 +399,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /", s.serveLanding)
 	mux.HandleFunc("GET /console", s.serveConsole)
 	mux.HandleFunc("GET /ide", s.serveIDE)
+	mux.HandleFunc("GET /ide/vendor/{file}", s.serveIDEVendor)
 	mux.HandleFunc("GET /v1/capabilities", s.getCapabilities)
 
 	// Documentation, when it was embedded at build time. An air-gapped
@@ -466,12 +476,15 @@ func hasEntryPoint(ps []auth.Provider) bool {
 //
 // Applied centrally rather than per-handler: there are six JSON decode sites
 // today, and the one that gets added next month is the one that would have been
-// forgotten. Uploads set their own, larger limit inside uploadFile, so they are
-// exempted here rather than being clamped to the JSON size.
+// forgotten. Uploads, and a file saved or accepted from the workbench, set
+// their own larger limit inside their handlers, so they are exempted here
+// rather than being clamped to the JSON size.
 func (s *Server) bodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil && !strings.HasSuffix(r.URL.Path, "/upload") &&
-			r.URL.Path != "/v1/uploads" {
+		own := strings.HasSuffix(r.URL.Path, "/upload") || r.URL.Path == "/v1/uploads" ||
+			(r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/file")) ||
+			strings.HasSuffix(r.URL.Path, "/accept")
+		if r.Body != nil && !own {
 			capBody(w, r)
 		}
 		next.ServeHTTP(w, r)

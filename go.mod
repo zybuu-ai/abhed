@@ -3,6 +3,7 @@ module github.com/zybuu-ai/abhed
 go 1.26.8
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/term v0.46.0

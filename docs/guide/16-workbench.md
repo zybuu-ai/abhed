@@ -18,12 +18,12 @@ on, laid out the way an editor is.
 
 | Where | What it shows |
 |---|---|
-| **Explorer** | the session's workspace; click a file to open it in a tab, edit it, and save with ⌘S / Ctrl S |
-| **Changes** | files the agent changed or you saved, each opening as a diff tab |
+| **Explorer** | the session's workspace; click a file to open it in an editor with syntax highlighting, and save with ⌘S / Ctrl S |
+| **Changes** | files the agent changed or you saved, each opening for review: accept or reject chunk by chunk |
 | **Tools** | every tool the agent has, whether it asks before running, and the permission rules in force |
 | **Extensions** | configured extensions and the events they hook, connected MCP servers, loaded skills |
 | **HawkEYE** | the session's totals and [findings](15-hawkeye.md), live |
-| **Terminal** | each command the agent ran, and a line to run your own in the same sandbox |
+| **Terminal** | a terminal in the session's sandbox: each line you type is one recorded, policy-checked command, and the agent's commands appear in it too |
 | **Problems** | HawkEYE's findings, the way an editor lists diagnostics |
 | **Events** | the raw record as it is written, untrusted events marked |
 
@@ -54,36 +54,52 @@ side door. Both go through the same call the agent's tools go through:
 | Ask rules and mutating tools | a person is asked | taken as answered: you are the person |
 | Workspace boundary | cannot leave it | cannot leave it |
 | `.abhed/`, `.git/`, anything a read rule withholds | not served | cannot be opened or written |
-| Shell commands | run in the session's sandbox | run in the same sandbox: no network unless the operator allowed it |
+| Commands | run in the session's sandbox | each line runs in the same sandbox, on a terminal: no network unless the operator allowed it |
 | The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`) |
 
 So HawkEYE's report covers what people did as well as what the agent did, and a
 save shows up under **Changes** with a diff like any other edit.
 
 A save is refused if the file changed since you opened it, so you cannot write
-over an edit the agent made in the meantime; reload and try again. Your terminal
-keeps its own working directory, so a `cd` there never moves the agent.
+over an edit the agent made in the meantime; reload and try again.
+
+**Review.** A changed file opens as the text it holds now against what it held
+before the session first changed it, chunk by chunk. *Reject* puts the earlier
+text back for that chunk, which is a save: it goes through the same call as
+any other and is recorded as your write. *Accept* keeps the chunk and moves the
+file's baseline, so it stops showing as a change and `/undo` returns to it; the
+acceptance is recorded as `change.accepted`. Rejecting everything in a file the
+session created removes the file, through a recorded `rm`.
+
+**Terminal.** The terminal is a real one — `vim`, `top`, a program that asks a
+question all work — but it is not a shell. Each line you enter is judged as a
+`bash` call before it runs, so a deny rule stops it there, and it runs on its
+own pseudo-terminal in the session's sandbox. Shell state does not carry from
+one line to the next: `cd` is followed, `export` is not. The output of each
+command is in the record with the control sequences stripped; what you typed
+is not recorded separately, since a terminal echoes it into the output unless
+the program turned echo off, which is when it should not be kept. A command
+nobody has watched for two minutes is ended. The terminal keeps its own working
+directory, so a `cd` there never moves the agent.
 
 Both need a live session, because that is what holds the sandbox. A session
 from before a restart has to be resumed with a message first.
 
 ## What it is not, yet
 
-- **The terminal runs commands; it is not a shell.** There is no tty and no
-  input, so `vim`, `top` or a prompt that waits for an answer will not work,
-  and output arrives when the command ends.
-- **No syntax highlighting, and a plain text area to edit in.** A real editor
-  component has to be vendored into the binary: the page loads nothing from
-  anywhere, so that it opens on an air-gapped network.
-- **Large files are read-only.** A file the viewer truncates cannot be saved
-  without losing the rest, and a save is limited to one megabyte.
-- **No accepting or rejecting a change hunk by hunk.**
+- **Shell state does not persist between lines.** Every line is its own
+  command, which is what makes every line a policy decision.
+- **Files over 4 MB are read-only**, shown in part.
 - **Changes** covers saves and edits made with `write` and `edit`. A file
   changed by a shell command, yours or the agent's, does not appear there.
+- **No completion or diagnostics** from a language server.
 
 ## What it is built on
 
-Nothing in the page is a mock. Tools, rules, extensions, MCP servers and skills
+Nothing in the page is a mock. The editor is CodeMirror and the terminal is
+xterm.js, built into the binary under their own licences (`server/ide/vendor/NOTICE`)
+so the page still loads nothing from the network; `web/ide/` rebuilds them.
+Tools, rules, extensions, MCP servers and skills
 come from `GET /v1/capabilities`, which any signed-in user may read. An
 extension's name and events are listed; its command line and environment are
 not, because those are the operator's and may hold credentials. File content,

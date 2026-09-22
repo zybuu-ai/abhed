@@ -126,3 +126,22 @@ func TestIDEAndCapabilitiesNeedSignIn(t *testing.T) {
 		}
 	}
 }
+
+// The vendored components come from the binary and nowhere else.
+func TestIDEVendorServesOnlyEmbeddedFiles(t *testing.T) {
+	h := testServer(t).Handler()
+	for path, want := range map[string]int{
+		"/ide/vendor/editor.js": http.StatusOK, "/ide/vendor/xterm.css": http.StatusOK,
+		"/ide/vendor/NOTICE": http.StatusOK, "/ide/vendor/missing.js": http.StatusNotFound,
+		"/ide/vendor/..%2Fide.html": http.StatusNotFound,
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != want {
+			t.Errorf("%s = %d, want %d", path, rec.Code, want)
+		}
+		if rec.Code == http.StatusOK && rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s served without nosniff", path)
+		}
+	}
+}
