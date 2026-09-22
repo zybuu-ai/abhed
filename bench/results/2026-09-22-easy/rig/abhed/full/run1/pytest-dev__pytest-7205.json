@@ -1,0 +1,38 @@
+{
+ "harness": "abhed",
+ "base_model": "gemma4:26b",
+ "finished": "2026-09-22 22:59:30",
+ "version": "abhed v1.0.1+dirty Community Edition",
+ "instance": "pytest-dev__pytest-7205",
+ "condition": "full",
+ "exit_code": 0,
+ "timed_out": false,
+ "wall_sec": 602.9,
+ "patch_bytes": 1581,
+ "patch": "diff --git a/reproduce_issue.py b/reproduce_issue.py\nnew file mode 100644\nindex 0000000..167c607\n--- /dev/null\n+++ b/reproduce_issue.py\n@@ -0,0 +1,5 @@\n+import pytest\n+\n+@pytest.mark.parametrize('data', [b'Hello World'])\n+def test_data(data):\n+    pass\ndiff --git a/src/_pytest/setuponly.py b/src/_pytest/setuponly.py\nindex c9cc589..9fc218a 100644\n--- a/src/_pytest/setuponly.py\n+++ b/src/_pytest/setuponly.py\n@@ -1,4 +1,5 @@\n import pytest\n+from _pytest._io.saferepr import saferepr\n \n \n def pytest_addoption(parser):\n@@ -66,7 +67,7 @@ def _show_fixture_action(fixturedef, msg):\n             tw.write(\" (fixtures used: {})\".format(\", \".join(deps)))\n \n     if hasattr(fixturedef, \"cached_param\"):\n-        tw.write(\"[{}]\".format(fixturedef.cached_param))\n+        tw.write(\"[{}]\".format(saferepr(fixturedef.cached_param)))\n \n     tw.flush()\n \ndiff --git a/test_saferepr.py b/test_saferepr.py\nnew file mode 100644\nindex 0000000..c2f61be\n--- /dev/null\n+++ b/test_saferepr.py\n@@ -0,0 +1,5 @@\n+from _pytest._io.saferepr import saferepr\n+\n+data = b'Hello World'\n+print(f\"repr: {repr(data)}\")\n+print(f\"saferepr: {saferepr(data)}\")\ndiff --git a/test_saferepr_v2.py b/test_saferepr_v2.py\nnew file mode 100644\nindex 0000000..f98db16\n--- /dev/null\n+++ b/test_saferepr_v2.py\n@@ -0,0 +1,8 @@\n+from _pytest._io.saferepr import saferepr\n+data = b'Hello World'\n+res = saferepr(data)\n+print(f\"Type: {type(res)}\")\n+print(f\"Value: {res}\")\n+print(f\"Format with {{}}: { '{}'.format(data) }\")\n+print(f\"Format with {{!r}}: { '{!r}'.format(data) }\")\n+print(f\"Format with saferepr: { '{}'.format(res) }\")\n",
+ "usage": {
+  "turns": 28,
+  "tokens_in": 378735,
+  "tokens_out": 15043,
+  "reason": "completed"
+ },
+ "output_tail": "XKC6CHG\",\"session_id\":\"s-1790097568273151000\",\"seq\":294,\"type\":\"agent.delta\",\"payload\":{\"text\":\"00s =\",\"n\":167},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.081588Z\"}\n{\"id\":\"01GCMAK0W4HY00DZMYDXKC6CHM\",\"session_id\":\"s-1790097568273151000\",\"seq\":295,\"type\":\"agent.delta\",\"payload\":{\"text\":\"================\",\"n\":168},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.081591Z\"}\n{\"id\":\"01GCMAK0W4HY00DZMYDXKC6CHR\",\"session_id\":\"s-1790097568273151000\",\"seq\":296,\"type\":\"agent.delta\",\"payload\":{\"text\":\"==============\",\"n\":169},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.081592Z\"}\n{\"id\":\"01GCMAK0W4HY00DZMYDXKC6CHW\",\"session_id\":\"s-1790097568273151000\",\"seq\":297,\"type\":\"agent.delta\",\"payload\":{\"text\":\"\\n\",\"n\":170},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.081593Z\"}\n{\"id\":\"01GCMAK16QG5FWSFRSWABTMJF4\",\"session_id\":\"s-1790097568273151000\",\"seq\":298,\"type\":\"agent.delta\",\"payload\":{\"text\":\"```\",\"n\":171},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.165065Z\"}\n{\"id\":\"01GCMAK16SA6AXW29D3VR53E9M\",\"session_id\":\"s-1790097568273151000\",\"seq\":299,\"type\":\"model.call\",\"payload\":{\"turn\":28,\"tokens_in\":20898,\"tokens_out\":258,\"tokens_cached\":0,\"context_window\":32768,\"first_token_ms\":1128,\"latency_ms\":7781,\"tool_calls\":0},\"actor\":\"system\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.166808Z\"}\n{\"id\":\"01GCMAK16SA6AXW29D3VR53E9R\",\"session_id\":\"s-1790097568273151000\",\"seq\":300,\"type\":\"agent.message\",\"payload\":{\"text\":\"The issue was caused by using `format()` with a bytes object in `src/_pytest/setuponly.py`, which implicitly calls `str()` on the bytes object, triggering a `BytesWarning`. Replacing the direct call with `saferepr()` ensures that the parameter is safely and correctly represented as a string without triggering the warning.\\n\\n```python\\n# src/_pytest/setuponly.py\\n\\n    if hasattr(fixturedef, \\\"cached_param\\\"):\\n        tw.write(\\\"[{}]\\\".format(saferepr(fixturedef.cached_param)))\\n```\\n\\nI have verified the fix by running the reproduction script with `-bb` (which turns `BytesWarning` into an error), and it now passes.\\n\\n```bash\\n$ python3 -bb -m pytest --setup-show reproduce_issue.py\\n============================= test session starts ==============================\\n...\\nreproduce_issue.py \\n        SETUP    F data[b'Hello World']\\n        reproduce_issue.py::test_data[Hello World] (fixtures used: data).\\n        TEARDOWN F data[b'Hello World']\\n\\n============================== 1 passed in 0.00s ===============================\\n```\"},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.166821Z\"}\n{\"id\":\"01GCMAK16ZVX04EY4XYKB5BK4R\",\"session_id\":\"s-1790097568273151000\",\"seq\":301,\"type\":\"session.ended\",\"payload\":{\"reason\":\"completed\",\"turns\":28,\"tokens_in\":378735,\"tokens_out\":15043,\"tokens_cached\":0,\"compactions\":0,\"context_tokens\":18132,\"context_window\":32768},\"actor\":\"system\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T17:29:30.167059Z\"}\n",
+ "difficulty": "<15 min fix",
+ "score": {
+  "resolved": true,
+  "f2p": "10/10",
+  "p2p": "16/16",
+  "f2p_fraction": 1.0,
+  "p2p_failed": [],
+  "f2p_ran_and_failed": false,
+  "tail": "ly]\nPASSED testing/test_setuponly.py::test_show_only_active_fixtures[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_different_scopes[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_nested_fixtures[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_autouse[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_parameters[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_parameter_ids[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_parameter_ids_function[--setup-plan]\nPASSED testing/test_setuponly.py::test_show_only_active_fixtures[--setup-show]\nPASSED testing/test_setuponly.py::test_show_different_scopes[--setup-show]\nPASSED testing/test_setuponly.py::test_show_nested_fixtures[--setup-show]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_autouse[--setup-show]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_parameters[--setup-show]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_parameter_ids[--setup-show]\nPASSED testing/test_setuponly.py::test_show_fixtures_with_parameter_ids_function[--setup-show]\nPASSED testing/test_setuponly.py::test_dynamic_fixture_request\nPASSED testing/test_setuponly.py::test_capturing\nPASSED testing/test_setuponly.py::test_show_fixtures_and_execute_test\nPASSED testing/test_setuponly.py::test_setup_show_with_KeyboardInterrupt_in_test\nPASSED testing/test_setuponly.py::test_show_fixture_action_with_bytes\n26 passed in 0.92s\n"
+ },
+ "hawkeye": {
+  "findings": [
+   {
+    "code": "cold-cache",
+    "severity": "info"
+   }
+  ]
+ }
+}
