@@ -105,6 +105,9 @@ func Main(args []string, opts ...Option) int {
 		return hawkeyeCmd(workspace, fs.Args()[1:])
 	case "migrate":
 		return migrateCmd(workspace)
+	case "acp":
+		// The Agent Client Protocol over stdio, for editors that speak it.
+		return acpCmd(workspace, a.version)
 	case "rpc":
 		// Line-delimited JSON on stdin and stdout, so a caller in any language
 		// can drive Abhed as a subprocess without running a server.

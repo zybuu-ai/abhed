@@ -26,7 +26,7 @@ model you point it at, and records everything it does.
 | Guide | For |
 |---|---|
 | [The SDK](09-sdk.md) | embedding Abhed in a Go program |
-| [RPC and headless](10-automation.md) | driving Abhed from another language, or from CI |
+| [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
