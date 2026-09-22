@@ -275,6 +275,17 @@ def main():
             pages.append((name, title_of(text, name), text))
         tree.append((sec, label, blurb, pages))
 
+    # Two sources resolving to one URL is a build error, not a sitemap surprise:
+    # the second page would silently replace the first.
+    seen = {}
+    for sec, _, _, pages in tree:
+        for name, _, _ in pages:
+            url = slug(sec, name)
+            if url in seen:
+                print("two pages claim /docs/%s (%s and %s) — rename one" % (url, seen[url], name), file=sys.stderr)
+                return 1
+            seen[url] = name
+
     total = sum(len(p[3]) for p in tree)
     VISION = os.path.join(SRC, "vision.md")
     if total == 0:
