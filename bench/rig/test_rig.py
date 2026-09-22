@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Checks on the parts of the rig that would misreport quietly if wrong."""
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -116,6 +117,35 @@ class Watch(unittest.TestCase):
         self.assertRegex(text, r"abhed\s+full\s+1 / 1")
         self.assertRegex(text, r"pi\s+full\s+0 / 1")
         self.assertIn("not a result", text)
+
+
+
+
+class RecordAndDifficultyTests(unittest.TestCase):
+    def test_abhed_usage_comes_from_the_record(self):
+        lines = [json.dumps({"seq": 1, "type": "user.message", "payload": {"text": "x"}}),
+                 "not json at all",
+                 json.dumps({"seq": 2, "type": "session.ended",
+                             "payload": {"reason": "completed", "turns": 4, "tokens_in": 1200, "tokens_out": 80}})]
+        h = rig.Abhed()
+        self.assertEqual(h.usage("\n".join(lines)),
+                         {"turns": 4, "tokens_in": 1200, "tokens_out": 80, "reason": "completed"})
+        self.assertEqual([e["seq"] for e in h.record("\n".join(lines))], [1, 2])
+        # The old text format still parses, for a record that was cut short.
+        self.assertEqual(h.usage("… 3 turns · 9,000 in / 200 out tokens")["tokens_in"], 9000)
+
+    def test_difficulty_filter_uses_the_datasets_rating(self):
+        real = rig.instances
+        rig.instances = lambda repo=None: [
+            {"instance_id": "a", "difficulty": "<15 min fix"},
+            {"instance_id": "b", "difficulty": "1-4 hours"},
+            {"instance_id": "c", "difficulty": "<15 min fix"}]
+        try:
+            self.assertEqual(rig.by_difficulty(["a", "b", "c"], "easy"), ["a", "c"])
+            self.assertEqual(rig.by_difficulty(["a", "b", "c"], "1-4 hours"), ["b"])
+            self.assertEqual(rig.by_difficulty(["a", "b"], ">4 hours"), [])
+        finally:
+            rig.instances = real
 
 
 if __name__ == "__main__":

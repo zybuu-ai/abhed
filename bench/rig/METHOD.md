@@ -97,6 +97,23 @@ The harness sees the problem statement and a checkout at the base commit with
 **no git history** — the fix is in the repository's future, and `git log` must
 not be a way to find it. It does not see the gold tests.
 
+**Difficulty is the dataset's, and it is recorded.** SWE-bench Verified
+rates every instance by the time an annotator judged the fix to take. A run
+may be limited to one band — `--difficulty easy` is the `<15 min fix` band,
+twelve of the pool's thirty — and the band is written into the plan and
+every result. The reason is the first pilot: on a 26B local model one session
+in eight resolved, which cannot separate harnesses. A band where the model
+resolves a third to a half of tasks can. A number from the easy band is
+reported as a number from the easy band.
+
+**Abhed's sessions come with their record.** Abhed runs with
+`-output-format json`, so its output is the event record, one event per
+line. The rig saves it beside the result (`<result>.events.json`) and runs
+`abhed hawkeye` over it, keeping the finding codes in the result. A session
+that failed then says how — a denied call, a repeated failure, a context
+ceiling — rather than only that it did. The other harnesses have no
+equivalent export; their output tails are kept as before.
+
 ## Scoring
 
 The SWE-bench rule, re-implemented on virtualenvs:
