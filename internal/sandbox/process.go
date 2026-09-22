@@ -76,6 +76,9 @@ func (s *Process) Describe() string {
 // mach service lookup in ways that make ordinary toolchains fail confusingly,
 // and a sandbox people disable is worth nothing. The denials below are the ones
 // that actually matter for an agent: writes outside the workspace, and network.
+// stateDir mirrors tools.StateDir; the package is kept free of tool imports.
+const stateDir = ".abhed"
+
 func (s *Process) seatbeltProfile() string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
@@ -106,6 +109,18 @@ func (s *Process) seatbeltProfile() string {
 		for _, c := range []string{".cache", "Library/Caches", ".npm", ".cargo/registry", "go/pkg/mod"} {
 			fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", filepath.Join(home, c))
 		}
+	}
+
+	// The harness's own state is out of reach for commands, as it is for the
+	// file tools: the later rule wins, so this holds inside the workspace allow.
+	b.WriteString("\n;; Abhed's own configuration, users and keys.\n")
+	fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(s.policy.Workspace, stateDir))
+	fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(s.policy.Workspace, stateDir))
+	if home, err := os.UserHomeDir(); err == nil {
+		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(home, stateDir))
+		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(home, stateDir))
+		// Skills are the one part of it a command may need: a skill can ship a script.
+		fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(home, stateDir, "skills"))
 	}
 
 	if !s.policy.AllowNetwork {
@@ -183,6 +198,9 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 			"--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
 			"--ro-bind-try", "/etc/ssl", "/etc/ssl",
 			"--bind", s.policy.Workspace, s.policy.Workspace,
+			// An empty, throwaway directory over Abhed's own state: nothing in
+			// it can be read, and anything written there is gone at exit.
+			"--tmpfs", filepath.Join(s.policy.Workspace, stateDir),
 			"--tmpfs", "/tmp",
 			"--chdir", cwd,
 		)

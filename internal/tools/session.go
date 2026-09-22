@@ -179,6 +179,11 @@ func (s *Session) Resolve(path string) (string, error) {
 	}
 
 	clean := filepath.Clean(path)
+	if isHarnessState(clean) {
+		return "", fmt.Errorf("%s is Abhed's own state (%s holds its policy, users and keys). "+
+			"The agent cannot read or change it in any mode; the operator edits it by hand. Do not retry",
+			path, StateDir)
+	}
 	roots := s.allowedRoots()
 
 	// Compare against the symlink-resolved roots. We resolve the deepest
@@ -208,6 +213,25 @@ func (s *Session) Resolve(path string) (string, error) {
 		return "", s.denied(path, roots)
 	}
 	return clean, nil
+}
+
+// StateDir is the directory, in the workspace and in the home directory, that
+// holds Abhed's own configuration, users and keys.
+const StateDir = ".abhed"
+
+// isHarnessState reports whether a cleaned path has StateDir as a component.
+//
+// It is a boundary and not a rule: a rule can be edited away by whoever can
+// write the configuration, and this is what stops the agent being that
+// whoever. A prompt-injected agent that could rewrite its own deny list, or
+// add a user for the next start, would have no boundary at all.
+func isHarnessState(clean string) bool {
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == StateDir {
+			return true
+		}
+	}
+	return false
 }
 
 // lexicalRoots returns the roots as given, before symlink resolution, so the

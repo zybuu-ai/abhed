@@ -46,9 +46,21 @@ Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callb
 `ModeBypass` comment: "dangerous; refusable by org policy"). Rules are
 scoped per-command, not per-tool: allowing `bash(npm test)` never allows
 `bash(rm -rf /)`. A deployment's deny list should block reads of SSH keys,
-cloud credentials, `.env` files, and the Abhed config itself, and no allow
-rule should pre-approve an interpreter or file-reading command that could be
+cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
 used to exfiltrate one of those files under the cover of an approved rule.
+
+**The agent cannot reach its own configuration.** `.abhed/` in the workspace
+and in the home directory holds the policy, the users file and the keys. The
+file tools refuse any path with that component (`internal/tools/session.go`,
+`isHarnessState`) and the process sandbox denies commands both reading and
+writing it (`internal/sandbox/process.go`), with `~/.abhed/skills` the one
+readable part. This is enforced before the rules are consulted, because a
+rule that protects the file the rules live in can be removed by editing
+that file. `internal/tools/state_test.go` and
+`internal/sandbox/state_test.go` try to read the configuration, rewrite the
+deny list and plant a users file, and fail if any succeeds. Container and VM
+tiers keep the workspace mount as configured; mount `.abhed` there read-only
+or leave it out of the mount.
 
 **Extensions may only veto, never permit.** `internal/extension/extension.go`
 states the rule directly: "An extension may VETO, never PERMIT." Hooks run
