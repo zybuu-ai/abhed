@@ -26,6 +26,7 @@ type scriptedTurn struct {
 	text      string
 	reasoning string
 	calls     []model.ToolCall
+	usage     *model.Usage // nil means a small, uncapped turn
 }
 
 func (s *scriptedAdapter) Name() string                           { return "scripted" }
@@ -57,7 +58,11 @@ func (s *scriptedAdapter) Complete(ctx context.Context, req model.Request) (<-ch
 	for i := range t.calls {
 		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &t.calls[i]}
 	}
-	ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 100, CachedInputTokens: 80}}
+	usage := &model.Usage{InputTokens: 100, CachedInputTokens: 80}
+	if t.usage != nil {
+		usage = t.usage
+	}
+	ch <- model.Chunk{Type: model.ChunkDone, Usage: usage}
 	close(ch)
 	return ch, nil
 }

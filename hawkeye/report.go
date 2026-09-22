@@ -60,6 +60,7 @@ type Turn struct {
 	TokensOut    int    `json:"tokens_out"`
 	TokensCached int    `json:"tokens_cached"`
 	Window       int    `json:"context_window"`
+	CutOff       bool   `json:"cut_off,omitempty"`
 	FirstTokenMS int64  `json:"first_token_ms"`
 	LatencyMS    int64  `json:"latency_ms"`
 	ToolCalls    int    `json:"tool_calls"`

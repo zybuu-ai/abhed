@@ -184,10 +184,13 @@ type ModelCall struct {
 	// FirstTokenMS is how long the model took to start answering; LatencyMS is
 	// the whole round trip. The gap between them is generation, the first is
 	// prefill — and prefill is what a cache miss costs.
-	FirstTokenMS int64  `json:"first_token_ms"`
-	LatencyMS    int64  `json:"latency_ms"`
-	ToolCalls    int    `json:"tool_calls"`
-	Error        string `json:"error,omitempty"`
+	FirstTokenMS int64 `json:"first_token_ms"`
+	LatencyMS    int64 `json:"latency_ms"`
+	ToolCalls    int   `json:"tool_calls"`
+	// CutOff marks a turn that spent the whole output budget: the model was
+	// still writing when the limit ended it, so what it said is not an answer.
+	CutOff bool   `json:"cut_off,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 type SessionEnded struct {

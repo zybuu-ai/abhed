@@ -13,6 +13,15 @@ All notable changes to Abhed are recorded here. The format follows
   may only tighten a decision; unavailable means ask, or deny when headless.
   Verdicts are recorded as `monitor.verdict`. The local-model judge follows.
 
+### Fixed
+
+- A turn that spends its whole output budget reasoning without a tool call
+  is a stall, not an answer: the model is told its reply was cut off, the
+  next call asks for low reasoning effort, the turn is marked `cut_off` in
+  the record and HawkEYE reports `output-cap`. Both of Abhed's failures in
+  the first easy-band benchmark run ended this way, one of them read as
+  completed because a sentence had come out before the cut.
+
 ## [1.0.1] - 2026-09-22
 
 ### Added

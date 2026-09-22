@@ -109,6 +109,11 @@ type Loop struct {
 	recordErr error
 	recordMu  sync.Mutex
 
+	// dropEffort is set once a turn has spent its whole output budget on
+	// reasoning without acting; later calls ask for low effort, where the
+	// provider offers the choice, so the next turn reaches a tool call.
+	dropEffort bool
+
 	// emptyTurns counts consecutive turns that produced neither text nor a
 	// tool call, so a model that stalls is nudged rather than mistaken for one
 	// that finished.
@@ -400,7 +405,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		Tools:       toolDefs(l.Tools),
 		MaxTokens:   l.Config.MaxTokens,
 		Temperature: l.Config.Temperature,
-		Effort:      l.Config.Effort,
+		Effort:      l.effort(),
 	}
 
 	callStart := time.Now()
@@ -484,6 +489,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		TokensCached: callUsage.CachedInputTokens, ContextWindow: l.Adapter.Profile().ContextWindow,
 		FirstTokenMS: firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
 		ToolCalls: len(calls),
+		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}
 	if streamErr != nil {
 		mc.Error = streamErr.Error()
@@ -527,17 +533,28 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		// nothing said, which reads as the agent silently ignoring the
 		// question. Prompt it once to continue, and only give up if it stalls
 		// again, so a genuine end-of-turn still terminates immediately.
-		if strings.TrimSpace(text.String()) == "" {
+		// A turn cut off at the output limit is the same stall with more
+		// tokens: the model was still reasoning when the budget ended it.
+		// Both failures in the first easy-band benchmark run ended this way,
+		// one of them read as "completed" because a sentence was there.
+		if strings.TrimSpace(text.String()) == "" || mc.CutOff {
 			l.emptyTurns++
+			if mc.CutOff {
+				l.dropEffort = true
+			}
 			if l.emptyTurns <= emptyTurnRetries {
 				// Only the user turn is appended. An assistant message with
 				// empty content is rejected outright by some endpoints
 				// ("invalid message content type: <nil>"), which would turn a
 				// recoverable stall into a failed session.
-				l.messages = append(l.messages,
-					model.Message{Role: model.RoleUser, Content: "You produced no answer and " +
-						"called no tool. Continue: either call the tool you intended, or write " +
-						"the answer itself."})
+				nudge := "You produced no answer and called no tool. Continue: either call " +
+					"the tool you intended, or write the answer itself."
+				if mc.CutOff {
+					nudge = "Your reply was cut off at the output limit before you acted. " +
+						"Keep the thinking short and reply with the tool call you intended, " +
+						"or with the answer itself in a few sentences."
+				}
+				l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: nudge})
 				return "", false, nil
 			}
 			return TermStalled, true, nil
@@ -1163,4 +1180,13 @@ func (l *Loop) noteCall(tool, subject string, isError bool) {
 	if len(l.recentCalls) > 5 {
 		l.recentCalls = l.recentCalls[len(l.recentCalls)-5:]
 	}
+}
+
+// effort is the reasoning effort for the next call: the configured one,
+// lowered once a turn has spent its whole budget thinking without acting.
+func (l *Loop) effort() model.EffortLevel {
+	if l.dropEffort {
+		return model.EffortLow
+	}
+	return l.Config.Effort
 }
