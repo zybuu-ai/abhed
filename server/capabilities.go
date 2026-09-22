@@ -1,7 +1,7 @@
 package server
 
 import (
-	_ "embed"
+	"embed"
 	"net/http"
 	"sort"
 	"strings"
@@ -10,13 +10,39 @@ import (
 //go:embed ide.html
 var ideHTML string
 
+// The editor and terminal components are built into the binary, under their
+// own licences (ide/vendor/NOTICE), so the page still loads nothing from anywhere.
+//
+//go:embed ide/vendor
+var ideVendor embed.FS
+
+func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("file")
+	data, err := ideVendor.ReadFile("ide/vendor/" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch {
+	case strings.HasSuffix(name, ".js"):
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case strings.HasSuffix(name, ".css"):
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	default:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	_, _ = w.Write(data)
+}
+
 // serveIDE serves the workbench: the agent beside the code it is changing.
 // The same strict policy as the console — nothing loads from anywhere, so it
 // opens on an air-gapped network.
 func (s *Server) serveIDE(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		"default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	_, _ = w.Write([]byte(ideHTML))
 }
 

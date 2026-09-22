@@ -281,6 +281,14 @@ func asExitError(err error, target **exec.ExitError) bool {
 
 // detectCd resolves a trailing `cd` so the next call starts where this one
 // ended. Only handles the simple leading/trailing forms models actually emit.
+// FollowCd moves the session's working directory the way a run of command
+// through the bash tool would, for a runner that executes commands itself.
+func (s *Session) FollowCd(command string) {
+	if next := detectCd(command, s); next != "" {
+		s.Cwd = next
+	}
+}
+
 func detectCd(command string, s *Session) string {
 	parts := strings.Split(command, "&&")
 	last := strings.TrimSpace(parts[len(parts)-1])

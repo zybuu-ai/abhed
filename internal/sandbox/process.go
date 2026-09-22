@@ -89,6 +89,8 @@ func (s *Process) seatbeltProfile() string {
 	for _, p := range []string{"/private/tmp", "/private/var/tmp", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/urandom", "/dev/dtracehelper"} {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
 	}
+	// A command on a terminal reopens its tty; the workbench runs one that way.
+	b.WriteString("(allow file-write* (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+$\"))\n")
 	// macOS gives each user a private TMPDIR under /var/folders, and compilers
 	// put their work directories there. Without this, every `go build`, `cc` and
 	// `cargo build` inside the sandbox fails with "operation not permitted" —

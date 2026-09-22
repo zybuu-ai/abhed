@@ -172,6 +172,24 @@ func (u *UndoLog) Changed() []string {
 
 // Original returns the earliest recorded content for a path, so /diff can show
 // the whole session's change rather than just the last edit.
+// Accept moves a file's baseline to content: the change up to here has been
+// reviewed and kept, so the changes view stops showing it and undo returns
+// to it rather than to what came before.
+func (u *UndoLog) Accept(path string, content []byte) bool {
+	if u == nil {
+		return false
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := range u.stack {
+		if u.stack[i].Path == path {
+			u.stack[i].Before, u.stack[i].Existed = content, true
+			return true
+		}
+	}
+	return false
+}
+
 func (u *UndoLog) Original(path string) ([]byte, bool, bool) {
 	if u == nil {
 		return nil, false, false

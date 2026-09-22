@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Abhed</title>
+<link rel="stylesheet" href="/ide/vendor/xterm.css">
+<script src="/ide/vendor/editor.js"></script>
+<script src="/ide/vendor/xterm.js"></script>
+<script src="/ide/vendor/addon-fit.js"></script>
 <style>
 :root{
   --bg:#F4F6FA; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#E9EDF4; --chrome:#EDF1F7;
@@ -131,11 +135,17 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .code{display:grid;grid-template-columns:auto minmax(0,1fr);font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
 .code .ln{padding:0 12px 0 16px;text-align:right;color:var(--muted);user-select:none;font-variant-numeric:tabular-nums;opacity:.7;white-space:pre}
 .code .tx{padding-right:24px;white-space:pre;tab-size:4}
-.code textarea.tx{font:inherit;color:inherit;background:transparent;border:0;outline:0;resize:none;overflow:hidden;width:100%;min-width:60ch;margin:0;padding:0 24px 0 0;display:block}
 .tab .dot{color:var(--warn,#e0a23b);margin-left:2px}
-#term-in{flex:none;display:flex;gap:8px;align-items:center;padding:6px 12px;border-top:1px solid var(--line);font:12px/1.5 var(--mono)}
-#term-in label{color:var(--muted);white-space:nowrap}
-#term-in input{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:0;outline:0}
+.cm-host{height:100%}.cm-host .cm-editor{height:100%;background:var(--bg)}.cm-host .cm-scroller{font:12.5px/1.6 var(--mono)}
+.cm-host .cm-gutters{background:var(--bg);border-right:1px solid var(--line)}
+.cm-host .cm-editor.cm-focused{outline:none}
+.cm-host .cm-mergeButtons button, .cm-host .cm-chunkButtons button{font:11px var(--sans);border:1px solid var(--line);border-radius:4px;padding:1px 7px;margin:0 2px;cursor:pointer;background:var(--surface);color:var(--ink)}
+.cm-host .cm-chunkButtons button[name=accept], .cm-host .cm-mergeButtons button[name=accept]{color:var(--add);border-color:var(--add)}
+.cm-host .cm-chunkButtons button[name=reject], .cm-host .cm-mergeButtons button[name=reject]{color:var(--del);border-color:var(--del)}
+#review{display:flex;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line);font:12px var(--sans);color:var(--muted);flex:none}
+#review button{font:11px var(--sans);border:1px solid var(--line);border-radius:4px;padding:2px 9px;cursor:pointer;background:var(--surface);color:var(--ink)}
+#review button.ok{color:var(--add);border-color:var(--add)}#review button.no{color:var(--del);border-color:var(--del)}
+#p-terminal{padding:0;overflow:hidden;background:var(--bg)}#p-terminal .xterm{height:100%;padding:4px 0 0 8px}
 .cmd .who{color:var(--muted);font-size:11px;margin-left:6px}
 .call .mine{flex:none;color:var(--muted);font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 5px}
 .diff{font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
@@ -309,8 +319,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
         <button type="button" data-p="events" aria-selected="false">Events<span class="n" id="n-evt"></span></button>
         <span class="sp"></span>
       </div>
-      <div class="pbody" id="p-terminal"></div>
-      <form id="term-in" autocomplete="off"><label for="term-q" id="term-cwd">$</label><input id="term-q" spellcheck="false" aria-label="Run a command in the session sandbox" placeholder="Run a command in the sandbox — same rules as the agent, and recorded"></form>
+      <div class="pbody" id="p-terminal" aria-label="Terminal: each line runs in the session sandbox under the same rules as the agent, and is recorded"></div>
       <div class="pbody" id="p-problems" hidden></div>
       <div class="pbody" id="p-events" hidden></div>
     </section>
@@ -392,7 +401,7 @@ document.querySelectorAll('#act button[data-view]').forEach(b => b.addEventListe
 function setPanel(name){
   document.querySelectorAll('#ptabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.p === name)));
   ['terminal','problems','events'].forEach(p => { $('p-' + p).hidden = p !== name; });
-  $('term-in').hidden = name !== 'terminal';
+  if(name === 'terminal') fitTerm();
   $('app').classList.remove('nopanel');
 }
 document.querySelectorAll('#ptabs button').forEach(b => b.addEventListener('click', () => setPanel(b.dataset.p)));
@@ -402,6 +411,8 @@ applyTheme(store.get('theme', ''));
 $('theme').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches;
   const next = dark ? 'light' : 'dark'; applyTheme(next); store.set('theme', next);
+  const t = tabs.find(x => x.id === active); if(t && t.view) showTab(t);
+  term.options.theme = next === 'dark' ? {background:'#00000000', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'} : {background:'#00000000', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
 });
 
 function dragSplit(handle, cssVar, axis, sign, min, max){
@@ -433,7 +444,7 @@ function openTab(t){
 }
 function closeTab(id){
   const i = tabs.findIndex(x => x.id === id); if(i < 0) return;
-  tabs.splice(i, 1);
+  const gone = tabs.splice(i, 1)[0]; if(gone.view){ gone.view.destroy(); gone.view = null; }
   if(active === id){ const n = tabs[i] || tabs[i-1]; active = n ? n.id : null; if(n) showTab(n); else welcome(); }
   drawTabs();
 }
@@ -475,50 +486,82 @@ async function showTab(t){
       if(active !== t.id) return;
       if(f.binary){ crumbs(t.path, fmt(f.size) + ' B · binary'); ed.appendChild(el('p', 'note', 'Binary file — not shown.')); return; }
       crumbs(t.path, fmt(f.size) + ' B' + (f.truncated ? ' · truncated' : ''));
-      if(f.truncated || !f.hash){
-        // Part of a file cannot be saved without losing the rest, so it stays read-only.
-        const lines = f.content.split('\n'); if(lines[lines.length-1] === '') lines.pop();
-        const g = el('div', 'code');
-        g.appendChild(el('div', 'ln', lines.map((_, i) => i + 1).join('\n')));
-        g.appendChild(el('div', 'tx', lines.join('\n')));
-        ed.appendChild(g); return;
-      }
       if(!t.dirty){ t.text = f.content; t.base = f.hash; }
       else if(t.base !== f.hash) crumbs(t.path, 'changed on disk since you opened it · your edits are unsaved');
+      t.readonly = f.truncated || !f.hash;
+      if(t.readonly) crumbs(t.path, fmt(f.size) + ' B · too large to edit here; shown in part');
       drawEditor(t, ed);
     }else{
-      const res = await api('/v1/sessions/' + current + '/changes');
+      const [orig, cur] = await Promise.all([
+        api('/v1/sessions/' + current + '/original?path=' + encodeURIComponent(t.path)),
+        api('/v1/sessions/' + current + '/file?path=' + encodeURIComponent(t.path)).catch(() => null)]);
       if(active !== t.id) return;
-      const c = (res.files || []).find(x => x.path === t.path);
-      if(!c){ crumbs(t.path, ''); ed.appendChild(el('p', 'note', 'No recorded change to this file.')); return; }
-      crumbs(t.path, c.status + ' · +' + c.added + ' −' + c.removed);
-      if(!c.diff){ ed.appendChild(el('p', 'note', c.note || 'No diff available.')); return; }
-      const d = el('div', 'diff');
-      for(const line of c.diff.replace(/\n$/, '').split('\n')){
-        const cls = line.startsWith('@@') ? 'hunk' : (line.startsWith('+++') || line.startsWith('---')) ? 'hdr' : line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : '';
-        d.appendChild(el('div', cls, line || ' '));
-      }
-      ed.appendChild(d);
+      if(orig.binary || (cur && cur.binary)){ crumbs(t.path, 'binary'); ed.appendChild(el('p', 'note', 'Binary file — no diff.')); return; }
+      if(cur && cur.truncated){ crumbs(t.path, 'too large'); ed.appendChild(el('p', 'note', 'Too large to review here.')); return; }
+      if(!t.dirty){ t.text = cur ? cur.content : ''; t.base = cur ? cur.hash : ''; }
+      t.original = orig.content; t.existed = orig.existed; t.deleted = !cur;
+      crumbs(t.path, (t.deleted ? 'deleted' : !orig.existed ? 'added' : 'modified') + ' · review');
+      drawReview(t, ed);
     }
   }catch(e){ crumbs(t.path, ''); ed.appendChild(el('p', 'note', e.message)); }
 }
-function drawEditor(t, ed){
-  const g = el('div', 'code'), ln = el('div', 'ln'), ta = el('textarea', 'tx');
-  ta.value = t.text; ta.spellcheck = false; ta.wrap = 'off'; ta.setAttribute('aria-label', 'Editing ' + t.path);
-  const fit = () => { const n = ta.value.split('\n').length; ln.textContent = Array.from({length:n}, (_, i) => i + 1).join('\n'); ta.rows = n; };
-  ta.addEventListener('input', () => { t.text = ta.value; if(!t.dirty){ t.dirty = true; drawTabs(); } fit(); crumbs(t.path, 'unsaved · ' + (isMac ? '⌘S' : 'Ctrl S') + ' to save'); });
-  ta.addEventListener('keydown', e => {
-    if(e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
-    e.preventDefault(); ta.setRangeText('\t', ta.selectionStart, ta.selectionEnd, 'end'); ta.dispatchEvent(new Event('input'));
-  });
-  g.appendChild(ln); g.appendChild(ta); ed.appendChild(g); fit();
+const E = window.AbhedEditor;
+function isDark(){ const t = document.documentElement.dataset.theme; return t ? t === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches; }
+function editorExtensions(t, extra){
+  const exts = [E.basicSetup, E.keymap.of([E.indentWithTab]),
+    E.EditorView.updateListener.of(u => { if(!u.docChanged) return; t.text = u.state.doc.toString(); if(!t.dirty){ t.dirty = true; drawTabs(); } crumbs(t.path, 'unsaved · ' + (isMac ? '⌘S' : 'Ctrl S') + ' to save'); })];
+  if(isDark()) exts.push(E.oneDark);
+  const lang = E.languageFor(t.path); if(lang) exts.push(lang);
+  if(t.readonly) exts.push(E.EditorState.readOnly.of(true), E.EditorView.editable.of(false));
+  return exts.concat(extra || []);
 }
+function mount(t, ed, exts){
+  if(t.view){ t.view.destroy(); t.view = null; }
+  const host = el('div', 'cm-host'); ed.appendChild(host);
+  t.view = new E.EditorView({state: E.EditorState.create({doc: t.text, extensions: exts}), parent: host});
+  return t.view;
+}
+function drawEditor(t, ed){ mount(t, ed, editorExtensions(t)); }
+
+// Review: the file as it is now, against what it held before the session
+// changed it. Rejecting a chunk edits the file, so it is saved like any other
+// edit and recorded as yours; accepting one moves the baseline and is recorded too.
+function drawReview(t, ed){
+  const bar = el('div'); bar.id = 'review';
+  bar.appendChild(el('span', '', 'Accept keeps a change and moves the baseline · Reject puts the earlier text back and saves'));
+  bar.appendChild(el('span', 'sp'));
+  const all = (label, cls, fn) => { const b = el('button', cls, label); b.type = 'button'; b.addEventListener('click', fn); bar.appendChild(b); };
+  all('Accept all', 'ok', () => acceptText(t, t.text));
+  all('Reject all', 'no', () => rejectAll(t));
+  ed.appendChild(bar);
+  const controls = (type, action) => { const b = el('button', '', type === 'accept' ? 'Accept' : 'Reject'); b.name = type; b.type = 'button';
+    b.addEventListener('click', e => { action(e); if(type === 'accept') queueAccept(t); else saveActive(); }); return b; };
+  mount(t, ed, editorExtensions(t, [E.unifiedMergeView({original: t.original, mergeControls: controls, highlightChanges: true, gutter: true})]));
+}
+let acceptTimer = null;
+function queueAccept(t){ clearTimeout(acceptTimer); acceptTimer = setTimeout(() => acceptText(t, E.getOriginalDoc(t.view.state).toString()), 200); }
+async function acceptText(t, text){
+  try{ await api('/v1/sessions/' + current + '/accept', {method:'POST', body: JSON.stringify({path:t.path, content:text})});
+    t.original = text; crumbs(t.path, 'accepted · baseline moved'); if(!t.dirty) showTab(t); changesSoon(); }
+  catch(e){ crumbs(t.path, 'not accepted — ' + e.message); }
+}
+async function rejectAll(t){
+  if(!t.existed){
+    // The file was created by this session: rejecting it all is removing it.
+    try{ await api('/v1/sessions/' + current + '/exec', {method:'POST', body: JSON.stringify({command:'rm -- ' + shellQuote(t.path)})}); closeTab(t.id); changesSoon(); }
+    catch(e){ crumbs(t.path, 'not removed — ' + e.message); }
+    return;
+  }
+  t.text = t.original; t.dirty = true; await saveActive();
+}
+const shellQuote = p => "'" + p.replace(/'/g, `'\\''`) + "'";
 async function saveActive(){
-  const t = tabs.find(x => x.id === active); if(!t || t.kind !== 'file' || !t.dirty || t.saving) return;
+  const t = tabs.find(x => x.id === active); if(!t || !t.dirty || t.saving || t.readonly) return;
   t.saving = true; crumbs(t.path, 'saving…');
   try{
     const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.text, base:t.base})});
     t.base = r.hash; t.dirty = false; drawTabs(); crumbs(t.path, 'saved · recorded as your change'); changesSoon(); hawkSoon();
+    if(t.kind === 'diff') showTab(t);
   }catch(e){ crumbs(t.path, 'not saved — ' + e.message); }
   t.saving = false;
 }
@@ -564,7 +607,7 @@ async function loadChanges(){
   }
 }
 $('changes-reload').addEventListener('click', loadChanges);
-const changesSoon = () => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !(t.kind === 'file' && (t.dirty || document.activeElement.tagName === 'TEXTAREA'))) showTab(t); }, 500); };
+const changesSoon = () => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !(t.view && t.view.hasFocus)) showTab(t); }, 500); };
 
 /* ---------------------------------------------------------------- tools + extensions */
 function drawCaps(){
@@ -649,7 +692,7 @@ function resetSession(){
   if(es){ es.close(); es = null; }
   current = null; live = false; lastSeq = 0; streaming = null; todoNode = null; thinkingNode = null; calls.clear();
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
-  clear($('tx')); clear($('p-terminal')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
+  clear($('tx')); resetTerm(); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
   tabs.length = 0; active = null; drawTabs(); welcome(); known.clear(); indexedFor = null;
   $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
@@ -760,29 +803,60 @@ function settleAsk(callID, how){
     const b = a.querySelector('.btns'); if(b) b.remove(); if(!a.querySelector('.done')) a.appendChild(el('div', 'done', how)); }
 }
 
-function logTerminal(cmd, p, who){
-  const box = $('p-terminal'), c = el('div', 'cmd'), head = el('div', 'p', cmd);
-  head.appendChild(el('span', 'who', who || 'agent')); c.appendChild(head);
-  if(p.content) c.appendChild(el('div', 'o' + (p.is_error ? ' err' : ''), p.content.slice(0, 8000)));
-  c.appendChild(el('div', 'x', (p.duration_ms || 0) + 'ms' + (caps ? ' · sandbox tier: ' + caps.sandbox.tier : '')));
-  box.appendChild(c); box.scrollTop = box.scrollHeight; $('n-term').textContent = ' ' + (++termN);
+const term = new Terminal({fontFamily:'"SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace', fontSize:12, lineHeight:1.2, cursorBlink:true, convertEol:true, scrollback:5000,
+  theme:{background:'#00000000', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'}, allowTransparency:true});
+const termFit = new FitAddon.FitAddon(); term.loadAddon(termFit); term.open($('p-terminal'));
+function fitTerm(){ if(!$('p-terminal').offsetHeight) return; try{ termFit.fit(); }catch{} if(tty.run) api('/v1/sessions/' + current + '/pty/' + tty.run + '/resize', {method:'POST', body: JSON.stringify({cols:term.cols, rows:term.rows})}).catch(() => {}); }
+new ResizeObserver(() => fitTerm()).observe($('p-terminal'));
+const tty = {line:'', run:null, es:null, cwd:'.', hist:[], at:0};
+function resetTerm(){ if(tty.es){ tty.es.close(); tty.es = null; } tty.run = null; tty.cwd = '.'; term.reset(); promptTerm(); }
+const promptTerm = () => { tty.line = ''; term.write('\r\n\x1b[36m' + (tty.cwd === '.' ? '' : tty.cwd + ' ') + '$\x1b[0m '); };
+function bytesOf(b64){ const bin = atob(b64), out = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+term.writeln('\x1b[2mEach line runs in the session sandbox under the same rules as the agent, and is recorded.\x1b[0m');
+term.onData(data => {
+  if(tty.run){ fetch('/v1/sessions/' + current + '/pty/' + tty.run + '/input', {method:'POST', body:data, headers:{'Content-Type':'application/octet-stream'}}).catch(() => {}); return; }
+  for(const ch of data){
+    if(ch === '\r'){ const cmd = tty.line.trim(); term.write('\r\n'); if(cmd) runLine(cmd); else promptTerm(); return; }
+    if(ch === '\x7f'){ if(tty.line){ tty.line = tty.line.slice(0, -1); term.write('\b \b'); } continue; }
+    if(ch === '\x03'){ term.write('^C'); promptTerm(); return; }
+    if(ch === '\x0c'){ term.clear(); continue; }
+    if(ch < ' ') continue;
+    tty.line += ch; term.write(ch);
+  }
+});
+term.attachCustomKeyEventHandler(e => {
+  if(tty.run || e.type !== 'keydown') return true;
+  if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
+    const n = e.key === 'ArrowUp' ? tty.at - 1 : tty.at + 1; if(n < 0 || n > tty.hist.length) return false;
+    tty.at = n; term.write('\b \b'.repeat(tty.line.length)); tty.line = tty.hist[n] || ''; term.write(tty.line); return false;
+  }
+  if(e.key === 'Tab') return false;
+  return true;
+});
+async function runLine(cmd){
+  if(!current){ term.writeln('\x1b[31mStart or open a session first: commands run in its sandbox.\x1b[0m'); promptTerm(); return; }
+  tty.hist.push(cmd); tty.at = tty.hist.length;
+  let r; try{ r = await api('/v1/sessions/' + current + '/pty', {method:'POST', body: JSON.stringify({command:cmd, cols:term.cols, rows:term.rows})}); }
+  catch(e){ term.writeln('\x1b[31m' + e.message + '\x1b[0m'); promptTerm(); return; }
+  tty.cwd = r.cwd || '.';
+  if(r.denied){ term.writeln('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); promptTerm(); return; }
+  if(!r.id || isPlainCd(cmd)){ promptTerm(); return; }
+  tty.run = r.id; $('n-term').textContent = ' ●';
+  const es = new EventSource('/v1/sessions/' + current + '/pty/' + r.id); tty.es = es;
+  es.addEventListener('out', e => term.write(bytesOf(e.data)));
+  const end = code => { es.close(); tty.es = null; tty.run = null; $('n-term').textContent = '';
+    if(code !== null) term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m'); changesSoon(); hawkSoon(); loadTree('', $('tree'), 0); promptTerm(); };
+  es.addEventListener('exit', e => end(e.data));
+  es.onerror = () => { if(tty.run === r.id) end(null); };
 }
-const termHist = []; let termAt = 0;
-$('term-in').addEventListener('submit', async e => {
-  e.preventDefault(); const q = $('term-q'), cmd = q.value.trim(); if(!cmd) return;
-  if(!current){ logTerminal(cmd, {content:'Start or open a session first: commands run in its sandbox.', is_error:true}, 'you'); return; }
-  termHist.push(cmd); termAt = termHist.length; q.value = ''; q.disabled = true;
-  try{
-    const r = await api('/v1/sessions/' + current + '/exec', {method:'POST', body: JSON.stringify({command:cmd})});
-    $('term-cwd').textContent = (r.cwd && r.cwd !== '.' ? r.cwd + ' ' : '') + '$';
-    changesSoon(); hawkSoon();
-  }catch(err){ logTerminal(cmd, {content:err.message, is_error:true}, 'you'); }
-  q.disabled = false; q.focus();
-});
-$('term-q').addEventListener('keydown', e => {
-  if(e.key === 'ArrowUp' && termAt > 0){ e.preventDefault(); $('term-q').value = termHist[--termAt]; }
-  else if(e.key === 'ArrowDown' && termAt < termHist.length){ e.preventDefault(); $('term-q').value = termHist[++termAt] || ''; }
-});
+const isPlainCd = c => /^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
+function logTerminal(cmd, p, who){
+  if(who === 'you') return; // the person's own commands are already on the terminal
+  const out = (p.content || '').slice(0, 8000).replace(/\n/g, '\r\n');
+  term.write('\r\n\x1b[2m[agent]\x1b[0m \x1b[36m$\x1b[0m ' + cmd + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : ''));
+  if(!tty.run) promptTerm();
+  termN++; if(!tty.run) $('n-term').textContent = ' ' + termN;
+}
 function logEvent(ev, p){
   if(ev.type === 'agent.delta') return;
   const box = $('p-events'), r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
@@ -921,6 +995,8 @@ $('palkey').textContent = isMac ? '⌘K' : 'Ctrl K';
   await loadSessions();
   setView(store.get('view', 'explorer')); $('app').dataset.pane = 'agent';
   const last = sessionList[0]; if(last) openSession(last.id, last.state); else loadTree('', $('tree'), 0);
+  if(!isDark()) term.options.theme = {background:'#00000000', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
+  fitTerm(); promptTerm();
 })();
 </script>
 </body>

@@ -28,7 +28,7 @@ import (
 
 const (
 	maxDirEntries = 2000
-	maxViewBytes  = 512 << 10
+	maxViewBytes  = 4 << 20
 )
 
 // viewerSkip is never listed and never served. .git and node_modules are
