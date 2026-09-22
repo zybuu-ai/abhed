@@ -902,11 +902,36 @@ $('q').addEventListener('keydown', e => {
   if(e.key === 'Escape'){ $('slash').hidden = true; return; }
   if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
 });
+$('q').addEventListener('input', () => {
+  const q = $('q'), at = q.value.slice(0, q.selectionStart).match(/(?:^|\s)@([\w./-]*)$/);
+  const box = $('slash'); if(!at){ if(box.dataset.mode === 'at'){ box.hidden = true; delete box.dataset.mode; } return; }
+  indexFiles(); const needle = at[1].toLowerCase();
+  const hits = [...known].filter(p => p.toLowerCase().includes(needle)).sort((a, b) => a.length - b.length).slice(0, 8);
+  clear(box); box.dataset.mode = 'at'; box.hidden = !hits.length;
+  hits.forEach(p => { const b = el('button', 'row'); b.type = 'button'; b.appendChild(el('span', 'name mono', '@' + p));
+    b.addEventListener('mousedown', ev => { ev.preventDefault(); const head = q.value.slice(0, q.selectionStart).replace(/@[\w./-]*$/, '@' + p + ' ');
+      q.value = head + q.value.slice(q.selectionStart); q.selectionStart = q.selectionEnd = head.length; box.hidden = true; delete box.dataset.mode; q.focus(); });
+    box.appendChild(b); });
+});
 $('composer').addEventListener('submit', e => { e.preventDefault(); send(); });
+// An @path mention attaches that file's content to the prompt, so the agent
+// reads what the person is pointing at instead of hunting for it.
+async function withMentions(text){
+  const paths = [...new Set((text.match(/(?:^|\s)@([\w./-]+)/g) || []).map(m => m.trim().slice(1)))].filter(p => known.has(p));
+  if(!paths.length || !current) return text;
+  const parts = [text];
+  for(const p of paths.slice(0, 5)){
+    try{ const f = await api('/v1/sessions/' + current + '/file?path=' + encodeURIComponent(p));
+      if(!f.binary) parts.push('\n\nAttached ' + p + (f.truncated ? ' (first part)' : '') + ':\n```\n' + f.content.slice(0, 60000) + '\n```'); }
+    catch{}
+  }
+  return parts.join('');
+}
 async function send(){
-  const prompt = $('q').value.trim(); if(!prompt || $('send').disabled) return;
+  let prompt = $('q').value.trim(); if(!prompt || $('send').disabled) return;
   $('send').disabled = true;
   try{
+    prompt = await withMentions(prompt);
     if(current){
       await api('/v1/sessions/' + current + '/messages', {method:'POST', body: JSON.stringify({prompt})});
       if(!live){ live = true; $('stop').hidden = false; if(!es) connect(current); }
@@ -979,9 +1004,18 @@ document.addEventListener('keydown', e => {
   else if(k === 's'){ e.preventDefault(); saveActive(); }
   else if(k === 'b'){ e.preventDefault(); $('app').classList.toggle('noside'); }
   else if(k === 'j'){ e.preventDefault(); $('app').classList.toggle('nopanel'); }
-  else if(k === 'l'){ e.preventDefault(); $('app').dataset.pane = 'agent'; $('q').focus(); }
+  else if(k === 'l'){ e.preventDefault(); askAboutSelection(); $('app').dataset.pane = 'agent'; $('q').focus(); }
 });
 $('palkey').textContent = isMac ? '⌘K' : 'Ctrl K';
+// Select code in the editor and press the focus-agent key: the selection is
+// quoted into the composer with its file and line numbers.
+function askAboutSelection(){
+  const t = tabs.find(x => x.id === active); if(!t || !t.view) return;
+  const st = t.view.state, sel = st.selection.main; if(sel.empty) return;
+  const from = st.doc.lineAt(sel.from).number, to = st.doc.lineAt(sel.to).number;
+  const q = $('q'); q.value = 'In `' + t.path + '` lines ' + from + '–' + to + ':\n```\n' + st.sliceDoc(sel.from, sel.to) + '\n```\n' + q.value;
+  q.style.height = 'auto'; q.style.height = Math.min(q.scrollHeight, 260) + 'px';
+}
 
 /* ---------------------------------------------------------------- boot */
 (async () => {

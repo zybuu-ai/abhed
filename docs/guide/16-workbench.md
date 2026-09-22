@@ -37,9 +37,14 @@ rest — and the permission mode is chosen beside it.
 |---|---|
 | ⌘K / Ctrl K | command palette: files, sessions, commands |
 | ⌘S / Ctrl S | save the open file |
+| ⌘L / Ctrl L with code selected | quote the selection, with its file and lines, into the composer |
 | ⌘B / Ctrl B | side panel |
 | ⌘J / Ctrl J | bottom panel |
 | ⌘L / Ctrl L | focus the agent |
+
+`@path` in the composer attaches that file's content to the message, with
+completion from the workspace tree as you type. Select code in the editor and
+press ⌘L to ask about exactly those lines.
 
 Panels resize by dragging the edges, and the layout is remembered per browser.
 
