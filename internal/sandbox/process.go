@@ -199,11 +199,13 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 			"--ro-bind-try", "/lib64", "/lib64",
 			"--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
 			"--ro-bind-try", "/etc/ssl", "/etc/ssl",
+			// /tmp first: a workspace under it is bound on top afterwards, or
+			// the tmpfs would hide it and every command would fail to start.
+			"--tmpfs", "/tmp",
 			"--bind", s.policy.Workspace, s.policy.Workspace,
 			// An empty, throwaway directory over Abhed's own state: nothing in
 			// it can be read, and anything written there is gone at exit.
 			"--tmpfs", filepath.Join(s.policy.Workspace, stateDir),
-			"--tmpfs", "/tmp",
 			"--chdir", cwd,
 		)
 		if !s.policy.AllowNetwork {
