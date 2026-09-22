@@ -148,5 +148,17 @@ class RecordAndDifficultyTests(unittest.TestCase):
             rig.instances = real
 
 
+class ResultFilesTests(unittest.TestCase):
+    def test_sidecars_are_not_results(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            run = root / "abhed" / "full" / "run1"
+            run.mkdir(parents=True)
+            for name in ("x.json", "x.events.json", "x.hawkeye.json"):
+                (run / name).write_text("{}")
+            self.assertEqual([p.name for p in rig.result_files(root)], ["x.json"])
+
+
 if __name__ == "__main__":
     unittest.main()

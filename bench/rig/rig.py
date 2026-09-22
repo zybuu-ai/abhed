@@ -542,6 +542,13 @@ def by_difficulty(tasks, label):
     return [t for t in tasks if rated.get(t) == label]
 
 
+def result_files(root):
+    """One file per session: the result, not the record or the HawkEYE
+    report the rig writes beside it."""
+    return [p for p in sorted(root.glob("*/*/run*/*.json"))
+            if not p.name.endswith((".events.json", ".hawkeye.json"))]
+
+
 def base_model():
     """The model behind the benchmark variants, as `models` last set it."""
     p = CACHE / "base-model.txt"
@@ -640,7 +647,7 @@ def _current():
 
 def snapshot(date):
     root = RESULTS / date / "rig"
-    done = [json.loads(p.read_text()) for p in root.glob("*/*/run*/*.json")]
+    done = [json.loads(p.read_text()) for p in result_files(root)]
     plan = json.loads((root / "plan.json").read_text()) if (root / "plan.json").exists() else None
     total = len(plan["sessions"]) if plan else None
     alive = subprocess.run(["pgrep", "-f", f"rig.py run --date {date}"], stdout=subprocess.PIPE).returncode == 0
@@ -703,7 +710,7 @@ def watch(args):
 
 def load(date):
     cells = {}
-    for p in (RESULTS / date / "rig").glob("*/*/run*/*.json"):
+    for p in result_files(RESULTS / date / "rig"):
         r = json.loads(p.read_text())
         run_no = int(p.parent.name[3:])
         cells.setdefault((r["harness"], r["condition"]), {}).setdefault(run_no, {})[r["instance"]] = r
