@@ -176,6 +176,19 @@ results table: a suite on which two of three harnesses cannot call a tool
 would measure nothing else. `qwen3.8:27b` is a dense model and too slow for a
 thirty-minute session on this hardware. The runs use `gemma4:26b`.
 
+## A hosted model
+
+The rig can point every harness at a hosted OpenAI-compatible endpoint
+instead of the local Ollama: `ABHED_BENCH_ENDPOINT`, `ABHED_BENCH_API_KEY`
+and `ABHED_BENCH_MODEL` name it, the key is read from the environment and
+written into no result, and the model id and the endpoint's host are recorded
+as the base model of every session. Two things change and are stated with
+the results: only the `full` condition runs, because the tight window needs
+`num_ctx` set at the endpoint and a server the rig does not run cannot be
+told; and the serving stack is somebody else's, so a run on a hosted model is
+reproducible only to the extent that provider is stable. `doctor` must pass
+per harness on the hosted model like any other.
+
 ## Watching a run
 
 `rig.py watch --date <date>` from another terminal: sessions finished of the

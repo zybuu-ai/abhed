@@ -290,11 +290,28 @@ def suite():
 # ---------------------------------------------------------------- harnesses
 
 def model_name(cond):
+    """The model id the harnesses ask for. Local runs use the Ollama variants
+    `models` writes, one per window condition; a remote endpoint names its
+    model directly and the window is what the harnesses are told, since the
+    rig cannot set num_ctx on a server it does not run."""
+    remote = os.environ.get("ABHED_BENCH_MODEL")
+    if remote:
+        return remote
     return f"abhed-bench-{cond}"
 
 
 def endpoint():
     return os.environ.get("ABHED_BENCH_ENDPOINT", "http://127.0.0.1:11434/v1")
+
+
+def api_key():
+    """The key the harnesses send. Ollama ignores it; a hosted endpoint needs
+    it. It comes from the environment only and is written into no result."""
+    return os.environ.get("ABHED_BENCH_API_KEY", "bench")
+
+
+def remote():
+    return bool(os.environ.get("ABHED_BENCH_MODEL"))
 
 
 class Harness:
@@ -362,7 +379,7 @@ class Abhed(Harness):
         cfg = json.loads(path.read_text())
         cfg["model"] = {"default": "bench", "providers": {"bench": {
             "type": "openai-compatible", "base_url": endpoint(), "model": model_name(cond),
-            "context_window": CONDITIONS[cond], "params": {}}}}
+            "api_key": api_key(), "context_window": CONDITIONS[cond], "params": {}}}}
         path.write_text(json.dumps(cfg, indent=1))
         # Unattended, as the other harnesses run: nothing prompts. Abhed keeps
         # its sandbox and its deny rules in this mode; that is the product.
@@ -435,7 +452,7 @@ class Pi(Harness):
         agent = home / ".pi" / "agent"
         agent.mkdir(parents=True, exist_ok=True)
         (agent / "models.json").write_text(json.dumps({"providers": {"bench": {
-            "baseUrl": endpoint(), "api": "openai-completions", "apiKey": "bench",
+            "baseUrl": endpoint(), "api": "openai-completions", "apiKey": api_key(),
             "models": [{"id": model_name(cond), "name": model_name(cond), "reasoning": False, "input": ["text"],
                         "contextWindow": CONDITIONS[cond], "maxTokens": 8192,
                         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}}, indent=1))
@@ -473,7 +490,7 @@ class OpenHands(Harness):
         # Headless always approves, per its docs. LLM settings come from the
         # environment only with --override-with-envs, and are not persisted.
         env = dict(env, HOME=str(home), LLM_MODEL=f"openai/{model_name(cond)}",
-                   LLM_BASE_URL=endpoint(), LLM_API_KEY="bench")
+                   LLM_BASE_URL=endpoint(), LLM_API_KEY=api_key())
         return sh(["openhands", "--headless", "--json", "--override-with-envs", "-t", prompt],
                   cwd=ws, env=env, timeout=RUN_TIMEOUT)
 
@@ -550,7 +567,11 @@ def result_files(root):
 
 
 def base_model():
-    """The model behind the benchmark variants, as `models` last set it."""
+    """The model behind the benchmark variants, as `models` last set it — or
+    the remote model named in the environment, with its endpoint's host."""
+    if remote():
+        host = urllib.parse.urlparse(endpoint()).netloc or endpoint()
+        return f"{os.environ['ABHED_BENCH_MODEL']} @ {host}"
     p = CACHE / "base-model.txt"
     return p.read_text().strip() if p.exists() else "unknown"
 
@@ -596,6 +617,9 @@ def run(args):
     for n in names:
         if n not in ("null", "gold") and not (CACHE / f"doctor-{n}.ok").exists():
             sys.exit(f"{n} has not passed `rig.py doctor --harness {n}`; an unchecked setup is not a measurement")
+    if remote() and (args.condition or list(CONDITIONS)) != ["full"]:
+        sys.exit("a remote model serves one window, its own: run with --condition full. "
+                 "The tight condition needs num_ctx set at the endpoint, which only a local Ollama allows.")
     tasks = sorted(suite())
     if getattr(args, "difficulty", None):
         tasks = by_difficulty(tasks, args.difficulty)
