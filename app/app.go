@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // App is the binary's registry: what it can authenticate with, which paid
@@ -32,6 +33,7 @@ type App struct {
 	auth       map[string]AuthBuilder
 	features   map[string]bool
 	commands   map[string]Command
+	migrate    []store.Extension
 	taps       []TapBuilder
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
@@ -92,6 +94,13 @@ func WithAuthMode(mode string, b AuthBuilder) Option {
 // refused at startup with a message naming the key, the tier and the fix,
 // instead of a feature quietly not happening. This is the declaration that
 // switches that refusal off.
+// WithMigrateExtension adds schema that `abhed migrate` applies as the owner,
+// with the privileges the runtime role gets on it. An edition with tables of
+// its own registers them here, so one command provisions the whole record.
+func WithMigrateExtension(ext store.Extension) Option {
+	return func(a *App) { a.migrate = append(a.migrate, ext) }
+}
+
 func WithFeature(name string) Option {
 	return func(a *App) { a.features[name] = true }
 }

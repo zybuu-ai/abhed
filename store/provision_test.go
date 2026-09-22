@@ -204,3 +204,35 @@ func TestValidPrivileges(t *testing.T) {
 		}
 	}
 }
+
+// An edition's own tables are provisioned by the same command, and the
+// runtime role gets on them exactly the privileges the edition named.
+func TestProvisionAppliesExtensions(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := Extension{
+		SQL:    "CREATE TABLE IF NOT EXISTS ext_probe (id text PRIMARY KEY, n bigserial, note text)",
+		Grants: map[string]string{"ext_probe": "SELECT, INSERT"},
+	}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User, Extensions: []Extension{ext}}); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "INSERT INTO ext_probe (id, note) VALUES ($1, 'x') ON CONFLICT DO NOTHING", testID(t, "ext-")); err != nil {
+		t.Fatalf("the runtime role cannot insert into the extension's table: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "DELETE FROM ext_probe"); err == nil {
+		t.Fatal("the runtime role could delete from a table it was granted only select and insert on")
+	}
+}
