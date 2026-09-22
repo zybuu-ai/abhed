@@ -6,6 +6,98 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-22
+
+The first major release. From here the command line, the configuration
+schema, the event record and the Go SDK (`sdk`) follow semantic versioning:
+a change that would break any of them is a 2.0. The other public Go packages
+(`server`, `auth`, `store`, `config`, `app`) are supported extension points
+whose shape may still move in a minor release, and say so when it does.
+
+### Added
+
+- **The workbench at `/ide`.** An editor with syntax highlighting beside the
+  agent, a file tree, a changes view that opens each file for review with
+  accept and reject chunk by chunk, a terminal, and HawkEYE live. Edits and
+  terminal commands made by the person go through the same policy, sandbox
+  and record as the agent's, marked as theirs. `@path` attaches a file to a
+  message; select code and press the focus-agent key to ask about it. The
+  editor and terminal components are built into the binary, so nothing loads
+  from the network.
+- **HawkEYE.** `abhed hawkeye`, `/hawkeye` and `GET /v1/sessions/{id}/hawkeye`
+  report what a session did from its record alone: per-turn tokens and
+  context, the policy step behind every call, files touched, subagents,
+  compactions, and deterministic findings — a call to a host that only tool
+  output supplied, a credential path, a gap in the record, a redacted secret.
+- **Context that keeps its record.** Old and large tool results leave the
+  window for a one-line pointer once it passes `context.offload_at`; the full
+  text stays in the record and the new `recall` tool reads it back by id,
+  text or offset. Nothing is lost from the record; anything dropped from the
+  window can be retrieved.
+- **Secrets by name.** `abhed secret set NAME` stores a credential outside
+  every workspace. The model sees the name, asks for it on one command, and
+  gets it only under a `secret(NAME)` allow rule, in every mode. Every event
+  is redacted before it is written and every tool result before the model
+  reads it; HawkEYE reports a redaction.
+- **`abhed resolve <issue-url>`** turns an issue on GitHub, GitLab or
+  Gitea/Forgejo — self-hosted instances and their certificate authorities
+  included — into a branch in its own worktree, a commit, a push and a pull
+  request. Opening the request is its own policy-judged action, `forge_pr`.
+- **`abhed acp`** speaks the Agent Client Protocol over stdio, so Zed,
+  JetBrains and other editors run Abhed as their agent; their approval dialog
+  answers asks and cannot lift a deny.
+- **The benchmark rig** (`bench/rig`): several harnesses on one local model
+  over multi-file tasks with a validity gate, self-tests, two context
+  conditions and paired bootstrap intervals. Results are published whatever
+  they say; the first published run is still owed.
+- **Scale.** A session's node is recorded and requests routed to it,
+  approvals are answered on any node, a node's claim is refreshed while its
+  turn runs, and shutdown drains instead of ending turns in flight.
+- **`abhed migrate`** and two database roles: an owner that migrates and a
+  runtime role that can only append.
+
+### Changed
+
+- The permission mode no longer decides secrets, and a write or edit that
+  could not succeed is refused before anyone is asked to approve it.
+- A finished terminal command stays readable for a minute, so a short one is
+  not lost to a reader that connects late.
+- The gosec baseline update refuses a change that would silently drop triaged
+  findings.
+
+### Fixed
+
+- Long files in Hindi, Japanese, Russian and other non-Latin scripts were
+  refused as binary two times in three.
+- A prompt label cut mid-character produced invalid UTF-8 that the database
+  refused. Contributed in #38.
+- bubblewrap hid a workspace under `/tmp` behind its own tmpfs, so every
+  command there failed to start.
+- The docs site fails the build when two pages claim one URL instead of
+  writing one over the other.
+
+### Security
+
+- **The agent cannot reach its own configuration in any mode.** The file
+  tools refuse any path with a `.abhed` component, and the process sandbox
+  denies commands reading or writing it, in the workspace and in the home
+  directory; `~/.abhed/skills` stays readable. Before this, `auto` and
+  `bypass` mode let the write tool rewrite `config.json` or plant
+  `users.json`.
+- **`/download` withheld nothing.** Any signed-in user could download the
+  server's own state (`users.json`, `config.json`) and files a deny rule
+  covers. Both are refused now, as the viewer and the agent refuse them.
+  Deployments on 0.2.0 should upgrade and treat local account passwords as
+  exposed.
+- **The audit record is protected from the server's own credentials.** The
+  application role owned the tables, so it could truncate them or disable
+  the append-only triggers. The runtime role now holds insert and select
+  only, a `BEFORE TRUNCATE` trigger stands as well, and the server refuses to
+  start as a role that could alter the record. Configure `storage.migrate_dsn`
+  for the owner, or `storage.single_role` to keep one role knowingly.
+- The egress, credential and configuration boundaries are verified on Linux
+  under bubblewrap in a privileged CI job, not only on macOS.
+
 ## [0.2.0] - 2026-09-19
 
 ### Security
