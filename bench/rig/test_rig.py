@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Checks on the parts of the rig that would misreport quietly if wrong."""
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -183,6 +185,32 @@ class RemoteEndpointTests(unittest.TestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+class SessionIsolationTests(unittest.TestCase):
+    def test_each_session_gets_its_own_environment_and_temp_dir(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "envs" / "i1" / "venv"
+            (src / "bin").mkdir(parents=True)
+            (src / "bin" / "pytest").write_text(f"#!{src}/bin/python\nprint('hi')\n")
+            (src / "bin" / "python").symlink_to("/usr/bin/python3")
+            saved = rig.CACHE
+            rig.CACHE = Path(tmp)
+            try:
+                copy = rig.session_venv("i1", Path(tmp) / "venv-a")
+                self.assertEqual((copy / "bin" / "pytest").read_text().splitlines()[0], f"#!{copy}/bin/python")
+                self.assertTrue((copy / "bin" / "python").is_symlink())
+                a = rig.task_env("i1", Path(tmp) / "abhed-full-i1-run1", copy)
+                b = rig.task_env("i1", Path(tmp) / "abhed-full-i1-run2")
+                self.assertTrue(a["PATH"].startswith(str(copy / "bin")))
+                self.assertTrue(b["PATH"].startswith(str(src / "bin")))
+                self.assertNotEqual(a["TMPDIR"], b["TMPDIR"])
+                self.assertTrue(os.path.isdir(a["TMPDIR"]))
+            finally:
+                rig.CACHE = saved
+                for e in (a, b):
+                    shutil.rmtree(e["TMPDIR"], ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -188,9 +188,13 @@ the results: only the `full` condition runs, because the tight window needs
 told; and the serving stack is somebody else's, so a run on a hosted model is
 reproducible only to the extent that provider is stable. `doctor` must pass
 per harness on the hosted model like any other. Sessions are independent —
-each has its own workspace, home and result — so `--parallel N` runs several
-at once on a hosted model; the machine's CPU and sandbox bound N, and the
-wall-clock column then measures a shared machine, which the results say.
+each has its own workspace, home, copy of the prepared environment, temp dir
+and result, named by harness, condition, instance and run — so `--parallel N`
+runs several at once on a hosted model; the machine's CPU and sandbox bound
+N, and the wall-clock column then measures a shared machine, which the
+results say. The copy of the environment is the agent's to change; the tests
+are scored in the prepared one, so nothing an agent installs reaches the
+score or the next session.
 
 `summarize` reports each harness by the dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,

@@ -35,6 +35,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -155,6 +156,24 @@ def prepare(args):
             print(f"  could not build: {str(e).splitlines()[0][:120]}")
 
 
+def session_venv(iid, dest):
+    """The agent's own copy of the prepared environment. Whatever it installs
+    or upgrades stays with the session; the tests are scored in the original,
+    and the next session starts clean."""
+    src = env_dir(iid) / "venv"
+    shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(src, dest, symlinks=True)
+    for f in (dest / "bin").iterdir():  # console scripts name the interpreter by absolute path
+        if f.is_file() and not f.is_symlink():
+            try:
+                text = f.read_text()
+            except UnicodeDecodeError:
+                continue
+            if str(src) in text:
+                f.write_text(text.replace(str(src), str(dest)))
+    return dest
+
+
 def workspace(iid, dest):
     """A fresh checkout at the base commit, with no history to mine."""
     inst = json.loads((env_dir(iid) / "instance.json").read_text())
@@ -173,9 +192,14 @@ def workspace(iid, dest):
     return inst
 
 
-def task_env(iid, ws):
+def task_env(iid, ws, venv=None):
     env = dict(os.environ)
-    env["PATH"] = f"{env_dir(iid) / 'venv' / 'bin'}:{env['PATH']}"
+    env["PATH"] = f"{(venv or env_dir(iid) / 'venv') / 'bin'}:{env['PATH']}"
+    # pytest keeps its scratch under the temp dir, in one tree per user, and
+    # two sessions sharing it race on the cleanup. One temp dir per session.
+    tmp = Path(tempfile.gettempdir()) / f"rig-{ws.name}"
+    tmp.mkdir(exist_ok=True)
+    env["TMPDIR"] = str(tmp)
     # The venv's editable install points at the prepared checkout, not this
     # copy. PYTHONPATH comes first, so the workspace's code is what runs —
     # and `validate` would exclude any instance where that did not hold.
@@ -498,18 +522,20 @@ class OpenHands(Harness):
 HARNESSES = {h.name: h for h in (Null, Gold, Abhed, Pi, OpenHands)}
 
 
-def one_run(hname, iid, cond, out_path):
-    ws = CACHE / "scratch" / f"{hname}-{cond}-{iid}"
-    home = CACHE / "scratch" / f"home-{hname}-{cond}-{iid}"
+def one_run(hname, iid, cond, out_path, run=1):
+    tag = f"{hname}-{cond}-{iid}-run{run}"
+    ws = CACHE / "scratch" / tag
+    home = CACHE / "scratch" / f"home-{tag}"
     shutil.rmtree(home, ignore_errors=True)
     home.mkdir(parents=True)
     inst = workspace(iid, ws)
+    venv = session_venv(iid, CACHE / "scratch" / f"venv-{tag}")
     h = HARNESSES[hname]()
     h.inst = inst
     prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
     started, timed_out, output, rc = time.time(), False, "", None
     try:
-        rc, output = h.run(ws, prompt, cond, task_env(iid, ws), home)
+        rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv), home)
     except subprocess.TimeoutExpired as e:
         timed_out, output = True, (e.stdout or "") if isinstance(e.stdout, str) else ""
     elapsed = time.time() - started
@@ -528,8 +554,8 @@ def one_run(hname, iid, cond, out_path):
         result["hawkeye"] = hawkeye(events, out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, indent=1))
-    shutil.rmtree(ws, ignore_errors=True)
-    shutil.rmtree(home, ignore_errors=True)
+    for d in (ws, home, venv, Path(task_env(iid, ws)["TMPDIR"])):
+        shutil.rmtree(d, ignore_errors=True)
     return result
 
 
@@ -651,7 +677,7 @@ def run(args):
 
     def one(item):
         i, r, iid, cond, n, out = item
-        res = one_run(n, iid, cond, out)
+        res = one_run(n, iid, cond, out, run=r)
         print(f"[{i}/{len(plan)}] {n:9} {cond:5} run{r} {iid}  resolved={res['score']['resolved']}  {res['wall_sec']}s", flush=True)
 
     # Sessions are independent: each has its own workspace, home and result
@@ -682,7 +708,7 @@ def _current():
     names = "|".join(sorted(HARNESSES, key=len, reverse=True))
     conds = "|".join(CONDITIONS)
     for d in sorted(scratch.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
-        m = re.fullmatch(rf"({names})-({conds})-(.+)", d.name)
+        m = re.fullmatch(rf"({names})-({conds})-(.+?)(?:-run\d+)?", d.name)
         if m and d.is_dir():
             return d, m.group(1), m.group(2), m.group(3)
     return None
