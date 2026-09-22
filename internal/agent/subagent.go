@@ -179,6 +179,9 @@ type SubagentFactory struct {
 	Budget    *Budget
 	Config    Config
 	Workspace string
+	// Redact is handed to every subagent's recorder, so a secret is stopped
+	// before a child's record as it is before the parent's.
+	Redact func([]byte) []byte
 	// Depth guards against runaway recursion; nested spawning is off by default.
 	Depth int
 }
@@ -216,6 +219,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		}
 	}
 	rec := NewRecorder(f.Store, sessionID, "")
+	rec.Redact = f.Redact
 
 	profile := req.AgentType
 	if _, found := Profiles[profile]; !found {

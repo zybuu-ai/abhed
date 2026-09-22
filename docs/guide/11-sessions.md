@@ -12,6 +12,11 @@ observation, compaction and terminal reason. Each event carries a sequence
 number, an actor, and a **trust tag**: content read from files, tool output and
 search results is data, never instruction, and the tag travels with it.
 
+Before any event is written it passes the redactor: a value from the secrets
+store, wherever it appears in a payload, is replaced with `[secret:NAME]`. The
+record is append-only, so this is the only moment a secret can be kept out of
+it. See [Secrets](04-permissions.md#secrets).
+
 ## Storage
 
 In memory by default, which loses everything when the process exits. Postgres

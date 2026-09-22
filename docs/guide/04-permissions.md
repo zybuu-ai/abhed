@@ -93,3 +93,47 @@ same command. A denial that says only "no" makes a model retry forever.
 `/undo` reverts the last turn's file changes. `/diff` shows what changed this
 session. With Postgres storage, `/resume` replays a past session exactly, which
 is how you find out what an agent did rather than what it said it did.
+
+## Secrets
+
+A command that runs tests, calls an API or opens a pull request needs a
+credential. It does not get one from your environment: the agent's commands
+see only what the sandbox passes through. It gets one **by name**, from a store
+the operator fills, and only under a rule that names it.
+
+```
+abhed secret set GITHUB_TOKEN      # value prompted without echo, or piped on stdin
+abhed secret list
+abhed secret rm GITHUB_TOKEN
+```
+
+Values live in `~/.abhed/secrets.json` (`ABHED_SECRETS_FILE` overrides), mode
+600, outside every workspace and under the directory the agent's tools and
+sandbox cannot reach. They are never in a config file.
+
+The model sees the **names**, and asks for one on a single command:
+
+```json
+{"command": "gh pr create --fill", "secrets": ["GITHUB_TOKEN"]}
+```
+
+That command, and only that command, runs with `GITHUB_TOKEN` in its
+environment. Whether it may is decided by a rule:
+
+```json
+"allow": ["secret(GITHUB_TOKEN)"],
+"deny":  ["secret(PROD_*)"]
+```
+
+A secret needs its own allow rule **in every mode**. `auto` and `bypass`
+approve calls; they do not hand out credentials. A command that asks for a
+name with no rule is refused, and the model is told which rule would permit
+it. A deny rule wins over an allow rule, as everywhere else.
+
+**Redaction.** The record is append-only, so a value that reached it could
+never be taken out. Every event is checked before it is written: a stored
+value, wherever it appears, becomes `[secret:NAME]`. Redaction matches the
+stored values exactly; it is not a pattern guessing at what a key looks like.
+When it fires, [HawkEYE](15-hawkeye.md) reports `secret-redacted`: the value
+was caught, and the command or the model exposed it, which is worth knowing.
+

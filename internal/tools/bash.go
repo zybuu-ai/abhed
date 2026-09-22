@@ -29,13 +29,23 @@ type Bash struct {
 	// Sandbox, when set, wraps the command (e.g. a microVM or container exec).
 	// Nil means direct execution, which is only appropriate for local dev.
 	Sandbox func(ctx context.Context, cwd, command string) *exec.Cmd
+	// Secrets resolves names the model asked for into NAME=value pairs for
+	// one command's environment. Policy has allowed each name by the time
+	// this runs. Nil means no secrets are available.
+	Secrets func(names []string) ([]string, error)
+	// SecretNames is what the model may ask for, by name only.
+	SecretNames []string
 }
 
 func (Bash) Name() string  { return "bash" }
 func (Bash) Mutates() bool { return true }
 
-func (Bash) Description() string {
-	return "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: the working directory persists between calls, but shell state (variables, functions) does not."
+func (b Bash) Description() string {
+	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: the working directory persists between calls, but shell state (variables, functions) does not."
+	if len(b.SecretNames) > 0 {
+		d += " Secrets available by name, as environment variables for one command when listed in `secrets`: " + strings.Join(b.SecretNames, ", ") + ". You never see their values."
+	}
+	return d
 }
 
 func (Bash) Schema() json.RawMessage {
@@ -44,16 +54,18 @@ func (Bash) Schema() json.RawMessage {
   "properties":{
     "command":{"type":"string","description":"The shell command to run."},
     "description":{"type":"string","description":"Short human-readable description of what this does, shown in the approval prompt."},
-    "timeout_ms":{"type":"integer","description":"Timeout in milliseconds. Default 120000, max 600000."}
+    "timeout_ms":{"type":"integer","description":"Timeout in milliseconds. Default 120000, max 600000."},
+    "secrets":{"type":"array","items":{"type":"string"},"description":"Names of stored secrets this command needs as environment variables. Each must be permitted by policy."}
   },
   "required":["command","description"]
 }`)
 }
 
 type bashArgs struct {
-	Command     string `json:"command"`
-	Description string `json:"description"`
-	TimeoutMS   int    `json:"timeout_ms"`
+	Command     string   `json:"command"`
+	Description string   `json:"description"`
+	TimeoutMS   int      `json:"timeout_ms"`
+	Secrets     []string `json:"secrets"`
 }
 
 // Commands that hang forever waiting for a TTY. Rejecting them with guidance
@@ -154,6 +166,17 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		// Minimal environment: the agent should not inherit the operator's
 		// credentials by accident.
 		cmd.Env = append(os.Environ(), "ABHED_SESSION=1")
+	}
+
+	if len(a.Secrets) > 0 {
+		if b.Secrets == nil {
+			return errf("No secrets are configured on this deployment; run the command without `secrets`.")
+		}
+		env, err := b.Secrets(a.Secrets)
+		if err != nil {
+			return errf("%v", err)
+		}
+		cmd.Env = append(cmd.Env, env...)
 	}
 
 	var out bytes.Buffer

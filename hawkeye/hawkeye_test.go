@@ -245,3 +245,18 @@ func TestOffloadsAndRecallsAreReported(t *testing.T) {
 		t.Fatalf("the chart does not mark the offload (err %v)", err)
 	}
 }
+
+// A redacted secret in a call's output is reported: caught, but exposed.
+func TestRedactedSecretIsReported(t *testing.T) {
+	r := (&rec{}).user("x").
+		call("c1", "bash", `{"command":"env"}`, "allow", "API_TOKEN=[secret:API_TOKEN]", false).
+		end(agent.TermCompleted)
+	got := Analyze("s-test", r.evs)
+	found := false
+	for _, f := range got.Findings {
+		found = found || (f.Code == "secret-redacted" && f.Severity == Warn)
+	}
+	if !found {
+		t.Fatalf("no secret-redacted finding: %+v", got.Findings)
+	}
+}
