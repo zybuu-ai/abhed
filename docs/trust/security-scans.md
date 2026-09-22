@@ -252,7 +252,7 @@ finding, or a new one once it has been triaged here, is followed by
 |---|---|---|
 | G104 | 61 | Unchecked error return |
 | G304 | 24 | Potential file inclusion via variable |
-| G204 | 13 | Subprocess launched with a variable |
+| G204 | 15 | Subprocess launched with a variable |
 | G115 | 8 | Integer overflow on type conversion |
 | G703 | 7 | Path traversal (taint analysis) |
 | G306 | 6 | File written with permissions looser than 0600 |
@@ -309,7 +309,7 @@ inside the configured workspace root(s) — or `Server.resolveInWorkspace`
 | Medium | internal/tools/session.go:55 | `os.ReadFile` in `recordChange` | False positive — internal helper called only with pre-resolved paths |
 | Medium | internal/tools/session.go:252 | `os.ReadFile` in `ChangedSinceRead` | False positive — same |
 
-#### G204 — subprocess launched with a variable (13 findings)
+#### G204 — subprocess launched with a variable (15 findings)
 
 | Severity | file:line | Finding | Triage |
 |---|---|---|---|
@@ -324,6 +324,7 @@ inside the configured workspace root(s) — or `Server.resolveInWorkspace`
 | High | internal/sandbox/container.go:195 | `exec.CommandContext(ctx, c.runtime, ..., "/bin/sh", "-c", command)` — the model's shell command reaching a shell inside the container sandbox | Accepted with reason — this is the sandbox's actual job; the Dockerfile's own top comment states the in-process path check "is not a boundary against an attacker who reaches the process" and that the container is what makes the boundary real. Isolation is enforced by the container profile (verified below in §6), not by refusing this call |
 | High | internal/sandbox/process.go:157 | same pattern for the macOS `sandbox-exec` / Linux `bwrap` backends | Accepted with reason — same, isolation enforced by the seatbelt profile / bwrap namespace flags |
 | Low | internal/sandbox/process.go:243 | `exec.CommandContext(ctx, "bash", "-c", command)` in the `None` (no-isolation) tier | Accepted with reason — tier is explicitly named and self-describes as `"NO ISOLATION — commands run directly on the host. Trusted repositories only."` The risk is disclosed by the tier's own `Describe()`, not hidden |
+| Low | internal/forge/resolve.go:99, :134 | `exec.CommandContext(ctx, "git", ...)` pushing the resolver's branch and running the worktree commands | False positive — fixed binary, argv args, no shell; the branch and directory names are built by the package, and the token reaches git through `GIT_CONFIG_*` environment variables, never argv |
 | High | server/pty.go:125 | `exec.CommandContext(ctx, "bash", "-c", req.Command)` — a line typed into the workbench terminal, when no `Sandbox` function is configured | Accepted with reason — the same fallback as bash.go:151, for the person at the keyboard rather than the model. The line has already passed the policy engine as a `bash` call (`ManualAuthorize`), is recorded, and normally runs through the sandbox's own command builder; the fallback is the same `Sandbox == nil` deployment concern flagged below |
 | High | internal/tools/bash.go:151 | `exec.CommandContext(runCtx, "bash", "-c", a.Command)` — the fallback when no `Sandbox` function is configured at all | Accepted with reason for the exec call itself (same "the bash tool runs shell commands" design). **The real risk is upstream**: whether a deployment can reach production with `b.Sandbox == nil`. Flagged in Recommended fixes below |
 

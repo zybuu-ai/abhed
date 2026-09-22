@@ -33,6 +33,7 @@
  "G204 internal/agent/parallel.go": 1,
  "G204 internal/agent/prompt.go": 2,
  "G204 internal/extension/extension.go": 1,
+ "G204 internal/forge/resolve.go": 2,
  "G204 internal/k8s/client.go": 1,
  "G204 internal/mcp/client.go": 1,
  "G204 internal/sandbox/container.go": 3,
