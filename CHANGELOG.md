@@ -6,6 +6,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The `monitor` package and a policy step for it: a judge that reads the
+  remit, the agent's reasoning and where a call's arguments came from, and
+  may only tighten a decision; unavailable means ask, or deny when headless.
+  Verdicts are recorded as `monitor.verdict`. The local-model judge follows.
+
 ## [1.0.1] - 2026-09-22
 
 ### Added
