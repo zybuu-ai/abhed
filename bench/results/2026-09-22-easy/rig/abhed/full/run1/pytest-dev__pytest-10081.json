@@ -1,0 +1,38 @@
+{
+ "harness": "abhed",
+ "base_model": "gemma4:26b",
+ "finished": "2026-09-22 23:35:28",
+ "version": "abhed v1.0.1+dirty Community Edition",
+ "instance": "pytest-dev__pytest-10081",
+ "condition": "full",
+ "exit_code": 0,
+ "timed_out": false,
+ "wall_sec": 1469.9,
+ "patch_bytes": 1503,
+ "patch": "diff --git a/check_skip.py b/check_skip.py\nnew file mode 100644\nindex 0000000..4216318\n--- /dev/null\n+++ b/check_skip.py\n@@ -0,0 +1,9 @@\n+import unittest\n+\n+@unittest.skip(\"hello\")\n+class MyTestCase(unittest.TestCase):\n+    pass\n+\n+print(f\"Has __unittest_skip__: {hasattr(MyTestCase, '__unittest_skip__')}\")\n+print(f\"Attributes: {dir(MyTestCase)}\")\n+print(f\"Skip reason: {getattr(MyTestCase, 'skip', 'None')}\")\ndiff --git a/repro.py b/repro.py\nnew file mode 100644\nindex 0000000..65ea681\n--- /dev/null\n+++ b/repro.py\n@@ -0,0 +1,10 @@\n+import unittest\n+\n+@unittest.skip(\"hello\")\n+class MyTestCase(unittest.TestCase):\n+    def setUp(self):\n+        pass\n+    def test_one(self):\n+        pass\n+    def tearDown(self):\n+        xxx\ndiff --git a/src/_pytest/unittest.py b/src/_pytest/unittest.py\nindex 851e494..fc87164 100644\n--- a/src/_pytest/unittest.py\n+++ b/src/_pytest/unittest.py\n@@ -316,7 +316,7 @@ class TestCaseFunction(Function):\n             # Arguably we could always postpone tearDown(), but this changes the moment where the\n             # TestCase instance interacts with the results object, so better to only do it\n             # when absolutely needed.\n-            if self.config.getoption(\"usepdb\") and not _is_skipped(self.obj):\n+            if self.config.getoption(\"usepdb\") and not _is_skipped(self.obj) and not _is_skipped(self.parent.obj):\n                 self._explicit_tearDown = self._testcase.tearDown\n                 setattr(self._testcase, \"tearDown\", lambda *args: None)\n \n",
+ "usage": {
+  "turns": 21,
+  "tokens_in": 198240,
+  "tokens_out": 49599,
+  "reason": "completed"
+ },
+ "output_tail": "2026-09-22T18:05:28.299085Z\"}\n{\"id\":\"01GCMJTFDE8YQVNTERTCZC8NQ8\",\"session_id\":\"s-1790098859318251000\",\"seq\":512,\"type\":\"agent.message\",\"payload\":{\"text\":\"I have resolved the issue where `unittest.TestCase.tearDown` was being executed for classes marked with `unittest.skip` when running with the `--pdb` flag.\\n\\n### Analysis\\nThe problem was located in `src/_pytest/unittest.py` within the `TestCaseFunction.runtest` method. When running with `--pdb`, `pytest` attempts to postpone the execution of `tearDown` by replacing it with a no-op (`lambda *args: None`). This is done to prevent `tearDown` from cleaning up instance variables before a developer can inspect them in the debugger.\\n\\nThe condition used to decide whether to postpone `tearDown` was:\\n```python\\nif self.config.getoption(\\\"usepdb\\\") and not _is_skipped(self.obj):\\n```\\nHere, `self.obj` refers to the test method. If a class is skipped using `@unittest.skip`, the `_is_skipped` check on the method might return `False` (depending on how the decorator propagates), but the class itself is skipped. In the original code, if the method was not explicitly marked as skipped, `pytest` would proceed to replace `tearDown`. However, the logic was flawed because it didn't account for the case where the parent class is skipped.\\n\\nIn the reported bug, the `tearDown` was being called even when it should have been skipped or postponed, leading to a `NameError` (or other errors) if the `tearDown` method contained logic that expected a certain state.\\n\\n### Fix\\nI updated the condition to also check if the parent object (the class) is skipped. This ensures that if the class is skipped, we don't attempt to perform the `tearDown` postponement logic in a way that interferes with the skip behavior, or more accurately, it correctly identifies that the test context is skipped.\\n\\nThe updated condition is:\\n```python\\nif self.config.getoption(\\\"usepdb\\\") and not _is_skipped(self.obj) and not _is_skipped(self.parent.obj):\\n```\\n\\nThis ensures that we only postpone `tearDown` if both the method and its containing class are not marked as skipped by `unittest`.\\n\\n### Verification\\nI verified the fix by running a reproduction script (`repro.py`) which contains a `unittest.TestCase` decorated with `@unittest.skip` at the class level. \\n- **Before fix**: Running `pytest --pdb repro.py` resulted in a `NameError` in `tearDown`, indicating that `tearDown` was executed despite the class being skipped.\\n- **After fix**: Running `pytest --pdb repro.py` correctly skips the test without executing `tearDown`.\"},\"actor\":\"agent\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T18:05:28.299094Z\"}\n{\"id\":\"01GCMJTFDE8YQVNTERTCZC8NQC\",\"session_id\":\"s-1790098859318251000\",\"seq\":513,\"type\":\"session.ended\",\"payload\":{\"reason\":\"completed\",\"turns\":21,\"tokens_in\":198240,\"tokens_out\":49599,\"tokens_cached\":0,\"compactions\":0,\"context_tokens\":13366,\"context_window\":32768},\"actor\":\"system\",\"trust\":\"trusted\",\"created_at\":\"2026-09-22T18:05:28.299341Z\"}\n",
+ "difficulty": "<15 min fix",
+ "score": {
+  "resolved": true,
+  "f2p": "1/1",
+  "p2p": "60/60",
+  "f2p_fraction": 1.0,
+  "p2p_failed": [],
+  "f2p_ran_and_failed": false,
+  "tail": "y-1 error]\nPASSED testing/test_unittest.py::test_BdbQuit\nPASSED testing/test_unittest.py::test_exit_outcome\nPASSED testing/test_unittest.py::test_trace\nPASSED testing/test_unittest.py::test_pdb_teardown_called\nPASSED testing/test_unittest.py::test_pdb_teardown_skipped_for_functions[@unittest.skip]\nPASSED testing/test_unittest.py::test_pdb_teardown_skipped_for_functions[@pytest.mark.skip]\nPASSED testing/test_unittest.py::test_pdb_teardown_skipped_for_classes[@unittest.skip]\nPASSED testing/test_unittest.py::test_pdb_teardown_skipped_for_classes[@pytest.mark.skip]\nPASSED testing/test_unittest.py::test_async_support\nPASSED testing/test_unittest.py::test_do_class_cleanups_on_success\nPASSED testing/test_unittest.py::test_do_class_cleanups_on_setupclass_failure\nPASSED testing/test_unittest.py::test_do_class_cleanups_on_teardownclass_failure\nPASSED testing/test_unittest.py::test_do_cleanups_on_success\nPASSED testing/test_unittest.py::test_do_cleanups_on_setup_failure\nPASSED testing/test_unittest.py::test_do_cleanups_on_teardown_failure\nPASSED testing/test_unittest.py::test_traceback_pruning\nPASSED testing/test_unittest.py::test_raising_unittest_skiptest_during_collection\nPASSED testing/test_unittest.py::test_plain_unittest_does_not_support_async\nSKIPPED [8] testing/test_unittest.py:456: could not import 'twisted.trial.unittest': No module named 'twisted'\nSKIPPED [1] testing/test_unittest.py:1327: could not import 'asynctest': No module named 'asynctest'\n64 passed, 9 skipped in 2.15s\n"
+ },
+ "hawkeye": {
+  "findings": [
+   {
+    "code": "cold-cache",
+    "severity": "info"
+   }
+  ]
+ }
+}
