@@ -160,5 +160,30 @@ class ResultFilesTests(unittest.TestCase):
             self.assertEqual([p.name for p in rig.result_files(root)], ["x.json"])
 
 
+class RemoteEndpointTests(unittest.TestCase):
+    def test_remote_model_is_named_and_keyed_from_the_environment(self):
+        import os
+        saved = {k: os.environ.get(k) for k in ("ABHED_BENCH_MODEL", "ABHED_BENCH_API_KEY", "ABHED_BENCH_ENDPOINT")}
+        try:
+            for k in saved:
+                os.environ.pop(k, None)
+            self.assertEqual(rig.model_name("full"), "abhed-bench-full")
+            self.assertEqual(rig.api_key(), "bench")
+            self.assertFalse(rig.remote())
+            os.environ["ABHED_BENCH_MODEL"] = "openai/gpt-oss-120b"
+            os.environ["ABHED_BENCH_API_KEY"] = "sk-test"
+            os.environ["ABHED_BENCH_ENDPOINT"] = "https://openrouter.ai/api/v1"
+            self.assertEqual(rig.model_name("tight"), "openai/gpt-oss-120b")
+            self.assertEqual(rig.api_key(), "sk-test")
+            self.assertTrue(rig.remote())
+            self.assertEqual(rig.base_model(), "openai/gpt-oss-120b @ openrouter.ai")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 if __name__ == "__main__":
     unittest.main()
