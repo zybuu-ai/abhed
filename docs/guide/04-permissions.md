@@ -94,6 +94,31 @@ same command. A denial that says only "no" makes a model retry forever.
 session. With Postgres storage, `/resume` replays a past session exactly, which
 is how you find out what an agent did rather than what it said it did.
 
+## The monitor
+
+Between the deny rules and the ask rules sits an optional judge: given the
+session's remit, the agent's most recent stated reasoning, the proposed call
+and where every host and path in it was first seen, it returns allow, ask or
+deny with a reason. It runs on calls policy would ask about, on any mutation
+a mode waved through, and on any call naming a host or path the user never
+mentioned; a read the user asked for, allowed by rule, never reaches it.
+
+Two rules make it safe to let it read the reasoning:
+
+- **A verdict can only tighten.** An allow may become an ask or a deny, an
+  ask may become a deny, and nothing moves the other way. A judge that could
+  be argued into permitting would have to be kept away from the text that
+  argues; here the worst a persuaded judge can do is nothing.
+- **Absence is not consent.** A judge that is unreachable, slow or
+  incoherent raises the call to ask — or to deny in a headless run, where
+  nobody can answer.
+
+Every consultation is in the record as `monitor.verdict`, with the decision
+before and after, the code, the rationale and the judge's version, and a
+denial it caused says so at step `monitor`. The judge is any implementation
+of `monitor.Monitor`; the local-model judge and its configuration follow in
+the next release.
+
 ## Secrets
 
 A command that runs tests, calls an API or opens a pull request needs a

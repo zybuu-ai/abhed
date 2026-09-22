@@ -41,6 +41,9 @@ const (
 	// EvChangeAccepted marks a person keeping a change after review, which
 	// moves the file's baseline in the changes view.
 	EvChangeAccepted EventType = "change.accepted"
+	// EvMonitorVerdict records the monitor's judgement of a call it was
+	// consulted on, and the decision before and after it.
+	EvMonitorVerdict EventType = "monitor.verdict"
 	EvSessionEnded   EventType = "session.ended"
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
@@ -396,4 +399,19 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	r.mu.Unlock()
 
 	return ev, r.store.Append(ev)
+}
+
+// MonitorVerdict is what the monitor said about one call. After is never
+// looser than Before; Unavailable means the judge could not answer and the
+// fail-closed rule decided instead.
+type MonitorVerdict struct {
+	CallID      string  `json:"call_id"`
+	Before      string  `json:"before"`
+	After       string  `json:"after"`
+	Code        string  `json:"code"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	Rationale   string  `json:"rationale,omitempty"`
+	LatencyMS   int64   `json:"latency_ms"`
+	Version     string  `json:"version,omitempty"`
+	Unavailable bool    `json:"unavailable,omitempty"`
 }

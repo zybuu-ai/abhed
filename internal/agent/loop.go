@@ -12,6 +12,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // ErrShutdown, given as a context cancel cause, marks a session ended by the
@@ -71,6 +72,16 @@ type Loop struct {
 	// Offloader moves old tool results out of the window and into the
 	// record before compaction is needed. Nil leaves the window alone.
 	Offloader *Offloader
+	// Monitor, when set, judges each call policy would allow or ask about
+	// against the remit and the agent's reasoning, and may only tighten the
+	// decision. Nil consults nobody.
+	Monitor *monitor.Guard
+	// reasoning and recentCalls are the monitor's short memory: the agent's
+	// last few stated thoughts, and the last few calls with their outcomes.
+	// Calls in one turn run concurrently, so both sit behind monitorMu.
+	reasoning   []string
+	recentCalls []monitor.Recent
+	monitorMu   sync.Mutex
 
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
@@ -263,6 +274,9 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 			})
 		}
 		l.turns++
+		if l.Monitor != nil {
+			l.Monitor.BeginTurn()
+		}
 
 		// Offload first: it is free and lossless, and often leaves compaction
 		// with nothing to do.
@@ -477,6 +491,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	l.record(EvModelCall, ActorSystem, mc)
 
 	if think := strings.TrimSpace(reasoning.String()); think != "" {
+		l.noteReasoning(think)
 		l.record(EvAgentReasoning, ActorAgent,
 			Reasoning{Text: think, Turn: l.turns})
 	}
@@ -622,6 +637,9 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	if doomed != nil {
 		decision.Reason = "refused before approval: the call could not succeed"
 	}
+	if l.Monitor != nil && doomed == nil {
+		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
+	}
 
 	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
@@ -733,6 +751,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	// Tool output is untrusted: it may contain text that looks like
 	// instructions. The trust tag travels with the event (docs arch §6).
 	trust := Untrusted
+	l.noteCall(call.Name, policy.Subject(call.Name, call.Args), result.IsError)
 	if _, err := l.Recorder.Record(EvObservation, ActorTool, trust, Observation{
 		CallID:     call.ID,
 		Tool:       call.Name,
@@ -1082,4 +1101,66 @@ func redactedText(redact func([]byte) []byte, text string) string {
 		return text
 	}
 	return out
+}
+
+// noteReasoning keeps the last few stated thoughts for the monitor.
+func (l *Loop) noteReasoning(text string) {
+	l.monitorMu.Lock()
+	defer l.monitorMu.Unlock()
+	l.reasoning = append(l.reasoning, text)
+	if len(l.reasoning) > 6 {
+		l.reasoning = l.reasoning[len(l.reasoning)-6:]
+	}
+}
+
+// reviewed puts a call to the monitor and returns the decision after it,
+// which is never looser than before. What the judge said is in the record.
+func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
+	var remit, user strings.Builder
+	for _, m := range l.messages {
+		if m.Role == model.RoleUser {
+			if remit.Len() == 0 {
+				remit.WriteString(m.Content)
+			}
+			user.WriteString(m.Content)
+			user.WriteByte('\n')
+		}
+	}
+	args := string(call.Args)
+	l.monitorMu.Lock()
+	thoughts := append([]string(nil), l.reasoning...)
+	recent := append([]monitor.Recent(nil), l.recentCalls...)
+	l.monitorMu.Unlock()
+	c := monitor.Case{
+		Remit: remit.String(), Reasoning: thoughts,
+		Tool: call.Name, Args: args, Mutates: mutates, Provisional: before,
+		Provenance: monitor.Trace(args, user.String()), Recent: recent,
+	}
+	out := l.Monitor.Review(ctx, c)
+	if out.Skipped != "" {
+		return before
+	}
+	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
+		CallID: call.ID, Before: string(out.Before), After: string(out.After), Code: out.Verdict.Code,
+		Confidence: out.Verdict.Confidence, Rationale: out.Verdict.Rationale, LatencyMS: out.Verdict.LatencyMS,
+		Version: out.Verdict.Version, Unavailable: out.Unavailable,
+	})
+	if !out.Tightened {
+		return before
+	}
+	why := out.Verdict.Code
+	if out.Verdict.Rationale != "" {
+		why += " — " + out.Verdict.Rationale
+	}
+	return policy.Result{Decision: out.After, Reason: "monitor: " + why, Scope: before.Scope, Step: "monitor"}
+}
+
+// noteCall keeps the last few calls and outcomes for the monitor.
+func (l *Loop) noteCall(tool, subject string, isError bool) {
+	l.monitorMu.Lock()
+	defer l.monitorMu.Unlock()
+	l.recentCalls = append(l.recentCalls, monitor.Recent{Tool: tool, Subject: subject, IsError: isError})
+	if len(l.recentCalls) > 5 {
+		l.recentCalls = l.recentCalls[len(l.recentCalls)-5:]
+	}
 }
