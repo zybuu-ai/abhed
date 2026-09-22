@@ -168,6 +168,14 @@ isolates tenants, and Postgres does not apply it to a superuser or a
 `BYPASSRLS` role, not even with `FORCE`. Abhed checks and refuses, because a
 control that is silently off is worse than one that is visibly missing.
 
+## Accounts
+
+With `auth.mode` set to `local` and no database, accounts live in a file:
+`<workspace>/.abhed/users.json` by default, or wherever `auth.users_file`
+points (`ABHED_USERS_FILE` overrides it). A server deployment sets it to a
+directory outside every workspace, so accounts never sit in a tree an agent
+is pointed at. With Postgres, accounts are rows and the file is not used.
+
 ## Where settings come from
 
 Later sources win, except that an org-managed file cannot be overridden:

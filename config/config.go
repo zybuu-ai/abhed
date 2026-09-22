@@ -171,11 +171,16 @@ type AuthConfig struct {
 	AllowSignup bool `json:"allow_signup,omitempty"`
 	// DefaultTenant is assigned to accounts created without one.
 	DefaultTenant string `json:"default_tenant,omitempty"`
-	Issuer        string `json:"issuer,omitempty"`
-	Audience      string `json:"audience,omitempty"`
-	JWKSURL       string `json:"jwks_url,omitempty"`
-	TenantClaim   string `json:"tenant_claim,omitempty"`
-	GroupsClaim   string `json:"groups_claim,omitempty"`
+	// UsersFile is where local accounts are kept when there is no database.
+	// Empty means <workspace>/.abhed/users.json; a deployment sets it to a
+	// path outside every workspace, such as its state directory.
+	// ABHED_USERS_FILE overrides it.
+	UsersFile   string `json:"users_file,omitempty"`
+	Issuer      string `json:"issuer,omitempty"`
+	Audience    string `json:"audience,omitempty"`
+	JWKSURL     string `json:"jwks_url,omitempty"`
+	TenantClaim string `json:"tenant_claim,omitempty"`
+	GroupsClaim string `json:"groups_claim,omitempty"`
 	// RequireGroup gates all access on membership, above tenancy.
 	RequireGroup string `json:"require_group,omitempty"`
 	// AdminGroup gates the administrative routes — settings, users, invites —
@@ -560,6 +565,9 @@ func applyEnv(cfg *Config) {
 
 	if v := os.Getenv("ABHED_MIGRATE_DATABASE_URL"); v != "" {
 		cfg.Storage.MigrateDSN = v
+	}
+	if v := os.Getenv("ABHED_USERS_FILE"); v != "" {
+		cfg.Auth.UsersFile = v
 	}
 	if v := os.Getenv("ABHED_DATABASE_URL"); v != "" {
 		cfg.Storage.DSN = v

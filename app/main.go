@@ -104,7 +104,7 @@ func Main(args []string, opts ...Option) int {
 	case "hawkeye":
 		return hawkeyeCmd(workspace, fs.Args()[1:])
 	case "migrate":
-		return migrateCmd(workspace)
+		return migrateCmd(workspace, a.migrate)
 	case "resolve":
 		return resolveCmd(workspace, fs.Args()[1:])
 	case "acp":
@@ -1580,7 +1580,7 @@ func userCmd(workspace string, args []string) int {
 				"abhed: import copies accounts INTO postgres; set storage.driver first")
 			return 1
 		}
-		src, err := auth.NewFileUserStore(filepath.Join(workspace, ".abhed", "users.json"))
+		src, err := auth.NewFileUserStore(usersFile(cfg, workspace))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
@@ -1912,8 +1912,16 @@ func userStore(cfg config.Config, workspace string) (auth.UserStore, error) {
 	// No Postgres: keep accounts in a file beside the workspace config, so
 	// `abhed user add` and `abhed serve` see the same accounts. An in-memory
 	// store here silently discarded every account the CLI created.
-	path := filepath.Join(workspace, ".abhed", "users.json")
-	return auth.NewFileUserStore(path)
+	return auth.NewFileUserStore(usersFile(cfg, workspace))
+}
+
+// usersFile is where local accounts live: the configured path, else beside
+// the workspace config.
+func usersFile(cfg config.Config, workspace string) string {
+	if cfg.Auth.UsersFile != "" {
+		return cfg.Auth.UsersFile
+	}
+	return filepath.Join(workspace, ".abhed", "users.json")
 }
 
 func storeConfig(cfg config.Config) store.Config {
@@ -2599,7 +2607,7 @@ func writeHawkeye(path string, rep hawkeye.Report) error {
 
 // migrateCmd applies the schema as the owning role and grants the runtime role
 // what the server needs. It is the one place the owner's credentials are used.
-func migrateCmd(workspace string) int {
+func migrateCmd(workspace string, extensions []store.Extension) int {
 	cfg, err := config.Load(workspace)
 	if err != nil {
 		fail(err)
@@ -2618,7 +2626,7 @@ func migrateCmd(workspace string) int {
 		fail(fmt.Errorf("storage.dsn: %w", err))
 	}
 	if err := store.Provision(context.Background(), store.ProvisionConfig{
-		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User,
+		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User, Extensions: extensions,
 	}); err != nil {
 		fail(err)
 	}

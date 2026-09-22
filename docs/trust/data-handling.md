@@ -16,7 +16,7 @@ From `store/schema.sql`, on the Postgres storage driver:
 
 Accounts (username, email, tenant, groups, bcrypt password hash) are stored
 either in this same Postgres database or, without `storage.driver: postgres`
-configured, in `<workspace>/.abhed/users.json` mode `0600`
+configured, in `<workspace>/.abhed/users.json` mode `0600` — or wherever `auth.users_file` (`ABHED_USERS_FILE`) points, which a deployment sets to its state directory so accounts never sit in a workspace
 (`docs/ops/enabling-auth.md`, "Where accounts live").
 
 **Uploads** are files the agent reads or writes inside the session workspace.

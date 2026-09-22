@@ -6,6 +6,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-22
+
+### Added
+
+- `auth.users_file` (`ABHED_USERS_FILE`): where local accounts are kept when
+  there is no database. A deployment points it outside every workspace.
+- `app.WithMigrateExtension`: an edition with tables of its own registers
+  their schema and the runtime role's privileges, so one `abhed migrate`
+  provisions the whole record under the owner and runtime roles.
+
 ## [1.0.0] - 2026-09-22
 
 The first major release. From here the command line, the configuration

@@ -159,3 +159,15 @@ func TestOffloadAtDistinguishesUnsetFromOff(t *testing.T) {
 		t.Error("offload_at above compact_at was accepted: compaction would always run first")
 	}
 }
+
+func TestEnvOverridesUsersFile(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv("ABHED_USERS_FILE", "/srv/abhed/state/users.json")
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.UsersFile != "/srv/abhed/state/users.json" {
+		t.Fatalf("users_file = %q", cfg.Auth.UsersFile)
+	}
+}

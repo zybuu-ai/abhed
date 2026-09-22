@@ -95,7 +95,12 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	}
 
 	role := pgx.Identifier{cfg.RuntimeRole}.Sanitize()
-	stmts := []string{"GRANT USAGE ON SCHEMA public TO " + role}
+	// Sequences too: an edition's serial column is useless to a role that
+	// may insert but cannot draw the next id.
+	stmts := []string{
+		"GRANT USAGE ON SCHEMA public TO " + role,
+		"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO " + role,
+	}
 	for _, g := range grants {
 		table := pgx.Identifier{g.table}.Sanitize()
 		if !validPrivileges(g.privileges) {
