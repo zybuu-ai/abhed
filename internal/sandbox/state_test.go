@@ -3,7 +3,6 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,9 +24,7 @@ func TestSeatbeltProfileShieldsHarnessState(t *testing.T) {
 // A command in the sandbox can neither read the configuration nor plant a
 // users file, while the rest of the workspace stays writable.
 func TestProcessSandboxShieldsHarnessState(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("state shielding is verified for the Seatbelt backend")
-	}
+	requireNetNS(t)
 	ws := workspace(t)
 	state := filepath.Join(ws, stateDir)
 	if err := os.MkdirAll(state, 0o755); err != nil {

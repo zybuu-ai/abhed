@@ -112,17 +112,17 @@ jobs:
         run: go test ./... -race -count=1
 
       # A skipped boundary test reads exactly like a passing one, and the trust
-      # docs cite these by name. Two reasons are expected here: the hosted
-      # runner cannot unshare a network namespace (#44), and two assertions are
-      # written for the Seatbelt backend. A skip for any other reason means a
-      # boundary stopped being checked, so the build fails rather than let the
-      # count drift.
+      # docs cite these by name. One reason is expected here: the hosted runner
+      # cannot unshare a network namespace, so bubblewrap cannot start. The
+      # boundaries themselves are verified in the privileged job below. A skip
+      # for any other reason means a boundary stopped being checked, so the
+      # build fails rather than let the count drift.
       - name: Sandbox boundary tests actually ran
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace|verified for the Seatbelt backend" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log
@@ -155,6 +155,29 @@ jobs:
                ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml'; then
             echo "references to the private deployment tree"; exit 1
           fi
+
+  # The process tier on Linux is bubblewrap, and denying network needs a
+  # namespace the hosted runner will not grant. A privileged container can, so
+  # this is where the egress, credential and state boundaries are actually
+  # exercised on the backend the image ships. Nothing here may skip.
+  sandbox:
+    name: Linux sandbox boundaries
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.26
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bubblewrap
+        run: apt-get update && apt-get install -y --no-install-recommends bubblewrap
+      - name: Every process-sandbox boundary runs under bubblewrap
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -run 'ProcessSandbox' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          if grep -q -- "--- SKIP" sandbox.log; then
+            echo "a boundary test skipped under a privileged runner:"; grep -B3 -- "--- SKIP" sandbox.log; exit 1
+          fi
+          echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
 
   container:
     name: Container image

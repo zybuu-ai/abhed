@@ -158,8 +158,12 @@ asserted. Current state:
 - [x] **Filesystem escape** — writes outside the workspace blocked; `/etc`, `/usr`, `/bin`
       unwritable (`TestProcessSandboxBlocksWriteOutsideWorkspace`, `...SystemPathWrite`)
 - [x] **Egress** — network denied by default, verified from inside the sandbox
-      (`TestProcessSandboxBlocksNetworkByDefault`)
-- [x] **Credential access** — `~/.ssh`, `~/.aws`, `~/.kube` unreadable
+      on both backends (`TestProcessSandboxBlocksNetworkByDefault`; Seatbelt on
+      macOS, bubblewrap in a privileged CI job on Linux)
+- [x] **Credential access** — a key under the home directory unreadable on both
+      backends (`TestProcessSandboxBlocksCredentialRead`)
+- [x] **Own configuration** — `.abhed/` unreadable and unwritable from a command
+      (`TestProcessSandboxShieldsHarnessState`)
 - [x] **Resource exhaustion** — runaway commands bounded (`TestResourceLimitsRejectForkBomb`)
 - [x] **Tier honesty** — no silent downgrade; `Select` fails with what it tried
       (`TestSelectRefusesToDowngrade`)
