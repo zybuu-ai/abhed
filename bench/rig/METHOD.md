@@ -187,7 +187,14 @@ the results: only the `full` condition runs, because the tight window needs
 `num_ctx` set at the endpoint and a server the rig does not run cannot be
 told; and the serving stack is somebody else's, so a run on a hosted model is
 reproducible only to the extent that provider is stable. `doctor` must pass
-per harness on the hosted model like any other.
+per harness on the hosted model like any other. Sessions are independent —
+each has its own workspace, home and result — so `--parallel N` runs several
+at once on a hosted model; the machine's CPU and sandbox bound N, and the
+wall-clock column then measures a shared machine, which the results say.
+
+`summarize` reports each harness by the dataset's difficulty band as well as
+overall, so one run over the whole valid suite still separates the easy,
+medium and hard tasks.
 
 ## Watching a run
 

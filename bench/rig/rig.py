@@ -642,12 +642,31 @@ def run(args):
         {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT, "base_model": base_model(),
          "difficulty": getattr(args, "difficulty", None) or "any",
          "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
+    todo = []
     for i, (r, iid, cond, n) in enumerate(plan, 1):
         out = RESULTS / args.date / "rig" / n / cond / f"run{r}" / f"{iid}.json"
         if out.exists() and not args.force:
             continue
+        todo.append((i, r, iid, cond, n, out))
+
+    def one(item):
+        i, r, iid, cond, n, out = item
         res = one_run(n, iid, cond, out)
         print(f"[{i}/{len(plan)}] {n:9} {cond:5} run{r} {iid}  resolved={res['score']['resolved']}  {res['wall_sec']}s", flush=True)
+
+    # Sessions are independent: each has its own workspace, home and result
+    # file. On a local model they run one at a time, since the model is the
+    # bottleneck; on a hosted one several may run, and the machine's own CPU
+    # and sandbox are what bound the number.
+    workers = max(1, getattr(args, "parallel", 1) or 1)
+    if workers == 1:
+        for item in todo:
+            one(item)
+    else:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            for _ in pool.map(one, todo):
+                pass
 
 
 # ---------------------------------------------------------------- watch
@@ -792,6 +811,22 @@ def summarize(args):
             d = 100 * statistics.mean(ref[t] - rate[t] for t in common)
             verdict = "" if ci[0] > 0 or ci[1] < 0 else " (spans zero)"
             lines.append(f"| abhed − {h} | {cond} | {d:+.1f} pts | {100 * ci[0]:+.1f} to {100 * ci[1]:+.1f}{verdict} |")
+    # By the dataset's difficulty band, so a run over the whole suite still
+    # says how each harness did on the easy, medium and hard tasks separately.
+    bands = {}
+    for (h, cond), runs in cells.items():
+        for res in runs.values():
+            for t, x in res.items():
+                band = x.get("difficulty") or "unrated"
+                cell = bands.setdefault((band, h, cond), [0, 0])
+                cell[0] += int(x["score"]["resolved"])
+                cell[1] += 1
+    if bands:
+        lines += ["", "By difficulty band (sessions resolved / sessions run, all runs together):", "",
+                  "| Band | Harness | Window | Resolved |", "|---|---|---|---|"]
+        order = {"<15 min fix": 0, "15 min - 1 hour": 1, "1-4 hours": 2, ">4 hours": 3}
+        for (band, h, cond), (won, n) in sorted(bands.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1], kv[0][2])):
+            lines.append(f"| {band} | {h} | {cond} | {won}/{n} ({100 * won / n:.0f}%) |")
     text = "\n".join(lines)
     (RESULTS / args.date / "rig" / "SUMMARY.md").write_text(text + "\n")
     print(text)
@@ -813,6 +848,7 @@ def main():
     p.add_argument("--condition", action="append", choices=sorted(CONDITIONS))
     p.add_argument("--limit", type=int); p.add_argument("--seed", type=int, default=1); p.add_argument("--force", action="store_true")
     p.add_argument("--difficulty", help="only tasks the dataset rates so: easy (<15 min fix), medium, hard, or the label itself")
+    p.add_argument("--parallel", type=int, default=1, help="sessions at once; more than 1 only makes sense on a hosted model")
     p.set_defaults(fn=run)
     p = sub.add_parser("summarize"); p.add_argument("--date", required=True); p.set_defaults(fn=summarize)
     p = sub.add_parser("watch", help="live progress of a run")
