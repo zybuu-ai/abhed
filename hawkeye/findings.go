@@ -75,6 +75,10 @@ func findings(r Report, evs []agent.Event) []Finding {
 			add(Info, "denied", "Denied: "+c.Tool,
 				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.By), c.Seq)
 		}
+		if strings.Contains(c.Output, "[secret:") {
+			add(Warn, "secret-redacted", "A stored secret's value was written out and redacted",
+				fmt.Sprintf("%s %s — the output held a secret's value; the record has [secret:NAME] in its place. The value was caught before the write, but the command or the model exposed it.", c.Tool, clip(c.Subject, 160)), c.Seq)
+		}
 		if c.Ran && c.IsError {
 			key := c.Tool + "\x00" + c.Args
 			failures[key]++

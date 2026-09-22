@@ -149,6 +149,9 @@ type Options struct {
 	Config   config.Config
 	Adapter  model.Adapter
 	Registry *tools.Registry
+	// Redact rewrites every event payload before it is written; the app sets
+	// it from the secrets store. Nil records payloads as they are.
+	Redact func([]byte) []byte
 	// SkillListing is the rendered skill index for the system prompt. The
 	// server takes the rendered string rather than the registry, because the
 	// registry's only other use is the tool, which is already in Registry.
@@ -773,6 +776,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 
 	rec := agent.NewRecorder(s.store, sessionID, "")
+	rec.Redact = s.opts.Redact
 	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
 	if err != nil {
 		return "", err
@@ -960,6 +964,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	registry, skillReg, _ := s.state.snapshot()
 	recorder := agent.NewRecorder(s.store, id, "")
+	recorder.Redact = s.opts.Redact
 	recorder.Advance(events[len(events)-1].Seq)
 
 	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant}

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -43,12 +44,14 @@ import (
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/websearch"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
+	"golang.org/x/term"
 )
 
 // Main runs the command with the given arguments and options and returns
@@ -108,6 +111,8 @@ func Main(args []string, opts ...Option) int {
 		return rpcCmd(workspace)
 	case "user":
 		return userCmd(workspace, fs.Args()[1:])
+	case "secret":
+		return secretCmd(fs.Args()[1:])
 	case "index":
 		return buildIndexCmd(workspace)
 	case "eval":
@@ -203,9 +208,10 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	// holder exists because the registry is built before the loop, and a
 	// package-level variable would quietly share state between sessions.
 	todos := &agent.LoopHolder{}
+	vault := openVault()
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command},
+		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault)},
 		tools.Todo{OnUpdate: func(items []tools.TodoItem, note string) {
 			todos.RecordTodos(toAgentTodos(items), note)
 		}},
@@ -297,6 +303,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		Adapter: adapter, Tools: registry, Policy: pol,
 		Approver: agent.AutoApprove{Yes: true}, // subagent tools are policed by pol
 		Session:  sess, Budget: budget, Config: loopCfg, Workspace: workspace,
+		Redact: openVault().Redactor(),
 	}
 	registry.Add(agent.Task{Spawn: factory.Spawn, Profiles: agent.Profiles})
 	registry.Add(agent.Tasks{Spawn: factory.Spawn, Profiles: agent.Profiles,
@@ -368,6 +375,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	sessionID := fmt.Sprintf("s-%d", time.Now().UnixNano())
 	recordSession(ctx, store, sessionID, appCfg)
 	rec := agent.NewRecorder(store, sessionID, "")
+	rec.Redact = openVault().Redactor()
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
@@ -540,6 +548,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionID := fmt.Sprintf("s-%d-%d", time.Now().Unix(), turn)
 		recordSession(ctx, store, sessionID, appCfg)
 		rec := agent.NewRecorder(store, sessionID, "")
+		rec.Redact = openVault().Redactor()
 
 		events := store.Subscribe(sessionID)
 		done := make(chan struct{})
@@ -1043,9 +1052,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	vault := openVault()
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command},
+		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault)},
 	)
 
 	gateway := mcp.NewGateway()
@@ -1180,6 +1190,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Config:       cfg,
 		Adapter:      buildAdapter(provider),
 		Registry:     registry,
+		Redact:       openVault().Redactor(),
 		SkillListing: skillListing,
 		SkillDirs:    skillDirs(cfg),
 		Store:        eventStore,
@@ -1298,9 +1309,10 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		if err != nil {
 			return nil, eval.Result{}, err
 		}
+		vault := openVault()
 		registry := tools.NewRegistry(
 			tools.Read{}, tools.Write{}, tools.Edit{},
-			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command},
+			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault)},
 		)
 		// Skills and web search are part of the agent under test, not extras.
 		// Without them a corpus that exercises a retrieval skill measures an
@@ -1324,6 +1336,7 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		store := agent.NewMemStore()
 		sessionID := "eval-" + task.ID
 		rec := agent.NewRecorder(store, sessionID, "")
+		rec.Redact = openVault().Redactor()
 
 		loopCfg := agent.DefaultConfig()
 		loopCfg.SystemPrompt = agent.BuildSystemPrompt(agent.BuildOptions{
@@ -2620,4 +2633,90 @@ func printStoreStatus(pg *store.Postgres) {
 		return
 	}
 	fmt.Println("            record NOT protected from this server's credentials (storage.single_role)")
+}
+
+// openVault opens the secrets store. A missing file is an empty store, so a
+// deployment with no secrets pays nothing and needs no configuration.
+func openVault() *secrets.Store {
+	path, err := secrets.DefaultPath()
+	if err != nil {
+		path = ".abhed-secrets-unavailable"
+	}
+	return secrets.Open(path)
+}
+
+// vaultNames lists what the model may ask for. An unreadable store lists
+// nothing: the failure surfaces when a secret is used, with its reason.
+func vaultNames(v *secrets.Store) []string {
+	names, err := v.Names()
+	if err != nil {
+		return nil
+	}
+	return names
+}
+
+// secretCmd manages the store: set NAME (value on stdin or prompted), list, rm NAME.
+func secretCmd(args []string) int {
+	vault := openVault()
+	fail := func(err error) int { fmt.Fprintf(os.Stderr, "abhed: %v\n", err); return 1 }
+	usage := func() int {
+		fmt.Fprintln(os.Stderr, "usage: abhed secret set NAME | list | rm NAME\n"+
+			"  The value is read from stdin, or prompted without echo on a terminal.\n"+
+			"  Stored in "+vault.Path()+" ("+secrets.EnvFile+" overrides), mode 600, never in config.\n"+
+			"  A session may use a secret only under an allow rule: \"allow\": [\"secret(NAME)\"].")
+		return 2
+	}
+	if len(args) == 0 {
+		return usage()
+	}
+	switch args[0] {
+	case "list":
+		names, err := vault.Names()
+		if err != nil {
+			return fail(err)
+		}
+		if len(names) == 0 {
+			fmt.Println("no secrets stored in " + vault.Path())
+			return 0
+		}
+		for _, n := range names {
+			fmt.Println(n)
+		}
+		return 0
+	case "rm", "remove":
+		if len(args) != 2 {
+			return usage()
+		}
+		if err := vault.Remove(args[1]); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("removed %s\n", args[1])
+		return 0
+	case "set":
+		if len(args) != 2 {
+			return usage()
+		}
+		var value string
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Fprintf(os.Stderr, "value for %s (not echoed): ", args[1])
+			b, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
+				return fail(err)
+			}
+			value = string(b)
+		} else {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fail(err)
+			}
+			value = strings.TrimRight(string(b), "\r\n")
+		}
+		if err := vault.Set(args[1], value); err != nil {
+			return fail(err)
+		}
+		fmt.Printf("stored %s in %s\n", args[1], vault.Path())
+		return 0
+	}
+	return usage()
 }

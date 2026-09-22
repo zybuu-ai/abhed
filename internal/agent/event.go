@@ -349,6 +349,9 @@ type Recorder struct {
 	parentID  string
 	mu        sync.Mutex
 	seq       int64
+	// Redact, when set, rewrites a payload before it is written. Set by the
+	// caller from the secrets store; nil records payloads as they are.
+	Redact func([]byte) []byte
 }
 
 func NewRecorder(store Store, sessionID, parentID string) *Recorder {
@@ -370,6 +373,11 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal %s payload: %w", t, err)
+	}
+	// The record is append-only, so a secret that reaches it can never be
+	// taken out again. It is stopped here, before the write.
+	if r.Redact != nil {
+		raw = r.Redact(raw)
 	}
 
 	r.mu.Lock()

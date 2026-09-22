@@ -177,7 +177,7 @@ func Subject(tool string, args json.RawMessage) string {
 	if err := json.Unmarshal(args, &m); err != nil {
 		return ""
 	}
-	for _, key := range []string{"command", "path", "pattern", "action", "resource", "host", "namespace"} {
+	for _, key := range []string{"command", "path", "pattern", "action", "resource", "host", "namespace", "name"} {
 		if v, found := m[key]; found {
 			if s, isStr := v.(string); isStr {
 				return s

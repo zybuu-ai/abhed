@@ -13,6 +13,11 @@
 | `ssh`, `ssh_connect` | remote execution, off by default |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
 
+`bash` takes an optional `secrets` list: names from the operator's store,
+handed to that one command as environment variables when a
+`secret(NAME)` rule allows it. The model never sees a value; see
+[Secrets](04-permissions.md#secrets).
+
 ## Adding your own
 
 Four routes, none of which needs a rebuild. Pick by where your tool already

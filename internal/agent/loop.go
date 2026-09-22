@@ -608,6 +608,11 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	}
 
 	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
+	// A command that asks for secrets is judged on each name first: a secret
+	// needs an allow rule of its own, in every mode, or the call is refused.
+	if refused := l.secretsRefused(call); refused != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	}
 
 	// Only an Ask is short-circuited: a deny is still recorded as a deny.
 	var doomed error
@@ -694,6 +699,11 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 
 	start := time.Now()
 	result := tool.Run(ctx, l.Session, call.Args)
+	// A secret's value is stripped from the result before the model and the
+	// record see it, so the model never holds a value it could echo elsewhere.
+	if l.Recorder != nil && l.Recorder.Redact != nil {
+		result.Content = redactedText(l.Recorder.Redact, result.Content)
+	}
 	elapsed := time.Since(start)
 
 	// An identical call that keeps failing means the model is not reading the
@@ -1031,4 +1041,45 @@ func (l *Loop) recordFailure() error {
 	l.recordMu.Lock()
 	defer l.recordMu.Unlock()
 	return l.recordErr
+}
+
+// secretsRefused names the first secret in the call that policy does not
+// allow outright, or "" when the call asks for none or every one is allowed.
+func (l *Loop) secretsRefused(call model.ToolCall) string {
+	var a struct {
+		Secrets []string `json:"secrets"`
+	}
+	if json.Unmarshal(call.Args, &a) != nil || len(a.Secrets) == 0 {
+		return ""
+	}
+	// Rules only, never the mode: bypass and auto approve calls, not secrets.
+	for _, name := range a.Secrets {
+		for _, r := range l.Policy.Deny {
+			if r.Matches("secret", name) {
+				return fmt.Sprintf("secret %s is denied by rule %s", name, r)
+			}
+		}
+		allowed := false
+		for _, r := range l.Policy.Allow {
+			allowed = allowed || r.Matches("secret", name)
+		}
+		if !allowed {
+			return fmt.Sprintf("secret %s is not permitted: a secret needs its own allow rule, secret(%s), in every mode", name, name)
+		}
+	}
+	return ""
+}
+
+// redactedText runs a payload redactor over one string, through the JSON
+// form the redactor matches against.
+func redactedText(redact func([]byte) []byte, text string) string {
+	raw, err := json.Marshal(text)
+	if err != nil {
+		return text
+	}
+	var out string
+	if json.Unmarshal(redact(raw), &out) != nil {
+		return text
+	}
+	return out
 }

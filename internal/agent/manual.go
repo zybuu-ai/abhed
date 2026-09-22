@@ -24,6 +24,9 @@ func (l *Loop) Manual(ctx context.Context, sess *tools.Session, call string, id 
 	}
 	start := time.Now()
 	result := tool.Run(ctx, sess, args)
+	if l.Recorder != nil && l.Recorder.Redact != nil {
+		result.Content = redactedText(l.Recorder.Redact, result.Content)
+	}
 	return result, l.ManualObserve(id, call, result, time.Since(start))
 }
 
