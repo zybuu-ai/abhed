@@ -115,39 +115,45 @@ func TestProcessSandboxBlocksSystemPathWrite(t *testing.T) {
 }
 
 // Egress denial is what makes a successful prompt injection non-exfiltrating.
+// bash's own /dev/tcp is used so the probe needs no curl inside the sandbox.
 func TestProcessSandboxBlocksNetworkByDefault(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("network assertion is verified for the Seatbelt backend")
-	}
+	requireNetNS(t)
 	ws := workspace(t)
 	s := processSandbox(t, ws, false)
 
 	out, _ := runIn(t, s, ws,
-		"curl -s -m 3 http://93.184.216.34/ -o /dev/null && echo REACHED || echo BLOCKED")
+		"timeout 5 bash -c 'exec 3<>/dev/tcp/93.184.216.34/80' 2>/dev/null && echo REACHED || echo BLOCKED")
 	if strings.Contains(out, "REACHED") {
 		t.Fatalf("ESCAPE: network reachable with AllowNetwork=false\n%s", out)
 	}
+	if !strings.Contains(out, "BLOCKED") {
+		t.Fatalf("the probe did not run:\n%s", out)
+	}
 }
 
+// A key under the home directory is unreadable from inside the sandbox: the
+// Seatbelt profile denies it, and bubblewrap never binds the home directory.
+// HOME is pointed at a fresh directory so the test plants nothing real.
 func TestProcessSandboxBlocksCredentialRead(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("credential denial is verified for the Seatbelt backend")
+	requireNetNS(t)
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home directory")
+	t.Setenv("HOME", home)
+	key := filepath.Join(home, ".ssh", "id_probe")
+	if err := os.MkdirAll(filepath.Dir(key), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	sshDir := filepath.Join(home, ".ssh")
-	if _, err := os.Stat(sshDir); err != nil {
-		t.Skip("no ~/.ssh to probe")
+	if err := os.WriteFile(key, []byte("PRIVATE-KEY-MATERIAL"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	ws := workspace(t)
 	s := processSandbox(t, ws, false)
-	out, _ := runIn(t, s, ws, "ls "+sshDir+" 2>&1 | head -3; echo ---")
-	// Denied reads surface as an error, not a listing.
-	if !strings.Contains(out, "Operation not permitted") && !strings.Contains(out, "denied") {
-		t.Logf("credential read output (review manually): %q", out)
+	out, _ := runIn(t, s, ws, "cat "+key+" 2>&1; echo ---")
+	if strings.Contains(out, "PRIVATE-KEY-MATERIAL") {
+		t.Fatalf("ESCAPE: a key under the home directory was readable:\n%s", out)
 	}
 }
 

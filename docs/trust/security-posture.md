@@ -83,8 +83,10 @@ never on the untrusted text that motivated it (`docs/architecture/03-security.md
 
 **Nothing, by default.** The shell tool gets no network access unless
 `sandbox.allow_network` is set to true (verified by
-`TestProcessSandboxBlocksNetworkByDefault` per
-`docs/architecture/03-security.md` §7), and a containerised server with no
+`TestProcessSandboxBlocksNetworkByDefault` on both the macOS and the Linux
+backend — the Linux run needs a privileged CI job, since a hosted runner
+cannot unshare a network namespace — per `docs/architecture/03-security.md`
+§7), and a containerised server with no
 bind mount has no route to the host filesystem.
 
 **`web_search`, when enabled**, is the one narrow, structured exception: a Go
