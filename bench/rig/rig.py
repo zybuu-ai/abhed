@@ -366,15 +366,59 @@ class Abhed(Harness):
         path.write_text(json.dumps(cfg, indent=1))
         # Unattended, as the other harnesses run: nothing prompts. Abhed keeps
         # its sandbox and its deny rules in this mode; that is the product.
-        return sh([self.binary(), "-C", str(ws), "-mode", "bypass", "-max-turns", "60", "-p", prompt],
+        # JSON output is the session's event record, one event per line: what
+        # HawkEYE reads to say why a session went the way it did.
+        return sh([self.binary(), "-C", str(ws), "-mode", "bypass", "-max-turns", "60",
+                   "-output-format", "json", "-p", prompt],
                   cwd=ws, env=env, timeout=RUN_TIMEOUT)
 
+    def record(self, output):
+        events = []
+        for line in output.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and "type" in ev and "seq" in ev:
+                events.append(ev)
+        return events
+
     def usage(self, output):
+        for ev in reversed(self.record(output)):
+            if ev["type"] == "session.ended":
+                p = ev.get("payload", {})
+                return {"turns": p.get("turns", 0), "tokens_in": p.get("tokens_in", 0),
+                        "tokens_out": p.get("tokens_out", 0), "reason": p.get("reason", "")}
         m = re.search(r"(\d+)\s*turns?\s*·\s*([\d,]+)\s*in\s*/\s*([\d,]+)\s*out\s*tokens", output)
         if not m:
             return {}
         return {"turns": int(m.group(1)), "tokens_in": int(m.group(2).replace(",", "")),
                 "tokens_out": int(m.group(3).replace(",", ""))}
+
+
+def hawkeye(events, out_path):
+    """Write the session's record beside its result and let HawkEYE read it.
+
+    Returns the finding codes, so a summary can say not only that a session
+    failed but what the record shows it doing: a call denied, a repeated
+    failure, a session that hit the context ceiling."""
+    rec = out_path.with_name(out_path.stem + ".events.json")
+    rec.write_text(json.dumps(events))
+    binary = Abhed().binary()
+    if not Path(binary).exists():
+        return {"findings": [], "note": "abhed binary not built; record saved, not analysed"}
+    report = out_path.with_name(out_path.stem + ".hawkeye.json")
+    rc, out = sh([binary, "hawkeye", "-o", str(report), str(rec)], timeout=120)
+    if rc != 0 or not report.exists():
+        return {"findings": [], "note": "hawkeye failed: " + out[-300:]}
+    try:
+        data = json.loads(report.read_text())
+    except json.JSONDecodeError:
+        return {"findings": [], "note": "hawkeye wrote no JSON"}
+    return {"findings": [{"code": f.get("code"), "severity": f.get("severity")} for f in data.get("findings", [])]}
 
 
 class Pi(Harness):
@@ -459,7 +503,12 @@ def one_run(hname, iid, cond, out_path):
     result = {"harness": hname, "base_model": base_model(), "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
               "wall_sec": round(elapsed, 1), "patch_bytes": len(diff), "patch": diff[-20000:],
               "usage": h.usage(output), "output_tail": output[-3000:],
+              "difficulty": inst.get("difficulty", ""),
               "score": score(iid, ws, inst, skip=suite().get(iid, []))}
+    events = h.record(output) if hasattr(h, "record") else None
+    if events:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        result["hawkeye"] = hawkeye(events, out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, indent=1))
     shutil.rmtree(ws, ignore_errors=True)
@@ -478,6 +527,19 @@ def selftest(_):
     if failures:
         sys.exit(f"\n{failures} self-test failure(s): the rig's scores cannot be trusted until these are explained")
     print("\nself-test passed: doing nothing scores 0, the reference patch scores 100")
+
+
+DIFFICULTY_ALIASES = {"easy": "<15 min fix", "medium": "15 min - 1 hour", "hard": "1-4 hours", "hardest": ">4 hours"}
+
+
+def by_difficulty(tasks, label):
+    """Keep the tasks the dataset rates at one difficulty. The rating is the
+    dataset's own — the time a human annotator judged the fix to take — and
+    it is written into the plan and every result, so a run on the easy band
+    can never be mistaken for a run on the whole suite."""
+    label = DIFFICULTY_ALIASES.get(label, label)
+    rated = {i["instance_id"]: i.get("difficulty", "") for i in instances()}
+    return [t for t in tasks if rated.get(t) == label]
 
 
 def base_model():
@@ -528,6 +590,10 @@ def run(args):
         if n not in ("null", "gold") and not (CACHE / f"doctor-{n}.ok").exists():
             sys.exit(f"{n} has not passed `rig.py doctor --harness {n}`; an unchecked setup is not a measurement")
     tasks = sorted(suite())
+    if getattr(args, "difficulty", None):
+        tasks = by_difficulty(tasks, args.difficulty)
+        if not tasks:
+            sys.exit(f"no valid instance is rated {args.difficulty!r}")
     if args.limit:
         # A sample, not the first N: sorted order puts one repository first,
         # and a pilot drawn from a single corner of the suite says little.
@@ -543,6 +609,7 @@ def run(args):
     (RESULTS / args.date / "rig" / "suite.json").write_text(json.dumps(suite(), indent=1))
     (RESULTS / args.date / "rig" / "plan.json").write_text(json.dumps(
         {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT, "base_model": base_model(),
+         "difficulty": getattr(args, "difficulty", None) or "any",
          "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
     for i, (r, iid, cond, n) in enumerate(plan, 1):
         out = RESULTS / args.date / "rig" / n / cond / f"run{r}" / f"{iid}.json"
@@ -714,6 +781,7 @@ def main():
     p.add_argument("--harness", action="append", choices=sorted(HARNESSES))
     p.add_argument("--condition", action="append", choices=sorted(CONDITIONS))
     p.add_argument("--limit", type=int); p.add_argument("--seed", type=int, default=1); p.add_argument("--force", action="store_true")
+    p.add_argument("--difficulty", help="only tasks the dataset rates so: easy (<15 min fix), medium, hard, or the label itself")
     p.set_defaults(fn=run)
     p = sub.add_parser("summarize"); p.add_argument("--date", required=True); p.set_defaults(fn=summarize)
     p = sub.add_parser("watch", help="live progress of a run")
