@@ -33,6 +33,8 @@ const (
 	// leave a process behind.
 	ptyIdle = 2 * time.Minute
 	ptyMax  = 4 * time.Hour
+	// ptyLinger is how long a finished command stays readable.
+	ptyLinger = time.Minute
 )
 
 // ptyRun is one command on a terminal.
@@ -88,7 +90,14 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	if live.ptys == nil {
 		live.ptys = map[string]*ptyRun{}
 	}
-	running := len(live.ptys)
+	running := 0
+	for _, r := range live.ptys {
+		select {
+		case <-r.done:
+		default:
+			running++
+		}
+	}
 	live.mu.Unlock()
 	if running >= 4 {
 		WriteError(w, http.StatusTooManyRequests, "four commands are already running in this session's terminal")
@@ -230,9 +239,13 @@ loop:
 		IsError: code != 0, Truncated: clipped}
 	_ = live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started))
 
-	live.mu.Lock()
-	delete(live.ptys, run.id)
-	live.mu.Unlock()
+	// A short command can end before its reader connects. The run stays
+	// findable for a minute so a late reader still gets the output and the exit.
+	time.AfterFunc(ptyLinger, func() {
+		live.mu.Lock()
+		delete(live.ptys, run.id)
+		live.mu.Unlock()
+	})
 }
 
 // ansiSeq matches CSI, OSC and DCS sequences, charset selections, the
@@ -335,6 +348,12 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 	}
 	// Typed input is not recorded: on a terminal it echoes into the output
 	// unless the program turned echo off, which is exactly when it should not.
+	select {
+	case <-run.done:
+		WriteError(w, http.StatusGone, "the command has ended")
+		return
+	default:
+	}
 	if _, err := run.tty.Write(data); err != nil {
 		WriteError(w, http.StatusGone, "the command has ended")
 		return
