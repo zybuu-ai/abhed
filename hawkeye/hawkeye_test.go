@@ -260,3 +260,21 @@ func TestRedactedSecretIsReported(t *testing.T) {
 		t.Fatalf("no secret-redacted finding: %+v", got.Findings)
 	}
 }
+
+// A turn that spent its whole output budget without a call is named.
+func TestOutputCappedTurnsAreReported(t *testing.T) {
+	r := (&rec{}).user("x").
+		add(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{Turn: 1, TokensIn: 9000, TokensOut: 8192, ContextWindow: 32768, ToolCalls: 0, CutOff: true}).
+		add(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{Turn: 2, TokensIn: 9100, TokensOut: 300, ContextWindow: 32768, ToolCalls: 1}).
+		end(agent.TermStalled)
+	got := Analyze("s-test", r.evs)
+	found := false
+	for _, f := range got.Findings {
+		if f.Code == "output-cap" && strings.Contains(f.Title, "1 turn") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no output-cap finding: %+v", got.Findings)
+	}
+}

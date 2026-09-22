@@ -63,6 +63,7 @@ and none of them is a model's opinion.
 | `record-gap` | critical | the event sequence skips — the record was filtered, truncated or edited |
 | `borrowed-host` | warn | an allowed call names a host the user never mentioned and that first appeared in tool output |
 | `sensitive-path` | warn / info | a call reached, or was stopped from reaching, a credential path |
+| `output-cap` | warn | a turn spent the whole output budget reasoning and made no tool call; the loop nudged it and lowered the effort |
 | `secret-redacted` | warn | a stored secret's value was written out by a command or the model and redacted before the record |
 | `abnormal-end` | warn | the session ended as anything other than completed or a user interrupt |
 | `repeated-failure` | warn | the same call failed three times unchanged |

@@ -104,6 +104,19 @@ func findings(r Report, evs []agent.Event) []Finding {
 			"The record holds what the model was shown, not the full output.", 0)
 	}
 
+	capped := 0
+	for _, t := range r.Turns {
+		if t.CutOff && t.ToolCalls == 0 {
+			capped++
+		}
+	}
+	if capped > 0 {
+		add(Warn, "output-cap", fmt.Sprintf("%d turn(s) spent the whole output budget without acting", capped),
+			"The model was still reasoning when the output limit ended the turn, and made no tool call. "+
+				"The loop nudges it and lowers the reasoning effort; if it keeps happening, the task is too "+
+				"open for this model at this effort.", 0)
+	}
+
 	for _, t := range r.Turns {
 		if t.Window > 0 && t.TokensIn*100 >= t.Window*85 {
 			add(Warn, "context-pressure", "The context window was nearly full",
