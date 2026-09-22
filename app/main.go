@@ -105,6 +105,8 @@ func Main(args []string, opts ...Option) int {
 		return hawkeyeCmd(workspace, fs.Args()[1:])
 	case "migrate":
 		return migrateCmd(workspace)
+	case "resolve":
+		return resolveCmd(workspace, fs.Args()[1:])
 	case "acp":
 		// The Agent Client Protocol over stdio, for editors that speak it.
 		return acpCmd(workspace, a.version)
