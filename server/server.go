@@ -788,6 +788,17 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	return sessionID, nil
 }
 
+// newPolicy builds the engine from the operator's rules. One constructor, so
+// a rule cannot bind the agent and not the endpoints that serve files.
+func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
+	pol := policy.New(mode)
+	pol.Managed = s.opts.Config.Managed
+	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
+	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
+	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
+	return pol
+}
+
 // buildLive constructs the in-process session and its loop: the scoped
 // workspace, the policy from config, the system prompt, the approver. One
 // function for both a new session and a continued one, so the two cannot
@@ -813,11 +824,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		}
 	}
 
-	pol := policy.New(policy.Mode(mode))
-	pol.Managed = s.opts.Config.Managed
-	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
-	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
-	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
+	pol := s.newPolicy(policy.Mode(mode))
 
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
