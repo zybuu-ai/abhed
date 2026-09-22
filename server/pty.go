@@ -46,10 +46,12 @@ type ptyRun struct {
 	cancel  context.CancelFunc
 	started time.Time
 
-	mu       sync.Mutex
-	subs     map[chan []byte]struct{}
-	record   []byte // output kept for the record, clipped
-	clipped  bool
+	mu      sync.Mutex
+	subs    map[chan []byte]struct{}
+	record  []byte // output kept for the record, clipped
+	clipped bool
+	// pumped closes when the last byte of output has been read.
+	pumped   chan struct{}
 	done     chan struct{}
 	exit     int
 	lastRead time.Time
@@ -149,7 +151,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run := &ptyRun{id: id, command: req.Command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(),
-		subs: map[chan []byte]struct{}{}, done: make(chan struct{}), lastRead: time.Now()}
+		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	live.mu.Lock()
 	live.ptys[id] = run
 	live.mu.Unlock()
@@ -166,6 +168,7 @@ func isPlainCd(command string) bool {
 
 // pump copies terminal output to every reader and to the record.
 func (p *ptyRun) pump() {
+	defer close(p.pumped)
 	buf := make([]byte, 8<<10)
 	for {
 		n, err := p.tty.Read(buf)
@@ -216,7 +219,18 @@ loop:
 		}
 	}
 	run.cancel()
+	// The last output can still be in flight after the process has gone.
+	// Give the pump a moment to read it before the terminal is closed, then
+	// a moment more for the read to return.
+	select {
+	case <-run.pumped:
+	case <-time.After(500 * time.Millisecond):
+	}
 	_ = run.tty.Close()
+	select {
+	case <-run.pumped:
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	code := 0
 	var ee *exec.ExitError
@@ -227,17 +241,19 @@ loop:
 	}
 	run.mu.Lock()
 	run.exit = code
-	close(run.done)
 	text := plainText(run.record)
 	clipped := run.clipped
 	run.mu.Unlock()
 
+	// The record is written before readers are told the command ended, so
+	// "exit" on the stream means the observation is already there.
 	live.manualMu.Lock()
 	sess.FollowCd(run.command)
 	live.manualMu.Unlock()
 	res := tools.Result{Content: fmt.Sprintf("exit %d · on a terminal\n%s", code, text), ExitCode: &code,
 		IsError: code != 0, Truncated: clipped}
 	_ = live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started))
+	close(run.done)
 
 	// A short command can end before its reader connects. The run stays
 	// findable for a minute so a late reader still gets the output and the exit.
