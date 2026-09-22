@@ -10,3 +10,11 @@ Difference in mean resolve rate, paired by task, 95% bootstrap interval. An inte
 |---|---|---|---|
 | abhed − openhands | full | +14.3 pts | -28.6 to +57.1 (spans zero) |
 | abhed − pi | full | +0.0 pts | -42.9 to +42.9 (spans zero) |
+
+By difficulty band (sessions resolved / sessions run, all runs together):
+
+| Band | Harness | Window | Resolved |
+|---|---|---|---|
+| <15 min fix | abhed | full | 5/7 (71%) |
+| <15 min fix | openhands | full | 4/7 (57%) |
+| <15 min fix | pi | full | 5/7 (71%) |
