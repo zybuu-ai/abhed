@@ -1104,18 +1104,21 @@ class SweepBoundaryTests(UsingCache, unittest.TestCase):
         self.assertEqual(got, [], "an orphan in the operator's home was targeted")
 
 
-TWO_LEVEL = ("import os, subprocess, sys, time; "
-             "p = subprocess.Popen([sys.executable, '-c', "
-             "'import subprocess, sys, time; "
-             "c = subprocess.Popen([\"sleep\", \"60\"], cwd=sys.argv[2]); "
-             "open(sys.argv[1], \"w\").write(str(c.pid)); time.sleep(60)', sys.argv[1], sys.argv[2]], "
-             "start_new_session=True); time.sleep({wait})")
+MIDDLE = ("import subprocess, sys; "
+          "subprocess.Popen(['/bin/sh', '-c', '(cd \"$1\" && exec /bin/sleep 60) & echo $! > \"$0\"; wait', "
+          "sys.argv[1], sys.argv[2]], start_new_session=True, stdin=subprocess.DEVNULL, "
+          "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)")
+# The harness: a middle process detaches /bin/sh into the workspace and exits,
+# so the shell is a real orphan while the harness still runs; its child works
+# elsewhere. Apple's binaries hide their environment, so only the orphan sweep
+# and its closure over descendants can find them.
+HARNESS = ("import subprocess, sys, time; "
+           "subprocess.run([sys.executable, '-c', {middle!r}, sys.argv[1], sys.argv[2]], "
+           "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+           "time.sleep({{wait}})").format(middle=MIDDLE)
 
 
 class TwoLevelTreeTests(UsingCache, unittest.TestCase):
-    """A detached parent working in the workspace, and its child working
-    elsewhere: a flask reloader and its server, say."""
-
     def setUp(self):
         super().setUp()
         self.ws = self.root / "scratch" / "ws"
@@ -1144,18 +1147,35 @@ class TwoLevelTreeTests(UsingCache, unittest.TestCase):
         self.assertEqual(alive, [], "the orphan's child survived")
 
     def cmd(self, wait):
-        return [sys.executable, "-c", TWO_LEVEL.format(wait=wait), str(self.pidfile), str(self.elsewhere)]
+        return [sys.executable, "-c", HARNESS.format(wait=wait), str(self.pidfile), str(self.elsewhere)]
 
     def test_after_a_normal_exit(self):
-        import time as _t
         rig.sh(self.cmd(1), cwd=self.ws, env=self.env)
         self.assert_gone(self.child())
 
     def test_on_timeout(self):
         import subprocess
         with self.assertRaises(subprocess.TimeoutExpired):
-            rig.sh(self.cmd(60), cwd=self.ws, env=self.env, timeout=2)
+            rig.sh(self.cmd(60), cwd=self.ws, env=self.env, timeout=3)
         self.assert_gone(self.child())
+
+    def test_on_stop(self):
+        import signal as s_
+        import subprocess
+        code = (f"import os, sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
+                f"rig.CACHE = rig.Path({str(self.root)!r}); rig._SESSIONS['t2'] = [{str(self.ws)!r}]; "
+                f"rig.install_stop_handlers(); "
+                f"rig.sh({self.cmd(60)!r}, cwd={str(self.ws)!r}, env={self.env!r})")
+        proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
+        child = self.child()
+        import time as _t
+        _t.sleep(0.5)
+        proc.send_signal(s_.SIGTERM)
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        self.assert_gone(child)
 
 
 class RoundEightTests(UsingCache, unittest.TestCase):
@@ -1186,11 +1206,37 @@ class RoundEightTests(UsingCache, unittest.TestCase):
         repo = str(self.root / "envs" / iid / "repo")
         (site / "__editable__.pytest.pth").write_text(repo + "\n")
         (site / "direct_url.json").write_text(json.dumps({"url": "file://" + repo}))
+        (site / "pytest.egg-link").write_text(repo + "\n.\n")
+        (src / "pyvenv.cfg").write_text(f"home = /usr/bin\ncommand = python -m venv {src}\n")
         ws = self.root / "scratch" / "s0"
         copy = rig.session_venv(iid, self.root / "scratch" / "venv-s0", ws)
         for f in copy.rglob("*"):
             if f.is_file():
                 self.assertNotIn(iid, f.read_text(), f.name)
+
+    def test_the_summary_lists_sessions_that_named_the_answers(self):
+        r = {"harness": "pi", "condition": "full", "touched_answers": True}
+        clean = {"harness": "abhed", "condition": "full", "touched_answers": False}
+        cells = {("pi", "full"): {1: {"i1": r}}, ("abhed", "full"): {2: {"i2": clean}}}
+        lines = rig.flagged(cells)
+        self.assertIn("| pi | full | 1 | i1 |", lines)
+        self.assertFalse(any("i2" in ln for ln in lines))
+        self.assertEqual(rig.flagged({("abhed", "full"): {1: {"i2": clean}}})[-1], "none")
+
+    def test_a_tool_holding_the_pipe_does_not_make_an_exit_a_timeout(self):
+        import time as _t
+        ws = self.root / "scratch" / "ws"
+        ws.mkdir(parents=True)
+        rig._SESSIONS["tp"] = [str(ws)]
+        self.addCleanup(rig._SESSIONS.pop, "tp", None)
+        holder = ("import subprocess, sys; subprocess.Popen(['/bin/sleep', '60'], start_new_session=True); "
+                  "print('done')")
+        start = _t.monotonic()
+        rc, out = rig.sh([sys.executable, "-c", holder], cwd=ws, env=dict(os.environ, **{rig.MARKER: "tp"}),
+                         timeout=30)
+        self.assertEqual(rc, 0)
+        self.assertIn("done", out)
+        self.assertLess(_t.monotonic() - start, 15, "the rig waited for the pipe, not the harness")
 
     def test_the_session_record_is_outside_the_scratch_tree(self):
         self.assertFalse(rig.session_meta("s0").is_relative_to(self.root / "scratch"))

@@ -73,17 +73,22 @@ session's directories, can outlive the session. Only directories the rig
 made for the session, inside its scratch directory, are ever swept, and a
 process that is not an orphan is never touched, so an operator's shell in a
 workspace is safe; an application launched from a workspace (an editor
-opened there, say) is an orphan and is not. A PID the rig recorded could in
+opened there, say) is an orphan and is not, and dies with its children. A PID the rig recorded could in
 principle be reused by an unrelated process before it is signalled; the
 window is a few seconds. OpenHands gets a tmux server of its own per
 session (`TMUX_TMPDIR`), and whether tmux was present is recorded in the plan.
 Session directories have opaque names, what each session is lives outside
-the scratch tree, and the agent's copy of the environment points its editable
-install at the session's workspace, so an agent cannot read its task's id from
-its surroundings. The reference patches themselves stay in the rig's cache,
-which pi and OpenHands, running unsandboxed, could read by absolute path;
-every result records `touched_answers` when a session's output or change
-names that cache, and such sessions are listed in the report. Sessions in
+the scratch tree, and the agent's copy of the environment names neither the
+task nor the prepared checkout, so an agent cannot read its task's id from its
+working directory or its environment. The reference patches themselves stay in
+the rig's cache, which any harness's shell — Abhed's included, whose sandbox
+allows reads — could reach by absolute path. Every result records
+`touched_answers` when a session's output or change names that cache, and the
+summary lists every such session, or says there were none. It is a name
+match: a glob, `find` or a directory listing in code would not trip it.
+
+A harness is waited for, not its output pipe: a tool it left holding the pipe
+cannot turn a normal exit into a timeout. Sessions in
 flight are abandoned, not scored, and redone on resume; results are written whole or not at all. A
 resume must be the same run: the rig refuses one under the same date whose
 sessions, model, endpoint, limits, timeout or parallelism differ from the plan it continues. Abhed

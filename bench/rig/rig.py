@@ -228,10 +228,11 @@ def _sweepable(d):
 def _leftovers(marker, dirs, parents=None):
     """A session's processes that outlived its harness: orphans working in its
     directories, and on Linux anything with its marker. Non-orphans are spared."""
-    parents = _parents() if parents is None else parents
     roots = [os.path.realpath(d) for d in dirs if d and _sweepable(d)]
-    out = set(_marked(marker))
-    for pid, cwd in (_cwds().items() if roots else []):
+    marked, cwds = _marked(marker), (_cwds() if roots else {})
+    parents = _parents() if parents is None else parents  # taken last: the freshest view
+    out = set(marked)
+    for pid, cwd in cwds.items():
         cwd = os.path.realpath(cwd)
         if parents.get(pid) == 1 and any(cwd == r or cwd.startswith(r + os.sep) for r in roots):
             out.add(pid)
@@ -293,6 +294,26 @@ def install_stop_handlers():
         signal.signal(s_, stop_all)
 
 
+def _read_all(pipe, chunks):
+    try:
+        chunks.append(pipe.read())
+    except (OSError, ValueError):
+        pass  # closed under us by _drain
+
+
+def _drain(reader, chunks, p):
+    """What the command printed; a process still holding the pipe after its
+    session ended gets ten seconds, then the pipe is closed."""
+    reader.join(10)
+    if reader.is_alive():
+        try:
+            p.stdout.close()
+        except OSError:
+            pass
+        reader.join(1)
+    return "".join(chunks)
+
+
 def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # stdin is closed on purpose. pi merges piped stdin into its prompt, so a
     # harness that inherits an open stdin waits on it for ever and never calls
@@ -313,18 +334,18 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     finally:
         if main:
             _Stop.starting -= 1
+    # The output is read on the side and the process waited for, not the pipe:
+    # a tool that keeps the pipe open must not turn an exit into a timeout.
+    chunks = []
+    reader = threading.Thread(target=_read_all, args=(p.stdout, chunks), daemon=True)
     try:
         if stopping():
             raise Stopped()  # the stop came while this child was starting
-        out, _ = p.communicate(timeout=timeout)
+        reader.start()
+        p.wait(timeout=timeout)
     except subprocess.TimeoutExpired as e:
         _end(p.pid, marker, dirs, p)
-        try:
-            out, _ = p.communicate(timeout=10)
-        except subprocess.TimeoutExpired:  # a daemonised grandchild still holds the pipe
-            p.stdout.close()
-            out = ""
-        raise subprocess.TimeoutExpired(cmd, timeout, output=out) from e
+        raise subprocess.TimeoutExpired(cmd, timeout, output=_drain(reader, chunks, p)) from e
     except BaseException:
         _end(p.pid, marker, dirs, p)  # Ctrl-C or any error: the harness must not outlive the rig
         raise
@@ -334,6 +355,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     _signal([p.pid], signal.SIGKILL, group=True)
     if marker:
         _signal(_leftovers(marker, dirs), signal.SIGKILL)
+    out = _drain(reader, chunks, p)
     if stopping():
         raise Stopped()  # killed by a stop signal: not a result
     if check and p.returncode != 0:
@@ -445,13 +467,14 @@ def session_venv(iid, dest, ws=None):
     if ws is not None:  # editable installs name the prepared checkout, and with it the task id
         repo = str(env_dir(iid) / "repo")
         for f in dest.rglob("*"):
-            if f.is_file() and (f.suffix == ".pth" or f.name == "direct_url.json" or f.name.endswith("_finder.py")):
+            named = f.suffix in (".pth", ".egg-link") or f.name in ("direct_url.json", "pyvenv.cfg")
+            if f.is_file() and not f.is_symlink() and (named or f.name.endswith("_finder.py")):
                 try:
                     text = f.read_text()
                 except (UnicodeDecodeError, OSError):
                     continue
-                if repo in text:
-                    f.write_text(text.replace(repo, str(ws)))
+                if repo in text or str(src) in text:
+                    f.write_text(text.replace(repo, str(ws)).replace(str(src), str(dest)))
     return dest
 
 
@@ -1052,6 +1075,7 @@ def pending(plan, root, force=False):
 
 
 def selftest(_):
+    check_socket_room()
     failures = 0
     for iid in sorted(suite()):
         for hname, want in (("null", False), ("gold", True)):
@@ -1121,7 +1145,7 @@ def setup_fingerprint(hname):
 def check_socket_room():
     """tmux puts its socket under the session temp dir; a Unix socket path has
     a hard limit (104 bytes on macOS), so a long cache path breaks OpenHands."""
-    sock = CACHE / "scratch" / ("tmp-s" + "0" * 12) / f"tmux-{os.getuid()}" / "openhands"
+    sock = Path(os.path.realpath(CACHE)) / "scratch" / ("tmp-s" + "0" * 12) / f"tmux-{os.getuid()}" / "openhands"
     if len(str(sock)) > 100:
         sys.exit(f"the rig cache path is too long for tmux sockets ({len(str(sock))} bytes): "
                  "set ABHED_BENCH_CACHE to a shorter directory")
@@ -1357,6 +1381,19 @@ def load(date):
     return cells
 
 
+def flagged(cells):
+    """Sessions whose output or change named where the reference patches are
+    kept. Listed whatever they scored; "none" is stated, not implied."""
+    rows = sorted((r["harness"], r["condition"], run_no, iid)
+                  for (_, _), runs in cells.items() for run_no, res in runs.items()
+                  for iid, r in res.items() if r.get("touched_answers"))
+    out = ["Sessions that named the reference-patch cache (a name match only):", ""]
+    if not rows:
+        return out + ["none"]
+    out += ["| Harness | Window | Run | Instance |", "|---|---|---|---|"]
+    return out + [f"| {h} | {c} | {n} | {i} |" for h, c, n, i in rows]
+
+
 def coverage(date):
     """Planned, scored and set-aside sessions per harness, so a session that was
     never scored cannot vanish from the summary."""
@@ -1441,7 +1478,7 @@ def summarize(args):
         order = {"<15 min fix": 0, "15 min - 1 hour": 1, "1-4 hours": 2, ">4 hours": 3}
         for (band, h, cond), (won, n) in sorted(bands.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1], kv[0][2])):
             lines.append(f"| {band} | {h} | {cond} | {won}/{n} ({100 * won / n:.0f}%) |")
-    lines += ["", *coverage(args.date)]
+    lines += ["", *coverage(args.date), "", *flagged(cells)]
     text = "\n".join(lines)
     (RESULTS / args.date / "rig" / "SUMMARY.md").write_text(text + "\n")
     print(text)
