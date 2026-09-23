@@ -1,18 +1,19 @@
 # Security Policy
 
-Abhed is pre-release software (0.1.x) built and maintained by one person at
-Zybuu. This document says what we support, how to report a problem, and what
-you can expect back.
+Abhed is built and maintained by a small team at Zybuu. This document says
+what we support, how to report a problem, and what you can expect back.
 
 ## Supported versions
 
 | Version | Supported |
 |---|---|
-| 0.1.x (pre-release) | Yes — this is the only line that exists |
+| 1.x, latest release | Yes |
+| 1.x, earlier releases | Upgrade to the latest 1.x first |
+| 0.x | No |
 
-There is no stable release yet and no long-term-support branch. Every fix
-lands on `main`. If you are running an older commit, the first thing we will
-ask is whether the issue reproduces at `HEAD`.
+There is no long-term-support branch. Every fix lands on `main` and ships in
+the next 1.x release. If you are running an older release or commit, the first
+thing we will ask is whether the issue reproduces on the latest release.
 
 ## Reporting a vulnerability
 
@@ -40,7 +41,7 @@ report isn't public before a fix ships.
   Lower-severity reports may take longer; we will tell you the plan, not
   leave you guessing.
 - Credit in the fix's changelog entry or commit message, if you want it.
-- One person is doing this work. Response times are honest estimates, not
+- A small team is doing this work. Response times are honest estimates, not
   contractual commitments.
 
 ## Safe harbor

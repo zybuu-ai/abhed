@@ -1,6 +1,6 @@
 # Contributing to Abhed
 
-Abhed is maintained by one person at Zybuu. That shapes everything below:
+Abhed is maintained by a small team at Zybuu. That shapes everything below:
 review latency is real, and a PR that makes review easy gets merged faster
 than one that is merely correct.
 
@@ -91,14 +91,14 @@ be asked to amend and re-push before merge.
 ## Sending a change
 
 1. Open an issue first for anything that isn't a small, obvious fix — a
-   one-person review queue means a discussion up front saves a rewritten PR
+   small review queue means a discussion up front saves a rewritten PR
    later.
 2. Keep the PR scoped to one thing. A PR that fixes a bug and reformats an
    unrelated file is two PRs' worth of review for the price of one diff
    that's hard to read.
 3. Include the test that fails without your change, per above.
-4. Expect review latency measured in days, not hours. This is one person
-   reading every PR against a codebase where the history above is typical of
+4. Expect review latency measured in days, not hours. A small team reads
+   every PR against a codebase where the history above is typical of
    the bugs that get through when review is rushed. A ping after a week is
    fine; a ping after a day is not going to make it faster.
 

@@ -3,8 +3,8 @@
 A summary for a security reviewer. Every claim below names the file that
 makes it true — read the file if you need more than the summary.
 
-Abhed is pre-release (0.1.x), built by a one-person company. No claim here
-should be read as a certification; see "What is not in place" at the end.
+Abhed is at 1.x, built by a small company. No claim here should be read as a
+certification; see "What is not in place" at the end.
 
 ## Trust boundaries
 
@@ -224,7 +224,7 @@ Stated plainly rather than buried:
   `docs/ops/red-team-scope.md` says what to commission.
 - **Single node.** The server is one process against one database. There is
   no horizontal scaling and no failover in the software.
-- **One maintainer.** Zybuu is a one-person company (`docs/vision.md`). There
-  is no second reviewer, no on-call rotation, and no bus-factor mitigation
-  beyond what is written down in this repository. See `SECURITY.md` for the
+- **A small team.** Zybuu is a small company. There is no security team, no
+  on-call rotation, and no bus-factor mitigation beyond what is written down
+  in this repository. See `SECURITY.md` for the
   response times that implies.
