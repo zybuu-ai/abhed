@@ -535,8 +535,8 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		// again, so a genuine end-of-turn still terminates immediately.
 		// A turn cut off at the output limit is the same stall with more
 		// tokens: the model was still reasoning when the budget ended it.
-		// Both failures in the first easy-band benchmark run ended this way,
-		// one of them read as "completed" because a sentence was there.
+		// Both failures in the first easy-band benchmark run (since withdrawn)
+		// ended this way, one read as "completed" because a sentence was there.
 		if strings.TrimSpace(text.String()) == "" || mc.CutOff {
 			l.emptyTurns++
 			if mc.CutOff {

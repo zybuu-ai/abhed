@@ -8,8 +8,7 @@ harness changes is flying blind on the thing that matters most.** Per P10, score
 alone is insufficient: agents with identical pass rates exhibit materially different
 behavior, including benchmark gaming and side-effectful tool misuse.
 
-So the eval harness is not a Phase 3 nicety. It is Phase 0 infrastructure, and the eval
-engineer is the first non-core hire.
+So the eval harness is not a later nicety. It is infrastructure from the start.
 
 ## 1. What gets measured
 
@@ -174,7 +173,7 @@ one and pay for it in the other.**
 
 ## 8. Answering the open questions
 
-The eval harness is also the instrument for the research gaps (§05 roadmap §6):
+The eval harness is also the instrument for the open research questions:
 
 - **Q1** — does the 7.80× harness variance hold for open-weight models? Run the L3 corpus
   across harness configurations × model families. This is a publishable result.

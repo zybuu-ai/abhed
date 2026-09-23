@@ -1,6 +1,6 @@
 # Abhed — Design Principles
 
-Status: Draft · 2026-09-02 · Owner: Yuvraj Singh
+Status: Draft · 2026-09-02 · Owner: @yuvraj-singh79
 
 Abhed is an on-prem, air-gap-capable deep agent platform. It targets the capability
 bar set by Claude Code and OpenAI Codex CLI, with the enterprise deployment posture of
@@ -193,12 +193,11 @@ not verified:
 | Air-gapped ops (offline mirrors, weight signing, SSO/RBAC, compliance frameworks) | Unverified |
 | Sandboxing & prompt-injection defense | **Unverified — and two claims were refuted** |
 | MCP spec state, transports, auth, gateway design | Unverified |
-| Build cost, team composition, timeline | Unverified |
 
 **Sandboxing is the most dangerous gap.** Two sandboxing claims were refuted 0-3, leaving
 the execution-isolation posture of every comparable agent unverified. For an enclave that
 ingests untrusted repo content and brokered web-search results, this is disqualifying for a
-production design and is the next research target. Abhed's Phase 0 therefore treats
+production design and is the next research target. Abhed therefore treats
 isolation as a *requirement to be independently established*, not a solved problem to copy.
 
 Model names throughout this research (GPT-5.4, Kimi K2.6, GLM-5.1, Claude Opus 4.5/4.6,

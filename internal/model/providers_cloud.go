@@ -5,8 +5,8 @@ import "fmt"
 // Cloud-gateway providers: the same model families reached through a hyperscaler.
 //
 // Each is the wire format of the underlying model with a different URL and a
-// different way of signing the request. Abhed carries no cloud SDK — that is
-// the air-gap discipline in docs §05 — so the two that need request signing
+// different way of signing the request. Abhed carries no cloud SDK, which keeps
+// the binary fit for an air-gapped site, so the two that need request signing
 // (SigV4 for Bedrock, ADC for Vertex) take a token the operator supplies,
 // which is what a sidecar or a short-lived credential already provides.
 //

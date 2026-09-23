@@ -184,7 +184,6 @@ Egress    broker (optional, default OFF)
 | [02 System architecture](docs/architecture/02-system-architecture.md) | Planes, loop, subagents, retrieval |
 | [03 Security](docs/architecture/03-security.md) | Isolation tiers, injection, validation status |
 | [04 Sizing](docs/architecture/04-sizing.md) | VRAM math, tiers, prefill economics, cost |
-| [05 Roadmap](docs/architecture/05-roadmap.md) | Build vs adopt, phasing, team, risks |
 | [06 Tool contracts](docs/architecture/06-tool-contracts.md) | Exact schemas, semantics, error messages |
 | [07 System prompt](docs/architecture/07-system-prompt.md) | Prompt layering, ABHED.md, anti-patterns |
 | [08 Eval](docs/architecture/08-eval.md) | 4-layer harness incl. behavioral inspection |

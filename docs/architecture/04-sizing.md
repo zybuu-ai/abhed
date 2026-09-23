@@ -160,8 +160,7 @@ would hurt Abhed.
 
 Excludes facility, network fabric, support contracts, and engineering. GPU pricing moves
 fast and varies enormously by vendor relationship — **treat these as order-of-magnitude
-only.** The engineering cost of building Abhed (see `05-roadmap.md`) will likely exceed T2
-hardware cost, which is the usual and correct surprise.
+only.**
 
 ## 8. Sizing procedure
 

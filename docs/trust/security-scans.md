@@ -43,8 +43,8 @@ exactly.
 | staticcheck | 2026.2.1 (0.8.1) | `env -u GOROOT go run honnef.co/go/tools/cmd/staticcheck@latest ./...` |
 | go vet | go1.26.0 | `env -u GOROOT go vet ./...` |
 | semgrep | 1.177.0 | `semgrep --config auto --exclude web/zybuu --exclude docs --exclude internal/docsite/site --exclude node_modules --exclude .abhed-workspace .` |
-| trivy | 0.74.0 (DB 2026-09-13) | `trivy image abhed:local` (via a `podman save` tarball — see note below) and `trivy fs --scanners vuln,secret,misconfig /Users/yuvrajsingh/titan` |
-| gitleaks | 8.30.1 | `gitleaks detect --source /Users/yuvrajsingh/titan` |
+| trivy | 0.74.0 (DB 2026-09-13) | `trivy image abhed:local` (via a `podman save` tarball — see note below) and `trivy fs --scanners vuln,secret,misconfig .` |
+| gitleaks | 8.30.1 | `gitleaks detect --source .` |
 | podman | 5.2.2 | `podman inspect abhed`, `podman exec abhed id`, `podman exec abhed cat /proc/1/status` |
 
 **Note on `trivy image`:** `trivy image abhed:local` initially failed because
@@ -598,7 +598,7 @@ library.
 advisory already covered under govulncheck §1 above (no call path to the
 affected subpackage). Not double-counted as a new issue.
 
-### `trivy fs --scanners vuln,secret,misconfig /Users/yuvrajsingh/titan`
+### `trivy fs --scanners vuln,secret,misconfig .`
 
 **Result:**
 
@@ -632,7 +632,7 @@ job).
 
 ## 5. gitleaks — full git history
 
-**Command:** `gitleaks detect --source /Users/yuvrajsingh/titan` (report saved as JSON with `-v`)
+**Command:** `gitleaks detect --source .` (report saved as JSON with `-v`)
 
 **Result: 1 finding, across 160 commits scanned (~2.94 MB).**
 

@@ -1,7 +1,6 @@
 // Command abhed-bench measures prefix-cache behavior on a real serving stack.
 //
-// This answers open question Q3 in docs/architecture/05-roadmap.md. The whole
-// capacity model in docs/architecture/04-sizing.md rests on a COMPUTED claim
+// The capacity model in docs/architecture/04-sizing.md rests on a COMPUTED claim
 // that prefix caching is worth ~17x on a long session — and on the corollary
 // that compaction invalidates the prefix and pays cold prefill again.
 //
