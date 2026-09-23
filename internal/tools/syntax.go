@@ -93,30 +93,49 @@ func (s *Session) interpreter() (string, [2]int, bool) {
 		return "", [2]int{}, false
 	}
 	for _, root := range append([]string{s.Root}, s.Roots...) {
-		if rel, err := filepath.Rel(root, real); err == nil && !strings.HasPrefix(rel, "..") {
+		if rel, err := filepath.Rel(root, real); err == nil && (rel == "." || filepath.IsLocal(rel)) {
 			return "", [2]int{}, false
 		}
 	}
-	return real, pythonVersion(real), true
+	ver, ok := pythonVersion(real)
+	return real, ver, ok
 }
 
-var pyVersions sync.Map // interpreter path -> [2]int
+var pyVersions sync.Map // interpreter path -> [2]int, successes only
 
-func pythonVersion(py string) [2]int {
+// pythonVersion asks the interpreter its version, under the same isolation
+// and bound as the check itself. A failure is not cached: the next edit asks again.
+func pythonVersion(py string) ([2]int, bool) {
 	if v, ok := pyVersions.Load(py); ok {
-		return v.([2]int)
+		return v.([2]int), true
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), pythonTimeout)
+	defer cancel()
+	cmd := pythonCommand(ctx, py, "import sys; print(*sys.version_info[:2])")
+	out, err := cmd.Output()
 	var v [2]int
-	out, err := exec.Command(py, "-I", "-S", "-c", "import sys; print(*sys.version_info[:2])").Output()
-	if err == nil {
-		_, _ = fmt.Sscan(string(out), &v[0], &v[1])
+	if err != nil {
+		return v, false
+	}
+	if n, _ := fmt.Sscan(string(out), &v[0], &v[1]); n != 2 || v[0] == 0 {
+		return v, false
 	}
 	pyVersions.Store(py, v)
-	return v
+	return v, true
 }
 
-// parsesPython compiles the source without running it. The real interpreter
-// file skips any virtualenv; -I -S skip the environment, site and .pth files.
+// pythonCommand runs py isolated: -I ignores the environment, user site and
+// current directory, -S skips site and so .pth files; no env, temp dir cwd.
+func pythonCommand(ctx context.Context, py, script string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, py, append([]string{"-I", "-S", "-c", script}, args...)...)
+	cmd.Dir = os.TempDir()
+	cmd.Env = []string{}
+	cmd.WaitDelay = time.Second // a child holding the pipe cannot outlast the timeout
+	return cmd
+}
+
+// parsesPython compiles the source without running it; the real interpreter
+// file skips any virtualenv. See pythonCommand for the isolation.
 func (s *Session) parsesPython(ctx context.Context, path string, content []byte) verdict {
 	py, ver, ok := s.interpreter()
 	if !ok {
@@ -124,11 +143,7 @@ func (s *Session) parsesPython(ctx context.Context, path string, content []byte)
 	}
 	ctx, cancel := context.WithTimeout(ctx, pythonTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, py, "-I", "-S", "-c",
-		"import sys; compile(sys.stdin.buffer.read(), sys.argv[1], 'exec')", filepath.Base(path))
-	cmd.Dir = os.TempDir()
-	cmd.Env = []string{}
-	cmd.WaitDelay = time.Second // a shim's child holding the pipe cannot outlast the timeout
+	cmd := pythonCommand(ctx, py, "import sys; compile(sys.stdin.buffer.read(), sys.argv[1], 'exec')", filepath.Base(path))
 	cmd.Stdin = bytes.NewReader(content)
 	stderr := &capped{max: 16 << 10}
 	cmd.Stderr = stderr
@@ -191,20 +206,17 @@ var notCode = map[string]bool{".md": true, ".markdown": true, ".rst": true, ".tx
 	".yaml": true, ".yml": true, ".diff": true, ".patch": true}
 
 // looksLikeDiff is true when the new text is a pasted hunk: every non-empty
-// line carries a marker, and it removes a line of the old text or pairs a
-// removal with an addition. Lists and negative numbers do neither.
+// line is marked and it both removes and adds. Negations and lists do not.
 func looksLikeDiff(path, oldText, newText string) bool {
 	if notCode[strings.ToLower(filepath.Ext(path))] {
 		return false
 	}
-	old := map[string]bool{}
 	for _, l := range strings.Split(oldText, "\n") {
 		if strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") {
 			return false
 		}
-		old[strings.TrimSpace(l)] = true
 	}
-	var plus, minus, removesOld bool
+	var plus, minus bool
 	for _, l := range strings.Split(newText, "\n") {
 		switch {
 		case strings.TrimSpace(l) == "":
@@ -212,14 +224,15 @@ func looksLikeDiff(path, oldText, newText string) bool {
 			plus = true
 		case strings.HasPrefix(l, "-"):
 			minus = true
-			rest := strings.TrimSpace(l[1:])
-			removesOld = removesOld || (rest != "" && old[rest])
 		default:
 			return false
 		}
 	}
-	return removesOld || (plus && minus)
+	return plus && minus
 }
+
+// parse is the parser syntaxVerdict uses; tests replace it.
+var parse = (*Session).parses
 
 // syntaxVerdict decides what happens to a change that leaves a file not
 // parsing. A file that did not parse before is left to the model, so a
@@ -228,7 +241,7 @@ func (s *Session) syntaxVerdict(ctx context.Context, path string, before []byte,
 	if s.Syntax == SyntaxOff {
 		return "", false
 	}
-	a := s.parses(ctx, path, after)
+	a := parse(s, ctx, path, after)
 	if !a.checked || a.err == nil {
 		return "", false
 	}
@@ -236,7 +249,7 @@ func (s *Session) syntaxVerdict(ctx context.Context, path string, before []byte,
 	if !existed {
 		return fmt.Sprintf("Warning: %s does not parse (%s) — %v", rel, a.by, a.err), false
 	}
-	b := s.parses(ctx, path, before)
+	b := parse(s, ctx, path, before)
 	switch {
 	case b.checked && b.err != nil:
 		return fmt.Sprintf("Note: %s still does not parse (%s) — %v", rel, a.by, a.err), false

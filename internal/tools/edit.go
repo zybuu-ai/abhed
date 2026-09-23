@@ -75,6 +75,9 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		// Empty old_string on a missing file is equivalent to a create.
 		if a.OldString == "" {
 			note, _ := s.syntaxVerdict(ctx, path, nil, false, []byte(a.NewString))
+			if diffNote != "" {
+				note = strings.TrimSpace(diffNote + "\n" + note)
+			}
 			s.recordChange(path)
 			if err := atomicWrite(path, []byte(a.NewString), 0o644); err != nil {
 				return errf("Create failed for %s: %v", a.Path, err)

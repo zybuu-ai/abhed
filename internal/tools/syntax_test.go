@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -160,19 +161,6 @@ func TestAnInterpreterInsideTheWorkspaceIsNeverRun(t *testing.T) {
 	}
 }
 
-// Site packages, and so .pth files, never load while checking.
-func TestSitePackagesDoNotLoad(t *testing.T) {
-	s, _ := setup(t)
-	py, _, ok := s.interpreter()
-	if !ok {
-		t.Skip("no python3 outside the workspace")
-	}
-	out, err := exec.Command(py, "-I", "-S", "-c", "import sys; print('site' in sys.modules)").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "False" {
-		t.Fatalf("site loaded under -I -S: %q %v", out, err)
-	}
-}
-
 func TestListsAndNumbersAreNotMistakenForDiffs(t *testing.T) {
 	for _, c := range []struct{ path, old, new string }{
 		{"README.md", "Some text", "- one\n- two"},
@@ -215,24 +203,6 @@ func TestEditInReportModeAppliesAndWarns(t *testing.T) {
 	}
 }
 
-func TestPythonRefusalFollowsTheInterpreterVersion(t *testing.T) {
-	s, dir := setup(t)
-	if _, _, ok := s.interpreter(); !ok {
-		t.Skip("no python3 outside the workspace")
-	}
-	p := filepath.Join(dir, "a.py")
-	writeFile(t, p, "def f():\n    return 1\n")
-	run(t, Read{}, s, map[string]any{"path": p})
-	v := s.parses(context.Background(), p, []byte("def f(:\n"))
-	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "def f():", "new_string": "def f(:"})
-	if v.strict != r.IsError {
-		t.Fatalf("strict=%v but refused=%v: %+v", v.strict, r.IsError, r)
-	}
-	if !strings.Contains(r.Content, v.by) {
-		t.Fatalf("the message does not name the interpreter %q: %s", v.by, r.Content)
-	}
-}
-
 func TestAlreadyBrokenFileKeepsItsNote(t *testing.T) {
 	s, dir := setup(t)
 	p := filepath.Join(dir, "half.go")
@@ -241,5 +211,115 @@ func TestAlreadyBrokenFileKeepsItsNote(t *testing.T) {
 	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "package half", "new_string": "package whole"})
 	if r.IsError || !strings.Contains(r.Content, "still does not parse") {
 		t.Fatalf("an edit to a broken file must apply with a note: %+v", r)
+	}
+}
+
+// Every property of the isolation is on the command itself.
+func TestPythonRunsIsolated(t *testing.T) {
+	cmd := pythonCommand(context.Background(), "/usr/bin/python3", "pass", "a.py")
+	args := strings.Join(cmd.Args[1:3], " ")
+	if args != "-I -S" {
+		t.Fatalf("interpreter flags %q, want -I -S", args)
+	}
+	if cmd.Env == nil || len(cmd.Env) != 0 {
+		t.Fatalf("environment %v, want empty", cmd.Env)
+	}
+	if cmd.Dir != os.TempDir() || cmd.WaitDelay == 0 {
+		t.Fatalf("dir %q, wait delay %v", cmd.Dir, cmd.WaitDelay)
+	}
+}
+
+// A python3 reached through a symlink, such as a virtualenv's, is run as the
+// real file, so the virtualenv and its site packages are skipped.
+func TestTheRealInterpreterIsRun(t *testing.T) {
+	found, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	real, _ := filepath.EvalSymlinks(found)
+	s, _ := setup(t)
+	link := t.TempDir()
+	if err := os.Symlink(real, filepath.Join(link, "python3")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", link+string(os.PathListSeparator)+os.Getenv("PATH"))
+	got, _, ok := s.interpreter()
+	if !ok || got != real {
+		t.Fatalf("ran %q, want the real file %q", got, real)
+	}
+}
+
+// A directory whose name starts with two dots is still inside the workspace.
+func TestADotDotDirectoryIsInsideTheWorkspace(t *testing.T) {
+	s, dir := setup(t)
+	bin := filepath.Join(dir, "..venv", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(bin, "python3"), "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(bin, "python3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, _, ok := s.interpreter(); ok {
+		t.Fatal("an interpreter under ..venv in the workspace was accepted")
+	}
+}
+
+// Below 3.12 a Python verdict warns; from 3.12 it refuses. Seeding the version
+// runs both branches whatever python3 this machine has.
+func TestPythonRefusalFollowsTheInterpreterVersion(t *testing.T) {
+	s, dir := setup(t)
+	py, _, ok := s.interpreter()
+	if !ok {
+		t.Skip("no python3 outside the workspace")
+	}
+	defer pyVersions.Delete(py)
+	p := filepath.Join(dir, "a.py")
+	for _, c := range []struct {
+		ver    [2]int
+		refuse bool
+	}{{[2]int{3, 9}, false}, {[2]int{3, 12}, true}} {
+		pyVersions.Store(py, c.ver)
+		writeFile(t, p, "def f():\n    return 1\n")
+		run(t, Read{}, s, map[string]any{"path": p})
+		r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "def f():", "new_string": "def f(:"})
+		if r.IsError != c.refuse || !strings.Contains(r.Content, fmt.Sprintf("python%d.%d", c.ver[0], c.ver[1])) {
+			t.Fatalf("python %v: refused=%v, want %v: %s", c.ver, r.IsError, c.refuse, r.Content)
+		}
+	}
+}
+
+// Without a conclusive answer about the file before the change, a broken
+// result is warned about, never refused.
+func TestAnUnknownBeforeNeverRefuses(t *testing.T) {
+	s, dir := setup(t)
+	real := parse
+	defer func() { parse = real }()
+	parse = func(s *Session, ctx context.Context, path string, content []byte) verdict {
+		if strings.Contains(string(content), "broken") {
+			return verdict{checked: true, err: fmt.Errorf("bad"), strict: true, by: "test"}
+		}
+		return verdict{} // no answer for the old content
+	}
+	p := filepath.Join(dir, "a.go")
+	writeFile(t, p, "fine")
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "fine", "new_string": "broken"})
+	if r.IsError || !strings.Contains(r.Content, "Warning:") {
+		t.Fatalf("an unknown baseline must warn, not refuse: %+v", r)
+	}
+}
+
+func TestDiffsInFilesWhereMarkersAreContent(t *testing.T) {
+	for _, path := range []string{"notes.md", "ci.yml", "fix.patch", "list.txt", "data.csv"} {
+		if looksLikeDiff(path, "old", "-old\n+new") {
+			t.Errorf("%s: a hunk in a file where it is content was refused", path)
+		}
+	}
+	for _, c := range []struct{ old, new string }{{"offset", "-offset"}, {"1", "-1"}, {"1,", "-1,\n-2,"}, {"x", "+x"}} {
+		if looksLikeDiff("a.py", c.old, c.new) {
+			t.Errorf("%q -> %q taken for a diff", c.old, c.new)
+		}
 	}
 }

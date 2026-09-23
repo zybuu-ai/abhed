@@ -15,6 +15,10 @@ All notable changes to Abhed are recorded here. The format follows
   HawkEYE reports a refused change as `broken-edit`. `tools.syntax_check`:
   `refuse` (default), `report` or `off`. It comes from benchmark sessions in
   which a model wrote diff markers into Python files and every test failed.
+- The `monitor` package and a policy step for it: a judge that reads the
+  remit, the agent's reasoning and where a call's arguments came from, and
+  may only tighten a decision; unavailable means ask, or deny when headless.
+  Verdicts are recorded as `monitor.verdict`. The local-model judge follows.
 
 ### Changed
 
@@ -23,10 +27,6 @@ All notable changes to Abhed are recorded here. The format follows
   `tools.syntax_check` to `report` or `off` to keep the old behaviour; the
   SDK also takes `Options.SyntaxCheck`.
 
-- The `monitor` package and a policy step for it: a judge that reads the
-  remit, the agent's reasoning and where a call's arguments came from, and
-  may only tighten a decision; unavailable means ask, or deny when headless.
-  Verdicts are recorded as `monitor.verdict`. The local-model judge follows.
 
 ### Fixed
 

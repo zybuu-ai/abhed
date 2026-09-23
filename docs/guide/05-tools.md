@@ -33,7 +33,9 @@ warning if it does not parse.
 
 Python is compiled, never run, by the `python3` on the path — the real
 interpreter behind it, never one inside the workspace, with site packages and
-the environment switched off. With no `python3`, Python is not checked. The
+the environment switched off. With no `python3`, or when `python3` is a
+version-manager shim (pyenv, asdf) that needs its environment, Python is not
+checked. The
 host's interpreter decides what parses, so one older than 3.12, which could
 reject newer syntax the project accepts, warns instead of refusing.
 
