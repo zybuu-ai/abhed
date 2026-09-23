@@ -89,10 +89,14 @@ the issue is resolved. The project's Python environment is already on PATH.
 </issue>"""
 
 
-# Every harness process group alive now, so a stop signal can end all of them.
-# No locks: the signal handler must never wait on one the main thread holds;
-# single set operations are atomic under the interpreter lock.
-_LIVE = set()
+# Live harness groups, pid -> the session workspace (or "" for plain commands).
+# No locks: the signal handler must never wait on one; dict operations are atomic.
+_LIVE = {}
+
+# Marks a harness run in its environment. Its tools may leave its process group
+# (pi and OpenHands start them in sessions of their own) but not its workspace.
+MARKER = "ABHED_RIG_SESSION"
+GRACE = 2.0
 
 
 class _Stop:
@@ -104,26 +108,105 @@ def stopping():
     return _Stop.signum != 0
 
 
-class Stopped(Exception):
-    """The rig is stopping; a session in flight is abandoned, not scored."""
+class Stopped(BaseException):
+    """The rig is stopping; a session in flight is abandoned, not scored.
+    A BaseException, so no broad `except Exception` can swallow it."""
 
 
-def _kill_group(p):
+def _signal(pids, sig, group=False):
+    for pid in pids:
+        try:
+            (os.killpg if group else os.kill)(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _descendants(root):
+    """Every process below root now, whatever session or group it moved to."""
     try:
-        os.killpg(p.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+        ps = subprocess.run(["ps", "-ax", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    kids = {}
+    for line in ps.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    out, todo = [], [root]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            out.append(c)
+            todo.append(c)
+    return out
+
+
+def _working_in(ws):
+    """Processes whose working directory is the workspace or below it: the
+    tools a harness left behind once it has exited and they were orphaned."""
+    ws = os.path.realpath(ws)
+    found = []
+    if sys.platform.startswith("linux"):
+        for d in Path("/proc").iterdir():
+            if d.name.isdigit():
+                try:
+                    cwd = os.readlink(d / "cwd")
+                except OSError:
+                    continue
+                if cwd == ws or cwd.startswith(ws + os.sep):
+                    found.append(int(d.name))
+    else:
+        try:
+            out = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fn"],
+                                 capture_output=True, text=True, timeout=20).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        pid = None
+        for line in out.splitlines():
+            if line.startswith("p"):
+                pid = int(line[1:])
+            elif line.startswith("n") and pid is not None:
+                cwd = os.path.realpath(line[1:])
+                if cwd == ws or cwd.startswith(ws + os.sep):
+                    found.append(pid)
+    return [p for p in found if p != os.getpid()]
+
+
+def _end(pid, ws, proc=None):
+    """Ask a harness to stop so it can end its own tools, then make sure: kill
+    its group, every process it started, and anything still working in its
+    workspace."""
+    tree = _descendants(pid)
+    _signal([pid], signal.SIGTERM, group=True)
+    _signal(tree, signal.SIGTERM)
+    if proc is not None:
+        try:
+            proc.wait(timeout=GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        time.sleep(GRACE)
+    _signal([pid], signal.SIGKILL, group=True)
+    _signal(tree + _descendants(pid), signal.SIGKILL)
+    if ws:
+        _signal(_working_in(ws), signal.SIGKILL)
 
 
 def stop_all(signum=signal.SIGTERM, _frame=None):
-    """The stop-signal handler: flag first, then kill every registered group.
-    A child registered after the snapshot sees the flag and kills itself."""
+    """The stop-signal handler: flag first, then end every registered harness.
+    A child registered after the snapshot sees the flag and ends itself."""
     _Stop.signum = _Stop.signum or signum
-    for pid in list(_LIVE):
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+    live = list(_LIVE.items())
+    trees = {pid: _descendants(pid) for pid, _ in live}
+    for pid, _ in live:
+        _signal([pid], signal.SIGTERM, group=True)
+        _signal(trees[pid], signal.SIGTERM)
+    if live:
+        time.sleep(GRACE)
+    for pid, ws in live:
+        _signal([pid], signal.SIGKILL, group=True)
+        _signal(trees[pid], signal.SIGKILL)
+        if ws:
+            _signal(_working_in(ws), signal.SIGKILL)
     if not _Stop.starting:  # else sh() finishes registering, then stops
         raise SystemExit(128 + _Stop.signum)
 
@@ -134,7 +217,7 @@ def exit_if_stopped():
 
 
 def install_stop_handlers():
-    for s_ in (signal.SIGINT, signal.SIGTERM):
+    for s_ in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s_, stop_all)
 
 
@@ -147,19 +230,22 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     if stopping():
         raise Stopped()
     main = threading.current_thread() is threading.main_thread()
-    _Stop.starting += main  # a signal now defers its exit until the child is registered
+    ws = str(cwd) if cwd and (env or {}).get(MARKER) else ""  # a harness run: sweep its workspace
+    if main:
+        _Stop.starting += 1  # a signal now defers its exit until the child is registered
     try:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-        _LIVE.add(p.pid)
+        _LIVE[p.pid] = ws
     finally:
-        _Stop.starting -= main
+        if main:
+            _Stop.starting -= 1
     try:
         if stopping():
             raise Stopped()  # the stop came while this child was starting
         out, _ = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        _kill_group(p)
+        _end(p.pid, ws, p)
         try:
             out, _ = p.communicate(timeout=10)
         except subprocess.TimeoutExpired:  # a daemonised grandchild still holds the pipe
@@ -167,11 +253,14 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
             out = ""
         raise subprocess.TimeoutExpired(cmd, timeout, output=out) from e
     except BaseException:
-        _kill_group(p)  # Ctrl-C or any error: the harness must not outlive the rig
+        _end(p.pid, ws, p)  # Ctrl-C or any error: the harness must not outlive the rig
         raise
     finally:
-        _LIVE.discard(p.pid)
-    _kill_group(p)  # anything the agent left running in the background
+        _LIVE.pop(p.pid, None)
+    # Anything the agent left running, in the group or orphaned in its workspace.
+    _signal([p.pid], signal.SIGKILL, group=True)
+    if ws:
+        _signal(_working_in(ws), signal.SIGKILL)
     if stopping():
         raise Stopped()  # killed by a stop signal: not a result
     if check and p.returncode != 0:
@@ -510,6 +599,16 @@ def api_key():
     return os.environ.get("ABHED_BENCH_API_KEY", "bench")
 
 
+def public_endpoint():
+    """The endpoint as recorded: scheme, host, port and path, never a user
+    part or a query that could carry a credential."""
+    u = urllib.parse.urlsplit(endpoint())
+    host = u.hostname or ""
+    if u.port:
+        host += f":{u.port}"
+    return urllib.parse.urlunsplit((u.scheme, host, u.path, "", ""))
+
+
 def remote():
     return bool(os.environ.get("ABHED_BENCH_MODEL"))
 
@@ -568,7 +667,10 @@ class Abhed(Harness):
         return os.environ.get("ABHED_BIN", str(HERE.parent.parent / "abhed"))
 
     def version(self):
-        return sh([self.binary(), "-version"], timeout=30)[1].strip()[:120]
+        try:
+            return sh([self.binary(), "-version"], timeout=30)[1].strip()[:120]
+        except (OSError, subprocess.TimeoutExpired):
+            return "unknown"
 
     def available(self):
         if Path(MANAGED_CONFIG).exists():
@@ -639,7 +741,7 @@ def hawkeye(events, out_path):
     report = out_path.with_name(out_path.stem + ".hawkeye.json")
     try:
         rc, out = sh([binary, "hawkeye", "-o", str(report), str(rec)], timeout=120)
-    except Stopped:
+    except BaseException:
         rec.unlink(missing_ok=True)  # an abandoned session leaves nothing beside the results
         report.unlink(missing_ok=True)
         raise
@@ -799,7 +901,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
         started, awake, timed_out, output, rc = time.time(), time.monotonic(), False, "", None
         try:
-            rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv, tmp), home)
+            rc, output = h.run(ws, prompt, cond, dict(task_env(iid, ws, venv, tmp), **{MARKER: tag}), home)
         except subprocess.TimeoutExpired as e:
             timed_out, output = True, timeout_output(e)
         if stopping():
@@ -883,7 +985,7 @@ def base_model():
     """The model behind the benchmark variants, as `models` last set it — or
     the remote model named in the environment, with its endpoint's host."""
     if remote():
-        host = urllib.parse.urlparse(endpoint()).netloc or endpoint()
+        host = urllib.parse.urlsplit(public_endpoint()).netloc or public_endpoint()
         return f"{os.environ['ABHED_BENCH_MODEL']} @ {host}"
     p = CACHE / "base-model.txt"
     return p.read_text().strip() if p.exists() else "unknown"
@@ -907,7 +1009,7 @@ def models(args):
 def setup_fingerprint(hname):
     """What a doctor pass vouches for: the model, the endpoint, the limits and
     the environment a harness gets. A change to any of them needs a new pass."""
-    setup = {"harness": hname, "model": base_model(), "endpoint": endpoint(), "max_output": MAX_OUTPUT,
+    setup = {"harness": hname, "model": base_model(), "endpoint": public_endpoint(), "max_output": MAX_OUTPUT,
              "window": {c: window(c) for c in CONDITIONS}, "pass_env": sorted(PASS_ENV)}
     return hashlib.sha256(json.dumps(setup, sort_keys=True).encode()).hexdigest() + "\n"
 
@@ -925,7 +1027,7 @@ def doctor(args):
     sh(git(ws) + ["init", "--quiet"], cwd=ws)
     try:
         rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
-                        "full", harness_env(), home)
+                        "full", dict(harness_env(), **{MARKER: f"doctor-{args.harness}"}), home)
         made = (ws / "hello.txt").exists() and "ready" in (ws / "hello.txt").read_text()
     finally:
         for p in (ws, home):  # both hold the endpoint key in harness config
@@ -968,7 +1070,8 @@ def run(args):
     # The suite is whatever validated on this machine, so it travels with the
     # results: which instances, and which drifted tests were set aside.
     root = RESULTS / args.date / "rig"
-    setup = {"timeout_sec": RUN_TIMEOUT, "base_model": base_model(), "endpoint": endpoint(),
+    setup = {"timeout_sec": RUN_TIMEOUT, "base_model": base_model(), "endpoint": public_endpoint(),
+             "parallel": max(1, getattr(args, "parallel", 1) or 1),
              "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
              "difficulty": getattr(args, "difficulty", None) or "any",
              "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}

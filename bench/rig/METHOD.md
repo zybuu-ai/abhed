@@ -57,13 +57,16 @@ and inherits nothing else from the operator's shell but `PATH`, locale and
 certificate settings: no provider credentials, and no `ABHED_MODEL`-style
 override of the model the rig configured. The operator's own settings are
 never read or written. pi and OpenHands are installed under the rig's cache
-(`.cache/tools`), not globally. A harness's process group is stopped with its
-session: on a timeout, on a normal exit, and when the rig itself is stopped
-by Ctrl-C or `pkill` (SIGINT or SIGTERM), which kills every live harness at
-once, parallel ones included; sessions in flight are then abandoned, not
-scored, and redone on resume; results are written whole or not at all. A
+(`.cache/tools`), not globally. A harness is ended with its session: on a
+timeout, on a normal exit, and when the rig itself is stopped by Ctrl-C,
+`pkill` or a closed terminal (SIGINT, SIGTERM or SIGHUP), which ends every live
+harness at once, parallel ones included. The harness is asked first, so it can
+stop its own tools, then its process group, every process it started and
+anything still working in its workspace are killed: pi and OpenHands start
+their tools in sessions of their own, outside the harness's group. Sessions in
+flight are abandoned, not scored, and redone on resume; results are written whole or not at all. A
 resume must be the same run: the rig refuses one under the same date whose
-sessions, model, endpoint, limits or timeout differ from the plan it continues. Abhed
+sessions, model, endpoint, limits, timeout or parallelism differ from the plan it continues. Abhed
 applies an organisation's managed config (`/etc/abhed/config.json`) over any
 other, so `doctor` and `run` refuse Abhed on a machine that has one.
 

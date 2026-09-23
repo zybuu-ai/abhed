@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Checks on the parts of the rig that would misreport quietly if wrong."""
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -623,6 +624,10 @@ class StopSignalTests(UsingCache, unittest.TestCase):
         import signal as s_
         self.check(s_.SIGINT)
 
+    def test_a_closed_terminal_stops_every_harness(self):
+        import signal as s_
+        self.check(s_.SIGHUP)
+
     def test_sigterm_stops_a_serial_run(self):
         import signal as s_
         import time as _t
@@ -664,23 +669,24 @@ class StopSignalTests(UsingCache, unittest.TestCase):
         return rc, took, alive
 
     def test_a_signal_while_the_child_is_being_registered_neither_deadlocks_nor_orphans(self):
-        prelude = ("exec(" + repr("class S(set):\n    def add(self, x):\n        os.kill(os.getpid(), signal.SIGTERM)\n"
-                                  "        super().add(x)\nrig._LIVE = S()") + ")")
+        prelude = ("exec(" + repr("class S(dict):\n    def __setitem__(self, k, v):\n        os.kill(os.getpid(), signal.SIGTERM)\n"
+                                  "        super().__setitem__(k, v)\nrig._LIVE = S()") + ")")
         rc, took, alive = self.injected(prelude, 1, None)
         self.assertEqual((rc, alive), (143, []))
         self.assertLess(took, 10)
 
     def test_a_signal_as_popen_returns_does_not_orphan_the_child(self):
-        prelude = ("exec(" + repr("class P(subprocess.Popen):\n    def __init__(self, *a, **k):\n"
-                                  "        super().__init__(*a, **k)\n        time.sleep(0.3)\n"
-                                  "        os.kill(os.getpid(), signal.SIGTERM)\nrig.subprocess.Popen = P") + ")")
+        prelude = ("exec(" + repr("class P(subprocess.Popen):\n    fired = False\n    def __init__(self, *a, **k):\n"
+                                  "        super().__init__(*a, **k)\n        if not P.fired:\n"
+                                  "            P.fired = True\n            time.sleep(0.3)\n"
+                                  "            os.kill(os.getpid(), signal.SIGTERM)\nrig.subprocess.Popen = P") + ")")
         rc, took, alive = self.injected(prelude, 1, None)
         self.assertEqual((rc, alive), (143, []))
 
     def test_a_worker_starting_as_the_rig_stops_does_not_keep_it_waiting(self):
         prelude = ("exec(" + repr("class P(subprocess.Popen):\n    def __init__(self, *a, **k):\n"
-                                  "        time.sleep(1.0)\n        super().__init__(*a, **k)\n"
-                                  "rig.subprocess.Popen = P") + ")")
+                                  "        if a and a[0][:1] == ['sh']:\n            time.sleep(1.0)\n"
+                                  "        super().__init__(*a, **k)\nrig.subprocess.Popen = P") + ")")
         rc, took, alive = self.injected(prelude, 2, 0.5)
         self.assertEqual((rc, alive), (143, []))
         self.assertLess(took, 5)
@@ -796,5 +802,146 @@ class ResumeTests(UsingCache, unittest.TestCase):
         self.assertEqual([p.name for p in self.root.iterdir() if p.name.endswith(".tmp")], [])
 
 
+ESCAPER = ("import os, subprocess, sys, time; "
+           "c = subprocess.Popen(['sleep', '60'], start_new_session=True); "
+           "open(sys.argv[1], 'w').write(str(c.pid)); time.sleep(60)")
+
+
+class EscapedToolTests(UsingCache, unittest.TestCase):
+    """pi and OpenHands start tools in a session of their own; the rig must
+    still end them with the harness."""
+
+    def escaped_pid(self, path):
+        import time as _t
+        for _ in range(100):
+            if path.exists() and path.read_text().strip():
+                return int(path.read_text())
+            _t.sleep(0.05)
+        self.fail("the tool never started")
+
+    def test_a_tool_in_its_own_session_dies_with_a_timed_out_harness(self):
+        import os
+        import subprocess
+        pidfile = self.root / "tool.pid"
+        ws = self.root / "ws"
+        ws.mkdir()
+        env = dict(os.environ, **{rig.MARKER: "t-timeout"})
+        with self.assertRaises(subprocess.TimeoutExpired):
+            rig.sh([sys.executable, "-c", ESCAPER, str(pidfile)], cwd=ws, env=env, timeout=2)
+        tool = self.escaped_pid(pidfile)
+        import time as _t
+        _t.sleep(0.3)
+        self.assertEqual(_pids_alive([tool]), [], "the escaped tool outlived the timeout")
+
+    def test_a_tool_in_its_own_session_dies_when_the_rig_is_stopped(self):
+        import signal as s_
+        import subprocess
+        import time as _t
+        pidfile = self.root / "tool.pid"
+        ws = self.root / "ws"
+        ws.mkdir()
+        code = (f"import os, sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
+                f"rig.install_stop_handlers(); "
+                f"rig.sh([sys.executable, '-c', {ESCAPER!r}, {str(pidfile)!r}], cwd={str(ws)!r}, "
+                f"env=dict(os.environ, **{{rig.MARKER: 't-stop'}}))")
+        proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
+        tool = self.escaped_pid(pidfile)
+        proc.send_signal(s_.SIGTERM)
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        _t.sleep(0.3)
+        alive = _pids_alive([tool])
+        for pid in alive:
+            import os
+            os.kill(pid, s_.SIGKILL)
+        self.assertEqual(alive, [], "the escaped tool outlived the rig")
+
+
+class RoundSixTests(UsingCache, unittest.TestCase):
+    def test_stopped_is_not_swallowed_by_a_broad_except(self):
+        try:
+            try:
+                raise rig.Stopped()
+            except Exception:  # noqa: BLE001 - the point of the test
+                self.fail("Stopped was caught as an ordinary error")
+        except rig.Stopped:
+            pass
+
+    def test_a_failed_write_leaves_the_old_result_whole(self):
+        path = self.root / "r.json"
+        path.write_text('{"old": 1}')
+        real = os.replace
+        os.replace = lambda *a: (_ for _ in ()).throw(OSError("disk full"))
+        try:
+            with self.assertRaises(OSError):
+                rig.write_atomic(path, '{"new": 1}')
+        finally:
+            os.replace = real
+        self.assertEqual(json.loads(path.read_text()), {"old": 1})
+
+    def test_a_stop_during_analysis_leaves_no_record_beside_the_results(self):
+        real = (rig.sh, rig.Abhed.binary)
+        bin_ = self.root / "abhed"
+        bin_.write_text("")
+        rig.Abhed.binary = lambda self: str(bin_)
+
+        def stop(*a, **k):
+            raise SystemExit(143)
+
+        rig.sh = stop
+        try:
+            out = self.root / "r" / "i1.json"
+            out.parent.mkdir()
+            with self.assertRaises(SystemExit):
+                rig.hawkeye([{"type": "x", "seq": 1}], out)
+            self.assertFalse((out.parent / "i1.events.json").exists())
+        finally:
+            rig.sh, rig.Abhed.binary = real
+
+    def test_version_does_not_swallow_a_stop(self):
+        real = rig.sh
+
+        def stop(*a, **k):
+            raise rig.Stopped()
+
+        rig.sh = stop
+        try:
+            with self.assertRaises(rig.Stopped):
+                rig.Pi().version()
+        finally:
+            rig.sh = real
+
+    def test_the_recorded_endpoint_carries_no_credentials(self):
+        saved = os.environ.get("ABHED_BENCH_ENDPOINT")
+        os.environ["ABHED_BENCH_ENDPOINT"] = "https://user:pass@host.example:8443/v1?key=abc"
+        try:
+            self.assertEqual(rig.public_endpoint(), "https://host.example:8443/v1")
+        finally:
+            if saved is None:
+                os.environ.pop("ABHED_BENCH_ENDPOINT", None)
+            else:
+                os.environ["ABHED_BENCH_ENDPOINT"] = saved
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrphanSweepTests(UsingCache, unittest.TestCase):
+    def test_a_tool_orphaned_by_a_harness_that_exited_is_swept(self):
+        import time as _t
+        pidfile = self.root / "tool.pid"
+        ws = self.root / "ws"
+        ws.mkdir()
+        # The harness starts a tool in its own session and exits at once.
+        quick = ("import subprocess, sys; c = subprocess.Popen(['sleep', '60'], start_new_session=True); "
+                 "open(sys.argv[1], 'w').write(str(c.pid))")
+        rig.sh([sys.executable, "-c", quick, str(pidfile)], cwd=ws, env=dict(os.environ, **{rig.MARKER: "t"}))
+        tool = int(pidfile.read_text())
+        _t.sleep(0.3)
+        alive = _pids_alive([tool])
+        for pid in alive:
+            os.kill(pid, 9)
+        self.assertEqual(alive, [], "the orphaned tool outlived its session")
