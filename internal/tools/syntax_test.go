@@ -487,3 +487,30 @@ func TestReportModeWarnsOfADiffInAnExistingFile(t *testing.T) {
 		t.Fatalf("report mode lost the diff warning: %+v", r)
 	}
 }
+
+func TestJSONCEdgeCases(t *testing.T) {
+	s, dir := setup(t)
+	ok := func(name, content string) {
+		t.Helper()
+		if v := s.parses(context.Background(), filepath.Join(dir, name), []byte(content)); v.err != nil {
+			t.Errorf("%s should parse: %v\n%s", name, v.err, content)
+		}
+	}
+	bad := func(name, content string) {
+		t.Helper()
+		if v := s.parses(context.Background(), filepath.Join(dir, name), []byte(content)); v.err == nil {
+			t.Errorf("%s should not parse:\n%s", name, content)
+		}
+	}
+	ok("tsconfig.json", `{"a": "q\"//not"}`)
+	if got := string(stripJSONC([]byte(`{"a": "q\"//not"}`))); got != `{"a": "q\"//not"}` {
+		t.Errorf("an escaped quote ended the string early: %s", got)
+	}
+	ok("tsconfig.json", "{\"a\": 1,\r\n}\r\n")
+	ok(filepath.Join(".vscode", "settings.json"), "{\n // editor\n \"x\": 1\n}")
+	ok(filepath.Join(".vscode", "sub", "x.json"), "{ /* nested */ \"x\": 1 }")
+	ok("deno.json", "{ // tasks\n \"tasks\": {} }")
+	bad("tsconfig.json", `{"a": 1} /* unterminated`)
+	bad("tsconfig.json", `[1/**/2]`)
+	bad("package.json", `{"a": 1,}`)
+}

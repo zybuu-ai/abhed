@@ -281,17 +281,25 @@ func sentence(msg string) string {
 	return msg + "."
 }
 
+// jsoncNames are .json files whose tools accept comments and trailing commas.
+var jsoncNames = map[string]bool{"devcontainer.json": true, ".eslintrc.json": true, ".babelrc.json": true,
+	"deno.json": true, "turbo.json": true, "biome.json": true, "tslint.json": true,
+	"api-extractor.json": true, "cspell.json": true, "launch.json": true, "settings.json": true}
+
 // jsonc reports files that are JSON with comments and trailing commas by
-// convention: editor, TypeScript and linter configuration.
+// convention: editor, TypeScript, linter and build configuration.
 func jsonc(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	dir := strings.ToLower(filepath.Base(filepath.Dir(path)))
-	switch {
-	case filepath.Ext(base) == ".jsonc", dir == ".vscode", dir == ".devcontainer",
-		strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json"),
-		strings.HasPrefix(base, "jsconfig") && strings.HasSuffix(base, ".json"),
-		base == "devcontainer.json", base == ".eslintrc.json", base == ".babelrc.json":
+	if filepath.Ext(base) == ".jsonc" || jsoncNames[base] {
 		return true
+	}
+	if strings.HasSuffix(base, ".json") && (strings.HasPrefix(base, "tsconfig") || strings.HasPrefix(base, "jsconfig")) {
+		return true
+	}
+	for _, part := range strings.Split(filepath.ToSlash(strings.ToLower(filepath.Dir(path))), "/") {
+		if part == ".vscode" || part == ".devcontainer" {
+			return true
+		}
 	}
 	return false
 }
@@ -299,11 +307,12 @@ func jsonc(path string) bool {
 // stripJSONC removes comments, then trailing commas, outside strings, so what
 // is left is plain JSON when the original was valid JSONC.
 func stripJSONC(src []byte) []byte {
-	return trailingCommas(scanJSON(src, true))
+	return trailingCommas(stripComments(src))
 }
 
-// scanJSON copies src, dropping comments outside strings when comments is set.
-func scanJSON(src []byte, comments bool) []byte {
+// stripComments replaces each comment outside strings with a space, so it
+// cannot join the tokens around it; an unterminated one is left, to fail.
+func stripComments(src []byte) []byte {
 	out := make([]byte, 0, len(src))
 	inString, escaped := false, false
 	for i := 0; i < len(src); i++ {
@@ -322,16 +331,18 @@ func scanJSON(src []byte, comments bool) []byte {
 		case c == '"':
 			inString = true
 			out = append(out, c)
-		case comments && c == '/' && i+1 < len(src) && src[i+1] == '/':
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
 			for i+1 < len(src) && src[i+1] != '\n' {
 				i++
 			}
-		case comments && c == '/' && i+1 < len(src) && src[i+1] == '*':
-			i += 2
-			for i+1 < len(src) && (src[i] != '*' || src[i+1] != '/') {
-				i++
+			out = append(out, ' ')
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			end := bytes.Index(src[i+2:], []byte("*/"))
+			if end < 0 {
+				return append(out, src[i:]...)
 			}
-			i++
+			i += 2 + end + 1
+			out = append(out, ' ')
 		default:
 			out = append(out, c)
 		}

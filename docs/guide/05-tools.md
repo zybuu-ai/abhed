@@ -25,8 +25,11 @@ Python. A change that would leave a file that parsed no longer parsing is not
 applied: the file stays as it was and the model is told the parser's error and
 the line, so it fixes its own text on the next turn. JSON files that allow
 comments and trailing commas by convention — `.jsonc`, `tsconfig*.json`,
-`jsconfig*.json`, `.eslintrc.json`, `devcontainer.json` and anything under
-`.vscode/` or `.devcontainer/` — are parsed that way.
+`jsconfig*.json`, `.eslintrc.json`, `.babelrc.json`, `devcontainer.json`,
+`deno.json`, `turbo.json`, `biome.json`, `tslint.json`, `api-extractor.json`,
+`cspell.json`, `settings.json`, `launch.json`, and anything in a `.vscode` or
+`.devcontainer` directory — are parsed that way; other `.json` files are
+strict JSON.
 
 An `edit` whose new text is a pasted diff hunk — every non-empty line starts
 with `+` or `-`, there is at least one of each, and the old text has no such
