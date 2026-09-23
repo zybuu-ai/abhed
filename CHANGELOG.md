@@ -25,6 +25,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
+- `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
+  sent a cached-token figure, zero included, rather than that some prefix was
+  cached. A stack that reports zero on every turn gets the no-caching warning,
+  worded as such.
 - Sessions from the command line, the server and the Go SDK now refuse an edit
   or write that would break a file's syntax, where they applied it before.
   Set `tools.syntax_check` to `report` or `off` to keep the old behaviour;
