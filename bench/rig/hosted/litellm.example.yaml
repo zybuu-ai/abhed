@@ -5,9 +5,9 @@ model_list:
   - model_name: watsonx/openai/gpt-oss-120b
     litellm_params:
       model: watsonx/openai/gpt-oss-120b
-      api_key: os.environ/WATSONX_APIKEY
-      api_base: os.environ/WATSONX_URL
-      space_id: os.environ/WATSONX_SPACE_ID
+      api_key: os.environ/ABHED_BENCH_WATSONX_APIKEY
+      api_base: os.environ/ABHED_BENCH_WATSONX_URL
+      space_id: os.environ/ABHED_BENCH_WATSONX_SPACE_ID
 litellm_settings:
   callbacks: shim.shim
   drop_params: true

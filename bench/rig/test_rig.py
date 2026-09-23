@@ -187,54 +187,6 @@ class RemoteEndpointTests(unittest.TestCase):
                     os.environ[k] = v
 
 
-class SessionIsolationTests(unittest.TestCase):
-    def test_each_session_gets_its_own_environment_and_temp_dir(self):
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "envs" / "i1" / "venv"
-            (src / "bin").mkdir(parents=True)
-            (src / "bin" / "pytest").write_text(f"#!{src}/bin/python\nprint('hi')\n")
-            (src / "bin" / "python").symlink_to("/usr/bin/python3")
-            saved = rig.CACHE
-            rig.CACHE = Path(tmp)
-            try:
-                copy = rig.session_venv("i1", Path(tmp) / "venv-a")
-                self.assertEqual((copy / "bin" / "pytest").read_text().splitlines()[0], f"#!{copy}/bin/python")
-                self.assertTrue((copy / "bin" / "python").is_symlink())
-                a = rig.task_env("i1", Path(tmp) / "abhed-full-i1-run1", copy)
-                b = rig.task_env("i1", Path(tmp) / "abhed-full-i1-run2")
-                self.assertTrue(a["PATH"].startswith(str(copy / "bin")))
-                self.assertTrue(b["PATH"].startswith(str(src / "bin")))
-                self.assertNotEqual(a["TMPDIR"], b["TMPDIR"])
-                self.assertTrue(os.path.isdir(a["TMPDIR"]))
-            finally:
-                rig.CACHE = saved
-                for e in (a, b):
-                    shutil.rmtree(e["TMPDIR"], ignore_errors=True)
-
-
-class AgentCommitTests(unittest.TestCase):
-    def test_a_commit_by_the_agent_neither_hides_the_patch_nor_keeps_its_test_edit(self):
-        import subprocess
-        with tempfile.TemporaryDirectory() as d:
-            ws = Path(d)
-            def git(*a):
-                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=ws, check=True,
-                                      capture_output=True, text=True).stdout
-            git("init", "-q")
-            (ws / "src.py").write_text("x = 1\n")
-            (ws / "test_x.py").write_text("def test(): pass\n")
-            git("add", "-A"); git("commit", "-q", "-m", "base")
-            base = git("rev-parse", "HEAD").strip()
-            (ws / "src.py").write_text("x = 2\n")
-            (ws / "test_x.py").write_text("def test(): assert False\n")
-            git("add", "-A"); git("commit", "-q", "-m", "agent")
-            _, diff = rig.sh(["git", "diff", "--cached", base, "--", "."], cwd=ws)
-            self.assertIn("x = 2", diff)
-            rig.sh(["git", "checkout", "--quiet", base, "--", "test_x.py"], cwd=ws)
-            self.assertEqual((ws / "test_x.py").read_text(), "def test(): pass\n")
-
-
 class WindowTests(unittest.TestCase):
     def test_every_harness_is_told_one_window(self):
         import os
@@ -253,6 +205,177 @@ class WindowTests(unittest.TestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+def fake_instance(root, iid="i1"):
+    """A prepared instance on disk: a tiny repo, a venv stub and instance.json."""
+    import sys as _sys
+    env = root / "envs" / iid
+    (env / "repo").mkdir(parents=True)
+    (env / "repo" / "src.py").write_text("x = 1\n")
+    (env / "repo" / "test_x.py").write_text("def test_x(): pass\n")
+    (env / "venv" / "bin").mkdir(parents=True)
+    (env / "venv" / "bin" / "python").symlink_to(_sys.executable)
+    gold = ("diff --git a/test_x.py b/test_x.py\n--- a/test_x.py\n+++ b/test_x.py\n"
+            "@@ -1 +1 @@\n-def test_x(): pass\n+def test_x(): assert True\n")
+    inst = {"instance_id": iid, "repo": "pytest-dev/pytest", "test_patch": gold,
+            "FAIL_TO_PASS": '["test_x.py::test_x"]', "PASS_TO_PASS": "[]", "problem_statement": "p"}
+    (env / "instance.json").write_text(json.dumps(inst))
+    return inst
+
+
+class UsingCache:
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self._saved = rig.CACHE
+        rig.CACHE = self.root
+        (self.root / "suite.json").write_text("{}")
+
+    def tearDown(self):
+        rig.CACHE = self._saved
+        self._tmp.cleanup()
+
+
+class AgentChangeTests(UsingCache, unittest.TestCase):
+    def agent(self, ws, *cmd):
+        import subprocess
+        subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@a", *cmd], cwd=ws, check=True,
+                       capture_output=True)
+
+    def test_a_commit_or_a_new_history_by_the_agent_does_not_hide_its_change(self):
+        fake_instance(self.root)
+        ws = self.root / "scratch" / "abhed-full-i1-run1"
+        rig.workspace("i1", ws)
+        (ws / "src.py").write_text("x = 2\n")
+        self.agent(ws, "add", "-A")
+        self.agent(ws, "commit", "-q", "-m", "agent")
+        shutil.rmtree(ws / ".git")  # and then starts over
+        self.agent(ws, "init", "-q")
+        patch = rig.agent_patch(ws)
+        self.assertIn("+x = 2", patch)
+
+    def test_scoring_uses_a_fresh_tree_with_the_gold_tests(self):
+        inst = fake_instance(self.root)
+        ws = self.root / "scratch" / "abhed-full-i1-run1"
+        rig.workspace("i1", ws)
+        (ws / "src.py").write_text("x = 2\n")
+        (ws / "test_x.py").write_text("def test_x(): assert False\n")  # the agent edits a test
+        (ws / "stray.txt").write_text("left behind")
+        seen = {}
+        real_sh = rig.sh
+
+        def sh(cmd, cwd=None, env=None, timeout=None, check=False):
+            if cmd[:3] == ["python", "-m", "pytest"]:
+                seen["src"] = (Path(cwd) / "src.py").read_text()
+                seen["test"] = (Path(cwd) / "test_x.py").read_text()
+                seen["tmp"] = env["TMPDIR"]
+                return 0, "PASSED test_x.py::test_x\n"
+            return real_sh(cmd, cwd=cwd, env=env, timeout=timeout, check=check)
+
+        rig.sh = sh
+        try:
+            result = rig.score_patch("i1", inst, rig.agent_patch(ws), "t")
+        finally:
+            rig.sh = real_sh
+        self.assertTrue(result["resolved"], result)
+        self.assertEqual(seen["src"], "x = 2\n")
+        self.assertEqual(seen["test"], "def test_x(): assert True\n")
+        self.assertIn("rig-score-", seen["tmp"])
+
+
+class SessionIsolationTests(UsingCache, unittest.TestCase):
+    def test_the_venv_copy_points_only_at_itself(self):
+        import os
+        src = self.root / "envs" / "i1" / "venv"
+        (src / "bin").mkdir(parents=True)
+        (src / "bin" / "pytest").write_text(f"#!{src}/bin/python\nprint('hi')\n")
+        (src / "bin" / "python").symlink_to("/usr/bin/python3")
+        (src / "lib").mkdir()
+        (src / "lib" / "tool").write_text("x")
+        (src / "bin" / "tool").symlink_to(src / "lib" / "tool")
+        copy = rig.session_venv("i1", self.root / "venv-a")
+        self.assertEqual((copy / "bin" / "pytest").read_text().splitlines()[0], f"#!{copy}/bin/python")
+        self.assertTrue((copy / "bin" / "python").is_symlink())
+        self.assertTrue(Path(os.path.realpath(copy / "bin" / "tool")).is_relative_to(copy.resolve()))
+        env = rig.task_env("i1", self.root / "ws", copy, tmp=self.root / "tmp-a")
+        self.assertTrue(env["PATH"].startswith(str(copy / "bin")))
+        self.assertEqual(env["TMPDIR"], str(self.root / "tmp-a"))
+
+    def test_scratch_names_keep_runs_and_invocations_apart(self):
+        a = rig.scratch_tag("abhed", "full", "i1", 1, Path("/r/2026-09-23/x.json"))
+        b = rig.scratch_tag("abhed", "full", "i1", 2, Path("/r/2026-09-23/x.json"))
+        c = rig.scratch_tag("abhed", "full", "i1", 1, Path("/r/2026-09-24/x.json"))
+        self.assertEqual(len({a, b, c}), 3)
+
+
+class RunBookkeepingTests(unittest.TestCase):
+    def test_a_slept_session_is_set_aside_and_redone(self):
+        out = Path("/r/abhed/full/run1/i1.json")
+        self.assertEqual(rig.result_path(out, 5), out)
+        self.assertEqual(rig.result_path(out, rig.SLEPT_LIMIT + 1).name, "i1.slept.json")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            run1 = root / "abhed" / "full" / "run1"
+            run1.mkdir(parents=True)
+            (run1 / "i1.slept.json").write_text("{}")
+            (run1 / "i2.json").write_text("{}")
+            plan = [(1, "i1", "full", "abhed"), (1, "i2", "full", "abhed")]
+            self.assertEqual([t[2] for t in rig.pending(plan, root)], ["i1"])
+
+    def test_a_timed_out_session_keeps_its_output(self):
+        import subprocess
+        self.assertEqual(rig.timeout_output(subprocess.TimeoutExpired("x", 1, output=b"half\xff")), "half\ufffd")
+        self.assertEqual(rig.timeout_output(subprocess.TimeoutExpired("x", 1, output="text")), "text")
+        self.assertEqual(rig.timeout_output(subprocess.TimeoutExpired("x", 1)), "")
+
+    def test_a_timeout_stops_the_whole_process_group(self):
+        import subprocess
+        import time as _t
+        start = _t.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            rig.sh(["sh", "-c", "sleep 30 & sleep 30"], timeout=1)
+        self.assertLess(_t.monotonic() - start, 10)
+
+    def test_the_endpoint_key_is_redacted(self):
+        import os
+        saved = os.environ.get("ABHED_BENCH_API_KEY")
+        os.environ["ABHED_BENCH_API_KEY"] = "sk-secret-123456"
+        try:
+            self.assertEqual(rig.redact("key=sk-secret-123456"), "key=[redacted]")
+        finally:
+            if saved is None:
+                os.environ.pop("ABHED_BENCH_API_KEY", None)
+            else:
+                os.environ["ABHED_BENCH_API_KEY"] = saved
+
+
+class EnvironmentSpecTests(UsingCache, unittest.TestCase):
+    def test_an_environment_built_from_another_spec_is_not_current(self):
+        d = self.root / "envs" / "i1"
+        d.mkdir(parents=True)
+        (d / "ready").write_text("")
+        self.assertFalse(rig.env_current("i1", "pytest-dev/pytest"))
+        (d / "ready").write_text(rig.env_spec("pytest-dev/pytest"))
+        self.assertTrue(rig.env_current("i1", "pytest-dev/pytest"))
+
+
+class ProxyLimitTests(unittest.TestCase):
+    def test_every_request_is_held_to_the_output_limit(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("shim", Path(__file__).parent / "hosted" / "shim.py")
+        shim = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shim)
+        self.assertEqual(shim.MAX_OUTPUT, rig.MAX_OUTPUT)
+        self.assertEqual(shim.normalise({}, 100)["max_tokens"], 100)
+        self.assertEqual(shim.normalise({"max_tokens": 5000}, 100)["max_tokens"], 100)
+        d = shim.normalise({"max_completion_tokens": 5000}, 100)
+        self.assertEqual(d["max_completion_tokens"], 100)
+        self.assertNotIn("max_tokens", d)
+        self.assertEqual(shim.normalise({"max_tokens": 50}, 100)["max_tokens"], 50)
+        msgs = shim.normalise({"messages": [{"content": []}, {"content": None},
+                                            {"content": [{"type": "text", "text": "a"}]}]}, 100)["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["", "", "a"])
 
 
 if __name__ == "__main__":

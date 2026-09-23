@@ -26,13 +26,25 @@ rules and its sandbox, because that is what the product is.
 
 **Limits.** The rig sets one limit of its own, the wall clock
 (`ABHED_BENCH_TIMEOUT`, 30 minutes), the same for every harness. Turn limits
-are each harness's shipped default: Abhed 100, OpenHands 500 iterations, pi
-none. Every harness is told the same context window and the same output
-limit per turn (8,192 tokens): Abhed and pi in their configuration, OpenHands
-through the proxy on a hosted run, since its CLI takes neither from the
-environment. An earlier revision capped Abhed alone at 60 turns, below its own
-default; fourteen of its first nineteen sessions on the hosted run ended on
-that cap, and the run was stopped and redone.
+are each harness's shipped default:
+
+| Harness | Turn limit | Source |
+|---|---|---|
+| Abhed | 100 | `internal/agent/loop.go`, `DefaultConfig` |
+| OpenHands | 500 iterations | `max_iteration_per_run` default in `openhands/sdk/conversation/conversation.py`, openhands-sdk 1.21.0 as installed with CLI 1.16.0 |
+| pi | none | no turn or step limit in `@mariozechner/pi-coding-agent` 0.73.1 |
+
+Every harness is held to the same output limit per turn,
+`ABHED_BENCH_MAX_OUTPUT` (8,192 tokens, Abhed's own default): Abhed and pi are
+told it, and the endpoint enforces it for all three — `num_predict` in the
+local Ollama variants, the proxy hook on a hosted run. The context window is
+enforced at a local endpoint; on a hosted model it is the model's own and
+Abhed and pi are told it, while OpenHands, whose CLI takes no window setting,
+runs on its defaults.
+
+An earlier revision capped Abhed alone at 60 turns, below its own default.
+In the hosted run of 23 Sep 2026, stopped and not published, fourteen of
+Abhed's first nineteen sessions ended on that cap; the run was redone.
 
 pi and OpenHands read configuration from the home directory, so each run gets
 a throwaway `HOME`. The operator's own settings are never read or written.
@@ -60,13 +72,21 @@ SWE-bench Verified instances, from the repositories whose tests are pytest
 node ids and whose dependencies install from wheels into a plain virtualenv:
 `pytest-dev/pytest`, `pylint-dev/pylint`, `pallets/flask`.
 
-The agent's change is measured against the commit the workspace starts
-from, recorded when the workspace is made, not against `HEAD`: an agent that
-commits its own work would otherwise leave an empty diff, and the gold tests
-would be laid over its edited test files. Three OpenHands sessions in the
-first hosted run were scored that way before this was fixed, and were rerun.
+**Scoring never trusts the agent's workspace.** When a workspace is made, the
+rig records its base tree in a git directory of its own beside the workspace,
+out of reach of the agent's commits, resets and hooks. The agent's change is
+the diff of the workspace against that record. It is then applied to a fresh
+copy of the base tree, the gold tests are laid over it, and the tests run
+there with a temp dir of their own, so nothing else the agent left — its git
+history, caches, stray files — can decide the score. All the rig's own git
+commands run with hooks off. In the stopped run of 23 Sep, three OpenHands
+sessions that committed their work were scored against their own last commit
+and so wrongly; that is what this fixes.
 
-Each environment is the project installed with its own test requirements:
+Each environment is the project installed with its own test requirements,
+and the install spec is written into the environment's `ready` marker; an
+environment built from another spec is rebuilt, so a cache cannot silently
+mix old and new environments:
 pytest's `testing` extra, pylint's `requirements_test_min.txt` plus `py`
 (its pinned pytest-benchmark needs it and newer pytest no longer brings it), flask's
 `requirements/tests.txt`. An earlier rig installed the project alone, and in
@@ -163,7 +183,8 @@ harness that does nothing (must score 0) and one that applies the gold patch
 The window is set **at the endpoint** (`rig.py models` writes Ollama variants
 with `num_ctx`), so every harness meets the same hard limit. Abhed and pi are
 also told the window through their documented setting. No such setting was
-found in OpenHands' CLI documentation; it runs on its defaults.
+found in OpenHands' CLI documentation; it runs on its defaults. The variants
+also set `num_predict`, the per-turn output limit, for the same reason.
 
 ## Runs and statistics
 
@@ -213,12 +234,14 @@ told; and the serving stack is somebody else's, so a run on a hosted model is
 reproducible only to the extent that provider is stable. `doctor` must pass
 per harness on the hosted model like any other. Sessions are independent —
 each has its own workspace, home, copy of the prepared environment, temp dir
-and result, named by harness, condition, instance and run — so `--parallel N`
+and result, named by harness, condition, instance, run and result path — so `--parallel N`
 runs several at once on a hosted model; the machine's CPU and sandbox bound
 N, and the wall-clock column then measures a shared machine, which the
 results say. The copy of the environment is the agent's to change; the tests
-are scored in the prepared one, so nothing an agent installs reaches the
-score or the next session. A session during which the machine slept for more than
+are scored in the prepared one, so nothing an agent installs there reaches the
+score or the next session. The prepared environment is not write-protected:
+a harness with no sandbox (pi, OpenHands) could still write into it by
+absolute path. None has been seen to; `prepare` rebuilds it if one does. A session during which the machine slept for more than
 two minutes is set aside as `<instance>.slept.json` and redone on resume: the
 session timeout runs on a clock that stops in sleep, and a model request that
 spans a sleep fails at the endpoint, so such a session measures neither
@@ -226,10 +249,11 @@ harness nor model.
 
 A hosted run goes through a LiteLLM proxy (`bench/rig/hosted/`): the
 harnesses speak OpenAI's API to it, it holds the provider's credentials from
-the environment, and its hook applies the output limit and normalises message
-content some providers reject. On a hosted model every harness is told the
-model's own window (`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b), not a
-smaller number only some of them would honour.
+rig-prefixed environment variables (`ABHED_BENCH_WATSONX_*`), and its hook
+holds every request to the output limit and normalises message content some
+providers reject. Abhed and pi are told the hosted model's own window
+(`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b). The endpoint key is
+redacted from every result.
 
 `summarize` reports each harness by the dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,

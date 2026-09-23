@@ -27,11 +27,13 @@ nothing must score 0 and one that applies the gold patch must score 100
 Standard library only, so it runs wherever Python does.
 """
 import argparse
+import hashlib
 import json
 import os
 import random
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -55,9 +57,8 @@ DATASET = "princeton-nlp/SWE-bench_Verified"
 # a run takes two minutes, depends on somebody else's server, and cannot be
 # repeated offline. Several of its instances are also Python 2 bugs that do not
 # reproduce on a current interpreter.
-# Each project is installed with its own test requirements, as SWE-bench does.
-# Without them an agent that runs the wider suite meets import errors and
-# spends its turns writing stand-ins for missing packages.
+# Each project gets its own test requirements, as in SWE-bench; without them
+# agents meet import errors and write stand-ins for the missing packages.
 POOL = {
     "pytest-dev/pytest": {"python": "3.9", "install": ["-e", ".[testing]"]},
     "pylint-dev/pylint": {"python": "3.9", "install": ["-e", ".", "-r", "requirements_test_min.txt", "py"]},
@@ -90,11 +91,21 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # stdin is closed on purpose. pi merges piped stdin into its prompt, so a
     # harness that inherits an open stdin waits on it for ever and never calls
     # the model — which is how the first doctor run on pi spent ten minutes.
-    p = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, text=True, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # Its own process group, so a timeout stops the agent's tools with it.
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        out, _ = p.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out) from e
     if check and p.returncode != 0:
-        raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{p.stdout[-2000:]}")
-    return p.returncode, p.stdout
+        raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{out[-2000:]}")
+    return p.returncode, out
 
 
 # ---------------------------------------------------------------- tasks
@@ -132,13 +143,23 @@ def env_dir(iid):
     return CACHE / "envs" / iid
 
 
+def env_spec(repo):
+    """What an environment is built from; stored in its `ready` marker."""
+    return json.dumps(POOL[repo], sort_keys=True)
+
+
+def env_current(iid, repo):
+    ready = env_dir(iid) / "ready"
+    return ready.exists() and ready.read_text() == env_spec(repo)
+
+
 def prepare(args):
     todo = instances(args.repo)
     todo = todo[: args.limit] if args.limit else todo
     for inst in todo:
         iid, spec = inst["instance_id"], POOL[inst["repo"]]
         d = env_dir(iid)
-        if (d / "ready").exists():
+        if env_current(iid, inst["repo"]):
             continue
         print(f"prepare {iid}", flush=True)
         shutil.rmtree(d, ignore_errors=True)
@@ -154,7 +175,7 @@ def prepare(args):
             sh(["uv", "pip", "install", "--quiet", "--python", py, *spec["install"]],
                cwd=d / "repo", timeout=900, check=True)
             (d / "instance.json").write_text(json.dumps(inst))
-            (d / "ready").write_text("")
+            (d / "ready").write_text(env_spec(inst["repo"]))
         except Exception as e:  # noqa: BLE001 - an instance that will not build is excluded, not fatal
             (d / "failed").write_text(str(e)[-3000:])
             print(f"  could not build: {str(e).splitlines()[0][:120]}")
@@ -175,6 +196,11 @@ def session_venv(iid, dest):
                 continue
             if str(src) in text:
                 f.write_text(text.replace(str(src), str(dest)))
+    for f in (dest / "bin").iterdir():  # a link back into the prepared env would let the agent write to it
+        if f.is_symlink() and Path(os.path.realpath(f)).is_relative_to(src.resolve()):
+            target = Path(os.path.realpath(f)).relative_to(src.resolve())
+            f.unlink()
+            f.symlink_to(dest / target)
     return dest
 
 
@@ -182,6 +208,7 @@ def workspace(iid, dest):
     """A fresh checkout at the base commit, with no history to mine."""
     inst = json.loads((env_dir(iid) / "instance.json").read_text())
     shutil.rmtree(dest, ignore_errors=True)
+    shutil.rmtree(rig_git(dest), ignore_errors=True)
     # A copy of the prepared tree, not a clone: installing a package can write
     # files git does not track (pytest's _version.py comes from setuptools_scm)
     # and a clone would leave them behind and the package unimportable.
@@ -189,26 +216,49 @@ def workspace(iid, dest):
     # .git is left out. The fix is in the repository's future, and an agent
     # must not be able to find it with `git log`.
     shutil.copytree(env_dir(iid) / "repo", dest, symlinks=True, ignore=shutil.ignore_patterns(".git"))
-    sh(["git", "init", "--quiet"], cwd=dest, check=True)
-    sh(["git", "add", "-A"], cwd=dest, check=True)
-    sh(["git", "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "--quiet", "-m", "base"],
-       cwd=dest, check=True)
-    # An agent may commit its own work. Everything is measured against this
-    # commit, not HEAD, so a commit can neither hide a change nor keep an
-    # edited test file in place of the gold one.
-    _, sha = sh(["git", "rev-parse", "HEAD"], cwd=dest, check=True)
-    inst["base_sha"] = sha.strip()
+    for g in (git(dest), git(dest, rig_git(dest))):
+        sh(g + ["init", "--quiet"], cwd=dest, check=True)
+        sh(g + ["add", "-A"], cwd=dest, check=True)
+        sh(g + ["commit", "--quiet", "-m", "base"], cwd=dest, check=True)
     return inst
 
 
-def task_env(iid, ws, venv=None):
+def rig_git(ws):
+    """The rig's own record of the base tree, outside the workspace, where the
+    agent's commits, resets and hooks cannot reach it."""
+    return ws.parent / f"{ws.name}.rig-git"
+
+
+def git(ws, git_dir=None):
+    """git with hooks off and a fixed identity; `git_dir` selects the rig's record."""
+    g = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=bench", "-c", "user.email=bench@localhost"]
+    return g + ([f"--git-dir={git_dir}", f"--work-tree={ws}"] if git_dir else [])
+
+
+class NoPatch(Exception):
+    """The agent's change could not be read."""
+
+
+def agent_patch(ws):
+    """The agent's change against the base tree, from the rig's own record."""
+    g = git(ws, rig_git(ws))
+    rc, out = sh(g + ["add", "-A"], cwd=ws)
+    if rc != 0:
+        raise NoPatch(out[-500:])
+    rc, out = sh(g + ["diff", "--cached", "--binary", "HEAD", "--", ".",
+                      ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
+    if rc != 0:
+        raise NoPatch(out[-500:])
+    return out
+
+
+def task_env(iid, ws, venv=None, tmp=None):
     env = dict(os.environ)
     env["PATH"] = f"{(venv or env_dir(iid) / 'venv') / 'bin'}:{env['PATH']}"
-    # pytest keeps its scratch under the temp dir, in one tree per user, and
-    # two sessions sharing it race on the cleanup. One temp dir per session.
-    tmp = Path(tempfile.gettempdir()) / f"rig-{ws.name}"
-    tmp.mkdir(exist_ok=True)
-    env["TMPDIR"] = str(tmp)
+    # pytest's scratch lives under the temp dir, one tree per user; sharing it
+    # makes sessions race on its cleanup.
+    if tmp:
+        env["TMPDIR"] = str(tmp)
     # The venv's editable install points at the prepared checkout, not this
     # copy. PYTHONPATH comes first, so the workspace's code is what runs —
     # and `validate` would exclude any instance where that did not hold.
@@ -250,10 +300,12 @@ def fair_at_base(status, f2p):
 def score(iid, ws, inst, skip=()):
     """Restore the gold tests over the agent's, run them, apply the SWE-bench rule."""
     files = re.findall(r"^diff --git a/(\S+) b/", inst["test_patch"], flags=re.M)
-    for f in files:
-        sh(["git", "checkout", "--quiet", inst.get("base_sha", "HEAD"), "--", f], cwd=ws)  # undo agent edits to test files
-        if not (ws / f).exists():
-            continue
+    for f in files:  # undo agent edits to test files
+        rc, _ = sh(git(ws) + ["cat-file", "-e", f"HEAD:{f}"], cwd=ws)
+        if rc == 0:
+            sh(git(ws) + ["checkout", "--quiet", "HEAD", "--", f], cwd=ws, check=True)
+        elif (ws / f).exists():
+            (ws / f).unlink()  # a file the gold patch creates
     ok, out = apply_patch(ws, inst["test_patch"])
     if not ok:
         return {"resolved": False, "reason": "gold tests did not apply", "detail": out[-800:]}
@@ -261,10 +313,8 @@ def score(iid, ws, inst, skip=()):
     f2p = json.loads(inst["FAIL_TO_PASS"])
     p2p = [t for t in json.loads(inst["PASS_TO_PASS"]) if t not in set(skip)]
     test_files = sorted({t.split("::")[0] for t in f2p + p2p})
-    # The tests get a temp dir of their own: whatever the agent left in its
-    # session's temp dir must not decide a test that uses tmp_path.
-    env = task_env(iid, ws)
-    env["TMPDIR"] = tempfile.mkdtemp(prefix="rig-score-")
+    # A temp dir of its own: nothing the agent left may decide a tmp_path test.
+    env = task_env(iid, ws, tmp=tempfile.mkdtemp(prefix="rig-score-"))
     try:
         _, out = sh(["python", "-m", "pytest", "-rA", "-p", "no:cacheprovider", "-q", *test_files],
                     cwd=ws, env=env, timeout=TEST_TIMEOUT)
@@ -340,18 +390,16 @@ def model_name(cond):
 
 
 def window(cond):
-    """The context window every harness is told. A local run enforces it at
-    the endpoint; a hosted model has its own, which the rig cannot change, so
-    all three are told that one instead of a smaller number only some obey."""
+    """The window the harnesses are told. Local runs enforce it at the endpoint;
+    on a hosted model it is the model's own, and OpenHands is not told it."""
     if remote():
         return int(os.environ.get("ABHED_BENCH_CONTEXT", "131072"))
     return CONDITIONS[cond]
 
 
-# Every harness answers with at most this many tokens a turn. Abhed's shipped
-# default is the same number; pi is told it; OpenHands cannot be, so the
-# hosted proxy applies it to any request that names no limit.
-MAX_OUTPUT = 8192
+# The per-turn output limit for every harness, read by the proxy hook too.
+# Abhed's default is 8,192; pi is told it; the endpoint enforces it for OpenHands.
+MAX_OUTPUT = int(os.environ.get("ABHED_BENCH_MAX_OUTPUT", "8192"))
 
 
 def endpoint():
@@ -554,50 +602,103 @@ class OpenHands(Harness):
 HARNESSES = {h.name: h for h in (Null, Gold, Abhed, Pi, OpenHands)}
 
 
+def timeout_output(e):
+    """What a timed-out command printed; it comes back as bytes even in text mode."""
+    out = e.output or b""
+    return out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+
+
+def result_path(out_path, slept):
+    """A session the machine slept through is kept aside, so a resume redoes it."""
+    return out_path.with_suffix(".slept.json") if slept > SLEPT_LIMIT else out_path
+
+
+def redact(text):
+    """The endpoint's key never goes into a result, whatever a harness printed."""
+    key = api_key()
+    return text.replace(key, "[redacted]") if len(key) >= 8 else text
+
+
+def scratch_tag(hname, cond, iid, run, out_path):
+    # The result path in the name keeps two rig invocations apart.
+    return f"{hname}-{cond}-{iid}-run{run}-{hashlib.sha1(str(out_path).encode()).hexdigest()[:6]}"
+
+
+def score_patch(iid, inst, patch, tag):
+    """Score the agent's change on a fresh copy of the base tree, so nothing
+    else it left behind (git state, caches, files outside the diff) counts."""
+    fresh = CACHE / "scratch" / f"score-{tag}"
+    try:
+        workspace(iid, fresh)
+        if patch.strip():
+            ok, out = apply_patch(fresh, patch)
+            if not ok:
+                return {"resolved": False, "reason": "agent patch did not apply to the base", "detail": out[-800:]}
+        return score(iid, fresh, inst, skip=suite().get(iid, []))
+    finally:
+        shutil.rmtree(fresh, ignore_errors=True)
+        shutil.rmtree(rig_git(fresh), ignore_errors=True)
+
+
 def one_run(hname, iid, cond, out_path, run=1):
-    tag = f"{hname}-{cond}-{iid}-run{run}"
+    tag = scratch_tag(hname, cond, iid, run, out_path)
     ws = CACHE / "scratch" / tag
     home = CACHE / "scratch" / f"home-{tag}"
-    shutil.rmtree(home, ignore_errors=True)
-    home.mkdir(parents=True)
-    inst = workspace(iid, ws)
-    venv = session_venv(iid, CACHE / "scratch" / f"venv-{tag}")
-    h = HARNESSES[hname]()
-    h.inst = inst
-    prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
-    started, awake, timed_out, output, rc = time.time(), time.monotonic(), False, "", None
+    venv = CACHE / "scratch" / f"venv-{tag}"
+    tmp = CACHE / "scratch" / f"tmp-{tag}"
     try:
-        rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv), home)
-    except subprocess.TimeoutExpired as e:
-        # The captured output comes back as bytes even in text mode.
-        out = e.stdout or b""
-        timed_out, output = True, out.decode("utf-8", "replace") if isinstance(out, bytes) else out
-    elapsed = time.time() - started
-    # The monotonic clock stops while the machine sleeps, and so does the
-    # session timeout. A session that slept is not a fair measurement.
-    slept = elapsed - (time.monotonic() - awake)
+        for d in (home, tmp):
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir(parents=True)
+        inst = workspace(iid, ws)
+        session_venv(iid, venv)
+        h = HARNESSES[hname]()
+        h.inst = inst
+        prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
+        started, awake, timed_out, output, rc = time.time(), time.monotonic(), False, "", None
+        try:
+            rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv, tmp), home)
+        except subprocess.TimeoutExpired as e:
+            timed_out, output = True, timeout_output(e)
+        elapsed = time.time() - started
+        # The monotonic clock, and so the session timeout, stops while the machine sleeps.
+        slept = elapsed - (time.monotonic() - awake)
 
-    # The agent's change, as a patch, before the gold tests are laid over it.
-    sh(["git", "add", "-A"], cwd=ws)
-    _, diff = sh(["git", "diff", "--cached", inst["base_sha"], "--", ".", ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
-    result = {"harness": hname, "base_model": base_model(), "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
-              "wall_sec": round(elapsed, 1), "patch_bytes": len(diff), "patch": diff[-20000:],
-              "usage": h.usage(output), "output_tail": output[-3000:],
-              "difficulty": inst.get("difficulty", ""),
-              "score": score(iid, ws, inst, skip=suite().get(iid, []))}
-    events = h.record(output) if hasattr(h, "record") else None
-    if events:
+        try:
+            diff = agent_patch(ws)
+            scored = score_patch(iid, inst, diff, tag)
+        except NoPatch as e:
+            diff, scored = "", {"resolved": False, "reason": "the agent's change could not be read", "detail": str(e)}
+        result = {"harness": hname, "base_model": base_model(), "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc,
+                  "timed_out": timed_out, "wall_sec": round(elapsed, 1), "patch_bytes": len(diff),
+                  "patch": redact(diff[-20000:]), "usage": h.usage(output), "output_tail": redact(output[-3000:]),
+                  "difficulty": inst.get("difficulty", ""), "score": scored}
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        result["hawkeye"] = hawkeye(events, out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if slept > SLEPT_LIMIT:
-        # Kept beside the results but not one of them, so a resumed run redoes it.
-        result["slept_sec"] = round(slept)
-        out_path = out_path.with_suffix(".slept.json")
-    out_path.write_text(json.dumps(result, indent=1))
-    for d in (ws, home, venv, Path(task_env(iid, ws)["TMPDIR"])):
-        shutil.rmtree(d, ignore_errors=True)
-    return result
+        events = h.record(output) if hasattr(h, "record") else None
+        if events:
+            result["hawkeye"] = hawkeye(events, out_path)
+        final = result_path(out_path, slept)
+        if final != out_path:
+            result["slept_sec"] = round(slept)
+        final.write_text(json.dumps(result, indent=1))
+        return result
+    finally:
+        # The workspace and home hold the endpoint key in harness config.
+        for d in (ws, rig_git(ws), home, venv, tmp):
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def pending(plan, root, force=False):
+    """Sessions still to run: those without a result. A slept session has
+    only a `.slept.json` beside where its result goes, so it is pending."""
+    todo = []
+    for i, (r, iid, cond, n) in enumerate(plan, 1):
+        out = root / n / cond / f"run{r}" / f"{iid}.json"
+        if out.exists() and not force:
+            continue
+        todo.append((i, r, iid, cond, n, out))
+    return todo
 
 
 def selftest(_):
@@ -653,7 +754,7 @@ def models(args):
     for p in CACHE.glob("doctor-*.ok"):
         p.unlink()
     for cond, ctx in CONDITIONS.items():
-        (d / f"{cond}.Modelfile").write_text(f"FROM {args.base}\nPARAMETER num_ctx {ctx}\n")
+        (d / f"{cond}.Modelfile").write_text(f"FROM {args.base}\nPARAMETER num_ctx {ctx}\nPARAMETER num_predict {MAX_OUTPUT}\n")
         print(f"ollama create {model_name(cond)} -f {d / f'{cond}.Modelfile'}")
     print("\nThe window is set at the endpoint, so every harness meets the same limit.")
 
@@ -710,12 +811,7 @@ def run(args):
          "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
          "difficulty": getattr(args, "difficulty", None) or "any",
          "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
-    todo = []
-    for i, (r, iid, cond, n) in enumerate(plan, 1):
-        out = RESULTS / args.date / "rig" / n / cond / f"run{r}" / f"{iid}.json"
-        if out.exists() and not args.force:
-            continue
-        todo.append((i, r, iid, cond, n, out))
+    todo = pending(plan, RESULTS / args.date / "rig", args.force)
 
     def one(item):
         i, r, iid, cond, n, out = item
@@ -750,8 +846,8 @@ def _current():
     names = "|".join(sorted(HARNESSES, key=len, reverse=True))
     conds = "|".join(CONDITIONS)
     for d in sorted(scratch.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
-        m = re.fullmatch(rf"({names})-({conds})-(.+?)(?:-run\d+)?", d.name)
-        if m and d.is_dir():
+        m = re.fullmatch(rf"({names})-({conds})-(.+?)(?:-run\d+)?(?:-[0-9a-f]{{6}})?", d.name)
+        if m and d.is_dir() and not d.name.endswith(".rig-git"):
             return d, m.group(1), m.group(2), m.group(3)
     return None
 
@@ -780,7 +876,7 @@ def snapshot(date):
     if cur:
         d, h, cond, iid = cur
         out += ["", f"  now       {h} · {cond} · {iid}   ({_hms(time.time() - d.stat().st_ctime)} of {_hms(RUN_TIMEOUT)} allowed)"]
-        _, diff = sh(["git", "diff", "--stat", "HEAD"], cwd=d, timeout=20)
+        _, diff = sh(git(d, rig_git(d)) + ["diff", "--stat", "HEAD"], cwd=d, timeout=20)
         changed = [ln.strip() for ln in diff.strip().splitlines() if "|" in ln]
         out.append(f"  editing   {', '.join(c.split('|')[0].strip() for c in changed[:4]) or 'nothing changed yet'}")
 
