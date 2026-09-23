@@ -55,10 +55,13 @@ DATASET = "princeton-nlp/SWE-bench_Verified"
 # a run takes two minutes, depends on somebody else's server, and cannot be
 # repeated offline. Several of its instances are also Python 2 bugs that do not
 # reproduce on a current interpreter.
+# Each project is installed with its own test requirements, as SWE-bench does.
+# Without them an agent that runs the wider suite meets import errors and
+# spends its turns writing stand-ins for missing packages.
 POOL = {
-    "pytest-dev/pytest": {"python": "3.9", "extra": []},
-    "pylint-dev/pylint": {"python": "3.9", "extra": ["pytest"]},
-    "pallets/flask": {"python": "3.11", "extra": ["pytest"]},
+    "pytest-dev/pytest": {"python": "3.9", "install": ["-e", ".[testing]"]},
+    "pylint-dev/pylint": {"python": "3.9", "install": ["-e", ".", "-r", "requirements_test_min.txt", "py"]},
+    "pallets/flask": {"python": "3.11", "install": ["-e", ".", "-r", "requirements/tests.txt"]},
 }
 
 # Two windows, enforced at the endpoint so every harness meets the same limit.
@@ -148,7 +151,7 @@ def prepare(args):
             sh(["git", "checkout", "--quiet", inst["base_commit"]], cwd=d / "repo", check=True)
             sh(["uv", "venv", "--quiet", "--python", spec["python"], str(d / "venv")], check=True)
             py = str(d / "venv" / "bin" / "python")
-            sh(["uv", "pip", "install", "--quiet", "--python", py, "-e", ".", *spec["extra"]],
+            sh(["uv", "pip", "install", "--quiet", "--python", py, *spec["install"]],
                cwd=d / "repo", timeout=900, check=True)
             (d / "instance.json").write_text(json.dumps(inst))
             (d / "ready").write_text("")

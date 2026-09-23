@@ -50,6 +50,14 @@ SWE-bench Verified instances, from the repositories whose tests are pytest
 node ids and whose dependencies install from wheels into a plain virtualenv:
 `pytest-dev/pytest`, `pylint-dev/pylint`, `pallets/flask`.
 
+Each environment is the project installed with its own test requirements:
+pytest's `testing` extra, pylint's `requirements_test_min.txt` plus `py`
+(its pinned pytest-benchmark needs it and newer pytest no longer brings it), flask's
+`requirements/tests.txt`. An earlier rig installed the project alone, and in
+the first sessions on a hosted model the agents met import errors running the
+wider suite and spent their turns writing stand-ins for hypothesis,
+`pkg_resources` and `py.path`; none of the six resolved.
+
 A workspace is a copy of the *installed* tree, not a clone: installing a
 package can write files git does not track — pytest's `_version.py` comes from
 setuptools_scm — and without them the package does not import. The first
