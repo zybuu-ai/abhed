@@ -193,6 +193,11 @@ def workspace(iid, dest):
     sh(["git", "add", "-A"], cwd=dest, check=True)
     sh(["git", "-c", "user.name=bench", "-c", "user.email=bench@localhost", "commit", "--quiet", "-m", "base"],
        cwd=dest, check=True)
+    # An agent may commit its own work. Everything is measured against this
+    # commit, not HEAD, so a commit can neither hide a change nor keep an
+    # edited test file in place of the gold one.
+    _, sha = sh(["git", "rev-parse", "HEAD"], cwd=dest, check=True)
+    inst["base_sha"] = sha.strip()
     return inst
 
 
@@ -246,7 +251,7 @@ def score(iid, ws, inst, skip=()):
     """Restore the gold tests over the agent's, run them, apply the SWE-bench rule."""
     files = re.findall(r"^diff --git a/(\S+) b/", inst["test_patch"], flags=re.M)
     for f in files:
-        sh(["git", "checkout", "--quiet", "HEAD", "--", f], cwd=ws)  # undo agent edits to test files
+        sh(["git", "checkout", "--quiet", inst.get("base_sha", "HEAD"), "--", f], cwd=ws)  # undo agent edits to test files
         if not (ws / f).exists():
             continue
     ok, out = apply_patch(ws, inst["test_patch"])
@@ -549,7 +554,7 @@ def one_run(hname, iid, cond, out_path, run=1):
 
     # The agent's change, as a patch, before the gold tests are laid over it.
     sh(["git", "add", "-A"], cwd=ws)
-    _, diff = sh(["git", "diff", "--cached", "HEAD", "--", ".", ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
+    _, diff = sh(["git", "diff", "--cached", inst["base_sha"], "--", ".", ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
     result = {"harness": hname, "base_model": base_model(), "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc, "timed_out": timed_out,
               "wall_sec": round(elapsed, 1), "patch_bytes": len(diff), "patch": diff[-20000:],
               "usage": h.usage(output), "output_tail": output[-3000:],

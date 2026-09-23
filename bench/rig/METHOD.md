@@ -50,6 +50,12 @@ SWE-bench Verified instances, from the repositories whose tests are pytest
 node ids and whose dependencies install from wheels into a plain virtualenv:
 `pytest-dev/pytest`, `pylint-dev/pylint`, `pallets/flask`.
 
+The agent's change is measured against the commit the workspace starts
+from, recorded when the workspace is made, not against `HEAD`: an agent that
+commits its own work would otherwise leave an empty diff, and the gold tests
+would be laid over its edited test files. Three OpenHands sessions in the
+first hosted run were scored that way before this was fixed, and were rerun.
+
 Each environment is the project installed with its own test requirements:
 pytest's `testing` extra, pylint's `requirements_test_min.txt` plus `py`
 (its pinned pytest-benchmark needs it and newer pytest no longer brings it), flask's

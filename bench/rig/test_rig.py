@@ -213,5 +213,27 @@ class SessionIsolationTests(unittest.TestCase):
                     shutil.rmtree(e["TMPDIR"], ignore_errors=True)
 
 
+class AgentCommitTests(unittest.TestCase):
+    def test_a_commit_by_the_agent_neither_hides_the_patch_nor_keeps_its_test_edit(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            def git(*a):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=ws, check=True,
+                                      capture_output=True, text=True).stdout
+            git("init", "-q")
+            (ws / "src.py").write_text("x = 1\n")
+            (ws / "test_x.py").write_text("def test(): pass\n")
+            git("add", "-A"); git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD").strip()
+            (ws / "src.py").write_text("x = 2\n")
+            (ws / "test_x.py").write_text("def test(): assert False\n")
+            git("add", "-A"); git("commit", "-q", "-m", "agent")
+            _, diff = rig.sh(["git", "diff", "--cached", base, "--", "."], cwd=ws)
+            self.assertIn("x = 2", diff)
+            rig.sh(["git", "checkout", "--quiet", base, "--", "test_x.py"], cwd=ws)
+            self.assertEqual((ws / "test_x.py").read_text(), "def test(): pass\n")
+
+
 if __name__ == "__main__":
     unittest.main()
