@@ -63,7 +63,7 @@ and none of them is a model's opinion.
 | `record-gap` | critical | the event sequence skips — the record was filtered, truncated or edited |
 | `borrowed-host` | warn | an allowed call names a host the user never mentioned and that first appeared in tool output |
 | `sensitive-path` | warn / info | a call reached, or was stopped from reaching, a credential path |
-| `broken-edit` | info | an `edit` or `write` was refused because it would have left a file that parsed no longer parsing; the file was left as it was |
+| `broken-edit` | info | an `edit` or `write` was refused, because it would have left a file that parsed no longer parsing or its new text was a pasted diff; the file was left as it was |
 | `output-cap` | warn | a turn spent the whole output budget reasoning and made no tool call; the loop nudged it and lowered the effort |
 | `secret-redacted` | warn | a stored secret's value was written out by a command or the model and redacted before the record |
 | `abnormal-end` | warn | the session ended as anything other than completed or a user interrupt |

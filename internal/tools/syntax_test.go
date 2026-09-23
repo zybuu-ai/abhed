@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func readFile(t *testing.T, path string) string {
@@ -249,20 +250,96 @@ func TestTheRealInterpreterIsRun(t *testing.T) {
 	}
 }
 
-// A directory whose name starts with two dots is still inside the workspace.
-func TestADotDotDirectoryIsInsideTheWorkspace(t *testing.T) {
-	s, dir := setup(t)
-	bin := filepath.Join(dir, "..venv", "bin")
+// fakePython is an interpreter that would be accepted if it were ever run: it
+// answers the version question, and leaves a marker so a test can tell.
+func fakePython(t *testing.T, bin string) (marker string) {
+	t.Helper()
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(bin, "python3"), "#!/bin/sh\nexit 0\n")
+	marker = filepath.Join(t.TempDir(), "ran")
+	writeFile(t, filepath.Join(bin, "python3"), "#!/bin/sh\n/usr/bin/touch "+marker+"\necho 3 13\n")
 	if err := os.Chmod(filepath.Join(bin, "python3"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return marker
+}
+
+func refusesInterpreter(t *testing.T, s *Session, marker string) {
+	t.Helper()
 	if _, _, ok := s.interpreter(); ok {
-		t.Fatal("an interpreter under ..venv in the workspace was accepted")
+		t.Fatal("an interpreter inside the session's roots was accepted")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("an interpreter inside the session's roots was run")
+	}
+}
+
+// A directory whose name starts with two dots is still inside the workspace.
+func TestADotDotDirectoryIsInsideTheWorkspace(t *testing.T) {
+	s, dir := setup(t)
+	refusesInterpreter(t, s, fakePython(t, filepath.Join(dir, "..venv", "bin")))
+}
+
+// An extra root is writable by the agent just like the workspace.
+func TestAnInterpreterInAnExtraRootIsNeverRun(t *testing.T) {
+	s, _ := setup(t)
+	extra := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(extra); err == nil {
+		extra = resolved
+	}
+	if err := s.AddRoot(extra); err != nil {
+		t.Fatal(err)
+	}
+	refusesInterpreter(t, s, fakePython(t, filepath.Join(extra, "bin")))
+}
+
+// The fake is accepted outside the roots, so the two tests above are not vacuous.
+func TestTheFakeInterpreterIsAcceptedOutsideTheRoots(t *testing.T) {
+	s, _ := setup(t)
+	fakePython(t, filepath.Join(t.TempDir(), "bin"))
+	if _, ver, ok := s.interpreter(); !ok || ver != [2]int{3, 13} {
+		t.Fatalf("the fake interpreter was not accepted outside the roots: %v %v", ver, ok)
+	}
+}
+
+// A failed version check is asked again next time, and a hanging one is cut off.
+func TestAFailedVersionCheckIsNotRemembered(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	count := filepath.Join(t.TempDir(), "count")
+	py := filepath.Join(bin, "python3")
+	writeFile(t, py, "#!/bin/sh\nif [ -f "+count+" ]; then echo 3 12; else /usr/bin/touch "+count+"; exit 1; fi\n")
+	if err := os.Chmod(py, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer pyVersions.Delete(py)
+	if _, ok := pythonVersion(py); ok {
+		t.Fatal("the first, failing check was trusted")
+	}
+	if v, ok := pythonVersion(py); !ok || v != [2]int{3, 12} {
+		t.Fatalf("the failure was remembered: %v %v", v, ok)
+	}
+}
+
+func TestAHangingVersionCheckIsCutOff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for the five-second bound")
+	}
+	py := filepath.Join(t.TempDir(), "python3")
+	writeFile(t, py, "#!/bin/sh\n/bin/sleep 30\n")
+	if err := os.Chmod(py, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, ok := pythonVersion(py); ok {
+		t.Fatal("a hanging check was trusted")
+	}
+	if took := time.Since(start); took > pythonTimeout+3*time.Second {
+		t.Fatalf("the check took %v", took)
 	}
 }
 
@@ -312,8 +389,8 @@ func TestAnUnknownBeforeNeverRefuses(t *testing.T) {
 }
 
 func TestDiffsInFilesWhereMarkersAreContent(t *testing.T) {
-	for _, path := range []string{"notes.md", "ci.yml", "fix.patch", "list.txt", "data.csv"} {
-		if looksLikeDiff(path, "old", "-old\n+new") {
+	for ext := range notCode {
+		if path := "file" + ext; looksLikeDiff(path, "old", "-old\n+new") {
 			t.Errorf("%s: a hunk in a file where it is content was refused", path)
 		}
 	}
@@ -321,5 +398,24 @@ func TestDiffsInFilesWhereMarkersAreContent(t *testing.T) {
 		if looksLikeDiff("a.py", c.old, c.new) {
 			t.Errorf("%q -> %q taken for a diff", c.old, c.new)
 		}
+	}
+}
+
+// Old text that already has marked lines is itself diff-like content, so the
+// guard stands aside.
+func TestOldTextWithMarkersTurnsTheGuardOff(t *testing.T) {
+	if looksLikeDiff("run.sh", "-a\n+b\n", "-a\n+c\n") {
+		t.Fatal("editing marked lines was taken for a pasted diff")
+	}
+}
+
+// Creating a file with a pasted diff in report mode keeps the warning.
+func TestReportModeWarnsOfADiffWhenCreating(t *testing.T) {
+	s, dir := setup(t)
+	s.Syntax = SyntaxReport
+	p := filepath.Join(dir, "new.sh")
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "", "new_string": "-a\n+b\n"})
+	if r.IsError || !strings.Contains(r.Content, "pasted diff") {
+		t.Fatalf("the diff warning was lost on create: %+v", r)
 	}
 }

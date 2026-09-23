@@ -231,8 +231,10 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		if info, err := os.Stat(path); err == nil {
 			mode = info.Mode().Perm()
 		}
-		if before, err = os.ReadFile(path); err != nil {
-			return errf("Cannot read %s: %v", a.Path, err)
+		if s.Syntax != SyntaxOff {
+			if before, err = os.ReadFile(path); err != nil {
+				return errf("Cannot read %s: %v", a.Path, err)
+			}
 		}
 	}
 	note, refuse := s.syntaxVerdict(ctx, path, before, existed, []byte(a.Content))

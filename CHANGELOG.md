@@ -27,7 +27,6 @@ All notable changes to Abhed are recorded here. The format follows
   `tools.syntax_check` to `report` or `off` to keep the old behaviour; the
   SDK also takes `Options.SyntaxCheck`.
 
-
 ### Fixed
 
 - A turn that spends its whole output budget reasoning without a tool call

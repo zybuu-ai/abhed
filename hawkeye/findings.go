@@ -81,8 +81,8 @@ func findings(r Report, evs []agent.Event) []Finding {
 		}
 		// tools.NotApplied: the prefix edit and write put on a change they refused.
 		if (c.Tool == "edit" || c.Tool == "write") && c.IsError && strings.HasPrefix(c.Output, "Not applied:") {
-			add(Info, "broken-edit", "An edit was refused: it would have broken the file",
-				fmt.Sprintf("%s %s — %s", c.Tool, clip(c.Subject, 160), clip(c.Output, 240)), c.Seq)
+			add(Info, "broken-edit", "An edit was refused: it would have broken the file, or was a pasted diff",
+				fmt.Sprintf("%s — %s", c.Tool, clip(c.Output, 240)), c.Seq)
 		}
 		if c.Ran && c.IsError {
 			key := c.Tool + "\x00" + c.Args

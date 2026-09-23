@@ -234,9 +234,8 @@ func looksLikeDiff(path, oldText, newText string) bool {
 // parse is the parser syntaxVerdict uses; tests replace it.
 var parse = (*Session).parses
 
-// syntaxVerdict decides what happens to a change that leaves a file not
-// parsing. A file that did not parse before is left to the model, so a
-// refactor is never blocked half-way; a new file is never refused.
+// syntaxVerdict decides what a change that breaks parsing gets. A file broken
+// before, or a new one, is never refused: a refactor must not stall half-way.
 func (s *Session) syntaxVerdict(ctx context.Context, path string, before []byte, existed bool, after []byte) (note string, refuse bool) {
 	if s.Syntax == SyntaxOff {
 		return "", false
@@ -256,8 +255,8 @@ func (s *Session) syntaxVerdict(ctx context.Context, path string, before []byte,
 	case !b.checked:
 		return fmt.Sprintf("Warning: %s does not parse (%s) — %v", rel, a.by, a.err), false
 	case s.Syntax == SyntaxRefuse && a.strict:
-		return fmt.Sprintf("%s %s would no longer parse (%s) — %v. The file is unchanged; fix the new text and try again.",
-			NotApplied, rel, a.by, a.err), true
+		return fmt.Sprintf("%s %s would no longer parse (%s) — %s The file is unchanged; fix the new text and try again.",
+			NotApplied, rel, a.by, sentence(a.err.Error())), true
 	}
 	return fmt.Sprintf("Warning: %s no longer parses (%s) — %v", rel, a.by, a.err), false
 }
@@ -268,4 +267,13 @@ func suffix(note string) string {
 		return ""
 	}
 	return "\n" + note
+}
+
+// sentence ends a parser message with one stop, whatever it ended with.
+func sentence(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if strings.HasSuffix(msg, ".") || strings.HasSuffix(msg, "?") || strings.HasSuffix(msg, "!") {
+		return msg
+	}
+	return msg + "."
 }
