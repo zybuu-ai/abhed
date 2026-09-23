@@ -1217,6 +1217,13 @@ class RoundEightTests(UsingCache, unittest.TestCase):
         self.assertFalse(rig.fetched_upstream("git clone https://github.com/pytest-dev/pytest-xdist", repo))
         self.assertFalse(rig.fetched_upstream("a curly brace near github.com/pytest-dev/pytest", repo))
         self.assertTrue(rig.fetched_upstream("gh repo clone pytest-dev/pytest", repo))
+        self.assertFalse(rig.fetched_upstream("curl failed: no network. Next I read pytest-dev/pytest docs", repo))
+        self.assertFalse(rig.fetched_upstream("git status  # we won't fetch; see github.com/pytest-dev/pytest", repo))
+        wide = issue + "\nit\u2019s\u2028broken"
+        go = json.dumps({"text": wide}, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+        go = go.replace("&", "\\u0026").replace("\u2028", "\\u2028")
+        self.assertTrue(rig.fetched_upstream(go, repo), "the unstripped issue must match")
+        self.assertFalse(rig.fetched_upstream(go, repo, wide), "Go keeps non-ASCII and escapes U+2028")
         cells = {("pi", "full"): {1: {"i1": {"harness": "pi", "condition": "full", "fetched_upstream": True}}}}
         self.assertIn("| pi | full | 1 | i1 |", rig.flagged(cells, (), "fetched_upstream", "t"))
         old = {("pi", "full"): {1: {"i1": {"harness": "pi", "condition": "full"}}}}

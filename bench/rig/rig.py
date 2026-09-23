@@ -1007,15 +1007,18 @@ def fetched_upstream(text, repo, prompt=""):
     Links alone fill the prompt and the tree, so the prompt is left out."""
     if not repo:
         return False
-    # Go escapes <, > and & in JSON; undo it so the echoed prompt matches too.
-    text = text.replace("\\u003c", "<").replace("\\u003e", ">").replace("\\u0026", "&")
+    # Undo Go's JSON escapes (<, >, &, U+2028, U+2029) so the echoed prompt matches.
+    for esc, ch in (("\\u003c", "<"), ("\\u003e", ">"), ("\\u0026", "&"), ("\\u2028", "\u2028"), ("\\u2029", "\u2029")):
+        text = text.replace(esc, ch)
     for p in {prompt, json.dumps(prompt)[1:-1], json.dumps(prompt, ensure_ascii=False)[1:-1]} - {""}:
         text = text.replace(p, "")
     r = re.escape(repo.lower())
-    fetch = (r"\b(git\b[^\n]{0,80}?\b(clone|fetch|pull|remote\s+add)|gh\s+repo\s+clone|curl|wget"
+    fetch = (r"\b(git(\s+-\S+(\s+[^\s-]\S*)?)*\s+(clone|fetch|pull|remote\s+add)|curl|wget"
              r"|urlopen|urlretrieve|requests\.get|httpx\.get|pip\s+(install|download))\b")
-    where = rf"(github\.com[:/]|api\.github\.com/repos/|raw\.githubusercontent\.com/|codeload\.github\.com/|\s){r}(\.git)?(?![\w.-])"
-    return bool(re.search(rf"{fetch}[^\n]{{0,200}}?{where}", text.lower()))
+    end = r"(\.git)?(?![\w.-])"
+    where = rf"(github\.com[:/]|api\.github\.com/repos/|raw\.githubusercontent\.com/|codeload\.github\.com/){r}{end}"
+    gh = rf"\bgh\s+repo\s+clone\s+[\"']?(https://github\.com/)?{r}{end}"
+    return bool(re.search(rf"{fetch}[^\n]{{0,200}}?{where}|{gh}", text.lower()))
 
 
 def score_patch(iid, inst, patch, tag):
