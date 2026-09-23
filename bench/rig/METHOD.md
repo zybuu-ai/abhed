@@ -61,10 +61,11 @@ never read or written. pi and OpenHands are installed under the rig's cache
 session: on a timeout, on a normal exit, and when the rig itself is stopped
 by Ctrl-C or `pkill` (SIGINT or SIGTERM), which kills every live harness at
 once, parallel ones included; sessions in flight are then abandoned, not
-scored, and redone on resume. A resume must use the same options as the run
-it continues; the rig refuses a changed plan under the same date. Abhed
+scored, and redone on resume; results are written whole or not at all. A
+resume must be the same run: the rig refuses one under the same date whose
+sessions, model, endpoint, limits or timeout differ from the plan it continues. Abhed
 applies an organisation's managed config (`/etc/abhed/config.json`) over any
-other, so the rig refuses to run Abhed on a machine that has one.
+other, so `doctor` and `run` refuse Abhed on a machine that has one.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
 prompt, so with an inherited stdin it waits for input that never comes and

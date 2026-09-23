@@ -90,8 +90,18 @@ the issue is resolved. The project's Python environment is already on PATH.
 
 
 # Every harness process group alive now, so a stop signal can end all of them.
-_LIVE, _LIVE_LOCK = set(), threading.Lock()
-_STOPPING = threading.Event()
+# No locks: the signal handler must never wait on one the main thread holds;
+# single set operations are atomic under the interpreter lock.
+_LIVE = set()
+
+
+class _Stop:
+    signum = 0     # the signal that stopped the rig, 0 while running
+    starting = 0   # main thread between Popen and registering its child
+
+
+def stopping():
+    return _Stop.signum != 0
 
 
 class Stopped(Exception):
@@ -105,18 +115,22 @@ def _kill_group(p):
         pass
 
 
-def stop_all(signum=None, _frame=None):
-    """Kill every live harness group; from a signal, then exit."""
-    _STOPPING.set()
-    with _LIVE_LOCK:
-        pids = list(_LIVE)
-    for pid in pids:
+def stop_all(signum=signal.SIGTERM, _frame=None):
+    """The stop-signal handler: flag first, then kill every registered group.
+    A child registered after the snapshot sees the flag and kills itself."""
+    _Stop.signum = _Stop.signum or signum
+    for pid in list(_LIVE):
         try:
             os.killpg(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-    if signum is not None:
-        raise SystemExit(128 + signum)
+    if not _Stop.starting:  # else sh() finishes registering, then stops
+        raise SystemExit(128 + _Stop.signum)
+
+
+def exit_if_stopped():
+    if stopping():
+        raise SystemExit(128 + _Stop.signum)
 
 
 def install_stop_handlers():
@@ -130,13 +144,19 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # the model — which is how the first doctor run on pi spent ten minutes.
     #
     # Its own process group, so a timeout stops the agent's tools with it.
-    if _STOPPING.is_set():
+    if stopping():
         raise Stopped()
-    p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    with _LIVE_LOCK:
-        _LIVE.add(p.pid)
+    main = threading.current_thread() is threading.main_thread()
+    _Stop.starting += main  # a signal now defers its exit until the child is registered
     try:
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        _LIVE.add(p.pid)
+    finally:
+        _Stop.starting -= main
+    try:
+        if stopping():
+            raise Stopped()  # the stop came while this child was starting
         out, _ = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
         _kill_group(p)
@@ -150,10 +170,9 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
         _kill_group(p)  # Ctrl-C or any error: the harness must not outlive the rig
         raise
     finally:
-        with _LIVE_LOCK:
-            _LIVE.discard(p.pid)
+        _LIVE.discard(p.pid)
     _kill_group(p)  # anything the agent left running in the background
-    if _STOPPING.is_set():
+    if stopping():
         raise Stopped()  # killed by a stop signal: not a result
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{out[-2000:]}")
@@ -512,6 +531,8 @@ class Harness:
             return ""
         try:
             return sh(self.version_cmd, timeout=30)[1].strip().splitlines()[-1][:120]
+        except Stopped:
+            raise
         except Exception:  # noqa: BLE001
             return "unknown"
 
@@ -611,12 +632,17 @@ def hawkeye(events, out_path):
     failed but what the record shows it doing: a call denied, a repeated
     failure, a session that hit the context ceiling."""
     rec = out_path.with_name(out_path.stem + ".events.json")
-    rec.write_text(redact(json.dumps(redact_obj(events))))
+    write_atomic(rec, redact(json.dumps(redact_obj(events))))
     binary = Abhed().binary()
     if not Path(binary).exists():
         return {"findings": [], "note": "abhed binary not built; record saved, not analysed"}
     report = out_path.with_name(out_path.stem + ".hawkeye.json")
-    rc, out = sh([binary, "hawkeye", "-o", str(report), str(rec)], timeout=120)
+    try:
+        rc, out = sh([binary, "hawkeye", "-o", str(report), str(rec)], timeout=120)
+    except Stopped:
+        rec.unlink(missing_ok=True)  # an abandoned session leaves nothing beside the results
+        report.unlink(missing_ok=True)
+        raise
     if rc != 0 or not report.exists():
         return {"findings": [], "note": "hawkeye failed: " + out[-300:]}
     try:
@@ -684,6 +710,13 @@ class OpenHands(Harness):
 
 
 HARNESSES = {h.name: h for h in (Null, Gold, Abhed, Pi, OpenHands)}
+
+
+def write_atomic(path, text):
+    """A stop mid-write must not leave a truncated result that counts as done."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 
 def timeout_output(e):
@@ -769,7 +802,7 @@ def one_run(hname, iid, cond, out_path, run=1):
             rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv, tmp), home)
         except subprocess.TimeoutExpired as e:
             timed_out, output = True, timeout_output(e)
-        if _STOPPING.is_set():
+        if stopping():
             raise Stopped()
         elapsed = time.time() - started
         # The monotonic clock, and so the session timeout, stops while the machine sleeps.
@@ -793,7 +826,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         final = result_path(out_path, slept, readable)
         if slept > SLEPT_LIMIT:
             result["slept_sec"] = round(slept)
-        final.write_text(redact(json.dumps(redact_obj(result), indent=1)))
+        write_atomic(final, redact(json.dumps(redact_obj(result), indent=1)))
         return result
     finally:
         # The workspace and home hold the endpoint key in harness config.
@@ -874,7 +907,7 @@ def models(args):
 def setup_fingerprint(hname):
     """What a doctor pass vouches for: the model, the endpoint, the limits and
     the environment a harness gets. A change to any of them needs a new pass."""
-    setup = {"harness": hname, "model": base_model(), "max_output": MAX_OUTPUT,
+    setup = {"harness": hname, "model": base_model(), "endpoint": endpoint(), "max_output": MAX_OUTPUT,
              "window": {c: window(c) for c in CONDITIONS}, "pass_env": sorted(PASS_ENV)}
     return hashlib.sha256(json.dumps(setup, sort_keys=True).encode()).hexdigest() + "\n"
 
@@ -914,6 +947,8 @@ def run(args):
         sys.exit("a remote model serves one window, its own: run with --condition full. "
                  "The tight condition needs num_ctx set at the endpoint, which only a local Ollama allows.")
     tasks = sorted(suite())
+    if "abhed" in names and Path(MANAGED_CONFIG).exists():
+        sys.exit(f"{MANAGED_CONFIG} would override the rig's settings for Abhed; move it aside for the run")
     stale = stale_envs(tasks)
     if stale:
         sys.exit(f"{len(stale)} environment(s) were built from another spec: run prepare and validate")
@@ -933,17 +968,14 @@ def run(args):
     # The suite is whatever validated on this machine, so it travels with the
     # results: which instances, and which drifted tests were set aside.
     root = RESULTS / args.date / "rig"
-    sessions = [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]
-    old = root / "plan.json"
-    if old.exists() and not args.force and json.loads(old.read_text())["sessions"] != sessions:
-        sys.exit("a run with this date has a different plan; resume it with the same options or use a new --date")
-    (RESULTS / args.date / "rig").mkdir(parents=True, exist_ok=True)
-    (RESULTS / args.date / "rig" / "suite.json").write_text(json.dumps(suite(), indent=1))
-    (RESULTS / args.date / "rig" / "plan.json").write_text(json.dumps(
-        {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT, "base_model": base_model(),
-         "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
-         "difficulty": getattr(args, "difficulty", None) or "any",
-         "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
+    setup = {"timeout_sec": RUN_TIMEOUT, "base_model": base_model(), "endpoint": endpoint(),
+             "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
+             "difficulty": getattr(args, "difficulty", None) or "any",
+             "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}
+    check_resume(root / "plan.json", setup, args.force)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "suite.json").write_text(json.dumps(suite(), indent=1))
+    (root / "plan.json").write_text(json.dumps({"started": time.strftime("%Y-%m-%d %H:%M:%S"), **setup}))
     todo = pending(plan, RESULTS / args.date / "rig", args.force)
 
     def one(item):
@@ -958,6 +990,18 @@ def run(args):
     execute(todo, max(1, getattr(args, "parallel", 1) or 1), one)
 
 
+def check_resume(plan_path, setup, force=False):
+    """A resume under the same date must be the same run: same sessions, model,
+    endpoint, limits and timeout. Anything else would mix two runs' results."""
+    if not plan_path.exists() or force:
+        return
+    old = json.loads(plan_path.read_text())
+    changed = sorted(k for k in setup if old.get(k) != setup[k])
+    if changed:
+        sys.exit(f"a run with this date was started with a different {', '.join(changed)}; "
+                 "resume it with the same setup or use a new --date")
+
+
 def execute(todo, workers, one):
     """Run sessions, several at once if asked. A stop signal kills every live
     harness at once; sessions in flight are abandoned and queued ones dropped."""
@@ -970,6 +1014,7 @@ def execute(todo, workers, one):
     if workers == 1:
         for item in todo:
             guarded(item)
+            exit_if_stopped()
         return
     import concurrent.futures
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
@@ -978,6 +1023,7 @@ def execute(todo, workers, one):
             pass
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
+    exit_if_stopped()
 
 
 # ---------------------------------------------------------------- watch
@@ -1194,8 +1240,12 @@ def main():
     p.add_argument("--date", required=True); p.add_argument("--every", type=int, default=10)
     p.add_argument("--once", action="store_true", help="print one snapshot and exit"); p.set_defaults(fn=watch)
     args = ap.parse_args()
-    install_stop_handlers()
-    args.fn(args)
+    if args.cmd in ("run", "doctor", "selftest", "validate", "prepare"):
+        install_stop_handlers()
+    try:
+        args.fn(args)
+    except Stopped:
+        exit_if_stopped()
 
 
 if __name__ == "__main__":

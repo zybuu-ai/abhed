@@ -623,13 +623,75 @@ class StopSignalTests(UsingCache, unittest.TestCase):
         import signal as s_
         self.check(s_.SIGINT)
 
+    def test_sigterm_stops_a_serial_run(self):
+        import signal as s_
+        import time as _t
+        pids = [self.root / "c0.pid"]
+        body = f"rig.execute([0], 1, lambda i: rig.sh(['sh', '-c', 'echo $$ > {self.root}/c0.pid; exec sleep 60']))"
+        proc, children = self.start(body, pids)
+        proc.send_signal(s_.SIGTERM)
+        self.assertEqual(proc.wait(timeout=10), 128 + s_.SIGTERM)
+        _t.sleep(0.3)
+        self.assertEqual(_pids_alive(children), [])
+
+    def injected(self, prelude, workers, delay):
+        """Start a run whose Popen or registration is instrumented, signal it
+        after `delay`, and return (exit code, seconds taken, children alive)."""
+        import os
+        import signal as s_
+        import subprocess
+        import time as _t
+        pidfile = self.root / "c0.pid"
+        code = (f"import os, signal, subprocess, sys, time; sys.path.insert(0, {str(Path(__file__).parent)!r}); "
+                f"import rig; rig.install_stop_handlers(); {prelude}; "
+                f"rig.execute([0], {workers}, lambda i: rig.sh(['sh', '-c', 'echo $$ > {pidfile}; exec sleep 60']))")
+        proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
+        start = _t.monotonic()
+        if delay is not None:
+            _t.sleep(delay)
+            proc.send_signal(s_.SIGTERM)
+        try:
+            rc = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:  # a hung rig is the failure; do not leave it behind
+            proc.kill()
+            rc = proc.wait()
+        took = _t.monotonic() - start
+        _t.sleep(0.5)
+        child = int(pidfile.read_text()) if pidfile.exists() and pidfile.read_text().strip() else None
+        alive = _pids_alive([child]) if child else []
+        for pid in alive:
+            os.kill(pid, s_.SIGKILL)
+        return rc, took, alive
+
+    def test_a_signal_while_the_child_is_being_registered_neither_deadlocks_nor_orphans(self):
+        prelude = ("exec(" + repr("class S(set):\n    def add(self, x):\n        os.kill(os.getpid(), signal.SIGTERM)\n"
+                                  "        super().add(x)\nrig._LIVE = S()") + ")")
+        rc, took, alive = self.injected(prelude, 1, None)
+        self.assertEqual((rc, alive), (143, []))
+        self.assertLess(took, 10)
+
+    def test_a_signal_as_popen_returns_does_not_orphan_the_child(self):
+        prelude = ("exec(" + repr("class P(subprocess.Popen):\n    def __init__(self, *a, **k):\n"
+                                  "        super().__init__(*a, **k)\n        time.sleep(0.3)\n"
+                                  "        os.kill(os.getpid(), signal.SIGTERM)\nrig.subprocess.Popen = P") + ")")
+        rc, took, alive = self.injected(prelude, 1, None)
+        self.assertEqual((rc, alive), (143, []))
+
+    def test_a_worker_starting_as_the_rig_stops_does_not_keep_it_waiting(self):
+        prelude = ("exec(" + repr("class P(subprocess.Popen):\n    def __init__(self, *a, **k):\n"
+                                  "        time.sleep(1.0)\n        super().__init__(*a, **k)\n"
+                                  "rig.subprocess.Popen = P") + ")")
+        rc, took, alive = self.injected(prelude, 2, 0.5)
+        self.assertEqual((rc, alive), (143, []))
+        self.assertLess(took, 5)
+
     def test_nothing_starts_once_the_rig_is_stopping(self):
-        rig._STOPPING.set()
+        rig._Stop.signum = 15
         try:
             with self.assertRaises(rig.Stopped):
                 rig.sh(["true"])
         finally:
-            rig._STOPPING.clear()
+            rig._Stop.signum = 0
 
 
 class RoundFourTests(UsingCache, unittest.TestCase):
@@ -713,6 +775,25 @@ class RoundFourTests(UsingCache, unittest.TestCase):
             self.assertNotEqual(a, rig.setup_fingerprint("abhed"))
         finally:
             rig.MAX_OUTPUT = real
+
+
+class ResumeTests(UsingCache, unittest.TestCase):
+    def test_a_resume_with_another_setup_is_refused(self):
+        plan = self.root / "plan.json"
+        setup = {"base_model": "m", "max_output": 8192, "timeout_sec": 1800, "sessions": [1]}
+        rig.check_resume(plan, setup)  # nothing to resume: fine
+        plan.write_text(json.dumps({"started": "t", **setup}))
+        rig.check_resume(plan, dict(setup))  # the same run: fine
+        with self.assertRaises(SystemExit) as e:
+            rig.check_resume(plan, dict(setup, max_output=4096))
+        self.assertIn("max_output", str(e.exception))
+        rig.check_resume(plan, dict(setup, max_output=4096), force=True)
+
+    def test_a_result_is_written_whole_or_not_at_all(self):
+        path = self.root / "r.json"
+        rig.write_atomic(path, '{"a": 1}')
+        self.assertEqual(json.loads(path.read_text()), {"a": 1})
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.endswith(".tmp")], [])
 
 
 if __name__ == "__main__":
