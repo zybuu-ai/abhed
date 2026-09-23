@@ -828,8 +828,10 @@ class EscapedToolTests(UsingCache, unittest.TestCase):
         import os
         import subprocess
         pidfile = self.root / "tool.pid"
-        ws = self.root / "ws"
-        ws.mkdir()
+        ws = self.root / "scratch" / "ws"
+        ws.mkdir(parents=True)
+        rig._SESSIONS["t-timeout"] = [str(ws)]
+        self.addCleanup(rig._SESSIONS.pop, "t-timeout", None)
         env = dict(os.environ, **{rig.MARKER: "t-timeout"})
         with self.assertRaises(subprocess.TimeoutExpired):
             rig.sh([sys.executable, "-c", ESCAPER, str(pidfile)], cwd=ws, env=env, timeout=2)
@@ -843,9 +845,10 @@ class EscapedToolTests(UsingCache, unittest.TestCase):
         import subprocess
         import time as _t
         pidfile = self.root / "tool.pid"
-        ws = self.root / "ws"
-        ws.mkdir()
+        ws = self.root / "scratch" / "ws"
+        ws.mkdir(parents=True)
         code = (f"import os, sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
+                f"rig.CACHE = rig.Path({str(self.root)!r}); rig._SESSIONS['t-stop'] = [{str(ws)!r}]; "
                 f"rig.install_stop_handlers(); "
                 f"rig.sh([sys.executable, '-c', {ESCAPER!r}, {str(pidfile)!r}], cwd={str(ws)!r}, "
                 f"env=dict(os.environ, **{{rig.MARKER: 't-stop'}}))")
@@ -935,8 +938,10 @@ class OrphanSweepTests(UsingCache, unittest.TestCase):
     def test_a_tool_orphaned_by_a_harness_that_exited_is_swept(self):
         import time as _t
         pidfile = self.root / "tool.pid"
-        ws = self.root / "ws"
-        ws.mkdir()
+        ws = self.root / "scratch" / "ws"
+        ws.mkdir(parents=True)
+        rig._SESSIONS["t"] = [str(ws)]
+        self.addCleanup(rig._SESSIONS.pop, "t", None)
         # The harness starts a tool in its own session and exits at once.
         quick = ("import subprocess, sys; c = subprocess.Popen(['sleep', '60'], start_new_session=True); "
                  "open(sys.argv[1], 'w').write(str(c.pid))")
@@ -961,9 +966,11 @@ class OutsideTheWorkspaceTests(UsingCache, unittest.TestCase):
     the session's temp dir, not its workspace: the hardest one to end."""
 
     def session(self):
-        ws, tmp = self.root / "ws", self.root / "tmp"
-        ws.mkdir()
-        tmp.mkdir()
+        ws, tmp = self.root / "scratch" / "ws", self.root / "scratch" / "tmp"
+        ws.mkdir(parents=True)
+        tmp.mkdir(parents=True)
+        rig._SESSIONS["t"] = [str(ws), str(tmp)]
+        self.addCleanup(rig._SESSIONS.pop, "t", None)
         env = dict(os.environ, TMPDIR=str(tmp), **{rig.MARKER: "t"})
         return ws, env
 
@@ -1004,7 +1011,8 @@ class OutsideTheWorkspaceTests(UsingCache, unittest.TestCase):
         ws, env = self.session()
         pidfile = self.root / "tool.pid"
         code = (f"import os, sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
-                f"rig.install_stop_handlers(); "
+                f"rig.CACHE = rig.Path({str(self.root)!r}); "
+                f"rig._SESSIONS['t'] = [{str(ws)!r}, {env['TMPDIR']!r}]; rig.install_stop_handlers(); "
                 f"rig.sh([sys.executable, '-c', {TERM_PROOF.format(wait=60)!r}, {str(pidfile)!r}], "
                 f"cwd={str(ws)!r}, env={env!r})")
         proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
@@ -1030,8 +1038,10 @@ class OutsideTheWorkspaceTests(UsingCache, unittest.TestCase):
 class SparedProcessTests(UsingCache, unittest.TestCase):
     def test_someone_elses_process_in_the_workspace_is_left_alone(self):
         import subprocess
-        ws = self.root / "ws"
-        ws.mkdir()
+        ws = self.root / "scratch" / "ws"
+        ws.mkdir(parents=True)
+        rig._SESSIONS["t"] = [str(ws)]
+        self.addCleanup(rig._SESSIONS.pop, "t", None)
         bystander = subprocess.Popen(["sleep", "30"], cwd=ws)  # the operator's shell, say
         try:
             rig.sh(["true"], cwd=ws, env=dict(os.environ, **{rig.MARKER: "t"}))
@@ -1055,6 +1065,43 @@ class SparedProcessTests(UsingCache, unittest.TestCase):
         rig.session_meta(tag).write_text(json.dumps({"harness": "pi", "condition": "full", "instance": "i9", "run": 2}))
         d, h, cond, iid = rig._current()
         self.assertEqual((d.name, h, cond, iid), (tag, "pi", "full", "i9"))
+
+
+class SweepBoundaryTests(UsingCache, unittest.TestCase):
+    """The sweep must never reach beyond the rig's own session directories:
+    not the operator's home, not their temp dir, whatever an environment says."""
+
+    def test_the_environment_never_names_what_is_swept(self):
+        seen = {}
+        real = rig._leftovers
+
+        def spy(marker, dirs, parents=None):
+            seen["dirs"] = list(dirs)
+            return []
+
+        rig._leftovers = spy
+        try:
+            rig.sh(["true"], cwd=Path.home(), env=dict(os.environ, **{rig.MARKER: "unregistered"}))
+        finally:
+            rig._leftovers = real
+        self.assertEqual(seen["dirs"], [])
+
+    def test_only_directories_inside_the_scratch_are_sweepable(self):
+        self.assertFalse(rig._sweepable(Path.home()))
+        self.assertFalse(rig._sweepable(tempfile.gettempdir()))
+        self.assertFalse(rig._sweepable(self.root / "scratch"))
+        self.assertFalse(rig._sweepable("/"))
+        self.assertTrue(rig._sweepable(self.root / "scratch" / "s0123"))
+
+    def test_a_registered_directory_outside_the_scratch_is_ignored(self):
+        seen = {}
+        real = rig._cwds
+        rig._cwds = lambda: {12345: str(Path.home())}
+        try:
+            got = rig._leftovers("x", [str(Path.home())], parents={12345: 1})
+        finally:
+            rig._cwds = real
+        self.assertEqual(got, [], "an orphan in the operator's home was targeted")
 
 
 if __name__ == "__main__":

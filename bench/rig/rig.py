@@ -200,11 +200,23 @@ def _marked(marker):
     return found
 
 
+# Session marker -> the directories the rig made for that session. Sweeping
+# trusts only this list, and only paths under the rig's scratch directory.
+_SESSIONS = {}
+
+
+def _sweepable(d):
+    """Only a directory the rig itself made for a session, inside its scratch."""
+    root = os.path.realpath(CACHE / "scratch")
+    real = os.path.realpath(d)
+    return real != root and real.startswith(root + os.sep)
+
+
 def _leftovers(marker, dirs, parents=None):
     """A session's processes that outlived its harness: orphans working in its
     directories, and on Linux anything with its marker. Non-orphans are spared."""
     parents = _parents() if parents is None else parents
-    roots = [os.path.realpath(d) for d in dirs if d]
+    roots = [os.path.realpath(d) for d in dirs if d and _sweepable(d)]
     out = set(_marked(marker))
     for pid, cwd in (_cwds().items() if roots else []):
         cwd = os.path.realpath(cwd)
@@ -275,9 +287,8 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     if stopping():
         raise Stopped()
     main = threading.current_thread() is threading.main_thread()
-    env_ = env or {}
-    marker = env_.get(MARKER, "")
-    dirs = [str(d) for d in (cwd, env_.get("TMPDIR"), env_.get("HOME")) if d] if marker else []
+    marker = (env or {}).get(MARKER, "")
+    dirs = _SESSIONS.get(marker, [])  # only what the rig registered, never the environment
     if main:
         _Stop.starting += 1  # a signal now defers its exit until the child is registered
     try:
@@ -955,6 +966,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         h.inst = inst
         prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
         started, awake, timed_out, output, rc = time.time(), time.monotonic(), False, "", None
+        _SESSIONS[tag] = [str(ws), str(tmp), str(home)]
         try:
             rc, output = h.run(ws, prompt, cond, dict(task_env(iid, ws, venv, tmp), **{MARKER: tag}), home)
         except subprocess.TimeoutExpired as e:
@@ -987,6 +999,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         return result
     finally:
         # The workspace and home hold the endpoint key in harness config.
+        _SESSIONS.pop(tag, None)
         meta.unlink(missing_ok=True)
         for d in (ws, rig_git(ws), home, venv, tmp):
             shutil.rmtree(d, ignore_errors=True)
@@ -1082,6 +1095,7 @@ def doctor(args):
         shutil.rmtree(p, ignore_errors=True)
         p.mkdir(parents=True)
     sh(git(ws) + ["init", "--quiet"], cwd=ws)
+    _SESSIONS[f"doctor-{args.harness}"] = [str(ws), str(home)]
     try:
         rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
                         "full", dict(harness_env(), **{MARKER: f"doctor-{args.harness}"}), home)
