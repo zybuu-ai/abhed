@@ -12,7 +12,8 @@ what we support, how to report a problem, and what you can expect back.
 | 0.x | No |
 
 There is no long-term-support branch. Every fix lands on `main` and ships in
-the next 1.x release. If you are running an older release or commit, the first
+the next release: a 1.x release, unless the fix itself must break
+compatibility. If you are running an older release or commit, the first
 thing we will ask is whether the issue reproduces on the latest release.
 
 ## Reporting a vulnerability
@@ -21,7 +22,7 @@ Email **security@zybuu.com**.
 
 If you do not get a response and need a fallback, use **support@zybuu.com** —
 that is the address currently monitored day to day, and it reaches the same
-person.
+team.
 
 Please include:
 

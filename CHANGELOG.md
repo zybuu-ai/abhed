@@ -23,6 +23,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
+  asked to upgrade, and 0.x is no longer supported.
 - Sessions from the command line, the server and the Go SDK now refuse an edit
   or write that would break a file's syntax, where they applied it before.
   Set `tools.syntax_check` to `report` or `off` to keep the old behaviour;

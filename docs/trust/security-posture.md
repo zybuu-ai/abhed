@@ -4,7 +4,7 @@ A summary for a security reviewer. Every claim below names the file that
 makes it true — read the file if you need more than the summary.
 
 Abhed is at 1.x, built by a small company. No claim here should be read as a
-certification; see "What is not in place" at the end.
+certification; see "What is NOT in place" at the end.
 
 ## Trust boundaries
 

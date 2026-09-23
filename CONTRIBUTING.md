@@ -11,8 +11,8 @@ go build ./...
 go test ./...
 ```
 
-**Local quirk:** on the maintainer's machine, `GOROOT` is set to something Go
-1.26 doesn't like, so commands here are actually run as:
+**Local quirk:** if `GOROOT` is set to something Go 1.26 doesn't like, run
+commands as:
 
 ```bash
 env -u GOROOT go build ./...
