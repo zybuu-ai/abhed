@@ -267,6 +267,8 @@ class AgentChangeTests(UsingCache, unittest.TestCase):
 
         def sh(cmd, cwd=None, env=None, timeout=None, check=False):
             if cmd[:3] == ["python", "-m", "pytest"]:
+                seen["cwd"] = Path(cwd)
+                seen["stray"] = (Path(cwd) / "stray.txt").exists()
                 seen["src"] = (Path(cwd) / "src.py").read_text()
                 seen["test"] = (Path(cwd) / "test_x.py").read_text()
                 seen["tmp"] = env["TMPDIR"]
@@ -282,6 +284,43 @@ class AgentChangeTests(UsingCache, unittest.TestCase):
         self.assertEqual(seen["src"], "x = 2\n")
         self.assertEqual(seen["test"], "def test_x(): assert True\n")
         self.assertIn("rig-score-", seen["tmp"])
+        self.assertNotEqual(seen["cwd"], ws)
+        self.assertTrue(seen["stray"], "stray.txt is part of the diff, so it is in the fresh tree")
+
+    def test_harness_state_stays_out_of_the_patch(self):
+        fake_instance(self.root)
+        ws = self.root / "scratch" / "abhed-full-i1-run1"
+        rig.workspace("i1", ws)
+        (ws / ".abhed").mkdir()
+        (ws / ".abhed" / "config.json").write_text('{"api_key": "k"}')
+        (ws / "src.py").write_text("x = 3\n")
+        patch = rig.agent_patch(ws)
+        self.assertIn("+x = 3", patch)
+        self.assertNotIn(".abhed", patch)
+
+    def test_a_file_the_gold_tests_create_is_replaced_not_merged(self):
+        inst = fake_instance(self.root)
+        inst["test_patch"] = ("diff --git a/test_new.py b/test_new.py\nnew file mode 100644\n--- /dev/null\n"
+                              "+++ b/test_new.py\n@@ -0,0 +1 @@\n+def test_x(): pass\n")
+        ws = self.root / "scratch" / "abhed-full-i1-run1"
+        rig.workspace("i1", ws)
+        (ws / "test_new.py").write_text("def test_x(): assert False\n")  # the agent wrote it first
+        real_sh = rig.sh
+        seen = {}
+
+        def sh(cmd, cwd=None, env=None, timeout=None, check=False):
+            if cmd[:3] == ["python", "-m", "pytest"]:
+                seen["test"] = (Path(cwd) / "test_new.py").read_text()
+                return 0, "PASSED test_x.py::test_x\n"
+            return real_sh(cmd, cwd=cwd, env=env, timeout=timeout, check=check)
+
+        rig.sh = sh
+        try:
+            result = rig.score_patch("i1", inst, rig.agent_patch(ws), "t")
+        finally:
+            rig.sh = real_sh
+        self.assertTrue(result["resolved"], result)
+        self.assertEqual(seen["test"], "def test_x(): pass\n")
 
 
 class SessionIsolationTests(UsingCache, unittest.TestCase):
@@ -314,14 +353,17 @@ class RunBookkeepingTests(unittest.TestCase):
         out = Path("/r/abhed/full/run1/i1.json")
         self.assertEqual(rig.result_path(out, 5), out)
         self.assertEqual(rig.result_path(out, rig.SLEPT_LIMIT + 1).name, "i1.slept.json")
+        self.assertEqual(rig.result_path(out, 0, readable=False).name, "i1.unread.json")
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             run1 = root / "abhed" / "full" / "run1"
             run1.mkdir(parents=True)
             (run1 / "i1.slept.json").write_text("{}")
             (run1 / "i2.json").write_text("{}")
-            plan = [(1, "i1", "full", "abhed"), (1, "i2", "full", "abhed")]
-            self.assertEqual([t[2] for t in rig.pending(plan, root)], ["i1"])
+            (run1 / "i3.unread.json").write_text("{}")
+            self.assertEqual([p.name for p in rig.result_files(root)], ["i2.json"])
+            plan = [(1, "i1", "full", "abhed"), (1, "i2", "full", "abhed"), (1, "i3", "full", "abhed")]
+            self.assertEqual([t[2] for t in rig.pending(plan, root)], ["i1", "i3"])
 
     def test_a_timed_out_session_keeps_its_output(self):
         import subprocess
@@ -376,6 +418,70 @@ class ProxyLimitTests(unittest.TestCase):
         msgs = shim.normalise({"messages": [{"content": []}, {"content": None},
                                             {"content": [{"type": "text", "text": "a"}]}]}, 100)["messages"]
         self.assertEqual([m["content"] for m in msgs], ["", "", "a"])
+
+
+class HarnessParityTests(UsingCache, unittest.TestCase):
+    def test_abhed_is_told_the_window_and_the_output_limit(self):
+        cfg = rig.Abhed.configure({"permissions": {}}, "full")
+        bench = cfg["model"]["providers"]["bench"]
+        self.assertEqual(bench["params"]["max_tokens"], rig.MAX_OUTPUT)
+        self.assertEqual(bench["context_window"], rig.window("full"))
+        self.assertIn("permissions", cfg)
+
+    def test_every_harness_runs_with_the_session_home(self):
+        seen = []
+        real_sh = rig.sh
+
+        def sh(cmd, cwd=None, env=None, timeout=None, check=False):
+            seen.append((cmd[0], (env or {}).get("HOME")))
+            if cmd[-1] == "init":
+                (Path(cwd) / ".abhed").mkdir(exist_ok=True)
+                (Path(cwd) / ".abhed" / "config.json").write_text("{}")
+            return 0, ""
+
+        rig.sh = sh
+        try:
+            for h in (rig.Abhed(), rig.Pi(), rig.OpenHands()):
+                ws, home = self.root / f"ws-{h.name}", self.root / f"home-{h.name}"
+                ws.mkdir()
+                home.mkdir()
+                seen.clear()
+                h.run(ws, "p", "full", {"PATH": "/usr/bin", "HOME": "/Users/operator"}, home)
+                self.assertTrue(seen and all(hm == str(home) for _, hm in seen), (h.name, seen))
+        finally:
+            rig.sh = real_sh
+
+    def test_the_record_beside_a_result_is_redacted(self):
+        import os
+        saved = {k: os.environ.get(k) for k in ("ABHED_BENCH_API_KEY", "ABHED_BIN")}
+        os.environ["ABHED_BENCH_API_KEY"] = "sk-secret-123456"
+        os.environ["ABHED_BIN"] = str(self.root / "no-such-binary")
+        try:
+            out = self.root / "r" / "i1.json"
+            out.parent.mkdir()
+            rig.hawkeye([{"type": "observation", "seq": 1, "payload": {"content": "api_key sk-secret-123456"}}], out)
+            self.assertNotIn("sk-secret-123456", (out.parent / "i1.events.json").read_text())
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_local_variants_carry_the_window_and_the_output_limit(self):
+        import argparse
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            rig.models(argparse.Namespace(base="some-model"))
+        text = (self.root / "modelfiles" / "full.Modelfile").read_text()
+        self.assertIn(f"PARAMETER num_ctx {rig.CONDITIONS['full']}", text)
+        self.assertIn(f"PARAMETER num_predict {rig.MAX_OUTPUT}", text)
+
+    def test_the_environment_sets_no_temp_dir_unless_given_one(self):
+        import os
+        env = rig.task_env("i1", self.root / "ws")
+        self.assertEqual(env.get("TMPDIR"), os.environ.get("TMPDIR"))
 
 
 if __name__ == "__main__":

@@ -57,6 +57,7 @@ DATASET = "princeton-nlp/SWE-bench_Verified"
 # a run takes two minutes, depends on somebody else's server, and cannot be
 # repeated offline. Several of its instances are also Python 2 bugs that do not
 # reproduce on a current interpreter.
+
 # Each project gets its own test requirements, as in SWE-bench; without them
 # agents meet import errors and write stand-ins for the missing packages.
 POOL = {
@@ -91,6 +92,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # stdin is closed on purpose. pi merges piped stdin into its prompt, so a
     # harness that inherits an open stdin waits on it for ever and never calls
     # the model — which is how the first doctor run on pi spent ten minutes.
+    #
     # Its own process group, so a timeout stops the agent's tools with it.
     p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -101,7 +103,11 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        out, _ = p.communicate()
+        try:
+            out, _ = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # a daemonised grandchild still holds the pipe
+            p.stdout.close()
+            out = ""
         raise subprocess.TimeoutExpired(cmd, timeout, output=out) from e
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{out[-2000:]}")
@@ -162,6 +168,7 @@ def prepare(args):
         if env_current(iid, inst["repo"]):
             continue
         print(f"prepare {iid}", flush=True)
+        (CACHE / "suite.json").unlink(missing_ok=True)  # validated against the old environment
         shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True)
         mirror = CACHE / "mirrors" / inst["repo"].replace("/", "__")
@@ -242,11 +249,11 @@ class NoPatch(Exception):
 def agent_patch(ws):
     """The agent's change against the base tree, from the rig's own record."""
     g = git(ws, rig_git(ws))
-    rc, out = sh(g + ["add", "-A"], cwd=ws)
+    keep_out = [":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"]
+    rc, out = sh(g + ["add", "-A", "--", ".", *keep_out], cwd=ws)
     if rc != 0:
         raise NoPatch(out[-500:])
-    rc, out = sh(g + ["diff", "--cached", "--binary", "HEAD", "--", ".",
-                      ":(exclude).abhed", ":(exclude).pi", ":(exclude).openhands"], cwd=ws)
+    rc, out = sh(g + ["diff", "--cached", "--binary", "HEAD", "--", ".", *keep_out], cwd=ws)
     if rc != 0:
         raise NoPatch(out[-500:])
     return out
@@ -365,6 +372,8 @@ def validate(_):
             valid[iid] = drift
         else:
             (env_dir(iid) / "invalid.json").write_text(json.dumps({"base": base, "gold": gold}, indent=1))
+    for d in (CACHE / "scratch" / "validate", rig_git(CACHE / "scratch" / "validate")):
+        shutil.rmtree(d, ignore_errors=True)
     (CACHE / "suite.json").write_text(json.dumps(valid, indent=1))
     print(f"\n{len(valid)} of {len(ready)} prepared instances are valid → {CACHE / 'suite.json'}")
 
@@ -473,22 +482,24 @@ class Abhed(Harness):
     def available(self):
         return Path(self.binary()).exists(), f"build it: go build -o abhed ./cmd/abhed (looked for {self.binary()})"
 
-    def run(self, ws, prompt, cond, env, home):
-        # Start from the shipped defaults and change only the model, so the
-        # benchmark runs the configuration a new user gets.
-        sh([self.binary(), "-C", str(ws), "init"], cwd=ws, check=True)
-        path = ws / ".abhed" / "config.json"
-        cfg = json.loads(path.read_text())
+    @staticmethod
+    def configure(cfg, cond):
+        """The shipped defaults with only the model changed, told the same
+        window and output limit as the other harnesses."""
         cfg["model"] = {"default": "bench", "providers": {"bench": {
             "type": "openai-compatible", "base_url": endpoint(), "model": model_name(cond),
-            "api_key": api_key(), "context_window": window(cond), "params": {}}}}
-        path.write_text(json.dumps(cfg, indent=1))
-        # Unattended, as the other harnesses run: nothing prompts. Abhed keeps
-        # its sandbox and its deny rules in this mode; that is the product.
-        # JSON output is the session's event record, one event per line: what
-        # HawkEYE reads to say why a session went the way it did.
-        # The turn limit is the shipped default, as for the other harnesses;
-        # the wall clock is the one limit the rig itself sets.
+            "api_key": api_key(), "context_window": window(cond), "params": {"max_tokens": MAX_OUTPUT}}}}
+        return cfg
+
+    def run(self, ws, prompt, cond, env, home):
+        # A throwaway HOME, as the others get: no operator skills or ABHED.md.
+        env = dict(env, HOME=str(home))
+        sh([self.binary(), "-C", str(ws), "init"], cwd=ws, env=env, check=True)
+        path = ws / ".abhed" / "config.json"
+        path.write_text(json.dumps(self.configure(json.loads(path.read_text()), cond), indent=1))
+
+        # Unattended, as the other harnesses run; bypass keeps the sandbox and deny rules.
+        # JSON output is the event record HawkEYE reads; the turn limit is the default.
         return sh([self.binary(), "-C", str(ws), "-mode", "bypass",
                    "-output-format", "json", "-p", prompt],
                   cwd=ws, env=env, timeout=RUN_TIMEOUT)
@@ -527,7 +538,7 @@ def hawkeye(events, out_path):
     failed but what the record shows it doing: a call denied, a repeated
     failure, a session that hit the context ceiling."""
     rec = out_path.with_name(out_path.stem + ".events.json")
-    rec.write_text(json.dumps(events))
+    rec.write_text(redact(json.dumps(events)))
     binary = Abhed().binary()
     if not Path(binary).exists():
         return {"findings": [], "note": "abhed binary not built; record saved, not analysed"}
@@ -608,8 +619,11 @@ def timeout_output(e):
     return out.decode("utf-8", "replace") if isinstance(out, bytes) else out
 
 
-def result_path(out_path, slept):
-    """A session the machine slept through is kept aside, so a resume redoes it."""
+def result_path(out_path, slept, readable=True):
+    """A session the machine slept through, or whose change the rig could not
+    read, is kept aside rather than scored, so a resume redoes it."""
+    if not readable:
+        return out_path.with_suffix(".unread.json")
     return out_path.with_suffix(".slept.json") if slept > SLEPT_LIMIT else out_path
 
 
@@ -664,11 +678,12 @@ def one_run(hname, iid, cond, out_path, run=1):
         # The monotonic clock, and so the session timeout, stops while the machine sleeps.
         slept = elapsed - (time.monotonic() - awake)
 
+        readable = True
         try:
             diff = agent_patch(ws)
             scored = score_patch(iid, inst, diff, tag)
         except NoPatch as e:
-            diff, scored = "", {"resolved": False, "reason": "the agent's change could not be read", "detail": str(e)}
+            readable, diff, scored = False, "", {"resolved": False, "reason": "unread", "detail": str(e)}
         result = {"harness": hname, "base_model": base_model(), "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
                   "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc,
                   "timed_out": timed_out, "wall_sec": round(elapsed, 1), "patch_bytes": len(diff),
@@ -678,8 +693,8 @@ def one_run(hname, iid, cond, out_path, run=1):
         events = h.record(output) if hasattr(h, "record") else None
         if events:
             result["hawkeye"] = hawkeye(events, out_path)
-        final = result_path(out_path, slept)
-        if final != out_path:
+        final = result_path(out_path, slept, readable)
+        if slept > SLEPT_LIMIT:
             result["slept_sec"] = round(slept)
         final.write_text(json.dumps(result, indent=1))
         return result
@@ -731,7 +746,7 @@ def result_files(root):
     """One file per session: the result, not the record or the HawkEYE
     report the rig writes beside it."""
     return [p for p in sorted(root.glob("*/*/run*/*.json"))
-            if not p.name.endswith((".events.json", ".hawkeye.json", ".slept.json"))]
+            if not p.name.endswith((".events.json", ".hawkeye.json", ".slept.json", ".unread.json"))]
 
 
 def base_model():
@@ -770,9 +785,13 @@ def doctor(args):
         shutil.rmtree(p, ignore_errors=True)
         p.mkdir(parents=True)
     sh(["git", "init", "--quiet"], cwd=ws)
-    rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
-                    "full", dict(os.environ), home)
-    made = (ws / "hello.txt").exists() and "ready" in (ws / "hello.txt").read_text()
+    try:
+        rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
+                        "full", dict(os.environ), home)
+        made = (ws / "hello.txt").exists() and "ready" in (ws / "hello.txt").read_text()
+    finally:
+        for p in (ws, home):  # both hold the endpoint key in harness config
+            shutil.rmtree(p, ignore_errors=True)
     print(out[-1200:])
     if not made:
         sys.exit(f"\n{args.harness}: exit {rc}, and hello.txt was not written. Fix the setup before benchmarking.")
@@ -876,9 +895,14 @@ def snapshot(date):
     if cur:
         d, h, cond, iid = cur
         out += ["", f"  now       {h} · {cond} · {iid}   ({_hms(time.time() - d.stat().st_ctime)} of {_hms(RUN_TIMEOUT)} allowed)"]
-        _, diff = sh(git(d, rig_git(d)) + ["diff", "--stat", "HEAD"], cwd=d, timeout=20)
-        changed = [ln.strip() for ln in diff.strip().splitlines() if "|" in ln]
-        out.append(f"  editing   {', '.join(c.split('|')[0].strip() for c in changed[:4]) or 'nothing changed yet'}")
+        g = git(d, rig_git(d)) + ["--no-optional-locks"]  # never contend with the session's add
+        try:
+            _, diff = sh(g + ["diff", "--name-only", "HEAD"], cwd=d, timeout=20)
+            _, new = sh(g + ["ls-files", "-o", "--exclude-standard"], cwd=d, timeout=20)
+        except OSError:
+            diff = new = ""  # the session ended while we looked
+        changed = [ln.strip() for ln in (diff + new).splitlines() if ln.strip() and not ln.startswith(".")]
+        out.append(f"  editing   {', '.join(changed[:4]) or 'nothing changed yet'}")
 
     if done:
         cells = {}

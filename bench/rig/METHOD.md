@@ -36,8 +36,11 @@ are each harness's shipped default:
 
 Every harness is held to the same output limit per turn,
 `ABHED_BENCH_MAX_OUTPUT` (8,192 tokens, Abhed's own default): Abhed and pi are
-told it, and the endpoint enforces it for all three — `num_predict` in the
-local Ollama variants, the proxy hook on a hosted run. The context window is
+told it, and the proxy hook on a hosted run holds every request to it. On a
+local run the Ollama variants set it as `num_predict`, which is a default a
+request's own `max_tokens` overrides; Abhed and pi send the same number, and
+OpenHands sends none for a model it does not know, so the default applies.
+Variants created before `num_predict` was added lack it: run `models` again. The context window is
 enforced at a local endpoint; on a hosted model it is the model's own and
 Abhed and pi are told it, while OpenHands, whose CLI takes no window setting,
 runs on its defaults.
@@ -46,8 +49,8 @@ An earlier revision capped Abhed alone at 60 turns, below its own default.
 In the hosted run of 23 Sep 2026, stopped and not published, fourteen of
 Abhed's first nineteen sessions ended on that cap; the run was redone.
 
-pi and OpenHands read configuration from the home directory, so each run gets
-a throwaway `HOME`. The operator's own settings are never read or written.
+Every harness reads configuration from the home directory — Abhed its
+skills and `ABHED.md` under `~/.abhed` — so each run gets a throwaway `HOME`. The operator's own settings are never read or written.
 Both are installed under the rig's cache (`.cache/tools`), not globally.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
@@ -241,7 +244,8 @@ results say. The copy of the environment is the agent's to change; the tests
 are scored in the prepared one, so nothing an agent installs there reaches the
 score or the next session. The prepared environment is not write-protected:
 a harness with no sandbox (pi, OpenHands) could still write into it by
-absolute path. None has been seen to; `prepare` rebuilds it if one does. A session during which the machine slept for more than
+absolute path. None has been seen to; if one does, delete that environment
+under `.cache/envs` and run `prepare` and `validate` again. A session during which the machine slept for more than
 two minutes is set aside as `<instance>.slept.json` and redone on resume: the
 session timeout runs on a clock that stops in sleep, and a model request that
 spans a sleep fails at the endpoint, so such a session measures neither
@@ -253,7 +257,13 @@ rig-prefixed environment variables (`ABHED_BENCH_WATSONX_*`), and its hook
 holds every request to the output limit and normalises message content some
 providers reject. Abhed and pi are told the hosted model's own window
 (`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b). The endpoint key is
-redacted from every result.
+redacted from every result and from the event record kept beside it. The
+proxy reads `ABHED_BENCH_MAX_OUTPUT` from its own environment, so start it
+with the same value the rig runs with.
+
+A session whose change the rig could not read is kept aside as
+`<instance>.unread.json`, like a slept one, and redone on resume: a failure
+of the rig's own must not be scored as the harness's loss.
 
 `summarize` reports each harness by the dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,
