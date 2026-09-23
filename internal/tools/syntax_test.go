@@ -389,7 +389,7 @@ func TestAnUnknownBeforeNeverRefuses(t *testing.T) {
 }
 
 func TestDiffsInFilesWhereMarkersAreContent(t *testing.T) {
-	for ext := range notCode {
+	for _, ext := range []string{".md", ".markdown", ".rst", ".txt", ".csv", ".yaml", ".yml", ".diff", ".patch"} {
 		if path := "file" + ext; looksLikeDiff(path, "old", "-old\n+new") {
 			t.Errorf("%s: a hunk in a file where it is content was refused", path)
 		}
@@ -417,5 +417,73 @@ func TestReportModeWarnsOfADiffWhenCreating(t *testing.T) {
 	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "", "new_string": "-a\n+b\n"})
 	if r.IsError || !strings.Contains(r.Content, "pasted diff") {
 		t.Fatalf("the diff warning was lost on create: %+v", r)
+	}
+}
+
+// JSON with comments by convention is parsed as such: adding a comment and a
+// trailing comma to a tsconfig is not a break, a missing brace still is.
+func TestJSONWithCommentsIsParsedAsSuch(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "tsconfig.json")
+	writeFile(t, p, "{\"compilerOptions\": {\"strict\": true}}\n")
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Write{}, s, map[string]any{"path": p,
+		"content": "{\n  // keep strict on\n  \"compilerOptions\": {\"strict\": true,},\n  /* url: \"http://x\" */\n}\n"})
+	if r.IsError {
+		t.Fatalf("a comment in tsconfig.json was refused: %+v", r)
+	}
+	run(t, Read{}, s, map[string]any{"path": p})
+	r = run(t, Write{}, s, map[string]any{"path": p, "content": "{\n  // strict\n  \"compilerOptions\": {\n"})
+	if !r.IsError {
+		t.Fatalf("a broken tsconfig.json was written: %+v", r)
+	}
+	if got := string(stripJSONC([]byte(`{"u": "http://a//b", "c": "/* x */"}`))); got != `{"u": "http://a//b", "c": "/* x */"}` {
+		t.Fatalf("comment markers inside strings were stripped: %s", got)
+	}
+	if jsonc(filepath.Join(dir, "package.json")) {
+		t.Fatal("package.json, which is strict JSON, was treated as JSONC")
+	}
+}
+
+// A Python failure that is not a compile error says nothing about the file.
+func TestACrashingInterpreterLeavesTheFileUnchecked(t *testing.T) {
+	s, _ := setup(t)
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	py := filepath.Join(bin, "python3")
+	writeFile(t, py, "#!/bin/sh\nfor a in \"$@\"; do case $a in *version_info*) echo 3 13; exit 0;; esac; done\necho 'Fatal Python error' >&2\nexit 1\n")
+	if err := os.Chmod(py, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	defer pyVersions.Delete(py)
+	if v := s.parses(context.Background(), "a.py", []byte("x = 1\n")); v.checked {
+		t.Fatalf("a crash was taken for a verdict: %+v", v)
+	}
+}
+
+func TestOffModeAppliesAPastedDiffSilently(t *testing.T) {
+	s, dir := setup(t)
+	s.Syntax = SyntaxOff
+	p := filepath.Join(dir, "run.sh")
+	writeFile(t, p, "a\n")
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "a\n", "new_string": "-a\n+b\n"})
+	if r.IsError || strings.Contains(r.Content, "pasted diff") {
+		t.Fatalf("off mode must apply without a word: %+v", r)
+	}
+}
+
+func TestReportModeWarnsOfADiffInAnExistingFile(t *testing.T) {
+	s, dir := setup(t)
+	s.Syntax = SyntaxReport
+	p := filepath.Join(dir, "run.sh")
+	writeFile(t, p, "a\n")
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "a\n", "new_string": "-a\n+b\n"})
+	if r.IsError || !strings.Contains(r.Content, "pasted diff") {
+		t.Fatalf("report mode lost the diff warning: %+v", r)
 	}
 }

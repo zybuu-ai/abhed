@@ -293,3 +293,15 @@ func TestRefusedEditIsReported(t *testing.T) {
 	}
 	t.Fatalf("no broken-edit finding: %+v", got.Findings)
 }
+
+// An ordinary failed edit, such as text not found, is not a broken edit.
+func TestOrdinaryEditFailureIsNotABrokenEdit(t *testing.T) {
+	r := (&rec{}).user("x").
+		call("c1", "edit", `{"path":"a.py"}`, "allow", "old_string not found in a.py", true).
+		end(agent.TermCompleted)
+	for _, f := range Analyze("s-test", r.evs).Findings {
+		if f.Code == "broken-edit" {
+			t.Fatalf("an ordinary failure was reported as broken-edit: %+v", f)
+		}
+	}
+}

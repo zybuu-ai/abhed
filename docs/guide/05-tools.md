@@ -23,20 +23,26 @@ handed to that one command as environment variables when a
 `edit` and `write` parse the result before they write it, for Go, JSON and
 Python. A change that would leave a file that parsed no longer parsing is not
 applied: the file stays as it was and the model is told the parser's error and
-the line, so it fixes its own text on the next turn. An `edit` whose new text is
-a pasted diff hunk — every non-empty line starts with `+` or `-`, there is at
-least one of each, and the old text has no such lines — is refused the same
-way, except in files where such lines are ordinary content (Markdown,
-reStructuredText, YAML, text, CSV, diffs). A file that did not parse before can still be edited, so a
-refactor is never blocked half-way, and a new file is always written, with a
-warning if it does not parse.
+the line, so it fixes its own text on the next turn. JSON files that allow
+comments and trailing commas by convention — `.jsonc`, `tsconfig*.json`,
+`jsconfig*.json`, `.eslintrc.json`, `devcontainer.json` and anything under
+`.vscode/` or `.devcontainer/` — are parsed that way.
+
+An `edit` whose new text is a pasted diff hunk — every non-empty line starts
+with `+` or `-`, there is at least one of each, and the old text has no such
+lines — is refused the same way, except in files where such lines are ordinary
+content (Markdown, reStructuredText, YAML, text, CSV, diffs). A file that did
+not parse before can still be edited, so a refactor is never blocked half-way,
+and a new file is written even if it does not parse, with a warning, unless it
+is a pasted diff.
 
 Python is compiled, never run, by the `python3` on the path — the real
-interpreter behind it, never one inside the workspace, with site packages and
-the environment switched off. With no `python3`, or when `python3` is a
-version-manager shim (pyenv, asdf) that needs its environment, Python is not
-checked. The host's interpreter decides what parses, so one older than 3.12, which could
-reject newer syntax the project accepts, warns instead of refusing.
+interpreter behind it, never one inside the workspace or an added directory,
+with site packages and the environment switched off. With no `python3`, or
+when `python3` is a version-manager shim (pyenv, asdf) that needs its
+environment, Python is not checked. The host's interpreter decides what
+parses, so one older than 3.12, which could reject newer syntax the project
+accepts, warns instead of refusing.
 
 Edits and saves made by a person in the [workbench](16-workbench.md) are
 never refused: they are saved, with the warning. Refused changes appear in

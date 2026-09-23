@@ -69,7 +69,10 @@ func (s *Session) parses(ctx context.Context, path string, content []byte) verdi
 	case ".go":
 		_, err := parser.ParseFile(token.NewFileSet(), filepath.Base(path), content, parser.SkipObjectResolution)
 		return verdict{checked: true, err: err, strict: true, by: "go"}
-	case ".json":
+	case ".json", ".jsonc":
+		if jsonc(path) {
+			content = stripJSONC(content)
+		}
 		var v any
 		if err := json.Unmarshal(content, &v); err != nil {
 			return verdict{checked: true, err: fmt.Errorf("invalid JSON: %w", err), strict: true, by: "json"}
@@ -276,4 +279,98 @@ func sentence(msg string) string {
 		return msg
 	}
 	return msg + "."
+}
+
+// jsonc reports files that are JSON with comments and trailing commas by
+// convention: editor, TypeScript and linter configuration.
+func jsonc(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	dir := strings.ToLower(filepath.Base(filepath.Dir(path)))
+	switch {
+	case filepath.Ext(base) == ".jsonc", dir == ".vscode", dir == ".devcontainer",
+		strings.HasPrefix(base, "tsconfig") && strings.HasSuffix(base, ".json"),
+		strings.HasPrefix(base, "jsconfig") && strings.HasSuffix(base, ".json"),
+		base == "devcontainer.json", base == ".eslintrc.json", base == ".babelrc.json":
+		return true
+	}
+	return false
+}
+
+// stripJSONC removes comments, then trailing commas, outside strings, so what
+// is left is plain JSON when the original was valid JSONC.
+func stripJSONC(src []byte) []byte {
+	return trailingCommas(scanJSON(src, true))
+}
+
+// scanJSON copies src, dropping comments outside strings when comments is set.
+func scanJSON(src []byte, comments bool) []byte {
+	out := make([]byte, 0, len(src))
+	inString, escaped := false, false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case inString:
+			out = append(out, c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+		case c == '"':
+			inString = true
+			out = append(out, c)
+		case comments && c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i+1 < len(src) && src[i+1] != '\n' {
+				i++
+			}
+		case comments && c == '/' && i+1 < len(src) && src[i+1] == '*':
+			i += 2
+			for i+1 < len(src) && (src[i] != '*' || src[i+1] != '/') {
+				i++
+			}
+			i++
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// trailingCommas drops a comma, outside strings, whose next non-space byte
+// closes an object or an array.
+func trailingCommas(src []byte) []byte {
+	out := make([]byte, 0, len(src))
+	inString, escaped := false, false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inString {
+			out = append(out, c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(src) && strings.ContainsRune(" \t\r\n", rune(src[j])) {
+				j++
+			}
+			if j < len(src) && (src[j] == '}' || src[j] == ']') {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
