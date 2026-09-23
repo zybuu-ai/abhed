@@ -167,23 +167,28 @@ func TestCacheReportedFollowsTheProvider(t *testing.T) {
 		{"gemini with figure", `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50,"cachedContentTokenCount":0}}`, true, false},
 		{"gemini without", `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50}}`, false, false},
 	} {
-		frames := []string{tc.frame}
-		if tc.anthropic {
-			frames = append(frames, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`, `{"type":"message_stop"}`)
-		}
-		srv := sseServer(t, frames...)
-		var a Adapter = NewGemini(srv.URL, "k", "m", Profile{})
-		if tc.anthropic {
-			a = NewAnthropic(srv.URL, "k", "m", Profile{})
-		}
-		ch, err := a.Complete(context.Background(), Request{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _, _, usage, _ := drain(t, ch)
-		srv.Close()
-		if usage.CacheReported != tc.reported {
-			t.Errorf("%s: CacheReported = %v, want %v", tc.name, usage.CacheReported, tc.reported)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			frames := []string{tc.frame}
+			if tc.anthropic {
+				frames = append(frames, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`, `{"type":"message_stop"}`)
+			}
+			srv := sseServer(t, frames...)
+			t.Cleanup(srv.Close)
+			var a Adapter = NewGemini(srv.URL, "k", "m", Profile{})
+			if tc.anthropic {
+				a = NewAnthropic(srv.URL, "k", "m", Profile{})
+			}
+			ch, err := a.Complete(context.Background(), Request{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, _, usage, errs := drain(t, ch)
+			if len(errs) != 0 {
+				t.Fatalf("unexpected errors: %v", errs)
+			}
+			if usage.CacheReported != tc.reported {
+				t.Errorf("CacheReported = %v, want %v", usage.CacheReported, tc.reported)
+			}
+		})
 	}
 }
