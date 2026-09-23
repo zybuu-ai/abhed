@@ -87,17 +87,18 @@ harness's shell — Abhed's included, whose sandbox allows reads — could reach
 by absolute path. Every result records `touched_answers` when a session's
 output or change names that cache, and the summary lists every such session,
 or says there were none. It is a name match: a glob, `find` or a directory
-listing in code would not trip it. Sessions in flight are abandoned, not
-scored, and redone on resume; results are written whole or not at all. A
-resume must be the same run: the rig refuses one under the same date whose
-sessions, model, endpoint, limits, timeout or parallelism differ from the plan
-it continues. Abhed applies an organisation's managed config
-(`/etc/abhed/config.json`) over any other, so `doctor` and `run` refuse Abhed
-on a machine that has one.
+listing in code would not trip it.
 
 A harness is waited for, not its output pipe: a tool it left holding the pipe
 cannot turn a normal exit into a timeout. Output such a tool writes more than
 ten seconds after its harness ends is not kept.
+
+Sessions in flight are abandoned, not scored, and redone on resume; results
+are written whole or not at all. A resume must be the same run: the rig
+refuses one under the same date whose sessions, model, endpoint, limits,
+timeout or parallelism differ from the plan it continues. Abhed applies an
+organisation's managed config (`/etc/abhed/config.json`) over any other, so
+`doctor` and `run` refuse Abhed on a machine that has one.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
 prompt, so with an inherited stdin it waits for input that never comes and

@@ -348,12 +348,14 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
             _Stop.starting -= 1
     # The output is read on the side and the process waited for, not the pipe:
     # a tool that keeps the pipe open must not turn an exit into a timeout.
-    chunks = []
-    reader = threading.Thread(target=_read_all, args=(os.dup(p.stdout.fileno()), chunks), daemon=True)
+    chunks, fd, reader = [], None, None
     try:
         if stopping():
             raise Stopped()  # the stop came while this child was starting
+        fd = os.dup(p.stdout.fileno())
+        reader = threading.Thread(target=_read_all, args=(fd, chunks), daemon=True)
         reader.start()
+        fd = None  # the reader owns it now
         p.wait(timeout=timeout)
     except subprocess.TimeoutExpired as e:
         _end(p.pid, marker, dirs, p)
@@ -363,6 +365,8 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
         raise
     finally:
         _LIVE.pop(p.pid, None)
+        if fd is not None:
+            os.close(fd)  # the reader never started
     # Anything the agent left running, in the group or orphaned.
     _signal([p.pid], signal.SIGKILL, group=True)
     if marker:
