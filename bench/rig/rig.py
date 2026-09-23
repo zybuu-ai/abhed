@@ -339,6 +339,21 @@ def model_name(cond):
     return f"abhed-bench-{cond}"
 
 
+def window(cond):
+    """The context window every harness is told. A local run enforces it at
+    the endpoint; a hosted model has its own, which the rig cannot change, so
+    all three are told that one instead of a smaller number only some obey."""
+    if remote():
+        return int(os.environ.get("ABHED_BENCH_CONTEXT", "131072"))
+    return CONDITIONS[cond]
+
+
+# Every harness answers with at most this many tokens a turn. Abhed's shipped
+# default is the same number; pi is told it; OpenHands cannot be, so the
+# hosted proxy applies it to any request that names no limit.
+MAX_OUTPUT = 8192
+
+
 def endpoint():
     return os.environ.get("ABHED_BENCH_ENDPOINT", "http://127.0.0.1:11434/v1")
 
@@ -418,13 +433,15 @@ class Abhed(Harness):
         cfg = json.loads(path.read_text())
         cfg["model"] = {"default": "bench", "providers": {"bench": {
             "type": "openai-compatible", "base_url": endpoint(), "model": model_name(cond),
-            "api_key": api_key(), "context_window": CONDITIONS[cond], "params": {}}}}
+            "api_key": api_key(), "context_window": window(cond), "params": {}}}}
         path.write_text(json.dumps(cfg, indent=1))
         # Unattended, as the other harnesses run: nothing prompts. Abhed keeps
         # its sandbox and its deny rules in this mode; that is the product.
         # JSON output is the session's event record, one event per line: what
         # HawkEYE reads to say why a session went the way it did.
-        return sh([self.binary(), "-C", str(ws), "-mode", "bypass", "-max-turns", "60",
+        # The turn limit is the shipped default, as for the other harnesses;
+        # the wall clock is the one limit the rig itself sets.
+        return sh([self.binary(), "-C", str(ws), "-mode", "bypass",
                    "-output-format", "json", "-p", prompt],
                   cwd=ws, env=env, timeout=RUN_TIMEOUT)
 
@@ -493,7 +510,7 @@ class Pi(Harness):
         (agent / "models.json").write_text(json.dumps({"providers": {"bench": {
             "baseUrl": endpoint(), "api": "openai-completions", "apiKey": api_key(),
             "models": [{"id": model_name(cond), "name": model_name(cond), "reasoning": False, "input": ["text"],
-                        "contextWindow": CONDITIONS[cond], "maxTokens": 8192,
+                        "contextWindow": window(cond), "maxTokens": MAX_OUTPUT,
                         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}}, indent=1))
         env = dict(env, HOME=str(home))
         return sh(["pi", "--provider", "bench", "--model", model_name(cond), "--mode", "json", "-p", prompt],
@@ -552,7 +569,9 @@ def one_run(hname, iid, cond, out_path, run=1):
     try:
         rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv), home)
     except subprocess.TimeoutExpired as e:
-        timed_out, output = True, (e.stdout or "") if isinstance(e.stdout, str) else ""
+        # The captured output comes back as bytes even in text mode.
+        out = e.stdout or b""
+        timed_out, output = True, out.decode("utf-8", "replace") if isinstance(out, bytes) else out
     elapsed = time.time() - started
     # The monotonic clock stops while the machine sleeps, and so does the
     # session timeout. A session that slept is not a fair measurement.
@@ -688,6 +707,7 @@ def run(args):
     (RESULTS / args.date / "rig" / "suite.json").write_text(json.dumps(suite(), indent=1))
     (RESULTS / args.date / "rig" / "plan.json").write_text(json.dumps(
         {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "timeout_sec": RUN_TIMEOUT, "base_model": base_model(),
+         "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
          "difficulty": getattr(args, "difficulty", None) or "any",
          "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}))
     todo = []

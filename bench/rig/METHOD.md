@@ -15,7 +15,7 @@ comparison, not a claim about them.
 
 | Harness | Invocation | Source, read 21 Sep 2026 |
 |---|---|---|
-| Abhed | `abhed -mode bypass -max-turns 60 -p <prompt>`, shipped default config with only the model changed | `docs/guide/10-automation.md` |
+| Abhed | `abhed -mode bypass -output-format json -p <prompt>`, shipped default config with only the model changed | `docs/guide/10-automation.md` |
 | pi | `pi --provider bench --model <id> --mode json -p <prompt>`, model declared in `~/.pi/agent/models.json` | pi-mono `packages/coding-agent` README and `docs/models.md` |
 | OpenHands | `openhands --headless --json --override-with-envs -t <prompt>`, `LLM_MODEL=openai/<id>`, `LLM_BASE_URL`, `LLM_API_KEY` | OpenHands docs: CLI headless, command reference, local LLMs |
 
@@ -23,6 +23,16 @@ Each runs **unattended in the mode its own documentation gives for that**:
 nothing prompts. OpenHands' headless mode "always runs in always-approve mode";
 pi has no permission system; Abhed's `bypass` mode still enforces its deny
 rules and its sandbox, because that is what the product is.
+
+**Limits.** The rig sets one limit of its own, the wall clock
+(`ABHED_BENCH_TIMEOUT`, 30 minutes), the same for every harness. Turn limits
+are each harness's shipped default: Abhed 100, OpenHands 500 iterations, pi
+none. Every harness is told the same context window and the same output
+limit per turn (8,192 tokens): Abhed and pi in their configuration, OpenHands
+through the proxy on a hosted run, since its CLI takes neither from the
+environment. An earlier revision capped Abhed alone at 60 turns, below its own
+default; fourteen of its first nineteen sessions on the hosted run ended on
+that cap, and the run was stopped and redone.
 
 pi and OpenHands read configuration from the home directory, so each run gets
 a throwaway `HOME`. The operator's own settings are never read or written.
@@ -213,6 +223,13 @@ two minutes is set aside as `<instance>.slept.json` and redone on resume: the
 session timeout runs on a clock that stops in sleep, and a model request that
 spans a sleep fails at the endpoint, so such a session measures neither
 harness nor model.
+
+A hosted run goes through a LiteLLM proxy (`bench/rig/hosted/`): the
+harnesses speak OpenAI's API to it, it holds the provider's credentials from
+the environment, and its hook applies the output limit and normalises message
+content some providers reject. On a hosted model every harness is told the
+model's own window (`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b), not a
+smaller number only some of them would honour.
 
 `summarize` reports each harness by the dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,

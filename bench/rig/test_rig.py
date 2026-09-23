@@ -235,5 +235,25 @@ class AgentCommitTests(unittest.TestCase):
             self.assertEqual((ws / "test_x.py").read_text(), "def test(): pass\n")
 
 
+class WindowTests(unittest.TestCase):
+    def test_every_harness_is_told_one_window(self):
+        import os
+        saved = {k: os.environ.get(k) for k in ("ABHED_BENCH_MODEL", "ABHED_BENCH_CONTEXT")}
+        try:
+            for k in saved:
+                os.environ.pop(k, None)
+            self.assertEqual(rig.window("tight"), rig.CONDITIONS["tight"])
+            os.environ["ABHED_BENCH_MODEL"] = "openai/gpt-oss-120b"
+            self.assertEqual(rig.window("full"), 131072)
+            os.environ["ABHED_BENCH_CONTEXT"] = "65536"
+            self.assertEqual(rig.window("full"), 65536)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,17 @@
+# A LiteLLM proxy in front of a hosted model. Credentials come from the
+# environment; nothing secret belongs in this file. Run from this directory:
+#   PYTHONPATH=. litellm --config litellm.example.yaml --host 127.0.0.1 --port 4000
+model_list:
+  - model_name: watsonx/openai/gpt-oss-120b
+    litellm_params:
+      model: watsonx/openai/gpt-oss-120b
+      api_key: os.environ/WATSONX_APIKEY
+      api_base: os.environ/WATSONX_URL
+      space_id: os.environ/WATSONX_SPACE_ID
+litellm_settings:
+  callbacks: shim.shim
+  drop_params: true
+  num_retries: 2
+  request_timeout: 600
+general_settings:
+  master_key: bench
