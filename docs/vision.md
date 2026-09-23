@@ -76,9 +76,9 @@ to that cloud they are hard to beat, and we do not try to. For an organisation
 that cannot, they are not on the table, and that organisation is our customer.
 
 **Against terminal harnesses for one developer.** Superb tools for one
-developer in a terminal, with many models. For that developer they are the
-better choice than Abhed, and we say so. Abhed is built for a platform team serving an organisation: many
-users, tenants, policy, audit, a server, an SDK.
+developer in a terminal, with many models. For that developer they can be the
+better choice than Abhed, and we say so. Abhed is built for a platform team
+serving an organisation: many users, tenants, policy, audit, a server, an SDK.
 
 **Against agent frameworks.** A toolkit, and a good one, for a team
 assembling agents in Python. The sandbox, the approvals, the audit log

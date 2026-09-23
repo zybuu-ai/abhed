@@ -68,8 +68,8 @@ An API key, from config or the environment:
 
 A Claude Pro or Max subscription token is **restricted to Anthropic's own
 apps**. Anthropic accepts the credential and then refuses the request unless the
-system prompt is its own client's. Measured directly: same token,
-same model, same second, the only difference being the first system block.
+system prompt is its own client's. Measured directly: same token, same model,
+same second, the only difference being the first system block.
 
 | First system block | Result |
 |---|---|
@@ -87,9 +87,9 @@ correct and the restriction may not be permanent. Today it is useful only for
 models outside the check.
 
 Working around it means sending Anthropic's client identity string from a
-product that is not that client. That circumvents an access control, misrepresents the
-product, and breaks the moment the check changes — so Abhed does not do it, and
-neither should anything built on it.
+product that is not that client. That circumvents an access control,
+misrepresents the product, and breaks the moment the check changes — so Abhed
+does not do it, and neither should anything built on it.
 
 Some models outside the check still answer. That is not a reason to rely on it:
 third-party usage of a subscription is billed as *extra usage* rather than drawn

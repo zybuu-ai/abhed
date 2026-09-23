@@ -219,8 +219,8 @@ func TestRetryableStatuses(t *testing.T) {
 }
 
 // A subscription token is accepted and then refused for anything but
-// Anthropic's own apps, and the refusal arrives as a 429. Telling the user to wait for a
-// limit that will never clear sends them to look in the wrong place entirely.
+// Anthropic's own apps, and the refusal arrives as a 429. Telling the user to
+// wait for a limit that will never clear sends them to look in the wrong place.
 func TestSubscriptionRefusalIsExplainedNotRetried(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

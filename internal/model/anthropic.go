@@ -551,7 +551,7 @@ func betaHeader(configured []string, required string) string {
 var errSubscriptionRestricted = fmt.Errorf( //nolint:staticcheck // a multi-line message shown to a person, laid out on purpose
 	"this subscription token was refused (HTTP 429, with none of the headers a " +
 		"rate limit carries).\n" +
-		"  A Claude Pro or Max token is restricted to Anthropic's own apps: Anthropic checks " +
+		"  A Claude Pro or Max token is restricted to Anthropic's own apps; it checks " +
 		"the system prompt and refuses other clients.\n" +
 		"  Use an API key from platform.claude.com instead:\n" +
 		"      unset CLAUDE_CODE_OAUTH_TOKEN\n" +

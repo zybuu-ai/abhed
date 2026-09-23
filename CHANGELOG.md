@@ -42,8 +42,8 @@ All notable changes to Abhed are recorded here. The format follows
 - A turn that spends its whole output budget reasoning without a tool call
   is a stall, not an answer: the model is told its reply was cut off, the
   next call asks for low reasoning effort, the turn is marked `cut_off` in
-  the record and HawkEYE reports `output-cap`. Benchmark sessions ended this
-  way, some read as completed because a sentence had come out before the cut.
+  the record and HawkEYE reports `output-cap`. Sessions ended this way; some
+  read as completed because a sentence had come out before the cut.
 
 ## [1.0.1] - 2026-09-22
 

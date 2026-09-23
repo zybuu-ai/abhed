@@ -2,9 +2,9 @@
 
 Status: Draft · 2026-09-02 · Owner: @yuvraj-singh79
 
-Abhed is an on-prem, air-gap-capable deep agent platform. It targets the capability
-bar set by the leading cloud coding agents, with the enterprise deployment posture of
-other enterprise agent platforms, and it is deliberately model-agnostic.
+Abhed is an on-prem, air-gap-capable deep agent platform. It targets the capability bar
+set by the leading cloud coding agents, with the enterprise deployment posture of other
+enterprise agent platforms, and it is deliberately model-agnostic.
 
 Every principle below is tagged with its evidence status:
 
@@ -25,8 +25,8 @@ reversals** — which model is "best" depends on the harness you run it in.
 
 Observationally, the same effect appears in public leaderboards: Claude Opus 4.5 scores
 45.9% on SWE-bench Pro under the standardized SEAL scaffold vs 55.4% under its vendor's
-own agent (+9.5pp). Grok 4 moves 58.6% → 72–75% between an open-source scaffold and
-xAI's own.
+own agent (+9.5pp). Grok 4 moves 58.6% → 72–75% between an open-source scaffold and xAI's
+own.
 
 > Honest qualification, from the verifiers: on some coding benchmarks the harness's
 > dominant effect is on **cost and failure mode** rather than raw accuracy (confidence
@@ -102,9 +102,9 @@ Model state as a chronological stream of actions and observations:
 abstraction rather than replacing it.
 
 This abstraction survived a full architectural rewrite of an open-source agent platform
-(its V0 → V1 SDK), which is
-strong evidence it is the right extensibility point. Its **deterministic replay** property
-is directly what an air-gapped platform needs for audit logging and incident reconstruction.
+(its V0 → V1 SDK), which is strong evidence it is the right extensibility point. Its
+**deterministic replay** property is directly what an air-gapped platform needs for audit
+logging and incident reconstruction.
 
 > Note: two related claims about that system's V0 execution details (its CodeAct action
 > space and its Docker sandboxing) were **refuted 0-3**. Adopt the event-stream abstraction;

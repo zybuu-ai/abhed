@@ -106,8 +106,8 @@ naming its default URL and its sampling set.
 **A Claude Pro or Max token does not work outside Anthropic's own apps**, and
 this is enforced rather than merely written down. Anthropic accepts the
 credential and then refuses the request unless the first system block is its
-own client's identity line; the refusal arrives as `429 rate_limit_error`, which reads as a
-limit that will clear and is not one.
+own client's identity line; the refusal arrives as `429 rate_limit_error`,
+which reads as a limit that will clear and is not one.
 
 Abhed still reads `CLAUDE_CODE_OAUTH_TOKEN` and `oauth_token`: the mechanism is
 correct, the restriction may not be permanent, and models outside the check do
@@ -116,9 +116,9 @@ headers a real rate limit carries — reports what it actually is, and does not
 retry a decision that will not change.
 
 Working around it means sending Anthropic's client identity string from
-something that is not that client. Abhed does not, and nothing built on Abhed should:
-it circumvents an access control, misrepresents the product, and breaks the
-moment the check changes.
+something that is not that client. Abhed does not, and nothing built on Abhed
+should: it circumvents an access control, misrepresents the product, and
+breaks the moment the check changes.
 
 Use an API key. And note that third-party usage under a subscription is billed
 as extra usage rather than drawn from the plan, so it is metered in claude.ai
