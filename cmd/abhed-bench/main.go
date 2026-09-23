@@ -32,6 +32,7 @@ type turnResult struct {
 	ColdTokens   int           `json:"cold_tokens"`
 	TTFT         time.Duration `json:"ttft_ns"`
 	Total        time.Duration `json:"total_ns"`
+	reported     bool          // the endpoint sent a cached-token figure, zero included
 }
 
 type report struct {
@@ -112,7 +113,7 @@ func main() {
 		}
 		res.Turn = i
 		rep.Turns = append(rep.Turns, res)
-		if res.CachedTokens > 0 {
+		if res.reported {
 			rep.CacheReported = true
 		}
 		history = append(history, model.Message{Role: model.RoleAssistant, Content: reply})
@@ -173,6 +174,7 @@ func measure(ctx context.Context, a model.Adapter, prefix string, history []mode
 			if chunk.Usage != nil {
 				res.PromptTokens = chunk.Usage.InputTokens
 				res.CachedTokens = chunk.Usage.CachedInputTokens
+				res.reported = chunk.Usage.CacheReported
 				res.ColdTokens = res.PromptTokens - res.CachedTokens
 			}
 		}

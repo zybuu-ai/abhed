@@ -43,7 +43,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 - HawkEYE's `cold-cache` finding no longer fires when the provider reports no
   cached-token figure at all, as some OpenAI-compatible endpoints do; absence
-  had been read as zero. `model.call` events record `cache_reported`. (#74)
+  had been read as zero. `model.call` events record `cache_reported`; a
+  record written before this has none, so `cold-cache` is not raised on it.
+  (#74)
 - A turn that spends its whole output budget reasoning without a tool call
   is a stall, not an answer: the model is told its reply was cut off, the
   next call asks for low reasoning effort, the turn is marked `cut_off` in
