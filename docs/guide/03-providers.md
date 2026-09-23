@@ -67,9 +67,9 @@ An API key, from config or the environment:
 ### Subscriptions do not work, and this is not a Abhed limitation
 
 A Claude Pro or Max subscription token is **restricted to Anthropic's own
-apps**. Anthropic accepts the credential and then refuses the request unless the
-system prompt is its own client's. Measured directly: same token, same model,
-same second, the only difference being the first system block.
+clients**. Anthropic accepts the credential and then refuses the request unless
+the system prompt is its own client's. Measured directly: same token, same
+model, same second, the only difference being the first system block.
 
 | First system block | Result |
 |---|---|

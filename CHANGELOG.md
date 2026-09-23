@@ -33,9 +33,11 @@ All notable changes to Abhed are recorded here. The format follows
 ### Removed
 
 - The benchmark (`bench/`, `docs/benchmarks`) is no longer part of this
-  repository, and the results published so far are withdrawn: the rig they
-  ran on did not give every harness the same conditions. A result published
-  later will state its method with it.
+  repository. The three multi-harness rig runs published so far are
+  withdrawn: the rig did not give every harness the same conditions. The
+  earlier single-file comparison of 2026-09-14 is no longer published either.
+  Both remain in this repository's history. A result published later will
+  come with its method and raw records, whatever it shows.
 
 ### Fixed
 

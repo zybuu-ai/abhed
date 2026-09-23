@@ -219,7 +219,7 @@ func TestRetryableStatuses(t *testing.T) {
 }
 
 // A subscription token is accepted and then refused for anything but
-// Anthropic's own apps, and the refusal arrives as a 429. Telling the user to
+// Anthropic's own clients, and the refusal arrives as a 429. Telling the user to
 // wait for a limit that will never clear sends them to look in the wrong place.
 func TestSubscriptionRefusalIsExplainedNotRetried(t *testing.T) {
 	var calls int32
@@ -243,7 +243,7 @@ func TestSubscriptionRefusalIsExplainedNotRetried(t *testing.T) {
 		t.Errorf("made %d attempts; a limit that names no reset will not clear", got)
 	}
 	msg := err.Error()
-	for _, want := range []string{"restricted to Anthropic's own apps", "ANTHROPIC_API_KEY"} {
+	for _, want := range []string{"restricted to Anthropic's own clients", "ANTHROPIC_API_KEY"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the error should say %q and what to do instead:\n%s", want, msg)
 		}
@@ -295,7 +295,7 @@ func TestAPIKeyIsNotToldAboutSubscriptions(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error")
 	}
-	if strings.Contains(err.Error(), "restricted to Anthropic's own apps") {
+	if strings.Contains(err.Error(), "restricted to Anthropic's own clients") {
 		t.Errorf("an API key must not be told its subscription is restricted:\n%s", err)
 	}
 }

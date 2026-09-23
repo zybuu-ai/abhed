@@ -541,7 +541,7 @@ func betaHeader(configured []string, required string) string {
 // limit.
 //
 // A Claude Pro or Max subscription token is accepted by the API and then
-// refused for anything but Anthropic's own apps. The refusal comes back as 429
+// refused for anything but Anthropic's own clients. The refusal comes back as 429
 // with a rate_limit_error, so without this the user is told to wait for a limit
 // that will never clear — and Abhed dutifully retries four times against a wall.
 //
@@ -551,7 +551,7 @@ func betaHeader(configured []string, required string) string {
 var errSubscriptionRestricted = fmt.Errorf( //nolint:staticcheck // a multi-line message shown to a person, laid out on purpose
 	"this subscription token was refused (HTTP 429, with none of the headers a " +
 		"rate limit carries).\n" +
-		"  A Claude Pro or Max token is restricted to Anthropic's own apps; it checks " +
+		"  A Claude Pro or Max token is restricted to Anthropic's own clients; it checks " +
 		"the system prompt and refuses other clients.\n" +
 		"  Use an API key from platform.claude.com instead:\n" +
 		"      unset CLAUDE_CODE_OAUTH_TOKEN\n" +

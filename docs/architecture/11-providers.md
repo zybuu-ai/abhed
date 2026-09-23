@@ -103,8 +103,8 @@ naming its default URL and its sampling set.
 
 ## Authenticating with a subscription
 
-**A Claude Pro or Max token does not work outside Anthropic's own apps**, and
-this is enforced rather than merely written down. Anthropic accepts the
+**A Claude Pro or Max token does not work outside Anthropic's own clients**,
+and this is enforced rather than merely written down. Anthropic accepts the
 credential and then refuses the request unless the first system block is its
 own client's identity line; the refusal arrives as `429 rate_limit_error`,
 which reads as a limit that will clear and is not one.
