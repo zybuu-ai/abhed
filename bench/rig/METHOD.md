@@ -194,7 +194,11 @@ runs several at once on a hosted model; the machine's CPU and sandbox bound
 N, and the wall-clock column then measures a shared machine, which the
 results say. The copy of the environment is the agent's to change; the tests
 are scored in the prepared one, so nothing an agent installs reaches the
-score or the next session.
+score or the next session. A session during which the machine slept for more than
+two minutes is set aside as `<instance>.slept.json` and redone on resume: the
+session timeout runs on a clock that stops in sleep, and a model request that
+spans a sleep fails at the endpoint, so such a session measures neither
+harness nor model.
 
 `summarize` reports each harness by the dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,

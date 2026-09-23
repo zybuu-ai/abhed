@@ -157,7 +157,7 @@ class ResultFilesTests(unittest.TestCase):
             root = Path(d)
             run = root / "abhed" / "full" / "run1"
             run.mkdir(parents=True)
-            for name in ("x.json", "x.events.json", "x.hawkeye.json"):
+            for name in ("x.json", "x.events.json", "x.hawkeye.json", "y.slept.json"):
                 (run / name).write_text("{}")
             self.assertEqual([p.name for p in rig.result_files(root)], ["x.json"])
 

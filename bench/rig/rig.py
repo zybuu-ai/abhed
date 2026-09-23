@@ -72,6 +72,7 @@ os.environ["PATH"] = f"{CACHE / 'tools' / 'bin'}:{os.environ['PATH']}"
 
 RUN_TIMEOUT = int(os.environ.get("ABHED_BENCH_TIMEOUT", "1800"))
 TEST_TIMEOUT = int(os.environ.get("ABHED_BENCH_TEST_TIMEOUT", "300"))
+SLEPT_LIMIT = 120
 
 PROMPT = """You are working in a checkout of {repo}. Resolve the issue below by
 changing the source code. Do not edit or add tests: hidden tests decide whether
@@ -533,12 +534,15 @@ def one_run(hname, iid, cond, out_path, run=1):
     h = HARNESSES[hname]()
     h.inst = inst
     prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
-    started, timed_out, output, rc = time.time(), False, "", None
+    started, awake, timed_out, output, rc = time.time(), time.monotonic(), False, "", None
     try:
         rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv), home)
     except subprocess.TimeoutExpired as e:
         timed_out, output = True, (e.stdout or "") if isinstance(e.stdout, str) else ""
     elapsed = time.time() - started
+    # The monotonic clock stops while the machine sleeps, and so does the
+    # session timeout. A session that slept is not a fair measurement.
+    slept = elapsed - (time.monotonic() - awake)
 
     # The agent's change, as a patch, before the gold tests are laid over it.
     sh(["git", "add", "-A"], cwd=ws)
@@ -553,6 +557,10 @@ def one_run(hname, iid, cond, out_path, run=1):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         result["hawkeye"] = hawkeye(events, out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if slept > SLEPT_LIMIT:
+        # Kept beside the results but not one of them, so a resumed run redoes it.
+        result["slept_sec"] = round(slept)
+        out_path = out_path.with_suffix(".slept.json")
     out_path.write_text(json.dumps(result, indent=1))
     for d in (ws, home, venv, Path(task_env(iid, ws)["TMPDIR"])):
         shutil.rmtree(d, ignore_errors=True)
@@ -589,7 +597,7 @@ def result_files(root):
     """One file per session: the result, not the record or the HawkEYE
     report the rig writes beside it."""
     return [p for p in sorted(root.glob("*/*/run*/*.json"))
-            if not p.name.endswith((".events.json", ".hawkeye.json"))]
+            if not p.name.endswith((".events.json", ".hawkeye.json", ".slept.json"))]
 
 
 def base_model():
