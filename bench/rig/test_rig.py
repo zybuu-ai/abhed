@@ -1108,10 +1108,8 @@ MIDDLE = ("import subprocess, sys; "
           "subprocess.Popen(['/bin/sh', '-c', '(cd \"$1\" && exec /bin/sleep 60) & echo $! > \"$0\"; wait', "
           "sys.argv[1], sys.argv[2]], start_new_session=True, stdin=subprocess.DEVNULL, "
           "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)")
-# The harness: a middle process detaches /bin/sh into the workspace and exits,
-# so the shell is a real orphan while the harness still runs; its child works
-# elsewhere. Apple's binaries hide their environment, so only the orphan sweep
-# and its closure over descendants can find them.
+# A middle process detaches /bin/sh into the workspace and exits: a real orphan
+# whose child works elsewhere, found only by the orphan sweep and its closure.
 HARNESS = ("import subprocess, sys, time; "
            "subprocess.run([sys.executable, '-c', {middle!r}, sys.argv[1], sys.argv[2]], "
            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
@@ -1256,6 +1254,54 @@ class RoundEightTests(UsingCache, unittest.TestCase):
                 rig.check_socket_room()
         finally:
             rig.CACHE = saved
+
+
+class OutputTests(UsingCache, unittest.TestCase):
+    def test_bytes_that_are_not_utf8_survive(self):
+        rc, out = rig.sh([sys.executable, "-c",
+                          "import sys; sys.stdout.buffer.write(b'before\\n\\xff\\xfe\\nafter\\n')"])
+        self.assertEqual(rc, 0)
+        self.assertIn("before", out)
+        self.assertIn("after", out)
+        self.assertEqual(rig.encode(out), b"before\n\xff\xfe\nafter\n")
+
+    def test_a_patch_with_bytes_that_are_not_utf8_applies_exactly(self):
+        import subprocess
+        ws = self.root / "repo"
+        ws.mkdir()
+        (ws / "f.bin").write_bytes(b"a\n")
+        subprocess.run(rig.git(ws) + ["init", "-q"], cwd=ws, check=True)
+        subprocess.run(rig.git(ws) + ["add", "-A"], cwd=ws, check=True)
+        subprocess.run(rig.git(ws) + ["commit", "-qm", "base"], cwd=ws, check=True)
+        (ws / "f.bin").write_bytes(b"a\n\xff\n")
+        _, patch = rig.sh(rig.git(ws) + ["diff"], cwd=ws)
+        subprocess.run(rig.git(ws) + ["checkout", "-q", "--", "f.bin"], cwd=ws, check=True)
+        ok, _ = rig.apply_patch(ws, patch)
+        self.assertTrue(ok)
+        self.assertEqual((ws / "f.bin").read_bytes(), b"a\n\xff\n")
+
+    def test_a_tool_holding_the_pipe_outside_the_session_cannot_hang_the_rig(self):
+        import time as _t
+        ws = self.root / "scratch" / "ws"
+        ws.mkdir(parents=True)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        rig._SESSIONS["th"] = [str(ws)]
+        self.addCleanup(rig._SESSIONS.pop, "th", None)
+        pidfile = self.root / "holder.pid"
+        holder = ("import subprocess, sys; "
+                  f"h = subprocess.Popen(['/bin/sleep', '40'], cwd={str(elsewhere)!r}, start_new_session=True); "
+                  f"open({str(pidfile)!r}, 'w').write(str(h.pid)); print('so far', flush=True)")
+        start = _t.monotonic()
+        rc, out = rig.sh([sys.executable, "-c", holder], cwd=ws, env=dict(os.environ, **{rig.MARKER: "th"}))
+        took = _t.monotonic() - start
+        pid = int(pidfile.read_text())
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+        self.assertLess(took, 15, "a stray tool holding the pipe hung the rig")
+        self.assertIn("so far", out)
 
 
 if __name__ == "__main__":

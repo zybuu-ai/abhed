@@ -294,24 +294,33 @@ def install_stop_handlers():
         signal.signal(s_, stop_all)
 
 
-def _read_all(pipe, chunks):
-    try:
-        chunks.append(pipe.read())
-    except (OSError, ValueError):
-        pass  # closed under us by _drain
-
-
-def _drain(reader, chunks, p):
-    """What the command printed; a process still holding the pipe after its
-    session ended gets ten seconds, then the pipe is closed."""
-    reader.join(10)
-    if reader.is_alive():
+def _read_all(fd, chunks):
+    """Raw bytes as they come, so whatever arrived is kept even if the pipe
+    never reaches EOF, and no byte is lost to decoding."""
+    while True:
         try:
-            p.stdout.close()
+            block = os.read(fd, 65536)
         except OSError:
-            pass
-        reader.join(1)
-    return "".join(chunks)
+            return
+        if not block:
+            return
+        chunks.append(block)
+
+
+def _drain(reader, chunks):
+    """What the command printed. A process still holding the pipe after its
+    session ended gets ten seconds; the reader is then left to it."""
+    reader.join(10)
+    return decode(b"".join(list(chunks)))
+
+
+def decode(raw):
+    # Bytes that are not UTF-8 survive as surrogates and encode back exactly.
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def encode(text):
+    return text.encode("utf-8", "surrogateescape")
 
 
 def sh(cmd, cwd=None, env=None, timeout=None, check=False):
@@ -328,7 +337,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     if main:
         _Stop.starting += 1  # a signal now defers its exit until the child is registered
     try:
-        p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
         _LIVE[p.pid] = (marker, dirs)
     finally:
@@ -337,7 +346,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # The output is read on the side and the process waited for, not the pipe:
     # a tool that keeps the pipe open must not turn an exit into a timeout.
     chunks = []
-    reader = threading.Thread(target=_read_all, args=(p.stdout, chunks), daemon=True)
+    reader = threading.Thread(target=_read_all, args=(p.stdout.fileno(), chunks), daemon=True)
     try:
         if stopping():
             raise Stopped()  # the stop came while this child was starting
@@ -345,7 +354,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
         p.wait(timeout=timeout)
     except subprocess.TimeoutExpired as e:
         _end(p.pid, marker, dirs, p)
-        raise subprocess.TimeoutExpired(cmd, timeout, output=_drain(reader, chunks, p)) from e
+        raise subprocess.TimeoutExpired(cmd, timeout, output=_drain(reader, chunks)) from e
     except BaseException:
         _end(p.pid, marker, dirs, p)  # Ctrl-C or any error: the harness must not outlive the rig
         raise
@@ -355,7 +364,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     _signal([p.pid], signal.SIGKILL, group=True)
     if marker:
         _signal(_leftovers(marker, dirs), signal.SIGKILL)
-    out = _drain(reader, chunks, p)
+    out = _drain(reader, chunks)
     if stopping():
         raise Stopped()  # killed by a stop signal: not a result
     if check and p.returncode != 0:
@@ -562,9 +571,9 @@ STATUS = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+(\S.*?)(?:\s+
 
 
 def apply_patch(ws, patch):
-    p = subprocess.run(git(ws) + ["apply", "--whitespace=nowarn", "-"], cwd=ws, input=patch, text=True,
+    p = subprocess.run(git(ws) + ["apply", "--whitespace=nowarn", "-"], cwd=ws, input=encode(patch),
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return p.returncode == 0, p.stdout
+    return p.returncode == 0, decode(p.stdout)
 
 
 # An instance is kept if the gold patch passes at least this share of its
@@ -976,8 +985,8 @@ def scratch_tag(hname, cond, iid, run, out_path):
 
 
 def touched_answers(text):
-    """Did the session name where the rig keeps the reference patches? pi and
-    OpenHands run unsandboxed and could read them; such a session is flagged."""
+    """Did the session name where the rig keeps the reference patches? Any
+    harness's shell could read them; such a session is flagged."""
     return any(k in text for k in ("verified.jsonl", "instance.json", str(CACHE / "envs"), "/.cache/envs/"))
 
 
@@ -1381,12 +1390,17 @@ def load(date):
     return cells
 
 
-def flagged(cells):
+def flagged(cells, aside=()):
     """Sessions whose output or change named where the reference patches are
-    kept. Listed whatever they scored; "none" is stated, not implied."""
-    rows = sorted((r["harness"], r["condition"], run_no, iid)
-                  for (_, _), runs in cells.items() for run_no, res in runs.items()
-                  for iid, r in res.items() if r.get("touched_answers"))
+    kept, scored or set aside. "none" is stated, not implied."""
+    rows = [(r["harness"], r["condition"], run_no, iid)
+            for (_, _), runs in cells.items() for run_no, res in runs.items()
+            for iid, r in res.items() if r.get("touched_answers")]
+    for path in aside:
+        r = json.loads(Path(path).read_text())
+        if r.get("touched_answers"):
+            rows.append((r["harness"], r["condition"], int(Path(path).parent.name[3:]), r["instance"] + " (set aside)"))
+    rows.sort()
     out = ["Sessions that named the reference-patch cache (a name match only):", ""]
     if not rows:
         return out + ["none"]
@@ -1478,7 +1492,9 @@ def summarize(args):
         order = {"<15 min fix": 0, "15 min - 1 hour": 1, "1-4 hours": 2, ">4 hours": 3}
         for (band, h, cond), (won, n) in sorted(bands.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1], kv[0][2])):
             lines.append(f"| {band} | {h} | {cond} | {won}/{n} ({100 * won / n:.0f}%) |")
-    lines += ["", *coverage(args.date), "", *flagged(cells)]
+    root = RESULTS / args.date / "rig"
+    aside = sorted(root.glob("*/*/run*/*.slept.json")) + sorted(root.glob("*/*/run*/*.unread.json"))
+    lines += ["", *coverage(args.date), "", *flagged(cells, aside)]
     text = "\n".join(lines)
     (RESULTS / args.date / "rig" / "SUMMARY.md").write_text(text + "\n")
     print(text)

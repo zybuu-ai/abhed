@@ -78,9 +78,10 @@ principle be reused by an unrelated process before it is signalled; the
 window is a few seconds. OpenHands gets a tmux server of its own per
 session (`TMUX_TMPDIR`), and whether tmux was present is recorded in the plan.
 Session directories have opaque names, what each session is lives outside
-the scratch tree, and the agent's copy of the environment names neither the
-task nor the prepared checkout, so an agent cannot read its task's id from its
-working directory or its environment. The reference patches themselves stay in
+the scratch tree, and the agent's copy of the environment points its editable
+install, configuration and links at the session, so the task's id is not in
+its working directory, its environment variables or its import path; compiled
+bytecode and install records in the copy may still carry the prepared path. The reference patches themselves stay in
 the rig's cache, which any harness's shell — Abhed's included, whose sandbox
 allows reads — could reach by absolute path. Every result records
 `touched_answers` when a session's output or change names that cache, and the
