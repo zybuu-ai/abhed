@@ -15,18 +15,110 @@ comparison, not a claim about them.
 
 | Harness | Invocation | Source, read 21 Sep 2026 |
 |---|---|---|
-| Abhed | `abhed -mode bypass -max-turns 60 -p <prompt>`, shipped default config with only the model changed | `docs/guide/10-automation.md` |
+| Abhed | `abhed -mode bypass -output-format json -p <prompt>`, shipped default config with only the model changed | `docs/guide/10-automation.md` |
 | pi | `pi --provider bench --model <id> --mode json -p <prompt>`, model declared in `~/.pi/agent/models.json` | pi-mono `packages/coding-agent` README and `docs/models.md` |
 | OpenHands | `openhands --headless --json --override-with-envs -t <prompt>`, `LLM_MODEL=openai/<id>`, `LLM_BASE_URL`, `LLM_API_KEY` | OpenHands docs: CLI headless, command reference, local LLMs |
 
 Each runs **unattended in the mode its own documentation gives for that**:
 nothing prompts. OpenHands' headless mode "always runs in always-approve mode";
-pi has no permission system; Abhed's `bypass` mode still enforces its deny
-rules and its sandbox, because that is what the product is.
+pi has no permission system (pi-mono README, read 21 Sep 2026); Abhed's
+`bypass` mode still enforces its deny rules and its sandbox, because that is
+what the product is.
 
-pi and OpenHands read configuration from the home directory, so each run gets
-a throwaway `HOME`. The operator's own settings are never read or written.
-Both are installed under the rig's cache (`.cache/tools`), not globally.
+**Network.** The harnesses do not get the same network, and a reader should
+weigh every result with that in mind. Abhed's shell runs in its sandbox, whose
+shipped default denies network access (`sandbox.allow_network: false`); pi has
+no sandbox, and OpenHands' local backend runs commands as ordinary host
+processes, so both reach the network freely. The asymmetry favours pi and
+OpenHands: they can install packages and read documentation that Abhed cannot,
+and they could in principle fetch the fix itself — the upstream repository
+holds the future commit, and later releases on PyPI contain it. Removing git
+history from the workspace closes the local route to the answer, not the
+network route. `fetched_upstream` flags a session whose output or change shows
+a command fetching from the upstream repository — `git clone` or `fetch`,
+`curl`, `wget`, a Python HTTP call or a `pip install` from it; a link alone
+does not count, and the prompt is left out. The task's own docs sometimes show
+a `git clone` of the project, so a flagged session is a candidate to check by
+hand, not a verdict. A download by other means would not show. So an Abhed win
+here is conservative, and an Abhed loss may owe something to the network. It
+is not equalised because Abhed ships with network denied, and the benchmark
+measures the harness as it ships.
+
+**Limits.** The rig sets one limit of its own, the wall clock
+(`ABHED_BENCH_TIMEOUT`, 30 minutes), the same for every harness. Turn limits
+are each harness's shipped default:
+
+| Harness | Turn limit | Source |
+|---|---|---|
+| Abhed | 100 | `limits.max_turns` default in `config/config.go` |
+| OpenHands | 500 iterations | `max_iteration_per_run` default in `openhands/sdk/conversation/conversation.py`, openhands-sdk 1.21.0 as installed with CLI 1.16.0 |
+| pi | none | no turn or step limit in `@mariozechner/pi-coding-agent` 0.73.1 |
+
+Every harness is held to the same output limit per turn,
+`ABHED_BENCH_MAX_OUTPUT` (8,192 tokens, Abhed's own default): Abhed is told
+it as `limits.max_tokens` and pi as `maxTokens`, and the proxy hook on a hosted run holds every request to it. On a
+local run the Ollama variants set it as `num_predict`, which is a default a
+request's own `max_tokens` overrides; Abhed and pi send the same number, and
+OpenHands sends none for a model LiteLLM does not know — it adds
+`max_completion_tokens` only when a limit is set (`openhands/sdk/llm/options/
+chat_options.py` and `common.py`, openhands-sdk 1.21.0) — so the default applies.
+Variants created before `num_predict` was added lack it: run `models` again. The context window is
+enforced at a local endpoint; on a hosted model it is the model's own and
+Abhed and pi are told it, while OpenHands, whose CLI takes no window setting,
+runs on its defaults.
+
+An earlier revision capped Abhed alone at 60 turns, below its own default.
+In the hosted run of 23 Sep 2026, stopped and not published, fourteen of
+Abhed's first nineteen sessions ended on that cap; the run was redone.
+
+Every harness reads configuration from the home directory — Abhed its skills
+and `ABHED.md` under `~/.abhed` — so each run gets a throwaway `HOME`, and
+inherits nothing else from the operator's shell but `PATH`, locale and
+certificate settings: no provider credentials, and no `ABHED_MODEL`-style
+override of the model the rig configured. The operator's own settings are
+never read or written. pi and OpenHands are installed under the rig's cache
+(`.cache/tools`), not globally. A harness is ended with its session: on a
+timeout, on a normal exit, and when the rig itself is stopped by Ctrl-C,
+`pkill` or a closed terminal (SIGINT, SIGTERM or SIGHUP), which ends every
+live harness at once, parallel ones included; a second Ctrl-C does not cut
+that short. The harness is asked first, so it can stop its own tools; then its
+process group and its process tree as it stood are killed, and so is any
+orphaned process still working in the session's workspace, temp dir or home,
+with everything below it — pi and OpenHands start their tools in sessions of
+their own, outside the harness's group. A marker in the session's environment
+finds the rest wherever they went: on Linux for every process, on macOS for
+the user's own programs but not Apple's binaries (`sleep`, `sh`). So on macOS
+a system binary the agent started, then orphaned after a `cd` out of the
+session's directories, can outlive the session. Only directories the rig made
+for the session, inside its scratch directory, are ever swept, and a process
+that is not an orphan is never touched, so an operator's shell in a workspace
+is safe; an application launched from a workspace (an editor opened there,
+say) is an orphan and is not, and dies with its children. A PID the rig
+recorded could in principle be reused by an unrelated process before it is
+signalled; the window is a few seconds. OpenHands gets a tmux server of its
+own per session (`TMUX_TMPDIR`), and whether tmux was present is recorded in
+the plan. Session directories have opaque names, what each session is lives
+outside the scratch tree, and the agent's copy of the environment points its
+editable install, configuration and links at the session, so the task's id is
+not in its working directory, its environment variables or its import path;
+compiled bytecode and install records in the copy may still carry the prepared
+path. The reference patches themselves stay in the rig's cache, which any
+harness's shell — Abhed's included, whose sandbox allows reads — could reach
+by absolute path. Every result records `touched_answers` when a session's
+output or change names that cache, and the summary lists every such session,
+or says there were none. It is a name match: a glob, `find` or a directory
+listing in code would not trip it.
+
+A harness is waited for, not its output pipe: a tool it left holding the pipe
+cannot turn a normal exit into a timeout. Output such a tool writes more than
+ten seconds after its harness ends is not kept.
+
+Sessions in flight are abandoned, not scored, and redone on resume; results
+are written whole or not at all. A resume must be the same run: the rig
+refuses one under the same date whose sessions, model, endpoint, limits,
+timeout or parallelism differ from the plan it continues. Abhed applies an
+organisation's managed config (`/etc/abhed/config.json`) over any other, so
+`doctor` and `run` refuse Abhed on a machine that has one.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
 prompt, so with an inherited stdin it waits for input that never comes and
@@ -38,7 +130,9 @@ Verified on 21 Sep 2026 with `gemma4:26b`: Abhed 0.2.1-dev, pi 0.73.1 and
 OpenHands CLI 1.16.0 each passed `doctor`. The OpenHands and pi invocations
 above are the documented ones and needed no change.
 
-**`rig.py doctor --harness X` must pass before `run` will include X.** It asks
+**`rig.py doctor --harness X` must pass before `run` will include X**, and
+the pass is tied to what it checked — model, endpoint, limits and the
+environment the harness gets — so any change to those needs a new pass. It asks
 the harness to create one file on the benchmark model. A harness that cannot
 make a tool call in this setup would score zero for a reason that has nothing
 to do with the harness; the earlier suite's aider result carried exactly that
@@ -49,6 +143,28 @@ kind of caveat, and this is the guard against repeating it.
 SWE-bench Verified instances, from the repositories whose tests are pytest
 node ids and whose dependencies install from wheels into a plain virtualenv:
 `pytest-dev/pytest`, `pylint-dev/pylint`, `pallets/flask`.
+
+**Scoring never trusts the agent's workspace.** When a workspace is made, the
+rig records its base tree in a git directory of its own beside the workspace,
+out of reach of the agent's commits, resets and hooks. The agent's change is
+the diff of the workspace against that record. It is then applied to a fresh
+copy of the base tree, the gold tests are laid over it, and the tests run
+there with a temp dir of their own, so nothing else the agent left — its git
+history, caches, stray files — can decide the score. All the rig's own git
+commands run with hooks off. In the stopped run of 23 Sep, three OpenHands
+sessions that committed their work were scored against their own last commit
+and so wrongly; that is what this fixes.
+
+Each environment is the project installed with its own test requirements,
+and the install spec is written into the environment's `ready` marker; an
+environment built from another spec is rebuilt, so a cache cannot silently
+mix old and new environments:
+pytest's `testing` extra, pylint's `requirements_test_min.txt` plus `py`
+(its pinned pytest-benchmark needs it and newer pytest no longer brings it), flask's
+`requirements/tests.txt`. An earlier rig installed the project alone, and in
+the first sessions on a hosted model the agents met import errors running the
+wider suite and spent their turns writing stand-ins for hypothesis,
+`pkg_resources` and `py.path`; none of the six resolved.
 
 A workspace is a copy of the *installed* tree, not a clone: installing a
 package can write files git does not track — pytest's `_version.py` comes from
@@ -134,12 +250,13 @@ harness that does nothing (must score 0) and one that applies the gold patch
 | Condition | Window | |
 |---|---|---|
 | `full` | 32,768 | |
-| `tight` | 24,576 | not lower: OpenHands documents 22,000 as its minimum, and a window a harness says it cannot work in measures nothing |
+| `tight` | 24,576 | not lower: OpenHands documents 22,000 as its minimum (local LLM docs, read 21 Sep 2026), and a window a harness says it cannot work in measures nothing |
 
 The window is set **at the endpoint** (`rig.py models` writes Ollama variants
 with `num_ctx`), so every harness meets the same hard limit. Abhed and pi are
 also told the window through their documented setting. No such setting was
-found in OpenHands' CLI documentation; it runs on its defaults.
+found in OpenHands' CLI documentation (read 21 Sep 2026); it runs on its defaults. The variants
+also set `num_predict`, the per-turn output limit, for the same reason.
 
 ## Runs and statistics
 
@@ -188,11 +305,39 @@ the results: only the `full` condition runs, because the tight window needs
 told; and the serving stack is somebody else's, so a run on a hosted model is
 reproducible only to the extent that provider is stable. `doctor` must pass
 per harness on the hosted model like any other. Sessions are independent —
-each has its own workspace, home and result — so `--parallel N` runs several
-at once on a hosted model; the machine's CPU and sandbox bound N, and the
-wall-clock column then measures a shared machine, which the results say.
+each has its own workspace, home, copy of the prepared environment, temp dir
+and result, named by harness, condition, instance, run and result path — so `--parallel N`
+runs several at once on a hosted model; the machine's CPU and sandbox bound
+N, and the wall-clock column then measures a shared machine, which the
+results say. The copy of the environment is the agent's to change; the tests
+are scored in the prepared one, so nothing an agent installs there reaches the
+score or the next session. The prepared environment is not write-protected:
+a harness with no sandbox (pi, OpenHands) could still write into it by
+absolute path. None has been seen to; if one does, delete that environment
+under `.cache/envs` and run `prepare` and `validate` again. A session during which the machine slept for more than
+two minutes is set aside as `<instance>.slept.json` and redone on resume: the
+session timeout runs on a clock that stops in sleep, and a model request that
+spans a sleep fails at the endpoint, so such a session measures neither
+harness nor model.
 
-`summarize` reports each harness by the dataset's difficulty band as well as
+A hosted run goes through a LiteLLM proxy (`bench/rig/hosted/`): the harnesses
+speak OpenAI's API to it, it holds the provider's credentials from
+rig-prefixed environment variables (`ABHED_BENCH_WATSONX_*` in the example),
+and its hook holds every request to the output limit and normalises message
+content some providers reject. Abhed and pi are told the hosted model's own
+window (`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b). The endpoint key and
+every `ABHED_BENCH_*` value the rig does not publish are redacted from every
+result and from the event record kept beside it. The proxy reads
+`ABHED_BENCH_MAX_OUTPUT` from its own environment, so start it with the same
+value the rig runs with.
+
+A session whose change the rig could not read is kept aside as
+`<instance>.unread.json`, like a slept one, and redone on resume: a failure
+of the rig's own must not be scored as the harness's loss.
+
+`summarize` counts, per harness, the sessions planned, scored and set aside,
+so none can drop out of the result unseen, and reports each harness by the
+dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,
 medium and hard tasks.
 

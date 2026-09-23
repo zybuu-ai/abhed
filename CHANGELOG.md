@@ -27,6 +27,14 @@ All notable changes to Abhed are recorded here. The format follows
   or write that would break a file's syntax, where they applied it before.
   Set `tools.syntax_check` to `report` or `off` to keep the old behaviour;
   the SDK also takes `Options.SyntaxCheck`.
+- The benchmark rig gives every harness the same conditions and scores on a
+  fresh copy of the base tree: each session has its own workspace,
+  environment copy, temp dir and home; limits and environment are equal and
+  stated in `bench/rig/METHOD.md`, with every remaining difference, network
+  access among them; sessions that named where the reference patches are
+  kept, or that ran a fetch from the upstream repository, are flagged and
+  listed; a hosted model is reached through a LiteLLM proxy hook in
+  `bench/rig/hosted`.
 
 ### Fixed
 
