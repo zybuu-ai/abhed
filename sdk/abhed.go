@@ -154,7 +154,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
-	if sess.Syntax, err = tools.ParseSyntaxMode(orDefault(opts.SyntaxCheck, cfg.Tools.SyntaxCheck)); err != nil {
+	syntax := orDefault(opts.SyntaxCheck, cfg.Tools.SyntaxCheck)
+	if cfg.Managed && cfg.Tools.SyntaxCheck != "" {
+		syntax = cfg.Tools.SyntaxCheck // an organisation's managed config wins, as everywhere
+	}
+	if sess.Syntax, err = tools.ParseSyntaxMode(syntax); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 
