@@ -957,12 +957,17 @@ def result_path(out_path, slept, readable=True):
     return out_path.with_suffix(".slept.json") if slept > SLEPT_LIMIT else out_path
 
 
+# Rig settings that are published with a run; any other ABHED_BENCH_* value
+# (a provider credential, a space id) is treated as secret.
+PUBLIC_BENCH_VARS = {"ABHED_BENCH_MODEL", "ABHED_BENCH_ENDPOINT", "ABHED_BENCH_TIMEOUT", "ABHED_BENCH_TEST_TIMEOUT",
+                     "ABHED_BENCH_MAX_OUTPUT", "ABHED_BENCH_CONTEXT", "ABHED_BENCH_CACHE"}
+
 SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.I)
 
 
 def _secrets():
     found = {api_key()} | {v for k, v in os.environ.items()
-                           if SECRET_NAME.search(k) or k.startswith("ABHED_BENCH_WATSONX")}
+                           if SECRET_NAME.search(k) or (k.startswith("ABHED_BENCH_") and k not in PUBLIC_BENCH_VARS)}
     forms = found | {json.dumps(v)[1:-1] for v in found}  # as a JSON string would carry it
     return sorted((v for v in forms if len(v) >= 8), key=len, reverse=True)
 
@@ -991,10 +996,13 @@ def scratch_tag(hname, cond, iid, run, out_path):
     return "s" + hashlib.sha1(f"{hname}|{cond}|{iid}|{run}|{out_path}".encode()).hexdigest()[:12]
 
 
-def touched_answers(text):
-    """Did the session name where the rig keeps the reference patches? Any
-    harness's shell could read them; such a session is flagged."""
-    return any(k in text for k in ("verified.jsonl", "instance.json", str(CACHE / "envs"), "/.cache/envs/"))
+def touched_answers(text, repo=""):
+    """Did the session name where the reference patches are: the rig's cache,
+    or the upstream repository that holds the fix? Such a session is flagged."""
+    names = ["verified.jsonl", "instance.json", str(CACHE / "envs"), "/.cache/envs/"]
+    if repo:
+        names += [f"github.com/{repo}", f"api.github.com/repos/{repo}"]
+    return any(k in text for k in names)
 
 
 def score_patch(iid, inst, patch, tag):
@@ -1060,7 +1068,7 @@ def one_run(hname, iid, cond, out_path, run=1):
                   "timed_out": timed_out, "wall_sec": round(elapsed, 1), "patch_bytes": len(diff),
                   "patch": redact(diff[-20000:]), "usage": h.usage(output), "output_tail": redact(output[-3000:]),
                   "difficulty": inst.get("difficulty", ""), "score": scored,
-                  "touched_answers": touched_answers(output + diff)}
+                  "touched_answers": touched_answers(output + diff, inst.get("repo", ""))}
         out_path.parent.mkdir(parents=True, exist_ok=True)
         events = h.record(output) if hasattr(h, "record") else None
         if events:
@@ -1236,7 +1244,8 @@ def run(args):
     check_resume(root / "plan.json", setup, args.force)
     root.mkdir(parents=True, exist_ok=True)
     (root / "suite.json").write_text(json.dumps(suite(), indent=1))
-    (root / "plan.json").write_text(json.dumps({"started": time.strftime("%Y-%m-%d %H:%M:%S"), **setup}))
+    (root / "plan.json").write_text(json.dumps({"started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                "abhed_build": abhed_build(), **setup}))
     todo = pending(plan, RESULTS / args.date / "rig", args.force)
 
     def one(item):
@@ -1249,6 +1258,14 @@ def run(args):
     # bottleneck; on a hosted one several may run, and the machine's own CPU
     # and sandbox are what bound the number.
     execute(todo, max(1, getattr(args, "parallel", 1) or 1), one)
+
+
+def abhed_build():
+    """The Abhed commit the binary was built from, and whether the tree was
+    clean: `-version` alone may print a development string."""
+    _, sha = sh(["git", "-C", str(HERE.parent.parent), "rev-parse", "HEAD"])
+    _, dirty = sh(["git", "-C", str(HERE.parent.parent), "status", "--porcelain", "--untracked-files=no"])
+    return {"commit": sha.strip(), "dirty": bool(dirty.strip())}
 
 
 def check_resume(plan_path, setup, force=False):

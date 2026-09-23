@@ -6,6 +6,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The benchmark rig gives every harness the same conditions and scores on a
+  fresh copy of the base tree: each session has its own workspace,
+  environment copy, temp dir and home; limits and environment are equal and
+  stated in `bench/rig/METHOD.md`, with every remaining difference, network
+  access among them; sessions that named where the reference patches are
+  kept are flagged and listed; a hosted model is reached through a LiteLLM
+  proxy hook in `bench/rig/hosted`.
+
 ### Added
 
 - `edit` and `write` parse Go, JSON and Python before writing, where a parser

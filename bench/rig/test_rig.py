@@ -1194,6 +1194,24 @@ class RoundEightTests(UsingCache, unittest.TestCase):
         self.assertTrue(rig.touched_answers("cat ../../.cache/verified.jsonl"))
         self.assertTrue(rig.touched_answers(f"ls {rig.CACHE / 'envs'}"))
         self.assertFalse(rig.touched_answers("pytest testing/test_pastebin.py"))
+        self.assertTrue(rig.touched_answers("git clone https://github.com/pytest-dev/pytest", "pytest-dev/pytest"))
+
+    def test_an_unpublished_rig_variable_is_redacted(self):
+        saved = os.environ.get("ABHED_BENCH_PROVIDER_SPACE")
+        os.environ["ABHED_BENCH_PROVIDER_SPACE"] = "space-6f29780d-e1f6"
+        try:
+            self.assertNotIn("6f29780d", rig.redact("space-6f29780d-e1f6 in a log"))
+            self.assertIn("gpt-oss", rig.redact("model gpt-oss-120b"))
+        finally:
+            if saved is None:
+                os.environ.pop("ABHED_BENCH_PROVIDER_SPACE", None)
+            else:
+                os.environ["ABHED_BENCH_PROVIDER_SPACE"] = saved
+
+    def test_the_plan_records_the_abhed_build(self):
+        build = rig.abhed_build()
+        self.assertEqual(len(build["commit"]), 40)
+        self.assertIsInstance(build["dirty"], bool)
 
     def test_the_venv_copy_does_not_name_the_task(self):
         iid = "pytest-dev__pytest-9999"

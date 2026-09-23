@@ -21,8 +21,21 @@ comparison, not a claim about them.
 
 Each runs **unattended in the mode its own documentation gives for that**:
 nothing prompts. OpenHands' headless mode "always runs in always-approve mode";
-pi has no permission system; Abhed's `bypass` mode still enforces its deny
-rules and its sandbox, because that is what the product is.
+pi has no permission system (pi-mono README, read 21 Sep 2026); Abhed's
+`bypass` mode still enforces its deny rules and its sandbox, because that is
+what the product is.
+
+**Network.** The harnesses do not get the same network, and a reader should
+weigh every result with that in mind. Abhed's shell runs in its sandbox, whose
+shipped default denies network access (`sandbox.allow_network: false`); pi
+has no sandbox, and OpenHands' local backend runs commands as ordinary host
+processes, so both reach the network freely. That cuts both ways: pi and
+OpenHands can install packages and read documentation that Abhed cannot, and
+they could in principle fetch the fix itself — the upstream repository holds
+the future commit, and later releases on PyPI contain it. Removing git history
+from the workspace closes the local route to the answer, not the network
+route. `touched_answers` flags a session whose output or change names the
+upstream repository's address, but a download by other means would not show.
 
 **Limits.** The rig sets one limit of its own, the wall clock
 (`ABHED_BENCH_TIMEOUT`, 30 minutes), the same for every harness. Turn limits
@@ -230,12 +243,12 @@ harness that does nothing (must score 0) and one that applies the gold patch
 | Condition | Window | |
 |---|---|---|
 | `full` | 32,768 | |
-| `tight` | 24,576 | not lower: OpenHands documents 22,000 as its minimum, and a window a harness says it cannot work in measures nothing |
+| `tight` | 24,576 | not lower: OpenHands documents 22,000 as its minimum (local LLM docs, read 21 Sep 2026), and a window a harness says it cannot work in measures nothing |
 
 The window is set **at the endpoint** (`rig.py models` writes Ollama variants
 with `num_ctx`), so every harness meets the same hard limit. Abhed and pi are
 also told the window through their documented setting. No such setting was
-found in OpenHands' CLI documentation; it runs on its defaults. The variants
+found in OpenHands' CLI documentation (read 21 Sep 2026); it runs on its defaults. The variants
 also set `num_predict`, the per-turn output limit, for the same reason.
 
 ## Runs and statistics
