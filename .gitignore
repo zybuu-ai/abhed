@@ -17,11 +17,9 @@ dist/
 *.test
 *.out
 
-# Python bytecode, from the benchmark scripts
+# Python bytecode, from the docs and CI scripts
 __pycache__/
 *.pyc
-bench/.scratch/
-bench/logs/
 
 # Runtime uploads from the web console: user data, never part of the product
 uploads/
@@ -35,6 +33,3 @@ uploads/
 # Internal notes and raw research are not published
 docs/internal/
 docs/research/
-
-# benchmark rig: datasets, clones and virtualenvs
-bench/rig/.cache/

@@ -70,24 +70,24 @@ this repository tests rather than a line of copy:
 We do not compete on the model. We run theirs, or yours. We compete on where
 the agent runs, what it can prove, and what it costs to operate.
 
-**Against Claude Code and OpenAI's Codex CLI.** Excellent tools, built around
-their makers' own models and clouds. For a developer who can send their code
+**Against cloud coding agents.** Excellent tools, built around their makers'
+own models and clouds. For a developer who can send their code
 to that cloud they are hard to beat, and we do not try to. For an organisation
 that cannot, they are not on the table, and that organisation is our customer.
 
-**Against pi.dev.** A superb harness for one developer in a terminal, with
-many models. For that developer, Pi is the better choice than Abhed, and we
-say so. Abhed is built for a platform team serving an organisation: many
+**Against terminal harnesses for one developer.** Superb tools for one
+developer in a terminal, with many models. For that developer they are the
+better choice than Abhed, and we say so. Abhed is built for a platform team serving an organisation: many
 users, tenants, policy, audit, a server, an SDK.
 
-**Against CrewAI and frameworks like it.** A toolkit, and a good one, for a
-team assembling agents in Python. The sandbox, the approvals, the audit log
+**Against agent frameworks.** A toolkit, and a good one, for a team
+assembling agents in Python. The sandbox, the approvals, the audit log
 and the deployment are left for that team to build. Abhed is the assembled,
 hardened thing, with a framework underneath it — extensions, skills, MCP,
 custom providers — for the parts that should be yours.
 
-**Against open-source harnesses such as OpenHands and Goose.** The closest
-competitors, and the ones to respect: any model, sandboxed, with real
+**Against open-source agent platforms.** The closest competitors, and the
+ones to respect: any model, sandboxed, with real
 communities and published benchmarks. Abhed's difference is narrower and
 specific — the audit record and the policy engine are in the core and
 enforced by the database, the deployment is one signed binary with an

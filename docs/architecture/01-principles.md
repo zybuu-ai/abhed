@@ -3,7 +3,7 @@
 Status: Draft · 2026-09-02 · Owner: @yuvraj-singh79
 
 Abhed is an on-prem, air-gap-capable deep agent platform. It targets the capability
-bar set by Claude Code and OpenAI Codex CLI, with the enterprise deployment posture of
+bar set by the leading cloud coding agents, with the enterprise deployment posture of
 other enterprise agent platforms, and it is deliberately model-agnostic.
 
 Every principle below is tagged with its evidence status:
@@ -24,8 +24,9 @@ GLM-5.1 by 13.0 points; changing the model within a fixed harness moved scores b
 reversals** — which model is "best" depends on the harness you run it in.
 
 Observationally, the same effect appears in public leaderboards: Claude Opus 4.5 scores
-45.9% on SWE-bench Pro under the standardized SEAL scaffold vs 55.4% under Claude Code
-(+9.5pp). Grok 4 moves 58.6% → 72–75% between SWE-agent and xAI's own scaffold.
+45.9% on SWE-bench Pro under the standardized SEAL scaffold vs 55.4% under its vendor's
+own agent (+9.5pp). Grok 4 moves 58.6% → 72–75% between an open-source scaffold and
+xAI's own.
 
 > Honest qualification, from the verifiers: on some coding benchmarks the harness's
 > dominant effect is on **cost and failure mode** rather than raw accuracy (confidence
@@ -90,8 +91,8 @@ plan-execute, multi-attempt retry, and tree search on top.
 composable strategies selectable per task class — not as an architecture to commit to once.
 
 > Scope caveat: that corpus covers open-source agents pinned to June 2023 – March 2025
-> commits. Claude Code, Codex CLI, and Goose are essentially absent (Goose: 0 mentions).
-> Do not generalize the counts to closed-source agents.
+> commits. The vendors' own coding agents are essentially absent. Do not generalize the
+> counts to closed-source agents.
 
 ## P6 — Agent state is an event-sourced stream. [V]
 
@@ -100,7 +101,8 @@ Model state as a chronological stream of actions and observations:
 `step(state)` call. Tool-calling (including MCP JSON schemas) maps *into* this action
 abstraction rather than replacing it.
 
-This abstraction survived a full architectural rewrite (OpenHands V0 → V1 SDK), which is
+This abstraction survived a full architectural rewrite of an open-source agent platform
+(its V0 → V1 SDK), which is
 strong evidence it is the right extensibility point. Its **deterministic replay** property
 is directly what an air-gapped platform needs for audit logging and incident reconstruction.
 

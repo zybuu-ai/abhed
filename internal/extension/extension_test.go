@@ -173,8 +173,7 @@ func TestArgsRewriteComposes(t *testing.T) {
 	}
 }
 
-// An extension can add a tool the harness never knew about — the capability
-// Pi's registerTool provides, and the one Abhed was missing.
+// An extension can add a tool the harness never knew about.
 func TestExtensionProvidesATool(t *testing.T) {
 	h := hostWith(t, "provider.sh")
 	provided, errs := h.Tools(context.Background())

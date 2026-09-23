@@ -15,9 +15,9 @@ tool runs, rewrite a result before the model reads it, drop messages before they
 are sent upstream, and add to the system prompt. It cannot turn a denied action
 into an allowed one.
 
-This is the single line Abhed draws differently from Pi, whose extension API is
-otherwise broader and better. Pi's answer to permissions is to containerise or
-write an extension, which is coherent for a developer on a laptop. It is not
+This is the single line Abhed draws differently from harnesses whose extension
+API is broader. Their answer to permissions is to containerise or write an
+extension, which is coherent for a developer on a laptop. It is not
 available to a deployment that has to prove to an auditor what the agent was
 permitted to do, because a gate an extension supplies is one an extension can
 also remove.
