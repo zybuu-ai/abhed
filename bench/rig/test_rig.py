@@ -561,7 +561,6 @@ class RigBoundaryTests(UsingCache, unittest.TestCase):
         self.assertIn("core.hooksPath=/dev/null", g)
 
     def test_the_summary_counts_sessions_set_aside(self):
-        root = rig.RESULTS / "t-coverage" / "rig"
         saved = rig.RESULTS
         rig.RESULTS = self.root / "results"
         try:
@@ -575,6 +574,145 @@ class RigBoundaryTests(UsingCache, unittest.TestCase):
             self.assertIn("| abhed | 3 | 1 | 1 | 1 |", rig.coverage("t"))
         finally:
             rig.RESULTS = saved
+
+
+def _pids_alive(pids):
+    import os
+    alive = []
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            alive.append(pid)
+        except ProcessLookupError:
+            pass
+    return alive
+
+
+class StopSignalTests(UsingCache, unittest.TestCase):
+    def start(self, body, pids):
+        import subprocess
+        code = (f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
+                f"rig.install_stop_handlers(); {body}")
+        proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
+        import time as _t
+        for _ in range(150):
+            if all(p.exists() and p.read_text().strip() for p in pids):
+                break
+            _t.sleep(0.1)
+        return proc, [int(p.read_text()) for p in pids]
+
+    def check(self, sig_):
+        import signal as s_
+        import time as _t
+        pids = [self.root / f"c{i}.pid" for i in range(2)]
+        body = ("rig.execute([0, 1], 2, lambda i: rig.sh(['sh', '-c', "
+                f"'echo $$ > {self.root}/c' + str(i) + '.pid; exec sleep 60']))")
+        proc, children = self.start(body, pids)
+        start = _t.monotonic()
+        proc.send_signal(sig_)
+        proc.wait(timeout=20)
+        self.assertLess(_t.monotonic() - start, 10, "the rig waited for its harnesses instead of stopping them")
+        _t.sleep(0.3)
+        self.assertEqual(_pids_alive(children), [])
+
+    def test_sigterm_stops_every_harness_in_a_parallel_run(self):
+        import signal as s_
+        self.check(s_.SIGTERM)
+
+    def test_ctrl_c_stops_every_harness_in_a_parallel_run(self):
+        import signal as s_
+        self.check(s_.SIGINT)
+
+    def test_nothing_starts_once_the_rig_is_stopping(self):
+        rig._STOPPING.set()
+        try:
+            with self.assertRaises(rig.Stopped):
+                rig.sh(["true"])
+        finally:
+            rig._STOPPING.clear()
+
+
+class RoundFourTests(UsingCache, unittest.TestCase):
+    def test_a_secret_is_redacted_in_every_field_and_in_json_escaped_form(self):
+        import os
+        saved = os.environ.get("ABHED_BENCH_WATSONX_APIKEY")
+        os.environ["ABHED_BENCH_WATSONX_APIKEY"] = 'k"ey\\with-quotes-123'
+        try:
+            obj = rig.redact_obj({"score": {"tail": 'x k"ey\\with-quotes-123 y'}, "l": ['k"ey\\with-quotes-123']})
+            text = rig.redact(json.dumps(obj))
+            self.assertNotIn("with-quotes-123", text)
+        finally:
+            if saved is None:
+                os.environ.pop("ABHED_BENCH_WATSONX_APIKEY", None)
+            else:
+                os.environ["ABHED_BENCH_WATSONX_APIKEY"] = saved
+
+    def test_stale_environments_and_ids_outside_the_pool_are_refused(self):
+        real = rig.instances
+        rig.instances = lambda repo=None: [{"instance_id": "i1", "repo": "pytest-dev/pytest"}]
+        try:
+            d = self.root / "envs" / "i1"
+            d.mkdir(parents=True)
+            (d / "ready").write_text("old spec")
+            self.assertEqual(rig.stale_envs(["i1", "gone"]), ["i1", "gone"])
+            (d / "ready").write_text(rig.env_spec("pytest-dev/pytest"))
+            self.assertEqual(rig.stale_envs(["i1"]), [])
+        finally:
+            rig.instances = real
+
+    def test_a_failed_rebuild_keeps_the_validated_suite(self):
+        import argparse
+        import contextlib
+        import io
+        real = (rig.instances, rig.sh)
+        rig.instances = lambda repo=None: [{"instance_id": "i1", "repo": "pytest-dev/pytest", "base_commit": "x"}]
+
+        def failing(cmd, **kw):
+            raise RuntimeError("network down")
+
+        rig.sh = failing
+        try:
+            (self.root / "suite.json").write_text('{"i1": []}')
+            with contextlib.redirect_stdout(io.StringIO()):
+                rig.prepare(argparse.Namespace(repo=None, limit=None))
+            self.assertTrue((self.root / "suite.json").exists())
+        finally:
+            rig.instances, rig.sh = real
+
+    def test_watch_reads_without_locks(self):
+        seen = []
+        real = rig.sh
+
+        def sh(cmd, cwd=None, env=None, timeout=None, check=False):
+            seen.append(cmd)
+            return 0, ""
+
+        rig.sh = sh
+        try:
+            rig.editing(self.root / "ws")
+        finally:
+            rig.sh = real
+        self.assertTrue(seen and all("--no-optional-locks" in c for c in seen))
+
+    def test_a_managed_config_keeps_abhed_out_of_the_run(self):
+        real = rig.MANAGED_CONFIG
+        rig.MANAGED_CONFIG = str(self.root / "managed.json")
+        try:
+            Path(rig.MANAGED_CONFIG).write_text("{}")
+            ok, why = rig.Abhed().available()
+            self.assertFalse(ok)
+            self.assertIn("override", why)
+        finally:
+            rig.MANAGED_CONFIG = real
+
+    def test_a_doctor_pass_is_tied_to_the_setup(self):
+        a = rig.setup_fingerprint("abhed")
+        real = rig.MAX_OUTPUT
+        rig.MAX_OUTPUT = real + 1
+        try:
+            self.assertNotEqual(a, rig.setup_fingerprint("abhed"))
+        finally:
+            rig.MAX_OUTPUT = real
 
 
 if __name__ == "__main__":

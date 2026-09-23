@@ -57,8 +57,14 @@ and inherits nothing else from the operator's shell but `PATH`, locale and
 certificate settings: no provider credentials, and no `ABHED_MODEL`-style
 override of the model the rig configured. The operator's own settings are
 never read or written. pi and OpenHands are installed under the rig's cache
-(`.cache/tools`), not globally. A harness's process group is stopped with the
-session, on a timeout, an interrupt of the rig, or a normal exit.
+(`.cache/tools`), not globally. A harness's process group is stopped with its
+session: on a timeout, on a normal exit, and when the rig itself is stopped
+by Ctrl-C or `pkill` (SIGINT or SIGTERM), which kills every live harness at
+once, parallel ones included; sessions in flight are then abandoned, not
+scored, and redone on resume. A resume must use the same options as the run
+it continues; the rig refuses a changed plan under the same date. Abhed
+applies an organisation's managed config (`/etc/abhed/config.json`) over any
+other, so the rig refuses to run Abhed on a machine that has one.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
 prompt, so with an inherited stdin it waits for input that never comes and
@@ -70,7 +76,9 @@ Verified on 21 Sep 2026 with `gemma4:26b`: Abhed 0.2.1-dev, pi 0.73.1 and
 OpenHands CLI 1.16.0 each passed `doctor`. The OpenHands and pi invocations
 above are the documented ones and needed no change.
 
-**`rig.py doctor --harness X` must pass before `run` will include X.** It asks
+**`rig.py doctor --harness X` must pass before `run` will include X**, and
+the pass is tied to what it checked — model, endpoint, limits and the
+environment the harness gets — so any change to those needs a new pass. It asks
 the harness to create one file on the benchmark model. A harness that cannot
 make a tool call in this setup would score zero for a reason that has nothing
 to do with the harness; the earlier suite's aider result carried exactly that

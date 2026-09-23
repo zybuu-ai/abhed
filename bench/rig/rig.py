@@ -38,6 +38,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -88,11 +89,39 @@ the issue is resolved. The project's Python environment is already on PATH.
 </issue>"""
 
 
+# Every harness process group alive now, so a stop signal can end all of them.
+_LIVE, _LIVE_LOCK = set(), threading.Lock()
+_STOPPING = threading.Event()
+
+
+class Stopped(Exception):
+    """The rig is stopping; a session in flight is abandoned, not scored."""
+
+
 def _kill_group(p):
     try:
         os.killpg(p.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def stop_all(signum=None, _frame=None):
+    """Kill every live harness group; from a signal, then exit."""
+    _STOPPING.set()
+    with _LIVE_LOCK:
+        pids = list(_LIVE)
+    for pid in pids:
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if signum is not None:
+        raise SystemExit(128 + signum)
+
+
+def install_stop_handlers():
+    for s_ in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(s_, stop_all)
 
 
 def sh(cmd, cwd=None, env=None, timeout=None, check=False):
@@ -101,8 +130,12 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # the model — which is how the first doctor run on pi spent ten minutes.
     #
     # Its own process group, so a timeout stops the agent's tools with it.
+    if _STOPPING.is_set():
+        raise Stopped()
     p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    with _LIVE_LOCK:
+        _LIVE.add(p.pid)
     try:
         out, _ = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
@@ -116,7 +149,12 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     except BaseException:
         _kill_group(p)  # Ctrl-C or any error: the harness must not outlive the rig
         raise
+    finally:
+        with _LIVE_LOCK:
+            _LIVE.discard(p.pid)
     _kill_group(p)  # anything the agent left running in the background
+    if _STOPPING.is_set():
+        raise Stopped()  # killed by a stop signal: not a result
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{out[-2000:]}")
     return p.returncode, out
@@ -167,6 +205,13 @@ def env_current(iid, repo):
     return ready.exists() and ready.read_text() == env_spec(repo)
 
 
+def stale_envs(ids):
+    """Instances whose environment was built from another spec, or whose
+    repository is no longer in the pool."""
+    repo = {i["instance_id"]: i["repo"] for i in instances()}
+    return [t for t in ids if t not in repo or not env_current(t, repo[t])]
+
+
 def prepare(args):
     todo = instances(args.repo)
     todo = todo[: args.limit] if args.limit else todo
@@ -181,9 +226,10 @@ def prepare(args):
         mirror = CACHE / "mirrors" / inst["repo"].replace("/", "__")
         try:
             if not mirror.exists():
-                sh(["git", "clone", "--quiet", "--mirror", f"https://github.com/{inst['repo']}.git", str(mirror)], check=True)
-            sh(["git", "clone", "--quiet", str(mirror), str(d / "repo")], check=True)
-            sh(["git", "checkout", "--quiet", inst["base_commit"]], cwd=d / "repo", check=True)
+                sh(git(mirror) + ["clone", "--quiet", "--mirror", f"https://github.com/{inst['repo']}.git", str(mirror)],
+                   check=True)
+            sh(git(d) + ["clone", "--quiet", str(mirror), str(d / "repo")], check=True)
+            sh(git(d / "repo") + ["checkout", "--quiet", inst["base_commit"]], cwd=d / "repo", check=True)
             sh(["uv", "venv", "--quiet", "--python", spec["python"], str(d / "venv")], check=True)
             py = str(d / "venv" / "bin" / "python")
             sh(["uv", "pip", "install", "--quiet", "--python", py, *spec["install"]],
@@ -267,6 +313,9 @@ def agent_patch(ws):
         raise NoPatch(out[-500:])
     return out
 
+
+# Abhed applies an organisation's managed config last, over the rig's.
+MANAGED_CONFIG = "/etc/abhed/config.json"
 
 # What a harness inherits from the operator's shell. Nothing else: no provider
 # credentials, and no ABHED_MODEL-style overrides of the model the rig set.
@@ -370,9 +419,9 @@ def validate(_):
     """An instance is usable only if base fails and gold passes, here."""
     valid = {}
     pool = {i["instance_id"] for i in instances()}
-    repo = {i["instance_id"]: i["repo"] for i in instances()}
-    ready = [p.parent.name for p in sorted((CACHE / "envs").glob("*/ready"))
-             if p.parent.name in pool and env_current(p.parent.name, repo[p.parent.name])]
+    built = [p.parent.name for p in sorted((CACHE / "envs").glob("*/ready")) if p.parent.name in pool]
+    stale = set(stale_envs(built))
+    ready = [i for i in built if i not in stale]
     for iid in ready:
         ws = CACHE / "scratch" / "validate"
         inst = workspace(iid, ws)
@@ -428,7 +477,7 @@ def window(cond):
 
 
 # The per-turn output limit for every harness, read by the proxy hook too.
-# Abhed's default is 8,192; pi is told it; the endpoint enforces it for OpenHands.
+# Abhed and pi are told it; the endpoint enforces it for OpenHands.
 MAX_OUTPUT = int(os.environ.get("ABHED_BENCH_MAX_OUTPUT", "8192"))
 
 
@@ -501,6 +550,8 @@ class Abhed(Harness):
         return sh([self.binary(), "-version"], timeout=30)[1].strip()[:120]
 
     def available(self):
+        if Path(MANAGED_CONFIG).exists():
+            return False, f"{MANAGED_CONFIG} would override the rig's settings; move it aside for the run"
         return Path(self.binary()).exists(), f"build it: go build -o abhed ./cmd/abhed (looked for {self.binary()})"
 
     @staticmethod
@@ -560,7 +611,7 @@ def hawkeye(events, out_path):
     failed but what the record shows it doing: a call denied, a repeated
     failure, a session that hit the context ceiling."""
     rec = out_path.with_name(out_path.stem + ".events.json")
-    rec.write_text(redact(json.dumps(events)))
+    rec.write_text(redact(json.dumps(redact_obj(events))))
     binary = Abhed().binary()
     if not Path(binary).exists():
         return {"findings": [], "note": "abhed binary not built; record saved, not analysed"}
@@ -652,13 +703,29 @@ def result_path(out_path, slept, readable=True):
 SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.I)
 
 
+def _secrets():
+    found = {api_key()} | {v for k, v in os.environ.items()
+                           if SECRET_NAME.search(k) or k.startswith("ABHED_BENCH_WATSONX")}
+    forms = found | {json.dumps(v)[1:-1] for v in found}  # as a JSON string would carry it
+    return sorted((v for v in forms if len(v) >= 8), key=len, reverse=True)
+
+
 def redact(text):
     """No key from the rig's environment goes into a result, whatever a harness printed."""
-    secrets = {api_key()} | {v for k, v in os.environ.items()
-                              if SECRET_NAME.search(k) or k.startswith("ABHED_BENCH_WATSONX")}
-    for v in sorted((v for v in secrets if len(v) >= 8), key=len, reverse=True):
+    for v in _secrets():
         text = text.replace(v, "[redacted]")
     return text
+
+
+def redact_obj(obj):
+    """redact() over every string in a result, before it is serialised."""
+    if isinstance(obj, str):
+        return redact(obj)
+    if isinstance(obj, dict):
+        return {k: redact_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_obj(v) for v in obj]
+    return obj
 
 
 def scratch_tag(hname, cond, iid, run, out_path):
@@ -702,6 +769,8 @@ def one_run(hname, iid, cond, out_path, run=1):
             rc, output = h.run(ws, prompt, cond, task_env(iid, ws, venv, tmp), home)
         except subprocess.TimeoutExpired as e:
             timed_out, output = True, timeout_output(e)
+        if _STOPPING.is_set():
+            raise Stopped()
         elapsed = time.time() - started
         # The monotonic clock, and so the session timeout, stops while the machine sleeps.
         slept = elapsed - (time.monotonic() - awake)
@@ -724,7 +793,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         final = result_path(out_path, slept, readable)
         if slept > SLEPT_LIMIT:
             result["slept_sec"] = round(slept)
-        final.write_text(redact(json.dumps(result, indent=1)))
+        final.write_text(redact(json.dumps(redact_obj(result), indent=1)))
         return result
     finally:
         # The workspace and home hold the endpoint key in harness config.
@@ -802,6 +871,14 @@ def models(args):
     print("\nThe window is set at the endpoint, so every harness meets the same limit.")
 
 
+def setup_fingerprint(hname):
+    """What a doctor pass vouches for: the model, the endpoint, the limits and
+    the environment a harness gets. A change to any of them needs a new pass."""
+    setup = {"harness": hname, "model": base_model(), "max_output": MAX_OUTPUT,
+             "window": {c: window(c) for c in CONDITIONS}, "pass_env": sorted(PASS_ENV)}
+    return hashlib.sha256(json.dumps(setup, sort_keys=True).encode()).hexdigest() + "\n"
+
+
 def doctor(args):
     """Before hours are spent: can this harness drive a tool on this model at all?"""
     h = HARNESSES[args.harness]()
@@ -812,7 +889,7 @@ def doctor(args):
     for p in (ws, home):
         shutil.rmtree(p, ignore_errors=True)
         p.mkdir(parents=True)
-    sh(["git", "init", "--quiet"], cwd=ws)
+    sh(git(ws) + ["init", "--quiet"], cwd=ws)
     try:
         rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
                         "full", harness_env(), home)
@@ -823,21 +900,21 @@ def doctor(args):
     print(out[-1200:])
     if not made:
         sys.exit(f"\n{args.harness}: exit {rc}, and hello.txt was not written. Fix the setup before benchmarking.")
-    (CACHE / f"doctor-{args.harness}.ok").write_text(f"{base_model()} {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    (CACHE / f"doctor-{args.harness}.ok").write_text(setup_fingerprint(args.harness))
     print(f"\n{args.harness}: ok — it used a tool on this model")
 
 
 def run(args):
     names = args.harness or ["abhed", "pi", "openhands"]
     for n in names:
-        if n not in ("null", "gold") and not (CACHE / f"doctor-{n}.ok").exists():
+        ok = CACHE / f"doctor-{n}.ok"
+        if n not in ("null", "gold") and (not ok.exists() or ok.read_text() != setup_fingerprint(n)):
             sys.exit(f"{n} has not passed `rig.py doctor --harness {n}`; an unchecked setup is not a measurement")
     if remote() and (args.condition or list(CONDITIONS)) != ["full"]:
         sys.exit("a remote model serves one window, its own: run with --condition full. "
                  "The tight condition needs num_ctx set at the endpoint, which only a local Ollama allows.")
     tasks = sorted(suite())
-    repo = {i["instance_id"]: i["repo"] for i in instances()}
-    stale = [t for t in tasks if not env_current(t, repo[t])]
+    stale = stale_envs(tasks)
     if stale:
         sys.exit(f"{len(stale)} environment(s) were built from another spec: run prepare and validate")
     if getattr(args, "difficulty", None):
@@ -855,6 +932,11 @@ def run(args):
     random.Random(args.seed).shuffle(plan)
     # The suite is whatever validated on this machine, so it travels with the
     # results: which instances, and which drifted tests were set aside.
+    root = RESULTS / args.date / "rig"
+    sessions = [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]
+    old = root / "plan.json"
+    if old.exists() and not args.force and json.loads(old.read_text())["sessions"] != sessions:
+        sys.exit("a run with this date has a different plan; resume it with the same options or use a new --date")
     (RESULTS / args.date / "rig").mkdir(parents=True, exist_ok=True)
     (RESULTS / args.date / "rig" / "suite.json").write_text(json.dumps(suite(), indent=1))
     (RESULTS / args.date / "rig" / "plan.json").write_text(json.dumps(
@@ -873,15 +955,29 @@ def run(args):
     # file. On a local model they run one at a time, since the model is the
     # bottleneck; on a hosted one several may run, and the machine's own CPU
     # and sandbox are what bound the number.
-    workers = max(1, getattr(args, "parallel", 1) or 1)
+    execute(todo, max(1, getattr(args, "parallel", 1) or 1), one)
+
+
+def execute(todo, workers, one):
+    """Run sessions, several at once if asked. A stop signal kills every live
+    harness at once; sessions in flight are abandoned and queued ones dropped."""
+    def guarded(item):
+        try:
+            one(item)
+        except Stopped:
+            pass
+
     if workers == 1:
         for item in todo:
-            one(item)
-    else:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            for _ in pool.map(one, todo):
-                pass
+            guarded(item)
+        return
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    try:
+        for _ in pool.map(guarded, todo):
+            pass
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 # ---------------------------------------------------------------- watch
@@ -901,6 +997,18 @@ def _current():
         if m and d.is_dir() and not d.name.endswith(".rig-git"):
             return d, m.group(1), m.group(2), m.group(3)
     return None
+
+
+def editing(d):
+    """Files a session in flight has changed, read without locks so the
+    session's own `add` never meets a lock of ours."""
+    g = git(d, rig_git(d)) + ["--no-optional-locks"]
+    try:
+        _, diff = sh(g + ["diff", "--name-only", "HEAD"], cwd=d, timeout=20)
+        _, new = sh(g + ["ls-files", "-o", "--exclude-standard"], cwd=d, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return []  # the session ended, or git was slow, while we looked
+    return [ln.strip() for ln in (diff + new).splitlines() if ln.strip() and not ln.startswith(".")]
 
 
 def snapshot(date):
@@ -927,14 +1035,7 @@ def snapshot(date):
     if cur:
         d, h, cond, iid = cur
         out += ["", f"  now       {h} · {cond} · {iid}   ({_hms(time.time() - d.stat().st_ctime)} of {_hms(RUN_TIMEOUT)} allowed)"]
-        g = git(d, rig_git(d)) + ["--no-optional-locks"]  # never contend with the session's add
-        try:
-            _, diff = sh(g + ["diff", "--name-only", "HEAD"], cwd=d, timeout=20)
-            _, new = sh(g + ["ls-files", "-o", "--exclude-standard"], cwd=d, timeout=20)
-        except (OSError, subprocess.TimeoutExpired):
-            diff = new = ""  # the session ended, or git was slow, while we looked
-        changed = [ln.strip() for ln in (diff + new).splitlines() if ln.strip() and not ln.startswith(".")]
-        out.append(f"  editing   {', '.join(changed[:4]) or 'nothing changed yet'}")
+        out.append(f"  editing   {', '.join(editing(d)[:4]) or 'nothing changed yet'}")
 
     if done:
         cells = {}
@@ -1093,6 +1194,7 @@ def main():
     p.add_argument("--date", required=True); p.add_argument("--every", type=int, default=10)
     p.add_argument("--once", action="store_true", help="print one snapshot and exit"); p.set_defaults(fn=watch)
     args = ap.parse_args()
+    install_stop_handlers()
     args.fn(args)
 
 
