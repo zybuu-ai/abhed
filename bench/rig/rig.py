@@ -261,11 +261,17 @@ def score(iid, ws, inst, skip=()):
     f2p = json.loads(inst["FAIL_TO_PASS"])
     p2p = [t for t in json.loads(inst["PASS_TO_PASS"]) if t not in set(skip)]
     test_files = sorted({t.split("::")[0] for t in f2p + p2p})
+    # The tests get a temp dir of their own: whatever the agent left in its
+    # session's temp dir must not decide a test that uses tmp_path.
+    env = task_env(iid, ws)
+    env["TMPDIR"] = tempfile.mkdtemp(prefix="rig-score-")
     try:
         _, out = sh(["python", "-m", "pytest", "-rA", "-p", "no:cacheprovider", "-q", *test_files],
-                    cwd=ws, env=task_env(iid, ws), timeout=TEST_TIMEOUT)
+                    cwd=ws, env=env, timeout=TEST_TIMEOUT)
     except subprocess.TimeoutExpired:
         return {"resolved": False, "reason": "tests timed out"}
+    finally:
+        shutil.rmtree(env["TMPDIR"], ignore_errors=True)
 
     status = {}
     for line in out.splitlines():
