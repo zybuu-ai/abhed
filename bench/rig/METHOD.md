@@ -63,17 +63,27 @@ timeout, on a normal exit, and when the rig itself is stopped by Ctrl-C,
 harness at once, parallel ones included; a second Ctrl-C does not cut that
 short. The harness is asked first, so it can stop its own tools; then its
 process group and its process tree as it stood are killed, and so is any
-orphaned process still working in the session's workspace, temp dir or home
-— pi and OpenHands start their tools in sessions of their own, outside the
-harness's group. On Linux a marker in the session's environment finds the
-rest wherever they went. On macOS, which does not show one process's
-environment to another, a tool that was orphaned after moving outside the
-session's directories can outlive it; none of the harnesses does that by
-default. A process that is not an orphan is never touched, so an operator's
-shell in a workspace is safe. OpenHands gets a tmux server of its own per
+orphaned process still working in the session's workspace, temp dir or home,
+with everything below it — pi and OpenHands start their tools in sessions of
+their own, outside the harness's group. A marker in the session's environment
+finds the rest wherever they went: on Linux for every process, on macOS for
+the user's own programs but not Apple's binaries (`sleep`, `sh`). So on macOS
+a system binary the agent started, then orphaned after a `cd` out of the
+session's directories, can outlive the session. Only directories the rig
+made for the session, inside its scratch directory, are ever swept, and a
+process that is not an orphan is never touched, so an operator's shell in a
+workspace is safe; an application launched from a workspace (an editor
+opened there, say) is an orphan and is not. A PID the rig recorded could in
+principle be reused by an unrelated process before it is signalled; the
+window is a few seconds. OpenHands gets a tmux server of its own per
 session (`TMUX_TMPDIR`), and whether tmux was present is recorded in the plan.
-Session directories have opaque names, so an agent cannot read its task's id
-from its working directory. Sessions in
+Session directories have opaque names, what each session is lives outside
+the scratch tree, and the agent's copy of the environment points its editable
+install at the session's workspace, so an agent cannot read its task's id from
+its surroundings. The reference patches themselves stay in the rig's cache,
+which pi and OpenHands, running unsandboxed, could read by absolute path;
+every result records `touched_answers` when a session's output or change
+names that cache, and such sessions are listed in the report. Sessions in
 flight are abandoned, not scored, and redone on resume; results are written whole or not at all. A
 resume must be the same run: the rig refuses one under the same date whose
 sessions, model, endpoint, limits, timeout or parallelism differ from the plan it continues. Abhed

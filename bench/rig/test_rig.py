@@ -1104,5 +1104,113 @@ class SweepBoundaryTests(UsingCache, unittest.TestCase):
         self.assertEqual(got, [], "an orphan in the operator's home was targeted")
 
 
+TWO_LEVEL = ("import os, subprocess, sys, time; "
+             "p = subprocess.Popen([sys.executable, '-c', "
+             "'import subprocess, sys, time; "
+             "c = subprocess.Popen([\"sleep\", \"60\"], cwd=sys.argv[2]); "
+             "open(sys.argv[1], \"w\").write(str(c.pid)); time.sleep(60)', sys.argv[1], sys.argv[2]], "
+             "start_new_session=True); time.sleep({wait})")
+
+
+class TwoLevelTreeTests(UsingCache, unittest.TestCase):
+    """A detached parent working in the workspace, and its child working
+    elsewhere: a flask reloader and its server, say."""
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "scratch" / "ws"
+        self.ws.mkdir(parents=True)
+        self.elsewhere = self.root / "elsewhere"
+        self.elsewhere.mkdir()
+        rig._SESSIONS["t2"] = [str(self.ws)]
+        self.addCleanup(rig._SESSIONS.pop, "t2", None)
+        self.pidfile = self.root / "child.pid"
+        self.env = dict(os.environ, **{rig.MARKER: "t2"})
+
+    def child(self):
+        import time as _t
+        for _ in range(100):
+            if self.pidfile.exists() and self.pidfile.read_text().strip():
+                return int(self.pidfile.read_text())
+            _t.sleep(0.05)
+        self.fail("the child never started")
+
+    def assert_gone(self, pid):
+        import time as _t
+        _t.sleep(0.3)
+        alive = _pids_alive([pid])
+        for p in alive:
+            os.kill(p, 9)
+        self.assertEqual(alive, [], "the orphan's child survived")
+
+    def cmd(self, wait):
+        return [sys.executable, "-c", TWO_LEVEL.format(wait=wait), str(self.pidfile), str(self.elsewhere)]
+
+    def test_after_a_normal_exit(self):
+        import time as _t
+        rig.sh(self.cmd(1), cwd=self.ws, env=self.env)
+        self.assert_gone(self.child())
+
+    def test_on_timeout(self):
+        import subprocess
+        with self.assertRaises(subprocess.TimeoutExpired):
+            rig.sh(self.cmd(60), cwd=self.ws, env=self.env, timeout=2)
+        self.assert_gone(self.child())
+
+
+class RoundEightTests(UsingCache, unittest.TestCase):
+    def test_a_second_stop_signal_leaves_the_first_one_to_finish(self):
+        sent = []
+        real = rig._signal
+        rig._signal = lambda pids, sig, group=False: sent.append(sig)
+        rig._Stop.handling = True
+        try:
+            rig.stop_all(2)  # must neither raise nor signal: the first handler is mid-way
+        finally:
+            rig._signal = real
+            rig._Stop.handling = False
+            rig._Stop.signum = 0
+        self.assertEqual(sent, [])
+
+    def test_a_session_that_names_the_answers_is_flagged(self):
+        self.assertTrue(rig.touched_answers("cat ../../.cache/verified.jsonl"))
+        self.assertTrue(rig.touched_answers(f"ls {rig.CACHE / 'envs'}"))
+        self.assertFalse(rig.touched_answers("pytest testing/test_pastebin.py"))
+
+    def test_the_venv_copy_does_not_name_the_task(self):
+        iid = "pytest-dev__pytest-9999"
+        src = self.root / "envs" / iid / "venv"
+        site = src / "lib" / "python3.9" / "site-packages"
+        site.mkdir(parents=True)
+        (src / "bin").mkdir()
+        repo = str(self.root / "envs" / iid / "repo")
+        (site / "__editable__.pytest.pth").write_text(repo + "\n")
+        (site / "direct_url.json").write_text(json.dumps({"url": "file://" + repo}))
+        ws = self.root / "scratch" / "s0"
+        copy = rig.session_venv(iid, self.root / "scratch" / "venv-s0", ws)
+        for f in copy.rglob("*"):
+            if f.is_file():
+                self.assertNotIn(iid, f.read_text(), f.name)
+
+    def test_the_session_record_is_outside_the_scratch_tree(self):
+        self.assertFalse(rig.session_meta("s0").is_relative_to(self.root / "scratch"))
+
+    def test_a_plan_from_an_older_rig_is_named_as_such(self):
+        plan = self.root / "plan.json"
+        plan.write_text(json.dumps({"sessions": [1]}))
+        with self.assertRaises(SystemExit) as e:
+            rig.check_resume(plan, {"sessions": [1], "max_output": 8192})
+        self.assertIn("without max_output", str(e.exception))
+
+    def test_a_cache_too_deep_for_tmux_sockets_is_refused(self):
+        saved = rig.CACHE
+        rig.CACHE = self.root / ("x" * 80)
+        try:
+            with self.assertRaises(SystemExit):
+                rig.check_socket_room()
+        finally:
+            rig.CACHE = saved
+
+
 if __name__ == "__main__":
     unittest.main()

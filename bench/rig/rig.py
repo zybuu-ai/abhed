@@ -186,8 +186,21 @@ def _cwds():
 
 
 def _marked(marker):
-    """Linux only: processes whose environment carries the session marker."""
+    """Processes whose environment carries the session marker. macOS shows the
+    environment of the user's own processes, but not of Apple's binaries."""
     found = []
+    if marker and not sys.platform.startswith("linux"):
+        try:
+            ps = subprocess.run(["ps", "-Eww", "-A", "-o", "pid=,command="], capture_output=True,
+                                text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return found
+        needle = f"{MARKER}={marker}"
+        for line in ps.splitlines():
+            parts = line.split()
+            if parts and parts[0].isdigit() and needle in parts[1:]:
+                found.append(int(parts[0]))
+        return found
     if marker and sys.platform.startswith("linux"):
         needle = f"{MARKER}={marker}".encode()
         for d in Path("/proc").iterdir():
@@ -222,6 +235,8 @@ def _leftovers(marker, dirs, parents=None):
         cwd = os.path.realpath(cwd)
         if parents.get(pid) == 1 and any(cwd == r or cwd.startswith(r + os.sep) for r in roots):
             out.add(pid)
+    for pid in list(out):  # and everything below them, wherever it works
+        out.update(_descendants(pid, parents))
     out.discard(os.getpid())
     return sorted(out)
 
@@ -408,7 +423,7 @@ def prepare(args):
             print(f"  could not build: {str(e).splitlines()[0][:120]}")
 
 
-def session_venv(iid, dest):
+def session_venv(iid, dest, ws=None):
     """The agent's own copy of the prepared environment: what it installs stays
     with the session, and the tests are scored in the original."""
     src = env_dir(iid) / "venv"
@@ -427,6 +442,16 @@ def session_venv(iid, dest):
             target = Path(os.path.realpath(f)).relative_to(src.resolve())
             f.unlink()
             f.symlink_to(dest / target)
+    if ws is not None:  # editable installs name the prepared checkout, and with it the task id
+        repo = str(env_dir(iid) / "repo")
+        for f in dest.rglob("*"):
+            if f.is_file() and (f.suffix == ".pth" or f.name == "direct_url.json" or f.name.endswith("_finder.py")):
+                try:
+                    text = f.read_text()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                if repo in text:
+                    f.write_text(text.replace(repo, str(ws)))
     return dest
 
 
@@ -927,6 +952,12 @@ def scratch_tag(hname, cond, iid, run, out_path):
     return "s" + hashlib.sha1(f"{hname}|{cond}|{iid}|{run}|{out_path}".encode()).hexdigest()[:12]
 
 
+def touched_answers(text):
+    """Did the session name where the rig keeps the reference patches? pi and
+    OpenHands run unsandboxed and could read them; such a session is flagged."""
+    return any(k in text for k in ("verified.jsonl", "instance.json", str(CACHE / "envs"), "/.cache/envs/"))
+
+
 def score_patch(iid, inst, patch, tag):
     """Score the agent's change on a fresh copy of the base tree, so nothing
     else it left behind (git state, caches, files outside the diff) counts."""
@@ -944,8 +975,10 @@ def score_patch(iid, inst, patch, tag):
 
 
 def session_meta(tag):
-    """What a session is, kept beside its workspace where the agent does not look."""
-    return CACHE / "scratch" / f"{tag}.meta.json"
+    """What a session is, kept outside the scratch tree the agent works in."""
+    d = CACHE / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{tag}.json"
 
 
 def one_run(hname, iid, cond, out_path, run=1):
@@ -961,7 +994,7 @@ def one_run(hname, iid, cond, out_path, run=1):
             d.mkdir(parents=True)
         meta.write_text(json.dumps({"harness": hname, "condition": cond, "instance": iid, "run": run}))
         inst = workspace(iid, ws)
-        session_venv(iid, venv)
+        session_venv(iid, venv, ws)
         h = HARNESSES[hname]()
         h.inst = inst
         prompt = PROMPT.format(repo=inst["repo"], problem=inst["problem_statement"])
@@ -987,7 +1020,8 @@ def one_run(hname, iid, cond, out_path, run=1):
                   "version": h.version(), "instance": iid, "condition": cond, "exit_code": rc,
                   "timed_out": timed_out, "wall_sec": round(elapsed, 1), "patch_bytes": len(diff),
                   "patch": redact(diff[-20000:]), "usage": h.usage(output), "output_tail": redact(output[-3000:]),
-                  "difficulty": inst.get("difficulty", ""), "score": scored}
+                  "difficulty": inst.get("difficulty", ""), "score": scored,
+                  "touched_answers": touched_answers(output + diff)}
         out_path.parent.mkdir(parents=True, exist_ok=True)
         events = h.record(output) if hasattr(h, "record") else None
         if events:
@@ -1084,24 +1118,35 @@ def setup_fingerprint(hname):
     return hashlib.sha256(json.dumps(setup, sort_keys=True).encode()).hexdigest() + "\n"
 
 
+def check_socket_room():
+    """tmux puts its socket under the session temp dir; a Unix socket path has
+    a hard limit (104 bytes on macOS), so a long cache path breaks OpenHands."""
+    sock = CACHE / "scratch" / ("tmp-s" + "0" * 12) / f"tmux-{os.getuid()}" / "openhands"
+    if len(str(sock)) > 100:
+        sys.exit(f"the rig cache path is too long for tmux sockets ({len(str(sock))} bytes): "
+                 "set ABHED_BENCH_CACHE to a shorter directory")
+
+
 def doctor(args):
     """Before hours are spent: can this harness drive a tool on this model at all?"""
+    check_socket_room()
     h = HARNESSES[args.harness]()
     ok, how = h.available()
     if not ok:
         sys.exit(f"{args.harness}: not installed — {how}")
-    ws, home = CACHE / "scratch" / "doctor", CACHE / "scratch" / "doctor-home"
-    for p in (ws, home):
+    ws, home, tmp = CACHE / "scratch" / "doctor", CACHE / "scratch" / "doctor-home", CACHE / "scratch" / "doctor-tmp"
+    for p in (ws, home, tmp):
         shutil.rmtree(p, ignore_errors=True)
         p.mkdir(parents=True)
     sh(git(ws) + ["init", "--quiet"], cwd=ws)
-    _SESSIONS[f"doctor-{args.harness}"] = [str(ws), str(home)]
+    _SESSIONS[f"doctor-{args.harness}"] = [str(ws), str(home), str(tmp)]
     try:
         rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
-                        "full", dict(harness_env(), **{MARKER: f"doctor-{args.harness}"}), home)
+                        "full", dict(harness_env(), TMPDIR=str(tmp), TMUX_TMPDIR=str(tmp),
+                                     **{MARKER: f"doctor-{args.harness}"}), home)
         made = (ws / "hello.txt").exists() and "ready" in (ws / "hello.txt").read_text()
     finally:
-        for p in (ws, home):  # both hold the endpoint key in harness config
+        for p in (ws, home, tmp):  # they hold the endpoint key in harness config
             shutil.rmtree(p, ignore_errors=True)
     print(out[-1200:])
     if not made:
@@ -1120,6 +1165,7 @@ def run(args):
         sys.exit("a remote model serves one window, its own: run with --condition full. "
                  "The tight condition needs num_ctx set at the endpoint, which only a local Ollama allows.")
     tasks = sorted(suite())
+    check_socket_room()
     if "abhed" in names and Path(MANAGED_CONFIG).exists():
         sys.exit(f"{MANAGED_CONFIG} would override the rig's settings for Abhed; move it aside for the run")
     stale = stale_envs(tasks)
@@ -1173,7 +1219,11 @@ def check_resume(plan_path, setup, force=False):
     old = json.loads(plan_path.read_text())
     old.setdefault("parallel", 1)  # plans written before parallelism was recorded
     old.setdefault("tmux", setup.get("tmux"))
-    changed = sorted(k for k in setup if old.get(k) != setup[k])
+    missing = sorted(k for k in setup if k not in old)
+    if missing:
+        sys.exit(f"a run with this date was planned without {', '.join(missing)}, by an older rig; "
+                 "use a new --date")
+    changed = sorted(k for k in setup if old[k] != setup[k])
     if changed:
         sys.exit(f"a run with this date was started with a different {', '.join(changed)}; "
                  "resume it with the same setup or use a new --date")
@@ -1213,9 +1263,9 @@ def _hms(sec):
 def _current():
     """The session in flight, read from the scratch directory it works in."""
     scratch = CACHE / "scratch"
-    metas = sorted(scratch.glob("s*.meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    metas = sorted((CACHE / "sessions").glob("s*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     for m in metas:
-        d = scratch / m.name[: -len(".meta.json")]
+        d = scratch / m.stem
         try:
             info = json.loads(m.read_text())
         except (OSError, json.JSONDecodeError):
