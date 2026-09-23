@@ -336,7 +336,7 @@ Then:
 
 ```
 › /sessions
-  s-1788362231965  completed  2026-09-02 20:47  yuvraj
+  s-1788362231965  completed  2026-09-02 20:47  alice
 › /resume s-1788362231965
 ```
 

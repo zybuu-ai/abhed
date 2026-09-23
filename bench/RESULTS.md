@@ -7,6 +7,8 @@
 **Abhed commit:** `de52025` (built as `cmd/titan` at the time; the project was
 renamed Abhed on 14 September 2026 — see the naming note in `README.md`).
 **aider version:** 0.86.2.
+**Note:** a local scratch path was redacted from one output tail
+(`robot-simulator`); no scored field changed.
 **Task set:** 24 exercism/python exercises, 3 systems, 72 runs total, one run
 at a time (see `README.md` for why: single local model is the bottleneck).
 

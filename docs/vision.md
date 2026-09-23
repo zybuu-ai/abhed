@@ -1,6 +1,6 @@
 # Why Zybuu, and why Abhed
 
-The answer to the first question every buyer and every investor asks.
+The answer to the first question every buyer asks.
 
 ## The thesis
 
@@ -105,23 +105,9 @@ economy", and it is the honest one.
 
 Abhed is not the best model; it does not have one. It is not a multi-agent
 framework with roles and message passing. It is not the right tool for a solo
-developer who is happy in the cloud. It is pre-release and invite-only, and
-its properties are proven at the scale of its test suite and its own
-deployment, not yet at a customer's.
+developer who is happy in the cloud. Its properties are proven at the scale
+of its test suite and its own deployment, not yet at a customer's.
 
-## The business, as proposed
-
-**Land** with platform and security teams in regulated industries, usually
-through the SDK: they have an agent they cannot ship because of where it would
-run, and Abhed is the shortest path to shipping it.
-
-**Charge** per deployment and per seat, annually, by tier — Community,
-Team, Enterprise, with air-gapped delivery as an addition — never per token.
-The tiers are the same product; what differs is what the customer needs
-proven and who is on the hook for it. Launch prices are published on the
-product page (`zybuu.com/abhed/#pricing`) so a buyer can size a purchase
-without a call.
-
-**Expand** with further products on the same infrastructure layer, each
-scoped the way Abhed is (`abhed.zybuu.com`), sharing the store, the identity,
-the policy, and the record.
+The Community Edition is free and open source. Team and Enterprise are
+priced per seat and per site, never per token: see
+[zybuu.com/abhed](https://zybuu.com/abhed/#pricing).

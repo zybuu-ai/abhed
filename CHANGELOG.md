@@ -36,6 +36,13 @@ All notable changes to Abhed are recorded here. The format follows
   listed; a hosted model is reached through a LiteLLM proxy hook in
   `bench/rig/hosted`.
 
+### Removed
+
+- The three multi-harness benchmark runs published so far are withdrawn:
+  the rig they ran on did not give every harness the same conditions.
+  `bench/results/README.md` lists every defect, whom it could favour, what
+  the runs showed and where they remain in history.
+
 ### Fixed
 
 - A turn that spends its whole output budget reasoning without a tool call
@@ -43,7 +50,8 @@ All notable changes to Abhed are recorded here. The format follows
   next call asks for low reasoning effort, the turn is marked `cut_off` in
   the record and HawkEYE reports `output-cap`. Both of Abhed's failures in
   the first easy-band benchmark run ended this way, one of them read as
-  completed because a sentence had come out before the cut.
+  completed because a sentence had come out before the cut (that run has
+  since been withdrawn; see `bench/results/README.md`).
 
 ## [1.0.1] - 2026-09-22
 

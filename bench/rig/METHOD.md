@@ -186,14 +186,14 @@ at the base commit the FAIL_TO_PASS tests must **run and fail**, and with the
 gold patch every FAIL_TO_PASS test must pass. Anything else is dropped and the
 reason kept in `invalid.json`.
 
-"Run and fail" is stricter than "not pass", and the difference cost half of the
-first pilot. `pylint-4604`'s hidden test file imports `IS_PYPY` from
-`pylint.constants` — a constant the reference patch adds and the issue never
-mentions. Without it the file cannot be imported, so all 21 target tests score
-zero for any fix that does not invent the same name in the same place. One
-harness edited the right file and still scored 0 of 21. Such an instance
-measures guessing, not fixing; it is excluded. Of 19 instances that passed the
-first gate, this was the only one.
+"Run and fail" is stricter than "not pass", and the difference cost half of an
+early pilot, since withdrawn (see `bench/results/README.md`). `pylint-4604`'s
+hidden test file imports `IS_PYPY` from `pylint.constants` — a constant the
+reference patch adds and the issue never mentions. Without it the file cannot
+be imported, so all 21 target tests score zero for any fix that does not
+invent the same name in the same place. One harness edited the right file and
+still scored 0 of 21. Such an instance measures guessing, not fixing; it is
+excluded. Of 19 instances that passed the first gate, this was the only one.
 
 **One stated deviation.** Dependencies are not pinned to the versions the
 dataset was built with, so a few PASS_TO_PASS tests fail from drift alone. A
@@ -213,14 +213,14 @@ The harness sees the problem statement and a checkout at the base commit with
 **no git history** — the fix is in the repository's future, and `git log` must
 not be a way to find it. It does not see the gold tests.
 
-**Difficulty is the dataset's, and it is recorded.** SWE-bench Verified
-rates every instance by the time an annotator judged the fix to take. A run
-may be limited to one band — `--difficulty easy` is the `<15 min fix` band,
-twelve of the pool's thirty — and the band is written into the plan and
-every result. The reason is the first pilot: on a 26B local model one session
-in eight resolved, which cannot separate harnesses. A band where the model
-resolves a third to a half of tasks can. A number from the easy band is
-reported as a number from the easy band.
+**Difficulty is the dataset's, and it is recorded.** SWE-bench Verified rates
+every instance by the time an annotator judged the fix to take. A run may be
+limited to one band — `--difficulty easy` is the `<15 min fix` band, twelve of
+the pool's thirty — and the band is written into the plan and every result.
+The reason is the early runs, since withdrawn (see `bench/results/README.md`):
+on a local model too few sessions resolved to separate harnesses. A band where
+the model resolves a third to a half of tasks can. A number from the easy band
+is reported as a number from the easy band.
 
 **Abhed's sessions come with their record.** Abhed runs with
 `-output-format json`, so its output is the event record, one event per
