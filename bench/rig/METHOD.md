@@ -27,18 +27,22 @@ what the product is.
 
 **Network.** The harnesses do not get the same network, and a reader should
 weigh every result with that in mind. Abhed's shell runs in its sandbox, whose
-shipped default denies network access (`sandbox.allow_network: false`); pi
-has no sandbox, and OpenHands' local backend runs commands as ordinary host
-processes, so both reach the network freely. Every effect of this favours pi and OpenHands: they can install packages and read documentation that Abhed cannot, and they could in principle fetch the fix itself — the upstream repository holds
-the future commit, and later releases on PyPI contain it. Removing git history
-from the workspace closes the local route to the answer, not the network
-route. `fetched_upstream` flags a session whose output or change shows a command
-fetching from the upstream repository — `git clone` or `fetch`, `curl`,
-`wget`, a Python HTTP call or a `pip install` from it; a link alone does not
-count, since the prompt and the task's own source are full of them. A download by other means would not show.
-So an Abhed win here is conservative, and an Abhed loss may owe something to
-the network. It is not equalised because Abhed ships with network denied,
-and the benchmark measures the harness as it ships.
+shipped default denies network access (`sandbox.allow_network: false`); pi has
+no sandbox, and OpenHands' local backend runs commands as ordinary host
+processes, so both reach the network freely. The asymmetry favours pi and
+OpenHands: they can install packages and read documentation that Abhed cannot,
+and they could in principle fetch the fix itself — the upstream repository
+holds the future commit, and later releases on PyPI contain it. Removing git
+history from the workspace closes the local route to the answer, not the
+network route. `fetched_upstream` flags a session whose output or change shows
+a command fetching from the upstream repository — `git clone` or `fetch`,
+`curl`, `wget`, a Python HTTP call or a `pip install` from it; a link alone
+does not count, and the prompt is left out. The task's own docs sometimes show
+a `git clone` of the project, so a flagged session is a candidate to check by
+hand, not a verdict. A download by other means would not show. So an Abhed win
+here is conservative, and an Abhed loss may owe something to the network. It
+is not equalised because Abhed ships with network denied, and the benchmark
+measures the harness as it ships.
 
 **Limits.** The rig sets one limit of its own, the wall clock
 (`ABHED_BENCH_TIMEOUT`, 30 minutes), the same for every harness. Turn limits
@@ -316,14 +320,16 @@ session timeout runs on a clock that stops in sleep, and a model request that
 spans a sleep fails at the endpoint, so such a session measures neither
 harness nor model.
 
-A hosted run goes through a LiteLLM proxy (`bench/rig/hosted/`): the
-harnesses speak OpenAI's API to it, it holds the provider's credentials from
-rig-prefixed environment variables (`ABHED_BENCH_WATSONX_*` in the example), and its hook
-holds every request to the output limit and normalises message content some
-providers reject. Abhed and pi are told the hosted model's own window
-(`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b). The endpoint key and every `ABHED_BENCH_*` value the rig does not publish are redacted from every result and from the event record kept beside it. The
-proxy reads `ABHED_BENCH_MAX_OUTPUT` from its own environment, so start it
-with the same value the rig runs with.
+A hosted run goes through a LiteLLM proxy (`bench/rig/hosted/`): the harnesses
+speak OpenAI's API to it, it holds the provider's credentials from
+rig-prefixed environment variables (`ABHED_BENCH_WATSONX_*` in the example),
+and its hook holds every request to the output limit and normalises message
+content some providers reject. Abhed and pi are told the hosted model's own
+window (`ABHED_BENCH_CONTEXT`, 131,072 for gpt-oss-120b). The endpoint key and
+every `ABHED_BENCH_*` value the rig does not publish are redacted from every
+result and from the event record kept beside it. The proxy reads
+`ABHED_BENCH_MAX_OUTPUT` from its own environment, so start it with the same
+value the rig runs with.
 
 A session whose change the rig could not read is kept aside as
 `<instance>.unread.json`, like a slept one, and redone on resume: a failure

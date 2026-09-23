@@ -1207,11 +1207,20 @@ class RoundEightTests(UsingCache, unittest.TestCase):
                       "wget https://raw.githubusercontent.com/pytest-dev/pytest/main/src/x.py",
                       "pip install git+https://github.com/pytest-dev/pytest@main"):
             self.assertTrue(rig.fetched_upstream(fetch, repo), fetch)
-        issue = ">>> urlopen(url, data=data)\nwith the attached [data.txt](https://github.com/pytest-dev/pytest/files/1/data.txt)"
+        issue = "<issue>>>> urlopen(url, data=data) with [data.txt](https://github.com/pytest-dev/pytest/files/1/data.txt)</issue>"
+        self.assertTrue(rig.fetched_upstream("prompt: " + issue, repo), "the unstripped issue must match, or this test proves nothing")
         self.assertFalse(rig.fetched_upstream("prompt: " + issue, repo, issue))
         self.assertFalse(rig.fetched_upstream(json.dumps({"text": issue}), repo, issue))
+        go = json.dumps({"text": issue}).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        self.assertFalse(rig.fetched_upstream(go, repo, issue), "Go's escaping of the echoed prompt")
+        self.assertTrue(rig.fetched_upstream(go + "\ngit -C x clone https://github.com/pytest-dev/pytest", repo, issue))
+        self.assertFalse(rig.fetched_upstream("git clone https://github.com/pytest-dev/pytest-xdist", repo))
+        self.assertFalse(rig.fetched_upstream("a curly brace near github.com/pytest-dev/pytest", repo))
+        self.assertTrue(rig.fetched_upstream("gh repo clone pytest-dev/pytest", repo))
         cells = {("pi", "full"): {1: {"i1": {"harness": "pi", "condition": "full", "fetched_upstream": True}}}}
         self.assertIn("| pi | full | 1 | i1 |", rig.flagged(cells, (), "fetched_upstream", "t"))
+        old = {("pi", "full"): {1: {"i1": {"harness": "pi", "condition": "full"}}}}
+        self.assertEqual(rig.flagged(old, (), "fetched_upstream", "t")[-1], "not recorded in these results")
 
     def test_an_unpublished_rig_variable_is_redacted(self):
         saved = os.environ.get("ABHED_BENCH_PROVIDER_SPACE")

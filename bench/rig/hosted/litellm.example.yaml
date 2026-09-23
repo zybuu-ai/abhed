@@ -1,7 +1,8 @@
 # A LiteLLM proxy in front of a hosted model; watsonx is the example, and any
 # LiteLLM provider works. Credentials come from the environment, and any
 # ABHED_BENCH_* variable the rig does not publish is redacted from results.
-# master_key is a placeholder: run as below, the proxy binds to 127.0.0.1. Run from this directory:
+# master_key is a placeholder: run as below, the proxy binds to 127.0.0.1.
+# Run from this directory:
 #   PYTHONPATH=. litellm --config litellm.example.yaml --host 127.0.0.1 --port 4000
 # Export the same ABHED_BENCH_MAX_OUTPUT here as for rig.py, or the hook's
 # limit and the one recorded in the run's plan differ.

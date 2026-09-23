@@ -1007,11 +1007,14 @@ def fetched_upstream(text, repo, prompt=""):
     Links alone fill the prompt and the tree, so the prompt is left out."""
     if not repo:
         return False
-    for p in {prompt, json.dumps(prompt)[1:-1]} - {""}:
+    # Go escapes <, > and & in JSON; undo it so the echoed prompt matches too.
+    text = text.replace("\\u003c", "<").replace("\\u003e", ">").replace("\\u0026", "&")
+    for p in {prompt, json.dumps(prompt)[1:-1], json.dumps(prompt, ensure_ascii=False)[1:-1]} - {""}:
         text = text.replace(p, "")
     r = re.escape(repo.lower())
-    fetch = r"(git\s+(clone|fetch|pull|remote\s+add)|curl|wget|urlopen|urlretrieve|requests\.get|httpx\.get|pip\s+(install|download))"
-    where = rf"(github\.com[:/]|api\.github\.com/repos/|raw\.githubusercontent\.com/|codeload\.github\.com/){r}"
+    fetch = (r"\b(git\b[^\n]{0,80}?\b(clone|fetch|pull|remote\s+add)|gh\s+repo\s+clone|curl|wget"
+             r"|urlopen|urlretrieve|requests\.get|httpx\.get|pip\s+(install|download))\b")
+    where = rf"(github\.com[:/]|api\.github\.com/repos/|raw\.githubusercontent\.com/|codeload\.github\.com/|\s){r}(\.git)?(?![\w.-])"
     return bool(re.search(rf"{fetch}[^\n]{{0,200}}?{where}", text.lower()))
 
 
@@ -1443,8 +1446,9 @@ def flagged(cells, aside=(), field="touched_answers",
             rows.append((r["harness"], r["condition"], int(Path(path).parent.name[3:]), r["instance"] + " (set aside)"))
     rows.sort()
     out = [title, ""]
+    recorded = any(field in r for runs in cells.values() for res in runs.values() for r in res.values())
     if not rows:
-        return out + ["none"]
+        return out + ["none" if recorded or not cells else "not recorded in these results"]
     out += ["| Harness | Window | Run | Instance |", "|---|---|---|---|"]
     return out + [f"| {h} | {c} | {n} | {i} |" for h, c, n, i in rows]
 
@@ -1537,7 +1541,7 @@ def summarize(args):
     aside = sorted(root.glob("*/*/run*/*.slept.json")) + sorted(root.glob("*/*/run*/*.unread.json"))
     lines += ["", *coverage(args.date), "", *flagged(cells, aside), "",
               *flagged(cells, aside, "fetched_upstream",
-                       "Sessions that tried to fetch from the upstream repository (git clone and the like):")]
+                       "Sessions that ran a fetch from the upstream repository (a pattern match; check each by hand):")]
     text = "\n".join(lines)
     (RESULTS / args.date / "rig" / "SUMMARY.md").write_text(text + "\n")
     print(text)
