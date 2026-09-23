@@ -89,19 +89,21 @@ the issue is resolved. The project's Python environment is already on PATH.
 </issue>"""
 
 
-# Live harness groups, pid -> the session workspace (or "" for plain commands).
-# No locks: the signal handler must never wait on one; dict operations are atomic.
+# Live harness groups, pid -> (session marker, session dirs). No locks: the
+# signal handler must never wait on one; dict operations are atomic.
 _LIVE = {}
 
-# Marks a harness run in its environment. Its tools may leave its process group
-# (pi and OpenHands start them in sessions of their own) but not its workspace.
+# In every harness's environment. Its tools may leave its group and its
+# directories; on Linux the marker still finds them.
 MARKER = "ABHED_RIG_SESSION"
 GRACE = 2.0
+_warned = set()
 
 
 class _Stop:
-    signum = 0     # the signal that stopped the rig, 0 while running
-    starting = 0   # main thread between Popen and registering its child
+    signum = 0      # the signal that stopped the rig, 0 while running
+    starting = 0    # main thread between Popen and registering its child
+    handling = False
 
 
 def stopping():
@@ -113,6 +115,12 @@ class Stopped(BaseException):
     A BaseException, so no broad `except Exception` can swallow it."""
 
 
+def _warn_once(what):
+    if what not in _warned:
+        _warned.add(what)
+        print(f"rig: warning: {what}", file=sys.stderr, flush=True)
+
+
 def _signal(pids, sig, group=False):
     for pid in pids:
         try:
@@ -121,17 +129,27 @@ def _signal(pids, sig, group=False):
             pass
 
 
-def _descendants(root):
-    """Every process below root now, whatever session or group it moved to."""
+def _parents():
+    """pid -> parent pid for every process."""
     try:
-        ps = subprocess.run(["ps", "-ax", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+        ps = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
-        return []
-    kids = {}
+        _warn_once("ps failed; processes a harness left behind may survive")
+        return {}
+    out = {}
     for line in ps.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+            out[int(parts[0])] = int(parts[1])
+    return out
+
+
+def _descendants(root, parents=None):
+    """Every process below root now, whatever session or group it moved to."""
+    parents = _parents() if parents is None else parents
+    kids = {}
+    for pid, ppid in parents.items():
+        kids.setdefault(ppid, []).append(pid)
     out, todo = [], [root]
     while todo:
         for c in kids.get(todo.pop(), []):
@@ -140,41 +158,65 @@ def _descendants(root):
     return out
 
 
-def _working_in(ws):
-    """Processes whose working directory is the workspace or below it: the
-    tools a harness left behind once it has exited and they were orphaned."""
-    ws = os.path.realpath(ws)
-    found = []
+def _cwds():
+    """pid -> working directory, for this user's processes."""
+    out = {}
     if sys.platform.startswith("linux"):
         for d in Path("/proc").iterdir():
             if d.name.isdigit():
                 try:
-                    cwd = os.readlink(d / "cwd")
+                    out[int(d.name)] = os.readlink(d / "cwd")
                 except OSError:
-                    continue
-                if cwd == ws or cwd.startswith(ws + os.sep):
-                    found.append(int(d.name))
-    else:
-        try:
-            out = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fn"],
-                                 capture_output=True, text=True, timeout=20).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            return []
-        pid = None
-        for line in out.splitlines():
-            if line.startswith("p"):
-                pid = int(line[1:])
-            elif line.startswith("n") and pid is not None:
-                cwd = os.path.realpath(line[1:])
-                if cwd == ws or cwd.startswith(ws + os.sep):
-                    found.append(pid)
-    return [p for p in found if p != os.getpid()]
+                    pass
+        return out
+    lsof = "/usr/sbin/lsof" if Path("/usr/sbin/lsof").exists() else shutil.which("lsof")
+    try:
+        text = subprocess.run([lsof, "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fn"],
+                              capture_output=True, text=True, timeout=20).stdout
+    except (OSError, TypeError, subprocess.TimeoutExpired):
+        _warn_once("lsof failed; tools a harness orphaned may survive")
+        return out
+    pid = None
+    for line in text.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            out[pid] = line[1:]
+    return out
 
 
-def _end(pid, ws, proc=None):
-    """Ask a harness to stop so it can end its own tools, then make sure: kill
-    its group, every process it started, and anything still working in its
-    workspace."""
+def _marked(marker):
+    """Linux only: processes whose environment carries the session marker."""
+    found = []
+    if marker and sys.platform.startswith("linux"):
+        needle = f"{MARKER}={marker}".encode()
+        for d in Path("/proc").iterdir():
+            if d.name.isdigit():
+                try:
+                    if needle in (d / "environ").read_bytes().split(b"\0"):
+                        found.append(int(d.name))
+                except OSError:
+                    pass
+    return found
+
+
+def _leftovers(marker, dirs, parents=None):
+    """A session's processes that outlived its harness: orphans working in its
+    directories, and on Linux anything with its marker. Non-orphans are spared."""
+    parents = _parents() if parents is None else parents
+    roots = [os.path.realpath(d) for d in dirs if d]
+    out = set(_marked(marker))
+    for pid, cwd in (_cwds().items() if roots else []):
+        cwd = os.path.realpath(cwd)
+        if parents.get(pid) == 1 and any(cwd == r or cwd.startswith(r + os.sep) for r in roots):
+            out.add(pid)
+    out.discard(os.getpid())
+    return sorted(out)
+
+
+def _end(pid, marker, dirs, proc=None):
+    """Ask a harness to stop, so it can end its own tools; then kill its group,
+    its process tree as it was, and whatever of the session is left over."""
     tree = _descendants(pid)
     _signal([pid], signal.SIGTERM, group=True)
     _signal(tree, signal.SIGTERM)
@@ -186,27 +228,30 @@ def _end(pid, ws, proc=None):
     else:
         time.sleep(GRACE)
     _signal([pid], signal.SIGKILL, group=True)
-    _signal(tree + _descendants(pid), signal.SIGKILL)
-    if ws:
-        _signal(_working_in(ws), signal.SIGKILL)
+    _signal(tree, signal.SIGKILL)
+    _signal(_leftovers(marker, dirs), signal.SIGKILL)
 
 
 def stop_all(signum=signal.SIGTERM, _frame=None):
     """The stop-signal handler: flag first, then end every registered harness.
     A child registered after the snapshot sees the flag and ends itself."""
     _Stop.signum = _Stop.signum or signum
+    if _Stop.handling:
+        return  # a second Ctrl-C must not cut the first one's kill phase short
+    _Stop.handling = True
     live = list(_LIVE.items())
-    trees = {pid: _descendants(pid) for pid, _ in live}
+    parents = _parents()
+    trees = {pid: _descendants(pid, parents) for pid, _ in live}
     for pid, _ in live:
         _signal([pid], signal.SIGTERM, group=True)
         _signal(trees[pid], signal.SIGTERM)
     if live:
         time.sleep(GRACE)
-    for pid, ws in live:
+    for pid, (marker, dirs) in live:
         _signal([pid], signal.SIGKILL, group=True)
         _signal(trees[pid], signal.SIGKILL)
-        if ws:
-            _signal(_working_in(ws), signal.SIGKILL)
+        _signal(_leftovers(marker, dirs), signal.SIGKILL)
+    _Stop.handling = False
     if not _Stop.starting:  # else sh() finishes registering, then stops
         raise SystemExit(128 + _Stop.signum)
 
@@ -230,13 +275,15 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     if stopping():
         raise Stopped()
     main = threading.current_thread() is threading.main_thread()
-    ws = str(cwd) if cwd and (env or {}).get(MARKER) else ""  # a harness run: sweep its workspace
+    env_ = env or {}
+    marker = env_.get(MARKER, "")
+    dirs = [str(d) for d in (cwd, env_.get("TMPDIR"), env_.get("HOME")) if d] if marker else []
     if main:
         _Stop.starting += 1  # a signal now defers its exit until the child is registered
     try:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-        _LIVE[p.pid] = ws
+        _LIVE[p.pid] = (marker, dirs)
     finally:
         if main:
             _Stop.starting -= 1
@@ -245,7 +292,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
             raise Stopped()  # the stop came while this child was starting
         out, _ = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        _end(p.pid, ws, p)
+        _end(p.pid, marker, dirs, p)
         try:
             out, _ = p.communicate(timeout=10)
         except subprocess.TimeoutExpired:  # a daemonised grandchild still holds the pipe
@@ -253,14 +300,14 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
             out = ""
         raise subprocess.TimeoutExpired(cmd, timeout, output=out) from e
     except BaseException:
-        _end(p.pid, ws, p)  # Ctrl-C or any error: the harness must not outlive the rig
+        _end(p.pid, marker, dirs, p)  # Ctrl-C or any error: the harness must not outlive the rig
         raise
     finally:
         _LIVE.pop(p.pid, None)
-    # Anything the agent left running, in the group or orphaned in its workspace.
+    # Anything the agent left running, in the group or orphaned.
     _signal([p.pid], signal.SIGKILL, group=True)
-    if ws:
-        _signal(_working_in(ws), signal.SIGKILL)
+    if marker:
+        _signal(_leftovers(marker, dirs), signal.SIGKILL)
     if stopping():
         raise Stopped()  # killed by a stop signal: not a result
     if check and p.returncode != 0:
@@ -351,9 +398,8 @@ def prepare(args):
 
 
 def session_venv(iid, dest):
-    """The agent's own copy of the prepared environment. Whatever it installs
-    or upgrades stays with the session; the tests are scored in the original,
-    and the next session starts clean."""
+    """The agent's own copy of the prepared environment: what it installs stays
+    with the session, and the tests are scored in the original."""
     src = env_dir(iid) / "venv"
     shutil.rmtree(dest, ignore_errors=True)
     shutil.copytree(src, dest, symlinks=True)
@@ -442,6 +488,7 @@ def task_env(iid, ws, venv=None, tmp=None):
     # makes sessions race on its cleanup.
     if tmp:
         env["TMPDIR"] = str(tmp)
+        env["TMUX_TMPDIR"] = str(tmp)  # OpenHands' tmux server is per session, not shared
     # The venv's editable install points at the prepared checkout, not this
     # copy. PYTHONPATH comes first, so the workspace's code is what runs —
     # and `validate` would exclude any instance where that did not hold.
@@ -864,8 +911,9 @@ def redact_obj(obj):
 
 
 def scratch_tag(hname, cond, iid, run, out_path):
-    # The result path in the name keeps two rig invocations apart.
-    return f"{hname}-{cond}-{iid}-run{run}-{hashlib.sha1(str(out_path).encode()).hexdigest()[:6]}"
+    """An opaque name: an agent can read its path, and a task id in it would
+    be a cue to recall the published fix. The result path keeps runs apart."""
+    return "s" + hashlib.sha1(f"{hname}|{cond}|{iid}|{run}|{out_path}".encode()).hexdigest()[:12]
 
 
 def score_patch(iid, inst, patch, tag):
@@ -884,16 +932,23 @@ def score_patch(iid, inst, patch, tag):
         shutil.rmtree(rig_git(fresh), ignore_errors=True)
 
 
+def session_meta(tag):
+    """What a session is, kept beside its workspace where the agent does not look."""
+    return CACHE / "scratch" / f"{tag}.meta.json"
+
+
 def one_run(hname, iid, cond, out_path, run=1):
     tag = scratch_tag(hname, cond, iid, run, out_path)
     ws = CACHE / "scratch" / tag
     home = CACHE / "scratch" / f"home-{tag}"
     venv = CACHE / "scratch" / f"venv-{tag}"
     tmp = CACHE / "scratch" / f"tmp-{tag}"
+    meta = session_meta(tag)
     try:
         for d in (home, tmp):
             shutil.rmtree(d, ignore_errors=True)
             d.mkdir(parents=True)
+        meta.write_text(json.dumps({"harness": hname, "condition": cond, "instance": iid, "run": run}))
         inst = workspace(iid, ws)
         session_venv(iid, venv)
         h = HARNESSES[hname]()
@@ -932,6 +987,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         return result
     finally:
         # The workspace and home hold the endpoint key in harness config.
+        meta.unlink(missing_ok=True)
         for d in (ws, rig_git(ws), home, venv, tmp):
             shutil.rmtree(d, ignore_errors=True)
 
@@ -1010,6 +1066,7 @@ def setup_fingerprint(hname):
     """What a doctor pass vouches for: the model, the endpoint, the limits and
     the environment a harness gets. A change to any of them needs a new pass."""
     setup = {"harness": hname, "model": base_model(), "endpoint": public_endpoint(), "max_output": MAX_OUTPUT,
+             "tmux": shutil.which("tmux") is not None,
              "window": {c: window(c) for c in CONDITIONS}, "pass_env": sorted(PASS_ENV)}
     return hashlib.sha256(json.dumps(setup, sort_keys=True).encode()).hexdigest() + "\n"
 
@@ -1072,6 +1129,7 @@ def run(args):
     root = RESULTS / args.date / "rig"
     setup = {"timeout_sec": RUN_TIMEOUT, "base_model": base_model(), "endpoint": public_endpoint(),
              "parallel": max(1, getattr(args, "parallel", 1) or 1),
+             "tmux": shutil.which("tmux") is not None,  # OpenHands' terminal backend
              "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
              "difficulty": getattr(args, "difficulty", None) or "any",
              "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}
@@ -1094,11 +1152,13 @@ def run(args):
 
 
 def check_resume(plan_path, setup, force=False):
-    """A resume under the same date must be the same run: same sessions, model,
-    endpoint, limits and timeout. Anything else would mix two runs' results."""
+    """A resume under the same date must be the same run: sessions, model,
+    endpoint, limits, timeout and parallelism; anything else mixes two runs."""
     if not plan_path.exists() or force:
         return
     old = json.loads(plan_path.read_text())
+    old.setdefault("parallel", 1)  # plans written before parallelism was recorded
+    old.setdefault("tmux", setup.get("tmux"))
     changed = sorted(k for k in setup if old.get(k) != setup[k])
     if changed:
         sys.exit(f"a run with this date was started with a different {', '.join(changed)}; "
@@ -1139,12 +1199,15 @@ def _hms(sec):
 def _current():
     """The session in flight, read from the scratch directory it works in."""
     scratch = CACHE / "scratch"
-    names = "|".join(sorted(HARNESSES, key=len, reverse=True))
-    conds = "|".join(CONDITIONS)
-    for d in sorted(scratch.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
-        m = re.fullmatch(rf"({names})-({conds})-(.+?)(?:-run\d+)?(?:-[0-9a-f]{{6}})?", d.name)
-        if m and d.is_dir() and not d.name.endswith(".rig-git"):
-            return d, m.group(1), m.group(2), m.group(3)
+    metas = sorted(scratch.glob("s*.meta.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for m in metas:
+        d = scratch / m.name[: -len(".meta.json")]
+        try:
+            info = json.loads(m.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if d.is_dir():
+            return d, info["harness"], info["condition"], info["instance"]
     return None
 
 

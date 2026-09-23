@@ -348,6 +348,11 @@ class SessionIsolationTests(UsingCache, unittest.TestCase):
         c = rig.scratch_tag("abhed", "full", "i1", 1, Path("/r/2026-09-24/x.json"))
         self.assertEqual(len({a, b, c}), 3)
 
+    def test_the_agent_cannot_read_its_task_id_from_its_path(self):
+        tag = rig.scratch_tag("abhed", "full", "pytest-dev__pytest-5809", 1, Path("/r/x.json"))
+        self.assertNotIn("pytest", tag)
+        self.assertNotIn("abhed", tag)
+
 
 class RunBookkeepingTests(unittest.TestCase):
     def test_a_slept_session_is_set_aside_and_redone(self):
@@ -925,9 +930,6 @@ class RoundSixTests(UsingCache, unittest.TestCase):
                 os.environ["ABHED_BENCH_ENDPOINT"] = saved
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OrphanSweepTests(UsingCache, unittest.TestCase):
     def test_a_tool_orphaned_by_a_harness_that_exited_is_swept(self):
@@ -945,3 +947,115 @@ class OrphanSweepTests(UsingCache, unittest.TestCase):
         for pid in alive:
             os.kill(pid, 9)
         self.assertEqual(alive, [], "the orphaned tool outlived its session")
+
+
+TERM_PROOF = ("import os, signal, subprocess, sys, time; "
+              "c = subprocess.Popen([sys.executable, '-c', "
+              "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'], "
+              "start_new_session=True, cwd=os.environ['TMPDIR']); "
+              "open(sys.argv[1], 'w').write(str(c.pid)); time.sleep({wait})")
+
+
+class OutsideTheWorkspaceTests(UsingCache, unittest.TestCase):
+    """A tool that ignores SIGTERM, runs in a session of its own and works in
+    the session's temp dir, not its workspace: the hardest one to end."""
+
+    def session(self):
+        ws, tmp = self.root / "ws", self.root / "tmp"
+        ws.mkdir()
+        tmp.mkdir()
+        env = dict(os.environ, TMPDIR=str(tmp), **{rig.MARKER: "t"})
+        return ws, env
+
+    def tool_pid(self, pidfile):
+        import time as _t
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text().strip():
+                return int(pidfile.read_text())
+            _t.sleep(0.05)
+        self.fail("the tool never started")
+
+    def gone(self, pid):
+        import time as _t
+        _t.sleep(0.3)
+        alive = _pids_alive([pid])
+        for p in alive:
+            os.kill(p, 9)
+        return alive == []
+
+    def test_on_timeout(self):
+        import subprocess
+        ws, env = self.session()
+        pidfile = self.root / "tool.pid"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            rig.sh([sys.executable, "-c", TERM_PROOF.format(wait=60), str(pidfile)], cwd=ws, env=env, timeout=2)
+        self.assertTrue(self.gone(self.tool_pid(pidfile)))
+
+    def test_after_a_normal_exit(self):
+        ws, env = self.session()
+        pidfile = self.root / "tool.pid"
+        rig.sh([sys.executable, "-c", TERM_PROOF.format(wait=0), str(pidfile)], cwd=ws, env=env)
+        self.assertTrue(self.gone(self.tool_pid(pidfile)))
+
+    def run_rig_and_signal(self, signals):
+        import signal as s_
+        import subprocess
+        import time as _t
+        ws, env = self.session()
+        pidfile = self.root / "tool.pid"
+        code = (f"import os, sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
+                f"rig.install_stop_handlers(); "
+                f"rig.sh([sys.executable, '-c', {TERM_PROOF.format(wait=60)!r}, {str(pidfile)!r}], "
+                f"cwd={str(ws)!r}, env={env!r})")
+        proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
+        tool = self.tool_pid(pidfile)
+        for sig in signals:
+            proc.send_signal(sig)
+            _t.sleep(0.5)
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return tool
+
+    def test_on_stop(self):
+        import signal as s_
+        self.assertTrue(self.gone(self.run_rig_and_signal([s_.SIGTERM])))
+
+    def test_a_second_ctrl_c_does_not_cut_the_stop_short(self):
+        import signal as s_
+        self.assertTrue(self.gone(self.run_rig_and_signal([s_.SIGINT, s_.SIGINT])))
+
+
+class SparedProcessTests(UsingCache, unittest.TestCase):
+    def test_someone_elses_process_in_the_workspace_is_left_alone(self):
+        import subprocess
+        ws = self.root / "ws"
+        ws.mkdir()
+        bystander = subprocess.Popen(["sleep", "30"], cwd=ws)  # the operator's shell, say
+        try:
+            rig.sh(["true"], cwd=ws, env=dict(os.environ, **{rig.MARKER: "t"}))
+            self.assertIsNone(bystander.poll(), "a process that was not the session's was killed")
+        finally:
+            bystander.kill()
+            bystander.wait()
+
+    def test_each_session_gets_its_own_tmux_server(self):
+        env = rig.task_env("i1", self.root / "ws", tmp=self.root / "t1")
+        self.assertEqual(env["TMUX_TMPDIR"], str(self.root / "t1"))
+
+    def test_a_plan_from_before_parallelism_was_recorded_resumes(self):
+        plan = self.root / "plan.json"
+        plan.write_text(json.dumps({"base_model": "m", "sessions": [1]}))
+        rig.check_resume(plan, {"base_model": "m", "sessions": [1], "parallel": 1})
+
+    def test_watch_finds_a_session_by_its_record_not_its_name(self):
+        tag = rig.scratch_tag("pi", "full", "i9", 2, Path("/r/x.json"))
+        (self.root / "scratch" / tag).mkdir(parents=True)
+        rig.session_meta(tag).write_text(json.dumps({"harness": "pi", "condition": "full", "instance": "i9", "run": 2}))
+        d, h, cond, iid = rig._current()
+        self.assertEqual((d.name, h, cond, iid), (tag, "pi", "full", "i9"))
+
+
+if __name__ == "__main__":
+    unittest.main()
