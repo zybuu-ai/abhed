@@ -163,7 +163,7 @@ type wireChunk struct {
 		PromptTokens        int `json:"prompt_tokens"`
 		CompletionTokens    int `json:"completion_tokens"`
 		PromptTokensDetails *struct {
-			CachedTokens int `json:"cached_tokens"`
+			CachedTokens *int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 		CompletionTokensDetails *struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
@@ -378,8 +378,8 @@ func (c *OpenAICompatible) stream(ctx context.Context, body io.ReadCloser,
 		if ch.Usage != nil {
 			usage.InputTokens = ch.Usage.PromptTokens
 			usage.OutputTokens = ch.Usage.CompletionTokens
-			if d := ch.Usage.PromptTokensDetails; d != nil {
-				usage.CachedInputTokens = d.CachedTokens
+			if d := ch.Usage.PromptTokensDetails; d != nil && d.CachedTokens != nil {
+				usage.CachedInputTokens, usage.CacheReported = *d.CachedTokens, true
 			}
 			if d := ch.Usage.CompletionTokensDetails; d != nil {
 				usage.ReasoningTokens = d.ReasoningTokens

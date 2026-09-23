@@ -32,6 +32,7 @@ type turnResult struct {
 	ColdTokens   int           `json:"cold_tokens"`
 	TTFT         time.Duration `json:"ttft_ns"`
 	Total        time.Duration `json:"total_ns"`
+	reported     bool          // the endpoint sent a cached-token figure, zero included
 }
 
 type report struct {
@@ -112,7 +113,7 @@ func main() {
 		}
 		res.Turn = i
 		rep.Turns = append(rep.Turns, res)
-		if res.CachedTokens > 0 {
+		if res.reported {
 			rep.CacheReported = true
 		}
 		history = append(history, model.Message{Role: model.RoleAssistant, Content: reply})
@@ -173,6 +174,7 @@ func measure(ctx context.Context, a model.Adapter, prefix string, history []mode
 			if chunk.Usage != nil {
 				res.PromptTokens = chunk.Usage.InputTokens
 				res.CachedTokens = chunk.Usage.CachedInputTokens
+				res.reported = chunk.Usage.CacheReported
 				res.ColdTokens = res.PromptTokens - res.CachedTokens
 			}
 		}
@@ -253,14 +255,26 @@ func summarize(turns []turnResult) summaryStats {
 	return s
 }
 
+// cacheNote says why no cache hit was seen: the endpoint sent no cached-token
+// figure, or sent zero on every turn. Empty when some prefix was cached.
+func cacheNote(r report) string {
+	switch {
+	case !r.CacheReported:
+		return "did not report a cached-token figure"
+	case r.Summary.TotalCached == 0:
+		return "reported zero cached tokens on every turn"
+	}
+	return ""
+}
+
 func printReport(r report) {
 	s := r.Summary
 	fmt.Printf("\n  %s\n", strings.Repeat("═", 50))
 	fmt.Printf("  RESULTS\n")
 	fmt.Printf("  %s\n", strings.Repeat("═", 50))
 
-	if !r.CacheReported {
-		fmt.Printf("\n  ⚠ This endpoint reported NO cached tokens.\n\n")
+	if note := cacheNote(r); note != "" {
+		fmt.Printf("\n  ⚠ This endpoint %s.\n\n", note)
 		fmt.Printf("    Either prefix caching is disabled, or the server does not\n")
 		fmt.Printf("    report prompt_tokens_details.cached_tokens. Abhed's context\n")
 		fmt.Printf("    design assumes a working prefix cache — without one, every\n")
@@ -294,7 +308,7 @@ func printReport(r report) {
 
 	fmt.Printf("\n  VERDICT: ")
 	switch {
-	case !r.CacheReported && s.TTFTSpeedup < 1.3:
+	case cacheNote(r) != "" && s.TTFTSpeedup < 1.3:
 		fmt.Printf("no prefix caching detected.\n")
 		fmt.Printf("  Abhed will work, but every turn pays full prefill. Enable prefix\n")
 		fmt.Printf("  caching on the serving stack before sizing a deployment.\n")

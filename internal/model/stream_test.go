@@ -153,3 +153,42 @@ func TestStreamsAlwaysTerminate(t *testing.T) {
 		t.Fatal("a truncated stream must still emit ChunkDone")
 	}
 }
+
+// A provider that leaves the cached-token figure out has not reported a cold
+// cache; one that sends it, zero or not, has reported one (issue #74).
+func TestCacheReportedFollowsTheProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame string
+		reported    bool
+		anthropic   bool
+	}{
+		{"anthropic with figure", `{"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":0}}}`, true, true},
+		{"anthropic without", `{"type":"message_start","message":{"usage":{"input_tokens":100}}}`, false, true},
+		{"gemini with figure", `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50,"cachedContentTokenCount":0}}`, true, false},
+		{"gemini without", `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50}}`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := []string{tc.frame}
+			if tc.anthropic {
+				frames = append(frames, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`, `{"type":"message_stop"}`)
+			}
+			srv := sseServer(t, frames...)
+			t.Cleanup(srv.Close)
+			var a Adapter = NewGemini(srv.URL, "k", "m", Profile{})
+			if tc.anthropic {
+				a = NewAnthropic(srv.URL, "k", "m", Profile{})
+			}
+			ch, err := a.Complete(context.Background(), Request{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, _, usage, errs := drain(t, ch)
+			if len(errs) != 0 {
+				t.Fatalf("unexpected errors: %v", errs)
+			}
+			if usage.CacheReported != tc.reported {
+				t.Errorf("CacheReported = %v, want %v", usage.CacheReported, tc.reported)
+			}
+		})
+	}
+}

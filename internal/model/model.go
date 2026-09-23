@@ -184,7 +184,10 @@ type Usage struct {
 	InputTokens       int
 	OutputTokens      int
 	CachedInputTokens int // drives the cache-hit metric (docs P8)
-	ReasoningTokens   int
+	// CacheReported is set when the provider sent a cached-token figure, zero
+	// included; some endpoints send none, and absence is not a cold cache.
+	CacheReported   bool
+	ReasoningTokens int
 }
 
 // Profile describes what a model can do. Populated by the conformance suite

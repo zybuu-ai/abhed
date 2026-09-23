@@ -54,7 +54,8 @@ func Analyze(sessionID string, events []agent.Event) Report {
 			_ = json.Unmarshal(e.Payload, &m)
 			r.Turns = append(r.Turns, Turn{
 				N: len(r.Turns) + 1, Seq: e.Seq, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-				TokensCached: m.TokensCached, Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
+				TokensCached: m.TokensCached, CacheReported: m.CacheReported,
+				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
 				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff,
 			})
 

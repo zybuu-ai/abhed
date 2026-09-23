@@ -25,6 +25,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
+- `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
+  sent a cached-token figure, zero included, rather than that some prefix was
+  cached. A stack that reports zero on every turn gets the no-caching warning,
+  worded as such.
 - Sessions from the command line, the server and the Go SDK now refuse an edit
   or write that would break a file's syntax, where they applied it before.
   Set `tools.syntax_check` to `report` or `off` to keep the old behaviour;
@@ -41,6 +45,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- HawkEYE's `cold-cache` finding no longer fires when the provider reports no
+  cached-token figure at all, as some OpenAI-compatible endpoints do; absence
+  had been read as zero. `model.call` events record `cache_reported`; a
+  record written before this has none, so `cold-cache` is not raised on it.
+  (#74)
 - A turn that spends its whole output budget reasoning without a tool call
   is a stall, not an answer: the model is told its reply was cut off, the
   next call asks for low reasoning effort, the turn is marked `cut_off` in

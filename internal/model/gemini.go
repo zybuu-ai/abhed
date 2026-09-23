@@ -236,9 +236,9 @@ type geminiStreamChunk struct {
 		FinishReason string        `json:"finishReason"`
 	} `json:"candidates"`
 	UsageMetadata *struct {
-		PromptTokenCount        int `json:"promptTokenCount"`
-		CandidatesTokenCount    int `json:"candidatesTokenCount"`
-		CachedContentTokenCount int `json:"cachedContentTokenCount"`
+		PromptTokenCount        int  `json:"promptTokenCount"`
+		CandidatesTokenCount    int  `json:"candidatesTokenCount"`
+		CachedContentTokenCount *int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
 	Error *struct {
 		Message string `json:"message"`
@@ -324,7 +324,9 @@ func (g *Gemini) stream(ctx context.Context, resp *http.Response, out chan<- Chu
 			// assigned rather than accumulated.
 			usage.InputTokens = u.PromptTokenCount
 			usage.OutputTokens = u.CandidatesTokenCount
-			usage.CachedInputTokens = u.CachedContentTokenCount
+			if u.CachedContentTokenCount != nil {
+				usage.CachedInputTokens, usage.CacheReported = *u.CachedContentTokenCount, true
+			}
 		}
 
 		for _, cand := range chunk.Candidates {

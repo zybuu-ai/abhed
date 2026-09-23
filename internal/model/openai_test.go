@@ -175,6 +175,27 @@ func TestCachedTokensCaptured(t *testing.T) {
 	}
 }
 
+// An endpoint that sends no cached-token figure must not read as a cold cache;
+// one that sends zero has reported a miss.
+func TestCacheReportedOnlyWhenSent(t *testing.T) {
+	for _, tc := range []struct {
+		usage    string
+		reported bool
+	}{
+		{`{"prompt_tokens":1000,"completion_tokens":5}`, false},
+		{`{"prompt_tokens":1000,"completion_tokens":5,"prompt_tokens_details":{}}`, false},
+		{`{"prompt_tokens":1000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0}}`, true},
+	} {
+		srv := sseServer(t, `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":`+tc.usage+`}`)
+		c := NewOpenAICompatible(srv.URL, "", "test", Profile{})
+		_, _, _, usage, _ := collect(t, c)
+		srv.Close()
+		if usage.CacheReported != tc.reported || usage.CachedInputTokens != 0 {
+			t.Errorf("usage %s: got reported=%v cached=%d", tc.usage, usage.CacheReported, usage.CachedInputTokens)
+		}
+	}
+}
+
 func TestHTTPErrorSurfaced(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

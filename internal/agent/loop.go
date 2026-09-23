@@ -486,8 +486,9 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	mc := ModelCall{
 		Turn: l.turns, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
-		TokensCached: callUsage.CachedInputTokens, ContextWindow: l.Adapter.Profile().ContextWindow,
-		FirstTokenMS: firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
+		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported,
+		ContextWindow: l.Adapter.Profile().ContextWindow,
+		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}
