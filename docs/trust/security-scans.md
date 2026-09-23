@@ -389,6 +389,13 @@ goes through `os.Root`, which refuses a path that escapes even if a link is
 swapped in after the check. `TestWorkbenchRefusesPathsOutsideTheWorkspace`
 covers `../`, an absolute path outside, and a symlinked file and directory.
 
+#### Syntax check on edits — two findings (G204, G304)
+
+| file | Rule | Triage |
+|---|---|---|
+| `internal/tools/syntax.go` (`parsesPython`) | G204 — subprocess launched with a variable | **Accepted.** The program is `python3` as found on the path and the arguments are fixed: `-I -c` with a constant script that calls `compile()`, which parses and does not execute, and the file's base name as a label. The content goes in on standard input, never on the command line. `-I` stops the interpreter reading the environment, user site packages or the current directory, and it runs in the temp directory, not the workspace. It is killed after five seconds. `TestPythonIsCompiledNotRun` fails if the checked source runs |
+| `internal/tools/file.go` (`Write.Run`) | G304 — file inclusion via variable | **False positive**, the same as this file's other G304 findings: the path has already been through `Session.Resolve`, which confines it to the workspace roots and refuses harness state; the read takes the file's content before an overwrite, to decide whether the change breaks its syntax |
+
 #### HawkEYE — three findings from the session report (G203, G304, G705)
 
 HawkEYE renders a session's record as a page, and that record contains tool

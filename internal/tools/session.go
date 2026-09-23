@@ -42,6 +42,10 @@ type Session struct {
 	// tool gets it by construction — a new tool cannot forget to call it.
 	Checkpoint func(path string, before []byte, existed bool)
 
+	// Syntax is what edit and write do with a change that breaks a file's
+	// syntax. The zero value refuses it.
+	Syntax SyntaxMode
+
 	mu    sync.Mutex
 	reads map[string]string // abs path -> content hash at time of read
 }
@@ -86,6 +90,7 @@ func (s *Session) Fork() *Session {
 		rawRoots:   append([]string(nil), s.rawRoots...),
 		Roots:      append([]string(nil), s.Roots...),
 		Checkpoint: s.Checkpoint,
+		Syntax:     s.Syntax,
 		reads:      make(map[string]string),
 	}
 }

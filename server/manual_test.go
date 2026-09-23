@@ -184,3 +184,26 @@ func TestManualCommandRunsAndKeepsItsOwnDirectory(t *testing.T) {
 		t.Fatalf("exec: %d %+v", rec.Code, out)
 	}
 }
+
+// A person's save of work in progress is never refused for its syntax: it is
+// saved, and the warning comes back with it.
+func TestManualSaveOfBrokenCodeIsWarnedNotRefused(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.write("main.go", "package main\n")
+	_, f := wb.file("main.go")
+	rec := wb.send("acme", "PUT", "file", saveRequest{Path: "main.go", Content: "package main\nfunc (\n", Base: f.Hash})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a save of broken code was refused: %d %s", rec.Code, rec.Body)
+	}
+	got, _ := os.ReadFile(filepath.Join(wb.workspace, "main.go"))
+	if string(got) != "package main\nfunc (\n" {
+		t.Fatalf("on disk: %q", got)
+	}
+	warned := false
+	for _, e := range wb.events() {
+		warned = warned || (e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "no longer parses"))
+	}
+	if !warned {
+		t.Fatal("the record does not carry the syntax warning")
+	}
+}

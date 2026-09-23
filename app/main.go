@@ -172,6 +172,9 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	if err := grantDirs(sess, cfg, addDirs); err != nil {
 		fail(err)
 	}
+	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
+		fail(err)
+	}
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
 	pol.Managed = cfg.Managed
@@ -1312,6 +1315,9 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		}
 		sess, err := tools.NewSession(ws)
 		if err != nil {
+			return nil, eval.Result{}, err
+		}
+		if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 			return nil, eval.Result{}, err
 		}
 		vault := openVault()

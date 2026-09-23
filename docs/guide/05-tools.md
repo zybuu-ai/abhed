@@ -18,6 +18,22 @@ handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
 
+### An edit that would break the file
+
+`edit` and `write` parse the result before they write it, for Go, JSON and
+Python (compiled with the `python3` on the path, never run). A change that
+would leave a file that parsed no longer parsing is not applied: the file
+stays as it was and the model is told the parser's error and the line, so it
+fixes its own text on the next turn. An `edit` whose new text is a pasted diff,
+every line starting with `+` or `-`, is refused the same way. A file that did
+not parse before can still be edited, so a refactor is never blocked half-way,
+and a new file is always written, with a warning if it does not parse.
+
+Edits and saves made by a person in the [workbench](16-workbench.md) are
+never refused: they are saved, with the warning. Refused changes appear in
+[HawkEYE](15-hawkeye.md) as `broken-edit`. `tools.syntax_check` sets the
+behaviour: `refuse` (the default), `report` to apply and warn, or `off`.
+
 ## Adding your own
 
 Four routes, none of which needs a rebuild. Pick by where your tool already

@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `edit` and `write` parse Go, JSON and Python before writing. A change that
+  would leave a file that parsed no longer parsing is not applied, and the
+  model is told the error and the line; an `edit` whose new text is a pasted
+  diff is refused the same way. Workbench saves are warned, never refused.
+  HawkEYE reports a refused change as `broken-edit`. `tools.syntax_check`:
+  `refuse` (default), `report` or `off`. It comes from benchmark sessions in
+  which a model wrote diff markers into Python files and every test failed.
+
 - The `monitor` package and a policy step for it: a judge that reads the
   remit, the agent's reasoning and where a call's arguments came from, and
   may only tighten a decision; unavailable means ask, or deny when headless.

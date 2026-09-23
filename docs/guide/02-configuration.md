@@ -41,6 +41,7 @@ starter file; everything below is optional and has a default.
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default |
 | `additional_dirs` | directories outside the workspace the agent may reach |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 
 ## Context
 

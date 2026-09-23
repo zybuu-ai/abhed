@@ -278,3 +278,18 @@ func TestOutputCappedTurnsAreReported(t *testing.T) {
 		t.Fatalf("no output-cap finding: %+v", got.Findings)
 	}
 }
+
+// An edit the syntax check refused is named, so a session that kept pasting
+// diff markers shows it.
+func TestRefusedEditIsReported(t *testing.T) {
+	r := (&rec{}).user("x").
+		call("c1", "edit", `{"path":"a.py"}`, "allow", "Not applied: a.py would no longer parse — line 3: SyntaxError", true).
+		end(agent.TermCompleted)
+	got := Analyze("s-test", r.evs)
+	for _, f := range got.Findings {
+		if f.Code == "broken-edit" {
+			return
+		}
+	}
+	t.Fatalf("no broken-edit finding: %+v", got.Findings)
+}

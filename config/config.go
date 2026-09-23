@@ -44,6 +44,7 @@ type Config struct {
 	// ordinary session — listed, recorded, replayable — that the clock started.
 	Schedules []ScheduleConfig `json:"schedules,omitempty"`
 	Auth      AuthConfig       `json:"auth"`
+	Tools     ToolsConfig      `json:"tools,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -641,6 +642,13 @@ func providerNames(m map[string]ProviderConfig) []string {
 	return out
 }
 
+// ToolsConfig tunes the built-in tools.
+type ToolsConfig struct {
+	// SyntaxCheck is what edit and write do with a change that would leave a
+	// file that parsed no longer parsing: "refuse" (the default), "report" or "off".
+	SyntaxCheck string `json:"syntax_check,omitempty"`
+}
+
 func (c Config) Validate() error {
 	p, err := c.Provider()
 	if err != nil {
@@ -691,6 +699,11 @@ func (c Config) Validate() error {
 	}
 	if c.Storage.Driver == "postgres" && c.Storage.DSN == "" && os.Getenv("ABHED_DATABASE_URL") == "" {
 		return fmt.Errorf("storage.driver is postgres but no DSN is set (use storage.dsn or ABHED_DATABASE_URL)")
+	}
+	switch c.Tools.SyntaxCheck {
+	case "", "refuse", "report", "off":
+	default:
+		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
 	}
 	switch c.Sandbox.MinTier {
 	case "none", "process", "container", "vm", "":

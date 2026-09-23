@@ -43,6 +43,9 @@ func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSes
 	defer live.mu.Unlock()
 	if live.manual == nil {
 		live.manual = live.Loop.Session.Fork()
+		if live.manual.Syntax == tools.SyntaxRefuse {
+			live.manual.Syntax = tools.SyntaxReport // a person's save of work in progress is warned, never refused
+		}
 	}
 	return live, live.manual, true
 }
