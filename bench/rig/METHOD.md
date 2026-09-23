@@ -39,7 +39,9 @@ Every harness is held to the same output limit per turn,
 told it, and the proxy hook on a hosted run holds every request to it. On a
 local run the Ollama variants set it as `num_predict`, which is a default a
 request's own `max_tokens` overrides; Abhed and pi send the same number, and
-OpenHands sends none for a model it does not know, so the default applies.
+OpenHands sends none for a model LiteLLM does not know — it adds
+`max_completion_tokens` only when a limit is set (`openhands/sdk/llm/options/
+chat_options.py` and `common.py`, openhands-sdk 1.21.0) — so the default applies.
 Variants created before `num_predict` was added lack it: run `models` again. The context window is
 enforced at a local endpoint; on a hosted model it is the model's own and
 Abhed and pi are told it, while OpenHands, whose CLI takes no window setting,
