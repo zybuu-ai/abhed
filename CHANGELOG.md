@@ -16,6 +16,13 @@ All notable changes to Abhed are recorded here. The format follows
   `refuse` (default), `report` or `off`. It comes from benchmark sessions in
   which a model wrote diff markers into Python files and every test failed.
 
+### Changed
+
+- Sessions from the command line, the server and the Go SDK now refuse an
+  edit that would break a file's syntax, where they applied it before. Set
+  `tools.syntax_check` to `report` or `off` to keep the old behaviour; the
+  SDK also takes `Options.SyntaxCheck`.
+
 - The `monitor` package and a policy step for it: a judge that reads the
   remit, the agent's reasoning and where a call's arguments came from, and
   may only tighten a decision; unavailable means ask, or deny when headless.

@@ -37,11 +37,11 @@ func TestEditThatBreaksParsingIsRefused(t *testing.T) {
 
 func TestPastedDiffIsRefused(t *testing.T) {
 	s, dir := setup(t)
-	p := filepath.Join(dir, "notes.txt") // no parser: only the diff guard can catch it
+	p := filepath.Join(dir, "run.sh") // no parser: only the diff guard can catch it
 	writeFile(t, p, "alpha\nbeta\n")
 	run(t, Read{}, s, map[string]any{"path": p})
 	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "beta\n", "new_string": "-beta\n+gamma\n"})
-	if !r.IsError || !strings.Contains(r.Content, "looks like a diff") {
+	if !r.IsError || !strings.Contains(r.Content, "pasted diff") {
 		t.Fatalf("a pasted diff was applied: %+v", r)
 	}
 	// A real line that starts with a sign is not a diff.
@@ -84,7 +84,7 @@ func TestOffModeAndUnknownLanguagesSkipTheCheck(t *testing.T) {
 	if r := run(t, Write{}, s, map[string]any{"path": p, "content": "{"}); r.IsError {
 		t.Fatalf("off mode refused: %+v", r)
 	}
-	if checked, _ := parses(context.Background(), "x.rs", []byte("fn (")); checked {
+	if v := s.parses(context.Background(), "x.rs", []byte("fn (")); v.checked {
 		t.Fatal("a language with no parser here was judged")
 	}
 }
@@ -102,19 +102,20 @@ func TestPythonIsCompiledNotRun(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is not installed")
 	}
+	s, _ := setup(t)
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "ran")
 	src := "open(" + `"` + marker + `"` + ", 'w').write('x')\n"
-	checked, err := parses(context.Background(), "a.py", []byte(src))
-	if !checked || err != nil {
-		t.Fatalf("valid python: checked=%v err=%v", checked, err)
+	v := s.parses(context.Background(), "a.py", []byte(src))
+	if !v.checked || v.err != nil {
+		t.Fatalf("valid python: %+v", v)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the checked source was executed")
 	}
-	checked, err = parses(context.Background(), "a.py", []byte("def f():\n+    return 1\n"))
-	if !checked || err == nil || !strings.Contains(err.Error(), "line") {
-		t.Fatalf("broken python: checked=%v err=%v", checked, err)
+	v = s.parses(context.Background(), "a.py", []byte("def f():\n+    return 1\n"))
+	if !v.checked || v.err == nil || !strings.Contains(v.err.Error(), "line") || !strings.HasPrefix(v.by, "python") {
+		t.Fatalf("broken python: %+v", v)
 	}
 }
 
@@ -134,5 +135,111 @@ func TestForkKeepsTheMode(t *testing.T) {
 	s.Syntax = SyntaxOff
 	if s.Fork().Syntax != SyntaxOff {
 		t.Fatal("a forked session lost the syntax mode")
+	}
+}
+
+// An agent can write a python3 into the workspace and put it first on PATH;
+// the check must never run it.
+func TestAnInterpreterInsideTheWorkspaceIsNeverRun(t *testing.T) {
+	s, dir := setup(t)
+	bin := filepath.Join(dir, ".venv", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	writeFile(t, filepath.Join(bin, "python3"), "#!/bin/sh\ntouch "+marker+"\nexit 1\n")
+	if err := os.Chmod(filepath.Join(bin, "python3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if v := s.parses(context.Background(), "a.py", []byte("x = (\n")); v.checked {
+		t.Fatalf("a workspace interpreter was used: %+v", v)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the workspace's python3 ran")
+	}
+}
+
+// Site packages, and so .pth files, never load while checking.
+func TestSitePackagesDoNotLoad(t *testing.T) {
+	s, _ := setup(t)
+	py, _, ok := s.interpreter()
+	if !ok {
+		t.Skip("no python3 outside the workspace")
+	}
+	out, err := exec.Command(py, "-I", "-S", "-c", "import sys; print('site' in sys.modules)").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "False" {
+		t.Fatalf("site loaded under -I -S: %q %v", out, err)
+	}
+}
+
+func TestListsAndNumbersAreNotMistakenForDiffs(t *testing.T) {
+	for _, c := range []struct{ path, old, new string }{
+		{"README.md", "Some text", "- one\n- two"},
+		{"deploy.yml", "tasks: []", "- import_tasks: a.yml"},
+		{"data.csv", "0", "-1\n-2"},
+		{"fix.patch", " context", "+added line"},
+		{"run.sh", "echo hi", "-1\n-2"},
+	} {
+		if looksLikeDiff(c.path, c.old, c.new) {
+			t.Errorf("%s: %q taken for a diff", c.path, c.new)
+		}
+	}
+	if !looksLikeDiff("run.sh", "echo hi\n", "-echo hi\n+echo bye\n") {
+		t.Error("a real hunk was not recognised")
+	}
+}
+
+func TestWriteThatBreaksParsingIsRefusedAndNotCheckpointed(t *testing.T) {
+	s, dir := setup(t)
+	checkpoints := 0
+	s.Checkpoint = func(string, []byte, bool) { checkpoints++ }
+	p := filepath.Join(dir, "cfg.json")
+	writeFile(t, p, `{"a": 1}`)
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Write{}, s, map[string]any{"path": p, "content": `{"a": 1,`})
+	if !r.IsError || !strings.HasPrefix(r.Content, NotApplied) || readFile(t, p) != `{"a": 1}` || checkpoints != 0 {
+		t.Fatalf("refused write: %+v, checkpoints %d", r, checkpoints)
+	}
+}
+
+func TestEditInReportModeAppliesAndWarns(t *testing.T) {
+	s, dir := setup(t)
+	s.Syntax = SyntaxReport
+	p := filepath.Join(dir, "main.go")
+	writeFile(t, p, "package main\n")
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "package main\n", "new_string": "package main\nfunc (\n"})
+	if r.IsError || !strings.Contains(r.Content, "no longer parses") {
+		t.Fatalf("report mode: %+v", r)
+	}
+}
+
+func TestPythonRefusalFollowsTheInterpreterVersion(t *testing.T) {
+	s, dir := setup(t)
+	if _, _, ok := s.interpreter(); !ok {
+		t.Skip("no python3 outside the workspace")
+	}
+	p := filepath.Join(dir, "a.py")
+	writeFile(t, p, "def f():\n    return 1\n")
+	run(t, Read{}, s, map[string]any{"path": p})
+	v := s.parses(context.Background(), p, []byte("def f(:\n"))
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "def f():", "new_string": "def f(:"})
+	if v.strict != r.IsError {
+		t.Fatalf("strict=%v but refused=%v: %+v", v.strict, r.IsError, r)
+	}
+	if !strings.Contains(r.Content, v.by) {
+		t.Fatalf("the message does not name the interpreter %q: %s", v.by, r.Content)
+	}
+}
+
+func TestAlreadyBrokenFileKeepsItsNote(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "half.go")
+	writeFile(t, p, "package half\n\nfunc a( {\n")
+	run(t, Read{}, s, map[string]any{"path": p})
+	r := run(t, Edit{}, s, map[string]any{"path": p, "old_string": "package half", "new_string": "package whole"})
+	if r.IsError || !strings.Contains(r.Content, "still does not parse") {
+		t.Fatalf("an edit to a broken file must apply with a note: %+v", r)
 	}
 }

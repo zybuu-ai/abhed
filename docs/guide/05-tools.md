@@ -21,13 +21,21 @@ handed to that one command as environment variables when a
 ### An edit that would break the file
 
 `edit` and `write` parse the result before they write it, for Go, JSON and
-Python (compiled with the `python3` on the path, never run). A change that
-would leave a file that parsed no longer parsing is not applied: the file
-stays as it was and the model is told the parser's error and the line, so it
-fixes its own text on the next turn. An `edit` whose new text is a pasted diff,
-every line starting with `+` or `-`, is refused the same way. A file that did
-not parse before can still be edited, so a refactor is never blocked half-way,
-and a new file is always written, with a warning if it does not parse.
+Python. A change that would leave a file that parsed no longer parsing is not
+applied: the file stays as it was and the model is told the parser's error and
+the line, so it fixes its own text on the next turn. An `edit` whose new text is
+a pasted diff hunk — every line starting with `+` or `-`, removing a line of the
+old text or pairing a removal with an addition — is refused the same way,
+except in files where such lines are ordinary content (Markdown, YAML, text,
+CSV, diffs). A file that did not parse before can still be edited, so a
+refactor is never blocked half-way, and a new file is always written, with a
+warning if it does not parse.
+
+Python is compiled, never run, by the `python3` on the path — the real
+interpreter behind it, never one inside the workspace, with site packages and
+the environment switched off. With no `python3`, Python is not checked. The
+host's interpreter decides what parses, so one older than 3.12, which could
+reject newer syntax the project accepts, warns instead of refusing.
 
 Edits and saves made by a person in the [workbench](16-workbench.md) are
 never refused: they are saved, with the warning. Refused changes appear in

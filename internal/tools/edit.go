@@ -61,9 +61,13 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if a.OldString == a.NewString {
 		return errf("old_string and new_string are identical — this edit would do nothing.")
 	}
-	if s.Syntax == SyntaxRefuse && looksLikeDiff(a.OldString, a.NewString) {
-		return errf("%s new_string looks like a diff: every line starts with + or -. "+
-			"Pass the new text itself, without diff markers.", NotApplied)
+	diffNote := ""
+	if s.Syntax != SyntaxOff && looksLikeDiff(a.Path, a.OldString, a.NewString) {
+		const why = "new_string looks like a pasted diff: every line starts with + or -. Pass the new text itself, without diff markers."
+		if s.Syntax == SyntaxRefuse {
+			return errf("%s %s", NotApplied, why)
+		}
+		diffNote = "Warning: " + why
 	}
 
 	info, err := os.Stat(path)
@@ -123,6 +127,9 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	note, refuse := s.syntaxVerdict(ctx, path, data, true, []byte(updated))
 	if refuse {
 		return errf("%s", note)
+	}
+	if diffNote != "" {
+		note = strings.TrimSpace(diffNote + "\n" + note)
 	}
 
 	mode := info.Mode().Perm()
