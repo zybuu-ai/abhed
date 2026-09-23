@@ -30,13 +30,13 @@ are each harness's shipped default:
 
 | Harness | Turn limit | Source |
 |---|---|---|
-| Abhed | 100 | `internal/agent/loop.go`, `DefaultConfig` |
+| Abhed | 100 | `limits.max_turns` default in `config/config.go` |
 | OpenHands | 500 iterations | `max_iteration_per_run` default in `openhands/sdk/conversation/conversation.py`, openhands-sdk 1.21.0 as installed with CLI 1.16.0 |
 | pi | none | no turn or step limit in `@mariozechner/pi-coding-agent` 0.73.1 |
 
 Every harness is held to the same output limit per turn,
-`ABHED_BENCH_MAX_OUTPUT` (8,192 tokens, Abhed's own default): Abhed and pi are
-told it, and the proxy hook on a hosted run holds every request to it. On a
+`ABHED_BENCH_MAX_OUTPUT` (8,192 tokens, Abhed's own default): Abhed is told
+it as `limits.max_tokens` and pi as `maxTokens`, and the proxy hook on a hosted run holds every request to it. On a
 local run the Ollama variants set it as `num_predict`, which is a default a
 request's own `max_tokens` overrides; Abhed and pi send the same number, and
 OpenHands sends none for a model LiteLLM does not know — it adds
@@ -52,8 +52,13 @@ In the hosted run of 23 Sep 2026, stopped and not published, fourteen of
 Abhed's first nineteen sessions ended on that cap; the run was redone.
 
 Every harness reads configuration from the home directory — Abhed its
-skills and `ABHED.md` under `~/.abhed` — so each run gets a throwaway `HOME`. The operator's own settings are never read or written.
-Both are installed under the rig's cache (`.cache/tools`), not globally.
+skills and `ABHED.md` under `~/.abhed` — so each run gets a throwaway `HOME`,
+and inherits nothing else from the operator's shell but `PATH`, locale and
+certificate settings: no provider credentials, and no `ABHED_MODEL`-style
+override of the model the rig configured. The operator's own settings are
+never read or written. pi and OpenHands are installed under the rig's cache
+(`.cache/tools`), not globally. A harness's process group is stopped with the
+session, on a timeout, an interrupt of the rig, or a normal exit.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
 prompt, so with an inherited stdin it waits for input that never comes and
@@ -267,7 +272,9 @@ A session whose change the rig could not read is kept aside as
 `<instance>.unread.json`, like a slept one, and redone on resume: a failure
 of the rig's own must not be scored as the harness's loss.
 
-`summarize` reports each harness by the dataset's difficulty band as well as
+`summarize` counts, per harness, the sessions planned, scored and set aside,
+so none can drop out of the result unseen, and reports each harness by the
+dataset's difficulty band as well as
 overall, so one run over the whole valid suite still separates the easy,
 medium and hard tasks.
 

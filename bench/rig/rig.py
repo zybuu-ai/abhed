@@ -88,6 +88,13 @@ the issue is resolved. The project's Python environment is already on PATH.
 </issue>"""
 
 
+def _kill_group(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # stdin is closed on purpose. pi merges piped stdin into its prompt, so a
     # harness that inherits an open stdin waits on it for ever and never calls
@@ -99,16 +106,17 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     try:
         out, _ = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_group(p)
         try:
             out, _ = p.communicate(timeout=10)
         except subprocess.TimeoutExpired:  # a daemonised grandchild still holds the pipe
             p.stdout.close()
             out = ""
         raise subprocess.TimeoutExpired(cmd, timeout, output=out) from e
+    except BaseException:
+        _kill_group(p)  # Ctrl-C or any error: the harness must not outlive the rig
+        raise
+    _kill_group(p)  # anything the agent left running in the background
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{out[-2000:]}")
     return p.returncode, out
@@ -168,7 +176,6 @@ def prepare(args):
         if env_current(iid, inst["repo"]):
             continue
         print(f"prepare {iid}", flush=True)
-        (CACHE / "suite.json").unlink(missing_ok=True)  # validated against the old environment
         shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True)
         mirror = CACHE / "mirrors" / inst["repo"].replace("/", "__")
@@ -183,6 +190,7 @@ def prepare(args):
                cwd=d / "repo", timeout=900, check=True)
             (d / "instance.json").write_text(json.dumps(inst))
             (d / "ready").write_text(env_spec(inst["repo"]))
+            (CACHE / "suite.json").unlink(missing_ok=True)  # validated against the old environment
         except Exception as e:  # noqa: BLE001 - an instance that will not build is excluded, not fatal
             (d / "failed").write_text(str(e)[-3000:])
             print(f"  could not build: {str(e).splitlines()[0][:120]}")
@@ -238,7 +246,8 @@ def rig_git(ws):
 
 def git(ws, git_dir=None):
     """git with hooks off and a fixed identity; `git_dir` selects the rig's record."""
-    g = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=bench", "-c", "user.email=bench@localhost"]
+    g = ["env", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "git", "-c", "core.hooksPath=/dev/null",
+         "-c", "user.name=bench", "-c", "user.email=bench@localhost"]
     return g + ([f"--git-dir={git_dir}", f"--work-tree={ws}"] if git_dir else [])
 
 
@@ -259,8 +268,18 @@ def agent_patch(ws):
     return out
 
 
+# What a harness inherits from the operator's shell. Nothing else: no provider
+# credentials, and no ABHED_MODEL-style overrides of the model the rig set.
+PASS_ENV = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "USER", "LOGNAME", "SHELL", "TZ",
+            "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"}
+
+
+def harness_env():
+    return {k: v for k, v in os.environ.items() if k in PASS_ENV}
+
+
 def task_env(iid, ws, venv=None, tmp=None):
-    env = dict(os.environ)
+    env = harness_env()
     env["PATH"] = f"{(venv or env_dir(iid) / 'venv') / 'bin'}:{env['PATH']}"
     # pytest's scratch lives under the temp dir, one tree per user; sharing it
     # makes sessions race on its cleanup.
@@ -280,7 +299,7 @@ STATUS = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+(\S.*?)(?:\s+
 
 
 def apply_patch(ws, patch):
-    p = subprocess.run(["git", "apply", "--whitespace=nowarn", "-"], cwd=ws, input=patch, text=True,
+    p = subprocess.run(git(ws) + ["apply", "--whitespace=nowarn", "-"], cwd=ws, input=patch, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return p.returncode == 0, p.stdout
 
@@ -351,7 +370,9 @@ def validate(_):
     """An instance is usable only if base fails and gold passes, here."""
     valid = {}
     pool = {i["instance_id"] for i in instances()}
-    ready = [p.parent.name for p in sorted((CACHE / "envs").glob("*/ready")) if p.parent.name in pool]
+    repo = {i["instance_id"]: i["repo"] for i in instances()}
+    ready = [p.parent.name for p in sorted((CACHE / "envs").glob("*/ready"))
+             if p.parent.name in pool and env_current(p.parent.name, repo[p.parent.name])]
     for iid in ready:
         ws = CACHE / "scratch" / "validate"
         inst = workspace(iid, ws)
@@ -488,7 +509,8 @@ class Abhed(Harness):
         window and output limit as the other harnesses."""
         cfg["model"] = {"default": "bench", "providers": {"bench": {
             "type": "openai-compatible", "base_url": endpoint(), "model": model_name(cond),
-            "api_key": api_key(), "context_window": window(cond), "params": {"max_tokens": MAX_OUTPUT}}}}
+            "api_key": api_key(), "context_window": window(cond), "params": {}}}}
+        cfg.setdefault("limits", {})["max_tokens"] = MAX_OUTPUT  # what Abhed sends as max_tokens
         return cfg
 
     def run(self, ws, prompt, cond, env, home):
@@ -498,8 +520,8 @@ class Abhed(Harness):
         path = ws / ".abhed" / "config.json"
         path.write_text(json.dumps(self.configure(json.loads(path.read_text()), cond), indent=1))
 
-        # Unattended, as the other harnesses run; bypass keeps the sandbox and deny rules.
-        # JSON output is the event record HawkEYE reads; the turn limit is the default.
+        # Unattended like the others; bypass keeps the sandbox and deny rules.
+        # JSON output is the event record HawkEYE reads; turns stay at the default.
         return sh([self.binary(), "-C", str(ws), "-mode", "bypass",
                    "-output-format", "json", "-p", prompt],
                   cwd=ws, env=env, timeout=RUN_TIMEOUT)
@@ -627,10 +649,16 @@ def result_path(out_path, slept, readable=True):
     return out_path.with_suffix(".slept.json") if slept > SLEPT_LIMIT else out_path
 
 
+SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.I)
+
+
 def redact(text):
-    """The endpoint's key never goes into a result, whatever a harness printed."""
-    key = api_key()
-    return text.replace(key, "[redacted]") if len(key) >= 8 else text
+    """No key from the rig's environment goes into a result, whatever a harness printed."""
+    secrets = {api_key()} | {v for k, v in os.environ.items()
+                              if SECRET_NAME.search(k) or k.startswith("ABHED_BENCH_WATSONX")}
+    for v in sorted((v for v in secrets if len(v) >= 8), key=len, reverse=True):
+        text = text.replace(v, "[redacted]")
+    return text
 
 
 def scratch_tag(hname, cond, iid, run, out_path):
@@ -696,7 +724,7 @@ def one_run(hname, iid, cond, out_path, run=1):
         final = result_path(out_path, slept, readable)
         if slept > SLEPT_LIMIT:
             result["slept_sec"] = round(slept)
-        final.write_text(json.dumps(result, indent=1))
+        final.write_text(redact(json.dumps(result, indent=1)))
         return result
     finally:
         # The workspace and home hold the endpoint key in harness config.
@@ -787,7 +815,7 @@ def doctor(args):
     sh(["git", "init", "--quiet"], cwd=ws)
     try:
         rc, out = h.run(ws, "Create a file named hello.txt containing exactly the word ready. Then stop.",
-                        "full", dict(os.environ), home)
+                        "full", harness_env(), home)
         made = (ws / "hello.txt").exists() and "ready" in (ws / "hello.txt").read_text()
     finally:
         for p in (ws, home):  # both hold the endpoint key in harness config
@@ -808,6 +836,10 @@ def run(args):
         sys.exit("a remote model serves one window, its own: run with --condition full. "
                  "The tight condition needs num_ctx set at the endpoint, which only a local Ollama allows.")
     tasks = sorted(suite())
+    repo = {i["instance_id"]: i["repo"] for i in instances()}
+    stale = [t for t in tasks if not env_current(t, repo[t])]
+    if stale:
+        sys.exit(f"{len(stale)} environment(s) were built from another spec: run prepare and validate")
     if getattr(args, "difficulty", None):
         tasks = by_difficulty(tasks, args.difficulty)
         if not tasks:
@@ -899,8 +931,8 @@ def snapshot(date):
         try:
             _, diff = sh(g + ["diff", "--name-only", "HEAD"], cwd=d, timeout=20)
             _, new = sh(g + ["ls-files", "-o", "--exclude-standard"], cwd=d, timeout=20)
-        except OSError:
-            diff = new = ""  # the session ended while we looked
+        except (OSError, subprocess.TimeoutExpired):
+            diff = new = ""  # the session ended, or git was slow, while we looked
         changed = [ln.strip() for ln in (diff + new).splitlines() if ln.strip() and not ln.startswith(".")]
         out.append(f"  editing   {', '.join(changed[:4]) or 'nothing changed yet'}")
 
@@ -946,6 +978,23 @@ def load(date):
         run_no = int(p.parent.name[3:])
         cells.setdefault((r["harness"], r["condition"]), {}).setdefault(run_no, {})[r["instance"]] = r
     return cells
+
+
+def coverage(date):
+    """Planned, scored and set-aside sessions per harness, so a session that was
+    never scored cannot vanish from the summary."""
+    root = RESULTS / date / "rig"
+    plan = json.loads((root / "plan.json").read_text())["sessions"] if (root / "plan.json").exists() else []
+    lines = ["Sessions planned, scored and set aside (slept through, or change unreadable):", "",
+             "| Harness | Planned | Scored | Set aside | Missing |", "|---|---|---|---|---|"]
+    for h in sorted({s["harness"] for s in plan}):
+        mine = [s for s in plan if s["harness"] == h]
+        base = [root / h / s["condition"] / f"run{s['run']}" / s["instance"] for s in mine]
+        scored = sum((b.parent / f"{b.name}.json").exists() for b in base)
+        aside = sum(not (b.parent / f"{b.name}.json").exists() and any(
+            (b.parent / f"{b.name}{x}").exists() for x in (".slept.json", ".unread.json")) for b in base)
+        lines.append(f"| {h} | {len(mine)} | {scored} | {aside} | {len(mine) - scored - aside} |")
+    return lines
 
 
 def paired_bootstrap(a, b, n=10000, seed=7):
@@ -1015,6 +1064,7 @@ def summarize(args):
         order = {"<15 min fix": 0, "15 min - 1 hour": 1, "1-4 hours": 2, ">4 hours": 3}
         for (band, h, cond), (won, n) in sorted(bands.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1], kv[0][2])):
             lines.append(f"| {band} | {h} | {cond} | {won}/{n} ({100 * won / n:.0f}%) |")
+    lines += ["", *coverage(args.date)]
     text = "\n".join(lines)
     (RESULTS / args.date / "rig" / "SUMMARY.md").write_text(text + "\n")
     print(text)

@@ -424,7 +424,7 @@ class HarnessParityTests(UsingCache, unittest.TestCase):
     def test_abhed_is_told_the_window_and_the_output_limit(self):
         cfg = rig.Abhed.configure({"permissions": {}}, "full")
         bench = cfg["model"]["providers"]["bench"]
-        self.assertEqual(bench["params"]["max_tokens"], rig.MAX_OUTPUT)
+        self.assertEqual(cfg["limits"]["max_tokens"], rig.MAX_OUTPUT)
         self.assertEqual(bench["context_window"], rig.window("full"))
         self.assertIn("permissions", cfg)
 
@@ -479,9 +479,102 @@ class HarnessParityTests(UsingCache, unittest.TestCase):
         self.assertIn(f"PARAMETER num_predict {rig.MAX_OUTPUT}", text)
 
     def test_the_environment_sets_no_temp_dir_unless_given_one(self):
+        self.assertNotIn("TMPDIR", rig.task_env("i1", self.root / "ws"))
+        self.assertEqual(rig.task_env("i1", self.root / "ws", tmp=self.root / "t")["TMPDIR"], str(self.root / "t"))
+
+
+class RigBoundaryTests(UsingCache, unittest.TestCase):
+    def test_an_interrupted_rig_takes_the_harness_with_it(self):
         import os
-        env = rig.task_env("i1", self.root / "ws")
-        self.assertEqual(env.get("TMPDIR"), os.environ.get("TMPDIR"))
+        import signal as sig
+        import subprocess
+        import time as _t
+        pidfile = self.root / "child.pid"
+        code = (f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); import rig; "
+                f"rig.sh(['sh', '-c', 'echo $$ > {pidfile}; exec sleep 60'])")
+        proc = subprocess.Popen([sys.executable, "-c", code], stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            _t.sleep(0.1)
+        child = int(pidfile.read_text())
+        proc.send_signal(sig.SIGINT)
+        proc.wait(timeout=20)
+        _t.sleep(0.3)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+
+    def test_harnesses_never_see_the_operators_credentials_or_overrides(self):
+        import os
+        planted = {"ABHED_BENCH_WATSONX_APIKEY": "wx-very-secret-key", "ABHED_MODEL": "other-model",
+                   "ABHED_BASE_URL": "http://elsewhere", "OPENAI_API_KEY": "sk-operator-key-1"}
+        saved = {k: os.environ.get(k) for k in planted}
+        os.environ.update(planted)
+        try:
+            env = rig.task_env("i1", self.root / "ws")
+            for k in planted:
+                self.assertNotIn(k, env)
+            self.assertIn("PATH", env)
+            text = rig.redact("key wx-very-secret-key and sk-operator-key-1")
+            self.assertNotIn("wx-very-secret-key", text)
+            self.assertNotIn("sk-operator-key-1", text)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_a_change_the_rig_cannot_read_is_set_aside_not_scored(self):
+        fake_instance(self.root)
+
+        class Quiet(rig.Harness):
+            name = "quiet"
+
+            def run(self, ws, prompt, cond, env, home):
+                return 0, "done"
+
+            def version(self):
+                return "0"
+
+        real = (rig.agent_patch, rig.HARNESSES.get("quiet"))
+        rig.HARNESSES["quiet"] = Quiet
+
+        def broken(ws):
+            raise rig.NoPatch("index.lock exists")
+
+        rig.agent_patch = broken
+        try:
+            out = self.root / "results" / "quiet" / "full" / "run1" / "i1.json"
+            rig.one_run("quiet", "i1", "full", out)
+        finally:
+            rig.agent_patch = real[0]
+            rig.HARNESSES.pop("quiet")
+        self.assertFalse(out.exists())
+        self.assertTrue(out.with_suffix(".unread.json").exists())
+        self.assertEqual(list((self.root / "scratch").glob("quiet-*")), [])
+
+    def test_the_rigs_git_ignores_the_operators_git_config(self):
+        g = rig.git(self.root)
+        self.assertIn("GIT_CONFIG_GLOBAL=/dev/null", g)
+        self.assertIn("GIT_CONFIG_NOSYSTEM=1", g)
+        self.assertIn("core.hooksPath=/dev/null", g)
+
+    def test_the_summary_counts_sessions_set_aside(self):
+        root = rig.RESULTS / "t-coverage" / "rig"
+        saved = rig.RESULTS
+        rig.RESULTS = self.root / "results"
+        try:
+            root = rig.RESULTS / "t" / "rig"
+            run1 = root / "abhed" / "full" / "run1"
+            run1.mkdir(parents=True)
+            (root / "plan.json").write_text(json.dumps({"sessions": [
+                {"run": 1, "instance": i, "condition": "full", "harness": "abhed"} for i in ("a", "b", "c")]}))
+            (run1 / "a.json").write_text("{}")
+            (run1 / "b.slept.json").write_text("{}")
+            self.assertIn("| abhed | 3 | 1 | 1 | 1 |", rig.coverage("t"))
+        finally:
+            rig.RESULTS = saved
 
 
 if __name__ == "__main__":
