@@ -1194,7 +1194,24 @@ class RoundEightTests(UsingCache, unittest.TestCase):
         self.assertTrue(rig.touched_answers("cat ../../.cache/verified.jsonl"))
         self.assertTrue(rig.touched_answers(f"ls {rig.CACHE / 'envs'}"))
         self.assertFalse(rig.touched_answers("pytest testing/test_pastebin.py"))
-        self.assertTrue(rig.touched_answers("git clone https://github.com/pytest-dev/pytest", "pytest-dev/pytest"))
+
+    def test_only_a_fetch_from_upstream_is_flagged(self):
+        repo = "pytest-dev/pytest"
+        self.assertFalse(rig.fetched_upstream("# More context: https://github.com/pytest-dev/pytest/issues/5974", repo))
+        self.assertFalse(rig.fetched_upstream("introduced by https://github.com/pytest-dev/pytest/commit/b6166dcc", repo))
+        self.assertFalse(rig.fetched_upstream("[set](https://github.com/pytest-dev/pytest/blob/28e8c85/src/x.py)", repo))
+        self.assertFalse(rig.touched_answers("# see https://github.com/pytest-dev/pytest/issues/5974"))
+        for fetch in ("git clone https://github.com/pytest-dev/pytest",
+                      "git clone git@github.com:Pytest-Dev/pytest.git",
+                      "curl https://api.github.com/repos/pytest-dev/pytest/commits",
+                      "wget https://raw.githubusercontent.com/pytest-dev/pytest/main/src/x.py",
+                      "pip install git+https://github.com/pytest-dev/pytest@main"):
+            self.assertTrue(rig.fetched_upstream(fetch, repo), fetch)
+        issue = ">>> urlopen(url, data=data)\nwith the attached [data.txt](https://github.com/pytest-dev/pytest/files/1/data.txt)"
+        self.assertFalse(rig.fetched_upstream("prompt: " + issue, repo, issue))
+        self.assertFalse(rig.fetched_upstream(json.dumps({"text": issue}), repo, issue))
+        cells = {("pi", "full"): {1: {"i1": {"harness": "pi", "condition": "full", "fetched_upstream": True}}}}
+        self.assertIn("| pi | full | 1 | i1 |", rig.flagged(cells, (), "fetched_upstream", "t"))
 
     def test_an_unpublished_rig_variable_is_redacted(self):
         saved = os.environ.get("ABHED_BENCH_PROVIDER_SPACE")
@@ -1208,8 +1225,19 @@ class RoundEightTests(UsingCache, unittest.TestCase):
             else:
                 os.environ["ABHED_BENCH_PROVIDER_SPACE"] = saved
 
+    def test_the_build_is_unknown_outside_a_checkout(self):
+        saved = rig.HERE
+        rig.HERE = self.root / "a" / "b"
+        rig.HERE.mkdir(parents=True)
+        try:
+            self.assertEqual(rig.abhed_build(), {"commit": "unknown", "dirty": None})
+        finally:
+            rig.HERE = saved
+
     def test_the_plan_records_the_abhed_build(self):
         build = rig.abhed_build()
+        if build["commit"] == "unknown":
+            self.skipTest("not inside a git checkout")
         self.assertEqual(len(build["commit"]), 40)
         self.assertIsInstance(build["dirty"], bool)
 

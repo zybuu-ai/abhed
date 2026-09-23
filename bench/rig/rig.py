@@ -996,13 +996,23 @@ def scratch_tag(hname, cond, iid, run, out_path):
     return "s" + hashlib.sha1(f"{hname}|{cond}|{iid}|{run}|{out_path}".encode()).hexdigest()[:12]
 
 
-def touched_answers(text, repo=""):
-    """Did the session name where the reference patches are: the rig's cache,
-    or the upstream repository that holds the fix? Such a session is flagged."""
-    names = ["verified.jsonl", "instance.json", str(CACHE / "envs"), "/.cache/envs/"]
-    if repo:
-        names += [f"github.com/{repo}", f"api.github.com/repos/{repo}"]
-    return any(k in text for k in names)
+def touched_answers(text):
+    """Did the session name where the rig keeps the reference patches? Any
+    harness's shell could read them; such a session is flagged."""
+    return any(k in text for k in ("verified.jsonl", "instance.json", str(CACHE / "envs"), "/.cache/envs/"))
+
+
+def fetched_upstream(text, repo, prompt=""):
+    """Did the session run a command fetching from the upstream repository?
+    Links alone fill the prompt and the tree, so the prompt is left out."""
+    if not repo:
+        return False
+    for p in {prompt, json.dumps(prompt)[1:-1]} - {""}:
+        text = text.replace(p, "")
+    r = re.escape(repo.lower())
+    fetch = r"(git\s+(clone|fetch|pull|remote\s+add)|curl|wget|urlopen|urlretrieve|requests\.get|httpx\.get|pip\s+(install|download))"
+    where = rf"(github\.com[:/]|api\.github\.com/repos/|raw\.githubusercontent\.com/|codeload\.github\.com/){r}"
+    return bool(re.search(rf"{fetch}[^\n]{{0,200}}?{where}", text.lower()))
 
 
 def score_patch(iid, inst, patch, tag):
@@ -1068,7 +1078,8 @@ def one_run(hname, iid, cond, out_path, run=1):
                   "timed_out": timed_out, "wall_sec": round(elapsed, 1), "patch_bytes": len(diff),
                   "patch": redact(diff[-20000:]), "usage": h.usage(output), "output_tail": redact(output[-3000:]),
                   "difficulty": inst.get("difficulty", ""), "score": scored,
-                  "touched_answers": touched_answers(output + diff, inst.get("repo", ""))}
+                  "touched_answers": touched_answers(output + diff),
+                  "fetched_upstream": fetched_upstream(output + diff, inst.get("repo", ""), prompt)}
         out_path.parent.mkdir(parents=True, exist_ok=True)
         events = h.record(output) if hasattr(h, "record") else None
         if events:
@@ -1238,14 +1249,14 @@ def run(args):
     setup = {"timeout_sec": RUN_TIMEOUT, "base_model": base_model(), "endpoint": public_endpoint(),
              "parallel": max(1, getattr(args, "parallel", 1) or 1),
              "tmux": shutil.which("tmux") is not None,  # OpenHands' terminal backend
+             "abhed_build": abhed_build(),
              "context_window": {c: window(c) for c in (args.condition or list(CONDITIONS))}, "max_output": MAX_OUTPUT,
              "difficulty": getattr(args, "difficulty", None) or "any",
              "sessions": [{"run": r, "instance": iid, "condition": cond, "harness": n} for r, iid, cond, n in plan]}
     check_resume(root / "plan.json", setup, args.force)
     root.mkdir(parents=True, exist_ok=True)
     (root / "suite.json").write_text(json.dumps(suite(), indent=1))
-    (root / "plan.json").write_text(json.dumps({"started": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                                "abhed_build": abhed_build(), **setup}))
+    (root / "plan.json").write_text(json.dumps({"started": time.strftime("%Y-%m-%d %H:%M:%S"), **setup}))
     todo = pending(plan, RESULTS / args.date / "rig", args.force)
 
     def one(item):
@@ -1261,10 +1272,16 @@ def run(args):
 
 
 def abhed_build():
-    """The Abhed commit the binary was built from, and whether the tree was
-    clean: `-version` alone may print a development string."""
-    _, sha = sh(["git", "-C", str(HERE.parent.parent), "rev-parse", "HEAD"])
-    _, dirty = sh(["git", "-C", str(HERE.parent.parent), "status", "--porcelain", "--untracked-files=no"])
+    """The HEAD of the Abhed checkout the rig sits in at run start, and whether
+    it was clean; the binary's own `-version` is recorded per result."""
+    root = HERE.parent.parent
+    try:
+        rc, sha = sh(git(root) + ["rev-parse", "HEAD"], cwd=root)
+        rc2, dirty = sh(git(root) + ["status", "--porcelain", "--untracked-files=no"], cwd=root)
+    except OSError:
+        return {"commit": "unknown", "dirty": None}
+    if rc != 0 or rc2 != 0:
+        return {"commit": "unknown", "dirty": None}
     return {"commit": sha.strip(), "dirty": bool(dirty.strip())}
 
 
@@ -1414,18 +1431,18 @@ def load(date):
     return cells
 
 
-def flagged(cells, aside=()):
-    """Sessions whose output or change named where the reference patches are
-    kept, scored or set aside. "none" is stated, not implied."""
+def flagged(cells, aside=(), field="touched_answers",
+            title="Sessions that named the reference-patch cache (a name match only):"):
+    """Sessions with a flag set, scored or set aside; "none" is stated, not implied."""
     rows = [(r["harness"], r["condition"], run_no, iid)
             for (_, _), runs in cells.items() for run_no, res in runs.items()
-            for iid, r in res.items() if r.get("touched_answers")]
+            for iid, r in res.items() if r.get(field)]
     for path in aside:
         r = json.loads(Path(path).read_text())
-        if r.get("touched_answers"):
+        if r.get(field):
             rows.append((r["harness"], r["condition"], int(Path(path).parent.name[3:]), r["instance"] + " (set aside)"))
     rows.sort()
-    out = ["Sessions that named the reference-patch cache (a name match only):", ""]
+    out = [title, ""]
     if not rows:
         return out + ["none"]
     out += ["| Harness | Window | Run | Instance |", "|---|---|---|---|"]
@@ -1518,7 +1535,9 @@ def summarize(args):
             lines.append(f"| {band} | {h} | {cond} | {won}/{n} ({100 * won / n:.0f}%) |")
     root = RESULTS / args.date / "rig"
     aside = sorted(root.glob("*/*/run*/*.slept.json")) + sorted(root.glob("*/*/run*/*.unread.json"))
-    lines += ["", *coverage(args.date), "", *flagged(cells, aside)]
+    lines += ["", *coverage(args.date), "", *flagged(cells, aside), "",
+              *flagged(cells, aside, "fetched_upstream",
+                       "Sessions that tried to fetch from the upstream repository (git clone and the like):")]
     text = "\n".join(lines)
     (RESULTS / args.date / "rig" / "SUMMARY.md").write_text(text + "\n")
     print(text)
