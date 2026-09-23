@@ -464,7 +464,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		ap.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
 			wasThinking := r.PauseThinking()
 			if editor.Raw() {
-				// Raw TTY: answer with a single keypress, like Claude Code.
+				// Raw TTY: answer with a single keypress.
 				keys := editor.BeginApproval()
 				read := func() (string, bool) {
 					select {

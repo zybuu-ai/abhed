@@ -66,14 +66,14 @@ An API key, from config or the environment:
 
 ### Subscriptions do not work, and this is not a Abhed limitation
 
-A Claude Pro or Max token — the kind `claude setup-token` prints — is **restricted
-to Claude Code**. Anthropic accepts the credential and then refuses the request
-unless the system prompt is Claude Code's own. Measured directly: same token,
-same model, same second, the only difference being the first system block.
+A Claude Pro or Max subscription token is **restricted to Anthropic's own
+clients**. Anthropic accepts the credential and then refuses the request unless
+the system prompt is its own client's. Measured directly: same token, same
+model, same second, the only difference being the first system block.
 
 | First system block | Result |
 |---|---|
-| exactly Claude Code's identity line | 200 |
+| exactly Anthropic's client identity line | 200 |
 | that line with anything appended | 429 |
 | any other prompt, or none | 429 |
 
@@ -86,10 +86,10 @@ Abhed reads `CLAUDE_CODE_OAUTH_TOKEN` and `oauth_token` because the mechanism is
 correct and the restriction may not be permanent. Today it is useful only for
 models outside the check.
 
-Working around it means sending Claude Code's identity string from a product
-that is not Claude Code. That circumvents an access control, misrepresents the
-product, and breaks the moment the check changes — so Abhed does not do it, and
-neither should anything built on it.
+Working around it means sending Anthropic's client identity string from a
+product that is not that client. That circumvents an access control,
+misrepresents the product, and breaks the moment the check changes — so Abhed
+does not do it, and neither should anything built on it.
 
 Some models outside the check still answer. That is not a reason to rely on it:
 third-party usage of a subscription is billed as *extra usage* rather than drawn

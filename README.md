@@ -10,7 +10,6 @@
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-2A8CF0?style=flat-square"></a>
   <a href="go.mod"><img alt="Go 1.26" src="https://img.shields.io/badge/go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white"></a>
   <a href="docs/guide/03-providers.md"><img alt="20 model providers" src="https://img.shields.io/badge/model%20providers-20-2A8CF0?style=flat-square"></a>
-  <a href="bench/RESULTS.md"><img alt="Benchmark 24/24" src="https://img.shields.io/badge/exercism%20benchmark-24%2F24-1E7F55?style=flat-square"></a>
   <a href="docs/trust/security-scans.md"><img alt="Security scans: 0 critical" src="https://img.shields.io/badge/image%20scan-0%20critical-1E7F55?style=flat-square"></a>
 </p>
 

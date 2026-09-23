@@ -30,7 +30,7 @@ type Approver struct {
 	// Interactive mode uses it to (1) pause the thinking indicator so the
 	// prompt is not overwritten frame by frame, and (2) read the answer through
 	// the single stdin reader the line editor already owns — a single keypress
-	// in raw mode, like Claude Code, rather than a full line. Reading In here
+	// in raw mode rather than a full line. Reading In here
 	// instead would open a second reader racing the editor for each keystroke
 	// and wait for a "\n" raw mode never sends (Enter is "\r"). read returns
 	// ok=false when input ended or was cancelled, which is treated as a refusal.

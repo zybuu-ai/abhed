@@ -57,7 +57,7 @@ type editor struct {
 	// approveCh, when non-nil, receives each decision keypress instead of the
 	// key being applied to the line. An approval prompt sets it through
 	// beginApproval, so the one reader the editor owns also answers approvals —
-	// a single keypress, like Claude Code — rather than a second reader racing
+	// a single keypress — rather than a second reader racing
 	// it for stdin and waiting on an Enter raw mode delivers as "\r".
 	approveMu sync.Mutex
 	approveCh chan rune

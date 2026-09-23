@@ -1,15 +1,13 @@
 // Package extension lets an operator change how the agent behaves without
 // forking it.
 //
-// The design question every harness answers differently is what belongs inside
-// the agent and what belongs outside. Pi answers "primitives, not features" and
-// exposes an API broad enough to rebuild most of the harness; that is the right
-// answer for one developer on a laptop, and it is why Pi is the most adaptable
-// harness of its kind. Abhed cannot copy it wholesale, because Abhed's claim is
-// that what an agent was permitted to do can be proven afterwards — and an
-// extension that can grant permission is one that can also remove the proof.
+// The design question every harness answers is what belongs inside the agent
+// and what belongs outside. An API broad enough to rebuild most of the harness
+// is the right answer for one developer on a laptop. Abhed's claim is that what
+// an agent was permitted to do can be proven afterwards — and an extension that
+// can grant permission is one that can also remove the proof.
 //
-// So the seam here is deliberately narrower than Pi's in exactly one direction:
+// So the seam here is deliberately narrow in exactly one direction:
 //
 //	An extension may VETO, never PERMIT.
 //

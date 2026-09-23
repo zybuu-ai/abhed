@@ -49,7 +49,6 @@ SECTIONS = [
     ("architecture", "Architecture", "How it is built, and why."),
     ("ops", "Operations", "Running it in a real environment."),
     ("trust", "Trust", "What a security review will ask, answered from the code."),
-    ("benchmarks", "Benchmarks", "Measured, reproducible, published whatever they say."),
 ]
 
 
@@ -70,7 +69,6 @@ Key facts, each stated on https://zybuu.com/abhed/ and traceable to the reposito
 - Deny rules are absolute in every permission mode; extensions may veto a tool call and can never permit one. No approver means refuse, never assume yes.
 - Embeds through a Go SDK with the same loop, policy and record. The SDK builds no sandbox: the host owns isolation.
 - Extend without forking: extensions (separate JSONL processes in any language), skills (a directory with a procedure), MCP servers (registered, disabled until enabled, optional tool allowlist).
-- Benchmark (2026-09-14, 24 Exercism Python exercises, one local 26B model, identical prompt): Abhed 24/24, a bare tool loop 22/24, aider 0.86.2 default one-shot 19/24. Abhed was the slowest and used the most tokens; the suite is small and single-file.
 - Not yet: no SOC 2, ISO 27001, HIPAA or FedRAMP certification; no support SLA; single node, no horizontal scaling or failover; Postgres is the only durable store; a human red-team engagement is outstanding; prompt injection is contained, not solved.
 - Pricing: Community is free and open source (Apache-2.0); Team and Enterprise are priced per seat and per site, never per token, at https://zybuu.com/abhed/#pricing.
 - Status: 1.x, open source at https://github.com/zybuu-ai/abhed. The command line, configuration, event record and Go SDK follow semantic versioning.
@@ -431,7 +429,7 @@ def main():
     open(os.path.join(OUT, "index.html"), "w").write(
         shell("Abhed documentation", "".join(idx), canonical=DOCS, kind="CollectionPage",
               desc="Documentation for Abhed, the on-prem, air-gap-capable agent harness by Zybuu: "
-                   "guide, architecture, operations, trust, and benchmarks."))
+                   "guide, architecture, operations and trust."))
     written += 1
 
     # The vision document — why Zybuu, and why Abhed — is the answer to the

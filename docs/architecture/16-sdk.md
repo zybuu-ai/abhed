@@ -64,7 +64,7 @@ not Go. See [15-extensions.md](15-extensions.md).
 
 ## What is not here yet
 
-**Subscription auth.** Pi can sign in with a Claude Pro, ChatGPT Plus or GitHub
-Copilot subscription. Abhed takes an API key. Closing this needs each vendor's
+**Subscription auth.** Some harnesses sign in with a model vendor's consumer
+subscription. Abhed takes an API key. Closing this needs each vendor's
 OAuth device flow and token refresh, one at a time — real work, and worth doing,
 but not a change to the harness.

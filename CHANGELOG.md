@@ -29,31 +29,23 @@ All notable changes to Abhed are recorded here. The format follows
   or write that would break a file's syntax, where they applied it before.
   Set `tools.syntax_check` to `report` or `off` to keep the old behaviour;
   the SDK also takes `Options.SyntaxCheck`.
-- The benchmark rig gives every harness the same conditions and scores on a
-  fresh copy of the base tree: each session has its own workspace,
-  environment copy, temp dir and home; limits and environment are equal and
-  stated in `bench/rig/METHOD.md`, with every remaining difference, network
-  access among them; sessions that named where the reference patches are
-  kept, or that ran a fetch from the upstream repository, are flagged and
-  listed; a hosted model is reached through a LiteLLM proxy hook in
-  `bench/rig/hosted`.
 
 ### Removed
 
-- The three multi-harness benchmark runs published so far are withdrawn:
-  the rig they ran on did not give every harness the same conditions.
-  `bench/results/README.md` lists every defect, whom it could favour, what
-  the runs showed and where they remain in history.
+- The benchmark (`bench/`, `docs/benchmarks`) is no longer part of this
+  repository. The three multi-harness rig runs published so far are
+  withdrawn: the rig did not give every harness the same conditions. The
+  earlier single-file comparison of 2026-09-14 is no longer published either.
+  Both remain in this repository's history. A result published later will
+  come with its method and raw records, whatever it shows.
 
 ### Fixed
 
 - A turn that spends its whole output budget reasoning without a tool call
   is a stall, not an answer: the model is told its reply was cut off, the
   next call asks for low reasoning effort, the turn is marked `cut_off` in
-  the record and HawkEYE reports `output-cap`. Both of Abhed's failures in
-  the first easy-band benchmark run ended this way, one of them read as
-  completed because a sentence had come out before the cut (that run has
-  since been withdrawn; see `bench/results/README.md`).
+  the record and HawkEYE reports `output-cap`. Sessions ended this way; some
+  read as completed because a sentence had come out before the cut.
 
 ## [1.0.1] - 2026-09-22
 

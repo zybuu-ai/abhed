@@ -110,7 +110,7 @@ unprompted.
   `qwen3-coder:30b`, ~26% faster. Do not leave it unattended.
 - **Avoid:** `qwen3.8:27b` on this hardware. Correct and honest, but dense, so
   3 tok/s makes it unusable interactively.
-- **Neither is Claude Code.** Both are ~30B models on a laptop. For the deep-agent
+- **Neither is a frontier model.** Both are ~30B models on a laptop. For the deep-agent
   workload Abhed targets, a served `gpt-oss-120b` on the OCP cluster remains the
   intended production path; these are the development stand-ins.
 
