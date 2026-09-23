@@ -65,6 +65,10 @@ type Options struct {
 	// Empty means default, which asks before every mutation.
 	Mode string
 
+	// SyntaxCheck overrides tools.syntax_check: "refuse" (the default),
+	// "report" or "off". It governs edits that would break a file's syntax.
+	SyntaxCheck string
+
 	// Allow and Deny are policy rules, e.g. "bash(go test*)". Deny is
 	// absolute: no mode, extension or approver overrides it.
 	Allow []string
@@ -148,6 +152,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	sess, err := tools.NewSession(opts.Workspace)
 	if err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	if sess.Syntax, err = tools.ParseSyntaxMode(orDefault(opts.SyntaxCheck, cfg.Tools.SyntaxCheck)); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 

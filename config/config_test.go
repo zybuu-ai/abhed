@@ -171,3 +171,18 @@ func TestEnvOverridesUsersFile(t *testing.T) {
 		t.Fatalf("users_file = %q", cfg.Auth.UsersFile)
 	}
 }
+
+func TestSyntaxCheckSettingIsValidated(t *testing.T) {
+	for _, v := range []string{"", "refuse", "report", "off"} {
+		c := Default()
+		c.Tools.SyntaxCheck = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q rejected: %v", v, err)
+		}
+	}
+	c := Default()
+	c.Tools.SyntaxCheck = "sometimes"
+	if err := c.Validate(); err == nil {
+		t.Error("an unknown tools.syntax_check was accepted")
+	}
+}

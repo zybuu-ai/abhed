@@ -109,3 +109,20 @@ func TestBadRuleFailsEarly(t *testing.T) {
 		t.Fatal("a malformed rule must be refused at construction")
 	}
 }
+
+// The syntax check is set from Options, overriding the config, and a bad
+// value fails at construction like any other setting.
+func TestSyntaxCheckOptionIsApplied(t *testing.T) {
+	p := &abhed.Provider{Type: "ollama", BaseURL: "http://127.0.0.1:1", Model: "m"}
+	for _, v := range []string{"", "refuse", "report", "off"} {
+		a, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(), Provider: p, SyntaxCheck: v})
+		if err != nil {
+			t.Fatalf("%q: %v", v, err)
+		}
+		a.Close()
+	}
+	_, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(), Provider: p, SyntaxCheck: "sometimes"})
+	if err == nil || !strings.Contains(err.Error(), "syntax_check") {
+		t.Fatalf("a bad SyntaxCheck must fail at construction: %v", err)
+	}
+}

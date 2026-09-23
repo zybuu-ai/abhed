@@ -18,6 +18,40 @@ handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
 
+### An edit that would break the file
+
+`edit` and `write` parse the result before they write it, for Go, JSON and
+Python. A change that would leave a file that parsed no longer parsing is not
+applied: the file stays as it was and the model is told the parser's error and
+the line, so it fixes its own text on the next turn. JSON files that allow
+comments and trailing commas by convention — `.jsonc`, `tsconfig*.json`,
+`jsconfig*.json`, `.eslintrc.json`, `.babelrc.json`, `devcontainer.json`,
+`deno.json`, `turbo.json`, `biome.json`, `tslint.json`, `api-extractor.json`,
+`cspell.json`, `settings.json`, `launch.json`, and anything in a `.vscode` or
+`.devcontainer` directory — are parsed that way; other `.json` files are
+strict JSON.
+
+An `edit` whose new text is a pasted diff hunk — every non-empty line starts
+with `+` or `-`, there is at least one of each, and the old text has no such
+lines — is refused the same way, except in files where such lines are ordinary
+content (Markdown, reStructuredText, YAML, text, CSV, diffs). A file that did
+not parse before can still be edited, so a refactor is never blocked half-way,
+and a new file is written even if it does not parse, with a warning, unless it
+is a pasted diff.
+
+Python is compiled, never run, by the `python3` on the path — the real
+interpreter behind it, never one inside the workspace or an added directory,
+with site packages and the environment switched off. With no `python3`, or
+when `python3` is a version-manager shim (pyenv, asdf) that needs its
+environment, Python is not checked. The host's interpreter decides what
+parses, so one older than 3.12, which could reject newer syntax the project
+accepts, warns instead of refusing.
+
+Edits and saves made by a person in the [workbench](16-workbench.md) are
+never refused: they are saved, with the warning. Refused changes appear in
+[HawkEYE](15-hawkeye.md) as `broken-edit`. `tools.syntax_check` sets the
+behaviour: `refuse` (the default), `report` to apply and warn, or `off`.
+
 ## Adding your own
 
 Four routes, none of which needs a rebuild. Pick by where your tool already

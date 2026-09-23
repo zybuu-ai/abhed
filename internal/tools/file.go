@@ -200,7 +200,7 @@ type writeArgs struct {
 // Precheck refuses a path the write could never use, before anyone is asked.
 func (Write) Precheck(s *Session, raw json.RawMessage) error { return precheckPath(s, raw) }
 
-func (Write) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
+func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	var a writeArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for write: %v", err)
@@ -226,10 +226,20 @@ func (Write) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	mode := os.FileMode(0o644)
+	var before []byte
 	if existed {
 		if info, err := os.Stat(path); err == nil {
 			mode = info.Mode().Perm()
 		}
+		if s.Syntax != SyntaxOff {
+			if before, err = os.ReadFile(path); err != nil {
+				return errf("Cannot read %s: %v", a.Path, err)
+			}
+		}
+	}
+	note, refuse := s.syntaxVerdict(ctx, path, before, existed, []byte(a.Content))
+	if refuse {
+		return errf("%s", note)
 	}
 
 	s.recordChange(path)
@@ -246,7 +256,7 @@ func (Write) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	if a.Content != "" && !strings.HasSuffix(a.Content, "\n") {
 		lines++
 	}
-	return ok("%s %s (%d bytes, %d lines).", verb, s.Rel(path), len(a.Content), lines)
+	return ok("%s %s (%d bytes, %d lines).%s", verb, s.Rel(path), len(a.Content), lines, suffix(note))
 }
 
 // atomicWrite writes via a temp file in the same directory then renames, so a

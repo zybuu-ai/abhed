@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,5 +193,27 @@ func TestSubagentEarlyTerminationIsReported(t *testing.T) {
 	}
 	if !strings.Contains(summary, "ended early") {
 		t.Fatalf("parent must be told the subagent did not finish: %q", summary)
+	}
+}
+
+// A subagent in its own worktree keeps the parent's syntax mode: a parent that
+// turned the check off must not get a child that refuses.
+func TestWorktreeSubagentKeepsTheSyntaxMode(t *testing.T) {
+	child := tempDir(t)
+	p := filepath.Join(child, "cfg.json")
+	if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
+		{calls: []model.ToolCall{call("write", map[string]string{"path": p, "content": "{"})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Session.Syntax = tools.SyntaxOff
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", Workspace: child}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "{" {
+		t.Fatalf("the child refused a write its parent allows: %q", got)
 	}
 }

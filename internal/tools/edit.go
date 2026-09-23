@@ -49,7 +49,7 @@ type editArgs struct {
 // Precheck refuses a path the edit could never use, before anyone is asked.
 func (Edit) Precheck(s *Session, raw json.RawMessage) error { return precheckPath(s, raw) }
 
-func (Edit) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
+func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	var a editArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for edit: %v", err)
@@ -61,17 +61,29 @@ func (Edit) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	if a.OldString == a.NewString {
 		return errf("old_string and new_string are identical — this edit would do nothing.")
 	}
+	diffNote := ""
+	if s.Syntax != SyntaxOff && looksLikeDiff(a.Path, a.OldString, a.NewString) {
+		const why = "new_string looks like a pasted diff: every line starts with + or -. Pass the new text itself, without diff markers."
+		if s.Syntax == SyntaxRefuse {
+			return errf("%s %s", NotApplied, why)
+		}
+		diffNote = "Warning: " + why
+	}
 
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		// Empty old_string on a missing file is equivalent to a create.
 		if a.OldString == "" {
+			note, _ := s.syntaxVerdict(ctx, path, nil, false, []byte(a.NewString))
+			if diffNote != "" {
+				note = strings.TrimSpace(diffNote + "\n" + note)
+			}
 			s.recordChange(path)
 			if err := atomicWrite(path, []byte(a.NewString), 0o644); err != nil {
 				return errf("Create failed for %s: %v", a.Path, err)
 			}
 			s.MarkRead(path, a.NewString)
-			return ok("Created %s (%d bytes).", s.Rel(path), len(a.NewString))
+			return ok("Created %s (%d bytes).%s", s.Rel(path), len(a.NewString), suffix(note))
 		}
 		return errf("File not found: %s. Use glob to locate it, or write() to create it.", a.Path)
 	}
@@ -115,6 +127,14 @@ func (Edit) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 		updated = strings.Replace(content, a.OldString, a.NewString, 1)
 	}
 
+	note, refuse := s.syntaxVerdict(ctx, path, data, true, []byte(updated))
+	if refuse {
+		return errf("%s", note)
+	}
+	if diffNote != "" {
+		note = strings.TrimSpace(diffNote + "\n" + note)
+	}
+
 	mode := info.Mode().Perm()
 	s.recordChange(path)
 	if err := atomicWrite(path, []byte(updated), mode); err != nil {
@@ -126,9 +146,9 @@ func (Edit) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 	// Saves a turn and confirms the edit landed where intended.
 	snippet := changedRegion(updated, a.NewString, 4)
 	if a.ReplaceAll {
-		return ok("Replaced %d occurrences in %s.\n%s", count, s.Rel(path), snippet)
+		return ok("Replaced %d occurrences in %s.\n%s%s", count, s.Rel(path), snippet, suffix(note))
 	}
-	return ok("Edited %s.\n%s", s.Rel(path), snippet)
+	return ok("Edited %s.\n%s%s", s.Rel(path), snippet, suffix(note))
 }
 
 // noMatchMessage builds the most important error in the tool set. A bare

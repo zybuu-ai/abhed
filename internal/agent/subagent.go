@@ -236,6 +236,9 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		if session, err = tools.NewSession(req.Workspace); err != nil {
 			return "", fmt.Errorf("subagent workspace: %w", err)
 		}
+		if f.Session != nil {
+			session.Syntax = f.Session.Syntax
+		}
 		workspace = req.Workspace
 	}
 

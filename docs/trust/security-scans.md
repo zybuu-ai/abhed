@@ -389,6 +389,13 @@ goes through `os.Root`, which refuses a path that escapes even if a link is
 swapped in after the check. `TestWorkbenchRefusesPathsOutsideTheWorkspace`
 covers `../`, an absolute path outside, and a symlinked file and directory.
 
+#### Syntax check on edits — two findings (G204, G304)
+
+| file | Rule | Triage |
+|---|---|---|
+| `internal/tools/syntax.go` (`parsesPython`, `pythonVersion`) | G204 — subprocess launched with a variable | **Accepted.** The program is the real file behind the `python3` on the path, resolved through its symlinks — which also bypasses any virtualenv — and refused if it lies inside the workspace or an extra root, which the agent can write (`TestTheRealInterpreterIsRun`, `TestAnInterpreterInsideTheWorkspaceIsNeverRun`, `TestADotDotDirectoryIsInsideTheWorkspace`, `TestAnInterpreterInAnExtraRootIsNeverRun`, with `TestTheFakeInterpreterIsAcceptedOutsideTheRoots` showing those can fail). `pythonCommand` runs it with `-I -S`, an empty environment, the temp directory as working directory and a bounded wait (`TestPythonRunsIsolated`): `-S` keeps `site`, and so `.pth` files, from loading, and `-I` keeps the environment, user site packages and the current directory out. The script is a constant that calls `compile()`, which parses and does not execute (`TestPythonIsCompiledNotRun`); the content goes in on standard input and the process is killed after five seconds. An interpreter outside the roots is trusted as the operator's own; one planted in a directory the sandbox can write outside the roots, such as its temp directory, and put first on the harness's own `PATH`, would not be caught — an unusual setup the operator controls |
+| `internal/tools/file.go` (`Write.Run`) | G304 — file inclusion via variable | **False positive**, the same as this file's other G304 findings: the path has already been through `Session.Resolve`, which confines it to the workspace roots and refuses harness state; the read takes the file's content before an overwrite, to decide whether the change breaks its syntax |
+
 #### HawkEYE — three findings from the session report (G203, G304, G705)
 
 HawkEYE renders a session's record as a page, and that record contains tool

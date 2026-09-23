@@ -842,6 +842,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	if err != nil {
 		return nil, nil, err
 	}
+	if sess.Syntax, err = tools.ParseSyntaxMode(s.opts.Config.Tools.SyntaxCheck); err != nil {
+		return nil, nil, err
+	}
 	// Extra roots come from the operator's config, applied to every session.
 	// A refusal here is a misconfiguration, not a per-request problem: fail
 	// the session rather than silently running with a narrower scope than the

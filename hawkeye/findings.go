@@ -79,6 +79,11 @@ func findings(r Report, evs []agent.Event) []Finding {
 			add(Warn, "secret-redacted", "A stored secret's value was written out and redacted",
 				fmt.Sprintf("%s %s — the output held a secret's value; the record has [secret:NAME] in its place. The value was caught before the write, but the command or the model exposed it.", c.Tool, clip(c.Subject, 160)), c.Seq)
 		}
+		// tools.NotApplied: the prefix edit and write put on a change they refused.
+		if (c.Tool == "edit" || c.Tool == "write") && c.IsError && strings.HasPrefix(c.Output, "Not applied:") {
+			add(Info, "broken-edit", "An edit was refused: it would have broken the file, or was a pasted diff",
+				fmt.Sprintf("%s — %s", c.Tool, clip(c.Output, 240)), c.Seq)
+		}
 		if c.Ran && c.IsError {
 			key := c.Tool + "\x00" + c.Args
 			failures[key]++

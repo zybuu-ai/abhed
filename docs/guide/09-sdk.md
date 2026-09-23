@@ -51,3 +51,8 @@ never permit.
 One difference is deliberate: **an agent with no `Approve` function refuses
 anything needing approval** rather than assuming yes. A service with nobody to
 ask should be stricter than a terminal with somebody watching, not looser.
+
+Edits that would break a file's syntax are refused, as from the command line;
+see [Tools](05-tools.md#an-edit-that-would-break-the-file). `Options.SyntaxCheck`
+(`refuse`, `report` or `off`) overrides `tools.syntax_check` from any config
+file, as `Options.Mode` overrides the permission mode.
