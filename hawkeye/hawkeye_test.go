@@ -305,3 +305,25 @@ func TestOrdinaryEditFailureIsNotABrokenEdit(t *testing.T) {
 		}
 	}
 }
+
+// Issue #74: an endpoint that reports no cache figures is not a cold cache.
+func TestColdCacheNeedsReportedFigures(t *testing.T) {
+	turns := func(reported bool, cached int) []agent.Event {
+		r := (&rec{at: time.Unix(0, 0)}).user("fix it")
+		for i := 0; i < 6; i++ {
+			r.add(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{
+				Turn: i + 1, TokensIn: 20000, TokensCached: cached, CacheReported: reported, ToolCalls: 1,
+			})
+		}
+		return r.end(agent.TermCompleted).evs
+	}
+	if has(Analyze("s", turns(false, 0)), "cold-cache") != nil {
+		t.Error("no cache figures reported: cold-cache must not fire")
+	}
+	if has(Analyze("s", turns(true, 0)), "cold-cache") == nil {
+		t.Error("zero cached tokens reported on every turn: cold-cache must fire")
+	}
+	if has(Analyze("s", turns(true, 15000)), "cold-cache") != nil {
+		t.Error("75% cached: cold-cache must not fire")
+	}
+}

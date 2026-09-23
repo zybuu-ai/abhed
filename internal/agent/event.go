@@ -179,6 +179,9 @@ type ModelCall struct {
 	TokensIn     int `json:"tokens_in"`
 	TokensOut    int `json:"tokens_out"`
 	TokensCached int `json:"tokens_cached"`
+	// CacheReported is false when the provider sent no cached-token figure,
+	// so a zero above means unknown rather than a cold cache.
+	CacheReported bool `json:"cache_reported,omitempty"`
 	// ContextWindow is the model's limit, zero when the adapter reports none.
 	ContextWindow int `json:"context_window,omitempty"`
 	// FirstTokenMS is how long the model took to start answering; LatencyMS is

@@ -130,10 +130,18 @@ func findings(r Report, evs []agent.Event) []Finding {
 			break
 		}
 	}
-	if len(r.Turns) >= 5 && r.Totals.CacheHitRate < 0.2 {
+	// Only turns whose provider reported a cache figure count: an endpoint that
+	// reports none would otherwise always read as cold.
+	reported, in, cached := 0, 0, 0
+	for _, t := range r.Turns {
+		if t.CacheReported {
+			reported, in, cached = reported+1, in+t.TokensIn, cached+t.TokensCached
+		}
+	}
+	if reported >= 5 && in > 0 && cached*5 < in {
 		add(Info, "cold-cache", "Most of the prompt was re-read cold on every turn",
 			fmt.Sprintf("Cache hit rate %.0f%% across %d turns. The endpoint is not caching the prefix, "+
-				"or something early in the prompt changes each turn.", r.Totals.CacheHitRate*100, len(r.Turns)), 0)
+				"or something early in the prompt changes each turn.", float64(cached)*100/float64(in), reported), 0)
 	}
 
 	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Severity] < rank[out[j].Severity] })

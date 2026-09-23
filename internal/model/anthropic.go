@@ -326,10 +326,10 @@ type anthropicEvent struct {
 }
 
 type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	InputTokens              int  `json:"input_tokens"`
+	OutputTokens             int  `json:"output_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
 }
 
 func (c *Anthropic) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
@@ -430,7 +430,10 @@ func (c *Anthropic) stream(ctx context.Context, resp *http.Response, out chan<- 
 		case "message_start":
 			if ev.Message != nil && ev.Message.Usage != nil {
 				usage.InputTokens += ev.Message.Usage.InputTokens
-				usage.CachedInputTokens += ev.Message.Usage.CacheReadInputTokens
+				if n := ev.Message.Usage.CacheReadInputTokens; n != nil {
+					usage.CachedInputTokens += *n
+					usage.CacheReported = true
+				}
 			}
 
 		case "content_block_start":

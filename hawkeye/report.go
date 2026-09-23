@@ -54,17 +54,19 @@ type Totals struct {
 
 // Turn is one round trip to the model.
 type Turn struct {
-	N            int    `json:"n"`
-	Seq          int64  `json:"seq"`
-	TokensIn     int    `json:"tokens_in"`
-	TokensOut    int    `json:"tokens_out"`
-	TokensCached int    `json:"tokens_cached"`
-	Window       int    `json:"context_window"`
-	CutOff       bool   `json:"cut_off,omitempty"`
-	FirstTokenMS int64  `json:"first_token_ms"`
-	LatencyMS    int64  `json:"latency_ms"`
-	ToolCalls    int    `json:"tool_calls"`
-	Error        string `json:"error,omitempty"`
+	N            int   `json:"n"`
+	Seq          int64 `json:"seq"`
+	TokensIn     int   `json:"tokens_in"`
+	TokensOut    int   `json:"tokens_out"`
+	TokensCached int   `json:"tokens_cached"`
+	// CacheReported is false when the provider gave no cached-token figure.
+	CacheReported bool   `json:"cache_reported,omitempty"`
+	Window        int    `json:"context_window"`
+	CutOff        bool   `json:"cut_off,omitempty"`
+	FirstTokenMS  int64  `json:"first_token_ms"`
+	LatencyMS     int64  `json:"latency_ms"`
+	ToolCalls     int    `json:"tool_calls"`
+	Error         string `json:"error,omitempty"`
 }
 
 // Call is one tool call followed through its whole life: what was asked, what

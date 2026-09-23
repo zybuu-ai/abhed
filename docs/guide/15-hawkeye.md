@@ -72,7 +72,7 @@ and none of them is a model's opinion.
 | `denied` | info | the policy or a reviewer refused a call |
 | `truncated` | info | tool results were cut before the model saw them |
 | `slow-tool` | info | a tool call ran longer than a minute |
-| `cold-cache` | info | under 20% of the prompt was cached across five or more turns |
+| `cold-cache` | info | under 20% of the prompt was cached across five or more turns whose provider reported a cache figure |
 | `no-end` | info | the record has no terminal event |
 
 `borrowed-host` is the one worth understanding. All tool output is untrusted,
