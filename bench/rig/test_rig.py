@@ -1236,6 +1236,13 @@ class RoundEightTests(UsingCache, unittest.TestCase):
         self.assertIn("done", out)
         self.assertLess(_t.monotonic() - start, 15, "the rig waited for the pipe, not the harness")
 
+    def test_a_set_aside_session_that_named_the_answers_is_listed(self):
+        run2 = self.root / "r" / "pi" / "full" / "run2"
+        run2.mkdir(parents=True)
+        aside = run2 / "i3.slept.json"
+        aside.write_text(json.dumps({"harness": "pi", "condition": "full", "instance": "i3", "touched_answers": True}))
+        self.assertIn("| pi | full | 2 | i3 (set aside) |", rig.flagged({}, [aside]))
+
     def test_the_session_record_is_outside_the_scratch_tree(self):
         self.assertFalse(rig.session_meta("s0").is_relative_to(self.root / "scratch"))
 

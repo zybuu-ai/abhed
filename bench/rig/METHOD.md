@@ -51,17 +51,17 @@ An earlier revision capped Abhed alone at 60 turns, below its own default.
 In the hosted run of 23 Sep 2026, stopped and not published, fourteen of
 Abhed's first nineteen sessions ended on that cap; the run was redone.
 
-Every harness reads configuration from the home directory — Abhed its
-skills and `ABHED.md` under `~/.abhed` — so each run gets a throwaway `HOME`,
-and inherits nothing else from the operator's shell but `PATH`, locale and
+Every harness reads configuration from the home directory — Abhed its skills
+and `ABHED.md` under `~/.abhed` — so each run gets a throwaway `HOME`, and
+inherits nothing else from the operator's shell but `PATH`, locale and
 certificate settings: no provider credentials, and no `ABHED_MODEL`-style
 override of the model the rig configured. The operator's own settings are
 never read or written. pi and OpenHands are installed under the rig's cache
 (`.cache/tools`), not globally. A harness is ended with its session: on a
 timeout, on a normal exit, and when the rig itself is stopped by Ctrl-C,
-`pkill` or a closed terminal (SIGINT, SIGTERM or SIGHUP), which ends every live
-harness at once, parallel ones included; a second Ctrl-C does not cut that
-short. The harness is asked first, so it can stop its own tools; then its
+`pkill` or a closed terminal (SIGINT, SIGTERM or SIGHUP), which ends every
+live harness at once, parallel ones included; a second Ctrl-C does not cut
+that short. The harness is asked first, so it can stop its own tools; then its
 process group and its process tree as it stood are killed, and so is any
 orphaned process still working in the session's workspace, temp dir or home,
 with everything below it — pi and OpenHands start their tools in sessions of
@@ -69,32 +69,35 @@ their own, outside the harness's group. A marker in the session's environment
 finds the rest wherever they went: on Linux for every process, on macOS for
 the user's own programs but not Apple's binaries (`sleep`, `sh`). So on macOS
 a system binary the agent started, then orphaned after a `cd` out of the
-session's directories, can outlive the session. Only directories the rig
-made for the session, inside its scratch directory, are ever swept, and a
-process that is not an orphan is never touched, so an operator's shell in a
-workspace is safe; an application launched from a workspace (an editor
-opened there, say) is an orphan and is not, and dies with its children. A PID the rig recorded could in
-principle be reused by an unrelated process before it is signalled; the
-window is a few seconds. OpenHands gets a tmux server of its own per
-session (`TMUX_TMPDIR`), and whether tmux was present is recorded in the plan.
-Session directories have opaque names, what each session is lives outside
-the scratch tree, and the agent's copy of the environment points its editable
-install, configuration and links at the session, so the task's id is not in
-its working directory, its environment variables or its import path; compiled
-bytecode and install records in the copy may still carry the prepared path. The reference patches themselves stay in
-the rig's cache, which any harness's shell — Abhed's included, whose sandbox
-allows reads — could reach by absolute path. Every result records
-`touched_answers` when a session's output or change names that cache, and the
-summary lists every such session, or says there were none. It is a name
-match: a glob, `find` or a directory listing in code would not trip it.
+session's directories, can outlive the session. Only directories the rig made
+for the session, inside its scratch directory, are ever swept, and a process
+that is not an orphan is never touched, so an operator's shell in a workspace
+is safe; an application launched from a workspace (an editor opened there,
+say) is an orphan and is not, and dies with its children. A PID the rig
+recorded could in principle be reused by an unrelated process before it is
+signalled; the window is a few seconds. OpenHands gets a tmux server of its
+own per session (`TMUX_TMPDIR`), and whether tmux was present is recorded in
+the plan. Session directories have opaque names, what each session is lives
+outside the scratch tree, and the agent's copy of the environment points its
+editable install, configuration and links at the session, so the task's id is
+not in its working directory, its environment variables or its import path;
+compiled bytecode and install records in the copy may still carry the prepared
+path. The reference patches themselves stay in the rig's cache, which any
+harness's shell — Abhed's included, whose sandbox allows reads — could reach
+by absolute path. Every result records `touched_answers` when a session's
+output or change names that cache, and the summary lists every such session,
+or says there were none. It is a name match: a glob, `find` or a directory
+listing in code would not trip it. Sessions in flight are abandoned, not
+scored, and redone on resume; results are written whole or not at all. A
+resume must be the same run: the rig refuses one under the same date whose
+sessions, model, endpoint, limits, timeout or parallelism differ from the plan
+it continues. Abhed applies an organisation's managed config
+(`/etc/abhed/config.json`) over any other, so `doctor` and `run` refuse Abhed
+on a machine that has one.
 
 A harness is waited for, not its output pipe: a tool it left holding the pipe
-cannot turn a normal exit into a timeout. Sessions in
-flight are abandoned, not scored, and redone on resume; results are written whole or not at all. A
-resume must be the same run: the rig refuses one under the same date whose
-sessions, model, endpoint, limits, timeout or parallelism differ from the plan it continues. Abhed
-applies an organisation's managed config (`/etc/abhed/config.json`) over any
-other, so `doctor` and `run` refuse Abhed on a machine that has one.
+cannot turn a normal exit into a timeout. Output such a tool writes more than
+ten seconds after its harness ends is not kept.
 
 Every harness runs with **stdin closed**. pi merges piped stdin into its
 prompt, so with an inherited stdin it waits for input that never comes and

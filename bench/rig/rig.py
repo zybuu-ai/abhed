@@ -295,16 +295,19 @@ def install_stop_handlers():
 
 
 def _read_all(fd, chunks):
-    """Raw bytes as they come, so whatever arrived is kept even if the pipe
-    never reaches EOF, and no byte is lost to decoding."""
-    while True:
-        try:
-            block = os.read(fd, 65536)
-        except OSError:
-            return
-        if not block:
-            return
-        chunks.append(block)
+    """Raw bytes as they come, on a descriptor of its own that it closes, so
+    its number is never reused under it while it reads."""
+    try:
+        while True:
+            try:
+                block = os.read(fd, 65536)
+            except OSError:
+                return
+            if not block:
+                return
+            chunks.append(block)
+    finally:
+        os.close(fd)
 
 
 def _drain(reader, chunks):
@@ -346,7 +349,7 @@ def sh(cmd, cwd=None, env=None, timeout=None, check=False):
     # The output is read on the side and the process waited for, not the pipe:
     # a tool that keeps the pipe open must not turn an exit into a timeout.
     chunks = []
-    reader = threading.Thread(target=_read_all, args=(p.stdout.fileno(), chunks), daemon=True)
+    reader = threading.Thread(target=_read_all, args=(os.dup(p.stdout.fileno()), chunks), daemon=True)
     try:
         if stopping():
             raise Stopped()  # the stop came while this child was starting
@@ -450,7 +453,7 @@ def prepare(args):
             (d / "ready").write_text(env_spec(inst["repo"]))
             (CACHE / "suite.json").unlink(missing_ok=True)  # validated against the old environment
         except Exception as e:  # noqa: BLE001 - an instance that will not build is excluded, not fatal
-            (d / "failed").write_text(str(e)[-3000:])
+            (d / "failed").write_text(str(e)[-3000:], errors="backslashreplace")
             print(f"  could not build: {str(e).splitlines()[0][:120]}")
 
 
@@ -1181,7 +1184,7 @@ def doctor(args):
     finally:
         for p in (ws, home, tmp):  # they hold the endpoint key in harness config
             shutil.rmtree(p, ignore_errors=True)
-    print(out[-1200:])
+    print(out[-1200:].encode("utf-8", "replace").decode("utf-8"))
     if not made:
         sys.exit(f"\n{args.harness}: exit {rc}, and hello.txt was not written. Fix the setup before benchmarking.")
     (CACHE / f"doctor-{args.harness}.ok").write_text(setup_fingerprint(args.harness))
