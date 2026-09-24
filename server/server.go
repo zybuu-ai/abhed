@@ -224,6 +224,10 @@ type Server struct {
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
 
+	// adminMu serialises admin-rights changes, so two demotions at once
+	// cannot leave nobody an administrator.
+	adminMu sync.Mutex
+
 	// state holds what a settings change may replace, behind its own lock.
 	// Separate from opts, which stays immutable — mixing "set once" and
 	// "changes at runtime" in one struct is how a field ends up read without
