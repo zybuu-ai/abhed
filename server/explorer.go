@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,19 +10,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
-	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Creating a folder, renaming and deleting from the Explorer have no tool of
 // their own. Each is one shell command run through agent.Loop.Manual, so it has
 // the policy, the sandbox and the record of a command typed into the terminal.
-// Before that, every path is held to the view's rules and to the write rules a
-// save would meet, which a command line alone would not carry.
+// Before that, every path it touches, and for a folder everything inside it at
+// the old name and the new, is held to the view's rules and to the write rules
+// a save would meet, which a command line alone would not carry.
+//
+// Checks and command run under the person's manual lock, so no other workbench
+// action lands between them. The agent's own writes can still: that race is the
+// one a person's rm -r in the terminal already has.
 
-// maxExplorerEntries bounds how much of a folder is checked before it is moved or deleted.
-const maxExplorerEntries = 5000
+const (
+	// maxExplorerEntries bounds how much of a folder is checked before it is moved or deleted.
+	maxExplorerEntries = 5000
+	explorerTimeout    = 2 * time.Minute
+)
 
 type folderRequest struct {
 	Path string `json:"path"`
@@ -36,15 +45,25 @@ type explorerResponse struct {
 	Path string `json:"path"`
 }
 
+// explorerPlan is the command a request comes to, once every check has passed.
+type explorerPlan struct {
+	command, description string
+	result               string      // the workspace path reported back
+	done                 func() bool // whether the change is on disk afterwards
+}
+
 // createFolder makes one directory, and its parents, for the person at the keyboard.
 func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 	var req folderRequest
-	s.explorerOp(w, r, &req, func(x *explorerCall) {
-		abs, ok := x.target(req.Path, true)
-		if !ok {
-			return
+	s.explorerOp(w, r, &req, func(x *explorerCall) (explorerPlan, bool) {
+		rel, abs, ok := x.named(req.Path)
+		if !ok || !x.absent(abs) || !x.check(rel, true, "") {
+			return explorerPlan{}, false
 		}
-		x.run(abs, "mkdir -p -- "+shellQuote(abs), "created a folder in the explorer")
+		return explorerPlan{
+			command: "mkdir -p -- " + shellQuote(abs), description: "created a folder in the explorer", result: rel,
+			done: func() bool { info, err := os.Stat(abs); return err == nil && info.IsDir() },
+		}, true
 	})
 }
 
@@ -52,51 +71,72 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 // what is already at the destination.
 func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 	var req renameRequest
-	s.explorerOp(w, r, &req, func(x *explorerCall) {
-		from, ok := x.source(req.From)
+	s.explorerOp(w, r, &req, func(x *explorerCall) (explorerPlan, bool) {
+		from, fromAbs, ok := x.named(req.From)
 		if !ok {
-			return
+			return explorerPlan{}, false
 		}
-		info, err := os.Lstat(from)
-		to, ok := x.target(req.To, err == nil && info.IsDir())
+		info, ok := x.present(fromAbs)
 		if !ok {
-			return
+			return explorerPlan{}, false
 		}
-		x.run(to, "mv -n -- "+shellQuote(from)+" "+shellQuote(to), "renamed in the explorer")
+		to, toAbs, ok := x.named(req.To)
+		if !ok || !x.absent(toAbs) || !x.check(from, info.IsDir(), "") || !x.check(to, info.IsDir(), "") {
+			return explorerPlan{}, false
+		}
+		// Everything inside moves too: each entry is judged where it is and where it lands.
+		if info.IsDir() && !x.contents(from, func(sub string, dir bool) bool {
+			return x.check(filepath.Join(from, sub), dir, sub) && x.check(filepath.Join(to, sub), dir, sub)
+		}) {
+			return explorerPlan{}, false
+		}
+		return explorerPlan{
+			command: "mv -n -- " + shellQuote(fromAbs) + " " + shellQuote(toAbs), description: "renamed in the explorer", result: to,
+			// mv -n succeeds without moving when something took the name first.
+			done: func() bool {
+				_, gone := os.Lstat(fromAbs)
+				_, there := os.Lstat(toAbs)
+				return gone != nil && there == nil
+			},
+		}, true
 	})
 }
 
 // deletePath removes a file, or a folder and everything in it.
 func (s *Server) deletePath(w http.ResponseWriter, r *http.Request) {
 	var req folderRequest
-	s.explorerOp(w, r, &req, func(x *explorerCall) {
-		abs, ok := x.source(req.Path)
+	s.explorerOp(w, r, &req, func(x *explorerCall) (explorerPlan, bool) {
+		rel, abs, ok := x.named(req.Path)
 		if !ok {
-			return
+			return explorerPlan{}, false
+		}
+		info, ok := x.present(abs)
+		if !ok || !x.check(rel, info.IsDir(), "") {
+			return explorerPlan{}, false
 		}
 		cmd := "rm -- "
-		if info, err := os.Lstat(abs); err == nil && info.IsDir() {
+		if info.IsDir() {
 			cmd = "rm -r -- "
+			if !x.contents(rel, func(sub string, dir bool) bool { return x.check(filepath.Join(rel, sub), dir, sub) }) {
+				return explorerPlan{}, false
+			}
 		}
-		x.run(abs, cmd+shellQuote(abs), "deleted in the explorer")
+		return explorerPlan{
+			command: cmd + shellQuote(abs), description: "deleted in the explorer", result: rel,
+			done: func() bool { _, err := os.Lstat(abs); return err != nil },
+		}, true
 	})
 }
 
-// explorerCall carries one request through its checks; the first failure
-// writes the reply and ends it.
+// explorerCall carries one request through its checks. A check that fails
+// writes the reply itself and returns false.
 type explorerCall struct {
-	s    *Server
-	w    http.ResponseWriter
-	r    *http.Request
-	live *liveSession
-	sess *tools.Session
-	v    *workspaceView
-	pol  *policy.Engine
-	// refused is set once a reply has been written for a denied path.
-	refused bool
+	w   http.ResponseWriter
+	v   *workspaceView
+	pol *policy.Engine
 }
 
-func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, do func(*explorerCall)) {
+func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, plan func(*explorerCall) (explorerPlan, bool)) {
 	live, sess, ok := s.manualSession(w, r)
 	if !ok {
 		return
@@ -116,124 +156,140 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, do 
 		return
 	}
 	defer v.Close()
-	do(&explorerCall{s: s, w: w, r: r, live: live, sess: sess, v: v, pol: live.Loop.Policy})
-}
 
-// lexical checks a client path against the view and returns it joined to the
-// root without following a final link, so a link is renamed or removed, never its target.
-func (x *explorerCall) lexical(p string) (string, bool) {
-	local := filepath.FromSlash(p)
-	if strings.TrimSpace(p) == "" || filepath.IsAbs(local) || !filepath.IsLocal(local) || filepath.Clean(local) == "." {
-		writeViewError(x.w, errNotInView)
-		return "", false
-	}
-	if _, err := x.v.resolve(p); err != nil {
-		writeViewError(x.w, err)
-		return "", false
-	}
-	return filepath.Join(x.v.sess.Root, local), true
-}
-
-// source is a path that must exist, and whose contents may all be written.
-func (x *explorerCall) source(p string) (string, bool) {
-	abs, ok := x.lexical(p)
+	live.manualMu.Lock()
+	defer live.manualMu.Unlock()
+	p, ok := plan(&explorerCall{w: w, v: v, pol: live.Loop.Policy})
 	if !ok {
-		return "", false
+		return
 	}
+	// Detached from the request: a client that goes away must not stop an rm -r half way.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), explorerTimeout)
+	defer cancel()
+	args, _ := json.Marshal(map[string]string{"command": p.command, "description": p.description})
+	res, err := live.Loop.Manual(ctx, sess, "bash", "u"+newSessionID(), args)
+	switch {
+	case err != nil:
+		WriteError(w, http.StatusInternalServerError, "the change could not be recorded, so it was not made")
+	case res.IsError:
+		WriteError(w, http.StatusForbidden, res.Content)
+	case res.ExitCode != nil && *res.ExitCode != 0:
+		WriteError(w, http.StatusConflict, strings.TrimSpace(res.Content))
+	case !p.done():
+		WriteError(w, http.StatusConflict, "the command ran but the change is not on disk; reload the explorer and try again")
+	default:
+		WriteJSON(w, http.StatusOK, explorerResponse{Path: filepath.ToSlash(p.result)})
+	}
+}
+
+// named takes a path the client sent: relative, inside the workspace and not
+// the workspace itself. It returns the path as named, links unresolved, so a
+// link is renamed or removed, never its target.
+func (x *explorerCall) named(p string) (string, string, bool) {
+	local := filepath.Clean(filepath.FromSlash(p))
+	if strings.TrimSpace(p) == "" || filepath.IsAbs(local) || !filepath.IsLocal(local) || local == "." {
+		writeViewError(x.w, errNotInView)
+		return "", "", false
+	}
+	return local, filepath.Join(x.v.sess.Root, local), true
+}
+
+func (x *explorerCall) present(abs string) (os.FileInfo, bool) {
 	info, err := os.Lstat(abs)
 	if err != nil {
 		writeViewError(x.w, errNotInView)
-		return "", false
+		return nil, false
 	}
-	if !x.writable(abs, info.IsDir()) {
-		return "", false
-	}
-	return abs, true
+	return info, true
 }
 
-// target is a path that must not exist yet; dir says a folder will be there.
-func (x *explorerCall) target(p string, dir bool) (string, bool) {
-	abs, ok := x.lexical(p)
-	if !ok {
-		return "", false
-	}
+func (x *explorerCall) absent(abs string) bool {
 	if _, err := os.Lstat(abs); err == nil {
 		WriteError(x.w, http.StatusConflict, "something with that name is already there")
-		return "", false
-	}
-	if !x.judge(abs) || (dir && !x.judge(abs+string(filepath.Separator))) {
-		return "", false
-	}
-	return abs, true
-}
-
-var errTooMany = errors.New("too many entries")
-
-// writable puts a write of the path, and of everything under a folder, to the policy.
-func (x *explorerCall) writable(abs string, dir bool) bool {
-	if !dir {
-		return x.judge(abs)
-	}
-	seen := 0
-	err := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if seen++; seen > maxExplorerEntries {
-			return errTooMany
-		}
-		subject := p
-		if d.IsDir() {
-			// A rule such as write(**/locked/**) names what is inside the folder.
-			subject += string(filepath.Separator)
-		}
-		if !x.judge(subject) {
-			return fs.SkipAll
-		}
-		return nil
-	})
-	switch {
-	case errors.Is(err, errTooMany):
-		WriteError(x.w, http.StatusRequestEntityTooLarge, fmt.Sprintf("this folder holds more than %d entries; change it from the terminal", maxExplorerEntries))
-		return false
-	case err != nil:
-		writeViewError(x.w, errNotInView)
-		return false
-	}
-	return !x.refused
-}
-
-// judge refuses a path a save to it would be refused.
-func (x *explorerCall) judge(abs string) bool {
-	if x.refused {
-		return false
-	}
-	args, _ := json.Marshal(map[string]string{"path": abs})
-	if d := x.pol.Evaluate("write", true, args); d.Decision == policy.Deny {
-		x.refused = true
-		WriteError(x.w, http.StatusForbidden, "Denied: "+d.Reason)
 		return false
 	}
 	return true
 }
 
-// run records and runs the command as the person's own action.
-func (x *explorerCall) run(abs, command, description string) {
-	x.live.manualMu.Lock()
-	defer x.live.manualMu.Unlock()
-	args, _ := json.Marshal(map[string]string{"command": command, "description": description})
-	res, err := x.live.Loop.Manual(x.r.Context(), x.sess, "bash", "u"+newSessionID(), args)
-	switch {
-	case err != nil:
-		WriteError(x.w, http.StatusInternalServerError, "the change could not be recorded, so it was not made")
-	case res.IsError:
-		WriteError(x.w, http.StatusForbidden, res.Content)
-	case res.ExitCode != nil && *res.ExitCode != 0:
-		WriteError(x.w, http.StatusConflict, strings.TrimSpace(res.Content))
-	default:
-		rel, _ := filepath.Rel(x.v.sess.Root, abs)
-		WriteJSON(x.w, http.StatusOK, explorerResponse{Path: filepath.ToSlash(rel)})
+// check refuses a path the view would not show, or a save to which would be
+// refused. The write rules are put to it as named and with its folder's links
+// followed, which is where rm and mv act. inside names the entry within a
+// folder being changed, for the reply.
+func (x *explorerCall) check(rel string, dir bool, inside string) bool {
+	code, why := x.judge(rel, dir)
+	if code == 0 {
+		return true
 	}
+	if inside != "" {
+		if code != http.StatusForbidden {
+			why = "the workbench does not show or change it"
+		}
+		code, why = http.StatusForbidden, "this folder holds "+filepath.ToSlash(inside)+": "+why
+	}
+	WriteError(x.w, code, why)
+	return false
+}
+
+func (x *explorerCall) judge(rel string, dir bool) (int, string) {
+	if _, err := x.v.resolve(rel); err != nil {
+		if errors.Is(err, errDenied) {
+			return http.StatusForbidden, err.Error()
+		}
+		return http.StatusNotFound, errNotInView.Error()
+	}
+	abs := filepath.Join(x.v.sess.Root, rel)
+	for _, spelling := range []string{abs, filepath.Join(realPath(filepath.Dir(abs)), filepath.Base(abs))} {
+		subjects := []string{spelling}
+		if dir {
+			// A rule such as write(**/locked/**) names what is inside the folder.
+			subjects = append(subjects, spelling+string(filepath.Separator))
+		}
+		for _, subject := range subjects {
+			args, _ := json.Marshal(map[string]string{"path": subject})
+			if d := x.pol.Evaluate("write", true, args); d.Decision == policy.Deny {
+				return http.StatusForbidden, "Denied: " + d.Reason
+			}
+		}
+	}
+	return 0, ""
+}
+
+var (
+	errTooMany = errors.New("too many entries")
+	errRefused = errors.New("refused")
+)
+
+// contents calls fn for each entry under the folder rel, by its path within
+// it, up to maxExplorerEntries; fn returning false ends the walk.
+func (x *explorerCall) contents(rel string, fn func(sub string, dir bool) bool) bool {
+	top := filepath.Join(x.v.sess.Root, rel)
+	seen := 0
+	err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == top {
+			return nil
+		}
+		if seen++; seen > maxExplorerEntries {
+			return errTooMany
+		}
+		sub, _ := filepath.Rel(top, p)
+		if !fn(sub, d.IsDir()) {
+			return errRefused
+		}
+		return nil
+	})
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, errRefused):
+	case errors.Is(err, errTooMany):
+		WriteError(x.w, http.StatusRequestEntityTooLarge, fmt.Sprintf("this folder holds more than %d entries; change it from the terminal", maxExplorerEntries))
+	default:
+		writeViewError(x.w, errNotInView)
+	}
+	return false
 }
 
 // shellQuote makes one word of s for /bin/sh, whatever it contains.

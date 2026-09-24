@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -118,5 +119,93 @@ func TestExplorerDeletesALinkNotItsTarget(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(wb.workspace, "real.txt")); string(got) != "keep\n" {
 		t.Fatalf("the link's target was touched: %q", got)
+	}
+}
+
+// A folder reached through a link is judged where the link leads: the write
+// rules hold for the target's own path, not only for the spelling sent.
+func TestExplorerJudgesThePathALinkLeadsTo(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "write(**/locked/**)")
+	})
+	wb.write("locked/keep.txt", "keep\n")
+	wb.write("free.txt", "y")
+	if err := os.Symlink(filepath.Join(wb.workspace, "locked"), filepath.Join(wb.workspace, "a")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	for name, c := range map[string]struct {
+		endpoint string
+		body     any
+	}{
+		"delete through the link": {"delete", folderRequest{Path: "a/keep.txt"}},
+		"rename out of it":        {"rename", renameRequest{From: "a/keep.txt", To: "out.txt"}},
+		"rename into it":          {"rename", renameRequest{From: "free.txt", To: "a/free.txt"}},
+		"new folder in it":        {"folder", folderRequest{Path: "a/sub"}},
+	} {
+		if rec := wb.send("acme", "POST", c.endpoint, c.body); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(wb.workspace, "locked/keep.txt")); string(got) != "keep\n" {
+		t.Fatal("a file under a write-denied folder was changed through a link")
+	}
+	for _, p := range []string{"locked/free.txt", "locked/sub", "out.txt"} {
+		if _, err := os.Lstat(filepath.Join(wb.workspace, p)); err == nil {
+			t.Errorf("%s was made through a link", p)
+		}
+	}
+}
+
+// Moving or deleting a folder answers for everything in it: a read-denied file
+// cannot be moved out from under its rule, a repository inside cannot be
+// deleted, and a folder cannot land its contents on write-denied paths.
+func TestExplorerJudgesAFoldersContents(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "read(**/cfg/prod.key)", "write(**/prod/config.yaml)")
+	})
+	wb.write("cfg/prod.key", "secret\n")
+	wb.write("sub/.git/HEAD", "ref: refs/heads/main\n")
+	wb.write("tmp/config.yaml", "x: 1\n")
+
+	for name, c := range map[string]struct {
+		endpoint string
+		body     any
+	}{
+		"read-denied inside":        {"rename", renameRequest{From: "cfg", To: "open"}},
+		"repository inside":         {"delete", folderRequest{Path: "sub"}},
+		"contents onto denied path": {"rename", renameRequest{From: "tmp", To: "prod"}},
+	} {
+		rec := wb.send("acme", "POST", c.endpoint, c.body)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "this folder holds") {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	for _, kept := range []string{"cfg/prod.key", "sub/.git/HEAD", "tmp/config.yaml"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was moved or removed", kept)
+		}
+	}
+	if rec, _ := wb.file("open/prod.key"); rec.Code == http.StatusOK {
+		t.Fatal("a read-denied file became readable at a new path")
+	}
+}
+
+// A folder too large to check is refused, not changed unchecked.
+func TestExplorerRefusesAFolderTooLargeToCheck(t *testing.T) {
+	wb := manualBench(t, nil)
+	for i := range maxExplorerEntries + 1 {
+		if err := os.WriteFile(filepath.Join(wb.workspace, "big", fmt.Sprintf("%05d", i)), nil, 0o644); err != nil {
+			if i == 0 {
+				wb.write("big/00000", "")
+				continue
+			}
+			t.Fatal(err)
+		}
+	}
+	if rec := wb.send("acme", "POST", "delete", folderRequest{Path: "big"}); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(wb.workspace, "big/00000")); err != nil {
+		t.Fatal("a folder too large to check was deleted")
 	}
 }
