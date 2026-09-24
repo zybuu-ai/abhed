@@ -1061,9 +1061,15 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	vault := openVault()
+	bash := tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+		Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}}
+	// The workbench terminal's shell runs under the same backend as the agent's commands.
+	if in, ok := sb.(sandbox.Interactive); ok {
+		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+	}
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault)},
+		tools.Glob{}, tools.Grep{}, bash,
 	)
 
 	gateway := mcp.NewGateway()
