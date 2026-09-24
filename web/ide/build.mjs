@@ -1,21 +1,45 @@
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "..", "..", "server", "ide", "vendor");
 mkdirSync(out, { recursive: true });
+// The directory holds only what this script writes, so a dropped file never lingers.
+for (const f of readdirSync(out)) rmSync(join(out, f));
 
-await build({
-  entryPoints: [join(here, "editor.js")],
+const common = {
   bundle: true,
   format: "iife",
   minify: true,
-  target: "es2020",
+  target: "es2022",
   legalComments: "none",
   logLevel: "info",
-  outfile: join(out, "editor.js"),
+};
+
+// The editor bundle, its stylesheet and the icon font, all under /ide/vendor/.
+await build({
+  ...common,
+  entryPoints: { editor: join(here, "editor.js") },
+  outdir: out,
+  loader: { ".ttf": "file" },
+  assetNames: "[name]",
+});
+
+// One same-origin worker per language service, loaded by the page as a classic script.
+const monaco = join(here, "node_modules", "monaco-editor", "esm", "vs");
+const workers = {
+  "editor.worker": "editor/editor.worker.js",
+  "json.worker": "language/json/json.worker.js",
+  "css.worker": "language/css/css.worker.js",
+  "html.worker": "language/html/html.worker.js",
+  "ts.worker": "language/typescript/ts.worker.js",
+};
+await build({
+  ...common,
+  entryPoints: Object.fromEntries(Object.entries(workers).map(([k, v]) => [k, join(monaco, v)])),
+  outdir: out,
 });
 
 const copies = [
@@ -28,7 +52,7 @@ for (const [src, dst] of copies) {
 }
 
 // NOTICE lists every installed package, direct or transitive, that esbuild
-// can inline into the bundles. Only the build tool itself is left out.
+// can inline into the bundles. Only the build tool and type stubs are left out.
 const modules = join(here, "node_modules");
 const names = [];
 for (const entry of readdirSync(modules)) {
@@ -44,7 +68,8 @@ const parts = [
   "Each entry gives the package name, the version built, and its license text.",
   "",
 ];
-for (const name of names.filter((n) => n !== "esbuild" && !n.startsWith("@esbuild/")).sort()) {
+const skip = (n) => n === "esbuild" || n.startsWith("@esbuild/") || n.startsWith("@types/");
+for (const name of names.filter((n) => !skip(n)).sort()) {
   const dir = join(modules, name);
   const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   let license;
@@ -56,5 +81,15 @@ for (const name of names.filter((n) => n !== "esbuild" && !n.startsWith("@esbuil
   }
   if (!license) throw new Error(`no LICENSE file for ${name}`);
   parts.push("=".repeat(72), `${name} ${meta.version} (${meta.license})`, "=".repeat(72), "", license.trim(), "");
+  // A package that carries notices for code it vendors has them passed on too.
+  try {
+    const notices = readFileSync(join(dir, "ThirdPartyNotices.txt"), "utf8");
+    parts.push(`${name}: notices for the code it includes`, "", notices.trim(), "");
+  } catch {}
 }
+// The icon font ships inside monaco-editor but carries its own licence.
+parts.push("=".repeat(72), "Codicons icon font, codicon.ttf (CC-BY-4.0)", "=".repeat(72), "",
+  "Copyright (c) Microsoft Corporation. The Codicons are licensed under the Creative",
+  "Commons Attribution 4.0 International licence, https://creativecommons.org/licenses/by/4.0/.",
+  "Source: https://github.com/microsoft/vscode-codicons. Shipped unmodified.", "");
 writeFileSync(join(out, "NOTICE"), parts.join("\n"));

@@ -43,6 +43,8 @@ func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	case strings.HasSuffix(name, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case strings.HasSuffix(name, ".ttf"):
+		w.Header().Set("Content-Type", "font/ttf")
 	default:
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
@@ -61,11 +63,12 @@ func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
 
 // serveIDE serves the workbench: the agent beside the code it is changing.
 // The same strict policy as the console — nothing loads from anywhere, so it
-// opens on an air-gapped network.
+// opens on an air-gapped network. font-src admits the editor's own icon font;
+// its workers are same-origin scripts, which script-src already covers.
 func (s *Server) serveIDE(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		"default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	_, _ = w.Write([]byte(ideHTML))
 }
 

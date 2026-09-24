@@ -49,13 +49,16 @@ func TestIDEIsServedUnderTheConsolesPolicy(t *testing.T) {
 		t.Fatalf("GET /ide = %d", rec.Code)
 	}
 	csp := rec.Header().Get("Content-Security-Policy")
-	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'"} {
+	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'", "font-src 'self';"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP %q is missing %q", csp, want)
 		}
 	}
-	if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "http") {
-		t.Errorf("CSP was loosened: %q", csp)
+	// The editor's workers are same-origin files, so neither blob: nor worker-src is needed.
+	for _, loose := range []string{"unsafe-eval", "http", "blob:", "worker-src", "*"} {
+		if strings.Contains(csp, loose) {
+			t.Errorf("CSP was loosened with %q: %q", loose, csp)
+		}
 	}
 }
 
@@ -142,7 +145,9 @@ func TestIDEAndCapabilitiesNeedSignIn(t *testing.T) {
 func TestIDEVendorServesOnlyEmbeddedFiles(t *testing.T) {
 	h := testServer(t).Handler()
 	for path, want := range map[string]int{
-		"/ide/vendor/editor.js": http.StatusOK, "/ide/vendor/xterm.css": http.StatusOK,
+		"/ide/vendor/editor.js": http.StatusOK, "/ide/vendor/editor.css": http.StatusOK,
+		"/ide/vendor/codicon.ttf": http.StatusOK, "/ide/vendor/editor.worker.js": http.StatusOK,
+		"/ide/vendor/json.worker.js": http.StatusOK, "/ide/vendor/xterm.css": http.StatusOK,
 		"/ide/vendor/NOTICE": http.StatusOK, "/ide/vendor/missing.js": http.StatusNotFound,
 		"/ide/vendor/..%2Fide.html": http.StatusNotFound,
 	} {
