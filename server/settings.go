@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -243,12 +245,28 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
-	s.adminAudit(r, "mcp.added", req.Name, map[string]any{
-		"tools": added, "command": req.Command, "url": req.URL})
+	s.adminAudit(r, "mcp.added", req.Name, mcpAuditDetail(req, added))
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"name":  req.Name,
 		"tools": added,
 	})
+}
+
+// mcpAuditDetail describes an added MCP server without its secrets: the URL
+// keeps scheme, host and path, and the command only its program.
+func mcpAuditDetail(req mcpRequest, added []string) map[string]any {
+	d := map[string]any{"tools": added}
+	if f := strings.Fields(req.Command); len(f) > 0 {
+		d["command"] = f[0]
+	}
+	if req.URL != "" {
+		if u, err := url.Parse(req.URL); err == nil {
+			d["url"] = (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+		} else {
+			d["url"] = "(unparseable)"
+		}
+	}
+	return d
 }
 
 // --------------------------------------------------------------- retrieval

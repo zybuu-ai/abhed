@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -14,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -117,12 +122,95 @@ func TestAdminMutationsReachTheAuditHook(t *testing.T) {
 // are checked in source, as the privilege tests do.
 func TestEveryAdminMutationIsAudited(t *testing.T) {
 	src := readSource(t, "server.go") + readSource(t, "settings.go") + readSource(t, "users.go")
-	for _, h := range regexp.MustCompile(`mux\.Handle\("POST /v1/admin/[^"]+", s\.Admin\(s\.(\w+)\)\)`).FindAllStringSubmatch(src, -1) {
+	handlers := regexp.MustCompile(`mux\.Handle\("POST /v1/admin/[^"]+", s\.Admin\(s\.(\w+)\)\)`).FindAllStringSubmatch(src, -1)
+	// Four today; fewer means the pattern stopped matching, not that the routes went.
+	if len(handlers) < 4 {
+		t.Fatalf("found %d admin mutation routes, want at least 4", len(handlers))
+	}
+	for _, h := range handlers {
 		body := regexp.MustCompile(`(?s)func \(s \*Server\) ` + h[1] + `\(.*?\n\}`).FindString(src)
+		if body == "" {
+			t.Errorf("cannot find the handler %s", h[1])
+			continue
+		}
 		if !strings.Contains(body, "s.adminAudit(") {
 			t.Errorf("%s changes the deployment without calling adminAudit", h[1])
 		}
 	}
+}
+
+// An MCP URL or command can carry a credential; neither the audit record nor
+// the log may hold it.
+func TestMCPAuditOmitsCredentials(t *testing.T) {
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		result := `{"protocolVersion":"2024-11-05","serverInfo":{"name":"t","version":"1"},"capabilities":{"tools":{}}}`
+		if req.Method == "tools/list" {
+			result = `{"tools":[{"name":"search","inputSchema":{"type":"object"}}]}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+	}))
+	defer mcpSrv.Close()
+
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	g := newHookRig(t, nil, func(o *Options) {
+		o.Gateway = mcp.NewGateway()
+		o.Logger = slog.New(slog.NewTextHandler(lockedWriter{&logs, &logMu}, nil))
+	})
+	alice := g.signIn(t, "alice")
+	u := strings.Replace(mcpSrv.URL, "http://", "http://user:secret-pass@", 1) + "/mcp?token=secret-tok&x=1"
+	body, _ := json.Marshal(map[string]string{"name": "corpus", "url": u})
+	if rec := g.do(alice, "POST", "/v1/admin/mcp", string(body)); rec.Code != http.StatusOK {
+		t.Fatalf("add MCP = %d %s", rec.Code, rec.Body)
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.audit) != 1 || g.audit[0].action != "mcp.added" {
+		t.Fatalf("audit = %+v", g.audit)
+	}
+	rec := fmt.Sprint(g.audit[0].detail)
+	logMu.Lock()
+	logged := logs.String()
+	logMu.Unlock()
+	for _, secret := range []string{"secret-pass", "secret-tok", "user:"} {
+		if strings.Contains(rec, secret) || strings.Contains(logged, secret) {
+			t.Errorf("%q reached the audit (%s) or the log", secret, rec)
+		}
+	}
+	if want := mcpSrv.URL + "/mcp"; g.audit[0].detail["url"] != want {
+		t.Errorf("url = %v, want %s", g.audit[0].detail["url"], want)
+	}
+
+	d := mcpAuditDetail(mcpRequest{Command: "/usr/bin/tool --api-key=abc"}, nil)
+	if d["command"] != "/usr/bin/tool" {
+		t.Errorf("command = %v", d["command"])
+	}
+}
+
+type lockedWriter struct {
+	w  io.Writer
+	mu *sync.Mutex
+}
+
+func (l lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 func refuseBob(_ context.Context, id *auth.Identity) error {
