@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -55,11 +56,11 @@ func (g *adminRig) signIn(t *testing.T, user string) *http.Cookie {
 	return nil
 }
 
-func (g *adminRig) do(c *http.Cookie, method, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	if c != nil {
-		req.AddCookie(c)
-	}
+// setAdmin asks, as the holder of c, for username's admin rights to be set.
+func (g *adminRig) setAdmin(c *http.Cookie, username string, admin bool) *httptest.ResponseRecorder {
+	body := fmt.Sprintf(`{"username":%q,"admin":%t}`, username, admin)
+	req := httptest.NewRequest("POST", "/v1/admin/users/admin", strings.NewReader(body))
+	req.AddCookie(c)
 	rec := httptest.NewRecorder()
 	g.h.ServeHTTP(rec, req)
 	return rec
@@ -80,11 +81,11 @@ func TestAdminWithEmailCannotDemoteThemselves(t *testing.T) {
 	g := newAdminRig(t)
 	alice := g.signIn(t, "alice")
 	// Another administrator, so only the self-demotion rule can refuse.
-	if rec := g.do(alice, "POST", "/v1/admin/users/admin", `{"username":"bob","admin":true}`); rec.Code != http.StatusNoContent {
+	if rec := g.setAdmin(alice, "bob", true); rec.Code != http.StatusNoContent {
 		t.Fatalf("promote bob = %d %s", rec.Code, rec.Body)
 	}
 	for _, name := range []string{"alice", "ALICE"} {
-		rec := g.do(alice, "POST", "/v1/admin/users/admin", `{"username":"`+name+`","admin":false}`)
+		rec := g.setAdmin(alice, name, false)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("self-demotion as %q = %d, want 409", name, rec.Code)
 		}
@@ -97,16 +98,16 @@ func TestAdminWithEmailCannotDemoteThemselves(t *testing.T) {
 func TestLastAdministratorCannotBeRemoved(t *testing.T) {
 	g := newAdminRig(t)
 	alice := g.signIn(t, "alice")
-	if rec := g.do(alice, "POST", "/v1/admin/users/admin", `{"username":"bob","admin":true}`); rec.Code != http.StatusNoContent {
+	if rec := g.setAdmin(alice, "bob", true); rec.Code != http.StatusNoContent {
 		t.Fatalf("promote bob = %d", rec.Code)
 	}
-	// bob's session was issued before the promotion, so sign in again.
+	// bob signs in after the promotion, so his session carries the group.
 	bob := g.signIn(t, "bob")
-	if rec := g.do(bob, "POST", "/v1/admin/users/admin", `{"username":"alice","admin":false}`); rec.Code != http.StatusNoContent {
+	if rec := g.setAdmin(bob, "alice", false); rec.Code != http.StatusNoContent {
 		t.Fatalf("bob demotes alice = %d %s", rec.Code, rec.Body)
 	}
 	// alice's old session still carries the group; bob is now the only admin.
-	rec := g.do(alice, "POST", "/v1/admin/users/admin", `{"username":"bob","admin":false}`)
+	rec := g.setAdmin(alice, "bob", false)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "last administrator") {
 		t.Fatalf("removing the last admin = %d %s, want 409", rec.Code, rec.Body)
 	}
