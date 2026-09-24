@@ -78,6 +78,8 @@ type ptyRun struct {
 	idle time.Duration
 	// leader names a shell, so what it leaves in its session can be ended safely.
 	leader sandbox.Leader
+	// endedBy says who ended the run when the server did, for its record.
+	endedBy atomic.Pointer[string]
 
 	mu      sync.Mutex
 	subs    map[chan []byte]struct{}
@@ -402,7 +404,7 @@ loop:
 			abandoned := len(run.subs) == 0 && time.Since(run.lastRead) > run.idle
 			run.mu.Unlock()
 			if abandoned {
-				run.cancel()
+				run.stop("ended after going unwatched")
 			}
 		}
 	}
@@ -438,14 +440,20 @@ loop:
 	how := "on a terminal"
 	if run.capture != nil {
 		run.capture.flush()
-		how = "interactive terminal; the latest output follows"
+		how = "interactive terminal"
+		if by := run.endedBy.Load(); by != nil {
+			how += ", " + *by
+		}
+		how += "; the latest output follows"
 	} else {
 		live.manualMu.Lock()
 		sess.FollowCd(run.command)
 		live.manualMu.Unlock()
 	}
+	// A shell's end is the person's doing, whatever its status; only a
+	// failure to start one is an error.
 	res := tools.Result{Content: fmt.Sprintf("exit %d · %s\n%s", code, how, text), ExitCode: &code,
-		IsError: code != 0, Truncated: clipped}
+		IsError: code != 0 && run.capture == nil, Truncated: clipped}
 	_ = live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started))
 	close(run.done)
 
@@ -715,8 +723,14 @@ func (s *Server) killPTY(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	run.cancel()
+	run.stop("closed from the workbench")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// stop ends the run, noting why for its record unless a reason is already set.
+func (p *ptyRun) stop(why string) {
+	p.endedBy.CompareAndSwap(nil, &why)
+	p.cancel()
 }
 
 // closeTerminals ends every shell and command the session has on a terminal.
@@ -724,6 +738,6 @@ func (l *liveSession) closeTerminals() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.ptys {
-		r.cancel()
+		r.stop("closed with the session")
 	}
 }
