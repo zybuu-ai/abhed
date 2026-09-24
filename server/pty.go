@@ -275,7 +275,7 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 		resp.Lines = "this sandbox cannot host an interactive shell, so each line runs as its own command"
 	case pol.Managed && pol.Screens("bash"):
 		// A managed policy is the organisation's word that its rules hold.
-		resp.Lines = "your organisation's policy has rules for bash that only a line-by-line terminal applies to every command"
+		resp.Lines = "your organisation's policy has deny rules or hooks that could refuse a command, which only a line-by-line terminal applies to every command"
 	}
 	if resp.Lines != "" {
 		WriteJSON(w, http.StatusOK, resp)

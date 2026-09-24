@@ -157,7 +157,8 @@ exported, and nothing contains it.
 
 `sandbox.terminal: "lines"` returns the terminal to one policy-checked `bash`
 call per line with no shell state, and a managed policy with deny rules for
-`bash` gets that mode automatically. Even then a rule checks the line, not what
+`bash` or for every tool (`*`), or with a policy hook, gets that mode
+automatically. Even then a rule checks the line, not what
 a script the line runs does. On the `none` tier the shell runs on the host, and
 the terminal banner and status bar say so.
 

@@ -1042,7 +1042,7 @@ function drawCaps(){
   line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
   line('deny', c.permissions.deny.join('   ') || '—'); line('ask', c.permissions.ask.join('   ') || '—'); line('allow', c.permissions.allow.join('   ') || '—');
   t.appendChild(r);
-  t.appendChild(el('div', 'empty', 'A deny rule holds in every mode, including auto. Rules are set in the server configuration.'));
+  t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
   [['builtin','Built in'],['mcp','From MCP servers'],['skill','Skills']].forEach(([k, title]) => {
     if(!by[k].length) return;

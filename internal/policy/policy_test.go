@@ -43,6 +43,30 @@ func TestAskReasonNamesWhatIsAsked(t *testing.T) {
 	}
 }
 
+// What forces the workbench terminal to judge each line: a hook, or a deny
+// rule for the tool or for every tool. The docs name the same three.
+func TestScreensNamesHooksAndWildcardRules(t *testing.T) {
+	e := New(ModeDefault)
+	if e.Screens("bash") {
+		t.Fatal("no rules and no hooks, yet bash is screened")
+	}
+	_ = e.AddDeny("read(**/.env)")
+	if e.Screens("bash") {
+		t.Fatal("a rule for another tool screens bash")
+	}
+	for name, edit := range map[string]func(*Engine){
+		"a bash rule":      func(e *Engine) { _ = e.AddDeny("bash(curl*)") },
+		"a rule for every": func(e *Engine) { _ = e.AddDeny("*(secret*)") },
+		"a hook":           func(e *Engine) { e.Hooks = append(e.Hooks, func(string, json.RawMessage) *Result { return nil }) },
+	} {
+		e := New(ModeDefault)
+		edit(e)
+		if !e.Screens("bash") {
+			t.Errorf("%s does not screen bash", name)
+		}
+	}
+}
+
 func TestDenyBeatsAllow(t *testing.T) {
 	e := New(ModeDefault)
 	_ = e.AddAllow("bash(*)")

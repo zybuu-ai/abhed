@@ -291,8 +291,10 @@ Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: eac
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the
 next (`cd` is followed, `export` is not). A managed policy
-(`/etc/abhed/config.json`) with deny rules for `bash` gets that mode without
-asking, because a managed rule is an organisation's statement that it holds.
+(`/etc/abhed/config.json`) with deny rules for `bash` or for every tool (`*`),
+or with a policy hook such as an extension, gets that mode without asking,
+because a managed rule is an organisation's statement that it holds, and a
+hook may refuse any command.
 Even line by line, a rule checks the line, not what a script the line runs
 does. The banner says which mode a tab is in, and why.
 

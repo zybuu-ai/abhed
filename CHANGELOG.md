@@ -92,8 +92,17 @@ All notable changes to Abhed are recorded here. The format follows
   new `terminal.input` event. The docs say plainly that the sandbox is the
   boundary and the line checks are best effort. `sandbox.terminal: "lines"`
   keeps the one-checked-command-per-line terminal, which a managed policy
-  with `bash` deny rules also gets. A page reload reattaches to its shells; a
+  also gets when it has deny rules for `bash` or for every tool (`*`), or a
+  policy hook such as an extension. A page reload reattaches to its shells; a
   shell nobody watches ends after 30 minutes (`sandbox.terminal_idle_minutes`).
+  When a shell ends, everything still running in its process session is
+  stopped and killed, pass after pass, including jobs started with `nohup`,
+  `disown` or `trap '' HUP`; a process that starts a session of its own
+  escapes and runs, within the sandbox, until it ends. If the sweep cannot
+  run, the server logs a warning (`the shell's session was not swept`) with
+  the session, the terminal and the reason. On the `none` and `process` tiers
+  a shell runs as the server's user and shares its process limit, so a fork
+  bomb there can exhaust it for the server too.
 - A session can be opened without a prompt (`POST /v1/sessions` with
   `"workbench": true`). The workbench opens one, so the terminal works as soon
   as the page loads; the first message goes to it. It records
@@ -112,8 +121,9 @@ All notable changes to Abhed are recorded here. The format follows
   the sandbox, in which `bash` deny rules only screen each line as typed and
   miss what the shell expands, recalls or runs from a script. To keep a policy
   decision on every line, set `sandbox.terminal: "lines"`; a managed policy
-  with `bash` deny rules keeps it without that setting. Deny rules still hold
-  for every tool call, the agent's and a person's.
+  keeps it without that setting when it has deny rules for `bash` or for
+  every tool (`*`), or a policy hook such as an extension. Deny rules still
+  hold for every tool call, the agent's and a person's.
 - The workbench streams replies with one DOM append per frame, follows the
   conversation only when you are at the bottom of it, reconnects from the last
   event it drew rather than replaying the session, draws a tool call's body
