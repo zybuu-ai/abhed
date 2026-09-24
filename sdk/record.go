@@ -38,6 +38,8 @@ const (
 	EvTodoUpdated     = agent.EvTodoUpdated
 	EvSessionEnded    = agent.EvSessionEnded
 
+	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
+
 	ActorUser   = agent.ActorUser
 	ActorAgent  = agent.ActorAgent
 	ActorSystem = agent.ActorSystem

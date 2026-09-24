@@ -182,7 +182,41 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #ahead button{font-size:12px;padding:3px 8px;border:1px solid var(--line-strong);border-radius:5px;color:var(--ink-2)}
 #ahead button:hover{background:var(--sunken)}
 #ahead #stop{color:var(--bad);border-color:var(--bad)}
-#tx{flex:1;min-height:0;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+#txwrap{flex:1;min-height:0;position:relative;display:flex}
+#tx{flex:1;min-height:0;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;overflow-anchor:none}
+#jump{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);padding:4px 12px;border-radius:14px;background:var(--raised);border:1px solid var(--line-strong);color:var(--ink-2);font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+#jump:hover{color:var(--ink);border-color:var(--accent)}
+.msg .md{white-space:normal}
+.md > :first-child{margin-top:0}.md > :last-child{margin-bottom:0}
+.md p{margin:.45em 0}.md h3,.md h4,.md h5,.md h6{margin:.9em 0 .35em;font-size:13.5px;font-weight:600}
+.md ul,.md ol{margin:.45em 0;padding-left:1.4em}.md li{margin:.15em 0}
+.md code{font:12px var(--mono);background:var(--sunken);padding:1px 4px;border-radius:3px}
+.md pre.code{font:11.5px/1.55 var(--mono);background:var(--sunken);border-left:2px solid var(--line-strong);border-radius:0 5px 5px 0;padding:.55rem .75rem;margin:.55em 0;white-space:pre;overflow-x:auto}
+.md pre.code code{background:none;padding:0}
+.md .tbl{overflow-x:auto;margin:.55em 0}.md table{border-collapse:collapse;font-size:12.5px}
+.md th,.md td{border:1px solid var(--line);padding:.25em .55em;text-align:left;vertical-align:top}.md th{background:var(--sunken);font-weight:600}
+.md blockquote{margin:.45em 0;padding-left:.8em;border-left:2px solid var(--line-strong);color:var(--ink-2)}
+.md a{color:var(--accent)}.md hr{border:0;border-top:1px solid var(--line);margin:.7em 0}
+.qbox{display:flex;flex-direction:column;gap:10px;flex:none}.qbox:empty{display:none}
+.msg.user.pending{opacity:.75}
+.msg.user.queued{border-style:dashed;background:var(--bg)}
+.msg.user.failed{border-color:var(--bad)}
+.qbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;margin-top:6px;font:11.5px var(--sans);color:var(--muted);white-space:normal}
+.qbar > span{flex:1 0 100%}
+.qbar button{padding:2px 8px;border:1px solid var(--line-strong);border-radius:5px;background:var(--surface);color:var(--ink-2);font-size:11.5px}
+.qbar button:hover{border-color:var(--accent);color:var(--ink)}
+.qbar button:disabled{opacity:.5;cursor:default}
+.wait{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);flex:none;padding:2px 2px}
+.wait .dots{display:inline-flex;gap:3px}.wait .dots i{width:5px;height:5px;border-radius:50%;background:var(--accent);opacity:.35}
+.wait .t{font:11px var(--mono);font-variant-numeric:tabular-nums}
+.think.live summary{color:var(--ink-2)}
+.think pre{max-height:320px;overflow:auto}
+.call .more{display:block;margin:0;padding:4px 10px;border-top:1px dashed var(--line);font-size:11.5px;color:var(--accent);width:100%;text-align:left}
+@media (prefers-reduced-motion:no-preference){
+  .wait .dots i{animation:blink 1.2s ease-in-out infinite}
+  .wait .dots i:nth-child(2){animation-delay:.2s}.wait .dots i:nth-child(3){animation-delay:.4s}
+}
+@keyframes blink{40%{opacity:1}}
 .msg{padding:9px 11px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}
 .msg.user{background:var(--accent-soft);border:1px solid var(--accent);align-self:flex-end;max-width:92%}
 .msg.agent{background:var(--raised);border:1px solid var(--line)}
@@ -329,7 +363,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 
   <section id="agent" aria-label="Agent">
     <div id="ahead"><span class="ttl" id="attl">New session</span><button type="button" id="stop" hidden>Stop</button></div>
-    <div id="tx" aria-live="polite"></div>
+    <div id="txwrap"><div id="tx" aria-live="polite"></div><button type="button" id="jump" hidden>Jump to latest ↓</button></div>
     <form id="composer">
       <div id="slash" hidden></div>
       <textarea id="q" placeholder="Describe a change, or type / for commands" aria-label="Message the agent"></textarea>
@@ -376,8 +410,10 @@ async function api(path, opts){
 
 /* ---------------------------------------------------------------- state */
 let current = null, live = false, es = null, lastSeq = 0;
-let caps = null, streaming = null, todoNode = null, thinkingNode = null;
-const calls = new Map();            // call_id -> {node, res, tool, subject}
+let caps = null, streaming = null, streamBody = null, todoNode = null, thinkBlock = null;
+const calls = new Map();            // call_id -> {node, res, tool, subject, args, out}
+const queued = new Map();           // queue id -> bubble waiting for the loop to read it
+const sent = [];                    // bubbles shown on send, not yet matched to their user.message
 const tabs = [];                    // {id, kind:'file'|'diff', path, label}
 let active = null;
 const known = new Set();            // file paths seen in the tree, for the palette
@@ -543,13 +579,13 @@ let acceptTimer = null;
 function queueAccept(t){ clearTimeout(acceptTimer); acceptTimer = setTimeout(() => acceptText(t, E.getOriginalDoc(t.view.state).toString()), 200); }
 async function acceptText(t, text){
   try{ await api('/v1/sessions/' + current + '/accept', {method:'POST', body: JSON.stringify({path:t.path, content:text})});
-    t.original = text; crumbs(t.path, 'accepted · baseline moved'); if(!t.dirty) showTab(t); changesSoon(); }
+    t.original = text; crumbs(t.path, 'accepted · baseline moved'); if(!t.dirty) showTab(t); changesSoon(300); }
   catch(e){ crumbs(t.path, 'not accepted — ' + e.message); }
 }
 async function rejectAll(t){
   if(!t.existed){
     // The file was created by this session: rejecting it all is removing it.
-    try{ await api('/v1/sessions/' + current + '/exec', {method:'POST', body: JSON.stringify({command:'rm -- ' + shellQuote(t.path)})}); closeTab(t.id); changesSoon(); }
+    try{ await api('/v1/sessions/' + current + '/exec', {method:'POST', body: JSON.stringify({command:'rm -- ' + shellQuote(t.path)})}); closeTab(t.id); changesSoon(300); }
     catch(e){ crumbs(t.path, 'not removed — ' + e.message); }
     return;
   }
@@ -561,7 +597,7 @@ async function saveActive(){
   t.saving = true; crumbs(t.path, 'saving…');
   try{
     const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.text, base:t.base})});
-    t.base = r.hash; t.dirty = false; drawTabs(); crumbs(t.path, 'saved · recorded as your change'); changesSoon(); hawkSoon();
+    t.base = r.hash; t.dirty = false; drawTabs(); crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
     if(t.kind === 'diff') showTab(t);
   }catch(e){ crumbs(t.path, 'not saved — ' + e.message); }
   t.saving = false;
@@ -608,7 +644,7 @@ async function loadChanges(){
   }
 }
 $('changes-reload').addEventListener('click', loadChanges);
-const changesSoon = () => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !(t.view && t.view.hasFocus)) showTab(t); }, 500); };
+const changesSoon = (ms = 1500) => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !(t.view && t.view.hasFocus)) showTab(t); }, ms); };
 
 /* ---------------------------------------------------------------- tools + extensions */
 function drawCaps(){
@@ -674,7 +710,8 @@ async function loadHawkeye(){
     box.appendChild(mk()); prob.appendChild(mk());
   }
 }
-const hawkSoon = () => { clearTimeout(hawkTimer); hawkTimer = setTimeout(loadHawkeye, 900); };
+// Trailing debounce: a burst of tool results costs one request, not one each.
+const hawkSoon = () => { clearTimeout(hawkTimer); hawkTimer = setTimeout(loadHawkeye, 1500); };
 $('hawk-open').addEventListener('click', () => { if(current) window.open('/v1/sessions/' + current + '/hawkeye?format=html', '_blank', 'noopener'); });
 $('s-find').addEventListener('click', () => setPanel('problems'));
 
@@ -689,40 +726,77 @@ async function loadSessions(){
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
   }
 }
+function setLive(on){
+  live = on; $('stop').hidden = !on;
+  $('hint').textContent = on ? 'Enter queues it · Esc twice stops the run' : 'Enter sends · Shift+Enter for a new line';
+  if(!on) waiting(false);
+}
 function resetSession(){
   if(es){ es.close(); es = null; }
-  current = null; live = false; lastSeq = 0; streaming = null; todoNode = null; thinkingNode = null; calls.clear();
+  cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
+  current = null; live = false; lastSeq = 0; streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear();
+  queued.clear(); sent.length = 0; waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); resetTerm(); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
   tabs.length = 0; active = null; drawTabs(); welcome(); known.clear(); indexedFor = null;
   $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
   clear($('hawkeye')); clear($('changes'));
-  $('attl').textContent = 'New session'; $('stop').hidden = true; drawStatus();
+  $('attl').textContent = 'New session'; setLive(false); drawStatus();
 }
 function openSession(id, state){
-  resetSession(); current = id; live = state === 'running' || state === 'waiting_approval';
-  const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? s.prompt : id; $('stop').hidden = !live;
+  resetSession(); current = id; setLive(state === 'running' || state === 'waiting_approval');
+  const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? s.prompt : id;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
-  connect(id); loadChanges(); loadSessions();
+  connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
 
+// A reconnect asks only for what came after the last event drawn, so a
+// dropped connection costs the gap rather than a replay of the whole session.
 function connect(id){
   if(es) es.close();
-  es = new EventSource('/v1/sessions/' + id + '/events');
+  es = new EventSource('/v1/sessions/' + id + '/events' + (lastSeq ? '?after=' + lastSeq : ''));
   es.onopen = () => setConn(true);
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
   es.onerror = () => { if(!es) return; es.close(); es = null;
-    if(live && current === id) setTimeout(() => { if(current === id && !es) connect(id); }, 1500);
+    if(live && current === id) setTimeout(() => { if(current === id && !es) connect(id); }, 1000);
     else if(current === id) loadHawkeye(); };
+}
+// Messages still queued on the server, for a page opened while a run is going.
+async function loadQueue(id){
+  let items; try{ items = await api('/v1/sessions/' + id + '/queue'); }catch{ return; }
+  if(current !== id) return;
+  if(qbox.parentNode !== tx()) tx().appendChild(qbox);
+  for(const q of items || []) if(!queued.has(q.id)){ const b = userBubble(q.text, 'queued'); b.qid = q.id; queued.set(q.id, b); qbox.appendChild(b); drawQueued(b); }
 }
 function setConn(on){ const n = $('s-conn'); n.className = on ? 'on' : 'off'; n.textContent = on ? '● connected' : '● offline'; }
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
-function add(n){ const box = tx(), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80; box.appendChild(n); if(stick) box.scrollTop = box.scrollHeight; return n; }
+// Queued messages sit below the conversation until the loop reads them.
+const qbox = el('div', 'qbox');
+let trimmed = false, flushRaf = 0, pendText = '', pendThink = '', waitNode = null, waitTimer = 0;
+const TX_MAX = 600, EVT_MAX = 500;
+const nearBottom = () => { const b = tx(); return b.scrollHeight - b.scrollTop - b.clientHeight < 80; };
+// Follow the conversation only when the reader is already at the end of it.
+function follow(stick){ if(stick){ tx().scrollTop = tx().scrollHeight; $('jump').hidden = true; } else $('jump').hidden = false; }
+$('jump').addEventListener('click', () => { tx().scrollTop = tx().scrollHeight; $('jump').hidden = true; });
+tx().addEventListener('scroll', () => { $('jump').hidden = nearBottom(); }, {passive:true});
+function add(n){
+  const box = tx(), stick = nearBottom();
+  if(qbox.parentNode !== box) box.appendChild(qbox);
+  box.insertBefore(n, waitNode && waitNode.parentNode === box && n !== waitNode ? waitNode : qbox);
+  trim(); follow(stick); return n;
+}
+// A long session would keep every node it ever drew. The oldest go; the record keeps them.
+function trim(){
+  const box = tx(); let over = box.childElementCount - TX_MAX; if(over <= 0) return;
+  if(!trimmed){ box.insertBefore(el('div', 'sys', 'Earlier messages are in the record: see Events, or the HawkEYE report.'), box.firstElementChild); trimmed = true; over++; }
+  let n = box.firstElementChild.nextElementSibling;
+  while(over-- > 0 && n && n !== qbox && n !== waitNode && n !== todoNode && n !== streaming){ const next = n.nextElementSibling; n.remove(); n = next; }
+}
 // An absolute path is mostly prefix. The end of it is what a person reads.
 function tail(p){ const parts = p.split('/').filter(Boolean); return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : p; }
 function subjectOf(tool, args){
@@ -731,53 +805,249 @@ function subjectOf(tool, args){
   if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
   const s = JSON.stringify(args); return s === '{}' ? '' : s;
 }
-function thinking(on, text){
-  if(!on){ if(thinkingNode){ thinkingNode.remove(); thinkingNode = null; } return; }
-  if(!thinkingNode) thinkingNode = add(el('div', 'sys')); else tx().appendChild(thinkingNode);
-  thinkingNode.textContent = text || 'working…';
+// The line under the conversation that says what the agent is doing, and for how long.
+function waiting(label){
+  if(!label){ if(waitNode){ waitNode.remove(); waitNode = null; } clearInterval(waitTimer); waitTimer = 0; return; }
+  const stick = nearBottom();
+  if(!waitNode){ waitNode = el('div', 'wait'); waitNode.setAttribute('role', 'status');
+    const dots = el('span', 'dots'); dots.append(el('i'), el('i'), el('i')); waitNode.append(dots, el('span', 'l'), el('span', 't')); }
+  if(waitNode.dataset.label !== label){ waitNode.dataset.label = label; waitNode.since = Date.now(); waitNode.children[1].textContent = label + '…'; }
+  const tick = () => { if(waitNode) waitNode.children[2].textContent = Math.floor((Date.now() - waitNode.since) / 1000) + 's'; };
+  tick(); if(!waitTimer) waitTimer = setInterval(tick, 1000);
+  const box = tx(); if(qbox.parentNode !== box) box.appendChild(qbox); box.insertBefore(waitNode, qbox); follow(stick);
 }
 function bubble(cls, who, text){ const m = el('div', 'msg ' + cls); m.appendChild(el('span', 'who', who)); m.appendChild(document.createTextNode(text || '')); return m; }
+const words = s => String(s || '').trim().split(/\s+/).filter(Boolean).length;
+
+// Deltas are gathered and drawn once a frame, appended to one text node: a
+// long reply costs one small DOM write per frame, not a rewrite per fragment.
+function flushStream(){
+  if(flushRaf){ cancelAnimationFrame(flushRaf); flushRaf = 0; }
+  if(!pendText && !pendThink) return;
+  const stick = nearBottom();
+  if(pendThink){ thinkLive().body.appendData(pendThink); pendThink = ''; }
+  if(pendText){
+    if(!streaming){ streaming = bubble('agent', 'abhed', ''); streamBody = streaming.lastChild; add(streaming); }
+    streamBody.appendData(pendText); pendText = '';
+  }
+  follow(stick);
+}
+const flushSoon = () => { if(!flushRaf) flushRaf = requestAnimationFrame(() => { flushRaf = 0; flushStream(); }); };
+
+// Reasoning streamed live into an open block, closed once the reply starts.
+function thinkLive(at){
+  if(thinkBlock && thinkBlock.live) return thinkBlock;
+  const d = el('details', 'think live'); d.open = true;
+  const s = el('summary', '', '▾ thinking'), pre = el('pre'), body = document.createTextNode('');
+  pre.appendChild(body); d.append(s, pre); add(d);
+  thinkBlock = {node:d, summary:s, body, live:true, since: at || Date.now(), pinned:false};
+  const t = thinkBlock; s.addEventListener('click', () => { t.pinned = true; });
+  return thinkBlock;
+}
+function endThinking(at, whole){
+  const t = thinkBlock; if(!t) return false;
+  if(whole != null && whole !== t.body.data) t.body.data = whole;
+  if(t.live){ t.live = false; t.secs = Math.max(1, Math.round(((at || Date.now()) - t.since) / 1000)); t.node.classList.remove('live'); if(!t.pinned) t.node.open = false; }
+  t.summary.textContent = '▸ thought for ' + t.secs + 's · ' + words(t.body.data) + ' words';
+  return true;
+}
+
+/* ---------------------------------------------------------------- markdown */
+// Replies are markdown. They are built as nodes, never as markup, so a reply
+// quoting a hostile file can only ever put text on the page.
+function mdInline(parent, s){
+  const re = /(`+)([^`]+?)\1|\*\*(.+?)\*\*|__(.+?)__|\*([^*\s][^*\n]*?)\*|\[([^\]]+)\]\(([^)\s]+)\)/g;
+  let at = 0, m;
+  while((m = re.exec(s))){
+    if(m.index > at) parent.appendChild(document.createTextNode(s.slice(at, m.index)));
+    if(m[2] != null) parent.appendChild(el('code', '', m[2]));
+    else if(m[3] != null || m[4] != null) mdInline(parent.appendChild(el('strong')), m[3] != null ? m[3] : m[4]);
+    else if(m[5] != null) mdInline(parent.appendChild(el('em')), m[5]);
+    else if(/^(https?:\/\/|mailto:)/i.test(m[7])){ const a = el('a'); a.href = m[7]; a.target = '_blank'; a.rel = 'noopener noreferrer'; mdInline(a, m[6]); parent.appendChild(a); }
+    else parent.appendChild(document.createTextNode(m[0]));
+    at = re.lastIndex;
+  }
+  if(at < s.length) parent.appendChild(document.createTextNode(s.slice(at)));
+}
+function md(text){
+  const root = el('div', 'md'), lines = String(text || '').split('\n');
+  let list = null, kind = '', para = null, quote = null;
+  const flat = () => { list = null; kind = ''; para = null; quote = null; };
+  for(let i = 0; i < lines.length; i++){
+    const line = lines[i];
+    const fence = /^\s*(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/.exec(line);
+    if(fence){
+      const body = [];
+      for(i++; i < lines.length && !lines[i].trim().startsWith(fence[1]); i++) body.push(lines[i]);
+      const pre = el('pre', 'code'); pre.appendChild(el('code', '', body.join('\n'))); if(fence[2]) pre.dataset.lang = fence[2];
+      root.appendChild(pre); flat(); continue;
+    }
+    if(/^\s*\|.*\|\s*$/.test(line)){
+      const rows = [];
+      for(; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) if(!/^[\s|:-]+$/.test(lines[i])) rows.push(lines[i].trim().replace(/^\||\|$/g, '').split('|'));
+      i--;
+      const wrap = el('div', 'tbl'), table = el('table');
+      rows.forEach((cells, r) => { const tr = el('tr'); cells.forEach(c => mdInline(tr.appendChild(el(r ? 'td' : 'th')), c.trim())); table.appendChild(tr); });
+      wrap.appendChild(table); root.appendChild(wrap); flat(); continue;
+    }
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if(h){ mdInline(root.appendChild(el('h' + Math.min(h[1].length + 2, 6))), h[2]); flat(); continue; }
+    if(/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)){ root.appendChild(el('hr')); flat(); continue; }
+    const item = /^\s*([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if(item){
+      const k = /\d/.test(item[1]) ? 'ol' : 'ul';
+      if(kind !== k){ flat(); list = root.appendChild(el(k)); kind = k; }
+      mdInline(list.appendChild(el('li')), item[2]); continue;
+    }
+    const q = /^\s*>\s?(.*)$/.exec(line);
+    if(q){ if(!quote){ flat(); quote = root.appendChild(el('blockquote')); } else quote.appendChild(el('br')); mdInline(quote, q[1]); continue; }
+    if(!line.trim()){ flat(); continue; }
+    if(!para){ flat(); para = root.appendChild(el('p')); } else para.appendChild(el('br'));
+    mdInline(para, line);
+  }
+  return root;
+}
+
+/* ---------------------------------------------------------------- queue */
+// A message sent while the agent works waits for the next step, and can be
+// sent now instead, or withdrawn, until the loop reads it.
+// Every message carries an id of the page's own, echoed on the user.message
+// that records it, so matching never depends on the recorded text.
+const newCid = () => 'c-' + Array.from(crypto.getRandomValues(new Uint8Array(9)), x => x.toString(16).padStart(2, '0')).join('');
+function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = newCid(); return b; }
+function drawQueued(b){
+  const old = b.querySelector('.qbar'); if(old) old.remove();
+  const bar = el('div', 'qbar');
+  if(b.classList.contains('queued')){
+    bar.appendChild(el('span', '', b.qnote || (b.qid ? 'Queued — will be read at the next step' : 'Queueing…')));
+    const now = el('button', '', 'Send now'), cancel = el('button', '', 'Cancel'); now.type = cancel.type = 'button';
+    now.disabled = cancel.disabled = !b.qid || !!b.busy;
+    now.addEventListener('click', () => sendNow(b)); cancel.addEventListener('click', () => unqueue(b));
+    bar.append(now, cancel);
+  }else if(b.qnote) bar.appendChild(el('span', '', b.qnote));
+  else if(b.classList.contains('pending')) bar.appendChild(el('span', '', 'Sending…'));
+  else return;
+  b.appendChild(bar);
+}
+function forget(b){ const i = sent.indexOf(b); if(i >= 0) sent.splice(i, 1); if(b.qid) queued.delete(b.qid); }
+// A user.message is matched to the bubble shown when it was sent: by the
+// page's id for it, then by queue id; by text only for a record without either.
+function claim(p){
+  let b = p.client_id ? sent.find(x => x.cid === p.client_id) || [...queued.values()].find(x => x.cid === p.client_id) : null;
+  if(!b && p.queue_id) b = queued.get(p.queue_id);
+  if(!b && !p.client_id && !p.queue_id) b = sent.find(x => !x.classList.contains('failed') && (x.prompt || x.text) === p.text);
+  if(!b) return null;
+  forget(b); b.delivered = true; b.qnote = '';
+  b.classList.remove('queued', 'pending'); drawQueued(b);
+  return b;
+}
+function failed(b, msg){
+  forget(b); b.classList.remove('queued', 'pending'); b.classList.add('failed');
+  b.qnote = 'Not sent — ' + msg; drawQueued(b); if(b.parentNode === qbox) add(b);
+  if(!$('q').value) $('q').value = b.text;
+}
+async function unqueue(b){
+  if(!b.qid || !current) return false;
+  b.busy = true; drawQueued(b);
+  try{ await api('/v1/sessions/' + current + '/queue/' + encodeURIComponent(b.qid), {method:'DELETE'}); }
+  catch(e){ b.busy = false; if(!b.delivered){ b.qnote = 'Not withdrawn — ' + e.message; drawQueued(b); } return false; }
+  forget(b); b.remove(); return true;
+}
+// Send now: withdraw it from the queue, stop the running step, and send it
+// as a fresh turn. The server waits for the step to stop before starting it.
+async function sendNow(b){
+  const id = current; if(!(await unqueue(b))) return;
+  b.qid = null; b.busy = false; b.classList.remove('queued'); b.classList.add('pending'); b.qnote = '';
+  sent.push(b); add(b); drawQueued(b); waiting('Stopping the current step');
+  try{
+    await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt || b.text, interrupt: true, client_id: b.cid})});
+    if(current !== id) return;
+    setLive(true); if(!b.delivered) waiting('Thinking'); if(!es) connect(id);
+  }catch(e){ failed(b, e.message); waiting(false); }
+}
+
 function render(ev){
-  const p = ev.payload || {};
+  const p = ev.payload || {}, at = Date.parse(ev.created_at) || Date.now();
+  // Anything but a fragment of the same kind draws what is pending first, so order holds.
+  if(ev.type === 'agent.delta' ? pendThink : ev.type === 'agent.reasoning.delta' ? pendText : true) flushStream();
   logEvent(ev, p);
   switch(ev.type){
-  case 'user.message': thinking(false); add(bubble('user', 'you', p.text)); if(live) thinking(true, 'waiting for the model…'); break;
-  case 'agent.delta': thinking(false); if(!streaming) streaming = add(bubble('agent', 'abhed', '')); streaming.lastChild.textContent += p.text || ''; tx().scrollTop = tx().scrollHeight; break;
-  case 'agent.message': thinking(false); if(streaming){ streaming.lastChild.textContent = p.text || ''; streaming = null; } else add(bubble('agent', 'abhed', p.text)); break;
-  case 'agent.reasoning': { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + (p.text || '').split(/\s+/).length + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); break; }
+  case 'user.message': { streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text)); if(live) waiting('Thinking'); break; }
+  case 'agent.reasoning.delta': thinkLive(at); pendThink += p.text || ''; flushSoon(); break;
+  case 'agent.delta': if(thinkBlock && thinkBlock.live) endThinking(at); waiting(false); pendText += p.text || ''; flushSoon(); break;
+  case 'agent.message': { waiting(false); const text = p.text || '', stick = nearBottom();
+    if(streaming){ streamBody.replaceWith(md(text)); streaming = null; streamBody = null; }
+    else if(text.trim()){ const b = bubble('agent', 'abhed', ''); b.lastChild.replaceWith(md(text)); add(b); }
+    follow(stick); break; }
+  case 'agent.reasoning':
+    if(thinkBlock){ endThinking(at, p.text || ''); thinkBlock = null; break; }
+    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); }
+    break;
   case 'action.requested': {
-    const mine = ev.actor === 'user'; if(!mine){ thinking(false); streaming = null; }
+    const mine = ev.actor === 'user'; if(!mine){ endThinking(at); streaming = null; streamBody = null; }
     const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
     if(mine) s.appendChild(el('span', 'mine', 'you'));
     s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
-    d.appendChild(s); d.appendChild(el('pre', '', JSON.stringify(p.args, null, 2)));
-    add(d); calls.set(p.call_id, {node:d, res, tool:p.tool, subject:subj, mine});
+    d.appendChild(s);
+    const c = {node:d, res, tool:p.tool, subject:subj, mine, args:p.args, out:null, drawn:0};
+    // Arguments and output are drawn when the call is opened, so a session of
+    // hundreds of calls keeps only their headers in the page.
+    d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
+    add(d); calls.set(p.call_id, c);
     if(p.tool === 'todo' && p.args && Array.isArray(p.args.items)) drawPlan(p.args.items);
-    if(p.requires_approval && live) askApproval(p);
+    if(p.requires_approval && live){ waiting(false); askApproval(p); }
     break; }
   case 'action.approved': { const c = calls.get(p.call_id);
     if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : p.by === 'user' ? ' · your own action' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live && !(c && c.mine)) thinking(true, 'running ' + (c ? c.tool : 'tool') + '…'); break; }
+    settleAsk(p.call_id, 'approved'); if(live && !(c && c.mine)) waiting('Running ' + (c ? c.tool : 'tool')); break; }
   case 'action.denied': { const c = calls.get(p.call_id);
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }
     settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
   case 'observation': {
-    const c = calls.get(p.call_id), mine = !!(c && c.mine); const body = p.content || ''; if(!mine) thinking(false);
+    const c = calls.get(p.call_id), mine = !!(c && c.mine); const body = p.content || '';
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
-      c.node.appendChild(el('pre', '', body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''))); }
+      c.out = body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''); if(c.node.open) fillCall(c); }
     if(p.tool === 'bash') logTerminal(c ? c.subject : '', p, mine ? 'you' : 'agent');
     if(p.tool === 'write' || p.tool === 'edit') changesSoon();
-    if(live && !mine) thinking(true, 'thinking…'); hawkSoon(); break; }
+    if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
   case 'model.call': stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
     if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
-  case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); break;
+  case 'compaction.started': if(live) waiting('Compacting context'); break;
+  case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
-  case 'session.ended': { thinking(false); live = false; $('stop').hidden = true; const bad = !['completed','user_interrupt'].includes(p.reason);
-    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns')); loadSessions(); loadChanges(); loadHawkeye(); break; }
+  case 'session.ended': { endThinking(at); streaming = streamBody = null; setLive(false); const bad = !['completed','user_interrupt'].includes(p.reason);
+    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
+    loadSessions(); loadChanges(); loadHawkeye(); const id = current; setTimeout(() => recheck(id), 600); break; }
   }
+}
+// A run can end just as a queued message arrives, and the server then starts
+// another for it after this stream closed; or Send now's fresh turn starts
+// after the interrupted one ended. Once the end has settled, ask the server.
+async function recheck(id){
+  let list, left;
+  try{ [list, left] = await Promise.all([api('/v1/sessions'), queued.size ? api('/v1/sessions/' + id + '/queue').catch(() => []) : []]); }catch{ return; }
+  if(current !== id) return;
+  const s = list.find(x => x.id === id), running = !!s && (s.state === 'running' || s.state === 'waiting_approval');
+  const still = new Set((left || []).map(q => q.id));
+  // A bubble the server no longer holds was read by a run this page has not seen yet.
+  const read = [...queued.values()].some(b => b.qid && !still.has(b.qid));
+  setLive(running);
+  if(running || read){ if(!es) connect(id); if(running) return; }
+  for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
+}
+function fillCall(c){
+  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', JSON.stringify(c.args, null, 2)), c.node.firstChild.nextSibling); }
+  if(c.out != null && c.drawn < 2){ c.drawn = 2; c.node.appendChild(clip(c.out)); }
+}
+// Long output shows its head until asked for the rest.
+function clip(text){
+  const lines = text.split('\n'); if(lines.length <= 24 && text.length <= 2000) return el('pre', '', text);
+  const pre = el('pre', '', lines.slice(0, 24).join('\n').slice(0, 2000) + '\n…'), more = el('button', 'more', 'show all ' + lines.length + ' lines');
+  more.type = 'button'; more.addEventListener('click', () => { pre.textContent = text; more.remove(); });
+  const wrap = el('div'); wrap.append(pre, more); return wrap;
 }
 // One plan block, moved to the end each time it changes, so the current
 // state of the work is always the last thing above the composer.
@@ -846,7 +1116,7 @@ async function runLine(cmd){
   const es = new EventSource('/v1/sessions/' + current + '/pty/' + r.id); tty.es = es;
   es.addEventListener('out', e => term.write(bytesOf(e.data)));
   const end = code => { es.close(); tty.es = null; tty.run = null; $('n-term').textContent = '';
-    if(code !== null) term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m'); changesSoon(); hawkSoon(); loadTree('', $('tree'), 0); promptTerm(); };
+    if(code !== null) term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m'); changesSoon(300); hawkSoon(); loadTree('', $('tree'), 0); promptTerm(); };
   es.addEventListener('exit', e => end(e.data));
   es.onerror = () => { if(tty.run === r.id) end(null); };
 }
@@ -859,11 +1129,13 @@ function logTerminal(cmd, p, who){
   termN++; if(!tty.run) $('n-term').textContent = ' ' + termN;
 }
 function logEvent(ev, p){
-  if(ev.type === 'agent.delta') return;
-  const box = $('p-events'), r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
+  if(ev.type === 'agent.delta' || ev.type === 'agent.reasoning.delta') return;
+  const box = $('p-events'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40, r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
   r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
   r.appendChild(el('span', 'd', p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || '').slice(0, 160)));
-  box.appendChild(r); $('n-evt').textContent = ' ' + (++evtN); if(!box.hidden) box.scrollTop = box.scrollHeight;
+  // The panel keeps the latest rows; the whole record is one replay away.
+  box.appendChild(r); while(box.childElementCount > EVT_MAX) box.firstElementChild.remove();
+  $('n-evt').textContent = ' ' + (++evtN); if(!box.hidden && stick) box.scrollTop = box.scrollHeight;
 }
 function drawStatus(){
   const has = stat.window > 0 && stat.ctx > 0; $('s-ctx').hidden = !has;
@@ -900,7 +1172,7 @@ $('q').addEventListener('keydown', e => {
   const hits = $('slash').hidden ? [] : drawSlash();
   if(hits.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')){ e.preventDefault(); slashSel = (slashSel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length; drawSlash(); return; }
   if(hits.length && (e.key === 'Enter' || e.key === 'Tab')){ e.preventDefault(); runSlash(hits[slashSel]); return; }
-  if(e.key === 'Escape'){ $('slash').hidden = true; return; }
+  if(e.key === 'Escape' && !$('slash').hidden){ $('slash').hidden = true; e.stopPropagation(); return; }
   if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
 });
 $('q').addEventListener('input', () => {
@@ -928,23 +1200,46 @@ async function withMentions(text){
   }
   return parts.join('');
 }
+// The message shows the moment it is sent. While a run is going it is queued
+// for the next step, never a reason to cancel the step in progress.
 async function send(){
-  let prompt = $('q').value.trim(); if(!prompt || $('send').disabled) return;
-  $('send').disabled = true;
+  const typed = $('q').value.trim(); if(!typed) return;
+  $('q').value = ''; $('q').style.height = 'auto'; $('slash').hidden = true;
+  const id = current, busy = !!id && live;
+  const b = userBubble(typed, busy ? 'queued' : 'pending'); sent.push(b);
+  if(busy){ const stick = nearBottom(); if(qbox.parentNode !== tx()) tx().appendChild(qbox); qbox.appendChild(b); follow(stick); }
+  else{ add(b); waiting('Thinking'); }
+  drawQueued(b);
   try{
-    prompt = await withMentions(prompt);
-    if(current){
-      await api('/v1/sessions/' + current + '/messages', {method:'POST', body: JSON.stringify({prompt})});
-      if(!live){ live = true; $('stop').hidden = false; if(!es) connect(current); }
+    b.prompt = await withMentions(typed);
+    if(id){
+      const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
+      if(current !== id || b.delivered) return;
+      if(r && r.queue_id){
+        b.qid = r.queue_id; queued.set(b.qid, b); if(!live) setLive(true);
+        if(!b.classList.contains('queued')){ b.classList.replace('pending', 'queued'); qbox.appendChild(b); }
+      }else{
+        if(b.classList.contains('queued')){ b.classList.replace('queued', 'pending'); add(b); }
+        setLive(true); waiting('Thinking'); if(!es) connect(id);
+      }
+      drawQueued(b);
     }else{
-      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt, mode: $('mode').value})});
-      sessionList.unshift({id:r.session_id, prompt, state:'running'}); openSession(r.session_id, 'running');
+      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid})});
+      sessionList.unshift({id:r.session_id, prompt: typed, state:'running'}); openSession(r.session_id, 'running');
+      sent.push(b); add(b); waiting('Thinking');
     }
-    $('q').value = ''; $('q').style.height = 'auto';
-  }catch(e){ add(el('div', 'sys bad', e.message)); }
-  finally{ $('send').disabled = false; }
+  }catch(e){ if(current === id){ failed(b, e.message); if(!busy) waiting(false); } }
 }
 $('stop').addEventListener('click', async () => { if(current) try{ await api('/v1/sessions/' + current + '/interrupt', {method:'POST'}); }catch{} });
+// Esc stops the run only when pressed twice: once to ask, once to confirm.
+let stopArmed = 0;
+$('agent').addEventListener('keydown', e => {
+  if(e.key !== 'Escape' || !live || !current) return;
+  e.preventDefault();
+  if(stopArmed){ clearTimeout(stopArmed); stopArmed = 0; setLive(live); $('stop').click(); return; }
+  $('hint').textContent = 'Press Esc again to stop the running turn';
+  stopArmed = setTimeout(() => { stopArmed = 0; setLive(live); }, 2500);
+});
 $('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
 
 /* ---------------------------------------------------------------- palette + keys */

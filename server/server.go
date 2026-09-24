@@ -242,6 +242,9 @@ type liveSession struct {
 	State   string // running | waiting_approval | done
 	Turns   int    // exchanges in this conversation
 	cancel  context.CancelFunc
+	// ran is closed when the current run's goroutine ends, so a caller that
+	// interrupted it can wait for the loop to be free.
+	ran chan struct{}
 	// cancelCause ends the run with a stated reason, so shutdown is not
 	// recorded as a user interrupt.
 	cancelCause context.CancelCauseFunc
@@ -340,6 +343,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/resize", s.resizePTY)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
+	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
+	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
 	// session was the wrong answer.
@@ -672,6 +677,27 @@ type createRequest struct {
 	// Provider names one of the CONFIGURED providers. Never a URL or a key —
 	// see provider.go for why that distinction is load-bearing.
 	Provider string `json:"provider,omitempty"`
+	// Interrupt, on a follow-up to a busy session, stops the running turn and
+	// sends this message as a fresh one instead of queueing it.
+	Interrupt bool `json:"interrupt,omitempty"`
+	// ClientID is the sender's own id for the message, echoed on the
+	// user.message that records it.
+	ClientID string `json:"client_id,omitempty"`
+}
+
+// validClientID keeps a client's id short and plain, since it is recorded.
+func validClientID(id string) bool {
+	if len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type createResponse struct {
@@ -687,6 +713,8 @@ type StartSpec struct {
 	Prompt   string
 	Mode     string
 	Provider string
+	// ClientID is echoed on the first user.message; see createRequest.
+	ClientID string
 	User     string
 	Tenant   string
 	// Unattended means nobody can answer an approval. An "ask" under the
@@ -715,8 +743,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+	if !validClientID(req.ClientID) {
+		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		return
+	}
 	sessionID, err := s.StartSession(r.Context(), StartSpec{
-		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider,
+		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
 		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()),
 	})
 	if err != nil {
@@ -795,6 +827,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	live.cancel = cancel
 	live.cancelCause = cancelCause
 	live.Turns = 1
+	live.ran = make(chan struct{})
 
 	if s.draining.Load() {
 		return "", errDraining
@@ -808,11 +841,11 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	go func() {
 		defer cancel()
 		live.undo.BeginTurn()
-		reason, err := loop.Run(runCtx, spec.Prompt)
+		reason, err := loop.RunMessage(runCtx, agent.Message{Text: spec.Prompt, ClientID: spec.ClientID})
+		for live.settle(runCtx, reason, err) {
+			reason, err = loop.RunQueued(runCtx)
+		}
 		stopBeat()
-		live.mu.Lock()
-		live.State = "done"
-		live.mu.Unlock()
 		s.releaseNode(sessionID)
 		if spec.OnEnd != nil {
 			spec.OnEnd(string(reason), err)
@@ -1175,9 +1208,16 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	// ?after= does what Last-Event-ID does for a client that opens a new
+	// EventSource, which cannot set the header itself.
 	var lastSeq int64
 	if v := r.Header.Get("Last-Event-ID"); v != "" {
 		lastSeq, _ = strconv.ParseInt(v, 10, 64)
+	} else if v := r.URL.Query().Get("after"); v != "" {
+		lastSeq, _ = strconv.ParseInt(v, 10, 64)
+	}
+	if lastSeq < 0 {
+		lastSeq = 0
 	}
 
 	// Replay what was missed before subscribing, so no event is dropped in the
@@ -1203,6 +1243,27 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 
+	// The store drops events for a subscriber that falls behind rather than
+	// stall the loop. Seeing a full buffer, or a gap in seq, means some may
+	// be gone, and they are read back from the record before going on.
+	send := func(batch []agent.Event) (ended bool) {
+		for _, e := range batch {
+			if e.Seq <= lastSeq {
+				continue
+			}
+			lastSeq = e.Seq
+			writeSSE(w, e)
+			ended = ended || e.Type == agent.EvSessionEnded
+		}
+		flusher.Flush()
+		return ended
+	}
+	catchUp := func() bool {
+		missed, err := s.store.Since(id, lastSeq)
+		return err == nil && send(missed)
+	}
+	behind := false
+
 	for {
 		select {
 		case <-r.Context().Done():
@@ -1211,13 +1272,25 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
-			if ev.Seq <= lastSeq {
+			behind = behind || len(events) >= cap(events)-1
+			if ev.Seq > lastSeq+1 {
+				behind = true
+			}
+			if !behind {
+				if send([]agent.Event{ev}) {
+					return
+				}
 				continue
 			}
-			lastSeq = ev.Seq
-			writeSSE(w, ev)
-			flusher.Flush()
-			if ev.Type == agent.EvSessionEnded {
+			// Drain what is buffered first, then read the rest back once.
+			if ev.Seq == lastSeq+1 && send([]agent.Event{ev}) {
+				return
+			}
+			if len(events) > 0 {
+				continue
+			}
+			behind = false
+			if catchUp() {
 				return
 			}
 		case <-keepalive.C:
@@ -1304,6 +1377,11 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+	if !validClientID(req.ClientID) {
+		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		return
+	}
+	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
 
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
@@ -1338,39 +1416,62 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 
 	live.mu.Lock()
 	busy := live.State == "running" || live.State == "waiting_approval"
-	if !busy {
-		live.State = "running"
-		live.Turns++
-	}
-	live.mu.Unlock()
-
-	if busy {
+	if busy && !req.Interrupt {
 		// A message to a working agent steers it rather than being refused.
 		// Interrupting and re-asking throws away everything the run has
 		// already established — the files read, the tool results, the context
 		// built — and makes the user pay for it twice. The message is applied
 		// at the next turn boundary, so a call in flight still completes and
-		// the transcript never shows one with no result.
-		live.Loop.Steer(req.Prompt)
+		// the transcript never shows one with no result. Queued under the
+		// lock, so a run cannot decide to end between the check and the queue.
+		qid := live.Loop.QueueMessage(msg)
+		live.mu.Unlock()
 		WriteJSON(w, http.StatusAccepted, map[string]string{
 			"session_id": id,
 			"delivery":   "steered",
+			"queue_id":   qid,
 		})
 		return
 	}
-
+	if busy {
+		// Send now: stop the running turn, wait for the loop to be free, and
+		// start this one fresh.
+		stop, ran := live.cancel, live.ran
+		live.mu.Unlock()
+		if stop != nil {
+			stop()
+		}
+		if ran != nil {
+			select {
+			case <-ran:
+			case <-time.After(30 * time.Second):
+				WriteError(w, http.StatusConflict, "the running turn did not stop in time")
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+		live.mu.Lock()
+		if live.State != "done" {
+			live.mu.Unlock()
+			WriteError(w, http.StatusConflict, "another turn started first")
+			return
+		}
+	}
+	live.State = "running"
+	live.Turns++
+	live.ran = make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	live.mu.Lock()
 	live.cancel = cancel
 	live.mu.Unlock()
 
 	go func() {
 		defer cancel()
 		live.undo.BeginTurn()
-		reason, err := live.Loop.Continue(ctx, req.Prompt)
-		live.mu.Lock()
-		live.State = "done"
-		live.mu.Unlock()
+		reason, err := live.Loop.RunMessage(ctx, msg)
+		for live.settle(ctx, reason, err) {
+			reason, err = live.Loop.RunQueued(ctx)
+		}
 		if err != nil {
 			s.log.Error("follow-up failed", "session", id, "error", err)
 			return
@@ -1381,11 +1482,70 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
 }
 
+// settle ends a run, unless a message was queued after the loop last looked
+// and the run ended cleanly: then it reports true and the caller runs again.
+func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, err error) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err == nil && ctx.Err() == nil && reason == agent.TermCompleted && len(l.Loop.Queued()) > 0 {
+		return true
+	}
+	l.State = "done"
+	if l.ran != nil {
+		close(l.ran)
+		l.ran = nil
+	}
+	return false
+}
+
+// notRunningHere answers for a session this process is not running: 421 with
+// the node that holds it, as approveAction does, or 404.
+func (s *Server) notRunningHere(w http.ResponseWriter, r *http.Request, id string) {
+	if node := s.elsewhere(r.Context(), id); node != "" {
+		w.Header().Set("Abhed-Session-Node", node)
+		WriteError(w, http.StatusMisdirectedRequest, "this session is running on another node; route by session id")
+		return
+	}
+	WriteError(w, http.StatusNotFound, "session not found")
+}
+
+// listQueue returns the messages waiting for the session's next turn boundary.
+func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
+	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	if !ok {
+		s.notRunningHere(w, r, r.PathValue("id"))
+		return
+	}
+	q := live.Loop.Queued()
+	if q == nil {
+		q = []agent.QueuedMessage{}
+	}
+	WriteJSON(w, http.StatusOK, q)
+}
+
+// cancelQueued withdraws a queued message before the loop reads it. Once it
+// has been delivered it cannot be withdrawn, and the answer is 404.
+func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
+	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	if !ok {
+		s.notRunningHere(w, r, r.PathValue("id"))
+		return
+	}
+	live.mu.Lock()
+	removed := live.Loop.Unqueue(r.PathValue("qid"))
+	live.mu.Unlock()
+	if !removed {
+		WriteError(w, http.StatusNotFound, "no such queued message; it may already have been delivered")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
-		WriteError(w, http.StatusNotFound, "session not found")
+		s.notRunningHere(w, r, r.PathValue("id"))
 		return
 	}
 	live.mu.Lock()

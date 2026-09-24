@@ -31,6 +31,17 @@ func TestIDEPageNeverAssemblesMarkupOrLoadsRemotely(t *testing.T) {
 	}
 }
 
+// Replies are rendered as markdown, and a reply can quote anything the agent
+// read. The renderer builds nodes from text, and links only to web addresses.
+func TestIDEMarkdownIsBuiltFromText(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+`
+	if out, err := runConsoleCases(t, "ide-md", harness, "ide_md_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's markdown renderer failed:\n%s", out)
+	}
+}
+
 func TestIDEIsServedUnderTheConsolesPolicy(t *testing.T) {
 	rec := httptest.NewRecorder()
 	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/ide", nil))

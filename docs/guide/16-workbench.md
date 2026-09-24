@@ -42,6 +42,60 @@ rest — and the permission mode is chosen beside it.
 | ⌘J / Ctrl J | bottom panel |
 | ⌘L / Ctrl L | focus the agent |
 
+## The conversation
+
+A message shows the moment you send it, and a *Thinking…* line with a
+seconds count stays under it until the first word of the reply. When the model
+reports its reasoning, it streams into an open **Thinking** block that closes
+when the reply starts, and reads *thought for 6s · 120 words* afterwards; one
+click opens it again. While a tool runs the line says *Running bash…*, and
+*Compacting context…* while the conversation is summarised.
+
+Replies stream as they are written and are drawn as markdown once complete:
+headings, lists, tables, code blocks and links. The text is built into the page
+as text, never as markup, and only `http`, `https` and `mailto` links are made
+clickable. The panel follows the reply only while you are at the bottom of it;
+scroll up and it stays where you are, with **Jump to latest** to come back. A
+tool call's arguments and output are drawn when you open it, and long output
+shows its first lines until you ask for the rest.
+
+**Sending while the agent works.** Send stays enabled during a run. A message
+sent then is not a reason to cancel the step in progress: it is queued, shown
+below the conversation as *Queued — will be read at the next step*, and the
+agent reads it at the next turn boundary, after the call in flight finishes.
+Until then it has two actions:
+
+| | |
+|---|---|
+| **Send now** | stops the running step and sends the message as a fresh turn |
+| **Cancel** | withdraws it; the agent never sees it |
+
+When the agent reads it, the bubble joins the conversation at that point. A
+message still queued when a run stops is read with your next one. Esc stops a
+run only when pressed twice, so a stray key never costs work; the **Stop**
+button stops it at once.
+
+If the connection drops, the page reconnects and asks only for what it has
+not drawn yet, rather than replaying the session.
+
+| Key | In the composer |
+|---|---|
+| Enter | send, or queue while the agent works |
+| Shift+Enter | new line |
+| Esc, twice | stop the running turn |
+
+The same queue is available to any client: a message posted to a busy session
+answers `202` with `"delivery": "steered"` and a `queue_id`,
+`GET /v1/sessions/{id}/queue` lists what is waiting, and
+`DELETE /v1/sessions/{id}/queue/{qid}` withdraws one. The `user.message` that
+delivers a queued message carries the same id as `queue_id`, and a
+`client_id` sent with any message comes back on its `user.message` too.
+Posting with `"interrupt": true` is Send now. On a server with node routing,
+the queue routes and `/interrupt` answer `421` with `Abhed-Session-Node` for
+a session running on another node. Streamed reasoning is recorded as
+`agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
+text, so a reader that ignores the parts is unaffected.
+
 `@path` in the composer attaches that file's content to the message, with
 completion from the workspace tree as you type. Select code in the editor and
 press ⌘L to ask about exactly those lines.

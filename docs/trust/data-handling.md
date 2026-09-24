@@ -14,6 +14,10 @@ From `store/schema.sql`, on the Postgres storage driver:
 | `checkpoints` | The content of a file immediately before the agent changed it, keyed to the event that changed it — this is what `/undo` reads |
 | `models` | The registry of configured model endpoints and their capability profile |
 
+A model's reasoning, where the endpoint reports it, is in `events` twice: in
+parts as it streamed (`agent.reasoning.delta`) and whole (`agent.reasoning`),
+the way a reply is held as `agent.delta` and `agent.message`.
+
 Accounts (username, email, tenant, groups, bcrypt password hash) are stored
 either in this same Postgres database or, without `storage.driver: postgres`
 configured, in `<workspace>/.abhed/users.json` mode `0600` — or wherever `auth.users_file` (`ABHED_USERS_FILE`) points, which a deployment sets to its state directory so accounts never sit in a workspace

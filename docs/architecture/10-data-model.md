@@ -125,8 +125,14 @@ CLI and web console both consume the same stream over SSE. One implementation.
 
 ```
 POST /v1/sessions                    → {session_id}
-POST /v1/sessions/{id}/messages      → 202, events stream
-GET  /v1/sessions/{id}/events        → SSE (resumable via Last-Event-ID)
+POST /v1/sessions/{id}/messages      → 202, events stream; to a busy session
+                                       {delivery:"steered", queue_id}, or with
+                                       "interrupt":true a fresh turn
+GET  /v1/sessions/{id}/events        → SSE (resumable via Last-Event-ID or ?after=seq)
+GET  /v1/sessions/{id}/queue         → messages waiting for the next turn boundary
+DELETE /v1/sessions/{id}/queue/{qid} → 204, or 404 once the loop has read it
+                                       (these and /interrupt: 421 + Abhed-Session-Node
+                                       for a session on another node)
 POST /v1/sessions/{id}/interrupt     → 204
 POST /v1/sessions/{id}/approve       → {event_id, decision, scope}
 POST /v1/sessions/{id}/compact       → 202
@@ -143,6 +149,7 @@ Wire format:
 ```
 
 `Last-Event-ID` resumption is what makes `/resume` and reconnect-after-network-drop work.
+`?after=` does the same for a client that opens a new `EventSource`, which cannot set the header.
 
 ## 4. Model adapter interface
 

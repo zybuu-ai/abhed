@@ -587,6 +587,43 @@ func TestReasoningIsRecordedButNotReplayedAsHistory(t *testing.T) {
 	}
 }
 
+// Reasoning streams as agent.reasoning.delta before the reply starts, and the
+// parts add up to the whole that agent.reasoning records afterwards.
+func TestReasoningStreamsAheadOfTheReply(t *testing.T) {
+	long := strings.Repeat("weighing the options carefully. ", 12)
+	loop, store := harnessIn(t, tempDir(t), []scriptedTurn{{reasoning: long, text: "4"}}, policy.ModeAuto, true)
+	if _, err := loop.Run(context.Background(), "2+2?"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	var parts strings.Builder
+	var firstDelta, lastThink, whole int64
+	for _, ev := range evs {
+		switch ev.Type {
+		case EvAgentReasoningDelta:
+			var d Delta
+			_ = json.Unmarshal(ev.Payload, &d)
+			parts.WriteString(d.Text)
+			lastThink = ev.Seq
+		case EvAgentDelta:
+			if firstDelta == 0 {
+				firstDelta = ev.Seq
+			}
+		case EvAgentReasoning:
+			whole = ev.Seq
+		}
+	}
+	if parts.String() != long {
+		t.Fatalf("streamed reasoning = %q, want the whole text", parts.String())
+	}
+	if lastThink == 0 || firstDelta == 0 || lastThink > firstDelta {
+		t.Errorf("reasoning parts must precede the reply (last part #%d, first reply delta #%d)", lastThink, firstDelta)
+	}
+	if whole == 0 {
+		t.Error("agent.reasoning is still recorded whole for readers that ignore the parts")
+	}
+}
+
 // A turn with no reasoning must not emit an empty panel.
 func TestNoReasoningEventWhenModelEmitsNone(t *testing.T) {
 	dir := tempDir(t)
@@ -596,7 +633,7 @@ func TestNoReasoningEventWhenModelEmitsNone(t *testing.T) {
 	}
 	evs, _ := store.Events("sess1")
 	for _, ev := range evs {
-		if ev.Type == EvAgentReasoning {
+		if ev.Type == EvAgentReasoning || ev.Type == EvAgentReasoningDelta {
 			t.Fatal("emitted a reasoning event for a turn that had none")
 		}
 	}
