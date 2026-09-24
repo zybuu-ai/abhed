@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -206,14 +209,28 @@ func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd 
 }
 
 // containerShell prefers bash where the image has it.
-const containerShell = `if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; fi; PS1='(sandbox: container) $ ' exec sh -i`
+const containerShell = `if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -l -O huponexit -i; fi; PS1='(sandbox: container) $ ' exec sh -i`
+
+// engineWait bounds a call to the engine made while ending or sweeping
+// shells, so an engine that hangs cannot hold a terminal open.
+const engineWait = 20 * time.Second
+
+// shellLabel marks this server's terminal containers: the host and the
+// workspace, so a restarted server finds the ones it left behind.
+func (c *Container) shellLabel() string {
+	host, _ := os.Hostname()
+	sum := sha256.Sum256([]byte(host + "\x00" + c.policy.Workspace))
+	return "abhed.term=" + hex.EncodeToString(sum[:6])
+}
 
 // Shell starts an interactive shell in a container of its own, with a
 // terminal (-t). The container is named so that ending the shell removes it,
 // even when the engine's CLI is killed before it can.
 func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	name := "abhed-term-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	args := []string{"run", "--rm", "-i", "-t", "--name", name}
+	var nonce [4]byte
+	_, _ = rand.Read(nonce[:])
+	name := "abhed-term-" + strconv.FormatInt(time.Now().UnixNano(), 36) + hex.EncodeToString(nonce[:])
+	args := []string{"run", "--rm", "-i", "-t", "--name", name, "--label", c.shellLabel()}
 	args = append(args, c.runArgs(cwd)[3:]...)
 	for _, kv := range shellEnv(c.Tier()) {
 		args = append(args, "-e", kv)
@@ -223,11 +240,30 @@ func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	cmd.Env = os.Environ()
 	runtime := c.runtime
 	cmd.Cancel = func() error {
-		rm := exec.Command(runtime, "rm", "-f", name) // #nosec G204 -- the configured engine and a name this process made
-		_ = rm.Run()
+		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
+		defer cancel()
+		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
 		return cmd.Process.Kill()
 	}
+	cmd.WaitDelay = hangUpDelay
 	return cmd
+}
+
+// SweepShells removes terminal containers this server left running, as a
+// crash does. Only containers with this server's label are touched.
+func (c *Container) SweepShells() {
+	if ok, _ := c.Available(); !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), engineWait)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, c.runtime, "ps", "-aq", "--filter", "label="+c.shellLabel()).Output() // #nosec G204 -- the configured engine
+	if err != nil {
+		return
+	}
+	if ids := strings.Fields(string(out)); len(ids) > 0 {
+		_ = exec.CommandContext(ctx, c.runtime, append([]string{"rm", "-f"}, ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
+	}
 }
 
 // Backend names the engine, and gVisor's runtime when it is in use.

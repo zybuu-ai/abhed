@@ -1067,6 +1067,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if in, ok := sb.(sandbox.Interactive); ok {
 		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
 	}
+	// Terminal containers a crashed run of this server left behind.
+	if sw, ok := sb.(interface{ SweepShells() }); ok {
+		go sw.SweepShells()
+	}
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
 		tools.Glob{}, tools.Grep{}, bash,

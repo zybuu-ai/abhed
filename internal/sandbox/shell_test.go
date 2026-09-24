@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -92,6 +93,57 @@ func TestProcessSandboxShellIsInteractiveAndConfined(t *testing.T) {
 	}
 }
 
+// Ending a shell ends the jobs it started in the background. An interactive
+// bash gives each its own process group, so killing the shell alone left them
+// running; it is hung up instead, and hangs its jobs up in turn.
+func TestProcessSandboxShellEndsItsBackgroundJobs(t *testing.T) {
+	requireNetNS(t)
+	ws := workspace(t)
+	shellEndsJobs(t, processSandbox(t, ws, false).(Interactive), ws, false)
+}
+
+func TestNoneShellEndsItsBackgroundJobs(t *testing.T) {
+	ws := workspace(t)
+	shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, false)
+	ws = workspace(t)
+	shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, true)
+}
+
+// byExit ends the shell with exit rather than by cancelling it.
+func shellEndsJobs(t *testing.T, s Interactive, ws string, byExit bool) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := s.Shell(ctx, ws)
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, tty) }()
+	_, _ = tty.Write([]byte("(sleep 2; touch late) &\r"))
+	started := filepath.Join(ws, "started")
+	_, _ = tty.Write([]byte("touch started\r"))
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the shell did not run the commands")
+		}
+	}
+	if byExit {
+		_, _ = tty.Write([]byte("exit\r"))
+	} else {
+		cancel()
+	}
+	_ = cmd.Wait()
+	_ = tty.Close()
+	time.Sleep(3 * time.Second)
+	if _, err := os.Stat(filepath.Join(ws, "late")); err == nil {
+		t.Fatal("a background job outlived its shell")
+	}
+}
+
 // The no-sandbox tier's shell says so in its prompt.
 func TestNoneShellNamesItself(t *testing.T) {
 	ws := workspace(t)
@@ -117,7 +169,19 @@ func TestContainerCommandKeepsTheHostEnvironment(t *testing.T) {
 		}
 	}
 	args := c.Shell(context.Background(), ws).Args
-	if !slices.Contains(args, "-t") || !slices.Contains(args, "--network") || !slices.Contains(args, "--read-only") {
-		t.Errorf("the shell's container is missing its terminal or its confinement: %v", args)
+	if !slices.Contains(args, "-t") || !slices.Contains(args, "--network") || !slices.Contains(args, "--read-only") || !slices.Contains(args, c.shellLabel()) {
+		t.Errorf("the shell's container is missing its terminal, label or confinement: %v", args)
+	}
+}
+
+// The host shell does not hand a person the server's own settings, which
+// hold the database URLs and the provider key.
+func TestNoneShellLeavesOutTheServersSettings(t *testing.T) {
+	t.Setenv("ABHED_DATABASE_URL", "postgres://owner:secret@db/abhed")
+	ws := workspace(t)
+	for _, kv := range NewNone(DefaultPolicy(ws)).Shell(context.Background(), ws).Env {
+		if strings.HasPrefix(kv, "ABHED_DATABASE_URL=") {
+			t.Fatalf("the shell has %s", kv)
+		}
 	}
 }

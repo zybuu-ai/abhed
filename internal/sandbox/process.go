@@ -171,7 +171,7 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 // Shell starts a long-lived interactive bash under the same confinement as
 // Command, for a person at a terminal.
 func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	return s.wrap(ctx, cwd, append(s.env(), shellEnv(s.Tier())...), shellArgv...)
+	return hangUp(s.wrap(ctx, cwd, append(s.env(), shellEnv(s.Tier())...), shellArgv...))
 }
 
 // Backend names the mechanism: sandbox-exec or bwrap.
@@ -286,8 +286,8 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shellArgv[0], shellArgv[1:]...) // #nosec G204 -- a fixed argv
 	cmd.Dir = cwd
-	cmd.Env = append(append(os.Environ(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
-	return cmd
+	cmd.Env = append(append(hostEnv(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
+	return hangUp(cmd)
 }
 
 // Backend says there is none.
