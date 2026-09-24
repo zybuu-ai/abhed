@@ -66,7 +66,16 @@ its engine managed as the CLI and server do, applies the configured ask rules,
 and wraps bash in the configured sandbox when the file sets a `sandbox` key.
 The console lets a client narrow its session to `plan` and nothing else. Not
 bound: the `ABHED_*` environment variables, which override the endpoint,
-credentials and database over the managed file, and the choice of model.
+credentials and database over the managed file; the choice of model; and, in
+the SDK, the organisation's `/etc/abhed/ABHED.md` (the SDK loads no memory
+files, and `Options.SystemPrompt` replaces the prompt), `limits.max_budget_tokens`
+and `limits.max_tokens`, which the SDK does not apply. A managed file that
+exists but cannot be read, or a link at the managed path to nothing, stops
+Abhed rather than being taken as absent. `abhed eval`, which approves every
+prompt with nobody to ask, refuses to run under a managed file, and the
+interactive `/mode` command is bound as `-mode` is. The binding covers the
+shipped entry points and programs that load configuration with `config.Load`;
+a `config.Config` built by hand carries no managed keys.
 
 **The agent cannot reach its own configuration.** `.abhed/` in the workspace
 and in the home directory holds the policy, the users file and the keys. The

@@ -129,6 +129,11 @@ All notable changes to Abhed are recorded here. The format follows
   pipeline that ran `abhed doctor` cleanly on 1.0.1 may fail on 1.1.0
   until the key is corrected or removed; the warning names the file and the
   key.
+- **Upgrade note:** a managed file (`/etc/abhed/config.json`) that exists but
+  cannot be read, such as one readable only by root, now stops `abhed` for
+  other users instead of being ignored; so does a link there to nothing.
+- An unknown permission mode given to `-mode` or the SDK's
+  `Options.Mode` is refused; it ran as `default`.
 - The SDK applies the configuration's `permissions.ask` rules, as the CLI and
   server do; it ignored them. This only adds prompts.
 - The reason given when a call is put to a person is accurate for the tool:
@@ -317,10 +322,16 @@ All notable changes to Abhed are recorded here. The format follows
   `sdk.New`, never a silent change. The SDK reads the managed file with or
   without `ConfigDir`, marks its engine managed, and wraps bash in the
   configured sandbox when the managed file sets a `sandbox` key (and fails
-  when no backend meets its `min_tier`). `abhed eval`, which runs in `auto`
-  mode, refuses to run under a managed file that pins another mode. A
-  managed file that exists but cannot be read is an error; it was treated as
-  absent. Without a managed file nothing changes.
+  when no backend meets its `min_tier`). The interactive `/mode` command is
+  bound as `-mode` is. `abhed eval`, which approves every prompt with nobody
+  to ask, refuses to run under a managed file. `abhed resolve` runs in a
+  pinned managed mode unless `-mode` says otherwise. A refusal names the
+  managed file. A managed file that cannot be read, including through a
+  directory that cannot be searched, or a link at the managed path to
+  nothing, is an error; each was treated as absent. Keys in the managed file
+  are matched as the JSON decoder matches them, so one it applies, such as
+  a key spelt with `ſ`, is also bound and is not reported as unknown.
+  Without a managed file nothing changes.
 
 ## [1.0.1] - 2026-09-22
 

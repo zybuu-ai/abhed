@@ -2,7 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -25,10 +28,17 @@ func LoadManaged() (Config, error) {
 // records which settings it made.
 func mergeManaged(cfg *Config) error {
 	path := managed.ConfigFile
-	// Only a missing file means unmanaged; one that cannot be read is an error.
+	// Only nothing at the path means unmanaged; a file that cannot be read,
+	// or a link to nothing, is an error.
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	data, err := readMerge(cfg, path)
-	if err != nil || data == nil {
+	if err != nil {
 		return err
+	}
+	if data == nil {
+		return fmt.Errorf("managed configuration %s is a link to nothing", path)
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
@@ -62,7 +72,7 @@ func walkSet(path string, v any, t reflect.Type, out *[]string) {
 		!reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]()):
 		fields := jsonFields(t)
 		for k, e := range obj {
-			if f, ok := fields[strings.ToLower(k)]; ok && !annotation(k) {
+			if f, ok := fieldFor(fields, k); ok && !annotation(k) {
 				walkSet(join(path, jsonName(f)), e, f.Type, out)
 			}
 		}
@@ -115,49 +125,69 @@ type ManagedError struct {
 	Key    string // the setting, e.g. permissions.mode
 	Value  string // what the caller asked for
 	Reason string
+	File   string // the managed file, whose owner can change the setting
 }
 
 func (e *ManagedError) Error() string {
-	return fmt.Sprintf("%s %s is refused: %s", e.Key, e.Value, e.Reason)
+	return fmt.Sprintf("%s %s is refused: %s (set in %s)", e.Key, e.Value, e.Reason, e.File)
+}
+
+// refuse builds a ManagedError naming the managed file.
+func refuse(key, value, reason string) error {
+	return &ManagedError{Key: key, Value: value, Reason: reason, File: managed.ConfigFile}
+}
+
+// knownMode reports whether m names a permission mode.
+func knownMode(m string) bool {
+	switch m {
+	case "default", "accept-edits", "plan", "auto", "bypass":
+		return true
+	}
+	return false
 }
 
 // Apply returns c with o applied. Deny rules are added. Without a managed
 // configuration every other override replaces or adds to the setting, as it
 // always has; under one, an override may tighten what the managed file set
-// and never loosen it, and bypass mode is refused.
+// and never loosen it, and bypass mode is refused. A managed limits.max_turns
+// of zero or less binds nothing. An unknown mode is an error.
+//
+// The binding is only as good as ManagedKeys: a Config that Load did not
+// build has none, and Apply then refuses nothing.
 func (c Config) Apply(o Overrides) (Config, error) {
 	if o.Mode != "" {
 		switch {
+		case !knownMode(o.Mode):
+			return c, fmt.Errorf("unknown permission mode %q: want default, accept-edits, plan, auto or bypass", o.Mode)
 		case c.ManagedSets("permissions.mode") && o.Mode != c.Permissions.Mode && o.Mode != "plan":
-			return c, &ManagedError{Key: "permissions.mode", Value: o.Mode, Reason: fmt.Sprintf(
-				"the managed configuration sets %q; only that mode or plan may be chosen", c.Permissions.Mode)}
+			return c, refuse("permissions.mode", o.Mode, fmt.Sprintf(
+				"the managed configuration sets %q; only that mode or plan may be chosen", c.Permissions.Mode))
 		case c.Managed && o.Mode == "bypass":
-			return c, &ManagedError{Key: "permissions.mode", Value: o.Mode,
-				Reason: "bypass mode is disabled under a managed configuration"}
+			return c, refuse("permissions.mode", o.Mode, "bypass mode is disabled under a managed configuration")
 		}
 		c.Permissions.Mode = o.Mode
 	}
 	if o.SyntaxCheck != "" {
 		if c.ManagedSets("tools.syntax_check") && syntaxRank(o.SyntaxCheck) < syntaxRank(c.Tools.SyntaxCheck) {
-			return c, &ManagedError{Key: "tools.syntax_check", Value: o.SyntaxCheck, Reason: fmt.Sprintf(
-				"the managed configuration sets %q, which may only be made stricter", orRefuse(c.Tools.SyntaxCheck))}
+			return c, refuse("tools.syntax_check", o.SyntaxCheck, fmt.Sprintf(
+				"the managed configuration sets %q, which may only be made stricter", orRefuse(c.Tools.SyntaxCheck)))
 		}
 		c.Tools.SyntaxCheck = o.SyntaxCheck
 	}
 	if o.MaxTurns > 0 {
 		if c.ManagedSets("limits.max_turns") && c.Limits.MaxTurns > 0 && o.MaxTurns > c.Limits.MaxTurns {
-			return c, &ManagedError{Key: "limits.max_turns", Value: fmt.Sprint(o.MaxTurns), Reason: fmt.Sprintf(
-				"the managed configuration allows at most %d", c.Limits.MaxTurns)}
+			return c, refuse("limits.max_turns", fmt.Sprint(o.MaxTurns), fmt.Sprintf(
+				"the managed configuration allows at most %d", c.Limits.MaxTurns))
 		}
 		c.Limits.MaxTurns = o.MaxTurns
 	}
 	if len(o.Allow) > 0 && c.ManagedSets("permissions.allow") {
-		return c, &ManagedError{Key: "permissions.allow", Value: strings.Join(o.Allow, ","),
-			Reason: "the managed configuration sets the allow rules, which may not be added to"}
+		return c, refuse("permissions.allow", strings.Join(o.Allow, ","),
+			"the managed configuration sets the allow rules, which may not be added to")
 	}
 	if len(o.AdditionalDirs) > 0 && c.ManagedSets("additional_dirs") {
-		return c, &ManagedError{Key: "additional_dirs", Value: strings.Join(o.AdditionalDirs, ","),
-			Reason: "the managed configuration sets the additional directories, which may not be added to"}
+		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
+			"the managed configuration sets the additional directories, which may not be added to")
 	}
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)

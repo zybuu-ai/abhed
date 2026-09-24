@@ -701,9 +701,7 @@ func (c Config) Validate() error {
 	if _, err := p.Adapter(); err != nil {
 		return fmt.Errorf("provider %q: %w", c.Model.Default, err)
 	}
-	switch c.Permissions.Mode {
-	case "default", "accept-edits", "plan", "auto", "bypass", "":
-	default:
+	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {

@@ -241,7 +241,21 @@ else. Without a managed file, flags and options apply as they always have.
 `config.Config.ManagedKeys` lists what the managed file set, as dotted paths
 (`permissions.mode`, `model.providers.onprem`), and `ManagedSets` asks about
 one. `Config.Apply` lays overrides over a configuration by these rules, so a
-program that loads configuration itself can honour them the same way.
+program that loads configuration itself can honour them the same way; a
+`Config` built by hand, not by `config.Load` or `config.LoadManaged`, records
+no managed keys and is bound by nothing. A managed `limits.max_turns` of zero
+or less binds nothing. A permission mode that is not one of `default`,
+`accept-edits`, `plan`, `auto` or `bypass` is refused, managed file or not.
+
+The interactive `/mode` command is bound as `-mode` is. `abhed resolve` runs
+in `auto` unless told otherwise, but under a managed file that pins a mode it
+runs in that mode; an explicit `-mode` is judged as given. `abhed eval`
+approves every prompt with nobody to ask, so it refuses to run under any
+managed file.
+
+A managed file that exists but cannot be read, including one in a directory
+that cannot be searched, or a link at the managed path that points nowhere,
+is an error: Abhed stops rather than run unmanaged.
 
 The environment variables in step 4 still apply over the managed file: they
 name a deployment's endpoint and credentials, which whoever runs the process

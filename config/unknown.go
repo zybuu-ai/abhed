@@ -97,7 +97,7 @@ func walkUnknown(file, path string, v any, t reflect.Type, out *[]UnknownKey) {
 				}
 				p := join(path, k)
 				// encoding/json matches a key to a field regardless of case.
-				f, ok := fields[strings.ToLower(k)]
+				f, ok := fieldFor(fields, k)
 				if !ok {
 					*out = append(*out, UnknownKey{File: file, Path: p, Suggest: suggest(path, k, val[k], fields)})
 					continue
@@ -149,6 +149,20 @@ func jsonFields(t reflect.Type) map[string]reflect.StructField {
 		fields[strings.ToLower(name)] = f
 	}
 	return fields
+}
+
+// fieldFor finds the field a key decodes into. encoding/json folds case as
+// strings.EqualFold does, so ſ matches s and the Kelvin sign k.
+func fieldFor(fields map[string]reflect.StructField, key string) (reflect.StructField, bool) {
+	if f, ok := fields[strings.ToLower(key)]; ok {
+		return f, true
+	}
+	for name, f := range fields {
+		if strings.EqualFold(name, key) {
+			return f, true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 // suggest names the known key an unknown one was probably meant to be: an

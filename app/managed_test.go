@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -81,11 +82,21 @@ func TestFlagsWithoutManagedConfigAreUnchanged(t *testing.T) {
 	}
 }
 
-// An eval runs in auto mode, which a managed configuration that pins another refuses.
-func TestEvalHonoursAManagedMode(t *testing.T) {
-	managedConfig(t, `{"permissions": {"mode": "default"}}`)
-	if code := evalCmd(t.TempDir(), t.TempDir(), ""); code == 0 {
-		t.Error("an eval ran in auto mode under a managed configuration that pins default")
+// An eval approves every prompt unattended, so any managed file refuses it,
+// whether or not it pins a mode.
+func TestEvalIsRefusedUnderAManagedFile(t *testing.T) {
+	for _, body := range []string{`{"permissions": {"mode": "default"}}`, `{"permissions": {"deny": ["bash(curl*)"]}}`} {
+		managedConfig(t, body)
+		cfg, err := config.Load(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := evalAllowed(cfg); err == nil || !strings.Contains(err.Error(), "refused under the managed configuration "+managed.ConfigFile) {
+			t.Errorf("%s: %v", body, err)
+		}
+		if code := evalCmd(t.TempDir(), t.TempDir(), ""); code == 0 {
+			t.Errorf("%s: an eval ran under a managed file", body)
+		}
 	}
 	managedConfig(t, "")
 	if code := evalCmd(t.TempDir(), t.TempDir(), ""); code != 0 {

@@ -38,6 +38,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -734,6 +735,21 @@ func (c *cliState) accumulate(u agent.Usage) {
 	c.total.Compactions += u.Compactions
 }
 
+// switchMode is /mode. The managed configuration binds it as it binds -mode,
+// and bypass is never offered mid-session.
+func switchMode(cfg config.Config, pol *policy.Engine, arg string) error {
+	switch policy.Mode(arg) {
+	case policy.ModeDefault, policy.ModeAcceptEdits, policy.ModePlan, policy.ModeAuto:
+	default:
+		return fmt.Errorf("unknown mode %q", arg)
+	}
+	if _, err := cfg.Apply(config.Overrides{Mode: arg}); err != nil {
+		return err
+	}
+	pol.Mode = policy.Mode(arg)
+	return nil
+}
+
 func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState) bool {
 	s := r.Style()
@@ -753,14 +769,11 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			fmt.Printf("  current mode: %s\n", pol.Mode)
 			return false
 		}
-		m := policy.Mode(fields[1])
-		switch m {
-		case policy.ModeDefault, policy.ModeAcceptEdits, policy.ModePlan, policy.ModeAuto:
-			pol.Mode = m
-			fmt.Printf("  mode: %s\n", m)
-		default:
-			fmt.Printf("  %s unknown mode %q\n", s.Red("✕"), fields[1])
+		if err := switchMode(st.appCfg, pol, fields[1]); err != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), err)
+			return false
 		}
+		fmt.Printf("  mode: %s\n", pol.Mode)
 
 	case "/cost":
 		u := st.total
@@ -1311,6 +1324,16 @@ func fanIn(taps []func(agent.Event)) func(agent.Event) {
 	}
 }
 
+// evalAllowed refuses an eval under a managed configuration: it approves
+// every prompt with nobody to ask, which is more than bypass.
+func evalAllowed(cfg config.Config) error {
+	if cfg.Managed {
+		return fmt.Errorf("eval approves every prompt with nobody to ask, which is refused "+
+			"under the managed configuration %s; run it where there is none", managed.ConfigFile)
+	}
+	return nil
+}
+
 // evalAllow lets corpora that compile and test code do so unattended.
 var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls*)"}
 
@@ -1325,10 +1348,8 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
-	// An eval runs unattended in auto mode with build-tool allow rules, which
-	// a managed configuration may forbid like any other override.
-	if _, err := cfg.Apply(config.Overrides{Mode: "auto", Allow: evalAllow}); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: eval: %v\n", err)
+	if err := evalAllowed(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
 	provider, err := cfg.Provider()
@@ -1382,7 +1403,6 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		}
 
 		pol := policy.New(policy.ModeAuto)
-		pol.Managed = cfg.Managed
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the
 		// same way a real session is. The build-tool defaults stay for corpora

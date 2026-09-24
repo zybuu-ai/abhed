@@ -78,5 +78,17 @@ and ask rules apply. If it sets any `sandbox` key, bash runs in the sandbox
 that setting selects, and `New` fails when no backend meets `sandbox.min_tier`;
 otherwise the SDK builds no sandbox and bash runs as the embedding process.
 
-`Provider` and `SetModel` are not bound by the managed file: they name any
-endpoint, as a user's own config file may.
+Not bound by the managed file:
+
+- `Provider` and `SetModel`, which name any endpoint, as a user's own config
+  file may.
+- The organisation's `/etc/abhed/ABHED.md`: the SDK loads no memory files, so
+  an embedded agent never sees it, and `SystemPrompt` replaces the built-in
+  prompt entirely.
+- `limits.max_budget_tokens` and `limits.max_tokens`, which the SDK does not
+  apply at all.
+
+The binding holds for the shipped entry points (the CLI, the server, the SDK)
+and for any program that builds its configuration with `config.Load` or
+`config.LoadManaged`. A `config.Config` built by hand records no managed keys,
+and `Apply` then refuses nothing.

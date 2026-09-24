@@ -147,7 +147,8 @@ func TestManagedAllowAndTurnsBind(t *testing.T) {
 	}
 }
 
-// A managed sandbox setting wraps bash, where otherwise it runs bare.
+// A managed sandbox setting wraps bash, where otherwise it runs bare. This
+// proves the wrapper is installed; internal/sandbox tests the isolation.
 func TestManagedSandboxBinds(t *testing.T) {
 	managedFile(t, `{"sandbox": {"min_tier": "none"}}`)
 	as, errs := newAgents(t, Options{})

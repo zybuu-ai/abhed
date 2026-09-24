@@ -39,13 +39,24 @@ var newResolveRunner = func(ctx context.Context, opts abhed.Options) (forge.Runn
 	}, nil
 }
 
+// resolveMode is the run's mode. The default, auto, yields to a mode the
+// managed configuration pins; a mode asked for by flag is judged as given.
+func resolveMode(cfg config.Config, fs *flag.FlagSet, mode string) string {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "mode" })
+	if !set && cfg.ManagedSets("permissions.mode") {
+		return ""
+	}
+	return mode
+}
+
 func resolveCmd(workspace string, args []string) int {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	kind := fs.String("kind", "", "github, gitlab or gitea; inferred from the host when empty")
 	base := fs.String("base", "", "branch the pull request targets (default: the repository's default branch)")
 	remote := fs.String("remote", "origin", "git remote to push to")
 	ca := fs.String("ca", os.Getenv("ABHED_FORGE_CA"), "PEM file with the certificate authority of a self-hosted forge")
-	mode := fs.String("mode", "auto", "permission mode for the run")
+	mode := fs.String("mode", "auto", "permission mode for the run; a mode the managed configuration pins replaces the default")
 	allow := fs.String("allow", "", "comma-separated allow rules for the run, e.g. 'bash(go test*)'")
 	yes := fs.Bool("y", false, "open the pull request without asking (an allow rule forge_pr(*) does the same)")
 	fs.Usage = func() {
@@ -71,6 +82,7 @@ func resolveCmd(workspace string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	*mode = resolveMode(cfg, fs, *mode)
 	opts := forge.Options{Kind: *kind, CAFile: *ca}
 	if opts.Kind != "" {
 		opts.Token = tokenFor(opts.Kind)
