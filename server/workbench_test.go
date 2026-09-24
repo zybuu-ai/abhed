@@ -24,6 +24,7 @@ import (
 // owned by tenant acme.
 type workbench struct {
 	t         *testing.T
+	s         *Server
 	h         http.Handler
 	workspace string
 	session   string
@@ -41,7 +42,7 @@ func newWorkbench(t *testing.T, edit func(*config.Config)) *workbench {
 		Workspace: dir, Config: cfg, Adapter: stubAdapter{},
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Glob{}),
 	})
-	wb := &workbench{t: t, h: s.Handler(), workspace: dir}
+	wb := &workbench{t: t, s: s, h: s.Handler(), workspace: dir}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/sessions", strings.NewReader(`{"prompt":"work"}`))

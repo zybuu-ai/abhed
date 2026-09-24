@@ -1,74 +1,30 @@
-import { basicSetup, EditorView } from "codemirror";
-import { EditorState, Compartment } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
-import { indentWithTab } from "@codemirror/commands";
-import { StreamLanguage } from "@codemirror/language";
-import { go } from "@codemirror/lang-go";
-import { python } from "@codemirror/lang-python";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { yaml } from "@codemirror/lang-yaml";
-import { html } from "@codemirror/lang-html";
-import { css } from "@codemirror/lang-css";
-import { rust } from "@codemirror/lang-rust";
-import { sql } from "@codemirror/lang-sql";
-import { shell } from "@codemirror/legacy-modes/mode/shell";
-import { toml } from "@codemirror/legacy-modes/mode/toml";
-import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
-import { MergeView, unifiedMergeView, getOriginalDoc, acceptChunk, rejectChunk, getChunks, updateOriginalDoc } from "@codemirror/merge";
-import { oneDark } from "@codemirror/theme-one-dark";
+import * as monaco from "monaco-editor";
 
-const byExtension = {
-  go: () => go(),
-  py: () => python(),
-  js: () => javascript(),
-  mjs: () => javascript(),
-  cjs: () => javascript(),
-  jsx: () => javascript({ jsx: true }),
-  ts: () => javascript({ typescript: true }),
-  tsx: () => javascript({ typescript: true, jsx: true }),
-  json: () => json(),
-  md: () => markdown(),
-  yaml: () => yaml(),
-  yml: () => yaml(),
-  html: () => html(),
-  htm: () => html(),
-  css: () => css(),
-  rs: () => rust(),
-  sql: () => sql(),
-  sh: () => StreamLanguage.define(shell),
-  bash: () => StreamLanguage.define(shell),
-  zsh: () => StreamLanguage.define(shell),
-  toml: () => StreamLanguage.define(toml),
+// Workers are same-origin files beside this bundle, so the page's CSP needs
+// no blob: or eval. Each language service runs in its own worker.
+const workers = {
+  json: "json",
+  css: "css", scss: "css", less: "css",
+  html: "html", handlebars: "html", razor: "html",
+  typescript: "ts", javascript: "ts",
+};
+self.MonacoEnvironment = {
+  getWorker(_, label) {
+    return new Worker("/ide/vendor/" + (workers[label] || "editor") + ".worker.js", { name: label });
+  },
 };
 
-const byName = {
-  dockerfile: () => StreamLanguage.define(dockerFile),
-};
-
-// Picks a language extension from the file name; null when none applies.
-function languageFor(path) {
-  if (typeof path !== "string") return null;
-  const name = path.split("/").pop().toLowerCase();
-  const named = byName[name];
-  if (named) return named();
-  const dot = name.lastIndexOf(".");
-  if (dot < 0) return null;
-  const make = byExtension[name.slice(dot + 1)];
-  return make ? make() : null;
-}
+// Language servers (go to definition, hover, diagnostics) are not wired yet.
+// A provider registered here is attached to each model the workbench opens.
+const languageServers = new Map();
 
 window.AbhedEditor = {
-  getOriginalDoc, acceptChunk, rejectChunk, getChunks, updateOriginalDoc,
-  EditorView,
-  EditorState,
-  Compartment,
-  basicSetup,
-  keymap,
-  indentWithTab,
-  oneDark,
-  MergeView,
-  unifiedMergeView,
-  languageFor,
+  monaco,
+  // registerLanguageServer(languageId, {attach(model, editor) -> {dispose()}})
+  registerLanguageServer(languageId, provider) { languageServers.set(languageId, provider); },
+  // attachLanguageServer returns a disposable, a no-op when none is registered.
+  attachLanguageServer(model, editor) {
+    const p = languageServers.get(model.getLanguageId());
+    return (p && p.attach(model, editor)) || { dispose() {} };
+  },
 };

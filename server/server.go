@@ -211,12 +211,14 @@ type Options struct {
 
 // Server holds live sessions and serves the API.
 type Server struct {
-	opts     Options
-	store    EventStore
-	sessions SessionRecorder // nil when the store is not durable
-	log      *slog.Logger
-	mu       sync.RWMutex
-	running  map[string]*liveSession
+	opts Options
+	// searching counts the workspace searches running per session.
+	searching sync.Map
+	store     EventStore
+	sessions  SessionRecorder // nil when the store is not durable
+	log       *slog.Logger
+	mu        sync.RWMutex
+	running   map[string]*liveSession
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
@@ -343,6 +345,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/changes", s.changesSession)
 	mux.HandleFunc("PUT /v1/sessions/{id}/file", s.saveFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/exec", s.execCommand)
+	mux.HandleFunc("POST /v1/sessions/{id}/folder", s.createFolder)
+	mux.HandleFunc("POST /v1/sessions/{id}/rename", s.renamePath)
+	mux.HandleFunc("POST /v1/sessions/{id}/delete", s.deletePath)
+	mux.HandleFunc("GET /v1/sessions/{id}/search", s.searchSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)

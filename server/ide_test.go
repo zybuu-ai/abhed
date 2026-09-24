@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -49,13 +52,16 @@ func TestIDEIsServedUnderTheConsolesPolicy(t *testing.T) {
 		t.Fatalf("GET /ide = %d", rec.Code)
 	}
 	csp := rec.Header().Get("Content-Security-Policy")
-	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'"} {
+	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'", "font-src 'self';"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP %q is missing %q", csp, want)
 		}
 	}
-	if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "http") {
-		t.Errorf("CSP was loosened: %q", csp)
+	// The editor's workers are same-origin files, so neither blob: nor worker-src is needed.
+	for _, loose := range []string{"unsafe-eval", "http", "blob:", "worker-src", "*"} {
+		if strings.Contains(csp, loose) {
+			t.Errorf("CSP was loosened with %q: %q", loose, csp)
+		}
 	}
 }
 
@@ -142,7 +148,9 @@ func TestIDEAndCapabilitiesNeedSignIn(t *testing.T) {
 func TestIDEVendorServesOnlyEmbeddedFiles(t *testing.T) {
 	h := testServer(t).Handler()
 	for path, want := range map[string]int{
-		"/ide/vendor/editor.js": http.StatusOK, "/ide/vendor/xterm.css": http.StatusOK,
+		"/ide/vendor/editor.js": http.StatusOK, "/ide/vendor/editor.css": http.StatusOK,
+		"/ide/vendor/codicon.ttf": http.StatusOK, "/ide/vendor/editor.worker.js": http.StatusOK,
+		"/ide/vendor/json.worker.js": http.StatusOK, "/ide/vendor/xterm.css": http.StatusOK,
 		"/ide/vendor/NOTICE": http.StatusOK, "/ide/vendor/missing.js": http.StatusNotFound,
 		"/ide/vendor/..%2Fide.html": http.StatusNotFound,
 	} {
@@ -154,5 +162,77 @@ func TestIDEVendorServesOnlyEmbeddedFiles(t *testing.T) {
 		if rec.Code == http.StatusOK && rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 			t.Errorf("%s served without nosniff", path)
 		}
+	}
+}
+
+// Components go out gzipped to a client that takes it and plain to one that
+// does not, the same bytes either way, each encoding with its own ETag.
+func TestIDEVendorServesBothEncodings(t *testing.T) {
+	h := testServer(t).Handler()
+	get := func(enc, etag string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/ide/vendor/editor.worker.js", nil)
+		if enc != "" {
+			req.Header.Set("Accept-Encoding", enc)
+		}
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	zipped, plain, refused := get("br, gzip;q=0.8", ""), get("", ""), get("gzip;q=0", "")
+	if zipped.Header().Get("Content-Encoding") != "gzip" || plain.Header().Get("Content-Encoding") != "" || refused.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("encodings: %q %q %q", zipped.Header().Get("Content-Encoding"), plain.Header().Get("Content-Encoding"), refused.Header().Get("Content-Encoding"))
+	}
+	zr, err := gzip.NewReader(zipped.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unzipped, _ := io.ReadAll(zr)
+	if !bytes.Equal(unzipped, plain.Body.Bytes()) || len(unzipped) == 0 {
+		t.Fatal("the two encodings do not carry the same file")
+	}
+	for _, rec := range []*httptest.ResponseRecorder{zipped, plain} {
+		if rec.Header().Get("Vary") != "Accept-Encoding" {
+			t.Errorf("Vary = %q", rec.Header().Get("Vary"))
+		}
+		// A worker takes its policy from its own response.
+		if csp := rec.Header().Get("Content-Security-Policy"); csp != "default-src 'none'; script-src 'self'" {
+			t.Errorf("worker CSP = %q", csp)
+		}
+	}
+	zTag, pTag := zipped.Header().Get("ETag"), plain.Header().Get("ETag")
+	if zTag == "" || zTag == pTag {
+		t.Fatalf("ETags must differ per encoding: %q %q", zTag, pTag)
+	}
+	if get("gzip", zTag).Code != http.StatusNotModified || get("gzip", pTag).Code != http.StatusOK {
+		t.Fatal("revalidation does not follow the encoding")
+	}
+}
+
+// Every component in the binary is a gzip stream that unpacks: a damaged one
+// would fail only for the client that cannot take gzip.
+func TestIDEVendorEveryComponentUnpacks(t *testing.T) {
+	entries, err := ideVendor.ReadDir("ide/vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".gz") {
+			continue
+		}
+		seen++
+		f, ok := vendorAsset(strings.TrimSuffix(e.Name(), ".gz"))
+		if !ok {
+			t.Fatalf("%s is embedded but not served", e.Name())
+		}
+		if plain, _, err := f.unpacked(); err != nil || len(plain) == 0 {
+			t.Errorf("%s does not unpack: %v", e.Name(), err)
+		}
+	}
+	if seen < 10 {
+		t.Fatalf("only %d components embedded", seen)
 	}
 }

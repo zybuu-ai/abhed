@@ -6,6 +6,7 @@
 <title>Abhed</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/ide/vendor/xterm.css">
+<link rel="stylesheet" href="/ide/vendor/editor.css">
 <script src="/ide/vendor/editor.js"></script>
 <script src="/ide/vendor/xterm.js"></script>
 <script src="/ide/vendor/addon-fit.js"></script>
@@ -88,8 +89,31 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .row[aria-current="true"]{background:var(--accent-soft)}
 .row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .meta{font:11px var(--mono);color:var(--muted);flex:none}
-.tree .row{font-family:var(--mono);font-size:12px}
+.tree .row{font-family:var(--mono);font-size:12px;gap:4px;min-height:22px;padding-top:2px;padding-bottom:2px}
 .tw{width:10px;flex:none;color:var(--muted);font-size:9px}
+.tree .tw.codicon{width:16px;font-size:14px}
+.tree .row.sel{background:var(--accent-soft);box-shadow:inset 1px 0 0 var(--accent)}
+.tree .ren{flex:1;min-width:0;font:12px var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--accent);border-radius:3px;padding:1px 4px}
+.vhead .ico{padding:3px;display:grid;place-items:center}.vhead .ico .codicon{font-size:16px}
+#ctx{position:fixed;z-index:20;min-width:190px;padding:4px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+#ctx button{display:flex;justify-content:space-between;gap:16px;width:100%;padding:5px 10px;border-radius:4px;text-align:left;font-size:12.5px}
+#ctx button:hover,#ctx button:focus-visible{background:var(--accent-soft);outline:none}
+#ctx kbd{border:0;background:none}
+#ctx hr{border:0;border-top:1px solid var(--line);margin:4px 2px}
+#sbox{padding:0 12px 8px;flex:none}
+.sfield{display:flex;align-items:center;gap:2px;border:1px solid var(--line-strong);border-radius:5px;background:var(--bg);padding:0 3px 0 0}
+.sfield:focus-within{border-color:var(--accent)}
+#sq{flex:1;min-width:0;border:0;background:transparent;color:var(--ink);font:12.5px var(--sans);padding:6px 8px}
+#sq:focus-visible{outline:none}
+.tog{width:22px;height:22px;border-radius:4px;display:grid;place-items:center;color:var(--muted)}
+.tog:hover{background:var(--sunken)}.tog[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+#s-sum{margin-top:6px;font-size:11.5px}
+#sres .sfile{font-size:12px;gap:4px;min-height:22px;padding-left:8px}
+#sres .sfile .d{color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#sres .sfile .name{flex:none;max-width:60%}
+#sres .sfile .c{margin-left:auto;font:10px var(--mono);padding:1px 6px;border-radius:8px;background:var(--sunken);color:var(--ink-2)}
+#sres .smatch{padding-left:30px;min-height:22px;font:12px var(--mono)}
+#sres mark{background:var(--warn-bg);color:var(--ink);box-shadow:0 0 0 1px var(--warn);border-radius:2px}
 .st{width:14px;flex:none;font:600 11px var(--mono);text-align:center}
 .st.M{color:var(--warn)}.st.A{color:var(--add)}.st.D{color:var(--del)}
 .plus{color:var(--add)}.minus{color:var(--del)}
@@ -132,20 +156,27 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .tab .k{font-size:10px;padding:1px 4px;border-radius:3px;background:var(--hunk-bg);color:var(--accent)}
 #crumbs{height:24px;flex:none;display:flex;align-items:center;gap:6px;padding:0 14px;font:11px var(--mono);color:var(--muted);border-bottom:1px solid var(--line);background:var(--bg);white-space:nowrap;overflow:hidden}
 #crumbs .sp{flex:1}
-#editor{flex:1;min-height:0;overflow:auto;background:var(--bg)}
+#crumb{display:flex;align-items:center;gap:2px;min-width:0;overflow:hidden}
+#crumb .sep{font-size:12px;opacity:.7}#crumb .leaf{color:var(--ink)}
+#crumb-pos{margin-left:12px}
+#editor{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+#editor .notebox{flex:1;min-height:0;overflow:auto}
+#editor .mhost{flex:1;min-height:0}
+/* Raised over the editor's text layer, which otherwise takes every click in a zone. */
+.hunkbar{position:relative;z-index:5;display:flex;gap:6px;align-items:center;height:100%;padding-left:10px;font:11px var(--sans);color:var(--muted);pointer-events:none}
+.hunkbar button{pointer-events:auto;border:1px solid var(--line-strong);border-radius:4px;padding:0 8px;height:19px;background:var(--surface);color:var(--ink);font:11px var(--sans)}
+.hunkbar button.ok{color:var(--add);border-color:var(--add)}.hunkbar button.no{color:var(--del);border-color:var(--del)}
+.hunkbar button:hover{filter:brightness(1.1);background:var(--sunken)}
 .code{display:grid;grid-template-columns:auto minmax(0,1fr);font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
 .code .ln{padding:0 12px 0 16px;text-align:right;color:var(--muted);user-select:none;font-variant-numeric:tabular-nums;opacity:.7;white-space:pre}
 .code .tx{padding-right:24px;white-space:pre;tab-size:4}
 .tab .dot{color:var(--warn,#e0a23b);margin-left:2px}
-.cm-host{height:100%}.cm-host .cm-editor{height:100%;background:var(--bg)}.cm-host .cm-scroller{font:12.5px/1.6 var(--mono)}
-.cm-host .cm-gutters{background:var(--bg);border-right:1px solid var(--line)}
-.cm-host .cm-editor.cm-focused{outline:none}
-.cm-host .cm-mergeButtons button, .cm-host .cm-chunkButtons button{font:11px var(--sans);border:1px solid var(--line);border-radius:4px;padding:1px 7px;margin:0 2px;cursor:pointer;background:var(--surface);color:var(--ink)}
-.cm-host .cm-chunkButtons button[name=accept], .cm-host .cm-mergeButtons button[name=accept]{color:var(--add);border-color:var(--add)}
-.cm-host .cm-chunkButtons button[name=reject], .cm-host .cm-mergeButtons button[name=reject]{color:var(--del);border-color:var(--del)}
-#review{display:flex;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line);font:12px var(--sans);color:var(--muted);flex:none}
-#review button{font:11px var(--sans);border:1px solid var(--line);border-radius:4px;padding:2px 9px;cursor:pointer;background:var(--surface);color:var(--ink)}
+#review{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line);font:12px var(--sans);color:var(--muted);flex:none}
+#review>*{flex:none}
+#review .what{flex:1 1 160px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#review button{white-space:nowrap;font:11px var(--sans);border:1px solid var(--line);border-radius:4px;padding:2px 9px;cursor:pointer;background:var(--surface);color:var(--ink)}
 #review button.ok{color:var(--add);border-color:var(--add)}#review button.no{color:var(--del);border-color:var(--del)}
+#review button.ico{padding:1px 4px;display:grid;place-items:center}
 #p-terminal{padding:0;overflow:hidden;background:var(--bg)}#p-terminal .xterm{height:100%;padding:4px 0 0 8px}
 .cmd .who{color:var(--muted);font-size:11px;margin-left:6px}
 .call .mine{flex:none;color:var(--muted);font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 5px}
@@ -305,6 +336,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   <nav id="act" aria-label="Views">
     <button type="button" data-view="sessions" title="Sessions" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
     <button type="button" data-view="explorer" title="Explorer" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h7l2 2h9v11H3z"/></svg></button>
+    <button type="button" data-view="search" title="Search" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg></button>
     <button type="button" data-view="changes" title="Changes" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 7.2v9.6M18 11.2c0 4-12 1.5-12 5.6"/></svg><span class="badge" id="b-changes" hidden></span></button>
     <button type="button" data-view="tools" title="Tools and permissions" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3 18l3 3 6.2-6.2a4 4 0 0 0 5.3-5.3l-2.6 2.6-2.4-.6-.6-2.4z"/></svg></button>
     <button type="button" data-view="extensions" title="Extensions, MCP servers and skills" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h7v7H4zM13 13h7v7h-7zM4 13h7v7H4zM16.5 3.5l4 4-4 4-4-4z"/></svg></button>
@@ -320,8 +352,26 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
       <div class="vbody" id="sessions"></div>
     </section>
     <section class="view" id="v-explorer">
-      <div class="vhead">Explorer<span class="sp"></span><button type="button" id="tree-reload" title="Reload">reload</button></div>
+      <div class="vhead">Explorer<span class="sp"></span>
+        <button type="button" class="ico" id="tree-newfile" title="New file" aria-label="New file"><span class="codicon codicon-new-file"></span></button>
+        <button type="button" class="ico" id="tree-newfolder" title="New folder" aria-label="New folder"><span class="codicon codicon-new-folder"></span></button>
+        <button type="button" class="ico" id="tree-collapse" title="Collapse folders" aria-label="Collapse folders"><span class="codicon codicon-collapse-all"></span></button>
+        <button type="button" class="ico" id="tree-reload" title="Reload" aria-label="Reload"><span class="codicon codicon-refresh"></span></button></div>
+      <div class="empty" id="tree-msg" role="status" hidden></div>
       <div class="vbody tree" id="tree"></div>
+    </section>
+    <section class="view" id="v-search" hidden>
+      <div class="vhead">Search<span class="sp"></span><button type="button" class="ico" id="search-clear" title="Clear results" aria-label="Clear results"><span class="codicon codicon-clear-all"></span></button></div>
+      <div id="sbox">
+        <div class="sfield">
+          <input id="sq" placeholder="Search the workspace" aria-label="Search the workspace" autocomplete="off" spellcheck="false">
+          <button type="button" class="tog" id="s-case" title="Match case" aria-pressed="false"><span class="codicon codicon-case-sensitive"></span></button>
+          <button type="button" class="tog" id="s-word" title="Match whole word" aria-pressed="false"><span class="codicon codicon-whole-word"></span></button>
+          <button type="button" class="tog" id="s-regex" title="Use regular expression (RE2)" aria-pressed="false"><span class="codicon codicon-regex"></span></button>
+        </div>
+        <div id="s-sum" class="dim"></div>
+      </div>
+      <div class="vbody" id="sres"></div>
     </section>
     <section class="view" id="v-changes" hidden>
       <div class="vhead">Changes<span class="sp"></span><button type="button" id="changes-reload">reload</button></div>
@@ -344,7 +394,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 
   <main id="center">
     <div id="tabs" role="tablist"></div>
-    <div id="crumbs"><span id="crumb"></span><span class="sp"></span><span id="crumb-meta"></span></div>
+    <div id="crumbs"><span id="crumb"></span><span class="sp"></span><span id="crumb-meta"></span><span id="crumb-pos"></span></div>
     <div id="editor"></div>
     <div id="split-panel" class="split" role="separator" aria-orientation="horizontal"></div>
     <section id="panel">
@@ -389,6 +439,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 </div>
 
 <div id="pal" hidden><div class="box" role="dialog" aria-label="Command palette"><input id="palq" placeholder="Type a command, a file or a session" autocomplete="off" spellcheck="false"><div id="pall"></div></div></div>
+<div id="ctx" role="menu" hidden></div>
 
 <script>
 'use strict';
@@ -430,6 +481,7 @@ function setView(name){
   if(name === 'changes') loadChanges();
   if(name === 'hawkeye') loadHawkeye();
   if(name === 'explorer' && !$('tree').firstChild) loadTree('', $('tree'), 0);
+  if(name === 'search') setTimeout(() => { $('sq').focus(); $('sq').select(); });
 }
 document.querySelectorAll('#act button[data-view]').forEach(b => b.addEventListener('click', () => {
   const same = b.getAttribute('aria-pressed') === 'true' && !$('app').classList.contains('noside');
@@ -448,7 +500,7 @@ applyTheme(store.get('theme', ''));
 $('theme').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches;
   const next = dark ? 'light' : 'dark'; applyTheme(next); store.set('theme', next);
-  const t = tabs.find(x => x.id === active); if(t && t.view) showTab(t);
+  editorTheme();
   term.options.theme = next === 'dark' ? {background:'#00000000', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'} : {background:'#00000000', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
 });
 
@@ -473,17 +525,97 @@ dragSplit($('split-agent'), '--agent', 'x', -1, 300, () => window.innerWidth * .
 dragSplit($('split-panel'), '--panel', 'y', -1, 90, () => window.innerHeight * .7);
 
 /* ---------------------------------------------------------------- tabs + editor */
-function openTab(t){
+// One editor for files and one diff editor for review, each tab holding its own
+// model, so switching tabs keeps undo history, cursor and scroll.
+const E = window.AbhedEditor, M = E.monaco;
+const modKey = k => (isMac ? '⌘' : 'Ctrl ') + k;
+const edPane = $('editor'), noteBox = el('div', 'notebox'), reviewBar = el('div'), codeHost = el('div', 'mhost'), diffHost = el('div', 'mhost');
+reviewBar.id = 'review'; edPane.append(noteBox, reviewBar, codeHost, diffHost);
+let code = null, diff = null, uriSeq = 0, diffInline = store.get('diff.inline', '') === '1';
+function isDark(){ const t = document.documentElement.dataset.theme; return t ? t === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches; }
+M.editor.defineTheme('abhed-light', {base:'vs', inherit:true, rules:[], colors:{'editor.background':'#F4F6FA', 'minimap.background':'#F4F6FA', 'editorGutter.background':'#F4F6FA'}});
+M.editor.defineTheme('abhed-dark', {base:'vs-dark', inherit:true, rules:[], colors:{'editor.background':'#070B12', 'minimap.background':'#070B12', 'editorGutter.background':'#070B12'}});
+const editorTheme = () => M.editor.setTheme(isDark() ? 'abhed-dark' : 'abhed-light');
+editorTheme(); matchMedia('(prefers-color-scheme:dark)').addEventListener('change', editorTheme);
+const editorOptions = {
+  automaticLayout:true, fontFamily:'"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace', fontSize:13, lineHeight:20,
+  minimap:{enabled:store.get('minimap', '1') === '1'}, folding:true, showFoldingControls:'mouseover', matchBrackets:'always', bracketPairColorization:{enabled:true},
+  guides:{bracketPairs:'active', indentation:true}, stickyScroll:{enabled:true}, renderWhitespace:'selection', scrollBeyondLastLine:false,
+  smoothScrolling:true, cursorSmoothCaretAnimation:'on', multiCursorModifier:'alt', fixedOverflowWidgets:true, 'semanticHighlighting.enabled':true,
+};
+function toggleMinimap(){ const on = store.get('minimap', '1') !== '1'; store.set('minimap', on ? '1' : '0'); if(code) code.updateOptions({minimap:{enabled:on}}); }
+function pane(which){ noteBox.hidden = which !== 'note'; codeHost.hidden = which !== 'code'; diffHost.hidden = reviewBar.hidden = which !== 'diff'; }
+function note(text){ clear(noteBox); noteBox.appendChild(el('p', 'note', text)); pane('note'); }
+function wire(ed){
+  ed.addAction({id:'abhed.ask', label:'Ask the agent about the selection', keybindings:[M.KeyMod.CtrlCmd | M.KeyCode.KeyL],
+    contextMenuGroupId:'navigation', contextMenuOrder:0, run: () => focusAgent()});
+  ed.onDidChangeCursorSelection(() => drawPos(ed));
+  ed.onDidFocusEditorText(() => drawPos(ed));
+}
+function codeEditor(){ if(!code){ code = M.editor.create(codeHost, {...editorOptions, model:null}); wire(code); } return code; }
+function diffEditor(){
+  if(!diff){
+    diff = M.editor.createDiffEditor(diffHost, {...editorOptions, renderSideBySide:!diffInline, useInlineViewWhenSpaceIsLimited:false,
+      originalEditable:false, ignoreTrimWhitespace:false, renderMarginRevertIcon:false, renderIndicators:true, minimap:{enabled:false}});
+    diff.onDidUpdateDiff(drawHunks); wire(diff.getModifiedEditor());
+  }
+  return diff;
+}
+const activeTab = () => tabs.find(x => x.id === active);
+function activeEditor(){ const t = activeTab(); if(!t || !t.model) return null; return t.kind === 'diff' ? (diff && diff.getModifiedEditor()) : code; }
+const editorFocused = () => !!((code && code.hasTextFocus()) || (diff && diff.getModifiedEditor().hasTextFocus()));
+function drawPos(ed){
+  const s = ed.getSelection(); if(!s || ed !== activeEditor()){ return; }
+  const n = ed.getModel() ? ed.getModel().getValueLengthInRange(s) : 0;
+  $('crumb-pos').textContent = 'Ln ' + s.positionLineNumber + ', Col ' + s.positionColumn + (n ? ' (' + n + ' selected)' : '');
+}
+// The language comes from the file name; a rename can change it.
+function languageOf(path){
+  const name = path.split('/').pop().toLowerCase(), dot = name.lastIndexOf('.'), ext = dot >= 0 ? name.slice(dot) : '';
+  const hit = M.languages.getLanguages().find(l => (l.filenames || []).some(f => f.toLowerCase() === name) || (ext && (l.extensions || []).includes(ext)));
+  return hit ? hit.id : 'plaintext';
+}
+function makeModel(t, text){
+  // A counter keeps each tab's model distinct, even for two tabs on one path.
+  t.model = M.editor.createModel(text, languageOf(t.path), M.Uri.from({scheme:'file', path:'/' + t.path, query:String(++uriSeq)}));
+  t.saved = t.model.getAlternativeVersionId();
+  t.model.onDidChangeContent(() => {
+    if(t.quiet) return;
+    const dirty = t.model.getAlternativeVersionId() !== t.saved; t.armed = false;
+    if(dirty !== !!t.dirty){ t.dirty = dirty; drawTabs(); }
+    if(dirty) crumbs(t.path, 'unsaved · ' + modKey('S') + ' to save');
+  });
+  t.lsp = E.attachLanguageServer(t.model, codeEditor());
+}
+// setText replaces a clean model's text with what is on disk, without marking it edited.
+function setText(t, text){ if(t.model.getValue() === text) return; t.quiet = true; t.model.setValue(text); t.quiet = false; t.saved = t.model.getAlternativeVersionId(); }
+function dropTab(t){
+  if(code && t.model && code.getModel() === t.model) code.setModel(null);
+  if(diff && t.model && diff.getModel() && diff.getModel().modified === t.model) diff.setModel(null);
+  [t.lsp, t.model, t.orig].forEach(d => { if(d) d.dispose(); }); t.model = t.orig = t.lsp = null;
+}
+function newTab(kind, path){ return {id:(kind === 'diff' ? 'd:' : 'f:') + path, kind, path, label:path.split('/').pop()}; }
+
+function openTab(t, at){
   let have = tabs.find(x => x.id === t.id);
-  if(!have){ tabs.push(t); have = t; }
-  active = have.id; drawTabs(); showTab(have);
+  if(!have){ const i = tabs.findIndex(x => x.id === active); tabs.splice(i < 0 ? tabs.length : i + 1, 0, t); have = t; }
+  if(at) have.reveal = at;
+  keepView(); active = have.id; drawTabs(); showTab(have);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'center';
 }
+// keepView remembers the cursor and scroll of the tab being left.
+function keepView(){ const t = activeTab(); if(t && t.kind === 'file' && code && code.getModel() === t.model) t.viewState = code.saveViewState(); }
 function closeTab(id){
   const i = tabs.findIndex(x => x.id === id); if(i < 0) return;
-  const gone = tabs.splice(i, 1)[0]; if(gone.view){ gone.view.destroy(); gone.view = null; }
+  const gone = tabs.splice(i, 1)[0]; dropTab(gone);
   if(active === id){ const n = tabs[i] || tabs[i-1]; active = n ? n.id : null; if(n) showTab(n); else welcome(); }
   drawTabs();
+}
+// Closing a tab with unsaved edits takes a second press, as the tab's own × does.
+function closeActive(){
+  const t = activeTab(); if(!t) return;
+  if(t.dirty && !t.armed){ t.armed = true; crumbs(t.path, 'unsaved changes · ' + modKey('W') + ' again to discard them'); return; }
+  closeTab(t.id);
 }
 function drawTabs(){
   const bar = $('tabs'); clear(bar);
@@ -495,138 +627,359 @@ function drawTabs(){
     const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.label);
     x.addEventListener('click', e => { e.stopPropagation(); if(t.dirty && !x.dataset.sure){ x.dataset.sure = '1'; x.textContent = 'discard?'; return; } closeTab(t.id); });
     b.appendChild(x);
-    b.addEventListener('click', () => { active = t.id; drawTabs(); showTab(t); });
+    b.addEventListener('click', () => { if(active === t.id) return; keepView(); active = t.id; drawTabs(); showTab(t); });
+    b.addEventListener('auxclick', e => { if(e.button === 1 && !t.dirty) closeTab(t.id); });
     b.addEventListener('keydown', e => { if(e.key === 'Enter') b.click(); });
     bar.appendChild(b);
+    if(t.id === active) requestAnimationFrame(() => b.scrollIntoView({block:'nearest', inline:'nearest'}));
   }
+  persistTabs();
 }
-function crumbs(path, meta){ $('crumbs').hidden = !path; $('crumb').textContent = path ? path.split('/').join('  ›  ') : ''; $('crumb-meta').textContent = meta || ''; }
+function crumbs(path, meta){
+  $('crumbs').hidden = !path; const c = $('crumb'); clear(c);
+  if(path) path.split('/').forEach((p, i, all) => { if(i) c.appendChild(el('span', 'sep codicon codicon-chevron-right')); c.appendChild(el('span', i === all.length - 1 ? 'leaf' : '', p)); });
+  $('crumb-meta').textContent = meta || ''; if(!path) $('crumb-pos').textContent = '';
+}
+
+// Open tabs come back after a reload: which files, and which one was in front.
+function persistTabs(){ if(current) store.set('tabs.' + current, JSON.stringify({open:tabs.map(t => [t.kind, t.path]), active})); }
+function restoreTabs(){
+  let saved = null; try{ saved = JSON.parse(store.get('tabs.' + current, 'null')); }catch{}
+  if(!saved || !Array.isArray(saved.open)) return;
+  for(const [kind, path] of saved.open.slice(0, 40)){
+    if((kind === 'file' || kind === 'diff') && typeof path === 'string' && !tabs.some(x => x.id === newTab(kind, path).id)) tabs.push(newTab(kind, path));
+  }
+  const a = tabs.find(x => x.id === saved.active) || tabs[tabs.length - 1];
+  if(a){ active = a.id; drawTabs(); showTab(a); }
+}
+window.addEventListener('beforeunload', e => { if(tabs.some(t => t.dirty)){ e.preventDefault(); e.returnValue = ''; } });
 
 function welcome(){
-  crumbs('', ''); const ed = $('editor'); clear(ed);
+  crumbs('', ''); clear(noteBox); pane('note');
   const w = el('div'); w.id = 'welcome';
   w.appendChild(el('h1', '', 'The agent works on the right. You work here.'));
   w.appendChild(el('p', '', 'Open a file to edit it, run commands in the Terminal below, or let the agent make a change and review it under Changes. Your edits and commands pass the same policy and sandbox as the agent, and land in the same record.'));
-  const dl = el('dl'); const mod = isMac ? '⌘' : 'Ctrl';
-  [[[mod,'K'],'Command palette: files, sessions, commands'],[[mod,'B'],'Toggle the side panel'],[[mod,'J'],'Toggle the terminal panel'],
-   [[mod,'L'],'Focus the agent'],[['/'],'In the composer: slash commands']].forEach(([keys, what]) => {
+  const dl = el('dl'), mod = isMac ? '⌘' : 'Ctrl', shift = isMac ? '⇧' : 'Shift';
+  [[[mod,'P'],'Go to file; the palette also runs commands'],[[shift,mod,'F'],'Search the workspace'],[[mod,'S'],'Save, and ' + (isMac ? '⌥⌘S' : 'Ctrl+Alt+S') + ' saves all'],
+   [['Ctrl','G'],'Go to line'],[[mod,'B'],'Toggle the side panel'],[['Ctrl','`'],'Toggle the terminal'],
+   [[mod,'L'],'Quote the selection to the agent'],[['/'],'In the composer: slash commands']].forEach(([keys, what]) => {
     const dt = el('dt'); keys.forEach(k => dt.appendChild(el('kbd', '', k))); dl.appendChild(dt); dl.appendChild(el('dd', '', what));
   });
-  w.appendChild(dl); ed.appendChild(w);
+  w.appendChild(dl); noteBox.appendChild(w);
 }
 async function showTab(t){
-  const ed = $('editor'); clear(ed); ed.scrollTop = 0;
-  crumbs(t.path, 'loading…');
+  if(t.model) mount(t);
+  else{ crumbs(t.path, 'loading…'); pane('note'); clear(noteBox); }
   try{
     if(t.kind === 'file'){
       const f = await api('/v1/sessions/' + current + '/file?path=' + encodeURIComponent(t.path));
-      if(active !== t.id) return;
-      if(f.binary){ crumbs(t.path, fmt(f.size) + ' B · binary'); ed.appendChild(el('p', 'note', 'Binary file — not shown.')); return; }
-      crumbs(t.path, fmt(f.size) + ' B' + (f.truncated ? ' · truncated' : ''));
-      if(!t.dirty){ t.text = f.content; t.base = f.hash; }
-      else if(t.base !== f.hash) crumbs(t.path, 'changed on disk since you opened it · your edits are unsaved');
+      if(active !== t.id || !tabs.includes(t)) return;
+      if(f.binary){ crumbs(t.path, fmt(f.size) + ' B · binary'); note('Binary file — not shown.'); return; }
+      let meta = fmt(f.size) + ' B';
       t.readonly = f.truncated || !f.hash;
-      if(t.readonly) crumbs(t.path, fmt(f.size) + ' B · too large to edit here; shown in part');
-      drawEditor(t, ed);
+      if(!t.model){ t.base = f.hash; makeModel(t, f.content); }
+      else if(!t.dirty && t.base !== f.hash){ t.base = f.hash; setText(t, f.content); }
+      else if(t.dirty && t.base !== f.hash) meta = 'changed on disk since you opened it · your edits are unsaved';
+      else if(t.dirty) meta = 'unsaved · ' + modKey('S') + ' to save';
+      if(t.readonly) meta = fmt(f.size) + ' B · too large to edit here; shown in part';
+      crumbs(t.path, meta); mount(t);
     }else{
       const [orig, cur] = await Promise.all([
         api('/v1/sessions/' + current + '/original?path=' + encodeURIComponent(t.path)),
         api('/v1/sessions/' + current + '/file?path=' + encodeURIComponent(t.path)).catch(() => null)]);
-      if(active !== t.id) return;
-      if(orig.binary || (cur && cur.binary)){ crumbs(t.path, 'binary'); ed.appendChild(el('p', 'note', 'Binary file — no diff.')); return; }
-      if(cur && cur.truncated){ crumbs(t.path, 'too large'); ed.appendChild(el('p', 'note', 'Too large to review here.')); return; }
-      if(!t.dirty){ t.text = cur ? cur.content : ''; t.base = cur ? cur.hash : ''; }
-      t.original = orig.content; t.existed = orig.existed; t.deleted = !cur;
-      crumbs(t.path, (t.deleted ? 'deleted' : !orig.existed ? 'added' : 'modified') + ' · review');
-      drawReview(t, ed);
+      if(active !== t.id || !tabs.includes(t)) return;
+      if(orig.binary || (cur && cur.binary)){ crumbs(t.path, 'binary'); note('Binary file — no diff.'); return; }
+      if(cur && cur.truncated){ crumbs(t.path, 'too large'); note('Too large to review here.'); return; }
+      t.existed = orig.existed; t.deleted = !cur;
+      if(!t.model){ t.base = cur ? cur.hash : ''; makeModel(t, cur ? cur.content : ''); }
+      else if(!t.dirty && t.base !== (cur ? cur.hash : '')){ t.base = cur ? cur.hash : ''; setText(t, cur ? cur.content : ''); }
+      if(!t.orig) t.orig = M.editor.createModel(orig.content, languageOf(t.path), M.Uri.from({scheme:'base', path:'/' + t.path, query:String(++uriSeq)}));
+      else if(t.orig.getValue() !== orig.content) t.orig.setValue(orig.content);
+      crumbs(t.path, (t.deleted ? 'deleted' : !orig.existed ? 'added' : 'modified') + ' · review'); mount(t);
     }
-  }catch(e){ crumbs(t.path, ''); ed.appendChild(el('p', 'note', e.message)); }
+  }catch(e){ if(active === t.id){ crumbs(t.path, ''); if(!t.model) note(e.message); } }
 }
-const E = window.AbhedEditor;
-function isDark(){ const t = document.documentElement.dataset.theme; return t ? t === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches; }
-function editorExtensions(t, extra){
-  const exts = [E.basicSetup, E.keymap.of([E.indentWithTab]),
-    E.EditorView.updateListener.of(u => { if(!u.docChanged) return; t.text = u.state.doc.toString(); if(!t.dirty){ t.dirty = true; drawTabs(); } crumbs(t.path, 'unsaved · ' + (isMac ? '⌘S' : 'Ctrl S') + ' to save'); })];
-  if(isDark()) exts.push(E.oneDark);
-  const lang = E.languageFor(t.path); if(lang) exts.push(lang);
-  if(t.readonly) exts.push(E.EditorState.readOnly.of(true), E.EditorView.editable.of(false));
-  return exts.concat(extra || []);
+function mount(t){
+  if(t.kind === 'file'){
+    const c = codeEditor(); pane('code');
+    if(c.getModel() !== t.model){ c.setModel(t.model); if(t.viewState) c.restoreViewState(t.viewState); }
+    c.updateOptions({readOnly:!!t.readonly, readOnlyMessage:{value:'This file is too large to edit here; it is shown in part.'}});
+    if(t.reveal){ const r = t.reveal; t.reveal = null; const range = new M.Range(r.line, r.col || 1, r.line, r.end || r.col || 1);
+      c.setSelection(range); c.revealRangeInCenterIfOutsideViewport(range); c.focus(); }
+    drawPos(c); return;
+  }
+  if(!t.orig) return;
+  drawReview(t); pane('diff');
+  const d = diffEditor(), m = d.getModel();
+  if(!m || m.modified !== t.model || m.original !== t.orig) d.setModel({original:t.orig, modified:t.model});
+  d.getModifiedEditor().updateOptions({readOnly:!!t.deleted}); drawPos(d.getModifiedEditor());
 }
-function mount(t, ed, exts){
-  if(t.view){ t.view.destroy(); t.view = null; }
-  const host = el('div', 'cm-host'); ed.appendChild(host);
-  t.view = new E.EditorView({state: E.EditorState.create({doc: t.text, extensions: exts}), parent: host});
-  return t.view;
-}
-function drawEditor(t, ed){ mount(t, ed, editorExtensions(t)); }
 
 // Review: the file as it is now, against what it held before the session
-// changed it. Rejecting a chunk edits the file, so it is saved like any other
+// changed it. Rejecting a change edits the file, so it is saved like any other
 // edit and recorded as yours; accepting one moves the baseline and is recorded too.
-function drawReview(t, ed){
-  const bar = el('div'); bar.id = 'review';
-  bar.appendChild(el('span', '', 'Accept keeps a change and moves the baseline · Reject puts the earlier text back and saves'));
-  bar.appendChild(el('span', 'sp'));
-  const all = (label, cls, fn) => { const b = el('button', cls, label); b.type = 'button'; b.addEventListener('click', fn); bar.appendChild(b); };
-  all('Accept all', 'ok', () => acceptText(t, t.text));
-  all('Reject all', 'no', () => rejectAll(t));
-  ed.appendChild(bar);
-  const controls = (type, action) => { const b = el('button', '', type === 'accept' ? 'Accept' : 'Reject'); b.name = type; b.type = 'button';
-    b.addEventListener('click', e => { action(e); if(type === 'accept') queueAccept(t); else saveActive(); }); return b; };
-  mount(t, ed, editorExtensions(t, [E.unifiedMergeView({original: t.original, mergeControls: controls, highlightChanges: true, gutter: true})]));
+function drawReview(t){
+  clear(reviewBar);
+  const what = el('span', 'what', 'Accept keeps a change · Reject restores the earlier text and saves'); what.title = 'Accept moves the baseline; Reject edits the file and saves it. Both are recorded as yours.';
+  reviewBar.appendChild(what);
+  const btn = (label, cls, fn, title) => { const b = el('button', cls, label); b.type = 'button'; if(title) b.title = title; b.addEventListener('click', fn); reviewBar.appendChild(b); return b; };
+  const count = el('span', '', reviewCount); count.id = 'review-n'; reviewBar.appendChild(count);
+  const icon = (name, title, fn) => { const b = btn('', 'ico', fn, title); b.setAttribute('aria-label', title); b.appendChild(el('span', 'codicon codicon-' + name)); };
+  icon('arrow-up', 'Previous change', () => diff && diff.goToDiff('previous'));
+  icon('arrow-down', 'Next change', () => diff && diff.goToDiff('next'));
+  btn(diffInline ? 'Side by side' : 'Inline', '', toggleDiffLayout, 'Show the review inline or side by side');
+  btn('Accept all', 'ok', async () => { if(await savedFirst(t)) acceptText(t, t.model.getValue()); });
+  btn('Reject all', 'no', () => rejectAll(t));
 }
-let acceptTimer = null;
-function queueAccept(t){ clearTimeout(acceptTimer); acceptTimer = setTimeout(() => acceptText(t, E.getOriginalDoc(t.view.state).toString()), 200); }
+function toggleDiffLayout(){
+  diffInline = !diffInline; store.set('diff.inline', diffInline ? '1' : '');
+  if(diff) diff.updateOptions({renderSideBySide:!diffInline});
+  const t = activeTab(); if(t && t.kind === 'diff') drawReview(t);
+}
+// Each change carries its own Accept and Reject, in a zone above it.
+let hunkZones = [], reviewCount = '';
+function drawHunks(){
+  const t = activeTab(); if(!diff) return;
+  const ed = diff.getModifiedEditor(), m = diff.getModel();
+  const changes = t && t.kind === 'diff' && m && m.modified === t.model ? diff.getLineChanges() || [] : [];
+  ed.changeViewZones(acc => {
+    hunkZones.forEach(id => acc.removeZone(id)); hunkZones = [];
+    changes.forEach((c, i) => {
+      const bar = el('div', 'hunkbar'); bar.appendChild(el('span', '', 'change ' + (i + 1) + ' of ' + changes.length));
+      const b = (label, cls, fn) => { const x = el('button', cls, label); x.type = 'button';
+        x.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); fn(); }); bar.appendChild(x); };
+      b('Accept', 'ok', () => acceptHunk(t, c)); b('Reject', 'no', () => rejectHunk(t, c));
+      const after = c.modifiedEndLineNumber === 0 ? c.modifiedStartLineNumber : c.modifiedStartLineNumber - 1;
+      hunkZones.push(acc.addZone({afterLineNumber:after, heightInPx:26, domNode:bar, ordinal:0}));
+    });
+  });
+  reviewCount = changes.length ? changes.length + (changes.length === 1 ? ' change' : ' changes') : 'no changes left';
+  const n = $('review-n'); if(n) n.textContent = reviewCount;
+}
+// Lines s..e of a model, or none when e is 0 (the other side of an insertion or deletion).
+const linesOf = (model, s, e) => e === 0 ? [] : model.getLinesContent().slice(s - 1, e);
+function spliceLines(lines, s, e, put){ if(e === 0) lines.splice(s, 0, ...put); else lines.splice(s - 1, e - s + 1, ...put); return lines; }
+// The baseline only ever moves to text that is on disk, so unsaved edits are saved first.
+async function savedFirst(t){ if(t.dirty) await save(t); return !t.dirty; }
+async function acceptHunk(t, c){
+  if(!await savedFirst(t)) return;
+  const text = spliceLines(t.orig.getLinesContent(), c.originalStartLineNumber, c.originalEndLineNumber,
+    linesOf(t.model, c.modifiedStartLineNumber, c.modifiedEndLineNumber)).join(t.orig.getEOL());
+  acceptText(t, text);
+}
+function rejectHunk(t, c){
+  const text = spliceLines(t.model.getLinesContent(), c.modifiedStartLineNumber, c.modifiedEndLineNumber,
+    linesOf(t.orig, c.originalStartLineNumber, c.originalEndLineNumber)).join(t.model.getEOL());
+  replaceAll(t, text); save(t);
+}
+// replaceAll is an edit, not a reload: it can be undone and it marks the tab unsaved.
+function replaceAll(t, text){ t.model.pushEditOperations([], [{range:t.model.getFullModelRange(), text}], () => null); }
 async function acceptText(t, text){
   try{ await api('/v1/sessions/' + current + '/accept', {method:'POST', body: JSON.stringify({path:t.path, content:text})});
-    t.original = text; crumbs(t.path, 'accepted · baseline moved'); if(!t.dirty) showTab(t); changesSoon(300); }
+    if(t.orig) t.orig.setValue(text); crumbs(t.path, 'accepted · baseline moved'); changesSoon(300); }
   catch(e){ crumbs(t.path, 'not accepted — ' + e.message); }
 }
 async function rejectAll(t){
   if(!t.existed){
     // The file was created by this session: rejecting it all is removing it.
-    try{ await api('/v1/sessions/' + current + '/exec', {method:'POST', body: JSON.stringify({command:'rm -- ' + shellQuote(t.path)})}); closeTab(t.id); changesSoon(300); }
+    try{ await api('/v1/sessions/' + current + '/delete', {method:'POST', body: JSON.stringify({path:t.path})}); closeTab(t.id); changesSoon(300); refreshDir(parentOf(t.path)); }
     catch(e){ crumbs(t.path, 'not removed — ' + e.message); }
     return;
   }
-  t.text = t.original; t.dirty = true; await saveActive();
+  replaceAll(t, t.orig.getValue()); await save(t);
 }
-const shellQuote = p => "'" + p.replace(/'/g, `'\\''`) + "'";
-async function saveActive(){
-  const t = tabs.find(x => x.id === active); if(!t || !t.dirty || t.saving || t.readonly) return;
+async function save(t){
+  if(!t || !t.model || !t.dirty || t.saving || t.readonly) return;
   t.saving = true; crumbs(t.path, 'saving…');
+  const version = t.model.getAlternativeVersionId();
   try{
-    const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.text, base:t.base})});
-    t.base = r.hash; t.dirty = false; drawTabs(); crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
-    if(t.kind === 'diff') showTab(t);
+    const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.model.getValue(), base:t.base})});
+    t.base = r.hash; t.saved = version; t.dirty = t.model.getAlternativeVersionId() !== version; drawTabs();
+    crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
   }catch(e){ crumbs(t.path, 'not saved — ' + e.message); }
   t.saving = false;
 }
-const openFile = path => openTab({id:'f:' + path, kind:'file', path, label:path.split('/').pop()});
-const openDiff = path => openTab({id:'d:' + path, kind:'diff', path, label:path.split('/').pop()});
+const saveActive = () => save(activeTab());
+async function saveAll(){ for(const t of tabs.filter(x => x.dirty)) await save(t); }
+const openFile = (path, at) => openTab(newTab('file', path), at);
+const openDiff = path => openTab(newTab('diff', path));
 
 /* ---------------------------------------------------------------- explorer + changes */
+// Every folder listed is remembered with where it is drawn, and every open one
+// is opened again when its parent is redrawn, so a refresh keeps the tree's shape.
+const dirs = new Map(), expanded = new Set();
+let treeSel = null;
+const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+const joinPath = (dir, name) => dir ? dir + '/' + name : name;
 async function loadTree(path, into, depth){
   if(!current){ clear(into); into.appendChild(el('div', 'empty', 'Start or open a session to browse its workspace.')); return; }
+  dirs.set(path, {into, depth});
   let res; try{ res = await api('/v1/sessions/' + current + '/tree?path=' + encodeURIComponent(path)); }
   catch(e){ clear(into); into.appendChild(el('div', 'empty', e.message)); return; }
   clear(into);
   for(const e of res.entries){
-    const row = el('button', 'row'); row.type = 'button'; row.style.paddingLeft = (12 + depth * 14) + 'px';
-    row.appendChild(el('span', 'tw', e.dir ? '▸' : '')); row.appendChild(el('span', 'name', e.name));
+    const row = el('button', 'row'); row.type = 'button'; row.style.paddingLeft = (8 + depth * 14) + 'px'; row.dataset.path = e.path;
+    if(treeSel && treeSel.path === e.path) row.classList.add('sel');
+    row.appendChild(el('span', 'tw codicon' + (e.dir ? ' codicon-chevron-right' : ''))); row.appendChild(el('span', 'name', e.name));
+    row.addEventListener('contextmenu', ev => { ev.preventDefault(); selectRow(row, e); treeMenu(ev.clientX, ev.clientY, e); });
+    row.addEventListener('keydown', ev => {
+      if(ev.key === 'F2'){ ev.preventDefault(); renameEntry(e, row); }
+      else if(ev.key === 'Delete' || (isMac && ev.metaKey && ev.key === 'Backspace')){ ev.preventDefault(); deleteEntry(e); }
+    });
     into.appendChild(row);
     if(e.dir){
       const kids = el('div'); kids.hidden = true; into.appendChild(kids);
-      row.addEventListener('click', () => {
-        kids.hidden = !kids.hidden; row.firstChild.textContent = kids.hidden ? '▸' : '▾';
-        if(!kids.hidden && !kids.firstChild) loadTree(e.path, kids, depth + 1);
-      });
-    }else{ known.add(e.path); row.addEventListener('click', () => openFile(e.path)); }
+      const show = open => { kids.hidden = !open; row.firstChild.className = 'tw codicon codicon-chevron-' + (open ? 'down' : 'right');
+        if(open){ expanded.add(e.path); loadTree(e.path, kids, depth + 1); } else expanded.delete(e.path); };
+      row.addEventListener('click', () => { selectRow(row, e); show(kids.hidden); });
+      if(expanded.has(e.path)) show(true);
+    }else{ known.add(e.path); row.addEventListener('click', () => { selectRow(row, e); openFile(e.path); }); }
   }
   if(res.truncated) into.appendChild(el('div', 'empty', 'This folder has more entries than are listed.'));
-  if(!res.entries.length) into.appendChild(el('div', 'empty', 'Empty.'));
+  if(!res.entries.length && !depth) into.appendChild(el('div', 'empty', 'Empty.'));
 }
+function selectRow(row, e){ document.querySelectorAll('#tree .row.sel').forEach(r => r.classList.remove('sel')); row.classList.add('sel'); treeSel = e; }
+function refreshDir(path){ const d = dirs.get(path); if(d && d.into.isConnected) return loadTree(path, d.into, d.depth); return loadTree('', $('tree'), 0); }
 $('tree-reload').addEventListener('click', () => loadTree('', $('tree'), 0));
+$('tree-collapse').addEventListener('click', () => { expanded.clear(); loadTree('', $('tree'), 0); });
+$('tree-newfile').addEventListener('click', () => newEntry(false));
+$('tree-newfolder').addEventListener('click', () => newEntry(true));
+$('tree').addEventListener('contextmenu', ev => { if(ev.target === $('tree')){ ev.preventDefault(); treeSel = null; treeMenu(ev.clientX, ev.clientY, null); } });
+
+// nameInput puts an editable name into the tree and calls done with what was typed.
+function nameInput(anchor, before, depth, initial, done, onEnd){
+  const row = el('div', 'row'); row.style.paddingLeft = (8 + depth * 14) + 'px';
+  const input = el('input', 'ren'); input.value = initial; input.spellcheck = false; input.setAttribute('aria-label', 'Name');
+  row.appendChild(el('span', 'tw codicon')); row.appendChild(input);
+  if(before) anchor.insertBefore(row, before); else anchor.appendChild(row);
+  let over = false;
+  const end = ok => { if(over) return; over = true; const v = input.value.trim(); row.remove(); if(onEnd) onEnd(); if(ok && v && v !== initial) done(v); };
+  input.addEventListener('keydown', ev => { ev.stopPropagation(); if(ev.key === 'Enter'){ ev.preventDefault(); end(true); } else if(ev.key === 'Escape'){ ev.preventDefault(); end(false); } });
+  input.addEventListener('blur', () => end(true));
+  input.focus(); const dot = initial.lastIndexOf('.'); input.setSelectionRange(0, dot > 0 ? dot : initial.length);
+  return row;
+}
+async function newEntry(folder){
+  if(!current) return;
+  setView('explorer');
+  const base = treeSel ? (treeSel.dir ? treeSel.path : parentOf(treeSel.path)) : '';
+  if(base && !expanded.has(base)){ expanded.add(base); await refreshDir(parentOf(base)); }
+  const d = dirs.get(base) || {into:$('tree'), depth:0};
+  nameInput(d.into, d.into.firstChild, d.depth, '', async name => {
+    const path = joinPath(base, name);
+    try{
+      if(folder){ await api('/v1/sessions/' + current + '/folder', {method:'POST', body: JSON.stringify({path})}); expanded.add(path); }
+      else await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path, content:'', base:''})});
+      await refreshDir(base); if(!folder) openFile(path); changesSoon(300);
+    }catch(e){ treeError(e); }
+  });
+}
+function renameEntry(e, row){
+  row.hidden = true;
+  const d = dirs.get(parentOf(e.path)) || {depth:0};
+  nameInput(row.parentNode, row, d.depth, e.name, async name => {
+    const to = joinPath(parentOf(e.path), name);
+    try{ await api('/v1/sessions/' + current + '/rename', {method:'POST', body: JSON.stringify({from:e.path, to})}); retarget(e.path, to); changesSoon(300); }
+    catch(err){ treeError(err); }
+    await refreshDir(parentOf(e.path));
+  }, () => { row.hidden = false; });
+}
+// retarget moves open tabs to a renamed path, keeping their edits.
+function retarget(from, to){
+  for(const t of tabs){
+    if(t.path !== from && !t.path.startsWith(from + '/')) continue;
+    const was = t.id; t.path = to + t.path.slice(from.length); t.id = (t.kind === 'diff' ? 'd:' : 'f:') + t.path; t.label = t.path.split('/').pop();
+    if(active === was) active = t.id;
+    if(t.model) M.editor.setModelLanguage(t.model, languageOf(t.path));
+  }
+  if(expanded.delete(from)) expanded.add(to);
+  const t = activeTab(); drawTabs(); if(t) crumbs(t.path, 'renamed');
+}
+async function deleteEntry(e){
+  if(!confirm('Delete ' + e.path + (e.dir ? ' and everything in it' : '') + '? This is recorded as your action and cannot be undone here.')) return;
+  try{
+    await api('/v1/sessions/' + current + '/delete', {method:'POST', body: JSON.stringify({path:e.path})});
+    tabs.filter(t => t.path === e.path || t.path.startsWith(e.path + '/')).forEach(t => closeTab(t.id));
+    known.delete(e.path); if(treeSel && treeSel.path === e.path) treeSel = null; changesSoon(300);
+  }catch(err){ treeError(err); }
+  await refreshDir(parentOf(e.path));
+}
+let treeMsgTimer = null;
+function treeError(e){ const n = $('tree-msg'); n.textContent = e.message; n.hidden = false; clearTimeout(treeMsgTimer); treeMsgTimer = setTimeout(() => { n.hidden = true; }, 8000); }
+async function copyPath(p){ try{ await navigator.clipboard.writeText(p); }catch{} }
+
+// A right-click menu over the tree, with each entry's actions.
+function treeMenu(x, y, e){
+  const m = $('ctx'); clear(m);
+  const item = (label, keys, fn) => { const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem');
+    b.appendChild(el('span', '', label)); if(keys) b.appendChild(el('kbd', '', keys));
+    b.addEventListener('click', () => { closeMenu(); fn(); }); m.appendChild(b); };
+  if(e && !e.dir) item('Open', '', () => openFile(e.path));
+  if(e && !e.dir) item('Open changes', '', () => openDiff(e.path));
+  if(e && !e.dir) m.appendChild(el('hr'));
+  item('New file…', '', () => newEntry(false)); item('New folder…', '', () => newEntry(true));
+  if(e){
+    m.appendChild(el('hr'));
+    item('Copy path', '', () => copyPath(e.path));
+    item('Rename…', 'F2', () => { const row = document.querySelector('#tree .row[data-path="' + CSS.escape(e.path) + '"]'); if(row) renameEntry(e, row); });
+    item('Delete', isMac ? '⌘⌫' : 'Del', () => deleteEntry(e));
+  }
+  m.hidden = false;
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px'; m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.firstChild.focus();
+}
+function closeMenu(){ $('ctx').hidden = true; }
+document.addEventListener('pointerdown', ev => { if(!$('ctx').hidden && !$('ctx').contains(ev.target)) closeMenu(); }, true);
+$('ctx').addEventListener('keydown', ev => {
+  const items = [...$('ctx').querySelectorAll('button')], i = items.indexOf(document.activeElement);
+  if(ev.key === 'Escape'){ ev.preventDefault(); closeMenu(); }
+  else if(ev.key === 'ArrowDown' || ev.key === 'ArrowUp'){ ev.preventDefault(); items[(i + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
+});
+
+/* ---------------------------------------------------------------- search */
+const sopt = {case:false, word:false, regex:false};
+let searchSeq = 0, searchTimer = null;
+[['s-case','case'],['s-word','word'],['s-regex','regex']].forEach(([id, k]) => $(id).addEventListener('click', () => {
+  sopt[k] = !sopt[k]; $(id).setAttribute('aria-pressed', String(sopt[k])); runSearch();
+}));
+$('sq').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 300); });
+$('sq').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); clearTimeout(searchTimer); runSearch(); } else if(e.key === 'Escape') $('sq').value = ''; });
+$('search-clear').addEventListener('click', () => { $('sq').value = ''; runSearch(); $('sq').focus(); });
+async function runSearch(){
+  const q = $('sq').value, box = $('sres'), sum = $('s-sum'), seq = ++searchSeq;
+  if(!q){ clear(box); sum.textContent = ''; return; }
+  if(!current){ clear(box); sum.textContent = 'Open a session to search its workspace.'; return; }
+  sum.textContent = 'Searching…';
+  const flags = Object.entries(sopt).filter(([, on]) => on).map(([k]) => '&' + k + '=1').join('');
+  let r; try{ r = await api('/v1/sessions/' + current + '/search?q=' + encodeURIComponent(q) + flags); }
+  catch(e){ if(seq === searchSeq){ clear(box); sum.textContent = e.message; } return; }
+  if(seq !== searchSeq) return;
+  clear(box);
+  const why = {matches:'the result limit', files:'the file limit', time:'the time limit'}[r.why] || 'a limit';
+  sum.textContent = r.matches ? r.matches + (r.matches === 1 ? ' result in ' : ' results in ') + r.files.length + (r.files.length === 1 ? ' file' : ' files') +
+    (r.truncated ? ' · stopped at ' + why + '; narrow the search' : '') : 'No results.';
+  for(const f of r.files){
+    const head = el('button', 'row sfile'); head.type = 'button'; head.title = f.path;
+    head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', f.path.split('/').pop()));
+    head.appendChild(el('span', 'd', parentOf(f.path))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
+    const list = el('div'); box.appendChild(head); box.appendChild(list);
+    head.addEventListener('click', () => { list.hidden = !list.hidden; head.firstChild.className = 'tw codicon codicon-chevron-' + (list.hidden ? 'right' : 'down'); });
+    for(const m of f.matches){
+      const row = el('button', 'row smatch'); row.type = 'button'; row.title = f.path + ':' + m.line + ':' + m.col;
+      const line = el('span', 'name');
+      let before = m.text.slice(0, m.from).replace(/^\s+/, ''); if(before.length > 40) before = '…' + before.slice(-40);
+      line.appendChild(document.createTextNode(before)); line.appendChild(el('mark', '', m.text.slice(m.from, m.to))); line.appendChild(document.createTextNode(m.text.slice(m.to)));
+      row.appendChild(line); row.addEventListener('click', () => openFile(f.path, {line:m.line, col:m.col, end:m.end}));
+      list.appendChild(row);
+    }
+  }
+}
+// Find in files starts from a one-line selection in the editor.
+function findInFiles(){
+  const ed = activeEditor(), s = ed && ed.getSelection();
+  if(s && !s.isEmpty() && s.startLineNumber === s.endLineNumber) $('sq').value = ed.getModel().getValueInRange(s);
+  setView('search'); if($('sq').value) runSearch();
+}
 
 async function loadChanges(){
   const box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
@@ -644,7 +997,7 @@ async function loadChanges(){
   }
 }
 $('changes-reload').addEventListener('click', loadChanges);
-const changesSoon = (ms = 1500) => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !(t.view && t.view.hasFocus)) showTab(t); }, ms); };
+const changesSoon = (ms = 1500) => { clearTimeout(changesTimer); changesTimer = setTimeout(() => { loadChanges(); const t = tabs.find(x => x.id === active); if(t && !t.dirty && !editorFocused()) showTab(t); }, ms); };
 
 /* ---------------------------------------------------------------- tools + extensions */
 function drawCaps(){
@@ -739,7 +1092,7 @@ function resetSession(){
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); resetTerm(); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
-  tabs.length = 0; active = null; drawTabs(); welcome(); known.clear(); indexedFor = null;
+  tabs.splice(0).forEach(dropTab); active = null; drawTabs(); welcome(); known.clear(); indexedFor = null; searchSeq++; clear($('sres')); $('s-sum').textContent = '';
   $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
@@ -748,7 +1101,7 @@ function openSession(id, state){
   resetSession(); current = id; setLive(state === 'running' || state === 'waiting_approval');
   const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? s.prompt : id;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
-  connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
+  restoreTabs(); connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
@@ -1249,7 +1602,18 @@ function palItems(){
   SLASH.forEach(s => out.push({k:'command', l:s[1], h:s[0], run:s[2]}));
   out.push({k:'command', l:'Toggle the side panel', h:mod + 'B', run:() => $('app').classList.toggle('noside')});
   out.push({k:'command', l:'Toggle the terminal panel', h:mod + 'J', run:() => $('app').classList.toggle('nopanel')});
+  out.push({k:'command', l:'Toggle the terminal', h:'Ctrl+`', run:toggleTerminal});
   out.push({k:'command', l:'Switch light / dark', h:'', run:() => $('theme').click()});
+  out.push({k:'command', l:'Save all', h:isMac ? '⌥⌘S' : 'Ctrl+Alt+S', run:saveAll});
+  out.push({k:'command', l:'Close the editor tab', h:mod + 'W', run:closeActive});
+  out.push({k:'command', l:'Go to line…', h:'Ctrl+G', run:() => editorAction('editor.action.gotoLine')});
+  out.push({k:'command', l:'Go to symbol in the editor…', h:isMac ? '⇧⌘O' : 'Ctrl+Shift+O', run:() => editorAction('editor.action.quickOutline')});
+  out.push({k:'command', l:'Editor commands…', h:'F1', run:() => editorAction('editor.action.quickCommand')});
+  out.push({k:'command', l:'Find in files', h:isMac ? '⇧⌘F' : 'Ctrl+Shift+F', run:findInFiles});
+  out.push({k:'command', l:'New file', h:'', run:() => newEntry(false)});
+  out.push({k:'command', l:'New folder', h:'', run:() => newEntry(true)});
+  out.push({k:'command', l:'Toggle the minimap', h:'', run:toggleMinimap});
+  out.push({k:'command', l:'Review inline or side by side', h:'', run:toggleDiffLayout});
   [...known].sort().forEach(p => out.push({k:'file', l:p, h:'', run:() => openFile(p)}));
   sessionList.forEach(s => out.push({k:'session', l:s.prompt || s.id, h:s.state, run:() => openSession(s.id, s.state)}));
   return out;
@@ -1295,21 +1659,33 @@ $('palq').addEventListener('keydown', e => {
 });
 $('pal').addEventListener('pointerdown', e => { if(e.target === $('pal')) closePal(); });
 document.addEventListener('keydown', e => {
+  // Ctrl+` is the terminal on every platform, as in desktop editors.
+  if(e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'Backquote'){ e.preventDefault(); toggleTerminal(); return; }
   const mod = isMac ? e.metaKey : e.ctrlKey; if(!mod) return; const k = e.key.toLowerCase();
-  if(k === 'k' || k === 'p'){ e.preventDefault(); if($('pal').hidden) openPal(); else closePal(); }
+  if(e.shiftKey && e.code === 'KeyF'){ e.preventDefault(); findInFiles(); }
+  else if(e.shiftKey && e.code === 'KeyE'){ e.preventDefault(); setView('explorer'); }
+  else if(e.altKey && e.code === 'KeyS'){ e.preventDefault(); saveAll(); }
+  else if(k === 'k' || k === 'p'){ e.preventDefault(); if($('pal').hidden) openPal(); else closePal(); }
   else if(k === 's'){ e.preventDefault(); saveActive(); }
+  // A browser keeps Cmd+W for itself in a normal tab; where it reaches the page, it closes the editor tab.
+  else if(k === 'w'){ e.preventDefault(); closeActive(); }
   else if(k === 'b'){ e.preventDefault(); $('app').classList.toggle('noside'); }
   else if(k === 'j'){ e.preventDefault(); $('app').classList.toggle('nopanel'); }
-  else if(k === 'l'){ e.preventDefault(); askAboutSelection(); $('app').dataset.pane = 'agent'; $('q').focus(); }
+  else if(k === 'l'){ e.preventDefault(); focusAgent(); }
 });
-$('palkey').textContent = isMac ? '⌘K' : 'Ctrl K';
+function toggleTerminal(){
+  if($('app').classList.contains('nopanel') || $('p-terminal').hidden){ setPanel('terminal'); term.focus(); }
+  else{ $('app').classList.add('nopanel'); const ed = activeEditor(); if(ed) ed.focus(); }
+}
+function editorAction(id){ const ed = activeEditor(); if(!ed) return; ed.focus(); const a = ed.getAction(id); if(a) a.run(); }
+function focusAgent(){ askAboutSelection(); $('app').dataset.pane = 'agent'; $('q').focus(); }
+$('palkey').textContent = isMac ? '⌘P' : 'Ctrl P';
 // Select code in the editor and press the focus-agent key: the selection is
 // quoted into the composer with its file and line numbers.
 function askAboutSelection(){
-  const t = tabs.find(x => x.id === active); if(!t || !t.view) return;
-  const st = t.view.state, sel = st.selection.main; if(sel.empty) return;
-  const from = st.doc.lineAt(sel.from).number, to = st.doc.lineAt(sel.to).number;
-  const q = $('q'); q.value = 'In `' + t.path + '` lines ' + from + '–' + to + ':\n```\n' + st.sliceDoc(sel.from, sel.to) + '\n```\n' + q.value;
+  const t = activeTab(), ed = activeEditor(); if(!t || !ed) return;
+  const sel = ed.getSelection(); if(!sel || sel.isEmpty()) return;
+  const q = $('q'); q.value = 'In `' + t.path + '` lines ' + sel.startLineNumber + '–' + sel.endLineNumber + ':\n```\n' + ed.getModel().getValueInRange(sel) + '\n```\n' + q.value;
   q.style.height = 'auto'; q.style.height = Math.min(q.scrollHeight, 260) + 'px';
 }
 

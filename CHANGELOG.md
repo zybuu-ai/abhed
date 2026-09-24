@@ -11,6 +11,25 @@ All notable changes to Abhed are recorded here. The format follows
 - `GET /account`, where a local-accounts user changes their own password, and
   `switch_url` and `password_url` in `/v1/whoami`, naming the routes this
   deployment has for switching user and changing a password.
+- Workbench: a **Search** view across the workspace, with match case, whole
+  word and RE2 regular expressions, results grouped by file and opened at the
+  line (`GET /v1/sessions/{id}/search`). It reads only what the Explorer shows
+  and passes over the folders `grep` does; it stops at 2,000 results, 20,000
+  files or five seconds and says which, marks a file cut at 100 matches, and
+  runs at most two at once per session.
+- Workbench: the Explorer makes new files and folders, renames (F2) and
+  deletes, from its toolbar and a right-click menu (`POST
+  /v1/sessions/{id}/folder`, `/rename`, `/delete`). Each is recorded as the
+  person's own command and held to the bash rules and the sandbox. Every
+  path it touches, as named and with links followed, and everything inside a
+  folder at its old and new path, must be one the workbench would open and a
+  save to which the write rules allow.
+- Workbench: save all (⌥⌘S / Ctrl Alt S), close the editor tab (⌘W / Ctrl W
+  where the browser passes it on), Ctrl \` for the terminal, ⇧⌘F for search,
+  the file's path and the cursor above the editor, a prompt before leaving
+  with unsaved edits, and open tabs restored after a reload.
+- `web/ide/editor.js` has a documented, empty seam where a language server
+  will attach; nothing is registered yet.
 - `edit` and `write` parse Go, JSON and Python before writing, where a parser
   is available (see the tools guide for Python's conditions). A change that
   would leave a file that parsed no longer parsing is not applied, and the
@@ -74,6 +93,18 @@ All notable changes to Abhed are recorded here. The format follows
   stream as an error; the session ends as `user_interrupt` as before.
 - `/v1/whoami` names `sign_out_url` when there is one, and the console and
   workbench draw Sign out only then.
+- The workbench editor is now Monaco (MIT), in place of CodeMirror: its
+  default keybindings, multiple cursors, minimap, find and replace, folding,
+  bracket matching, go to line and go to symbol, and in-browser language
+  services for JSON, CSS, HTML, JavaScript and TypeScript. Review uses its
+  diff editor, side by side or inline, with Accept and Reject on each change.
+  The components under `/ide/vendor/` are now kept and sent gzipped, about
+  3.5 MB (14 MB unpacked, for a client without gzip), half of it the
+  TypeScript worker, which loads only for JavaScript and TypeScript; the
+  binary grows by about 2.4 MB. The workbench's content security policy adds `font-src 'self'` for the editor's
+  icon font; its workers are same-origin files, so no `blob:`, `worker-src` or
+  `unsafe-eval` is needed, and each is served with its own
+  `default-src 'none'; script-src 'self'`.
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
 - `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
