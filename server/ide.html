@@ -1533,9 +1533,13 @@ function drawTermTabs(){
 // Open shells are remembered for this tab of the browser, so a reload
 // reattaches to them rather than leaving them to run unwatched.
 const shellsKey = id => 'abhed.ide.shells.' + id;
+// Streams closing as the page unloads must not read as shells that ended.
+let leaving = false;
+addEventListener('beforeunload', () => { leaving = true; });
+addEventListener('pagehide', () => { leaving = true; });
 function saveShells(id){
   id = id || current;
-  if(!id) return;
+  if(!id || leaving) return;
   const open = terms.filter(t => t.kind === 'shell' && t.mode === 'shell' && t.run && t.session === id)
     .map(t => ({id:t.run, name:t.name, info:t.info}));
   try{ sessionStorage.setItem(shellsKey(id), JSON.stringify(open)); }catch{}
@@ -1633,7 +1637,7 @@ function attach(t, id, reattach){
   };
 }
 function ended(t, id, code){
-  if(t.run !== id) return;
+  if(t.run !== id || leaving) return;
   endRun(t, false); drawTermTabs(); changesSoon(); hawkSoon(); treeSoon();
   if(t.mode === 'shell'){ t.term.write('\r\n\x1b[2m' + (code == null ? 'disconnected' : 'the shell exited with ' + code) + ' · press Enter for a new one\x1b[0m\r\n'); t.dead = true; return; }
   if(code != null) t.term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m');
@@ -1806,6 +1810,9 @@ async function send(){
   try{
     b.prompt = await withMentions(typed);
     if(id){
+      // A workbench session is named by its first message.
+      const s = sessionList.find(x => x.id === id);
+      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = typed; }
       const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
       if(current !== id || b.delivered) return;
       if(r && r.queue_id){
@@ -1816,8 +1823,6 @@ async function send(){
         setLive(true); waiting('Thinking'); if(!es) connect(id);
       }
       drawQueued(b);
-      const s = sessionList.find(x => x.id === id);
-      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = typed; loadSessions(); }
     }else{
       const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid})});
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value}); openSession(r.session_id, 'running');
