@@ -62,6 +62,35 @@ deny list and plant a users file, and fail if any succeeds. Container and VM
 tiers keep the workspace mount as configured; mount `.abhed` there read-only
 or leave it out of the mount.
 
+**A person's terminal is sandboxed; its line checks are best effort.** Each
+tab of the `/ide` terminal is, by default, one interactive `bash` started
+through the same sandbox backend as the agent's commands (`Shell` in
+`internal/sandbox/process.go` and `container.go`), in the workspace root, under
+the tier's filesystem, network and harness-state limits
+(`TestProcessSandboxShellIsInteractiveAndConfined`). Opening it is the
+person's `bash` call: judged by the policy, so plan mode refuses it, and
+recorded with `actor: user`, as is the shell's exit and the last 64 KB of its
+output. An interactive shell cannot be judged command by command, because the
+shell decides what a line means after it is sent: history recall, tab
+completion, aliases, functions, scripts and full-screen programs all happen
+inside it. So, for the terminal:
+
+- the sandbox is the enforcement boundary;
+- `bash` deny rules are a screen: the server rebuilds each line from the keys
+  it forwards and refuses a matching line before its Enter reaches the shell
+  (`server/terminal.go`, `shellInput` in `server/pty.go`), recording the
+  refusal; it cannot see what the shell expands or recalls;
+- each line entered is recorded as `terminal.input`, as typed, marked `edited`
+  when keys the server cannot follow were used; a line the terminal did not
+  echo (a password prompt) is recorded without its text, and keys typed in a
+  full-screen program are not recorded.
+
+`sandbox.terminal: "lines"` returns the terminal to one policy-checked `bash`
+call per line with no shell state, and a managed policy with deny rules for
+`bash` gets that mode automatically. Even then a rule checks the line, not what
+a script the line runs does. On the `none` tier the shell runs on the host, and
+the terminal banner and status bar say so.
+
 **Extensions may only veto, never permit.** `internal/extension/extension.go`
 states the rule directly: "An extension may VETO, never PERMIT." Hooks run
 first in the policy order specifically so they can veto before anything

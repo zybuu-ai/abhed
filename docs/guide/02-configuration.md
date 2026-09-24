@@ -30,7 +30,7 @@ starter file; everything below is optional and has a default.
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
-| `sandbox` | process isolation and network access |
+| `sandbox` | process isolation and network access; `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
 | `storage` | in-memory or Postgres |
 | `auth` | who may use a server deployment |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
@@ -114,6 +114,10 @@ finishes. Zero means no cap.
 
 Shell commands run under process isolation with writes scoped to the workspace.
 This is a boundary, not a jail: it is not sufficient for genuinely hostile code.
+
+`"terminal": "lines"` makes the workbench terminal run each line as a
+policy-checked command of its own instead of an interactive shell; the
+[workbench guide](16-workbench.md) says what each mode checks.
 
 ## Storage
 

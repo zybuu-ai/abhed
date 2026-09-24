@@ -77,6 +77,22 @@ All notable changes to Abhed are recorded here. The format follows
 - `auth.github.orgs`, `auth.github.teams` and `auth.github.allow_any`, for the
   paid editions' GitHub sign-in. Validated in every edition; the Community
   Edition does not otherwise read them.
+- The workbench terminal is a shell: each tab is one interactive `bash` in the
+  session's sandbox, at the workspace root, with history, completion, state
+  between lines and full-screen programs. Tabs can be added, renamed and
+  closed; resize, multi-line paste, Ctrl+C and a Kill button work; a banner
+  states the sandbox tier, the workspace and the network, and the `none` tier
+  is flagged in red. Opening the shell is a judged, recorded `bash` call;
+  each line is screened against the deny rules as typed and recorded as the
+  new `terminal.input` event. The docs say plainly that the sandbox is the
+  boundary and the line checks are best effort. `sandbox.terminal: "lines"`
+  keeps the one-checked-command-per-line terminal, which a managed policy
+  with `bash` deny rules also gets.
+- A session can be opened without a prompt (`POST /v1/sessions` with
+  `"workbench": true`). The workbench opens one, so the terminal works as soon
+  as the page loads; the first message goes to it. It records
+  `session.started`, is owned and listed like any other, and session lists
+  now carry each session's `mode`.
 
 ### Changed
 
@@ -105,6 +121,15 @@ All notable changes to Abhed are recorded here. The format follows
   icon font; its workers are same-origin files, so no `blob:`, `worker-src` or
   `unsafe-eval` is needed, and each is served with its own
   `default-src 'none'; script-src 'self'`.
+- The workbench's terminal and editor reopen a session from its record after
+  a restart, where they answered 409; if it cannot be reopened, the page opens
+  a fresh workbench session. A clean shutdown records `session.ended` for
+  workbench sessions nobody has messaged, so they can be reopened.
+- A session continued from its record no longer shows the model the calls a
+  person made in the workbench, which the model had never seen while the
+  session ran.
+- `GET /v1/capabilities` reports the sandbox tier in force and its mechanism,
+  not the configured minimum.
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
 - `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
@@ -151,6 +176,14 @@ All notable changes to Abhed are recorded here. The format follows
   icon, and the editor files are revalidated so an upgrade never serves a
   stale copy. The authentication guide says which edition has which sign-in,
   and no longer promises API tokens the Community Edition does not issue.
+- On the container tier, a workbench terminal command ran the engine's CLI
+  with only `TERM` in its environment, so it had no `PATH`, `HOME` or
+  `DOCKER_HOST`. It now inherits the host's environment; only the `-e` flags
+  reach the container.
+- The Explorer no longer collapses every folder when a command finishes; it
+  reloads in place and keeps the folders that were open.
+- Interrupting or deleting a session that had been continued from its record,
+  and was idle, no longer fails on a missing cancel function.
 - HawkEYE's `cold-cache` finding no longer fires when the provider reports no
   cached-token figure at all, as some OpenAI-compatible endpoints do; absence
   had been read as zero. `model.call` events record `cache_reported`; a
