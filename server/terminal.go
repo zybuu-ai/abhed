@@ -45,7 +45,7 @@ type enteredLine struct {
 	// output just after its Enter.
 	echo []byte
 	// known is set when the terminal was asked at the Enter (process and none
-	// tiers). secret is canonical mode with echo off, how a password is read;
+	// tiers). secret is canonical mode, in which bash is not at its prompt;
 	// program is another process group in the foreground than the shell.
 	known, secret, program bool
 	// alt is the container tier's guess at a full-screen program.

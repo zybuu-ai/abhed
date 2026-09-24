@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -129,7 +130,11 @@ func (wb *workbench) drive(id string, steps ...step) (string, string) {
 			}
 		}
 	}
-	prompted := func(s string) bool { return strings.HasSuffix(strings.TrimRight(s, " "), "$") }
+	// bash 5 follows its prompt with the bracketed-paste switch, so the check is on plain text.
+	prompted := func(s string) bool {
+		p := strings.TrimRight(plainText([]byte(s)), " ")
+		return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#") // # when run as root
+	}
 	go func() {
 		waitFor(0, prompted)
 		for _, st := range steps {
@@ -146,7 +151,7 @@ func (wb *workbench) drive(id string, steps ...step) (string, string) {
 			switch {
 			case st.nowait:
 			case st.until != "":
-				waitFor(from, func(s string) bool { return strings.Contains(s, st.until) })
+				waitFor(from, func(s string) bool { return strings.Contains(plainText([]byte(s)), st.until) })
 			case strings.HasSuffix(st.keys, "\r"):
 				waitFor(from, prompted)
 			default:
@@ -181,7 +186,8 @@ func (wb *workbench) drive(id string, steps ...step) (string, string) {
 			exit = strings.TrimPrefix(line, "data: ")
 		}
 	}
-	return snapshot(), exit
+	// Plain text: bash 5 wraps each prompt in bracketed-paste switches.
+	return plainText([]byte(snapshot())), exit
 }
 
 // typed returns the lines the record holds as entered at a terminal.
@@ -329,6 +335,55 @@ func TestShellWithholdsWhatReadNTook(t *testing.T) {
 	}
 }
 
+// Keys typed while a builtin keeps the shell busy are read later in canonical
+// mode, here by read -s. A line entered in canonical mode is not one typed at
+// bash's prompt, and its text is withheld.
+func TestShellWithholdsTypeAheadDuringABuiltin(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	steps := []step{{keys: `end=$((SECONDS+2)); while [ $SECONDS -lt $end ]; do :; done; read -s pw; echo "len=${#pw}"` + "\r", until: "len="},
+		{do: func(string) { time.Sleep(300 * time.Millisecond) }}}
+	for _, k := range "hunter27" {
+		steps = append(steps, step{keys: string(k), nowait: true})
+	}
+	steps = append(steps, step{keys: "\r", until: "len=8"}, step{keys: "exit\r"})
+	out, _ := wb.drive(start.ID, steps...)
+	if !strings.Contains(out, "len=8") {
+		t.Fatalf("read -s did not take the typed-ahead line:\n%s", out)
+	}
+	for _, in := range wb.typed() {
+		if strings.Contains(in.Line, "hunter27") {
+			t.Fatalf("a password typed ahead reached the record: %+v", in)
+		}
+	}
+}
+
+// With bracketed paste (bash 5.1 and later), a pasted line waits for an
+// Enter; the password typed after it is still withheld.
+func TestShellWithholdsAPasswordAfterABracketedPaste(t *testing.T) {
+	v, err := exec.Command("/bin/bash", "-c", `echo $((BASH_VERSINFO[0]*100+BASH_VERSINFO[1]))`).Output()
+	if n, _ := strconv.Atoi(strings.TrimSpace(string(v))); err != nil || n < 501 {
+		t.Skip("this bash has no bracketed paste")
+	}
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: "\x1b[200~read -s pw\recho len=${#pw}\r\x1b[201~", nowait: true},
+		step{do: func(string) { time.Sleep(300 * time.Millisecond) }},
+		step{keys: "\r", nowait: true},
+		step{do: func(string) { time.Sleep(300 * time.Millisecond) }},
+		step{keys: "hunter28\r", until: "len=8"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "len=8") {
+		t.Fatalf("the pasted lines did not run as expected:\n%s", out)
+	}
+	for _, in := range wb.typed() {
+		if strings.Contains(in.Line, "hunter28") {
+			t.Fatalf("a password after a bracketed paste reached the record: %+v", in)
+		}
+	}
+}
+
 // A secret typed ahead while a command still runs, then edited once the
 // password prompt is up, is never recorded in clear. It was recorded as
 // "s3cretr" before: the one key typed after the edit matched stray output.
@@ -360,9 +415,10 @@ func TestShellWithholdsATypedAheadPassword(t *testing.T) {
 // its own process group, which killing the shell alone left running.
 func TestShellKillEndsBackgroundJobs(t *testing.T) {
 	forms := map[string]string{
-		"a job":                   `sleep 300 & echo job=$!`,
-		"a job outside its table": `(sleep 301 & echo job=$! )`,
-		"a job ignoring hang-up":  `trap '' HUP; sleep 302 & echo job=$!`,
+		"a job":                    `sleep 300 & echo job=$!`,
+		"a job outside its table":  `(sleep 301 & echo job=$! )`,
+		"a job ignoring hang-up":   `trap '' HUP; sleep 302 & echo job=$!`,
+		"a job that keeps forking": `( (trap '' HUP; while :; do sleep 303 & sleep 0.05; done) & echo job=$! )`,
 	}
 	for name, form := range forms {
 		for _, byExit := range []bool{false, true} {
