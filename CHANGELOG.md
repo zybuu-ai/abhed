@@ -211,8 +211,9 @@ All notable changes to Abhed are recorded here. The format follows
 - A workbench shell ended by the person, by `exit`, Kill, closing its tab,
   closing the session or going unwatched, is recorded with its exit status and
   not as an error, and the record says how it was closed. Only a shell that
-  failed to start is an error. A terminal command or shell ended by a signal
-  now records 128 plus the signal's number, as a shell reports it, where it
+  failed to start is an error. A command ended by a signal, the agent's
+  `bash` call or one in the workbench terminal, now records 128 plus the
+  signal's number as its `exit_code`, as a shell reports it, where it
   recorded -1.
 - HawkEYE no longer attributes a person's workbench calls to the model: calls
   with `actor: user` never raise `repeated-failure`, `slow-tool`, `truncated`
