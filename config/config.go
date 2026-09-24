@@ -50,6 +50,9 @@ type Config struct {
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
+	// ManagedKeys are the settings the managed file made, as sorted dotted
+	// paths such as permissions.mode. See ManagedSets and Apply.
+	ManagedKeys []string `json:"-"`
 	// Unknown lists the keys in the files that no setting reads.
 	Unknown []UnknownKey `json:"-"`
 }
@@ -544,15 +547,8 @@ func Load(workspace string) (Config, error) {
 	}
 
 	// Managed config is applied last and marks the engine as org-controlled.
-	managed := filepath.Join("/etc", "abhed", "config.json")
-	if _, err := os.Stat(managed); err == nil {
-		if err := mergeFile(&cfg, managed); err != nil {
-			return cfg, err
-		}
-		cfg.Managed = true
-		for i := range cfg.Unknown {
-			cfg.Unknown[i].Managed = cfg.Unknown[i].File == managed
-		}
+	if err := mergeManaged(&cfg); err != nil {
+		return cfg, err
 	}
 
 	applyEnv(&cfg)
@@ -561,20 +557,27 @@ func Load(workspace string) (Config, error) {
 }
 
 func mergeFile(cfg *Config, path string) error {
+	_, err := readMerge(cfg, path)
+	return err
+}
+
+// readMerge merges the file at path into cfg and returns what it read, or
+// nil when there is no such file.
+func readMerge(cfg *Config, path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
-	return nil
+	return data, nil
 }
 
 // applyEnv lets a deployment override the endpoint without editing files,
@@ -698,9 +701,7 @@ func (c Config) Validate() error {
 	if _, err := p.Adapter(); err != nil {
 		return fmt.Errorf("provider %q: %w", c.Model.Default, err)
 	}
-	switch c.Permissions.Mode {
-	case "default", "accept-edits", "plan", "auto", "bypass", "":
-	default:
+	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {

@@ -38,12 +38,14 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -165,6 +167,15 @@ func Main(args []string, opts ...Option) int {
 	return run(a, workspace, *prompt, *mode, *modelID, *maxTurns, *format, *allow, *deny, *addDirs)
 }
 
+// applyFlags lays the command line over the configuration. The managed
+// configuration binds the flags exactly as it binds the SDK's Options.
+func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDirs string) (config.Config, error) {
+	return cfg.Apply(config.Overrides{
+		Mode: mode, MaxTurns: maxTurns,
+		Allow: splitRules(allow), Deny: splitRules(deny), AdditionalDirs: splitRules(addDirs),
+	})
+}
+
 func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, format, allowFlag, denyFlag, addDirs string) int {
 	cfg, err := config.Load(workspace)
 	if err != nil {
@@ -173,11 +184,8 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	if modelFlag != "" {
 		cfg.Model.Default = modelFlag
 	}
-	if modeFlag != "" {
-		cfg.Permissions.Mode = modeFlag
-	}
-	if maxTurns > 0 {
-		cfg.Limits.MaxTurns = maxTurns
+	if cfg, err = applyFlags(cfg, modeFlag, maxTurns, allowFlag, denyFlag, addDirs); err != nil {
+		fail(err)
 	}
 
 	provider, err := cfg.Provider()
@@ -190,7 +198,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	if err != nil {
 		fail(err)
 	}
-	if err := grantDirs(sess, cfg, addDirs); err != nil {
+	if err := grantDirs(sess, cfg, ""); err != nil {
 		fail(err)
 	}
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
@@ -202,8 +210,6 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
-	must(pol.AddAllow(splitRules(allowFlag)...))
-	must(pol.AddDeny(splitRules(denyFlag)...))
 
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
@@ -729,6 +735,21 @@ func (c *cliState) accumulate(u agent.Usage) {
 	c.total.Compactions += u.Compactions
 }
 
+// switchMode is /mode. The managed configuration binds it as it binds -mode,
+// and bypass is never offered mid-session.
+func switchMode(cfg config.Config, pol *policy.Engine, arg string) error {
+	switch policy.Mode(arg) {
+	case policy.ModeDefault, policy.ModeAcceptEdits, policy.ModePlan, policy.ModeAuto:
+	default:
+		return fmt.Errorf("unknown mode %q", arg)
+	}
+	if _, err := cfg.Apply(config.Overrides{Mode: arg}); err != nil {
+		return err
+	}
+	pol.Mode = policy.Mode(arg)
+	return nil
+}
+
 func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState) bool {
 	s := r.Style()
@@ -748,14 +769,11 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			fmt.Printf("  current mode: %s\n", pol.Mode)
 			return false
 		}
-		m := policy.Mode(fields[1])
-		switch m {
-		case policy.ModeDefault, policy.ModeAcceptEdits, policy.ModePlan, policy.ModeAuto:
-			pol.Mode = m
-			fmt.Printf("  mode: %s\n", m)
-		default:
-			fmt.Printf("  %s unknown mode %q\n", s.Red("✕"), fields[1])
+		if err := switchMode(st.appCfg, pol, fields[1]); err != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), err)
+			return false
 		}
+		fmt.Printf("  mode: %s\n", pol.Mode)
 
 	case "/cost":
 		u := st.total
@@ -1306,6 +1324,19 @@ func fanIn(taps []func(agent.Event)) func(agent.Event) {
 	}
 }
 
+// evalAllowed refuses an eval under a managed configuration: it approves
+// every prompt with nobody to ask, which is more than bypass.
+func evalAllowed(cfg config.Config) error {
+	if cfg.Managed {
+		return fmt.Errorf("eval approves every prompt with nobody to ask, which is refused "+
+			"under the managed configuration %s; run it where there is none", managed.ConfigFile)
+	}
+	return nil
+}
+
+// evalAllow lets corpora that compile and test code do so unattended.
+var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls*)"}
+
 // evalCmd runs the evaluation corpus against the configured model.
 //
 // Per docs P1 the harness is the dominant variable in agent success, so this is
@@ -1314,6 +1345,10 @@ func fanIn(taps []func(agent.Event)) func(agent.Event) {
 func evalCmd(workspace, corpusDir, jsonPath string) int {
 	cfg, err := config.Load(workspace)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err := evalAllowed(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
@@ -1373,7 +1408,7 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		// same way a real session is. The build-tool defaults stay for corpora
 		// that compile and test code.
 		must(pol.AddAllow(cfg.Permissions.Allow...))
-		must(pol.AddAllow("bash(go *)", "bash(npm *)", "bash(python *)", "bash(cat *)", "bash(ls*)"))
+		must(pol.AddAllow(evalAllow...))
 
 		store := agent.NewMemStore()
 		sessionID := "eval-" + task.ID
@@ -2010,19 +2045,7 @@ func webSearchLabel(cfg config.Config) string {
 // tier. Select never silently downgrades, so a failure here is a real
 // configuration problem the operator must see.
 func buildSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, error) {
-	p := sandbox.DefaultPolicy(workspace)
-	if cfg.Sandbox.MinTier != "" {
-		p.MinTier = sandbox.Tier(cfg.Sandbox.MinTier)
-	}
-	p.AllowNetwork = cfg.Sandbox.AllowNetwork
-	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
-	if cfg.Sandbox.MaxMemoryMB > 0 {
-		p.MaxMemoryMB = cfg.Sandbox.MaxMemoryMB
-	}
-	if cfg.Sandbox.MaxProcs > 0 {
-		p.MaxProcs = cfg.Sandbox.MaxProcs
-	}
-	return sandbox.Select(p)
+	return sandboxconfig.Build(cfg, workspace)
 }
 
 // grantDirs widens the session's reachable set from config and the --add-dir

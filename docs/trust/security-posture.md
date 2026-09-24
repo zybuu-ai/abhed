@@ -53,6 +53,30 @@ scoped per-command, not per-tool: allowing `bash(npm test)` never allows
 cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
 used to exfiltrate one of those files under the cover of an approved rule.
 
+**The managed configuration binds every entry point.** `/etc/abhed/config.json`
+is read last, and `config.Load` records which keys it set
+(`Config.ManagedKeys`). The CLI's flags and the SDK's `Options` pass through
+one function, `Config.Apply` (`config/managed.go`), which lets them tighten a
+managed setting and refuses, with an error, anything that would loosen one:
+`bypass` mode, a mode other than `plan` when the file pins one, a weaker
+`tools.syntax_check`, a higher `limits.max_turns`, an added allow rule or
+directory when the file sets those lists. Deny rules from a caller are only
+ever added. The SDK reads the managed file even without a `ConfigDir`, marks
+its engine managed as the CLI and server do, applies the configured ask rules,
+and wraps bash in the configured sandbox when the file sets a `sandbox` key.
+The console lets a client narrow its session to `plan` and nothing else. Not
+bound: the `ABHED_*` environment variables, which override the endpoint,
+credentials and database over the managed file; the choice of model; and, in
+the SDK, the organisation's `/etc/abhed/ABHED.md` (the SDK loads no memory
+files, and `Options.SystemPrompt` replaces the prompt), `limits.max_budget_tokens`
+and `limits.max_tokens`, which the SDK does not apply. A managed file that
+exists but cannot be read, or a link at the managed path to nothing, stops
+Abhed rather than being taken as absent. `abhed eval`, which approves every
+prompt with nobody to ask, refuses to run under a managed file, and the
+interactive `/mode` command is bound as `-mode` is. The binding covers the
+shipped entry points and programs that load configuration with `config.Load`;
+a `config.Config` built by hand carries no managed keys.
+
 **The agent cannot reach its own configuration.** `.abhed/` in the workspace
 and in the home directory holds the policy, the users file and the keys. The
 file tools refuse any path with that component (`internal/tools/session.go`,
@@ -303,7 +327,7 @@ specific threat:
 | Ephemeral scratch space | `--tmpfs /tmp:rw,noexec,nosuid,size=512m` | Gone on restart, `noexec` so a dropped payload cannot run |
 | Resource caps | `--memory 2g --memory-swap 2g --pids-limit 512 --cpus 2` | A runaway or hostile agent should exhaust its own limits, not the host's |
 | Loopback-only bind | `--publish 127.0.0.1:8080:8080` | The reverse proxy is the sole route in |
-| Config mounted read-only at the managed path | `--volume $CONFIG:/etc/abhed/config.json:ro` | Loading config at the managed path sets `Managed`, making `bypass` mode refusable and policy non-escalatable from inside the container |
+| Config mounted read-only at the managed path | `--volume $CONFIG:/etc/abhed/config.json:ro` | Loading config at the managed path sets `Managed`, refusing `bypass` mode, and binds every key it sets against flags and SDK options from inside the container |
 | Skills mounted read-only | `--volume $SKILLS:/workspace/.abhed/skills:ro` | Skills are instructions; the agent must not be able to rewrite its own operating rules |
 
 The transport and browser layers — TLS and HSTS, a Content-Security-Policy,

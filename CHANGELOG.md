@@ -12,15 +12,20 @@ All notable changes to Abhed are recorded here. The format follows
   beyond the record (`Live`: the session is still running there), and
   `hawkeye.Call.Actor` (`actor` in the JSON report): whether the model or a
   person made the call. `Analyze` is unchanged.
-- `tools.ExitStatus`, a process's exit code with a signal death given as 128
-  plus the signal's number.
+- `config.Config.ManagedKeys`, the settings the managed file set as dotted
+  paths, and `Config.ManagedSets` to ask about one; `config.Overrides`,
+  `Config.Apply`, which lays a caller's overrides over a configuration so
+  they may tighten the managed settings and never loosen them, and
+  `config.ManagedError`, the refusal it returns; `config.LoadManaged`, the
+  defaults with only the managed file applied.
 - A configuration key that nothing reads is reported: it is still ignored, so
   every configuration that loaded before still loads, but each one is written
   to standard error once, with its file, its JSON path and, when a known key
   is close, the one probably meant (`model.provider` → `model.default`).
   `abhed doctor` lists them and fails. Keys starting with `_` or `$`
   (`_comment`, `$schema`) are annotations and never reported; one in the
-  managed file says so. `config.Config.Unknown` carries them.
+  managed file says so. `config.Config.Unknown` carries them, and
+  `config.UnknownKey.Managed` marks one found in the managed file.
 - `GET /account`, where a local-accounts user changes their own password, and
   `switch_url` and `password_url` in `/v1/whoami`, naming the routes this
   deployment has for switching user and changing a password.
@@ -119,6 +124,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- **Upgrade note:** `abhed doctor` now exits non-zero when the configuration
+  has a key that nothing reads, in any file, the managed one included. A
+  pipeline that ran `abhed doctor` cleanly on 1.0.1 may fail on 1.1.0
+  until the key is corrected or removed; the warning names the file and the
+  key.
+- **Upgrade note:** a managed file (`/etc/abhed/config.json`) behind a
+  directory that cannot be searched, or a link there to nothing, now stops
+  `abhed` instead of being ignored. The SDK now reads the managed file even
+  without `ConfigDir`, so an embedder on a host with one is bound by it.
+- An unknown permission mode given to `-mode` or the SDK's
+  `Options.Mode` is refused; it ran as `default`.
+- The SDK applies the configuration's `permissions.ask` rules, as the CLI and
+  server do; it ignored them. This only adds prompts.
 - The reason given when a call is put to a person is accurate for the tool:
   "running a command needs approval in default mode" for `bash`, "changing a
   file needs approval …" for `edit` and `write`, where every such call read
@@ -287,6 +305,36 @@ All notable changes to Abhed are recorded here. The format follows
   of each string, and redaction fails closed: text that cannot be redacted
   becomes `[redacted: output withheld]`, and a payload left invalid is
   replaced whole.
+- **An embedded agent could loosen the managed configuration.** The SDK let
+  `Options.Mode` replace the managed permission mode, including with
+  `bypass`, which the CLI and server refuse under a managed file; it never
+  marked its policy engine managed, so the workbench terminal's managed
+  line-by-line enforcement and the engine's own `bypass` refusal did not
+  apply; without `ConfigDir` it did not read the managed file at all; and
+  `Options.SyntaxCheck` could turn a managed syntax check off. The CLI's
+  `-mode` flag also replaced a managed mode. Now `config.Load` records which
+  keys the managed file set, and the CLI's flags and the SDK's `Options` may
+  tighten those settings and never loosen them: `bypass` is refused under a
+  managed file; a managed `permissions.mode` admits only itself or `plan`;
+  a managed `tools.syntax_check` only something stricter; a managed
+  `limits.max_turns` only a lower limit; a managed `permissions.allow` or
+  `additional_dirs` no additions. Deny rules from a caller are added to the
+  managed ones. A refused override is an error from `abhed` and from
+  `sdk.New`, never a silent change. The SDK reads the managed file with or
+  without `ConfigDir`, marks its engine managed, and wraps bash in the
+  configured sandbox when the managed file sets a `sandbox` key (and fails
+  when no backend meets its `min_tier`). The interactive `/mode` command is
+  bound as `-mode` is. `abhed eval`, which approves every prompt with nobody
+  to ask, refuses to run under a managed file. `abhed resolve` runs in a
+  pinned managed mode unless `-mode` says otherwise. A refusal names the
+  managed file. A managed file behind a directory that cannot be searched,
+  or a link at the managed path to nothing, is an error; both were treated
+  as absent, as the SDK treated the file when `ConfigDir` was empty. Keys in
+  the managed file
+  are matched as the JSON decoder matches them, so one it applies, such as
+  a key spelt with `ſ`, is also bound and is not reported as unknown.
+  Without a managed file, the only changes are the two under Changed: an
+  unknown mode is refused, and the SDK applies `permissions.ask`.
 
 ## [1.0.1] - 2026-09-22
 
