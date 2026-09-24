@@ -90,9 +90,10 @@ func (wb *workbench) startShell() ptyStartResponse {
 // step: a prompt by default when the keys end a line, or until when it is set.
 // do, when set, runs instead of typing.
 type step struct {
-	keys  string
-	until string
-	do    func(out string)
+	keys   string
+	until  string
+	do     func(out string)
+	nowait bool // for keys that show nothing, such as at a password prompt
 }
 
 // typeLines types each piece into a shell, waiting for its prompt between
@@ -143,6 +144,7 @@ func (wb *workbench) drive(id string, steps ...step) (string, string) {
 				resp.Body.Close()
 			}
 			switch {
+			case st.nowait:
 			case st.until != "":
 				waitFor(from, func(s string) bool { return strings.Contains(s, st.until) })
 			case strings.HasSuffix(st.keys, "\r"):
@@ -303,6 +305,30 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 	}
 }
 
+// Keys a program reads without an Enter (read -s -n) are the front of the
+// next line the capture sees. That line was recorded in clear, secret and
+// all, because only its tail was looked for in the echo; now the whole line
+// must have been shown.
+func TestShellWithholdsWhatReadNTook(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	steps := []step{{keys: "read -s -n 8 pw\r", until: "-n 8 pw"}}
+	for _, k := range "hunter22" {
+		steps = append(steps, step{keys: string(k), nowait: true})
+	}
+	steps = append(steps, step{do: func(string) { time.Sleep(200 * time.Millisecond) }})
+	for _, k := range "echo hello world" {
+		steps = append(steps, step{keys: string(k)})
+	}
+	steps = append(steps, step{keys: "\r", until: "\nhello world"}, step{keys: "exit\r"})
+	wb.drive(start.ID, steps...)
+	for _, in := range wb.typed() {
+		if strings.Contains(in.Line, "hunter22") {
+			t.Fatalf("a password read by read -n reached the record: %+v", in)
+		}
+	}
+}
+
 // A secret typed ahead while a command still runs, then edited once the
 // password prompt is up, is never recorded in clear. It was recorded as
 // "s3cretr" before: the one key typed after the edit matched stray output.
@@ -333,27 +359,38 @@ func TestShellWithholdsATypedAheadPassword(t *testing.T) {
 // Kill ends the shell's background jobs too: an interactive bash gives each
 // its own process group, which killing the shell alone left running.
 func TestShellKillEndsBackgroundJobs(t *testing.T) {
-	wb := shellBench(t, nil)
-	start := wb.startShell()
-	out, _ := wb.drive(start.ID,
-		step{keys: "sleep 300 & echo job=$!\r", until: "\njob="},
-		step{do: func(string) {
-			if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
-				t.Errorf("kill: %d", rec.Code)
-			}
-		}})
-	m := regexp.MustCompile(`job=(\d+)`).FindStringSubmatch(out)
-	if m == nil {
-		t.Fatalf("no job pid:\n%s", out)
+	forms := map[string]string{
+		"a job":                   `sleep 300 & echo job=$!`,
+		"a job outside its table": `(sleep 301 & echo job=$! )`,
+		"a job ignoring hang-up":  `trap '' HUP; sleep 302 & echo job=$!`,
 	}
-	pid, _ := strconv.Atoi(m[1])
-	deadline := time.Now().Add(5 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			t.Fatalf("background job %d outlived Kill", pid)
+	for name, form := range forms {
+		for _, byExit := range []bool{false, true} {
+			wb := shellBench(t, nil)
+			start := wb.startShell()
+			end := step{do: func(string) {
+				if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+					t.Errorf("kill: %d", rec.Code)
+				}
+			}}
+			if byExit {
+				end = step{keys: "exit\r"}
+			}
+			out, _ := wb.drive(start.ID, step{keys: form + "\r", until: "\njob="}, end)
+			m := regexp.MustCompile(`\njob=(\d+)`).FindStringSubmatch(out)
+			if m == nil {
+				t.Fatalf("%s: no job pid:\n%s", name, out)
+			}
+			pid, _ := strconv.Atoi(m[1])
+			deadline := time.Now().Add(5 * time.Second)
+			for syscall.Kill(pid, 0) == nil {
+				if time.Now().After(deadline) {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+					t.Fatalf("%s (exit=%v): job %d outlived its shell", name, byExit, pid)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -605,7 +642,9 @@ func TestLineCaptureWithholdsWhenUnsure(t *testing.T) {
 		c := newLineCapture("u1", nil)
 		for i := range keys[:len(keys)-1] {
 			c.keys([]byte{keys[i]})
-			c.output([]byte(echo))
+			if i == 0 { // the terminal shows the given text once, as the line is typed
+				c.output([]byte(echo))
+			}
 		}
 		e := c.keys([]byte{keys[len(keys)-1]})[0].enter
 		e.known, e.secret = known, secret
@@ -621,6 +660,8 @@ func TestLineCaptureWithholdsWhenUnsure(t *testing.T) {
 		"short, terminal asked":   {typed("ls\r", "ls", true, false), true},
 		"short, terminal unknown": {typed("ls\r", "ls", false, false), false},
 		"edit at the Enter":       {typed("abcdX\x7fr\r", "abcdX", true, false), false},
+		"only the end shown":      {typed("hunter22echo hi there\r", "echo hi there", true, false), false},
+		"all but one key shown":   {typed("echo hi there\r", "echo hi the", true, false), false},
 	} {
 		if got := tc.e.echoed(); got != tc.want {
 			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)

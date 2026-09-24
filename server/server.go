@@ -942,6 +942,10 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{
 		"origin": "workbench", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
 	}); err != nil {
+		// An empty session left listed would be one nobody can open.
+		if del, ok := s.store.(agent.SessionDeleter); ok {
+			_ = del.DeleteSession(sessionID)
+		}
 		return "", fmt.Errorf("record session start: %w", err)
 	}
 	s.mu.Lock()

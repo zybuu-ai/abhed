@@ -218,9 +218,12 @@ reattaches to the shells it had open, with their recent output. A shell nobody
 has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), and one
 is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
 its tab, deleting the session or either limit, hangs it up, and bash hangs up
-the jobs it started in the background; so does typing `exit`. A job started
-with `nohup`, `disown` or `setsid` ignores that and keeps running until it
-ends, within the sandbox.
+the jobs it started in the background; so does typing `exit`. A moment later
+everything still in the shell's session is killed, which covers jobs started
+with `nohup` or `disown`, run as `( cmd & )`, or under `trap '' HUP`. What
+escapes is a process that makes a session of its own, with `setsid` or by
+daemonising; it runs until it ends, within the sandbox. On Linux bubblewrap
+ends everything in the sandbox with the shell, and a container is removed.
 
 What a shell changes about the checks, stated plainly:
 
@@ -231,7 +234,9 @@ What a shell changes about the checks, stated plainly:
   from the keys it passes on and, before the Enter reaches the shell, puts it to
   the policy. A line a deny rule matches is refused, recorded as a denied `bash`
   call, and discarded. That stops a denied command typed or pasted at the
-  prompt. It does not see what the shell makes of the line afterwards:
+  prompt. It does not see lines typed ahead while a command still runs: they
+  go to the terminal while that command has it, and the shell reads them after,
+  unscreened and unrecorded. Nor does it see what the shell makes of a line:
   history recall (the arrow keys, `!!`, Ctrl-R, Ctrl-O), tab completion,
   variables and other expansions (`$CMD`), a line continued with `\` onto the
   next, an alias, a function, a script, or anything typed into another program,
@@ -241,8 +246,10 @@ What a shell changes about the checks, stated plainly:
   (Tab, the arrow keys), since the shell may then have run something else. When
   the server cannot be sure the terminal showed a line as it was typed, it
   records that a line was entered but not its text: at a password prompt, for
-  a line whose echo it did not see, and for a short line where it could not ask
-  the terminal. Keys typed ahead while a command still runs are shown by the
+  a line whose whole text it did not see echoed before the Enter (so keys a
+  program took without an Enter, as `read -s -n` does, never prefix a recorded
+  line), for an edited line, and for a short line where it could not ask the
+  terminal. Keys typed ahead while a command still runs are shown by the
   terminal as they arrive, so a password typed ahead of its prompt is in the
   recorded output, as it was on screen.
 - **Which program has the keys.** On the process and none tiers the server
@@ -251,7 +258,10 @@ What a shell changes about the checks, stated plainly:
   screened nor recorded. On the container tier the engine's CLI holds the
   terminal, so the server can only watch for a program switching to the
   alternate screen; a `printf` of that sequence switches the screening and the
-  recording off there until the screen is switched back.
+  recording off there until the screen is switched back. Nor can it tell a
+  password prompt there: a password that also appears in what was printed
+  while it was typed, such as a user name in `[sudo] password for root:`, can
+  be recorded.
 
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on

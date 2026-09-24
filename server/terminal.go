@@ -24,9 +24,7 @@ const (
 	echoWait = 300 * time.Millisecond
 	// echoKeep bounds the output kept to find a line's echo in.
 	echoKeep = 8 << 10
-	// probeLen is how much of the end of a line is looked for in the echo,
-	// and probeMin the least that counts as a match.
-	probeLen = 12
+	// probeMin is the shortest line kept where the terminal cannot be asked.
 	probeMin = 4
 	// maxPending bounds the lines waiting to be judged; more are counted, not kept.
 	maxPending = 64
@@ -38,9 +36,6 @@ const (
 type enteredLine struct {
 	line   string
 	edited bool
-	// probe is the end of what was typed without an editing key, which a
-	// terminal with echo on shows verbatim.
-	probe string
 	// typedEcho is whether any output arrived while the line was typed.
 	typedEcho bool
 	// whole is set when every key of the line came in one write, so none of it
@@ -69,8 +64,6 @@ type keyChunk struct {
 type lineCapture struct {
 	mu    sync.Mutex
 	line  []byte
-	run   []byte
-	mark  int // how much of run came in earlier writes
 	esc   int // 0 none, 1 after ESC, 2 in a CSI sequence, 3 after ESC O
 	param []byte
 	edit  bool
@@ -103,7 +96,6 @@ func (c *lineCapture) keys(data []byte) []keyChunk {
 	defer c.mu.Unlock()
 	var out []keyChunk
 	from, here := 0, false
-	c.mark = len(c.run)
 	for i, b := range data {
 		if !c.started {
 			c.started, c.typedEcho, c.echo, here = true, false, nil, true
@@ -158,13 +150,12 @@ func (c *lineCapture) keys(data []byte) []keyChunk {
 			}
 			c.edited()
 		case b == 0x03 || b == 0x15: // Ctrl-C and Ctrl-U abandon the line
-			c.line, c.run, c.edit, c.mark = c.line[:0], c.run[:0], false, 0
+			c.line, c.edit = c.line[:0], false
 		case b < 0x20:
 			c.edited()
 		default:
 			if len(c.line) < maxManualCommand {
 				c.line = append(c.line, b)
-				c.run = append(c.run, b)
 			} else {
 				c.edit = true
 			}
@@ -180,35 +171,23 @@ func (c *lineCapture) keys(data []byte) []keyChunk {
 func (c *lineCapture) abandon() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.line, c.run, c.edit, c.started, c.mark = c.line[:0], c.run[:0], false, false, 0
+	c.line, c.edit, c.started = c.line[:0], false, false
 }
 
 // edited marks the line as changed by a key the capture cannot follow.
 func (c *lineCapture) edited() {
 	c.edit = true
-	c.run, c.mark = c.run[:0], 0
 }
 
-// submit ends the current line. Called with c.mu held. A typed line can only
-// be matched against output that came before its Enter, so its probe is what
-// came in earlier writes; a whole line is matched against what follows.
+// submit ends the current line. Called with c.mu held. A typed line is
+// matched against the output that came before its Enter; a pasted one,
+// against what follows.
 func (c *lineCapture) submit(whole bool) *enteredLine {
-	probe := c.run
-	if !whole {
-		probe = c.run[:min(c.mark, len(c.run))]
-	}
-	if len(probe) > probeLen {
-		probe = probe[len(probe)-probeLen:]
-		for len(probe) > 0 && !utf8.RuneStart(probe[0]) {
-			probe = probe[1:]
-		}
-	}
-	e := &enteredLine{line: string(c.line), edited: c.edit, probe: string(probe), whole: whole,
-		typedEcho: c.typedEcho, alt: c.alt}
+	e := &enteredLine{line: string(c.line), edited: c.edit, whole: whole, typedEcho: c.typedEcho, alt: c.alt}
 	if !whole {
 		e.echo = append([]byte(nil), c.echo...)
 	}
-	c.line, c.run, c.edit, c.started, c.mark = c.line[:0], c.run[:0], false, false, 0
+	c.line, c.edit, c.started = c.line[:0], false, false
 	return e
 }
 
@@ -291,22 +270,17 @@ func (c *lineCapture) judge(e *enteredLine) {
 	}
 }
 
-// echoed reports whether the terminal showed the line as it was typed. When
-// unsure it says no: a line wrongly withheld costs a record its text, a
-// line wrongly kept can put a password in it.
+// echoed reports whether the terminal showed the line as it was typed: the
+// whole line, unedited, in its echo. Keys a program read without an Enter
+// (read -s -n) stay at the front of the next line, and a line that begins
+// with them never matches. When unsure it says no: a line wrongly withheld
+// costs the record its text, a line wrongly kept can put a password in it.
 func (e *enteredLine) echoed() bool {
-	if e.secret || e.probe == "" || !strings.Contains(plainText(e.echo), e.probe) {
+	if e.secret || e.edited || e.line == "" || !strings.Contains(plainText(e.echo), e.line) {
 		return false
 	}
-	if e.edited && !e.typedEcho && !e.whole {
-		return false
-	}
-	if len(e.probe) >= probeMin {
-		return true
-	}
-	// A short line is kept only when the terminal said it was not reading a
-	// password and the whole line, unedited, is what matched.
-	return e.known && !e.edited && e.probe == e.line
+	// A short line needs the terminal to have said it was not reading a password.
+	return len(e.line) >= probeMin || e.known
 }
 
 // altScreen follows the switches to and from a full-screen program's screen.

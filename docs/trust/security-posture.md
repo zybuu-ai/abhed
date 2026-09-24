@@ -93,7 +93,13 @@ inside it. So, for the terminal:
   the terminal showed the line as typed, the line is recorded without its text:
   at a password prompt (on the process and none tiers, read from the
   terminal's own mode), when its echo was not seen before the Enter, and for a
-  line under four bytes where the terminal could not be asked. Keys typed ahead
+  line under four bytes where the terminal could not be asked. The whole line
+  must be seen echoed, so keys a program took without an Enter (`read -s -n`)
+  never prefix a recorded line, and an edited line is recorded without its
+  text. On the container tier, where the terminal cannot be asked, a password
+  that also appears in the prompt printed while it was typed can be recorded.
+  Lines typed ahead while a command runs go to that command's terminal and are
+  read by the shell afterwards: neither screened nor recorded. Keys typed ahead
   while a command runs are echoed as they arrive, so they are in the recorded
   output as they were on screen;
 - which program has the keys is asked of the terminal on the process and none
@@ -103,8 +109,12 @@ inside it. So, for the terminal:
   the only sign; printing that sequence switches screening and recording off
   there until it is switched back;
 - ending a shell (Kill, closing its tab, deleting the session, the idle or
-  twelve-hour limit, or `exit`) hangs it up, and bash hangs up its background
-  jobs; `nohup`, `disown` and `setsid` still escape that, within the sandbox.
+  twelve-hour limit, or `exit`) hangs it up, bash hangs up its background
+  jobs, and then every process left in the shell's session is killed
+  (`EndSession` in `internal/sandbox`), which covers `nohup`, `disown`,
+  `( cmd & )` and `trap '' HUP`. A process that starts a session of its own
+  (`setsid`, a daemon) escapes that and runs until it ends, within the
+  sandbox; bubblewrap and the container tier end everything regardless.
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies

@@ -148,6 +148,10 @@ forwards:
 | `X-Abhed-Tenant` | the tenant | `default` |
 | `X-Abhed-Groups` | comma-separated groups (the admin group among them, if any) | none |
 
+A request with no `X-Abhed-User` is `anonymous`, and `anonymous` owns every
+session in its tenant, now including each workbench shell: the proxy must set
+the header on every request.
+
 Abhed does no verification of its own in this mode, so the proxy must be the
 only route to the port: bind Abhed to loopback or a private interface and let
 nothing else reach it. Anything that can reach the port directly can claim any
