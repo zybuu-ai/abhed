@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -706,9 +707,8 @@ func (c Config) Validate() error {
 	if err := c.Auth.GitHub.validate(); err != nil {
 		return err
 	}
-	if u := c.Auth.ProxyLogoutURL; u != "" && !strings.HasPrefix(u, "/") &&
-		!strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
-		return fmt.Errorf("auth.proxy_logout_url %q must be an http(s) URL or a path", u)
+	if u := c.Auth.ProxyLogoutURL; u != "" && !validLogoutURL(u) {
+		return fmt.Errorf("auth.proxy_logout_url %q must be an http(s) URL or a path on this host", u)
 	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":
@@ -735,6 +735,22 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
 	}
 	return nil
+}
+
+// validLogoutURL accepts an absolute http(s) URL or a path with no host; a
+// "//" or backslash prefix would send the browser to another site.
+func validLogoutURL(s string) bool {
+	if strings.ContainsAny(s, "\\\x00\r\n") {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	if strings.HasPrefix(s, "/") {
+		return u.Host == "" && u.Scheme == "" && !strings.HasPrefix(s, "//")
+	}
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 func (g GitHubAuthConfig) validate() error {

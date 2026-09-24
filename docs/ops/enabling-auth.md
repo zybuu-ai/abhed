@@ -119,7 +119,18 @@ accounts are created by an administrator, which is true and actionable.
 administrator removing their own rights, and refuses removing the last
 administrator whoever asks, since nothing on the deployment could grant it
 back. Every change under `/v1/admin/*` is written to the server log as
-`admin action`, with the action, the target and who made it.
+`admin action`, with the action, the target and who made it. An MCP server's
+URL is recorded as scheme, host and path only, and its command as the program
+alone, since either can carry a credential.
+
+The last-administrator rule holds within one server process. Two nodes
+sharing a Postgres account store can each remove the other's last
+co-administrator at the same moment. If that happens, create a new
+administrator from the command line with `abhed user add <new-name> -admin`.
+
+Must-change is enforced on the node that holds the session. A reset reaches
+the live sessions on the node that made it; on another node a session already
+open stays unconfined until it signs in again.
 
 ## Behind a reverse proxy
 
@@ -200,6 +211,21 @@ above without them.
 | `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued | `403` with the error text; no session |
 | `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…}`; whoami answers `authenticated: false` with the reason |
 | `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way |
+
+Notes for an edition setting them:
+
+- **The reason is shown to the person.** Admit's and Check's error text
+  appears in the sign-in form, in whoami, and on the front door after "Access
+  refused:", cut to 200 characters. Write it for them; never pass through an
+  internal error such as a database message.
+- **Admit covers local accounts only.** A single sign-on session is issued at
+  its callback, which is public, and is ended by Check on its first checked
+  request. Refuse at the provider's own callback where it matters.
+- **Check runs when a request arrives.** A stream already open (session
+  events, a terminal) is not cut when access is withdrawn; it is refused when
+  it reconnects.
+- **AdminAudit may run while the admin-rights lock is held**, so it must not
+  call an admin route itself.
 
 `auth.LocalAuth.Sessions()` lists live local sessions — a digest of the
 cookie as the ID, never the cookie, with the user, when it was created, last

@@ -227,7 +227,9 @@ func TestGitHubAuthKeysAreValidated(t *testing.T) {
 
 func TestProxyLogoutURLIsValidated(t *testing.T) {
 	for url, ok := range map[string]bool{"": true, "/oauth2/sign_out": true,
-		"https://sso.example.com/logout": true, "javascript:alert(1)": false} {
+		"https://sso.example.com/logout": true, "javascript:alert(1)": false,
+		"//evil.example.com/logout": false, `/\evil.example.com`: false, `\\evil.example.com`: false,
+		"https://": false, "ftp://sso.example.com/": false, "/a\r\nLocation: x": false} {
 		c := Default()
 		c.Auth.ProxyLogoutURL = url
 		if err := c.Validate(); (err == nil) != ok {

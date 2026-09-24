@@ -45,7 +45,9 @@ All notable changes to Abhed are recorded here. The format follows
   after any provider, token or proxy identifies someone, which ends a refused
   session and answers 403 with the reason (a browser goes to `/?refused=`),
   and which `/v1/whoami` and `/v1/overview` honour too; and
-  `server.Options.AdminAudit`, told of every `/v1/admin/*` change.
+  `server.Options.AdminAudit`, told of every `/v1/admin/*` change. An MCP
+  server's URL is recorded without credentials or query, and its command as
+  the program alone.
 - `auth.LocalAuth.Sessions` lists live local sessions by a digest of their
   cookie, never the cookie, with when each was created, last seen and
   expires; `EndSession` ends one by that digest. `auth.SessionEnder` lets a
@@ -108,6 +110,8 @@ All notable changes to Abhed are recorded here. The format follows
   `/v1/whoami`, sign-out and static files. A browser is sent to `/account`; an
   API call gets `403 {"error":"password change required"}`. It had been a note
   in the workbench.
+- In `proxy` mode, a request whose proxy names no user no longer carries the
+  groups in `X-Abhed-Groups`.
 - The workbench is where sign-in lands, and the console links to it; it had
   to be reached by typing `/ide`. Switch no longer leads to a 404 on local
   accounts, Admin appears only where an admin page exists, and a local user

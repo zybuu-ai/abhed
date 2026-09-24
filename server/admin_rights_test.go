@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,5 +114,37 @@ func TestLastAdministratorCannotBeRemoved(t *testing.T) {
 	}
 	if !g.isAdmin(t, "bob") {
 		t.Fatal("the last administrator was removed")
+	}
+}
+
+// Two administrators removing each other at once: exactly one succeeds.
+func TestConcurrentDemotionsLeaveAnAdministrator(t *testing.T) {
+	for range 5 {
+		g := newAdminRig(t)
+		alice := g.signIn(t, "alice")
+		if rec := g.setAdmin(alice, "bob", true); rec.Code != http.StatusNoContent {
+			t.Fatalf("promote bob = %d", rec.Code)
+		}
+		bob := g.signIn(t, "bob")
+		codes := make(chan int, 2)
+		var start sync.WaitGroup
+		start.Add(1)
+		for _, req := range []struct {
+			c      *http.Cookie
+			target string
+		}{{alice, "bob"}, {bob, "alice"}} {
+			go func() {
+				start.Wait()
+				codes <- g.setAdmin(req.c, req.target, false).Code
+			}()
+		}
+		start.Done()
+		a, b := <-codes, <-codes
+		if a+b != http.StatusNoContent+http.StatusConflict {
+			t.Fatalf("results %d and %d, want one 204 and one 409", a, b)
+		}
+		if g.isAdmin(t, "alice") == g.isAdmin(t, "bob") {
+			t.Fatal("not exactly one administrator left")
+		}
 	}
 }

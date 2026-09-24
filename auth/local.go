@@ -113,7 +113,8 @@ type LocalAuth struct {
 	SessionTTL time.Duration
 	Secure     bool
 	// Admit, when set, is asked after the password checks out and before a
-	// session is issued; its error is shown to the person with a 403.
+	// session is issued; its error is shown to the person with a 403. Local
+	// accounts only: other providers meet Middleware.Check on their first request.
 	Admit func(ctx context.Context, u *User) error
 
 	mu       sync.RWMutex

@@ -45,8 +45,9 @@ type Middleware struct {
 	// PublicPaths bypass authentication (health checks, the console shell).
 	PublicPaths []string
 	// Check, when set, runs after a provider, the verifier or a trusted proxy
-	// has identified someone. An error refuses the request with that reason,
-	// and ends the session when a provider holds one.
+	// has identified someone. An error refuses the request, ends the session a
+	// provider holds, and its text is shown to the person, so keep it plain.
+	// A stream is checked when it opens, not while it runs.
 	Check func(ctx context.Context, id *Identity) error
 }
 
@@ -116,7 +117,7 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 
 		if m.TrustHeaders {
 			id := headerIdentity(r)
-			if id.Subject != "anonymous" {
+			if r.Header.Get("X-Abhed-User") != "" {
 				if err := m.check(r.Context(), id); err != nil {
 					m.refuse(w, r, err)
 					return
@@ -131,15 +132,15 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// headerIdentity is the identity a trusted proxy asserted, anonymous when it
-// named no user.
+// headerIdentity is the identity a trusted proxy asserted, anonymous and
+// without groups when it named no user.
 func headerIdentity(r *http.Request) *Identity {
 	id := &Identity{
 		Subject: headerOr(r, "X-Abhed-User", "anonymous"),
 		Email:   r.Header.Get("X-Abhed-Email"),
 		Tenant:  headerOr(r, "X-Abhed-Tenant", "default"),
 	}
-	if groups := r.Header.Get("X-Abhed-Groups"); groups != "" {
+	if groups := r.Header.Get("X-Abhed-Groups"); groups != "" && r.Header.Get("X-Abhed-User") != "" {
 		id.Groups = strings.Split(groups, ",")
 	}
 	return id
@@ -186,12 +187,20 @@ func (m Middleware) check(ctx context.Context, id *Identity) error {
 // to the front door with the reason, an API client gets 403 and the reason.
 func (m Middleware) refuse(w http.ResponseWriter, r *http.Request, err error) {
 	if wantsHTML(r) {
-		http.Redirect(w, r, "/?refused="+url.QueryEscape(err.Error()), http.StatusFound)
+		http.Redirect(w, r, "/?refused="+url.QueryEscape(clip(err.Error(), 200)), http.StatusFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden", "reason": err.Error()})
+}
+
+// clip shortens s to at most n runes.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // endSession ends the session p holds for r. SignOut is the fallback, with

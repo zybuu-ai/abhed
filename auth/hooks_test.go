@@ -234,3 +234,45 @@ func TestNoCheckAdmitsAsBefore(t *testing.T) {
 		t.Fatalf("= %d %q", rec.Code, rec.Body)
 	}
 }
+
+// Check is skipped only when the proxy names nobody; the anonymous identity
+// then carries no groups, whatever the headers say.
+func TestProxyAnonymousHasNoGroupsAndNamedIsChecked(t *testing.T) {
+	var checked []string
+	mw := Middleware{TrustHeaders: true, Check: func(_ context.Context, id *Identity) error {
+		checked = append(checked, id.Subject)
+		return nil
+	}}
+	var groups []string
+	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := FromContext(r.Context())
+		groups = id.Groups
+	}))
+
+	req := httptest.NewRequest("GET", "/v1/sessions", nil)
+	req.Header.Set("X-Abhed-Groups", "abhed-admin")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if len(groups) != 0 || len(checked) != 0 {
+		t.Fatalf("no user: groups %v, checked %v", groups, checked)
+	}
+
+	req.Header.Set("X-Abhed-User", "anonymous")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if len(checked) != 1 || checked[0] != "anonymous" {
+		t.Fatalf("a proxy that names anonymous was not checked: %v", checked)
+	}
+}
+
+func TestRefusalReasonIsClipped(t *testing.T) {
+	mw := Middleware{TrustHeaders: true, Check: func(context.Context, *Identity) error {
+		return errors.New(strings.Repeat("x", 500))
+	}}
+	req := httptest.NewRequest("GET", "/ide", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("X-Abhed-User", "carol")
+	rec := httptest.NewRecorder()
+	mw.Wrap(echoSubject()).ServeHTTP(rec, req)
+	if loc := rec.Header().Get("Location"); len(loc) != len("/?refused=")+200 {
+		t.Fatalf("redirect = %d bytes", len(loc))
+	}
+}

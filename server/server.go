@@ -200,8 +200,8 @@ type Options struct {
 	Index        *index.Index
 	IndexOptions index.BuildOptions
 	// AdminAudit, when set, is told of every administrative change made
-	// through /v1/admin/*: who is in the context, what, to what, and detail.
-	// Nil means the server log only.
+	// through /v1/admin/*; nil means the server log only. It may run under the
+	// admin-rights lock, so it must not call an admin route itself.
 	AdminAudit func(ctx context.Context, action, target string, detail map[string]any)
 	// DrainTimeout is how long a shutdown waits for running turns to finish
 	// before cancelling them. Zero keeps the old behaviour of ending them at
@@ -229,7 +229,7 @@ type Server struct {
 	mounts []Mount
 
 	// adminMu serialises admin-rights changes, so two demotions at once
-	// cannot leave nobody an administrator.
+	// cannot leave nobody an administrator. It holds within one process only.
 	adminMu sync.Mutex
 
 	// state holds what a settings change may replace, behind its own lock.

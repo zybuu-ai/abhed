@@ -806,7 +806,7 @@ function shortPath(p){
 // A session this deployment refused arrives here with the reason.
 try{
   const why = new URLSearchParams(location.search).get('refused');
-  if(why){ $('refused').textContent = why; $('refused').hidden = false; }
+  if(why){ $('refused').textContent = 'Access refused: ' + why.slice(0, 200); $('refused').hidden = false; }
 }catch{}
 
 load();
