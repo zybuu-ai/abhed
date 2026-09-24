@@ -170,6 +170,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed -h`, and an unknown flag, print a synopsis, every subcommand with
+  what it does, an edition's own commands, and then the flags; they printed
+  the flags alone. `-addr` read as `-addr abhed serve` and now reads as a flag
+  with a value. `app.WithCommand` now also ignores `hawkeye`, `migrate`,
+  `resolve`, `acp` and `secret`, which Main always dispatched itself.
 - On the macOS process tier with the network off, a command could list the
   host's interfaces, LAN address and VPN tunnels (`ifconfig`, `netstat -rn`,
   `scutil --nwi`). The sandbox now denies the routing sysctls and the system
