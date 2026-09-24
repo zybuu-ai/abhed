@@ -209,3 +209,93 @@ func TestNoSecretsMeansNoLag(t *testing.T) {
 		t.Fatalf("deltas %q, want %q", got, chunks)
 	}
 }
+
+// Values that begin as a label does, split into two or three fragments
+// anywhere, never reach an event.
+func TestBracketSecretsSplitAcrossDeltas(t *testing.T) {
+	vals := map[string]string{"BRACKET": "[abcdefghijkl", "LABELLIKE": "[secret:k9zz"}
+	reply := "see [abcdefghijkl now, and [secret:k9zz too."
+	cuts := runeCuts(reply)
+	for i, a := range cuts {
+		for _, b := range cuts[i:] {
+			ad := &fragmentAdapter{chunks: []string{reply[:a], reply[a:b], reply[b:]}}
+			recorded, live := streamRun(context.Background(), t, vals, ad)
+			checkStream(t, vals, reply, recorded, live)
+		}
+	}
+}
+
+// A value whose bytes also occur across a JSON escape is matched in the text,
+// not the escape: the real occurrence is redacted and the rest left alone.
+func TestSecretBesideAnEscapeIsRedacted(t *testing.T) {
+	cases := []struct{ value, text, want string }{
+		{"003e9a8b7c6d5e", "a>9a8b7c6d5e key 003e9a8b7c6d5e", "a>9a8b7c6d5e key [secret:K]"},
+		{"nf00d1e2b3c4", "log:\nf00d1e2b3c4 and key nf00d1e2b3c4", "log:\nf00d1e2b3c4 and key [secret:K]"},
+	}
+	for _, tc := range cases {
+		vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+		if err := vault.Set("K", tc.value); err != nil {
+			t.Fatal(err)
+		}
+		if got := redactedText(vault.Redactor().Redact, tc.text); got != tc.want {
+			t.Fatalf("redacted %q to %q, want %q", tc.text, got, tc.want)
+		}
+		for _, cut := range runeCuts(tc.text) {
+			a := &fragmentAdapter{chunks: []string{tc.text[:cut], tc.text[cut:]}}
+			recorded, _ := streamRun(context.Background(), t, map[string]string{"K": tc.value}, a)
+			var deltas strings.Builder
+			for _, e := range recorded {
+				var d Delta
+				if err := json.Unmarshal(e.Payload, &d); err != nil {
+					t.Fatalf("%s is not valid JSON: %s", e.Type, e.Payload)
+				}
+				if e.Type == EvAgentDelta {
+					deltas.WriteString(d.Text)
+				}
+				if e.Type == EvAgentMessage && d.Text != tc.want {
+					t.Fatalf("the message reads %q, want %q", d.Text, tc.want)
+				}
+			}
+			if deltas.String() != tc.want {
+				t.Fatalf("cut %d: the deltas read %q, want %q", cut, deltas.String(), tc.want)
+			}
+		}
+	}
+}
+
+type brokenRedactor struct{}
+
+func (brokenRedactor) Redact(b []byte) []byte { return breakJSON(b) }
+func (brokenRedactor) Span() int              { return 4 }
+
+// Redaction that fails withholds the text; it never falls back to the
+// original, and the record still holds valid JSON.
+func TestFailedRedactionIsWithheld(t *testing.T) {
+	if got := redactedText(breakJSON, "the key is hunter22"); got != Withheld {
+		t.Fatalf("a failed redaction returned %q", got)
+	}
+	rec := NewRecorder(NewMemStore(), "s", "")
+	rec.Redact = brokenRedactor{}
+	ev, err := rec.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "the key is hunter22"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(ev.Payload) || strings.Contains(string(ev.Payload), "hunter22") ||
+		!strings.Contains(string(ev.Payload), Withheld) {
+		t.Fatalf("recorded %s", ev.Payload)
+	}
+}
+
+// A typed nil redactor is no redactor: it neither panics nor holds text back.
+func TestTypedNilRedactorIsIgnored(t *testing.T) {
+	var none *secrets.Redactor
+	rec := NewRecorder(NewMemStore(), "s", "")
+	rec.Redact = none
+	ev, err := rec.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "plain"})
+	if err != nil || !strings.Contains(string(ev.Payload), "plain") {
+		t.Fatalf("recorded %s, %v", ev.Payload, err)
+	}
+	if b := (&Loop{Recorder: rec}).fragments(); b.span != 0 || b.push("as is") != "as is" {
+		t.Fatal("a typed nil redactor changed the stream")
+	}
+}

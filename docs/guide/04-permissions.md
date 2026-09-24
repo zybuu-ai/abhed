@@ -166,4 +166,8 @@ The reply streams as many fragments, and a value may be split between two, so
 streamed text is held back by about the length of the longest stored value
 and redacted together with what follows. The live view lags by that much, and
 only when secrets are stored; the whole reply is redacted as one event too.
+A stored key file makes that lag visible, a few kilobytes of text, and values
+that occur close together hold the text back until the last one is complete.
+Text that cannot be redacted is never written as it was: it becomes
+`[redacted: output withheld]`.
 

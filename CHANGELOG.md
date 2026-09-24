@@ -105,8 +105,16 @@ All notable changes to Abhed are recorded here. The format follows
   it. Streamed text is now held back by about the length of the longest
   stored value, redacted with what follows, and released at the end of the
   turn, on error or on interrupt; with no secrets stored nothing is held
-  back. `server.Options.Redact` and `agent.Recorder.Redact` take an
-  `agent.Redactor`, which `secrets.Store.Redactor` returns.
+  back. `server.Options.Redact` now takes any type with methods
+  `Redact([]byte) []byte` and `Span() int`, the length of the longest text
+  it replaces; a nil pointer of such a type means no redaction.
+- **A value next to a JSON escape could be left in place.** Values were
+  matched against the escaped payload, so one whose bytes also occurred
+  across an escape (`\u003e`, `\n`) could break the JSON, and tool output
+  was then passed on unredacted. Values are now matched in the decoded text
+  of each string, and redaction fails closed: text that cannot be redacted
+  becomes `[redacted: output withheld]`, and a payload left invalid is
+  replaced whole.
 
 ## [1.0.1] - 2026-09-22
 

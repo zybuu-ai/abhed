@@ -153,9 +153,9 @@ func (s *Store) Env(names []string) ([]string, error) {
 }
 
 // Redactor replaces every stored value in a JSON payload with [secret:NAME].
-// Values are matched in their JSON-escaped form, which is how they would
-// appear inside an event, and the longest first so a value that contains
-// another is replaced whole.
+// Each string literal is decoded and matched as text, so a match never
+// straddles an escape and the output is always valid JSON. The longest value
+// is replaced first, so a value that contains another is replaced whole.
 type Redactor struct {
 	pairs []pair
 }
@@ -172,31 +172,80 @@ func (s *Store) Redactor() *Redactor {
 	}
 	pairs := make([]pair, 0, len(m))
 	for name, value := range m {
-		esc, _ := json.Marshal(value)
-		needle := string(esc[1 : len(esc)-1])
-		if needle == "" {
+		if value == "" {
 			continue
 		}
-		pairs = append(pairs, pair{needle, "[secret:" + name + "]"})
+		label := "[secret:" + name + "]"
+		// Text that embeds JSON holds the value escaped, so that form is a
+		// needle too, with and without HTML escaping.
+		seen := map[string]bool{}
+		for _, n := range []string{value, escaped(value, true), escaped(value, false)} {
+			if !seen[n] {
+				seen[n] = true
+				pairs = append(pairs, pair{n, label})
+			}
+		}
 	}
-	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
+	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
 	return &Redactor{pairs: pairs}
 }
 
-// Redact returns the payload with every stored value replaced.
+func escaped(v string, html bool) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(html)
+	_ = enc.Encode(v)
+	out := strings.TrimSuffix(b.String(), "\n")
+	return out[1 : len(out)-1]
+}
+
+// Redact returns the payload with every stored value replaced. A payload that
+// is not valid JSON is scanned the same way, literal by literal.
 func (r *Redactor) Redact(b []byte) []byte {
 	if len(r.pairs) == 0 {
 		return b
 	}
-	text := string(b)
-	for _, p := range r.pairs {
-		text = strings.ReplaceAll(text, p.needle, p.label)
+	var out []byte
+	last := 0
+	for i := 0; i < len(b); i++ {
+		if b[i] != '"' {
+			continue
+		}
+		j := i + 1
+		for j < len(b) && b[j] != '"' {
+			if b[j] == '\\' {
+				j++
+			}
+			j++
+		}
+		if j >= len(b) {
+			break
+		}
+		var text string
+		if json.Unmarshal(b[i:j+1], &text) == nil {
+			if red := r.text(text); red != text {
+				enc, _ := json.Marshal(red)
+				out = append(append(out, b[last:i]...), enc...)
+				last = j + 1
+			}
+		}
+		i = j
 	}
-	return []byte(text)
+	if out == nil {
+		return b
+	}
+	return append(out, b[last:]...)
 }
 
-// Span is the byte length of the longest value in its escaped form, or 0 when
-// none is stored: the most text a caller streaming fragments must hold back.
+func (r *Redactor) text(s string) string {
+	for _, p := range r.pairs {
+		s = strings.ReplaceAll(s, p.needle, p.label)
+	}
+	return s
+}
+
+// Span is the byte length of the longest text a value is matched as, or 0
+// when none is stored: the most a caller streaming fragments must hold back.
 func (r *Redactor) Span() int {
 	if len(r.pairs) == 0 {
 		return 0
