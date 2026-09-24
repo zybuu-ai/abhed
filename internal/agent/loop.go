@@ -833,8 +833,8 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	result := tool.Run(ctx, l.Session, call.Args)
 	// A secret's value is stripped from the result before the model and the
 	// record see it, so the model never holds a value it could echo elsewhere.
-	if l.Recorder != nil && l.Recorder.Redact != nil {
-		result.Content = redactedText(l.Recorder.Redact.Redact, result.Content)
+	if red := l.Recorder.redactor(); red != nil {
+		result.Content = redactedText(red.Redact, result.Content)
 	}
 	elapsed := time.Since(start)
 
@@ -1216,28 +1216,29 @@ type fragmentBuffer struct {
 // nothing back and passes fragments through unchanged.
 func (l *Loop) fragments() *fragmentBuffer {
 	b := &fragmentBuffer{}
-	if l.Recorder != nil && l.Recorder.Redact != nil {
-		b.redact, b.span = l.Recorder.Redact.Redact, l.Recorder.Redact.Span()
+	if red := l.Recorder.redactor(); red != nil {
+		b.redact, b.span = red.Redact, red.Span()
 	}
 	return b
 }
 
 // push adds a fragment and returns the redacted text that can be emitted now.
-// The last span-1 bytes are held back: too short to hold a whole secret, they
-// may be the start of one.
+// At least the last span-1 bytes are held back: too short to hold a whole
+// secret, they may be the start of one.
 func (b *fragmentBuffer) push(s string) string {
 	if b.span == 0 {
 		return s
 	}
 	raw := b.carry + s
 	whole := redactedText(b.redact, raw)
-	for cut := len(raw) - (b.span - 1); cut > 0; cut-- {
-		if cut < len(raw) && !utf8.RuneStart(raw[cut]) {
-			continue
+	for cut := len(raw) - (b.span - 1); cut > 0; cut -= max(b.span-1, 1) {
+		for cut > 0 && cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+			cut--
 		}
-		// A cut through a secret found in the whole text would leave both
-		// halves unmatched; step back before it.
-		if head := redactedText(b.redact, raw[:cut]); strings.HasPrefix(whole, head) {
+		// A cut is safe only where splitting changes nothing. A secret that
+		// crosses it starts less than a span before it, so the next try is there.
+		head := redactedText(b.redact, raw[:cut])
+		if cut > 0 && head+redactedText(b.redact, raw[cut:]) == whole {
 			b.carry = raw[cut:]
 			return head
 		}
@@ -1257,15 +1258,16 @@ func (b *fragmentBuffer) flush() string {
 }
 
 // redactedText runs a payload redactor over one string, through the JSON
-// form the redactor matches against.
+// form the redactor matches against. It fails closed: text that cannot be
+// redacted is withheld, never returned as it was.
 func redactedText(redact func([]byte) []byte, text string) string {
 	raw, err := json.Marshal(text)
 	if err != nil {
-		return text
+		return Withheld
 	}
 	var out string
 	if json.Unmarshal(redact(raw), &out) != nil {
-		return text
+		return Withheld
 	}
 	return out
 }

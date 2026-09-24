@@ -9,6 +9,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -371,11 +372,30 @@ type Recorder struct {
 	Redact Redactor
 }
 
-// Redactor rewrites a JSON payload before it is recorded. Span is the length
-// of the longest value it replaces as it appears in a payload, 0 for none.
+// Redactor rewrites a JSON payload before it is recorded. Span is the byte
+// length of the longest text it replaces within a string, 0 for none.
 type Redactor interface {
 	Redact([]byte) []byte
 	Span() int
+}
+
+// Withheld stands in for text whose redaction failed: it is never written
+// unredacted.
+const Withheld = "[redacted: output withheld]"
+
+// withheldPayload replaces a payload whose redaction left invalid JSON.
+var withheldPayload = []byte(`{"withheld":"` + Withheld + `"}`)
+
+// redactor returns the recorder's redactor, or nil when none is set, a typed
+// nil included.
+func (r *Recorder) redactor() Redactor {
+	if r == nil || r.Redact == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(r.Redact); v.Kind() == reflect.Pointer && v.IsNil() {
+		return nil
+	}
+	return r.Redact
 }
 
 func NewRecorder(store Store, sessionID, parentID string) *Recorder {
@@ -400,8 +420,10 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	}
 	// The record is append-only, so a secret that reaches it can never be
 	// taken out again. It is stopped here, before the write.
-	if r.Redact != nil {
-		raw = r.Redact.Redact(raw)
+	if red := r.redactor(); red != nil {
+		if raw = red.Redact(raw); !json.Valid(raw) {
+			raw = withheldPayload
+		}
 	}
 
 	r.mu.Lock()

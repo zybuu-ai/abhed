@@ -77,3 +77,27 @@ func TestRedactorReplacesStoredValuesInPayloads(t *testing.T) {
 		t.Fatal("an empty store must leave payloads alone")
 	}
 }
+
+// A value is matched in the decoded text of each string, never across an
+// escape, so the redacted payload is still valid JSON and nothing else moves.
+func TestRedactorNeverMatchesAcrossAnEscape(t *testing.T) {
+	cases := []struct{ value, text, want string }{
+		{"003e9a8b7c6d5e", "a>9a8b7c6d5e key 003e9a8b7c6d5e", "a>9a8b7c6d5e key [secret:K]"},
+		{"nf00d1e2b3c4", "log:\nf00d1e2b3c4 and key nf00d1e2b3c4", "log:\nf00d1e2b3c4 and key [secret:K]"},
+	}
+	for _, tc := range cases {
+		s := Open(filepath.Join(t.TempDir(), "secrets.json"))
+		_ = s.Set("K", tc.value)
+		payload, _ := json.Marshal(map[string]any{"content": tc.text, "n": 12345678901234567})
+		got := s.Redactor().Redact(payload)
+		var back map[string]json.RawMessage
+		if err := json.Unmarshal(got, &back); err != nil {
+			t.Fatalf("invalid JSON: %s", got)
+		}
+		var content string
+		_ = json.Unmarshal(back["content"], &content)
+		if content != tc.want || string(back["n"]) != "12345678901234567" {
+			t.Fatalf("got %s", got)
+		}
+	}
+}
