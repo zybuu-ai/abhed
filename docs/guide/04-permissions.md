@@ -162,10 +162,10 @@ stored values exactly; it is not a pattern guessing at what a key looks like.
 When it fires, [HawkEYE](15-hawkeye.md) reports `secret-redacted`: the value
 was caught, and the command or the model exposed it, which is worth knowing.
 
-The reply streams as many fragments, and a value may be split between two, so
-streamed text is held back by about the length of the longest stored value
+The reply and the reasoning stream as many fragments, and a value may be split
+between two, so streamed text is held back by about the length of the longest stored value
 and redacted together with what follows. The live view lags by that much, and
-only when secrets are stored; the whole reply is redacted as one event too.
+only when secrets are stored; the whole text is redacted as one event too.
 A stored key file makes that lag visible, a few kilobytes of text, and values
 that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes

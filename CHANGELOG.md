@@ -100,7 +100,7 @@ All notable changes to Abhed are recorded here. The format follows
   is recorded as many `agent.delta` events, and redaction ran on each one, so
   a stored value that arrived in two fragments matched in neither: it
   reached the record and the live stream in pieces. `agent.message` was
-  always redacted whole. The model holds a value only when a prompt or an
+  always redacted whole. `agent.reasoning.delta` is redacted the same way. The model holds a value only when a prompt or an
   @-mentioned file carried one, since tool output is redacted before it sees
   it. Streamed text is now held back by about the length of the longest
   stored value, redacted with what follows, and released at the end of the

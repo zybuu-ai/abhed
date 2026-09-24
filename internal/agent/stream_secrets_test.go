@@ -19,6 +19,7 @@ import (
 // stream with an error or a cancel when asked to.
 type fragmentAdapter struct {
 	chunks []string
+	script []model.Chunk // sent before chunks, for reasoning and interleaving
 	err    error
 	cancel context.CancelFunc
 }
@@ -28,7 +29,10 @@ func (f *fragmentAdapter) Profile() model.Profile                 { return model
 func (f *fragmentAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
 
 func (f *fragmentAdapter) Complete(context.Context, model.Request) (<-chan model.Chunk, error) {
-	ch := make(chan model.Chunk, len(f.chunks)+2)
+	ch := make(chan model.Chunk, len(f.script)+len(f.chunks)+3)
+	for _, c := range f.script {
+		ch <- c
+	}
 	for _, c := range f.chunks {
 		ch <- model.Chunk{Type: model.ChunkText, Text: c}
 	}
@@ -74,6 +78,12 @@ func streamRun(ctx context.Context, t *testing.T, vals map[string]string, a *fra
 // add up to the redacted reply.
 func checkStream(t *testing.T, vals map[string]string, reply string, recorded, live []Event) {
 	t.Helper()
+	checkDeltas(t, EvAgentDelta, vals, reply, recorded, live)
+}
+
+// checkDeltas is checkStream for any kind of streamed fragment.
+func checkDeltas(t *testing.T, kind EventType, vals map[string]string, reply string, recorded, live []Event) {
+	t.Helper()
 	want := reply
 	for _, name := range sortedByLength(vals) {
 		want = strings.ReplaceAll(want, vals[name], "[secret:"+name+"]")
@@ -86,7 +96,7 @@ func checkStream(t *testing.T, vals map[string]string, reply string, recorded, l
 					t.Fatalf("a value reached %s: %s", e.Type, e.Payload)
 				}
 			}
-			if e.Type == EvAgentDelta {
+			if e.Type == kind {
 				var d Delta
 				if err := json.Unmarshal(e.Payload, &d); err != nil {
 					t.Fatal(err)
@@ -95,7 +105,7 @@ func checkStream(t *testing.T, vals map[string]string, reply string, recorded, l
 			}
 		}
 		if deltas.String() != want {
-			t.Fatalf("the deltas read\n%q\nwant\n%q", deltas.String(), want)
+			t.Fatalf("the %s events read\n%q\nwant\n%q", kind, deltas.String(), want)
 		}
 	}
 }
@@ -297,5 +307,61 @@ func TestTypedNilRedactorIsIgnored(t *testing.T) {
 	}
 	if b := (&Loop{Recorder: rec}).fragments(); b.span != 0 || b.push("as is") != "as is" {
 		t.Fatal("a typed nil redactor changed the stream")
+	}
+}
+
+// thinkingScript streams reasoning in the given parts with a reply fragment
+// between each, which releases the reasoning buffer as a real endpoint that
+// interleaves them would.
+func thinkingScript(parts ...string) []model.Chunk {
+	var out []model.Chunk
+	for i, p := range parts {
+		if i > 0 {
+			out = append(out, model.Chunk{Type: model.ChunkText, Text: "then "})
+		}
+		out = append(out, model.Chunk{Type: model.ChunkReasoning, Text: p})
+	}
+	return out
+}
+
+// Streamed reasoning is redacted across its fragments as the reply is: a value
+// split into two or three parts anywhere never reaches an event.
+func TestSecretSplitAcrossReasoningDeltasIsRedacted(t *testing.T) {
+	cases := []struct {
+		vals     map[string]string
+		thinking string
+	}{
+		{map[string]string{"API_TOKEN": "tok-9f8e7d-4c3b2a"}, "The user gave tok-9f8e7d-4c3b2a, so use it."},
+		{map[string]string{"SHORT": "k1x", "LONG": "sk-live-0123456789abcdef", "BRACKET": "[abcdefghijkl"},
+			"k1x, sk-live-0123456789abcdef and [abcdefghijkl."},
+		{map[string]string{"KEY": "clé-sécrète-ü✓"}, "ключ: clé-sécrète-ü✓ — ✓"},
+	}
+	for _, tc := range cases {
+		cuts := runeCuts(tc.thinking)
+		for i, a := range cuts {
+			for _, b := range cuts[i:] {
+				r := tc.thinking
+				ad := &fragmentAdapter{script: thinkingScript(r[:a], r[a:b], r[b:]), chunks: []string{"done."}}
+				recorded, live := streamRun(context.Background(), t, tc.vals, ad)
+				checkDeltas(t, EvAgentReasoningDelta, tc.vals, r, recorded, live)
+			}
+		}
+	}
+}
+
+// Reasoning long enough to be released on its own, with no reply between the
+// parts, and cut off by an interrupt, is still redacted across the parts.
+func TestLongReasoningSplitIsRedacted(t *testing.T) {
+	vals := map[string]string{"API_TOKEN": "tok-9f8e7d-4c3b2a"}
+	pad := strings.Repeat("thinking it over. ", 10)
+	r := pad + "tok-9f8e7d-4c3b2a" + pad
+	for _, cut := range runeCuts(r) {
+		ctx, cancel := context.WithCancel(context.Background())
+		ad := &fragmentAdapter{script: []model.Chunk{
+			{Type: model.ChunkReasoning, Text: r[:cut]}, {Type: model.ChunkReasoning, Text: r[cut:]},
+		}, cancel: cancel}
+		recorded, live := streamRun(ctx, t, vals, ad)
+		checkDeltas(t, EvAgentReasoningDelta, vals, r, recorded, live)
+		cancel()
 	}
 }

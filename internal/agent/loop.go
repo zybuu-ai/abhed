@@ -503,16 +503,22 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	var calls []model.ToolCall
 	var streamErr error
 	var thinking strings.Builder // un-flushed reasoning fragment
+	thoughts := l.fragments()
 	thinkN := 0
 	lastThink := time.Now()
-	flushThinking := func() {
-		if thinking.Len() == 0 {
-			return
+	// The tail a secret could start in stays held until the stream ends, since
+	// reasoning may resume after the reply has begun.
+	flushThinking := func(final bool) {
+		out := thoughts.push(thinking.String())
+		if final {
+			out += thoughts.flush()
 		}
-		thinkN++
-		l.record(EvAgentReasoningDelta, ActorAgent, Delta{Text: thinking.String(), Seq: thinkN})
 		thinking.Reset()
 		lastThink = time.Now()
+		if out != "" {
+			thinkN++
+			l.record(EvAgentReasoningDelta, ActorAgent, Delta{Text: out, Seq: thinkN})
+		}
 	}
 
 	for chunk := range stream {
@@ -521,7 +527,9 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		switch chunk.Type {
 		case model.ChunkText:
-			flushThinking()
+			if thinking.Len() > 0 {
+				flushThinking(false)
+			}
 			text.WriteString(chunk.Text)
 			// Emit the fragment immediately. Waiting for the full reply makes a
 			// 30-second answer feel like a hang; streaming makes the same wall
@@ -552,7 +560,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			reasoning.WriteString(chunk.Text)
 			thinking.WriteString(chunk.Text)
 			if thinking.Len() >= 160 || time.Since(lastThink) > 250*time.Millisecond {
-				flushThinking()
+				flushThinking(false)
 			}
 		case model.ChunkToolCall:
 			calls = append(calls, *chunk.ToolCall)
@@ -570,7 +578,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	}
 
-	flushThinking()
+	flushThinking(true)
 	// The stream has ended, cleanly or not, so nothing is held back any more.
 	if out := deltas.push(pending.String()) + deltas.flush(); out != "" {
 		deltaN++
