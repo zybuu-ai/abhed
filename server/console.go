@@ -53,6 +53,7 @@ var consoleHTML = strings.ReplaceAll(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Abhed Console</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%20256%20256%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22fwall%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%235CC4FF%22%2F%3E%3Cstop%20offset%3D%2255%25%22%20stop-color%3D%22%232A8CF0%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%230B3C8C%22%2F%3E%3C%2FlinearGradient%3E%3CradialGradient%20id%3D%22fcore%22%20cx%3D%2240%25%22%20cy%3D%2235%25%22%20r%3D%2270%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%23FFFFFF%22%2F%3E%3Cstop%20offset%3D%2270%25%22%20stop-color%3D%22%23DDEFFF%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%239ED2FF%22%2F%3E%3C%2FradialGradient%3E%3CradialGradient%20id%3D%22fglow%22%20cx%3D%2250%25%22%20cy%3D%2250%25%22%20r%3D%2250%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%235CC4FF%22%20stop-opacity%3D%22.55%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%235CC4FF%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%3C%2Fdefs%3E%3Cpath%20d%3D%22M218.6%2090.5%20L165.5%2037.4%20L90.5%2037.4%20L37.4%2090.5%20L37.4%20165.5%20L90.5%20218.6%20L165.5%20218.6%20L218.6%20165.5%20Z%22%20fill%3D%22none%22%20stroke%3D%22url%28%23fwall%29%22%20stroke-width%3D%2224%22%20stroke-linejoin%3D%22round%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2262%22%20fill%3D%22none%22%20stroke%3D%22url%28%23fwall%29%22%20stroke-width%3D%226%22%20opacity%3D%22.45%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2250%22%20fill%3D%22url%28%23fglow%29%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2223%22%20fill%3D%22url%28%23fcore%29%22%2F%3E%3C%2Fsvg%3E">
 <style>
 :root{
@@ -610,9 +611,11 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   <div class="stat">active <b id="active">0</b></div>
   <div class="stat" id="whobox" hidden>
     <span class="who-chip" id="who"></span>
+    <a class="ghost" href="/ide" title="Editor, terminal and agent side by side">Workbench</a>
     <a class="ghost" id="adminlink" href="/admin" hidden
        title="Who has access, and who no longer does">Admin</a>
-    <a class="ghost" id="switchuser" href="/switch-user"
+    <a class="ghost" id="pwlink" href="/account" hidden title="Change your password">Password</a>
+    <a class="ghost" id="switchuser" href="/logout" hidden
        title="Sign in as a different user">Switch</a>
     <a class="ghost" id="signout" href="/logout">Sign out</a>
   </div>
@@ -1993,10 +1996,15 @@ async function whoami(){
   }
 
   $('who').textContent = me.email || me.name || me.subject;
+  // Only links this deployment can answer: a Switch with no route behind it
+  // was a 404 on local accounts.
+  if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
+  if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
   try{
     if(sessionStorage.getItem('abhed.must_change') === '1'){
       sessionStorage.removeItem('abhed.must_change');
-      note('This password was set for you. Change it: abhed user passwd <you>, or ask your administrator.');
+      note(me.password_url ? 'This password was set for you. Change it under Password, at the top right.'
+                           : 'This password was set for you. Ask your administrator to change it.');
     }
   }catch{}
   $('who').title = 'tenant ' + me.tenant +
@@ -2013,8 +2021,9 @@ async function capabilities(){
   try{
     const o = await api('/v1/overview');
     TOOLS = new Set(o && o.tools ? o.tools : []);
+    // An admin page exists only in editions that serve one.
     const a = $('adminlink');
-    if(a && o && o.admin) a.hidden = false;
+    if(a && o && o.admin && o.admin_url){ a.href = o.admin_url; a.hidden = false; }
   }catch{ TOOLS = new Set(); }
   drawExamples();
 }
@@ -2129,6 +2138,6 @@ a{color:#4C8FD6}
 
 $ abhed user add alice -admin</pre>
   <p>See <code>docs/ops/enabling-auth.md</code>. Sign-in through an identity
-     provider (OIDC) is part of the Enterprise Edition.</p>
+     provider (OIDC) is part of the paid editions, Team and Enterprise.</p>
   <p><a href="/">← Back to Abhed</a></p>
 </div>`

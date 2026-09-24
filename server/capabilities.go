@@ -1,7 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -32,7 +34,15 @@ func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	// Revalidated on every load, so an upgrade never runs a stale editor
+	// against a new page; the ETag makes the check a 304.
+	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(data))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	_, _ = w.Write(data)
 }
 

@@ -9,7 +9,20 @@ much security sounds good.
 | `local` | A team with no identity provider | A username and password Abhed holds |
 | `proxy` | Behind an authenticating reverse proxy | `X-Abhed-User` / `X-Abhed-Tenant` headers |
 
-OIDC sign-in and tenant mapping are part of the Enterprise Edition.
+**Which edition has what.**
+
+| | Community | Team | Enterprise |
+|---|---|---|---|
+| No sign-in, local accounts, or an authenticating proxy | yes | yes | yes |
+| Change your own password at `/account` | yes | yes | yes |
+| OIDC single sign-on (Keycloak, Okta, Entra ID, Auth0, Google and other OIDC providers) and API bearer tokens from the same provider | — | yes | yes |
+| Invites and an admin page | — | yes | yes |
+| Access requests and grants with a recorded reason, tenant mapping | — | — | yes |
+
+The paid editions are built on this module and document their own setup.
+SAML is not built in to any edition: put a SAML-speaking proxy in front and
+use `proxy` mode. Users of the Community Edition are managed from the command
+line (`abhed user add|list|passwd|remove`).
 
 **Headers are not trusted unless you ask for it.** In `none` mode a caller cannot
 choose its own tenant by setting a header — there is a test asserting exactly that.
@@ -118,6 +131,17 @@ only route to the port: bind Abhed to loopback or a private interface and let
 nothing else reach it. Anything that can reach the port directly can claim any
 identity by setting the headers itself.
 
+## Behind a reverse proxy
+
+The server refuses a state-changing request whose `Origin` matches neither its
+own host nor `server.allowed_origins`. A proxy that rewrites `Host` therefore
+needs the public origin listed, or every sign-in and every console action
+answers `403 cross-origin request rejected`:
+
+```json
+{ "server": { "allowed_origins": ["https://abhed.internal"] } }
+```
+
 ## When authentication is off
 
 With `auth.mode: none` there are no user accounts, so `/login` and `/logout`
@@ -129,11 +153,18 @@ than no link.
 
 ## API clients
 
-Bearer tokens work unchanged, and take precedence over a cookie:
+The Community Edition issues no API tokens. A script signs in with a
+password and sends the session cookie back:
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" https://abhed.internal/v1/sessions
+curl -c jar -H 'Content-Type: application/json' \
+  -d '{"username":"ci","password":"..."}' https://abhed.internal/v1/signin
+curl -b jar https://abhed.internal/v1/sessions
 ```
+
+Behind `proxy` mode the proxy authenticates the script. The paid editions
+also accept a bearer token from their OIDC provider; a session cookie, when
+one is sent, is checked first.
 
 A browser navigation with no session is redirected to sign in; an API call with
 no token gets `401` with a reason. That distinction is `Accept: text/html`.

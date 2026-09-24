@@ -336,8 +336,8 @@ async function load(){
     box.appendChild(oauthButtons(o));
     cta.appendChild(box);
   }else{
-    const a = el('a','btn', o.authenticated ? 'Open console' : 'Start working');
-    a.href = '/console';
+    const a = el('a','btn', o.authenticated ? 'Open the workbench' : 'Start working');
+    a.href = '/ide';
     cta.appendChild(a);
     if(o.auth_mode === 'none'){
       // Say plainly that this instance has no accounts, rather than showing a
@@ -502,7 +502,7 @@ function signInForm(o){
       if(body.must_change_password){
         try{ sessionStorage.setItem('abhed.must_change', '1'); }catch{}
       }
-      location.href = '/console';
+      location.href = '/ide';
     }catch(e){
       err.textContent = 'Cannot reach the server.';
       err.hidden = false;
@@ -749,7 +749,7 @@ function signUpForm(o){
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({username:user.value, password:pass.value}),
       });
-      if(si.ok){ location.href = '/console'; return; }
+      if(si.ok){ location.href = '/ide'; return; }
       fail('Account created — please sign in.');
     }catch(e){
       fail('Cannot reach the server.');

@@ -45,6 +45,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The workbench is where sign-in lands, and the console links to it; it had
+  to be reached by typing `/ide`. Switch no longer leads to a 404 on local
+  accounts, Admin appears only where an admin page exists, and a local user
+  can change their own password at `/account`, which also ends a password an
+  administrator set. The workbench shows who is signed in, pages have an
+  icon, and the editor files are revalidated so an upgrade never serves a
+  stale copy. The authentication guide says which edition has which sign-in,
+  and no longer promises API tokens the Community Edition does not issue.
 - HawkEYE's `cold-cache` finding no longer fires when the provider reports no
   cached-token figure at all, as some OpenAI-compatible endpoints do; absence
   had been read as zero. `model.call` events record `cache_reported`; a
