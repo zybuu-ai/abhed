@@ -156,6 +156,21 @@ func addAll(dst *[]Rule, patterns []string) error {
 	return nil
 }
 
+// Screens reports whether a hook or a deny rule could refuse some calls to
+// tool and not others. Something that cannot show each call to the engine,
+// such as an interactive shell, cannot honour such a rule and must not run.
+func (e *Engine) Screens(tool string) bool {
+	if len(e.Hooks) > 0 {
+		return true
+	}
+	for _, r := range e.Deny {
+		if r.tool == tool || r.tool == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 // Subject extracts the string a rule matches against: the command for bash,
 // the path for file tools, and — for the higher-privilege tools whose
 // security-relevant argument is named differently — the verb or target they

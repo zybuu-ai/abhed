@@ -708,6 +708,9 @@ type createRequest struct {
 	// ClientID is the sender's own id for the message, echoed on the
 	// user.message that records it.
 	ClientID string `json:"client_id,omitempty"`
+	// Workbench opens a session with no prompt, idle until a message arrives,
+	// so the workbench has a sandbox to work in before anyone asks the agent.
+	Workbench bool `json:"workbench,omitempty"`
 }
 
 // validClientID keeps a client's id short and plain, since it is recorded.
@@ -764,7 +767,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if strings.TrimSpace(req.Prompt) == "" {
+	idle := req.Workbench && strings.TrimSpace(req.Prompt) == ""
+	if strings.TrimSpace(req.Prompt) == "" && !idle {
 		WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
@@ -772,12 +776,20 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
 		return
 	}
-	sessionID, err := s.StartSession(r.Context(), StartSpec{
+	spec := StartSpec{
 		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
 		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()),
-	})
+	}
+	start := s.StartSession
+	if idle {
+		start = s.openWorkbench
+	}
+	sessionID, err := start(r.Context(), spec)
 	if err != nil {
 		switch {
+		case errors.Is(err, errDraining):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 		case errors.Is(err, errBadMode):
 			WriteError(w, http.StatusForbidden, err.Error())
 		case strings.HasPrefix(err.Error(), "provider:"):
@@ -818,25 +830,8 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 
 	sessionID := newSessionID()
-
-	// Events reference sessions, so the session row must exist first.
-	if s.sessions != nil {
-		if err := s.sessions.CreateSession(ctx, store.SessionRecord{
-			ID: sessionID,
-			// Leave Tenant empty so the store applies its own configured
-			// tenant. With auth.mode=none every request is "default", which
-			// would otherwise collide with a store scoped to a real tenant and
-			// fail row-level security on the very first session.
-			Tenant:    storeTenant(s.opts.Config, spec.Tenant),
-			User:      spec.User,
-			Workspace: s.opts.Workspace,
-			Model:     adapter.Profile().Name,
-			Mode:      mode,
-			Prompt:    spec.Prompt,
-			StartedAt: time.Now().UTC(),
-		}); err != nil {
-			return "", fmt.Errorf("persist session: %w", err)
-		}
+	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
+		return "", err
 	}
 
 	rec := agent.NewRecorder(s.store, sessionID, "")
@@ -882,6 +877,76 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		s.log.Info("session ended", "session", sessionID, "reason", reason)
 	}()
 
+	return sessionID, nil
+}
+
+// persistSession writes the session row. Events reference sessions, so the
+// row must exist before the first one.
+func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, mode string, adapter model.Adapter) error {
+	if s.sessions == nil {
+		return nil
+	}
+	if err := s.sessions.CreateSession(ctx, store.SessionRecord{
+		ID: id,
+		// Leave Tenant empty so the store applies its own configured
+		// tenant. With auth.mode=none every request is "default", which
+		// would otherwise collide with a store scoped to a real tenant and
+		// fail row-level security on the very first session.
+		Tenant:    storeTenant(s.opts.Config, spec.Tenant),
+		User:      spec.User,
+		Workspace: s.opts.Workspace,
+		Model:     adapter.Profile().Name,
+		Mode:      mode,
+		Prompt:    spec.Prompt,
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		return fmt.Errorf("persist session: %w", err)
+	}
+	return nil
+}
+
+// openWorkbench creates a session with no prompt: the same workspace, policy,
+// sandbox, owner and record as any other, idle until a message arrives.
+func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, error) {
+	mode, ok := requestMode(s.opts.Config.Permissions.Mode, spec.Mode)
+	if !ok {
+		return "", errBadMode
+	}
+	if s.draining.Load() {
+		return "", errDraining
+	}
+	registry, skillReg, _ := s.state.snapshot()
+	adapter := s.opts.Adapter
+	if spec.Provider != "" {
+		a, err := s.resolveProvider(spec.Provider)
+		if err != nil {
+			return "", fmt.Errorf("provider: %w", err)
+		}
+		adapter = a
+	}
+	sessionID := newSessionID()
+	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
+		return "", err
+	}
+	rec := agent.NewRecorder(s.store, sessionID, "")
+	rec.Redact = s.opts.Redact
+	live, _, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
+	if err != nil {
+		return "", err
+	}
+	live.State = "idle"
+	// The first event, so the session has a record to be resumed from.
+	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{
+		"origin": "workbench", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+	}); err != nil {
+		return "", fmt.Errorf("record session start: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.draining.Load() {
+		return "", errDraining
+	}
+	s.running[sessionID] = live
 	return sessionID, nil
 }
 
@@ -931,6 +996,8 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
+		// Replaced when a turn starts; a session opened idle has nothing to cancel.
+		Cancel:    func() {},
 		approvals: make(chan approvalReply, 1),
 		allowed:   map[string]bool{},
 		durable:   s.approvalStore(),
@@ -1023,7 +1090,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 
 	msgs, err := agent.Fork(events, 0)
-	if err != nil {
+	if err != nil && messaged(events) {
 		return nil, fmt.Errorf("rebuild conversation: %w", err)
 	}
 	mode, ok := requestMode(s.opts.Config.Permissions.Mode, rec.Mode)
@@ -1066,6 +1133,17 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	return live, nil
 }
 
+// messaged reports whether anyone has sent the session a message. One opened
+// at the workbench may have none, and continues with an empty conversation.
+func messaged(events []agent.Event) bool {
+	for _, e := range events {
+		if e.Type == agent.EvUserMessage {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	errNoSession   = errors.New("session not found")
 	errBusySession = errors.New("session is already running")
@@ -1081,6 +1159,8 @@ type sessionSummary struct {
 	Prompt  string    `json:"prompt"`
 	State   string    `json:"state"`
 	Created time.Time `json:"created"`
+	// Mode is the permission mode the session was started in.
+	Mode string `json:"mode,omitempty"`
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
@@ -1103,7 +1183,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				if !ownsSession(rec.Tenant, rec.User, tenant, user) {
 					continue
 				}
-				state := "done"
+				state, prompt := "done", rec.Prompt
 				if rec.EndedAt == nil {
 					state = "running"
 				}
@@ -1111,12 +1191,15 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				if live, found := s.running[rec.ID]; found {
 					live.mu.Lock()
 					state = live.State
+					if prompt == "" {
+						prompt = live.Prompt
+					}
 					live.mu.Unlock()
 				}
 				s.mu.RUnlock()
 				out = append(out, sessionSummary{
 					ID: rec.ID, User: rec.User, Tenant: rec.Tenant,
-					Prompt: rec.Prompt, State: state, Created: rec.StartedAt,
+					Prompt: prompt, State: state, Created: rec.StartedAt, Mode: rec.Mode,
 				})
 			}
 			WriteJSON(w, http.StatusOK, out)
@@ -1141,7 +1224,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		l.mu.Lock()
 		out = append(out, sessionSummary{
 			ID: l.ID, User: l.User, Tenant: l.Tenant,
-			Prompt: l.Prompt, State: l.State, Created: l.Created,
+			Prompt: l.Prompt, State: l.State, Created: l.Created, Mode: string(l.Loop.Policy.Mode),
 		})
 		l.mu.Unlock()
 	}
@@ -1485,6 +1568,9 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	live.State = "running"
 	live.Turns++
+	if live.Prompt == "" {
+		live.Prompt = req.Prompt // a workbench session is named by its first message
+	}
 	live.ran = make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	live.cancel = cancel
@@ -2340,6 +2426,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // With no budget configured this is the old behaviour: end everything at once.
 func (s *Server) drain() {
 	s.draining.Store(true)
+	s.closeIdle()
 
 	if s.opts.DrainTimeout > 0 {
 		deadline := time.NewTimer(s.opts.DrainTimeout)
@@ -2366,6 +2453,26 @@ func (s *Server) drain() {
 	s.cancelRunning()
 }
 
+// closeIdle ends the terminals of sessions opened with no prompt and marks
+// their records ended, so a restarted server can reopen them from the record.
+func (s *Server) closeIdle() {
+	s.mu.Lock()
+	var idle []*liveSession
+	for _, live := range s.running {
+		live.mu.Lock()
+		if live.State == "idle" {
+			idle = append(idle, live)
+		}
+		live.mu.Unlock()
+	}
+	s.mu.Unlock()
+	for _, live := range idle {
+		live.closeTerminals()
+		_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
+			agent.SessionEnded{Reason: agent.TermShutdown})
+	}
+}
+
 func (s *Server) runningCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2376,7 +2483,7 @@ func (s *Server) runningCount() int {
 		live.mu.Unlock()
 		// A session sitting at "done" is resumable but not working; it holds
 		// no turn, so waiting on it would spend the whole budget for nothing.
-		if state != "done" {
+		if state != "done" && state != "idle" {
 			n++
 		}
 	}

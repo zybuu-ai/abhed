@@ -66,6 +66,31 @@ func (l *Loop) ManualObserve(id, call string, result tools.Result, took time.Dur
 	return err
 }
 
+// ManualScreen judges a line entered at an interactive terminal before the
+// shell is given it. A refusal is recorded as the person's denied bash call
+// with its result; an allowed line is left to ManualTerminalInput.
+func (l *Loop) ManualScreen(id, line string) (*tools.Result, error) {
+	tool, found := l.Tools.Get("bash")
+	if !found {
+		return nil, fmt.Errorf("unknown tool %q", "bash")
+	}
+	args, _ := json.Marshal(map[string]string{"command": line, "description": "entered in the interactive terminal"})
+	if l.Policy.Evaluate("bash", tool.Mutates(), args).Decision != policy.Deny {
+		return nil, nil
+	}
+	_, refused, err := l.ManualAuthorize("bash", id, args)
+	if err != nil || refused == nil {
+		return refused, err
+	}
+	return refused, l.ManualObserve(id, "bash", *refused, 0)
+}
+
+// ManualTerminalInput records a line entered at an interactive terminal.
+func (l *Loop) ManualTerminalInput(in TerminalInput) error {
+	_, err := l.Recorder.Record(EvTerminalInput, ActorUser, Trusted, in)
+	return err
+}
+
 func orEmpty(r *tools.Result) tools.Result {
 	if r == nil {
 		return tools.Result{}

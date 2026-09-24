@@ -49,6 +49,11 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			lastAssistant = &msgs[len(msgs)-1]
 
 		case EvActionRequested:
+			// A person's own call at the workbench never entered the model's
+			// conversation, so a rebuilt one leaves it out too.
+			if ev.Actor == ActorUser {
+				continue
+			}
 			var a ActionRequested
 			if json.Unmarshal(ev.Payload, &a) != nil {
 				continue

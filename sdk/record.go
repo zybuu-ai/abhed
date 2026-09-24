@@ -37,6 +37,7 @@ const (
 	EvPlanUpdated     = agent.EvPlanUpdated
 	EvTodoUpdated     = agent.EvTodoUpdated
 	EvSessionEnded    = agent.EvSessionEnded
+	EvTerminalInput   = agent.EvTerminalInput
 
 	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
 

@@ -252,6 +252,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 			c()
 		}
 		live.Cancel()
+		live.closeTerminals()
 		s.mu.Lock()
 		delete(s.running, id)
 		s.mu.Unlock()

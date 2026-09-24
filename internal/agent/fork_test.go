@@ -12,6 +12,21 @@ func ev(seq int64, t EventType, payload any) Event {
 	return Event{Seq: seq, Type: t, Payload: b}
 }
 
+// A person's call at the workbench, and its result, are not part of the
+// model's conversation, so a continued session does not see them either.
+func TestForkLeavesOutThePersonsOwnCalls(t *testing.T) {
+	mine := ev(9, EvActionRequested, ActionRequested{CallID: "u1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
+	mine.Actor = ActorUser
+	events := append(fullSession(), mine, ev(10, EvObservation, Observation{CallID: "u1", Tool: "bash", Content: "a.go"}))
+	msgs, err := Fork(events, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 6 {
+		t.Fatalf("the person's call entered the conversation:\n%s", dump(msgs))
+	}
+}
+
 func fullSession() []Event {
 	return []Event{
 		ev(1, EvUserMessage, Message{Text: "fix the bug"}),
