@@ -550,6 +550,9 @@ func Load(workspace string) (Config, error) {
 			return cfg, err
 		}
 		cfg.Managed = true
+		for i := range cfg.Unknown {
+			cfg.Unknown[i].Managed = cfg.Unknown[i].File == managed
+		}
 	}
 
 	applyEnv(&cfg)

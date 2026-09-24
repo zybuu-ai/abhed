@@ -231,4 +231,7 @@ abhed: warning: /srv/repo/.abhed/config.json: unknown key model.provider is igno
 
 `abhed doctor` lists the same keys under `config` and fails, so a check in a
 deployment pipeline catches them. Keys match regardless of case, as JSON
-decoding does, so `Model` is read as `model` and is not reported.
+decoding does, so `Model` is read as `model` and is not reported. A key that
+starts with `_` or `$`, such as `_comment` or `$schema`, is an annotation for
+people and is never reported. An unknown key in the managed file
+(`/etc/abhed/config.json`) is marked as such, since only its owner can correct it.

@@ -12,7 +12,9 @@ All notable changes to Abhed are recorded here. The format follows
   every configuration that loaded before still loads, but each one is written
   to standard error once, with its file, its JSON path and, when a known key
   is close, the one probably meant (`model.provider` → `model.default`).
-  `abhed doctor` lists them and fails. `config.Config.Unknown` carries them.
+  `abhed doctor` lists them and fails. Keys starting with `_` or `$`
+  (`_comment`, `$schema`) are annotations and never reported; one in the
+  managed file says so. `config.Config.Unknown` carries them.
 - `GET /account`, where a local-accounts user changes their own password, and
   `switch_url` and `password_url` in `/v1/whoami`, naming the routes this
   deployment has for switching user and changing a password.

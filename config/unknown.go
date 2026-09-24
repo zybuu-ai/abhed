@@ -17,6 +17,8 @@ type UnknownKey struct {
 	File    string `json:"file"`
 	Path    string `json:"path"`              // e.g. model.provider
 	Suggest string `json:"suggest,omitempty"` // a known key it is close to
+	// Managed is set for the organisation's file, which its owner corrects.
+	Managed bool `json:"managed,omitempty"`
 }
 
 func (u UnknownKey) String() string {
@@ -24,7 +26,15 @@ func (u UnknownKey) String() string {
 	if u.Suggest != "" {
 		s += fmt.Sprintf(" (did you mean %s?)", u.Suggest)
 	}
+	if u.Managed {
+		s += "; this is the managed configuration, which whoever manages it must correct"
+	}
 	return s
+}
+
+// annotation reports a key written for people, such as _comment or $schema.
+func annotation(key string) bool {
+	return strings.HasPrefix(key, "_") || strings.HasPrefix(key, "$")
 }
 
 // aliases are keys written for another where the spelling is not close.
@@ -82,6 +92,9 @@ func walkUnknown(file, path string, v any, t reflect.Type, out *[]UnknownKey) {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
+				if annotation(k) {
+					continue
+				}
 				p := join(path, k)
 				// encoding/json matches a key to a field regardless of case.
 				f, ok := fields[strings.ToLower(k)]

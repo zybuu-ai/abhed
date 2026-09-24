@@ -22,7 +22,9 @@ func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
 	  "sandbox": {"allow_networks": true, "Min_Tier": "process"},
 	  "permissions": {"deny": ["bash(rm*)"]},
 	  "extensions": [{"name": "x", "command": "/bin/x", "evnets": ["tool_call"]}],
-	  "zzz_nothing_like_it": 1
+	  "zzz_nothing_like_it": 1,
+	  "_comment": "annotations are for people", "$schema": "./schema.json",
+	  "storage": {"_note": "memory for now"}
 	}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +69,17 @@ func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
 	}
 	if !strings.Contains(warned.String(), "model.provider is ignored (did you mean model.default?)") {
 		t.Errorf("the warning does not say what was meant:\n%s", warned.String())
+	}
+}
+
+// A key in the managed file says who has to correct it.
+func TestUnknownKeyInTheManagedFileSaysSo(t *testing.T) {
+	u := UnknownKey{File: "/etc/abhed/config.json", Path: "model.provider", Suggest: "model.default", Managed: true}
+	if !strings.Contains(u.String(), "managed configuration") {
+		t.Fatalf("the managed file is not named as such: %s", u)
+	}
+	if strings.Contains((UnknownKey{File: "a", Path: "b"}).String(), "managed") {
+		t.Fatal("a workspace file is called managed")
 	}
 }
 
