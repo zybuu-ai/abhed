@@ -2230,6 +2230,7 @@ func (a *App) doctor(workspace string) int {
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
 	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
+	unknown := printUnknown(os.Stdout, cfg)
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
 		label := string(sb.Tier())
 		if sb.Tier() == sandbox.TierNone {
@@ -2416,8 +2417,24 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("ok\n  ran a command under the %s tier\n", sb.Tier())
 	}
 
+	if unknown {
+		fmt.Println("\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
+		return 1
+	}
 	fmt.Println("\nReady.")
 	return 0
+}
+
+// printUnknown lists the configuration's unknown keys and reports whether there were any.
+func printUnknown(w io.Writer, cfg config.Config) bool {
+	for i, u := range cfg.Unknown {
+		label := "            "
+		if i == 0 {
+			label = "config      "
+		}
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, u)
+	}
+	return len(cfg.Unknown) > 0
 }
 
 func resolveWorkspace(dir string) (string, error) {

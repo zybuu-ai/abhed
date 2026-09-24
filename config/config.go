@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -49,6 +50,8 @@ type Config struct {
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
+	// Unknown lists the keys in the files that no setting reads.
+	Unknown []UnknownKey `json:"-"`
 }
 
 type ModelConfig struct {
@@ -550,6 +553,7 @@ func Load(workspace string) (Config, error) {
 	}
 
 	applyEnv(&cfg)
+	warnUnknown(cfg.Unknown)
 	return cfg, cfg.Validate()
 }
 
@@ -566,6 +570,7 @@ func mergeFile(cfg *Config, path string) error {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
+	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	return nil
 }
 
