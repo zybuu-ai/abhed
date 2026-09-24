@@ -181,7 +181,7 @@ type SubagentFactory struct {
 	Workspace string
 	// Redact is handed to every subagent's recorder, so a secret is stopped
 	// before a child's record as it is before the parent's.
-	Redact func([]byte) []byte
+	Redact Redactor
 	// Depth guards against runaway recursion; nested spawning is off by default.
 	Depth int
 }

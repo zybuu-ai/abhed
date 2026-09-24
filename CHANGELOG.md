@@ -94,6 +94,20 @@ All notable changes to Abhed are recorded here. The format follows
   the record and HawkEYE reports `output-cap`. Sessions ended this way; some
   read as completed because a sentence had come out before the cut.
 
+### Security
+
+- **A secret split across streamed fragments reached the record.** The reply
+  is recorded as many `agent.delta` events, and redaction ran on each one, so
+  a stored value that arrived in two fragments matched in neither: it
+  reached the record and the live stream in pieces. `agent.message` was
+  always redacted whole. The model holds a value only when a prompt or an
+  @-mentioned file carried one, since tool output is redacted before it sees
+  it. Streamed text is now held back by about the length of the longest
+  stored value, redacted with what follows, and released at the end of the
+  turn, on error or on interrupt; with no secrets stored nothing is held
+  back. `server.Options.Redact` and `agent.Recorder.Redact` take an
+  `agent.Redactor`, which `secrets.Store.Redactor` returns.
+
 ## [1.0.1] - 2026-09-22
 
 ### Added

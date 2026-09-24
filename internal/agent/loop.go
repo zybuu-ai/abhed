@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -496,6 +497,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	var text strings.Builder
 	var reasoning strings.Builder
 	var pending strings.Builder // un-flushed delta fragment
+	deltas := l.fragments()
 	deltaN := 0
 	lastFlush := time.Now()
 	var calls []model.ToolCall
@@ -535,9 +537,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			// up carrying seven tokens. A time floor also bounds the event rate
 			// on a fast endpoint, which pure per-token emission would not.
 			if flushable(pending.String()) || time.Since(lastFlush) > 40*time.Millisecond {
-				deltaN++
-				l.record(EvAgentDelta, ActorAgent,
-					Delta{Text: pending.String(), Seq: deltaN})
+				if out := deltas.push(pending.String()); out != "" {
+					deltaN++
+					l.record(EvAgentDelta, ActorAgent, Delta{Text: out, Seq: deltaN})
+				}
 				pending.Reset()
 				lastFlush = time.Now()
 			}
@@ -568,12 +571,12 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	flushThinking()
-	if pending.Len() > 0 {
+	// The stream has ended, cleanly or not, so nothing is held back any more.
+	if out := deltas.push(pending.String()) + deltas.flush(); out != "" {
 		deltaN++
-		l.record(EvAgentDelta, ActorAgent,
-			Delta{Text: pending.String(), Seq: deltaN})
-		pending.Reset()
+		l.record(EvAgentDelta, ActorAgent, Delta{Text: out, Seq: deltaN})
 	}
+	pending.Reset()
 
 	mc := ModelCall{
 		Turn: l.turns, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
@@ -831,7 +834,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	// A secret's value is stripped from the result before the model and the
 	// record see it, so the model never holds a value it could echo elsewhere.
 	if l.Recorder != nil && l.Recorder.Redact != nil {
-		result.Content = redactedText(l.Recorder.Redact, result.Content)
+		result.Content = redactedText(l.Recorder.Redact.Redact, result.Content)
 	}
 	elapsed := time.Since(start)
 
@@ -1198,6 +1201,59 @@ func (l *Loop) secretsRefused(call model.ToolCall) string {
 		}
 	}
 	return ""
+}
+
+// fragmentBuffer redacts a reply streamed in fragments. Redaction runs per
+// event, so a secret split across two fragments would match in neither; the
+// buffer holds back a tail that could still be the start of one.
+type fragmentBuffer struct {
+	redact func([]byte) []byte
+	span   int
+	carry  string // raw text not yet emitted
+}
+
+// fragments returns a buffer for one streamed reply. With no secrets it holds
+// nothing back and passes fragments through unchanged.
+func (l *Loop) fragments() *fragmentBuffer {
+	b := &fragmentBuffer{}
+	if l.Recorder != nil && l.Recorder.Redact != nil {
+		b.redact, b.span = l.Recorder.Redact.Redact, l.Recorder.Redact.Span()
+	}
+	return b
+}
+
+// push adds a fragment and returns the redacted text that can be emitted now.
+// The last span-1 bytes are held back: too short to hold a whole secret, they
+// may be the start of one.
+func (b *fragmentBuffer) push(s string) string {
+	if b.span == 0 {
+		return s
+	}
+	raw := b.carry + s
+	whole := redactedText(b.redact, raw)
+	for cut := len(raw) - (b.span - 1); cut > 0; cut-- {
+		if cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+			continue
+		}
+		// A cut through a secret found in the whole text would leave both
+		// halves unmatched; step back before it.
+		if head := redactedText(b.redact, raw[:cut]); strings.HasPrefix(whole, head) {
+			b.carry = raw[cut:]
+			return head
+		}
+	}
+	b.carry = raw
+	return ""
+}
+
+// flush returns what was held back, redacted, once the stream has ended.
+func (b *fragmentBuffer) flush() string {
+	s := b.carry
+	b.carry = ""
+	if b.span == 0 || s == "" {
+		return s
+	}
+	return redactedText(b.redact, s)
 }
 
 // redactedText runs a payload redactor over one string, through the JSON

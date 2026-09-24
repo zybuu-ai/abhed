@@ -15,7 +15,9 @@ search results is data, never instruction, and the tag travels with it.
 Before any event is written it passes the redactor: a value from the secrets
 store, wherever it appears in a payload, is replaced with `[secret:NAME]`. The
 record is append-only, so this is the only moment a secret can be kept out of
-it. See [Secrets](04-permissions.md#secrets).
+it. A streamed reply is redacted across its fragments, not one fragment at a
+time, so a value split between two is still caught. See
+[Secrets](04-permissions.md#secrets).
 
 ## Storage
 
