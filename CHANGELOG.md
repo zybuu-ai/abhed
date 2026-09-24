@@ -169,6 +169,12 @@ All notable changes to Abhed are recorded here. The format follows
   closing the session or going unwatched, is recorded with its exit status and
   not as an error, and the record says how it was closed. Only a shell that
   failed to start is an error.
+- HawkEYE no longer attributes a person's workbench calls to the model: calls
+  with `actor: user` never raise `repeated-failure`, `slow-tool`, `truncated`
+  or `borrowed-host`, and each call in a report now carries its `actor`.
+  `no-end` is not raised for a session still running on the server, or while
+  a shell the person opened is still open. `hawkeye.AnalyzeWith` takes what
+  the caller knows beyond the record.
 - The workbench chat shows the conversation with the agent. The person's own
   calls (shells, terminal lines, Explorer operations and saves) no longer
   appear in it; they stay in Events and the record, and saves in Changes.

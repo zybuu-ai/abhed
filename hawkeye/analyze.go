@@ -14,9 +14,20 @@ import (
 // keeps all of it; a report that embedded every byte would be the record.
 const outputKeep = 4000
 
+// Options is what the record alone cannot say.
+type Options struct {
+	// Live is set when the session is still running where the report is made.
+	Live bool
+}
+
 // Analyze derives a report from a session's events. Events may arrive in any
 // order; they are read in sequence order.
 func Analyze(sessionID string, events []agent.Event) Report {
+	return AnalyzeWith(sessionID, events, Options{})
+}
+
+// AnalyzeWith is Analyze with what the caller knows beyond the record.
+func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	evs := append([]agent.Event(nil), events...)
 	ordered := sort.SliceIsSorted(evs, func(i, j int) bool { return evs[i].Seq < evs[j].Seq })
 	sort.SliceStable(evs, func(i, j int) bool { return evs[i].Seq < evs[j].Seq })
@@ -65,6 +76,7 @@ func Analyze(sessionID string, events []agent.Event) Report {
 			c := &Call{
 				Seq: e.Seq, CallID: a.CallID, Tool: a.Tool, Args: clip(string(a.Args), 2000),
 				Subject: policy.Subject(a.Tool, a.Args), Decision: "pending", Reason: a.Reason,
+				Actor: string(e.Actor),
 			}
 			calls[a.CallID] = c
 			order = append(order, a.CallID)
@@ -156,7 +168,7 @@ func Analyze(sessionID string, events []agent.Event) Report {
 	sort.Slice(r.Files, func(i, j int) bool { return r.Files[i].Path < r.Files[j].Path })
 
 	r.totals(ended)
-	r.Findings = findings(r, evs)
+	r.Findings = findings(r, evs, opt)
 	return r
 }
 

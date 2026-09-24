@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -33,7 +34,18 @@ var (
 	rank = map[Severity]int{Critical: 0, Warn: 1, Info: 2}
 )
 
-func findings(r Report, evs []agent.Event) []Finding {
+// A person's calls at the workbench count in the totals and in the findings
+// about what was reached, denied or exposed. They are left out of the findings
+// about the model's behaviour: repeats, slow calls, truncation and borrowed hosts.
+func (c Call) byPerson() bool { return c.Actor == string(agent.ActorUser) }
+
+// shellOpen reports a shell the person opened that has not ended yet.
+func (c Call) shellOpen() bool {
+	return c.byPerson() && c.Tool == "bash" && c.Decision == "allowed" && !c.Ran &&
+		strings.Contains(c.Args, `"interactive":true`)
+}
+
+func findings(r Report, evs []agent.Event, opt Options) []Finding {
 	out := []Finding{}
 	add := func(sev Severity, code, title, detail string, seq int64) {
 		out = append(out, Finding{Severity: sev, Code: code, Title: title, Detail: detail, Seq: seq})
@@ -46,7 +58,7 @@ func findings(r Report, evs []agent.Event) []Finding {
 				"so this record was filtered, truncated or edited before it was analysed.", r.Integrity.Gaps),
 			r.Integrity.Gaps[0])
 	}
-	if !r.Integrity.HasEnd && len(evs) > 0 {
+	if !r.Integrity.HasEnd && len(evs) > 0 && !opt.Live && !slices.ContainsFunc(r.Calls, Call.shellOpen) {
 		add(Info, "no-end", "The session has no recorded end",
 			"It is still running, or the process died before it could write one.", 0)
 	}
@@ -84,6 +96,9 @@ func findings(r Report, evs []agent.Event) []Finding {
 			add(Info, "broken-edit", "An edit was refused: it would have broken the file, or was a pasted diff",
 				fmt.Sprintf("%s — %s", c.Tool, clip(c.Output, 240)), c.Seq)
 		}
+		if c.byPerson() {
+			continue
+		}
 		if c.Ran && c.IsError {
 			key := c.Tool + "\x00" + c.Args
 			failures[key]++
@@ -100,7 +115,7 @@ func findings(r Report, evs []agent.Event) []Finding {
 
 	truncated := 0
 	for _, c := range r.Calls {
-		if c.Truncated {
+		if c.Truncated && !c.byPerson() {
 			truncated++
 		}
 	}
@@ -184,7 +199,7 @@ func borrowedHosts(r Report, evs []agent.Event) []Finding {
 			var a agent.ActionRequested
 			_ = json.Unmarshal(e.Payload, &a)
 			c := byID[a.CallID]
-			if c.Decision != "allowed" {
+			if c.Decision != "allowed" || c.byPerson() {
 				continue
 			}
 			for _, h := range hosts(string(a.Args)) {

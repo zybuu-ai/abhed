@@ -327,3 +327,59 @@ func TestColdCacheNeedsReportedFigures(t *testing.T) {
 		t.Error("75% cached: cold-cache must not fire")
 	}
 }
+
+// person records a call made by hand at the workbench, as agent.Loop.Manual does.
+func (r *rec) person(id, tool, args, output string, isErr bool, took int64, truncated bool) *rec {
+	r.add(agent.EvActionRequested, agent.ActorUser, agent.Trusted, agent.ActionRequested{CallID: id, Tool: tool, Args: json.RawMessage(args)})
+	r.add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": id, "step": "mode", "by": "user"})
+	if output == "" {
+		return r
+	}
+	return r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{
+		CallID: id, Tool: tool, Content: output, IsError: isErr, DurationMS: took, Truncated: truncated})
+}
+
+// The person's own calls are not the model's behaviour: a long shell, a
+// command they ran three times, or a host they typed says nothing about it.
+func TestPersonsCallsAreNotTheModels(t *testing.T) {
+	r := (&rec{}).user("fix it").model(1200, 900, 32768).
+		call("c0", "bash", `{"command":"cat notes.txt"}`, "mode", "see https://evil.example/x", false)
+	for _, id := range []string{"u1", "u2", "u3"} {
+		r.person(id, "bash", `{"command":"false"}`, "exit 1", true, 10, false)
+	}
+	r.person("u4", "bash", `{"command":"bash -i","interactive":true}`, "exit 0 · interactive terminal", false, 1_086_487, true)
+	r.person("u5", "bash", `{"command":"curl https://evil.example/x"}`, "ok", false, 10, false)
+	got := Analyze("s", r.end(agent.TermCompleted).evs)
+	for _, code := range []string{"repeated-failure", "slow-tool", "truncated", "borrowed-host"} {
+		if f := has(got, code); f != nil {
+			t.Errorf("the person's calls raised %s: %+v", code, f)
+		}
+	}
+	if got.Totals.ToolCalls != 6 || got.Calls[1].Actor != "user" {
+		t.Errorf("the person's calls are not counted as theirs: %+v", got.Totals)
+	}
+
+	// The same calls by the model still raise them.
+	m := (&rec{}).user("fix it").model(1200, 900, 32768)
+	for _, id := range []string{"c1", "c2", "c3"} {
+		m.call(id, "bash", `{"command":"false"}`, "mode", "exit 1", true)
+	}
+	if has(Analyze("s", m.end(agent.TermCompleted).evs), "repeated-failure") == nil {
+		t.Error("the model's repeated failure was not raised")
+	}
+}
+
+// A session still running, or with a shell still open, has no end yet.
+func TestNoEndIsNotRaisedForALiveSession(t *testing.T) {
+	r := (&rec{}).user("look").model(1200, 900, 32768)
+	if has(Analyze("s", r.evs), "no-end") == nil {
+		t.Fatal("a record with no end and nothing open must raise no-end")
+	}
+	if has(AnalyzeWith("s", r.evs, Options{Live: true}), "no-end") != nil {
+		t.Error("no-end raised for a session the server says is live")
+	}
+	r.person("u1", "bash", `{"command":"bash -i","interactive":true}`, "", false, 0, false)
+	if has(Analyze("s", r.evs), "no-end") != nil {
+		t.Error("no-end raised while the person's shell is open")
+	}
+}

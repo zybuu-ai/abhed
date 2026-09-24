@@ -814,6 +814,14 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
+// A live workbench session has no end yet, and its report does not say it lacks one.
+func TestLiveSessionReportHasNoMissingEnd(t *testing.T) {
+	wb := shellBench(t, nil)
+	if body := wb.get("acme", "hawkeye").Body.String(); strings.Contains(body, `"no-end"`) {
+		t.Fatalf("a live session's report says it has no end: %s", body)
+	}
+}
+
 // A shell the person ends, by exit or by closing it, ends normally: its
 // status is recorded, and it is not an error.
 func TestShellEndIsNotAnError(t *testing.T) {

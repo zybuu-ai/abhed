@@ -1458,7 +1458,8 @@ func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	rep := hawkeye.Analyze(id, events)
+	_, live := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live})
 	if r.URL.Query().Get("format") != "html" {
 		WriteJSON(w, http.StatusOK, rep)
 		return
