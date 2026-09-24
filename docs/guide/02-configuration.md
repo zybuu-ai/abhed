@@ -214,6 +214,40 @@ Later sources win, except that an org-managed file cannot be overridden:
 5. command-line flags
 6. **managed settings**, which nothing below can loosen
 
+### The managed file
+
+`/etc/abhed/config.json` belongs to the organisation. It is read last, so each
+key it sets replaces what the user and project files said. A list it sets,
+such as `permissions.deny`, replaces the lower files' list; so does a map
+entry, such as one provider under `model.providers`. Its presence makes the
+policy engine managed: `bypass` mode is refused wherever it comes from.
+
+What a caller sets over the files, the CLI's flags and the SDK's `Options`,
+may tighten what the managed file set and never loosen it:
+
+| Setting | A flag or option may |
+|---|---|
+| `permissions.mode` | choose `plan` or the managed mode; `bypass` is refused even when the file does not set a mode |
+| `tools.syntax_check` | make it stricter only (`off` < `report` < `refuse`) |
+| `limits.max_turns` | lower it |
+| `permissions.allow` | add nothing |
+| `additional_dirs` | add nothing |
+| `permissions.deny` | add rules; the managed ones stay |
+
+A refused override stops the command with an error naming the setting. The
+console already lets a client narrow its session's mode to `plan` and nothing
+else. Without a managed file, flags and options apply as they always have.
+
+`config.Config.ManagedKeys` lists what the managed file set, as dotted paths
+(`permissions.mode`, `model.providers.onprem`), and `ManagedSets` asks about
+one. `Config.Apply` lays overrides over a configuration by these rules, so a
+program that loads configuration itself can honour them the same way.
+
+The environment variables in step 4 still apply over the managed file: they
+name a deployment's endpoint and credentials, which whoever runs the process
+controls. Nor is the model: `-model` and the console's picker choose among the
+providers any file defines, and the SDK's `Provider` names any endpoint.
+
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say.
 

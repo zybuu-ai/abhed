@@ -53,6 +53,30 @@ anything needing approval** rather than assuming yes. A service with nobody to
 ask should be stricter than a terminal with somebody watching, not looser.
 
 Edits that would break a file's syntax are refused, as from the command line;
-see [Tools](05-tools.md#an-edit-that-would-break-the-file). `Options.SyntaxCheck`
-(`refuse`, `report` or `off`) overrides `tools.syntax_check` from any config
-file, as `Options.Mode` overrides the permission mode.
+see [Tools](05-tools.md#an-edit-that-would-break-the-file).
+
+## Options and configuration
+
+`Options` are laid over the configuration the way flags are on the command
+line. `ConfigDir` reads the same files the CLI does; without it only the
+managed file is read.
+
+| Option | Without a managed file | Under a managed file |
+|---|---|---|
+| `Mode` | replaces `permissions.mode` | `bypass` is refused; if the file sets `permissions.mode`, only that mode or `plan` |
+| `SyntaxCheck` | replaces `tools.syntax_check` (`refuse`, `report`, `off`) | if the file sets it, only as strict or stricter (`off` < `report` < `refuse`) |
+| `MaxTurns` | replaces the default turn limit | if the file sets `limits.max_turns`, at most that; zero uses it |
+| `Allow` | added to `permissions.allow` | refused if the file sets `permissions.allow` |
+| `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
+| `Extensions` | added to the configured ones | added; an extension can only veto |
+
+An option the managed file forbids is an error from `New`, a
+`*config.ManagedError` naming the setting, never a silent change of what runs.
+A managed file makes the engine managed as it does for the CLI and the server,
+so `bypass` reaching it from a lower file is refused there too, and its deny
+and ask rules apply. If it sets any `sandbox` key, bash runs in the sandbox
+that setting selects, and `New` fails when no backend meets `sandbox.min_tier`;
+otherwise the SDK builds no sandbox and bash runs as the embedding process.
+
+`Provider` and `SetModel` are not bound by the managed file: they name any
+endpoint, as a user's own config file may.

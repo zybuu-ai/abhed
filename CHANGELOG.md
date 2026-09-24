@@ -14,6 +14,12 @@ All notable changes to Abhed are recorded here. The format follows
   person made the call. `Analyze` is unchanged.
 - `tools.ExitStatus`, a process's exit code with a signal death given as 128
   plus the signal's number.
+- `config.Config.ManagedKeys`, the settings the managed file set as dotted
+  paths, and `Config.ManagedSets` to ask about one; `config.Overrides`,
+  `Config.Apply`, which lays a caller's overrides over a configuration so
+  they may tighten the managed settings and never loosen them, and
+  `config.ManagedError`, the refusal it returns; `config.LoadManaged`, the
+  defaults with only the managed file applied.
 - A configuration key that nothing reads is reported: it is still ignored, so
   every configuration that loaded before still loads, but each one is written
   to standard error once, with its file, its JSON path and, when a known key
@@ -119,6 +125,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The SDK applies the configuration's `permissions.ask` rules, as the CLI and
+  server do; it ignored them. This only adds prompts.
 - The reason given when a call is put to a person is accurate for the tool:
   "running a command needs approval in default mode" for `bash`, "changing a
   file needs approval …" for `edit` and `write`, where every such call read
@@ -287,6 +295,28 @@ All notable changes to Abhed are recorded here. The format follows
   of each string, and redaction fails closed: text that cannot be redacted
   becomes `[redacted: output withheld]`, and a payload left invalid is
   replaced whole.
+- **An embedded agent could loosen the managed configuration.** The SDK let
+  `Options.Mode` replace the managed permission mode, including with
+  `bypass`, which the CLI and server refuse under a managed file; it never
+  marked its policy engine managed, so the workbench terminal's managed
+  line-by-line enforcement and the engine's own `bypass` refusal did not
+  apply; without `ConfigDir` it did not read the managed file at all; and
+  `Options.SyntaxCheck` could turn a managed syntax check off. The CLI's
+  `-mode` flag also replaced a managed mode. Now `config.Load` records which
+  keys the managed file set, and the CLI's flags and the SDK's `Options` may
+  tighten those settings and never loosen them: `bypass` is refused under a
+  managed file; a managed `permissions.mode` admits only itself or `plan`;
+  a managed `tools.syntax_check` only something stricter; a managed
+  `limits.max_turns` only a lower limit; a managed `permissions.allow` or
+  `additional_dirs` no additions. Deny rules from a caller are added to the
+  managed ones. A refused override is an error from `abhed` and from
+  `sdk.New`, never a silent change. The SDK reads the managed file with or
+  without `ConfigDir`, marks its engine managed, and wraps bash in the
+  configured sandbox when the managed file sets a `sandbox` key (and fails
+  when no backend meets its `min_tier`). `abhed eval`, which runs in `auto`
+  mode, refuses to run under a managed file that pins another mode. A
+  managed file that exists but cannot be read is an error; it was treated as
+  absent. Without a managed file nothing changes.
 
 ## [1.0.1] - 2026-09-22
 

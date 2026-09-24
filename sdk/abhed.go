@@ -11,11 +11,16 @@
 // receives the event stream, which is the point — a host application usually
 // has better ideas than a terminal prompt about how to ask for permission.
 //
-// One guarantee does NOT come with it: this package builds no sandbox. Bash
-// runs with the privileges of the process that embedded it, where the CLI
-// would have wrapped it in the configured tier. A host that needs isolation
-// owns it — a container, a jail, a separate user — exactly as for any other
-// library that shells out.
+// The organisation's managed configuration (/etc/abhed/config.json) binds an
+// embedded agent as it binds the CLI and the server, whether or not ConfigDir
+// is set: Options may tighten what it sets and never loosen it, and New
+// returns an error for an option that would.
+//
+// One guarantee does NOT come with it: this package builds no sandbox unless
+// the managed configuration sets one. Otherwise bash runs with the privileges
+// of the process that embedded it, where the CLI would have wrapped it in the
+// configured tier. A host that needs isolation owns it — a container, a jail,
+// a separate user — exactly as for any other library that shells out.
 package abhed
 
 import (
@@ -30,6 +35,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -54,7 +60,8 @@ type Options struct {
 	Workspace string
 
 	// ConfigDir loads .abhed/config.json from a directory, the same file the
-	// CLI reads. Provider overrides what it names.
+	// CLI reads, with the user's and the managed file. Provider overrides what
+	// it names. Without it only the managed file, if any, is read.
 	ConfigDir string
 
 	// Provider names the model directly, for a caller that would rather not
@@ -62,15 +69,20 @@ type Options struct {
 	Provider *Provider
 
 	// Mode is the permission mode: default, plan, accept-edits, auto, bypass.
-	// Empty means default, which asks before every mutation.
+	// Empty means the configured mode, else default, which asks before every
+	// mutation. Under a managed configuration bypass is refused, and if it
+	// sets permissions.mode only that mode or plan may be chosen.
 	Mode string
 
 	// SyntaxCheck overrides tools.syntax_check: "refuse" (the default),
 	// "report" or "off". It governs edits that would break a file's syntax.
+	// If the managed configuration sets it, it may only be made stricter.
 	SyntaxCheck string
 
-	// Allow and Deny are policy rules, e.g. "bash(go test*)". Deny is
-	// absolute: no mode, extension or approver overrides it.
+	// Allow and Deny are policy rules, e.g. "bash(go test*)", added to the
+	// configured ones. Deny is absolute: no mode, extension or approver
+	// overrides it. Allow is refused if the managed configuration sets
+	// permissions.allow.
 	Allow []string
 	Deny  []string
 
@@ -82,7 +94,8 @@ type Options struct {
 	// the agent waits on it.
 	OnEvent func(Event)
 
-	// MaxTurns bounds one conversation. Zero uses the default.
+	// MaxTurns bounds one conversation. Zero uses the default, or the managed
+	// limits.max_turns, which it may not exceed.
 	MaxTurns int
 
 	// SystemPrompt replaces the built-in prompt entirely. Most callers want
@@ -122,13 +135,20 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: Workspace is required")
 	}
 
-	cfg := config.Default()
+	// The managed configuration applies with or without a config file.
+	load := config.LoadManaged
 	if opts.ConfigDir != "" {
-		loaded, err := config.Load(opts.ConfigDir)
-		if err != nil {
-			return nil, fmt.Errorf("abhed: %w", err)
-		}
-		cfg = loaded
+		load = func() (config.Config, error) { return config.Load(opts.ConfigDir) }
+	}
+	cfg, err := load()
+	if err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	if cfg, err = cfg.Apply(config.Overrides{
+		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
+		Allow: opts.Allow, Deny: opts.Deny,
+	}); err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	if p := opts.Provider; p != nil {
 		cfg.Model.Default = "embedded"
@@ -154,20 +174,30 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
-	if sess.Syntax, err = tools.ParseSyntaxMode(orDefault(opts.SyntaxCheck, cfg.Tools.SyntaxCheck)); err != nil {
+	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 
-	mode := opts.Mode
-	if mode == "" {
-		mode = cfg.Permissions.Mode
-	}
-	pol := policy.New(policy.Mode(orDefault(mode, "default")))
-	if err := pol.AddDeny(append(cfg.Permissions.Deny, opts.Deny...)...); err != nil {
+	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	pol.Managed = cfg.Managed
+	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}
-	if err := pol.AddAllow(append(cfg.Permissions.Allow, opts.Allow...)...); err != nil {
+	if err := pol.AddAsk(cfg.Permissions.Ask...); err != nil {
+		return nil, fmt.Errorf("abhed: ask rule: %w", err)
+	}
+	if err := pol.AddAllow(cfg.Permissions.Allow...); err != nil {
 		return nil, fmt.Errorf("abhed: allow rule: %w", err)
+	}
+
+	// A managed sandbox setting binds here too; otherwise bash is unsandboxed.
+	bash := tools.Bash{}
+	if cfg.ManagedSets("sandbox") {
+		sb, err := sandboxconfig.Build(cfg, opts.Workspace)
+		if err != nil {
+			return nil, fmt.Errorf("abhed: %w", err)
+		}
+		bash.Sandbox = sb.Command
 	}
 
 	host := extension.NewHost(nil)
@@ -196,13 +226,13 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	loopCfg := agent.DefaultConfig()
 	loopCfg.SystemPrompt = system
-	if opts.MaxTurns > 0 {
-		loopCfg.MaxTurns = opts.MaxTurns
+	if (opts.MaxTurns > 0 || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
+		loopCfg.MaxTurns = cfg.Limits.MaxTurns
 	}
 
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{}, tools.Todo{},
+		tools.Glob{}, tools.Grep{}, bash, tools.Todo{},
 	)
 
 	loop := agent.NewLoop(adapter, registry, pol, approverFor(opts.Approve),
