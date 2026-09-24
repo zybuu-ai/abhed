@@ -108,8 +108,18 @@ accounts are created by an administrator, which is true and actionable.
   response. The on-disk store uses its own type to persist it, rather than
   relaxing that tag.
 - A password set by an administrator (`user add`, `user passwd`) is flagged
-  `must_change_password`; the workbench says so at sign-in, and the user sets
-  their own at `/account`.
+  `must_change_password`, and until the user sets their own at `/account` the
+  session reaches nothing else: only `/account`, `POST /v1/password`,
+  `/v1/whoami`, sign-out and static files. A browser is sent to `/account`
+  with a note; an API call gets `403 {"error":"password change required"}`.
+
+### Administrators
+
+`POST /v1/admin/users/admin` grants or removes the admin group. It refuses an
+administrator removing their own rights, and refuses removing the last
+administrator whoever asks, since nothing on the deployment could grant it
+back. Every change under `/v1/admin/*` is written to the server log as
+`admin action`, with the action, the target and who made it.
 
 ## Behind a reverse proxy
 
@@ -131,6 +141,16 @@ Abhed does no verification of its own in this mode, so the proxy must be the
 only route to the port: bind Abhed to loopback or a private interface and let
 nothing else reach it. Anything that can reach the port directly can claim any
 identity by setting the headers itself.
+
+`/v1/whoami` reports the identity the proxy supplied (`"auth_mode": "proxy"`,
+the subject and groups), and the console and workbench show it. The proxy owns
+sign-in, so there is no Switch link, and Sign out appears only when
+`auth.proxy_logout_url` names the proxy's own sign-out; `/logout` then
+redirects there:
+
+```json
+{ "auth": { "mode": "proxy", "proxy_logout_url": "/oauth2/sign_out" } }
+```
 
 ## Allowed origins
 
@@ -169,6 +189,21 @@ one is sent, is checked first.
 
 A browser navigation with no session is redirected to sign in; an API call with
 no token gets `401` with a reason. That distinction is `Accept: text/html`.
+
+## Hooks for an edition built on this module
+
+All of these are unset in the Community Edition, which behaves as described
+above without them.
+
+| Hook | Called | Effect of an error |
+|---|---|---|
+| `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued | `403` with the error text; no session |
+| `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…}`; whoami answers `authenticated: false` with the reason |
+| `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way |
+
+`auth.LocalAuth.Sessions()` lists live local sessions — a digest of the
+cookie as the ID, never the cookie, with the user, when it was created, last
+seen and expires — and `EndSession(id)` ends one by that digest.
 
 ## Tenant
 

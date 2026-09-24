@@ -39,6 +39,23 @@ All notable changes to Abhed are recorded here. The format follows
 - `agent.reasoning.delta` events carry reasoning as it streams.
   `agent.reasoning` is unchanged and still follows with the whole text.
 - The event stream takes `?after=<seq>` as well as `Last-Event-ID`.
+- Hooks for the paid editions, all nil or unset by default so the Community
+  Edition behaves as before: `auth.LocalAuth.Admit`, asked after a password
+  checks out and before a session is issued; `auth.Middleware.Check`, run
+  after any provider, token or proxy identifies someone, which ends a refused
+  session and answers 403 with the reason (a browser goes to `/?refused=`),
+  and which `/v1/whoami` and `/v1/overview` honour too; and
+  `server.Options.AdminAudit`, told of every `/v1/admin/*` change.
+- `auth.LocalAuth.Sessions` lists live local sessions by a digest of their
+  cookie, never the cookie, with when each was created, last seen and
+  expires; `EndSession` ends one by that digest. `auth.SessionEnder` lets a
+  provider end a request's session without answering it.
+- In `proxy` mode `/v1/whoami` reports the identity the proxy supplied, and
+  the console and workbench show it. Sign-out appears only when the new
+  `auth.proxy_logout_url` names the proxy's own.
+- `auth.github.orgs`, `auth.github.teams` and `auth.github.allow_any`, for the
+  paid editions' GitHub sign-in. Validated in every edition; the Community
+  Edition does not otherwise read them.
 
 ### Changed
 
@@ -53,6 +70,8 @@ All notable changes to Abhed are recorded here. The format follows
   them for a subscriber that fell behind, so none is lost or repeated.
 - A `model.call` cut short by an interrupt no longer records the cancelled
   stream as an error; the session ends as `user_interrupt` as before.
+- `/v1/whoami` names `sign_out_url` when there is one, and the console and
+  workbench draw Sign out only then.
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
 - `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
@@ -63,6 +82,11 @@ All notable changes to Abhed are recorded here. The format follows
   or write that would break a file's syntax, where they applied it before.
   Set `tools.syntax_check` to `report` or `off` to keep the old behaviour;
   the SDK also takes `Options.SyntaxCheck`.
+
+### Deprecated
+
+- `auth.LocalAuth.Whoami`: nothing registers it; the server answers
+  `/v1/whoami` for every provider. It goes in 2.0.
 
 ### Removed
 
@@ -75,6 +99,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- An administrator whose account has an email address could remove their own
+  administrator rights: the guard compared the username with the email. It now
+  compares the account itself, and the last administrator cannot be removed by
+  anyone.
+- A password set by an administrator now has to be changed before anything
+  else: until it is, the session reaches only `/account`, `POST /v1/password`,
+  `/v1/whoami`, sign-out and static files. A browser is sent to `/account`; an
+  API call gets `403 {"error":"password change required"}`. It had been a note
+  in the workbench.
 - The workbench is where sign-in lands, and the console links to it; it had
   to be reached by typing `/ide`. Switch no longer leads to a 404 on local
   accounts, Admin appears only where an admin page exists, and a local user
