@@ -1,8 +1,13 @@
 package app
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -47,9 +52,49 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 			t.Errorf("%v: -addr is not shown as a flag with a value:\n%s", args, out)
 		}
 	}
-	for _, name := range []string{"serve", "doctor", "user", "init", "hawkeye", "migrate", "acp", "rpc", "resolve", "secret"} {
+}
+
+// The usage table and Main's dispatch name the same subcommands, so neither
+// can gain one the other lacks.
+func TestUsageMatchesMainsDispatch(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "Main" {
+			return true
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			sw, ok := n.(*ast.SwitchStmt)
+			if !ok || sw.Tag == nil || types.ExprString(sw.Tag) != "fs.Arg(0)" {
+				return true
+			}
+			for _, st := range sw.Body.List {
+				for _, e := range st.(*ast.CaseClause).List {
+					if lit, ok := e.(*ast.BasicLit); ok {
+						name, _ := strconv.Unquote(lit.Value)
+						dispatched[name] = true
+					}
+				}
+			}
+			return false
+		})
+		return false
+	})
+	if len(dispatched) == 0 {
+		t.Fatal("found no subcommands in Main's switch; this test would prove nothing")
+	}
+	for name := range dispatched {
 		if !builtinCommands[name] {
-			t.Errorf("%s is dispatched by Main but an edition could claim it", name)
+			t.Errorf("Main dispatches %s, which the usage does not list", name)
+		}
+	}
+	for _, c := range subcommands {
+		if !dispatched[c.name] {
+			t.Errorf("the usage lists %s, which Main does not dispatch", c.name)
 		}
 	}
 }

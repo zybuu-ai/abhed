@@ -2417,11 +2417,17 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("ok\n  ran a command under the %s tier\n", sb.Tier())
 	}
 
+	return doctorVerdict(os.Stdout, unknown)
+}
+
+// doctorVerdict ends a doctor run whose checks all passed: ready, unless the
+// configuration has keys nothing reads.
+func doctorVerdict(w io.Writer, unknown bool) int {
 	if unknown {
-		fmt.Println("\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
+		fmt.Fprintln(w, "\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
 		return 1
 	}
-	fmt.Println("\nReady.")
+	fmt.Fprintln(w, "\nReady.")
 	return 0
 }
 
