@@ -163,6 +163,9 @@ type Message struct {
 	// QueueID is set on a user message that waited in the queue, and matches
 	// the id it was given when it was sent.
 	QueueID string `json:"queue_id,omitempty"`
+	// ClientID is an id the sender chose for the message, echoed so a client
+	// can match its own message without comparing text.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // Delta is one streamed fragment of an agent message.

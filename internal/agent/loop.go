@@ -132,9 +132,11 @@ type Loop struct {
 // QueuedMessage is a message waiting for the next turn boundary. Its ID is
 // carried on the user.message that delivers it, so a client can match the two.
 type QueuedMessage struct {
-	ID   string    `json:"id"`
-	Text string    `json:"text"`
-	At   time.Time `json:"queued_at"`
+	ID   string `json:"id"`
+	Text string `json:"text"`
+	// ClientID is the sender's own id for the message, when it gave one.
+	ClientID string    `json:"client_id,omitempty"`
+	At       time.Time `json:"queued_at"`
 }
 
 // Steer delivers a message to a running agent, applied at the next turn
@@ -152,11 +154,15 @@ type QueuedMessage struct {
 func (l *Loop) Steer(text string) { l.Queue(text) }
 
 // Queue is Steer that returns the message's id, or "" for a blank message.
-func (l *Loop) Queue(text string) string {
-	if strings.TrimSpace(text) == "" {
+func (l *Loop) Queue(text string) string { return l.QueueMessage(Message{Text: text}) }
+
+// QueueMessage queues m, keeping its ClientID for the user.message that
+// delivers it. Its QueueID is assigned here.
+func (l *Loop) QueueMessage(m Message) string {
+	if strings.TrimSpace(m.Text) == "" {
 		return ""
 	}
-	q := QueuedMessage{ID: "q_" + newID(), Text: text, At: time.Now().UTC()}
+	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC()}
 	l.steerMu.Lock()
 	defer l.steerMu.Unlock()
 	l.steer = append(l.steer, q)
@@ -202,7 +208,7 @@ func (l *Loop) deliverQueued() error {
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
-		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID}); err != nil {
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID, ClientID: q.ClientID}); err != nil {
 			return err
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
@@ -293,15 +299,21 @@ func (l *Loop) Continue(ctx context.Context, userPrompt string) (TerminalReason,
 // Calling it again on the same Loop continues the conversation rather than
 // starting over; see Continue.
 func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, error) {
+	return l.RunMessage(ctx, Message{Text: userPrompt})
+}
+
+// RunMessage is Run for a prompt that carries a client's id, which the
+// recorded user.message echoes so the client can match it.
+func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error) {
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
 	if err := l.deliverQueued(); err != nil {
 		return TermError, err
 	}
-	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: userPrompt}); err != nil {
+	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: m.Text, ClientID: m.ClientID}); err != nil {
 		return TermError, err
 	}
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: userPrompt})
+	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
 	return l.run(ctx)
 }
 
@@ -571,7 +583,9 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}
-	if streamErr != nil {
+	// A stream cut by our own cancel is an interrupt, recorded as such at
+	// session end, not a model failure.
+	if streamErr != nil && ctx.Err() == nil {
 		mc.Error = streamErr.Error()
 	}
 	l.record(EvModelCall, ActorSystem, mc)
