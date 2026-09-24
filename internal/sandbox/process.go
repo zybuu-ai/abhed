@@ -162,7 +162,7 @@ func ignoreState(workspace string) {
 	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) // #nosec G304 -- the workspace's own state directory
+	f, err := os.OpenFile(filepath.Join(dir, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the workspace's own state directory
 	if err == nil {
 		_, _ = f.WriteString("# Abhed's own state: not for the repository.\n*\n")
 		_ = f.Close()

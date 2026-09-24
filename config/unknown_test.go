@@ -19,7 +19,7 @@ func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 	  "model": {"provider": "custom", "providers": {"custom": {
 	    "type": "openai-compatible", "base_url": "http://gpu:8000/v1", "model": "m", "contxt_window": 8192}}},
-	  "sandbox": {"allow_netwrok": true, "Min_Tier": "process"},
+	  "sandbox": {"allow_networks": true, "Min_Tier": "process"},
 	  "permissions": {"deny": ["bash(rm*)"]},
 	  "extensions": [{"name": "x", "command": "/bin/x", "evnets": ["tool_call"]}],
 	  "zzz_nothing_like_it": 1
@@ -44,7 +44,7 @@ func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
 	want := map[string]string{
 		"model.provider":                       "model.default",
 		"model.providers.custom.contxt_window": "model.providers.custom.context_window",
-		"sandbox.allow_netwrok":                "sandbox.allow_network",
+		"sandbox.allow_networks":               "sandbox.allow_network",
 		"extensions[0].evnets":                 "extensions[0].events",
 		"zzz_nothing_like_it":                  "",
 	}
