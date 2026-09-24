@@ -29,7 +29,7 @@ func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, erro
 	}
 	emit(agent.EvAgentReasoning, map[string]string{"text": "I should write the file."})
 	args := json.RawMessage(`{"path":"/ws/a.txt","content":"hi"}`)
-	ok, err := a.opts.Approve(ctx, "write", args, abhed.Decision{Scope: "write(/ws/a.txt)", Reason: "mutating tool requires approval"})
+	ok, err := a.opts.Approve(ctx, "write", args, abhed.Decision{Scope: "write(/ws/a.txt)", Reason: "changing a file needs approval in default mode"})
 	if err != nil {
 		return "", err
 	}

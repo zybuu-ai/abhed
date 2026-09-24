@@ -277,7 +277,23 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	if !mutates {
 		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
 	}
-	return Result{Decision: Ask, Reason: "mutating tool requires approval", Scope: suggestScope(tool, subject), Step: "default"}
+	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+}
+
+// askReason says why a call is put to a person. A command is asked about
+// because it can do anything, not because it is known to change something.
+func askReason(tool string, mode Mode) string {
+	if mode == "" {
+		mode = ModeDefault
+	}
+	what := tool + " can make changes, so it"
+	switch tool {
+	case "bash":
+		what = "running a command"
+	case "edit", "write":
+		what = "changing a file"
+	}
+	return fmt.Sprintf("%s needs approval in %s mode", what, mode)
 }
 
 // suggestScope proposes a narrow "always allow" rule for the approval prompt.

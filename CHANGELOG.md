@@ -97,6 +97,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The reason given when a call is put to a person is accurate for the tool:
+  "running a command needs approval in default mode" for `bash`, "changing a
+  file needs approval …" for `edit` and `write`, where every such call read
+  "mutating tool requires approval". What is allowed, asked and denied is
+  unchanged; only the `reason` text differs.
 - **Security-relevant default:** the workbench terminal no longer judges each
   line before it runs. After an upgrade it is an interactive shell, bounded by
   the sandbox, in which `bash` deny rules only screen each line as typed and

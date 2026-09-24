@@ -23,6 +23,26 @@ func TestDenySurvivesBypass(t *testing.T) {
 	}
 }
 
+// The reason an approval prompt shows is accurate for the tool: a command
+// is asked about because it can do anything, not called mutating.
+func TestAskReasonNamesWhatIsAsked(t *testing.T) {
+	for _, c := range []struct {
+		mode       Mode
+		tool, want string
+		args       json.RawMessage
+	}{
+		{ModeDefault, "bash", "running a command needs approval in default mode", args(map[string]string{"command": "whoami"})},
+		{ModeAcceptEdits, "bash", "running a command needs approval in accept-edits mode", args(map[string]string{"command": "uname -a"})},
+		{ModeDefault, "write", "changing a file needs approval in default mode", args(map[string]string{"path": "a.txt"})},
+		{ModeDefault, "k8s_apply", "k8s_apply can make changes, so it needs approval in default mode", args(map[string]string{})},
+	} {
+		res := New(c.mode).Evaluate(c.tool, true, c.args)
+		if res.Decision != Ask || res.Reason != c.want {
+			t.Errorf("%s in %s: %s %q, want ask %q", c.tool, c.mode, res.Decision, res.Reason, c.want)
+		}
+	}
+}
+
 func TestDenyBeatsAllow(t *testing.T) {
 	e := New(ModeDefault)
 	_ = e.AddAllow("bash(*)")
