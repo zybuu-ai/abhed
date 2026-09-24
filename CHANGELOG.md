@@ -8,6 +8,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `hawkeye.AnalyzeWith` and `hawkeye.Options`, for what the caller knows
+  beyond the record (`Live`: the session is still running there), and
+  `hawkeye.Call.Actor` (`actor` in the JSON report): whether the model or a
+  person made the call. `Analyze` is unchanged.
+- `tools.ExitStatus`, a process's exit code with a signal death given as 128
+  plus the signal's number.
 - A configuration key that nothing reads is reported: it is still ignored, so
   every configuration that loaded before still loads, but each one is written
   to standard error once, with its file, its JSON path and, when a known key
@@ -217,10 +223,8 @@ All notable changes to Abhed are recorded here. The format follows
   recorded -1.
 - HawkEYE no longer attributes a person's workbench calls to the model: calls
   with `actor: user` never raise `repeated-failure`, `slow-tool`, `truncated`
-  or `borrowed-host`, and each call in a report now carries its `actor`.
-  `no-end` is not raised for a session still running on the server, or while
-  a shell the person opened is still open. `hawkeye.AnalyzeWith` takes what
-  the caller knows beyond the record.
+  or `borrowed-host`. `no-end` is not raised for a session still running on
+  the server; offline, with a shell still open, it says so.
 - The workbench chat shows the conversation with the agent. The person's own
   calls (shells, terminal lines, Explorer operations and saves) no longer
   appear in it; they stay in Events and the record, and saves in Changes.

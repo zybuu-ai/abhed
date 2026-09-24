@@ -1458,7 +1458,10 @@ func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	_, live := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	// Live here whoever owns it: mayAccess has already admitted the caller.
+	s.mu.RLock()
+	_, live := s.running[id]
+	s.mu.RUnlock()
 	rep := hawkeye.AnalyzeWith(id, events, hawkeye.Options{Live: live})
 	if r.URL.Query().Get("format") != "html" {
 		WriteJSON(w, http.StatusOK, rep)

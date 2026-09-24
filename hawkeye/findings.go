@@ -58,9 +58,15 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 				"so this record was filtered, truncated or edited before it was analysed.", r.Integrity.Gaps),
 			r.Integrity.Gaps[0])
 	}
-	if !r.Integrity.HasEnd && len(evs) > 0 && !opt.Live && !slices.ContainsFunc(r.Calls, Call.shellOpen) {
-		add(Info, "no-end", "The session has no recorded end",
-			"It is still running, or the process died before it could write one.", 0)
+	// The record cannot tell a shell still open from a server that died with
+	// one, so an open shell changes what the finding says, not whether it is made.
+	if !r.Integrity.HasEnd && len(evs) > 0 && !opt.Live {
+		detail := "It is still running, or the process died before it could write one."
+		if slices.ContainsFunc(r.Calls, Call.shellOpen) {
+			detail = "A shell the person opened in the workbench had not ended either: the session may still be open " +
+				"there, or the server stopped before it could record the end."
+		}
+		add(Info, "no-end", "The session has no recorded end", detail, 0)
 	}
 	if why, bad := abnormal[r.Outcome]; bad {
 		add(Warn, "abnormal-end", "Ended as "+r.Outcome, "The session did not complete: "+why+".", r.Integrity.LastSeq)

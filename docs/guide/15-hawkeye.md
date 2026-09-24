@@ -82,8 +82,9 @@ raise `sensitive-path`, `denied` and `secret-redacted`, which are about what
 was reached, refused or exposed whoever did it. They never raise the findings
 about the model's behaviour: `repeated-failure`, `slow-tool`, `truncated` and
 `borrowed-host`. `no-end` is not raised for a session still running on the
-server that makes the report, nor while a shell the person opened has not
-ended; the command line, which reads only the record, relies on the second.
+server that makes the report. The command line reads only the record, which
+cannot tell a shell still open from a server that stopped with one open, so
+there `no-end` is still raised and says a shell was open.
 
 `borrowed-host` is the one worth understanding. All tool output is untrusted,
 and an injected instruction usually has to name somewhere to send things. A

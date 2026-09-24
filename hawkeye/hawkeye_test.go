@@ -369,7 +369,7 @@ func TestPersonsCallsAreNotTheModels(t *testing.T) {
 	}
 }
 
-// A session still running, or with a shell still open, has no end yet.
+// A session the server says is still running has no end yet.
 func TestNoEndIsNotRaisedForALiveSession(t *testing.T) {
 	r := (&rec{}).user("look").model(1200, 900, 32768)
 	if has(Analyze("s", r.evs), "no-end") == nil {
@@ -378,8 +378,9 @@ func TestNoEndIsNotRaisedForALiveSession(t *testing.T) {
 	if has(AnalyzeWith("s", r.evs, Options{Live: true}), "no-end") != nil {
 		t.Error("no-end raised for a session the server says is live")
 	}
+	// Offline, an open shell may be a server that died with it: still raised, and said.
 	r.person("u1", `{"command":"bash -i","interactive":true}`, "", false, 0, false)
-	if has(Analyze("s", r.evs), "no-end") != nil {
-		t.Error("no-end raised while the person's shell is open")
+	if f := has(Analyze("s", r.evs), "no-end"); f == nil || !strings.Contains(f.Detail, "shell") {
+		t.Errorf("no-end with a shell still open offline: %+v", f)
 	}
 }
