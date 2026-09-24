@@ -728,7 +728,7 @@ function drawReview(t){
   icon('arrow-up', 'Previous change', () => diff && diff.goToDiff('previous'));
   icon('arrow-down', 'Next change', () => diff && diff.goToDiff('next'));
   btn(diffInline ? 'Side by side' : 'Inline', '', toggleDiffLayout, 'Show the review inline or side by side');
-  btn('Accept all', 'ok', () => acceptText(t, t.model.getValue()));
+  btn('Accept all', 'ok', async () => { if(await savedFirst(t)) acceptText(t, t.model.getValue()); });
   btn('Reject all', 'no', () => rejectAll(t));
 }
 function toggleDiffLayout(){
@@ -759,7 +759,10 @@ function drawHunks(){
 // Lines s..e of a model, or none when e is 0 (the other side of an insertion or deletion).
 const linesOf = (model, s, e) => e === 0 ? [] : model.getLinesContent().slice(s - 1, e);
 function spliceLines(lines, s, e, put){ if(e === 0) lines.splice(s, 0, ...put); else lines.splice(s - 1, e - s + 1, ...put); return lines; }
-function acceptHunk(t, c){
+// The baseline only ever moves to text that is on disk, so unsaved edits are saved first.
+async function savedFirst(t){ if(t.dirty) await save(t); return !t.dirty; }
+async function acceptHunk(t, c){
+  if(!await savedFirst(t)) return;
   const text = spliceLines(t.orig.getLinesContent(), c.originalStartLineNumber, c.originalEndLineNumber,
     linesOf(t.model, c.modifiedStartLineNumber, c.modifiedEndLineNumber)).join(t.orig.getEOL());
   acceptText(t, text);
@@ -958,7 +961,7 @@ async function runSearch(){
   for(const f of r.files){
     const head = el('button', 'row sfile'); head.type = 'button'; head.title = f.path;
     head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', f.path.split('/').pop()));
-    head.appendChild(el('span', 'd', parentOf(f.path))); head.appendChild(el('span', 'c', String(f.matches.length)));
+    head.appendChild(el('span', 'd', parentOf(f.path))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
     const list = el('div'); box.appendChild(head); box.appendChild(list);
     head.addEventListener('click', () => { list.hidden = !list.hidden; head.firstChild.className = 'tw codicon codicon-chevron-' + (list.hidden ? 'right' : 'down'); });
     for(const m of f.matches){
