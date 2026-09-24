@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -111,6 +112,9 @@ type LocalAuth struct {
 	CookieName string
 	SessionTTL time.Duration
 	Secure     bool
+	// Admit, when set, is asked after the password checks out and before a
+	// session is issued; its error is shown to the person with a 403.
+	Admit func(ctx context.Context, u *User) error
 
 	mu       sync.RWMutex
 	sessions map[string]*browserSession
@@ -205,21 +209,41 @@ func (l *LocalAuth) ChangePassword(ctx context.Context, username, current, next 
 	}
 	u.Hash = string(hash)
 	u.MustChange = false
-	return l.Store.Put(ctx, u)
+	if err := l.Store.Put(ctx, u); err != nil {
+		return err
+	}
+	l.markMustChange(u.Username, false)
+	return nil
+}
+
+// markMustChange sets the password-change flag on every live session of a user.
+func (l *LocalAuth) markMustChange(username string, on bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, s := range l.sessions {
+		if s.Identity != nil && strings.EqualFold(s.Identity.Subject, username) {
+			s.mustChange.Store(on)
+		}
+	}
 }
 
 // issue creates a browser session for a signed-in user.
 func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	sid := randomToken()
-	l.mu.Lock()
-	l.sessions[sid] = &browserSession{
+	now := time.Now()
+	s := &browserSession{
 		Identity: &Identity{
 			Subject: u.Username, Email: u.Email, Name: u.Name,
 			Tenant: u.Tenant, Groups: u.Groups,
-			Expires: time.Now().Add(l.SessionTTL).Unix(),
+			IssuedAt: now.Unix(), Expires: now.Add(l.SessionTTL).Unix(),
 		},
-		Expires: time.Now().Add(l.SessionTTL),
+		Created: now,
+		Expires: now.Add(l.SessionTTL),
 	}
+	s.mustChange.Store(u.MustChange)
+	s.lastSeen.Store(now.UnixNano())
+	l.mu.Lock()
+	l.sessions[sid] = s
 	l.mu.Unlock()
 
 	http.SetCookie(w, &http.Cookie{
@@ -231,6 +255,16 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 
 // FromCookie resolves a session cookie to an identity.
 func (l *LocalAuth) FromCookie(r *http.Request) (*Identity, bool) {
+	s, ok := l.session(r)
+	if !ok {
+		return nil, false
+	}
+	s.lastSeen.Store(time.Now().UnixNano())
+	return s.Identity, true
+}
+
+// session finds the live session a request's cookie names.
+func (l *LocalAuth) session(r *http.Request) (*browserSession, bool) {
 	c, err := r.Cookie(l.CookieName)
 	if err != nil {
 		return nil, false
@@ -241,7 +275,67 @@ func (l *LocalAuth) FromCookie(r *http.Request) (*Identity, bool) {
 	if !found || time.Now().After(s.Expires) {
 		return nil, false
 	}
-	return s.Identity, true
+	return s, true
+}
+
+// MustChangePassword reports whether the request's session belongs to an
+// account whose password was set for it and has not yet been changed.
+func (l *LocalAuth) MustChangePassword(r *http.Request) bool {
+	s, ok := l.session(r)
+	return ok && s.mustChange.Load()
+}
+
+// Sessions lists the live local sessions, newest first, without their cookies.
+func (l *LocalAuth) Sessions() []SessionInfo {
+	now := time.Now()
+	l.mu.RLock()
+	out := make([]SessionInfo, 0, len(l.sessions))
+	for sid, s := range l.sessions {
+		if now.After(s.Expires) || s.Identity == nil {
+			continue
+		}
+		out = append(out, SessionInfo{
+			ID: sessionDigest(sid), Provider: l.Name(),
+			Subject: s.Identity.Subject, Email: s.Identity.Email, Name: s.Identity.Name,
+			Created: s.Created, LastSeen: time.Unix(0, s.lastSeen.Load()),
+			Expires: s.Expires, MustChange: s.mustChange.Load(),
+		})
+	}
+	l.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
+	return out
+}
+
+// EndSession ends the session whose SessionInfo.ID is id, reporting whether
+// one was found.
+func (l *LocalAuth) EndSession(id string) bool {
+	if id == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for sid := range l.sessions {
+		if sessionDigest(sid) == id {
+			delete(l.sessions, sid)
+			return true
+		}
+	}
+	return false
+}
+
+// EndRequestSession ends the session the request carries and expires its
+// cookie, without answering the request.
+func (l *LocalAuth) EndRequestSession(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(l.CookieName); err == nil {
+		l.mu.Lock()
+		delete(l.sessions, c.Value)
+		l.mu.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: l.CookieName, Value: "", Path: "/",
+		HttpOnly: true, Secure: l.Secure, MaxAge: -1,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 type signInRequest struct {
@@ -265,6 +359,14 @@ func (l *LocalAuth) SignInHandler(w http.ResponseWriter, r *http.Request) {
 			map[string]string{"error": ErrBadCredentials.Error()})
 		return
 	}
+	// Asked only after the password checks out, so a refusal says nothing
+	// about accounts to someone who does not hold one.
+	if l.Admit != nil {
+		if err := l.Admit(r.Context(), u); err != nil {
+			writeAuthJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 
 	l.issue(w, u)
 	writeAuthJSON(w, http.StatusOK, map[string]any{
@@ -275,15 +377,7 @@ func (l *LocalAuth) SignInHandler(w http.ResponseWriter, r *http.Request) {
 
 // SignOut clears the session.
 func (l *LocalAuth) SignOut(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(l.CookieName); err == nil {
-		l.mu.Lock()
-		delete(l.sessions, c.Value)
-		l.mu.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name: l.CookieName, Value: "", Path: "/",
-		HttpOnly: true, Secure: l.Secure, MaxAge: -1,
-	})
+	l.EndRequestSession(w, r)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -312,6 +406,9 @@ func (l *LocalAuth) ChangePasswordHandler(w http.ResponseWriter, r *http.Request
 }
 
 // Whoami reports the signed-in user.
+//
+// Deprecated: the server answers /v1/whoami for every provider and never
+// registers this; it will be removed in 2.0.
 func (l *LocalAuth) Whoami(w http.ResponseWriter, r *http.Request) {
 	id, ok := l.FromCookie(r)
 	if !ok {
@@ -323,6 +420,8 @@ func (l *LocalAuth) Whoami(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true, "auth_mode": "local",
 		"subject": id.Subject, "email": id.Email, "name": id.Name,
 		"tenant": id.Tenant, "groups": id.Groups,
+		"switch_url": "/logout", "password_url": "/account", "sign_out_url": "/logout",
+		"must_change_password": l.MustChangePassword(r),
 	})
 }
 
@@ -346,7 +445,11 @@ func (l *LocalAuth) CreateUserOrReset(ctx context.Context, u *User, password str
 	u.Hash = string(hash)
 	// An administratively reset password is temporary by definition.
 	u.MustChange = true
-	return l.Store.Put(ctx, u)
+	if err := l.Store.Put(ctx, u); err != nil {
+		return err
+	}
+	l.markMustChange(u.Username, true)
+	return nil
 }
 
 // ListUsers returns every local account, for an administrator's user list.
