@@ -56,6 +56,9 @@ const (
 	// agent.reasoning still follows with the whole text, so a reader that
 	// ignores the fragments loses nothing.
 	EvAgentReasoningDelta EventType = "agent.reasoning.delta"
+	// EvTerminalInput is a line a person entered in an interactive workbench
+	// terminal, as typed. Best effort: see TerminalInput.
+	EvTerminalInput EventType = "terminal.input"
 )
 
 type Actor string
@@ -134,6 +137,17 @@ type Event struct {
 }
 
 // Payload shapes.
+
+// TerminalInput is one line entered in an interactive terminal, rebuilt from
+// the keys typed. Completion and history recall happen inside the shell, so
+// when Edited is set the shell may have run something other than Line.
+// Withheld says why the text is absent, for a line the terminal did not echo.
+type TerminalInput struct {
+	CallID   string `json:"call_id"`
+	Line     string `json:"line,omitempty"`
+	Edited   bool   `json:"edited,omitempty"`
+	Withheld string `json:"withheld,omitempty"`
+}
 
 type ActionRequested struct {
 	CallID           string          `json:"call_id"`

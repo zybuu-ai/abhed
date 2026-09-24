@@ -439,6 +439,12 @@ type SandboxConfig struct {
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
 	MaxMemoryMB   int      `json:"max_memory_mb"`
 	MaxProcs      int      `json:"max_procs"`
+	// Terminal is how the workbench terminal runs: "shell" (the default), one
+	// interactive shell per tab, or "lines", each line judged before it runs.
+	Terminal string `json:"terminal,omitempty"`
+	// TerminalIdleMinutes ends a workbench shell nobody has watched for this
+	// long. Zero means 30.
+	TerminalIdleMinutes int `json:"terminal_idle_minutes,omitempty"`
 }
 
 type LimitsConfig struct {
@@ -733,6 +739,11 @@ func (c Config) Validate() error {
 	case "none", "process", "container", "vm", "":
 	default:
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
+	}
+	switch c.Sandbox.Terminal {
+	case "", "shell", "lines":
+	default:
+		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
 	}
 	return nil
 }

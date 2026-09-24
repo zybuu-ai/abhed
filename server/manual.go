@@ -17,7 +17,8 @@ import (
 
 // What the person at the workbench does by hand — saving a file, running a
 // command — goes through agent.Loop.Manual: the same policy, the same sandbox
-// and the same record as the agent's own calls. There is no second, softer path.
+// and the same record as the agent's own calls. An interactive shell (pty.go)
+// is judged when it opens and is then bounded by the sandbox alone.
 
 // maxManualCommand bounds a command line typed into the workbench.
 const maxManualCommand = 8 << 10
@@ -35,9 +36,38 @@ func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSes
 	}
 	live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !found {
-		// A finished session from before a restart has no sandbox to run in.
-		WriteError(w, http.StatusConflict, "this session is not live on this server; send it a message to resume it, or start a new one")
-		return nil, nil, false
+		// A session from before a restart is continued from its record, as a
+		// message would continue it, so there is a sandbox to work in.
+		if !s.mayAccess(r, id) {
+			WriteError(w, http.StatusNotFound, "session not found")
+			return nil, nil, false
+		}
+		resumed, err := s.resumeSession(r.Context(), id, "", UserOf(r.Context()), TenantOf(r.Context()))
+		if errors.Is(err, errBusySession) {
+			// Another request may have reopened it a moment ago.
+			if l, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+				resumed, err = l, nil
+			}
+		}
+		switch {
+		case errors.Is(err, errNoSession):
+			WriteError(w, http.StatusNotFound, "session not found")
+			return nil, nil, false
+		case errors.Is(err, errDraining):
+			w.Header().Set("Retry-After", "5")
+			WriteError(w, http.StatusServiceUnavailable, errDraining.Error())
+			return nil, nil, false
+		case err != nil:
+			s.log.Warn("could not reopen session", "session", id, "error", err)
+			WriteError(w, http.StatusConflict, "this session could not be reopened on this server; start a new one")
+			return nil, nil, false
+		}
+		live = resumed
+		live.mu.Lock()
+		if live.Turns == 0 && live.State == "done" {
+			live.State = "idle" // a workbench session nobody has messaged yet
+		}
+		live.mu.Unlock()
 	}
 	live.mu.Lock()
 	defer live.mu.Unlock()

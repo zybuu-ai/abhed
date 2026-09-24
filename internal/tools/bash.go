@@ -35,6 +35,19 @@ type Bash struct {
 	Secrets func(names []string) ([]string, error)
 	// SecretNames is what the model may ask for, by name only.
 	SecretNames []string
+	// Shell, when set, starts a long-lived interactive shell under the same
+	// sandbox as Sandbox. Only the workbench terminal uses it.
+	Shell func(ctx context.Context, cwd string) *exec.Cmd
+	// Isolation says what contains the commands, for a person to read.
+	Isolation Isolation
+}
+
+// Isolation describes the sandbox in force: its tier, the mechanism that
+// provides it, and whether commands can reach the network.
+type Isolation struct {
+	Tier    string `json:"tier"`
+	Backend string `json:"backend"`
+	Network bool   `json:"network"`
 }
 
 func (Bash) Name() string  { return "bash" }

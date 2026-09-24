@@ -177,7 +177,24 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #review button{white-space:nowrap;font:11px var(--sans);border:1px solid var(--line);border-radius:4px;padding:2px 9px;cursor:pointer;background:var(--surface);color:var(--ink)}
 #review button.ok{color:var(--add);border-color:var(--add)}#review button.no{color:var(--del);border-color:var(--del)}
 #review button.ico{padding:1px 4px;display:grid;place-items:center}
-#p-terminal{padding:0;overflow:hidden;background:var(--bg)}#p-terminal .xterm{height:100%;padding:4px 0 0 8px}
+#p-terminal{padding:0;overflow:hidden;background:var(--bg);display:flex;flex-direction:column}
+#tbar{display:flex;align-items:center;gap:4px;height:28px;flex:none;padding:0 6px;border-bottom:1px solid var(--line);background:var(--chrome)}
+#ttabs{display:flex;gap:2px;min-width:0;overflow-x:auto;scrollbar-width:none}
+.ttab{display:flex;align-items:center;gap:6px;height:22px;padding:0 4px 0 10px;border-radius:5px;font:12px var(--mono);color:var(--muted);white-space:nowrap;cursor:pointer}
+.ttab:hover{background:var(--sunken)}
+.ttab[aria-selected="true"]{background:var(--bg);color:var(--ink);box-shadow:inset 0 -2px 0 var(--accent)}
+.ttab .live{color:var(--ok);font-size:9px}
+.ttab .x{width:16px;height:16px;border-radius:3px;display:grid;place-items:center;color:var(--muted);font-size:14px;line-height:1}
+.ttab .x:hover{background:var(--line);color:var(--ink)}
+.ttab input{font:12px var(--mono);width:110px;background:var(--surface);color:var(--ink);border:1px solid var(--accent);border-radius:3px;padding:0 4px}
+#tbar .tb{font:12px var(--sans);color:var(--muted);padding:2px 8px;border-radius:4px;flex:none}
+#tbar .tb:hover{background:var(--sunken);color:var(--ink)}#tbar .tb:disabled{opacity:.4;cursor:default;background:none}
+#tbar #t-kill:not(:disabled){color:var(--bad)}
+#tbar .tsp{flex:1}
+#tpanes{flex:1;min-height:0;position:relative}
+.tpane{position:absolute;inset:0;padding:4px 0 0 8px}.tpane .xterm{height:100%}
+.tempty{margin:14px 16px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.tempty button{height:26px;padding:0 12px;border-radius:5px;background:var(--accent);color:#fff;font-weight:600}
 .cmd .who{color:var(--muted);font-size:11px;margin-left:6px}
 .call .mine{flex:none;color:var(--muted);font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 5px}
 .diff{font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
@@ -404,7 +421,10 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
         <button type="button" data-p="events" aria-selected="false">Events<span class="n" id="n-evt"></span></button>
         <span class="sp"></span>
       </div>
-      <div class="pbody" id="p-terminal" aria-label="Terminal: each line runs in the session sandbox under the same rules as the agent, and is recorded"></div>
+      <div class="pbody" id="p-terminal" aria-label="Terminal: a shell in the session sandbox; lines you enter are checked against the deny rules and recorded">
+        <div id="tbar"><div id="ttabs" role="tablist" aria-label="Terminals"></div><button type="button" class="tb" id="t-new" title="New terminal">+</button><span class="tsp"></span><button type="button" class="tb" id="t-kill" title="End this terminal's shell or running command" disabled>Kill</button></div>
+        <div id="tpanes"></div>
+      </div>
       <div class="pbody" id="p-problems" hidden></div>
       <div class="pbody" id="p-events" hidden></div>
     </section>
@@ -455,7 +475,7 @@ const fmt = n => (n || 0).toLocaleString('en-US');
 
 async function api(path, opts){
   const r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts});
-  if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} throw new Error(m); }
+  if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} const e = new Error(m); e.status = r.status; throw e; }
   return r.status === 204 ? null : r.json();
 }
 
@@ -480,7 +500,7 @@ function setView(name){
   store.set('view', name);
   if(name === 'changes') loadChanges();
   if(name === 'hawkeye') loadHawkeye();
-  if(name === 'explorer' && !$('tree').firstChild) loadTree('', $('tree'), 0);
+  if(name === 'explorer' && (!$('tree').firstChild || treeStale)) refreshTree();
   if(name === 'search') setTimeout(() => { $('sq').focus(); $('sq').select(); });
 }
 document.querySelectorAll('#act button[data-view]').forEach(b => b.addEventListener('click', () => {
@@ -490,7 +510,7 @@ document.querySelectorAll('#act button[data-view]').forEach(b => b.addEventListe
 function setPanel(name){
   document.querySelectorAll('#ptabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.p === name)));
   ['terminal','problems','events'].forEach(p => { $('p-' + p).hidden = p !== name; });
-  if(name === 'terminal') fitTerm();
+  if(name === 'terminal') requestAnimationFrame(fitActive);
   $('app').classList.remove('nopanel');
 }
 document.querySelectorAll('#ptabs button').forEach(b => b.addEventListener('click', () => setPanel(b.dataset.p)));
@@ -501,7 +521,7 @@ $('theme').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches;
   const next = dark ? 'light' : 'dark'; applyTheme(next); store.set('theme', next);
   editorTheme();
-  term.options.theme = next === 'dark' ? {background:'#00000000', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'} : {background:'#00000000', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
+  terms.forEach(x => { x.term.options.theme = next === 'dark' ? TERM_DARK : TERM_LIGHT; });
 });
 
 function dragSplit(handle, cssVar, axis, sign, min, max){
@@ -658,7 +678,7 @@ function welcome(){
   crumbs('', ''); clear(noteBox); pane('note');
   const w = el('div'); w.id = 'welcome';
   w.appendChild(el('h1', '', 'The agent works on the right. You work here.'));
-  w.appendChild(el('p', '', 'Open a file to edit it, run commands in the Terminal below, or let the agent make a change and review it under Changes. Your edits and commands pass the same policy and sandbox as the agent, and land in the same record.'));
+  w.appendChild(el('p', '', 'Open a file to edit it, work in a shell in the Terminal below, or let the agent make a change and review it under Changes. Your saves pass the same policy as the agent\'s edits, your shell runs in the same sandbox as its commands, and both land in the same record.'));
   const dl = el('dl'), mod = isMac ? '⌘' : 'Ctrl', shift = isMac ? '⇧' : 'Shift';
   [[[mod,'P'],'Go to file; the palette also runs commands'],[[shift,mod,'F'],'Search the workspace'],[[mod,'S'],'Save, and ' + (isMac ? '⌥⌘S' : 'Ctrl+Alt+S') + ' saves all'],
    [['Ctrl','G'],'Go to line'],[[mod,'B'],'Toggle the side panel'],[['Ctrl','`'],'Toggle the terminal'],
@@ -841,6 +861,20 @@ async function loadTree(path, into, depth){
 function selectRow(row, e){ document.querySelectorAll('#tree .row.sel').forEach(r => r.classList.remove('sel')); row.classList.add('sel'); treeSel = e; }
 function refreshDir(path){ const d = dirs.get(path); if(d && d.into.isConnected) return loadTree(path, d.into, d.depth); return loadTree('', $('tree'), 0); }
 $('tree-reload').addEventListener('click', () => loadTree('', $('tree'), 0));
+// After a command, once its output has been quiet for a second and at most
+// four seconds after the first request; the tree keeps its open folders.
+let treeStale = false, treeTimer = null, treeFirst = 0;
+function refreshTree(){
+  if($('v-explorer').hidden){ treeStale = true; return; }
+  treeStale = false;
+  const box = $('tree'), top = box.scrollTop;
+  Promise.resolve(loadTree('', box, 0)).then(() => { box.scrollTop = top; });
+}
+function treeSoon(){
+  const now = Date.now(); if(!treeTimer) treeFirst = now;
+  clearTimeout(treeTimer);
+  treeTimer = setTimeout(() => { treeTimer = null; terms.forEach(x => { x.watch = false; }); refreshTree(); }, Math.max(0, Math.min(1000, 4000 - (now - treeFirst))));
+}
 $('tree-collapse').addEventListener('click', () => { expanded.clear(); loadTree('', $('tree'), 0); });
 $('tree-newfile').addEventListener('click', () => newEntry(false));
 $('tree-newfolder').addEventListener('click', () => newEntry(true));
@@ -1071,11 +1105,12 @@ $('s-find').addEventListener('click', () => setPanel('problems'));
 /* ---------------------------------------------------------------- sessions */
 async function loadSessions(){
   try{ sessionList = await api('/v1/sessions'); }catch{ sessionList = []; }
+  sessionList.sort((a, b) => String(b.created || '').localeCompare(String(a.created || '')));
   const box = $('sessions'); clear(box);
   if(!sessionList.length){ box.appendChild(el('div', 'empty', 'No sessions yet. Ask the agent for something on the right.')); return; }
   for(const s of sessionList){
     const row = el('button', 'row'); row.type = 'button'; row.setAttribute('aria-current', String(s.id === current));
-    row.appendChild(el('span', 'dot ' + s.state)); row.appendChild(el('span', 'name', s.prompt || s.id));
+    row.appendChild(el('span', 'dot ' + s.state)); row.appendChild(el('span', 'name', sessionLabel(s)));
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
   }
 }
@@ -1090,19 +1125,37 @@ function resetSession(){
   current = null; live = false; lastSeq = 0; streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear();
   queued.clear(); sent.length = 0; waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
-  clear($('tx')); resetTerm(); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
+  clear($('tx')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
   tabs.splice(0).forEach(dropTab); active = null; drawTabs(); welcome(); known.clear(); indexedFor = null; searchSeq++; clear($('sres')); $('s-sum').textContent = '';
   $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
+  closeAllTerms(); noTerminal();
+  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session';
 }
-function openSession(id, state){
+const sessionLabel = s => s.prompt || 'Workbench session';
+// opts.auto marks the session the page opened by itself; opts.note is shown on its terminal.
+function openSession(id, state, opts){
   resetSession(); current = id; setLive(state === 'running' || state === 'waiting_approval');
-  const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? s.prompt : id;
+  const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? sessionLabel(s) : id;
+  // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
+  if(s && s.mode) $('mode').value = s.mode;
+  $('mode').disabled = true; $('mode').title = 'Fixed when the session started. Start a new session to choose another mode.';
+  $('s-mode').textContent = 'mode ' + $('mode').value;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
   restoreTabs(); connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
+  newTerminal(opts);
+}
+// A session with no prompt: the workspace and sandbox, ready for the terminal and the editor.
+async function createWorkbench(note){
+  try{
+    const mode = $('mode').value;
+    const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode})});
+    sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode});
+    openSession(r.session_id, 'idle', {note});
+  }catch(e){ noTerminal('Could not open a workbench session: ' + e.message); }
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
 
@@ -1362,6 +1415,7 @@ function render(ev){
       c.out = body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''); if(c.node.open) fillCall(c); }
     if(p.tool === 'bash') logTerminal(c ? c.subject : '', p, mine ? 'you' : 'agent');
     if(p.tool === 'write' || p.tool === 'edit') changesSoon();
+    if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
   case 'model.call': stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
@@ -1427,65 +1481,255 @@ function settleAsk(callID, how){
     const b = a.querySelector('.btns'); if(b) b.remove(); if(!a.querySelector('.done')) a.appendChild(el('div', 'done', how)); }
 }
 
-const term = new Terminal({fontFamily:'"SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace', fontSize:12, lineHeight:1.2, cursorBlink:true, convertEol:true, scrollback:5000,
-  theme:{background:'#00000000', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'}, allowTransparency:true});
-const termFit = new FitAddon.FitAddon(); term.loadAddon(termFit); term.open($('p-terminal'));
-function fitTerm(){ if(!$('p-terminal').offsetHeight) return; try{ termFit.fit(); }catch{} if(tty.run) api('/v1/sessions/' + current + '/pty/' + tty.run + '/resize', {method:'POST', body: JSON.stringify({cols:term.cols, rows:term.rows})}).catch(() => {}); }
-new ResizeObserver(() => fitTerm()).observe($('p-terminal'));
-const tty = {line:'', run:null, es:null, cwd:'.', hist:[], at:0};
-function resetTerm(){ if(tty.es){ tty.es.close(); tty.es = null; } tty.run = null; tty.cwd = '.'; term.reset(); promptTerm(); }
-const promptTerm = () => { tty.line = ''; term.write('\r\n\x1b[36m' + (tty.cwd === '.' ? '' : tty.cwd + ' ') + '$\x1b[0m '); };
+/* ---------------------------------------------------------------- terminal */
+// Each tab is one interactive shell in the session's sandbox or, where the
+// server says a shell cannot be offered, a terminal that runs each line as a
+// checked command of its own. The agent's commands have a read-only tab.
+const TERM_DARK = {background:'#070B12', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'};
+const TERM_LIGHT = {background:'#F4F6FA', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
+const terms = [];
+let activeTerm = null, agentTerm = null, termSeq = 0;
+const ptyURL = (t, rest) => '/v1/sessions/' + t.session + '/pty' + (rest || '');
 function bytesOf(b64){ const bin = atob(b64), out = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
-term.writeln('\x1b[2mEach line runs in the session sandbox under the same rules as the agent, and is recorded.\x1b[0m');
-term.onData(data => {
-  if(tty.run){ fetch('/v1/sessions/' + current + '/pty/' + tty.run + '/input', {method:'POST', body:data, headers:{'Content-Type':'application/octet-stream'}}).catch(() => {}); return; }
-  for(const ch of data){
-    if(ch === '\r'){ const cmd = tty.line.trim(); term.write('\r\n'); if(cmd) runLine(cmd); else promptTerm(); return; }
-    if(ch === '\x7f'){ if(tty.line){ tty.line = tty.line.slice(0, -1); term.write('\b \b'); } continue; }
-    if(ch === '\x03'){ term.write('^C'); promptTerm(); return; }
-    if(ch === '\x0c'){ term.clear(); continue; }
+
+function makeTerm(name, kind){
+  const box = $('tpanes'); box.querySelectorAll('.tempty').forEach(n => n.remove());
+  const pane = el('div', 'tpane'); box.appendChild(pane);
+  const term = new Terminal({fontFamily:'"SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace', fontSize:12, lineHeight:1.2, cursorBlink:kind !== 'agent',
+    convertEol:kind === 'agent', scrollback:5000, theme:isDark() ? TERM_DARK : TERM_LIGHT, allowTransparency:true, disableStdin:kind === 'agent'});
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(pane);
+  // Sized before the shell starts, so it is told the right width from the first prompt.
+  if($('p-terminal').offsetHeight) try{ fit.fit(); }catch{}
+  const t = {id:++termSeq, name, kind, pane, term, fit, session:current, run:null, es:null, mode:null, dead:false,
+    line:'', queue:[], hist:[], at:0, cwd:'.', q:'', sending:false, watch:false};
+  terms.push(t);
+  term.onData(d => onTermData(t, d));
+  term.attachCustomKeyEventHandler(e => lineKeys(t, e));
+  selectTerm(t);
+  return t;
+}
+function selectTerm(t){
+  activeTerm = t; terms.forEach(x => { x.pane.hidden = x !== t; }); drawTermTabs();
+  requestAnimationFrame(() => { fitActive(); if(activeTerm === t) t.term.focus(); });
+}
+function drawTermTabs(){
+  const bar = $('ttabs'); clear(bar);
+  for(const t of terms){
+    const b = el('div', 'ttab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t === activeTerm)); b.tabIndex = 0;
+    const nm = el('span', 'nm', t.name); if(t.kind !== 'agent') nm.title = 'Double-click to rename'; b.appendChild(nm);
+    if(t.run) b.appendChild(el('span', 'live', '●'));
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.name);
+    x.addEventListener('click', e => { e.stopPropagation(); closeTerm(t); });
+    b.appendChild(x);
+    b.addEventListener('click', () => { if(activeTerm !== t) selectTerm(t); });
+    b.addEventListener('keydown', e => { if(e.key === 'Enter' && e.target === b) selectTerm(t); });
+    if(t.kind !== 'agent') nm.addEventListener('dblclick', e => { e.stopPropagation(); renameTerm(t, nm); });
+    bar.appendChild(b);
+  }
+  $('t-kill').disabled = !(activeTerm && activeTerm.run);
+  $('n-term').textContent = terms.some(x => x.run) ? ' ●' : '';
+  saveShells(current);
+}
+// Open shells are remembered for this tab of the browser, so a reload
+// reattaches to them rather than leaving them to run unwatched.
+const shellsKey = id => 'abhed.ide.shells.' + id;
+// Streams closing as the page unloads must not read as shells that ended.
+let leaving = false;
+addEventListener('beforeunload', () => { leaving = true; });
+addEventListener('pagehide', () => { leaving = true; });
+function saveShells(id){
+  id = id || current;
+  if(!id || leaving) return;
+  const open = terms.filter(t => t.kind === 'shell' && t.mode === 'shell' && t.run && t.session === id)
+    .map(t => ({id:t.run, name:t.name, info:t.info}));
+  try{ sessionStorage.setItem(shellsKey(id), JSON.stringify(open)); }catch{}
+}
+function savedShells(id){ try{ return JSON.parse(sessionStorage.getItem(shellsKey(id)) || '[]'); }catch{ return []; } }
+function renameTerm(t, nm){
+  const inp = el('input'); inp.value = t.name; inp.setAttribute('aria-label', 'Terminal name'); nm.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const finish = keep => { if(done) return; done = true; if(keep && inp.value.trim()) t.name = inp.value.trim().slice(0, 40); drawTermTabs(); t.term.focus(); };
+  inp.addEventListener('keydown', e => { e.stopPropagation(); if(e.key === 'Enter') finish(true); else if(e.key === 'Escape') finish(false); });
+  inp.addEventListener('blur', () => finish(true));
+  inp.addEventListener('click', e => e.stopPropagation());
+}
+function endRun(t, kill){
+  if(t.es){ t.es.close(); t.es = null; }
+  if(kill && t.run) fetch(ptyURL(t, '/' + t.run), {method:'DELETE', credentials:'same-origin'}).catch(() => {});
+  t.run = null;
+}
+function closeTerm(t){
+  endRun(t, true); t.term.dispose(); t.pane.remove();
+  const i = terms.indexOf(t); if(i >= 0) terms.splice(i, 1);
+  if(t === agentTerm) agentTerm = null;
+  if(activeTerm === t){ activeTerm = null; const n = terms[i] || terms[i-1]; if(n) selectTerm(n); }
+  drawTermTabs(); saveShells(t.session); if(!terms.length) noTerminal();
+}
+function closeAllTerms(){ [...terms].forEach(closeTerm); }
+function fitActive(){
+  const t = activeTerm; if(!t || !$('p-terminal').offsetHeight) return;
+  try{ t.fit.fit(); }catch{}
+  if(t.run && t.session === current) api(ptyURL(t, '/' + t.run + '/resize'), {method:'POST', body: JSON.stringify({cols:t.term.cols, rows:t.term.rows})}).catch(() => {});
+}
+new ResizeObserver(() => fitActive()).observe($('tpanes'));
+function noTerminal(why){
+  const box = $('tpanes'); box.querySelectorAll('.tempty').forEach(n => n.remove()); if(terms.length) return;
+  const e = el('div', 'tempty'); const b = el('button'); b.type = 'button';
+  if(current){ e.appendChild(el('span', '', why || 'No terminal open.')); b.textContent = 'New terminal'; b.addEventListener('click', () => newTerminal()); }
+  else{ e.appendChild(el('span', '', why || 'No session is open. A workbench session gives you a shell in the sandbox without asking the agent anything.')); b.textContent = 'Open a workbench session'; b.addEventListener('click', () => createWorkbench()); }
+  e.appendChild(b); box.appendChild(e);
+}
+async function newTerminal(opts){
+  if(!current){ await createWorkbench(); return; }
+  const saved = opts && opts.reattach ? savedShells(current) : [];
+  if(saved.length){
+    for(const s of saved){
+      const t = makeTerm(s.name, 'shell'); t.mode = 'shell'; t.info = s.info;
+      if(s.info) banner(t, s.info);
+      attach(t, s.id, true);
+    }
+    setPanel('terminal'); return;
+  }
+  const n = terms.filter(x => x.kind !== 'agent').length + 1;
+  const t = makeTerm('shell ' + n, 'shell'); setPanel('terminal'); await startTerm(t, opts || {});
+}
+$('t-new').addEventListener('click', () => newTerminal());
+$('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.run) fetch(ptyURL(t, '/' + t.run), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); });
+
+// The banner says what contains the shell, before anything is typed into it.
+function banner(t, r, note){
+  const iso = r.isolation, w = s => t.term.write(s + '\r\n');
+  if(note) w('\x1b[33m' + note + '\x1b[0m');
+  if(!iso || iso.tier === 'none') w('\x1b[1;31mNO SANDBOX: commands here run directly on the host, as the server\'s user, with all of its access.\x1b[0m');
+  const tier = iso ? iso.tier + (iso.backend ? ' (' + iso.backend + ')' : '') : 'unknown';
+  w('\x1b[2msandbox: ' + tier + ' · workspace: ' + (r.workspace || '?') + ' · network: ' + (iso ? (iso.network ? 'on' : 'off') : '?') + '\x1b[0m');
+  if(r.lines || r.denied) w('\x1b[2mline by line: each line is checked against the policy and runs on its own; nothing carries over between lines' + (r.lines ? ' — ' + r.lines : '') + '\x1b[0m');
+  else w('\x1b[2mbash, at the workspace root · each line you enter is checked against the deny rules as typed and recorded; the sandbox is the boundary\x1b[0m');
+}
+async function startTerm(t, opts){
+  opts = opts || {}; t.dead = false; t.mode = null;
+  t.term.write('\x1b[2mopening a shell in the sandbox…\x1b[0m');
+  let r;
+  try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify({interactive:true, cols:t.term.cols, rows:t.term.rows})}); }
+  catch(e){
+    if(!terms.includes(t)) return;
+    if(e.status === 409 && opts.auto && t.session === current){ createWorkbench('The last session could not be reopened on this server, so this is a new one.'); return; }
+    t.term.write('\r\n\x1b[31m' + e.message + '\x1b[0m\r\n\x1b[2mpress Enter to try again\x1b[0m\r\n'); t.dead = true; return;
+  }
+  if(!terms.includes(t) || t.session !== current){ if(r.interactive) fetch(ptyURL(t, '/' + r.id), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); return; }
+  t.term.reset(); banner(t, r, opts.note);
+  if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m\r\n'); hawkSoon(); }
+  if(!r.interactive){ t.mode = 'lines'; t.cwd = r.cwd || '.'; promptLine(t); return; }
+  t.mode = 'shell'; t.info = {isolation:r.isolation, workspace:r.workspace}; attach(t, r.id);
+}
+// reattach: the shell was opened before a reload; if it has gone, a new one starts.
+function attach(t, id, reattach){
+  t.run = id; drawTermTabs(); if(t === activeTerm) fitActive();
+  const es = new EventSource(ptyURL(t, '/' + id)); t.es = es; let opened = 0;
+  // A reconnect is sent the recent output again, so the screen starts over.
+  es.onopen = () => { if(opened++ && t.mode === 'shell') t.term.reset(); };
+  es.addEventListener('out', e => { t.term.write(bytesOf(e.data)); if(t.watch) treeSoon(); });
+  es.addEventListener('exit', e => ended(t, id, e.data));
+  es.onerror = () => {
+    if(es.readyState !== EventSource.CLOSED) return;
+    if(reattach && !opened && t.run === id){ endRun(t, false); t.term.reset(); startTerm(t); return; }
+    ended(t, id, null);
+  };
+}
+function ended(t, id, code){
+  if(t.run !== id || leaving) return;
+  endRun(t, false); drawTermTabs(); changesSoon(); hawkSoon(); treeSoon();
+  if(t.mode === 'shell'){ t.term.write('\r\n\x1b[2m' + (code == null ? 'disconnected' : 'the shell exited with ' + code) + ' · press Enter for a new one\x1b[0m\r\n'); t.dead = true; return; }
+  if(code != null) t.term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m');
+  nextLine(t);
+}
+function onTermData(t, d){
+  if(t.kind === 'agent' || t.session !== current) return;
+  if(t.dead){ if(/[\r\n]/.test(d)){ t.term.reset(); startTerm(t); } return; }
+  if(t.mode === 'shell'){ if(!t.run) return; if(/[\r\n]/.test(d)){ t.watch = true; treeSoon(); } sendInput(t, d); return; }
+  if(t.mode === 'lines') linesData(t, d);
+}
+// Keys go to the server in order, one request at a time, batched while one is in flight.
+function sendInput(t, d){
+  t.q += d; if(t.sending) return;
+  t.sending = true;
+  (async () => {
+    while(t.q && t.run){
+      // At most 16 KB and 500 lines a request: the server takes up to a thousand.
+      let n = Math.min(t.q.length, 16384); if(n < t.q.length && /[\ud800-\udbff]/.test(t.q[n - 1])) n++;
+      for(let i = 0, lines = 0; i < n; i++) if(t.q[i] === '\r' && ++lines === 500){ n = i + 1; break; }
+      const chunk = t.q.slice(0, n), run = t.run; t.q = t.q.slice(n);
+      try{ const r = await fetch(ptyURL(t, '/' + run + '/input'), {method:'POST', body:chunk, credentials:'same-origin', headers:{'Content-Type':'application/octet-stream'}});
+        if(!r.ok) break; }catch{ break; }
+    }
+    t.q = ''; t.sending = false;
+  })();
+}
+
+// Line by line: the page edits the line, and each one is a checked command.
+const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : t.cwd + ' ') + '$\x1b[0m ';
+// Shows the prompt, and whatever has been typed ahead of it.
+const promptLine = t => { t.term.write(linePrompt(t) + t.line); };
+// A paste of several lines: the first is on screen already, the rest are
+// shown one at a time, as each runs.
+function linesData(t, d){
+  if(t.run){ sendInput(t, d); return; }
+  d = d.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+  let quiet = t.busy || t.queue.length > 0, dropped = 0;
+  for(const ch of d){
+    if(ch === '\r'){
+      const cmd = t.line.trim(); t.line = '';
+      if(!quiet) t.term.write('\r\n');
+      if(cmd && t.queue.length >= 200) dropped++; else if(cmd) t.queue.push({cmd, shown:!quiet}); else if(!quiet && !t.queue.length) promptLine(t);
+      quiet = true; continue;
+    }
+    if(ch === '\x7f'){ if(t.line){ t.line = t.line.slice(0, -1); if(!quiet) t.term.write('\b \b'); } continue; }
+    if(ch === '\x03'){ t.term.write('^C'); t.queue = []; t.line = ''; quiet = false; promptLine(t); continue; }
+    if(ch === '\x0c'){ t.term.clear(); continue; }
     if(ch < ' ') continue;
-    tty.line += ch; term.write(ch);
+    t.line += ch; if(!quiet) t.term.write(ch);
   }
-});
-term.attachCustomKeyEventHandler(e => {
-  if(tty.run || e.type !== 'keydown') return true;
+  if(dropped) t.term.write('\r\n\x1b[31m' + dropped + ' more lines were not run: at most 200 wait at once.\x1b[0m\r\n');
+  if(!t.run && !t.busy && t.queue.length) nextLine(t);
+}
+function nextLine(t){
+  if(!t.queue.length){ promptLine(t); return; }
+  const {cmd, shown} = t.queue.shift();
+  if(!shown) t.term.write(linePrompt(t) + cmd + '\r\n');
+  runLine(t, cmd);
+}
+function lineKeys(t, e){
+  if(t.mode !== 'lines' || t.run || e.type !== 'keydown') return true;
   if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
-    const n = e.key === 'ArrowUp' ? tty.at - 1 : tty.at + 1; if(n < 0 || n > tty.hist.length) return false;
-    tty.at = n; term.write('\b \b'.repeat(tty.line.length)); tty.line = tty.hist[n] || ''; term.write(tty.line); return false;
+    const n = e.key === 'ArrowUp' ? t.at - 1 : t.at + 1; if(n < 0 || n > t.hist.length) return false;
+    t.at = n; t.term.write('\b \b'.repeat(t.line.length)); t.line = t.hist[n] || ''; t.term.write(t.line); return false;
   }
-  if(e.key === 'Tab') return false;
-  return true;
-});
-async function runLine(cmd){
-  if(!current){ term.writeln('\x1b[31mStart or open a session first: commands run in its sandbox.\x1b[0m'); promptTerm(); return; }
-  tty.hist.push(cmd); tty.at = tty.hist.length;
-  let r; try{ r = await api('/v1/sessions/' + current + '/pty', {method:'POST', body: JSON.stringify({command:cmd, cols:term.cols, rows:term.rows})}); }
-  catch(e){ term.writeln('\x1b[31m' + e.message + '\x1b[0m'); promptTerm(); return; }
-  tty.cwd = r.cwd || '.';
-  if(r.denied){ term.writeln('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); promptTerm(); return; }
-  if(!r.id || isPlainCd(cmd)){ promptTerm(); return; }
-  tty.run = r.id; $('n-term').textContent = ' ●';
-  const es = new EventSource('/v1/sessions/' + current + '/pty/' + r.id); tty.es = es;
-  es.addEventListener('out', e => term.write(bytesOf(e.data)));
-  const end = code => { es.close(); tty.es = null; tty.run = null; $('n-term').textContent = '';
-    if(code !== null) term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m'); changesSoon(300); hawkSoon(); loadTree('', $('tree'), 0); promptTerm(); };
-  es.addEventListener('exit', e => end(e.data));
-  es.onerror = () => { if(tty.run === r.id) end(null); };
+  return e.key !== 'Tab';
+}
+async function runLine(t, cmd){
+  t.hist.push(cmd); t.at = t.hist.length; t.busy = true;
+  let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify({command:cmd, cols:t.term.cols, rows:t.term.rows})}); }
+  catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
+  t.busy = false; t.cwd = r.cwd || '.';
+  if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
+  if(!r.id || isPlainCd(cmd)){ nextLine(t); return; }
+  attach(t, r.id);
 }
 const isPlainCd = c => /^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
+
+// The agent's commands, with their output, in a tab of their own.
 function logTerminal(cmd, p, who){
-  if(who === 'you') return; // the person's own commands are already on the terminal
-  const out = (p.content || '').slice(0, 8000).replace(/\n/g, '\r\n');
-  term.write('\r\n\x1b[2m[agent]\x1b[0m \x1b[36m$\x1b[0m ' + cmd + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : ''));
-  if(!tty.run) promptTerm();
-  termN++; if(!tty.run) $('n-term').textContent = ' ' + termN;
+  if(who === 'you') return; // the person's own commands are already on their terminal
+  if(!agentTerm){ const keep = activeTerm; agentTerm = makeTerm('agent', 'agent'); agentTerm.term.write('\x1b[2mCommands the agent ran, with their output. Read only.\x1b[0m\r\n'); if(keep) selectTerm(keep); }
+  const out = (p.content || '').slice(0, 8000);
+  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + cmd + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
+  termN++;
 }
 function logEvent(ev, p){
   if(ev.type === 'agent.delta' || ev.type === 'agent.reasoning.delta') return;
   const box = $('p-events'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40, r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
   r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
-  r.appendChild(el('span', 'd', p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || '').slice(0, 160)));
+  r.appendChild(el('span', 'd', p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160)));
   // The panel keeps the latest rows; the whole record is one replay away.
   box.appendChild(r); while(box.childElementCount > EVT_MAX) box.firstElementChild.remove();
   $('n-evt').textContent = ' ' + (++evtN); if(!box.hidden && stick) box.scrollTop = box.scrollHeight;
@@ -1504,7 +1748,7 @@ const SLASH = [
   ['/tools', 'Tools and permission rules', () => setView('tools')],
   ['/extensions', 'Extensions, MCP servers, skills', () => setView('extensions')],
   ['/hawkeye', 'What this session did, and findings', () => setView('hawkeye')],
-  ['/terminal', 'Commands the agent ran', () => setPanel('terminal')],
+  ['/terminal', 'Your shell in the sandbox, and the agent\'s commands', () => setPanel('terminal')],
   ['/events', 'The raw event record', () => setPanel('events')],
   ['/report', 'Open the full HawkEYE report', () => $('hawk-open').click()],
   ['/stop', 'Interrupt the running turn', () => $('stop').click()],
@@ -1566,6 +1810,9 @@ async function send(){
   try{
     b.prompt = await withMentions(typed);
     if(id){
+      // A workbench session is named by its first message.
+      const s = sessionList.find(x => x.id === id);
+      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = typed; }
       const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
       if(current !== id || b.delivered) return;
       if(r && r.queue_id){
@@ -1578,7 +1825,7 @@ async function send(){
       drawQueued(b);
     }else{
       const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid})});
-      sessionList.unshift({id:r.session_id, prompt: typed, state:'running'}); openSession(r.session_id, 'running');
+      sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
   }catch(e){ if(current === id){ failed(b, e.message); if(!busy) waiting(false); } }
@@ -1604,6 +1851,7 @@ function palItems(){
   out.push({k:'command', l:'Toggle the terminal panel', h:mod + 'J', run:() => $('app').classList.toggle('nopanel')});
   out.push({k:'command', l:'Toggle the terminal', h:'Ctrl+`', run:toggleTerminal});
   out.push({k:'command', l:'Switch light / dark', h:'', run:() => $('theme').click()});
+  out.push({k:'command', l:'New terminal', h:'', run:() => newTerminal()});
   out.push({k:'command', l:'Save all', h:isMac ? '⌥⌘S' : 'Ctrl+Alt+S', run:saveAll});
   out.push({k:'command', l:'Close the editor tab', h:mod + 'W', run:closeActive});
   out.push({k:'command', l:'Go to line…', h:'Ctrl+G', run:() => editorAction('editor.action.gotoLine')});
@@ -1615,7 +1863,7 @@ function palItems(){
   out.push({k:'command', l:'Toggle the minimap', h:'', run:toggleMinimap});
   out.push({k:'command', l:'Review inline or side by side', h:'', run:toggleDiffLayout});
   [...known].sort().forEach(p => out.push({k:'file', l:p, h:'', run:() => openFile(p)}));
-  sessionList.forEach(s => out.push({k:'session', l:s.prompt || s.id, h:s.state, run:() => openSession(s.id, s.state)}));
+  sessionList.forEach(s => out.push({k:'session', l:sessionLabel(s), h:s.state, run:() => openSession(s.id, s.state)}));
   return out;
 }
 function drawPal(){
@@ -1674,7 +1922,7 @@ document.addEventListener('keydown', e => {
   else if(k === 'l'){ e.preventDefault(); focusAgent(); }
 });
 function toggleTerminal(){
-  if($('app').classList.contains('nopanel') || $('p-terminal').hidden){ setPanel('terminal'); term.focus(); }
+  if($('app').classList.contains('nopanel') || $('p-terminal').hidden){ setPanel('terminal'); if(activeTerm) activeTerm.term.focus(); }
   else{ $('app').classList.add('nopanel'); const ed = activeEditor(); if(ed) ed.focus(); }
 }
 function editorAction(id){ const ed = activeEditor(); if(!ed) return; ed.focus(); const a = ed.getAction(id); if(a) a.run(); }
@@ -1695,7 +1943,9 @@ function askAboutSelection(){
   try{ caps = await api('/v1/capabilities'); setConn(true); }
   catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + e.message)); return; }
   stat.window = caps.model.context_window; drawCaps();
-  $('s-sandbox').textContent = 'sandbox ' + caps.sandbox.tier + (caps.sandbox.network ? ' · network on' : ' · no network');
+  const sb = caps.sandbox, sbox = $('s-sandbox');
+  sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
+  if(sb.tier === 'none') sbox.className = 'off';
   $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode; $('s-mode').textContent = 'mode ' + caps.permissions.mode;
   try{
     const me = await api('/v1/whoami');
@@ -1715,9 +1965,8 @@ function askAboutSelection(){
   }catch{}
   await loadSessions();
   setView(store.get('view', 'explorer')); $('app').dataset.pane = 'agent';
-  const last = sessionList[0]; if(last) openSession(last.id, last.state); else loadTree('', $('tree'), 0);
-  if(!isDark()) term.options.theme = {background:'#00000000', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
-  fitTerm(); promptTerm();
+  // A terminal as soon as the page opens: the last session, reopened if need be, or a new workbench session.
+  const last = sessionList[0]; if(last) openSession(last.id, last.state, {auto:true, reattach:true}); else createWorkbench();
 })();
 </script>
 </body>

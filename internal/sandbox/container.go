@@ -2,12 +2,16 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Image is the default execution image. In an air-gapped install this is
@@ -117,7 +121,9 @@ func (c *Container) Describe() string {
 	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, Image)
 }
 
-func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+// runArgs is everything up to the image: the confinement both a command and
+// a shell run under. It begins with "run --rm -i".
+func (c *Container) runArgs(cwd string) []string {
 	args := []string{"run", "--rm", "-i"}
 	args = append(args, c.extra...)
 
@@ -190,9 +196,86 @@ func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd 
 	}
 
 	args = append(args, "-e", "ABHED_SANDBOX="+string(c.Tier()))
-	args = append(args, Image, "/bin/sh", "-c", command)
+	return args
+}
 
-	return exec.CommandContext(ctx, c.runtime, args...)
+func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+	args := append(c.runArgs(cwd), Image, "/bin/sh", "-c", command)
+	cmd := exec.CommandContext(ctx, c.runtime, args...)
+	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
+	// -e flags above reach the container.
+	cmd.Env = os.Environ()
+	return cmd
+}
+
+// containerShell prefers bash where the image has it.
+const containerShell = `if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -l -O huponexit -i; fi; PS1='(sandbox: container) $ ' exec sh -i`
+
+// engineWait bounds a call to the engine made while ending or sweeping
+// shells, so an engine that hangs cannot hold a terminal open.
+const engineWait = 20 * time.Second
+
+// shellLabel marks this server's terminal containers: the host and the
+// workspace, so a restarted server finds the ones it left behind.
+func (c *Container) shellLabel() string {
+	host, _ := os.Hostname()
+	sum := sha256.Sum256([]byte(host + "\x00" + c.policy.Workspace))
+	return "abhed.term=" + hex.EncodeToString(sum[:6])
+}
+
+// Shell starts an interactive shell in a container of its own, with a
+// terminal (-t). The container is named so that ending the shell removes it,
+// even when the engine's CLI is killed before it can.
+func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
+	var nonce [4]byte
+	_, _ = rand.Read(nonce[:])
+	name := "abhed-term-" + strconv.FormatInt(time.Now().UnixNano(), 36) + hex.EncodeToString(nonce[:])
+	args := []string{"run", "--rm", "-i", "-t", "--name", name, "--label", c.shellLabel()}
+	args = append(args, c.runArgs(cwd)[3:]...)
+	for _, kv := range shellEnv(c.Tier()) {
+		args = append(args, "-e", kv)
+	}
+	args = append(args, "-e", "HOME=/tmp", Image, "/bin/sh", "-c", containerShell)
+	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the shell is fixed
+	cmd.Env = os.Environ()
+	runtime := c.runtime
+	cmd.Cancel = func() error {
+		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
+		defer cancel()
+		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = hangUpDelay
+	return cmd
+}
+
+// SweepShells removes terminal containers this server left running, as a
+// crash does. Only containers with this server's label are touched.
+func (c *Container) SweepShells() {
+	if ok, _ := c.Available(); !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), engineWait)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, c.runtime, "ps", "-aq", "--filter", "label="+c.shellLabel()).Output() // #nosec G204 -- the configured engine
+	if err != nil {
+		return
+	}
+	if ids := strings.Fields(string(out)); len(ids) > 0 {
+		_ = exec.CommandContext(ctx, c.runtime, append([]string{"rm", "-f"}, ids...)...).Run() // #nosec G204 -- the configured engine and ids it listed
+	}
+}
+
+// Backend names the engine, and gVisor's runtime when it is in use.
+func (c *Container) Backend() string {
+	engine := c.runtime
+	if i := strings.LastIndex(engine, "/"); i >= 0 {
+		engine = engine[i+1:]
+	}
+	if c.isGVisor() {
+		return "runsc via " + engine
+	}
+	return engine
 }
 
 func envOr(key, fallback string) string {

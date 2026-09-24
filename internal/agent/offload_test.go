@@ -169,6 +169,20 @@ func TestRecallPagesALongResult(t *testing.T) {
 	}
 }
 
+// What a person ran at the workbench is not the model's to read back.
+func TestRecallLeavesOutThePersonsOwnCalls(t *testing.T) {
+	store := NewMemStore()
+	rec := NewRecorder(store, "s-mine", "")
+	_, _ = rec.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{CallID: "u1", Tool: "bash", Args: json.RawMessage(`{"command":"bash -i"}`)})
+	_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: "u1", Tool: "bash", Content: "private-shell-output"})
+	r := Recall{Store: store, SessionID: "s-mine"}
+	for _, args := range []string{`{"query":"private-shell"}`, `{"call_id":"u1"}`} {
+		if got := r.Run(context.Background(), nil, json.RawMessage(args)).Content; strings.Contains(got, "private-shell-output") {
+			t.Fatalf("recall %s returned the person's shell output: %s", args, got)
+		}
+	}
+}
+
 func TestRecallSearchesMessagesAndResults(t *testing.T) {
 	store := NewMemStore()
 	rec := NewRecorder(store, "s-find", "")

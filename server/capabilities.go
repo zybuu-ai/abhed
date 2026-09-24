@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 //go:embed ide.html
@@ -170,6 +172,8 @@ type capModel struct {
 type capSandbox struct {
 	Tier    string `json:"tier"`
 	Network bool   `json:"network"`
+	// Backend is the mechanism in force, when the server knows it.
+	Backend string `json:"backend,omitempty"`
 }
 
 type capPermissions struct {
@@ -218,6 +222,12 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 				ct.Source = "skill"
 			}
 			c.Tools = append(c.Tools, ct)
+		}
+	}
+	// The tier the sandbox actually provides, which may be stronger than the minimum.
+	if t, ok := bashTool(reg); ok {
+		if b, ok := t.(tools.Bash); ok && b.Isolation.Tier != "" {
+			c.Sandbox.Tier, c.Sandbox.Backend = b.Isolation.Tier, b.Isolation.Backend
 		}
 	}
 	// recall is bound to one session's record, so the loop adds it to its own
@@ -274,4 +284,11 @@ func clipUTF8(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+func bashTool(reg *tools.Registry) (tools.Tool, bool) {
+	if reg == nil {
+		return nil, false
+	}
+	return reg.Get("bash")
 }

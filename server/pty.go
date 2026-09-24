@@ -13,18 +13,21 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// The workbench terminal runs one command line at a time on a pseudo-terminal,
-// so vim, top and a prompt that waits for an answer all work. Each line is a
-// bash call: the same policy decision, the same sandbox and the same record as
-// the agent's, which is what a live shell could not give — a shell has no
-// call to judge until it is too late.
+// The workbench terminal runs in one of two ways. By default each tab is one
+// long-lived interactive shell in the session's sandbox (terminal.go says what
+// that can and cannot check). In "lines" mode each line is a bash call of its
+// own on a pseudo-terminal: the same policy decision, sandbox and record as
+// the agent's, with no shell state from one line to the next.
 
 const (
 	// ptyRecordBytes bounds what one command's output puts in the record.
@@ -33,11 +36,29 @@ const (
 	// leave a process behind.
 	ptyIdle = 2 * time.Minute
 	ptyMax  = 4 * time.Hour
+	// shellMax is a working day: a shell is where a person stays.
+	shellMax = 12 * time.Hour
 	// ptyLinger is how long a finished command stays readable.
 	ptyLinger = time.Minute
+	// shellIdle is longer than ptyIdle: a shell outlives a laptop's sleep or a
+	// dropped connection, and a reloaded page reattaches to it.
+	shellIdle = 30 * time.Minute
+	// maxTerminals bounds the shells and commands one session runs at once.
+	maxTerminals = 8
+	// maxLinesPerInput bounds the lines one write to a shell may enter.
+	maxLinesPerInput = 1000
 )
 
-// ptyRun is one command on a terminal.
+var errTooManyLines = errors.New("too many lines in one input")
+
+// shellInfo is what launch needs to know about an interactive shell.
+type shellInfo struct {
+	capture *lineCapture
+	local   bool
+	idle    time.Duration
+}
+
+// ptyRun is one command, or one interactive shell, on a terminal.
 type ptyRun struct {
 	id      string
 	command string
@@ -45,6 +66,18 @@ type ptyRun struct {
 	tty     *os.File
 	cancel  context.CancelFunc
 	started time.Time
+	// capture is set for an interactive shell; inputMu keeps its keys in order.
+	capture *lineCapture
+	inputMu sync.Mutex
+	// local is set when the server holds the shell's own terminal (process
+	// and none tiers), so it can ask which process group has the foreground;
+	// shellPgrp is the shell's, taken at its first prompt.
+	local     bool
+	shellPgrp atomic.Int64
+	// idle is how long the run may go unwatched.
+	idle time.Duration
+	// leader names a shell, so what it leaves in its session can be ended safely.
+	leader sandbox.Leader
 
 	mu      sync.Mutex
 	subs    map[chan []byte]struct{}
@@ -61,6 +94,8 @@ type ptyStartRequest struct {
 	Command string `json:"command"`
 	Cols    uint16 `json:"cols"`
 	Rows    uint16 `json:"rows"`
+	// Interactive asks for a long-lived shell instead of one command.
+	Interactive bool `json:"interactive,omitempty"`
 }
 
 type ptyStartResponse struct {
@@ -68,9 +103,17 @@ type ptyStartResponse struct {
 	// Denied carries the refusal when policy stopped the command before it ran.
 	Denied string `json:"denied,omitempty"`
 	Cwd    string `json:"cwd"`
+	// Interactive is set when ID is a shell. Lines, when a shell was asked
+	// for, says why the terminal judges each line instead.
+	Interactive bool   `json:"interactive,omitempty"`
+	Lines       string `json:"lines,omitempty"`
+	// Isolation and Workspace are what the terminal's banner states.
+	Isolation *tools.Isolation `json:"isolation,omitempty"`
+	Workspace string           `json:"workspace,omitempty"`
 }
 
-// startPTY judges one command line and, if allowed, runs it on a terminal.
+// startPTY starts an interactive shell, or judges one command line and, if
+// allowed, runs it on a terminal.
 func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	live, sess, ok := s.manualSession(w, r)
 	if !ok {
@@ -78,7 +121,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	}
 	capBody(w, r)
 	var req ptyStartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Command) == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (!req.Interactive && strings.TrimSpace(req.Command) == "") {
 		WriteError(w, http.StatusBadRequest, "command is required")
 		return
 	}
@@ -86,23 +129,19 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "command is too long")
 		return
 	}
+	// A shell does not share the person's working directory, so it does not
+	// wait on manualMu, which an explorer operation may hold for minutes.
+	if req.Interactive {
+		live.shellMu.Lock()
+		defer live.shellMu.Unlock()
+		if !terminalsFull(w, live) {
+			s.startShell(w, live, sess, req)
+		}
+		return
+	}
 	live.manualMu.Lock()
 	defer live.manualMu.Unlock()
-	live.mu.Lock()
-	if live.ptys == nil {
-		live.ptys = map[string]*ptyRun{}
-	}
-	running := 0
-	for _, r := range live.ptys {
-		select {
-		case <-r.done:
-		default:
-			running++
-		}
-	}
-	live.mu.Unlock()
-	if running >= 4 {
-		WriteError(w, http.StatusTooManyRequests, "four commands are already running in this session's terminal")
+	if terminalsFull(w, live) {
 		return
 	}
 
@@ -137,8 +176,50 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		cmd.Dir = sess.Cwd
 		cmd.Env = append(os.Environ(), "ABHED_SESSION=1")
 	}
-	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
-	size := &pty.Winsize{Cols: req.Cols, Rows: req.Rows}
+	cmd.Env = withTerm(cmd.Env)
+	run, err := s.launch(live, sess, id, req.Command, cmd, cancel, req.Cols, req.Rows, nil)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, ptyStartResponse{ID: run.id, Cwd: sess.Rel(sess.Cwd)})
+}
+
+// terminalsFull refuses another terminal when the session runs maxTerminals.
+func terminalsFull(w http.ResponseWriter, live *liveSession) bool {
+	live.mu.Lock()
+	if live.ptys == nil {
+		live.ptys = map[string]*ptyRun{}
+	}
+	running := 0
+	for _, r := range live.ptys {
+		select {
+		case <-r.done:
+		default:
+			running++
+		}
+	}
+	live.mu.Unlock()
+	if running >= maxTerminals {
+		WriteError(w, http.StatusTooManyRequests, "eight terminals or commands are already running in this session")
+		return true
+	}
+	return false
+}
+
+// withTerm names the terminal. A nil Env means the host's environment, which
+// appending to directly would have replaced with TERM alone.
+func withTerm(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	return append(env, "TERM=xterm-256color")
+}
+
+// launch starts cmd on a new terminal and follows it to the end.
+func (s *Server) launch(live *liveSession, sess *tools.Session, id, command string, cmd *exec.Cmd,
+	cancel context.CancelFunc, cols, rows uint16, shell *shellInfo) (*ptyRun, error) {
+	size := &pty.Winsize{Cols: cols, Rows: rows}
 	if size.Cols == 0 || size.Rows == 0 {
 		size = &pty.Winsize{Cols: 100, Rows: 30}
 	}
@@ -147,17 +228,88 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		res := tools.Result{Content: "Failed to run command: " + err.Error(), IsError: true}
 		_ = live.Loop.ManualObserve(id, "bash", res, 0)
-		WriteError(w, http.StatusInternalServerError, res.Content)
-		return
+		return nil, errors.New(res.Content)
 	}
-	run := &ptyRun{id: id, command: req.Command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(),
+	run := &ptyRun{id: id, command: command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(), idle: ptyIdle,
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
+	if shell != nil {
+		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		run.leader = sandbox.Lead(cmd) // named now, while its pid is certainly its own
+	}
 	live.mu.Lock()
 	live.ptys[id] = run
 	live.mu.Unlock()
 	go run.pump()
 	go s.finishPTY(live, sess, run)
-	WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Cwd: sess.Rel(sess.Cwd)})
+	return run, nil
+}
+
+// isolationOf says what contains the terminal, for its banner.
+func isolationOf(t tools.Tool) *tools.Isolation {
+	b, ok := t.(tools.Bash)
+	if !ok {
+		return nil
+	}
+	in := b.Isolation
+	if b.Sandbox == nil {
+		in = tools.Isolation{Tier: "none", Backend: "host", Network: true}
+	}
+	return &in
+}
+
+// startShell starts one interactive shell in the session's sandbox, at the
+// workspace root. Starting it is the person's bash call: judged, and recorded
+// with the shell's exit and the tail of its output when it ends.
+func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tools.Session, req ptyStartRequest) {
+	resp := ptyStartResponse{Cwd: sess.Rel(sess.Root), Workspace: sess.Root}
+	tool, _ := live.Loop.Tools.Get("bash")
+	resp.Isolation = isolationOf(tool)
+	b, _ := tool.(tools.Bash)
+	_, _, cfg := s.state.snapshot()
+	switch pol := live.Loop.Policy; {
+	case cfg.Sandbox.Terminal == "lines":
+		resp.Lines = "this server's terminal judges each line before it runs (sandbox.terminal is \"lines\")"
+	case b.Shell == nil:
+		resp.Lines = "this sandbox cannot host an interactive shell, so each line runs as its own command"
+	case pol.Managed && pol.Screens("bash"):
+		// A managed policy is the organisation's word that its rules hold.
+		resp.Lines = "your organisation's policy has rules for bash that only a line-by-line terminal applies to every command"
+	}
+	if resp.Lines != "" {
+		WriteJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	id := "u" + newSessionID()
+	args, _ := json.Marshal(map[string]any{"command": "bash -i", "description": "interactive terminal in the session sandbox", "interactive": true})
+	if _, refused, err := live.Loop.ManualAuthorize("bash", id, args); err != nil {
+		WriteError(w, http.StatusInternalServerError, "the terminal could not be recorded, so it was not opened")
+		return
+	} else if refused != nil {
+		_ = live.Loop.ManualObserve(id, "bash", *refused, 0)
+		resp.ID, resp.Denied = id, refused.Content
+		WriteJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
+	cmd := b.Shell(ctx, sess.Root)
+	cmd.Env = withTerm(cmd.Env)
+	shell := &shellInfo{
+		capture: newLineCapture(id, func(in agent.TerminalInput) { _ = live.Loop.ManualTerminalInput(in) }),
+		local:   resp.Isolation != nil && (resp.Isolation.Tier == "process" || resp.Isolation.Tier == "none"),
+		idle:    shellIdle,
+	}
+	if cfg.Sandbox.TerminalIdleMinutes > 0 {
+		shell.idle = time.Duration(cfg.Sandbox.TerminalIdleMinutes) * time.Minute
+	}
+	run, err := s.launch(live, sess, id, "bash -i", cmd, cancel, req.Cols, req.Rows, shell)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.ID, resp.Interactive = run.id, true
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 // isPlainCd reports a command that only changes directory.
@@ -174,13 +326,31 @@ func (p *ptyRun) pump() {
 		n, err := p.tty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
+			if p.capture != nil {
+				p.capture.output(chunk)
+				// The first output is the shell's prompt, and the foreground
+				// group then is the shell's own.
+				if p.local && p.shellPgrp.Load() == 0 {
+					if fg, _, ok := ttyNow(p.tty); ok {
+						p.shellPgrp.Store(int64(fg))
+					}
+				}
+			}
 			p.mu.Lock()
-			if len(p.record) < ptyRecordBytes {
+			switch {
+			case p.capture != nil:
+				// A shell's record keeps its latest output, which is also what
+				// a reader that reconnects is shown.
+				p.record = append(p.record, chunk...)
+				if len(p.record) > ptyRecordBytes {
+					p.record, p.clipped = keepTail(p.record, ptyRecordBytes), true
+				}
+			case len(p.record) < ptyRecordBytes:
 				p.record = append(p.record, chunk...)
 				if len(p.record) > ptyRecordBytes {
 					p.record, p.clipped = p.record[:ptyRecordBytes], true
 				}
-			} else {
+			default:
 				p.clipped = true
 			}
 			for ch := range p.subs {
@@ -197,12 +367,30 @@ func (p *ptyRun) pump() {
 	}
 }
 
+// noteSweep tells the operator when a shell's session was not swept, so that
+// containment not running is never silent.
+func (s *Server) noteSweep(live *liveSession, run *ptyRun, refused string) {
+	if refused != "" {
+		s.log.Warn("the shell's session was not swept; what it left running may still run",
+			"session", live.ID, "terminal", run.id, "reason", refused)
+	}
+}
+
 // finishPTY waits for the command, records its output and clears it away.
 func (s *Server) finishPTY(live *liveSession, sess *tools.Session, run *ptyRun) {
 	idle := time.NewTicker(15 * time.Second)
 	defer idle.Stop()
 	waited := make(chan error, 1)
-	go func() { waited <- run.cmd.Wait() }()
+	go func() {
+		if run.capture != nil {
+			// A shell takes what it left running in its session with it.
+			refused, err := run.leader.Wait(run.cmd)
+			s.noteSweep(live, run, refused)
+			waited <- err
+			return
+		}
+		waited <- run.cmd.Wait()
+	}()
 	var err error
 loop:
 	for {
@@ -211,7 +399,7 @@ loop:
 			break loop
 		case <-idle.C:
 			run.mu.Lock()
-			abandoned := len(run.subs) == 0 && time.Since(run.lastRead) > ptyIdle
+			abandoned := len(run.subs) == 0 && time.Since(run.lastRead) > run.idle
 			run.mu.Unlock()
 			if abandoned {
 				run.cancel()
@@ -247,10 +435,16 @@ loop:
 
 	// The record is written before readers are told the command ended, so
 	// "exit" on the stream means the observation is already there.
-	live.manualMu.Lock()
-	sess.FollowCd(run.command)
-	live.manualMu.Unlock()
-	res := tools.Result{Content: fmt.Sprintf("exit %d · on a terminal\n%s", code, text), ExitCode: &code,
+	how := "on a terminal"
+	if run.capture != nil {
+		run.capture.flush()
+		how = "interactive terminal; the latest output follows"
+	} else {
+		live.manualMu.Lock()
+		sess.FollowCd(run.command)
+		live.manualMu.Unlock()
+	}
+	res := tools.Result{Content: fmt.Sprintf("exit %d · %s\n%s", code, how, text), ExitCode: &code,
 		IsError: code != 0, Truncated: clipped}
 	_ = live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started))
 	close(run.done)
@@ -273,25 +467,41 @@ func plainText(b []byte) string {
 	return string(ansiSeq.ReplaceAll(b, nil))
 }
 
-// ptyFor finds one of the caller's running commands.
-func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*ptyRun, bool) {
-	live, _, ok := s.manualSession(w, r)
-	if !ok {
-		return nil, false
+// ptyFor finds one of the caller's running commands. A terminal lives in this
+// process, so a session that is not live here has none to find.
+func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *ptyRun, bool) {
+	id := r.PathValue("id")
+	live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	if !validSessionID(id) || !found {
+		WriteError(w, http.StatusNotFound, "that command is not running")
+		return nil, nil, false
 	}
 	live.mu.Lock()
 	run := live.ptys[r.PathValue("pty")]
 	live.mu.Unlock()
 	if run == nil {
 		WriteError(w, http.StatusNotFound, "that command is not running")
-		return nil, false
+		return nil, nil, false
 	}
-	return run, true
+	return live, run, true
+}
+
+// say shows a line from the server on the terminal, outside the record.
+func (p *ptyRun) say(text string) {
+	msg := []byte("\r\n\x1b[31m" + strings.ReplaceAll(text, "\n", "\r\n") + "\x1b[0m\r\n")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for ch := range p.subs {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
 }
 
 // streamPTY sends a command's output as it happens, then its exit code.
 func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
-	run, ok := s.ptyFor(w, r)
+	_, run, ok := s.ptyFor(w, r)
 	if !ok {
 		return
 	}
@@ -353,7 +563,7 @@ func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
 
 // writePTY forwards keystrokes to the command.
 func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
-	run, ok := s.ptyFor(w, r)
+	live, run, ok := s.ptyFor(w, r)
 	if !ok {
 		return
 	}
@@ -362,24 +572,127 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "input is too large")
 		return
 	}
-	// Typed input is not recorded: on a terminal it echoes into the output
-	// unless the program turned echo off, which is exactly when it should not.
 	select {
 	case <-run.done:
 		WriteError(w, http.StatusGone, "the command has ended")
 		return
 	default:
 	}
-	if _, err := run.tty.Write(data); err != nil {
-		WriteError(w, http.StatusGone, "the command has ended")
+	// A single command's input is not recorded: on a terminal it echoes into
+	// the output unless the program turned echo off, which is exactly when it
+	// should not. A shell's lines are, by the capture.
+	if run.capture == nil {
+		if _, err := run.tty.Write(data); err != nil {
+			WriteError(w, http.StatusGone, "the command has ended")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := s.shellInput(live, run, data); errors.Is(err, errTooManyLines) {
+		WriteError(w, http.StatusRequestEntityTooLarge, "more than a thousand lines at once; paste them in parts")
+		return
+	} else if err != nil {
+		WriteError(w, http.StatusGone, "the terminal has ended")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// shellInput forwards keys to a shell. Each line is put to the deny rules at
+// its Enter, as typed; a refused line never reaches the shell, which is sent
+// Ctrl-C instead to discard it.
+func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
+	run.inputMu.Lock()
+	defer run.inputMu.Unlock()
+	keys := run.capture.keys(data)
+	if len(keys) > maxLinesPerInput {
+		return errTooManyLines
+	}
+	// Keys a program reads are not the start of the shell's next line.
+	defer func() {
+		if run.programHasTerminal() {
+			run.capture.abandon()
+		}
+	}()
+	for _, k := range keys {
+		e := k.enter
+		if e != nil {
+			run.ask(e)
+		}
+		if e == nil || e.program || e.line == "" {
+			if _, err := run.tty.Write(k.data); err != nil {
+				return err
+			}
+			if e != nil {
+				run.capture.entered(e)
+			}
+			continue
+		}
+		refused, err := live.Loop.ManualScreen("u"+newSessionID(), e.line)
+		if err != nil {
+			refused = &tools.Result{Content: "Denied: the line could not be recorded"}
+		}
+		if refused == nil {
+			if _, err := run.tty.Write(k.data); err != nil {
+				return err
+			}
+			run.capture.entered(e)
+			continue
+		}
+		run.say(refused.Content)
+		// A line pasted whole has not reached the shell at all, and an empty
+		// line brings its prompt back. One typed earlier is in its buffer.
+		discard := []byte{'\r'}
+		if !e.whole {
+			discard = []byte{0x03}
+		}
+		if _, err := run.tty.Write(discard); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ask fills in what the terminal says at a line's Enter. On the process and
+// none tiers the server holds the shell's own terminal and can ask it; on a
+// container's, the engine's CLI holds it raw, and the alternate screen is the
+// only sign of a full-screen program.
+func (p *ptyRun) ask(e *enteredLine) {
+	e.program = e.alt
+	if !p.local {
+		return
+	}
+	e.program = false
+	fg, canonical, ok := ttyNow(p.tty)
+	if !ok {
+		return
+	}
+	// A line read in canonical mode is not one typed at bash's prompt: a
+	// password prompt, or keys typed ahead while a builtin ran. Its text is
+	// withheld.
+	e.known, e.secret, e.program = true, canonical, p.isProgram(fg)
+}
+
+// isProgram reports whether fg, the foreground process group, is not the shell's.
+func (p *ptyRun) isProgram(fg int) bool {
+	shell := int(p.shellPgrp.Load())
+	return shell != 0 && fg != shell
+}
+
+// programHasTerminal reports, where the terminal can be asked, whether a
+// program other than the shell is reading the keys.
+func (p *ptyRun) programHasTerminal() bool {
+	if !p.local {
+		return false
+	}
+	fg, _, ok := ttyNow(p.tty)
+	return ok && p.isProgram(fg)
+}
+
 // resizePTY tells the command its terminal changed size.
 func (s *Server) resizePTY(w http.ResponseWriter, r *http.Request) {
-	run, ok := s.ptyFor(w, r)
+	_, run, ok := s.ptyFor(w, r)
 	if !ok {
 		return
 	}
@@ -398,10 +711,19 @@ func (s *Server) resizePTY(w http.ResponseWriter, r *http.Request) {
 
 // killPTY ends the command.
 func (s *Server) killPTY(w http.ResponseWriter, r *http.Request) {
-	run, ok := s.ptyFor(w, r)
+	_, run, ok := s.ptyFor(w, r)
 	if !ok {
 		return
 	}
 	run.cancel()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// closeTerminals ends every shell and command the session has on a terminal.
+func (l *liveSession) closeTerminals() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, r := range l.ptys {
+		r.cancel()
+	}
 }

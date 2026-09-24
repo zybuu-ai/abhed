@@ -32,7 +32,8 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 | Type | Payload | Emitted by |
 |---|---|---|
-| `session.started` | workspace, model, mode, prompt hash | system |
+| `session.started` | workspace, model, mode, origin; recorded today for a workbench session, which is opened without a prompt | system |
+| `terminal.input` | call id of the shell, the line as typed, `edited`, or `withheld` with a reason | user |
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args | agent |

@@ -41,9 +41,13 @@ documented at the top of `internal/policy/policy.go`:
 Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 ```
 
-**Deny rules are absolute.** A matching deny rule blocks the call even in
-`bypass` mode — the most permissive mode Abhed has (`internal/policy/policy.go`,
-`ModeBypass` comment: "dangerous; refusable by org policy"). Rules are
+**Deny rules are absolute for tool calls.** A matching deny rule blocks the
+call even in `bypass` mode — the most permissive mode Abhed has
+(`internal/policy/policy.go`, `ModeBypass` comment: "dangerous; refusable by
+org policy") — whether the agent or a person makes it. One scope limit: what a
+person runs inside the workbench's interactive shell is bounded by the sandbox,
+and there deny rules are a best-effort screen on each line as typed (see "A
+person's terminal is sandboxed" below). Rules are
 scoped per-command, not per-tool: allowing `bash(npm test)` never allows
 `bash(rm -rf /)`. A deployment's deny list should block reads of SSH keys,
 cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
@@ -61,6 +65,93 @@ that file. `internal/tools/state_test.go` and
 deny list and plant a users file, and fail if any succeeds. Container and VM
 tiers keep the workspace mount as configured; mount `.abhed` there read-only
 or leave it out of the mount.
+
+**A person's terminal is sandboxed; its line checks are best effort.** Each
+tab of the `/ide` terminal is, by default, one interactive `bash` started
+through the same sandbox backend as the agent's commands (`Shell` in
+`internal/sandbox/process.go` and `container.go`), in the workspace root, under
+the tier's filesystem, network and harness-state limits
+(`TestProcessSandboxShellIsInteractiveAndConfined`). Opening it is the
+person's `bash` call: judged by the policy, so plan mode refuses it, and
+recorded with `actor: user`, as is the shell's exit and the last 64 KB of its
+output. An interactive shell cannot be judged command by command, because the
+shell decides what a line means after it is sent: history recall, tab
+completion, aliases, functions, scripts and full-screen programs all happen
+inside it. So, for the terminal:
+
+- the sandbox is the enforcement boundary;
+- `bash` deny rules are a screen: the server rebuilds each line from the keys
+  it forwards and refuses a matching line before its Enter reaches the shell
+  (`server/terminal.go`, `shellInput` in `server/pty.go`), recording the
+  refusal. It does not see what the shell makes of the line: history recall
+  (arrow keys, `!!`, Ctrl-R, Ctrl-O), completion, variables and other
+  expansions, a line continued with `\` (`rm -rf \` then `/` passes both
+  lines), aliases, functions, scripts, or input to another program, including
+  a nested shell;
+- each line entered is recorded as `terminal.input`, as typed, marked `edited`
+  when keys the server cannot follow were used. When the server cannot confirm
+  the terminal showed the line as typed, the line is recorded without its text:
+  at a password prompt (on the process and none tiers, read from the
+  terminal's own mode), when its echo was not seen before the Enter, and for a
+  line under four bytes where the terminal could not be asked. The whole line
+  must be seen echoed, so keys a program took without an Enter (`read -s -n`)
+  never prefix a recorded line, and an edited line is recorded without its
+  text. On the container tier, where the terminal cannot be asked, a password
+  that also appears in the prompt printed while it was typed can be recorded.
+  Lines typed ahead while a command runs are not screened. While another
+  program has the terminal they are not recorded; while the shell itself is
+  busy (a builtin, the gap between commands) the terminal is in canonical
+  mode, and they are recorded without their text. So is every line after
+  `set +o emacs +o vi`, which makes bash read its prompt in canonical mode;
+  those lines are still screened. Keys typed ahead
+  while a command runs are echoed as they arrive, so they are in the recorded
+  output as they were on screen;
+- which program has the keys is asked of the terminal on the process and none
+  tiers (its foreground process group against the shell's); while it is not
+  the shell, keys are neither screened nor recorded. On the container tier
+  the engine's CLI holds the terminal, and a switch to the alternate screen is
+  the only sign; printing that sequence switches screening and recording off
+  there until it is switched back;
+- ending a shell (Kill, closing its tab, deleting the session, the idle or
+  twelve-hour limit, or `exit`) hangs it up, bash hangs up its background
+  jobs, and then every process left in the shell's session is stopped and
+  killed, pass after pass until none is new (`Leader` in
+  `internal/sandbox/leader.go`). That covers `nohup`, `disown`, `( cmd & )`,
+  `trap '' HUP` and a job that keeps forking. The sweep runs only while the
+  exited shell is unreaped, so its process id, and with it the session id,
+  cannot belong to anything else, and only after the shell's recorded start
+  time matches. On Linux each signal goes through a pidfd, so a reused process
+  id is never signalled. On macOS a member is checked with `getsid` and then
+  signalled by number, both the SIGSTOP and the SIGKILL. If the id were reused
+  in between, which needs a pid wrap within microseconds and is not reachable
+  in practice, the signal would land on a foreign process: a stop is found on
+  the recheck and undone with SIGCONT, a kill is not. A strict fix
+  there would need signalling by audit token. When the sweep cannot run (the
+  start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
+  logs that containment did not run. A process that starts a session of its own
+  (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
+  bubblewrap and the container tier end everything regardless. On the none
+  and process tiers a shell shares the server's user and so its process
+  limit: a fork bomb there can exhaust it for the server too. A pids cgroup
+  per shell is the planned follow-up.
+
+What the shell can reach is the tier's, as for the agent's commands, but a
+person now has it interactively. On the macOS process tier, Seatbelt denies
+writes outside the workspace and reads of `.abhed` and five credential paths
+(`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`, `~/.docker/config.json`); other
+files in the home directory, such as `~/.config/gh`, `~/.netrc`,
+`~/.git-credentials` and `~/.npmrc`, are readable, and the shell can signal
+other processes running as the same user. The environment is an allowlist
+(`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
+`ABHED_` settings. On the `none` tier the shell has the server's environment
+without its `ABHED_` settings, which leaves anything else the operator
+exported, and nothing contains it.
+
+`sandbox.terminal: "lines"` returns the terminal to one policy-checked `bash`
+call per line with no shell state, and a managed policy with deny rules for
+`bash` gets that mode automatically. Even then a rule checks the line, not what
+a script the line runs does. On the `none` tier the shell runs on the host, and
+the terminal banner and status bar say so.
 
 **Extensions may only veto, never permit.** `internal/extension/extension.go`
 states the rule directly: "An extension may VETO, never PERMIT." Hooks run

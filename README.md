@@ -147,7 +147,7 @@ go build -o abhed-bench ./cmd/abhed-bench
 | Event-sourced loop, 8 emitted terminal reasons | ✅ tested |
 | Tools: read, write, edit, glob, grep, bash, task | ✅ tested |
 | Read-before-edit, exact-match, near-miss recovery | ✅ tested |
-| Ordered policy engine, absolute deny, always-confirm destructive | ✅ tested |
+| Ordered policy engine, deny absolute for every tool call, always-confirm destructive | ✅ tested |
 | OpenAI-compatible adapter, streaming, reasoning-token stripping | ✅ tested |
 | **Execution sandbox** (Seatbelt / bubblewrap / OCI / gVisor) | ✅ escape-tested |
 | **Compaction** with PreCompact hook, tool-call integrity | ✅ tested |
@@ -206,8 +206,11 @@ editing tool can have.
 minimum tier, Abhed fails with what it tried and how to fix it. A sandbox that
 quietly weakens itself is worse than none, because operators stop checking.
 
-**Deny is absolute.** It blocks even in bypass mode. Destructive commands confirm
-in every mode. Managed org policy cannot be escalated past locally.
+**Deny is absolute.** It blocks every tool call, the agent's and a person's,
+even in bypass mode. A person's interactive shell in the workbench is bounded by
+the sandbox, and there deny rules are a best-effort screen on each line typed
+([the workbench](docs/guide/16-workbench.md)). Destructive commands confirm in
+every mode. Managed org policy cannot be escalated past locally.
 
 **Everything untrusted is tagged at ingest** — file contents, tool output, MCP
 responses — because a coding agent's whole job is reading untrusted text and

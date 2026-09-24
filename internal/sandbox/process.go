@@ -165,14 +165,28 @@ func (s *Process) bwrapFreshOK() bool {
 }
 
 func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
+	return s.wrap(ctx, cwd, s.env(), "/bin/bash", "-c", command)
+}
+
+// Shell starts a long-lived interactive bash under the same confinement as
+// Command, for a person at a terminal.
+func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
+	return hangUp(s.wrap(ctx, cwd, append(s.env(), shellEnv(s.Tier())...), shellArgv...))
+}
+
+// Backend names the mechanism: sandbox-exec or bwrap.
+func (s *Process) Backend() string { return s.backend }
+
+// wrap runs argv inside the backend's confinement.
+func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
 	switch s.backend {
 	case "sandbox-exec":
 		profile := s.seatbeltProfile()
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
-		cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "/bin/bash", "-c", command)
+		cmd := exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...)...)
 		cmd.Dir = cwd
-		cmd.Env = s.env()
+		cmd.Env = env
 		return cmd
 
 	case "bwrap":
@@ -214,11 +228,11 @@ func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 		for _, p := range s.policy.ReadOnlyPaths {
 			args = append(args, "--ro-bind-try", p, p)
 		}
-		args = append(args, "/bin/bash", "-c", command)
+		args = append(args, argv...)
 
 		cmd := exec.CommandContext(ctx, "bwrap", args...)
 		cmd.Dir = cwd
-		cmd.Env = s.env()
+		cmd.Env = env
 		return cmd
 	}
 
@@ -266,3 +280,15 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	cmd.Env = append(os.Environ(), "ABHED_SANDBOX=none")
 	return cmd
 }
+
+// Shell starts an interactive bash directly on the host, with nothing
+// between it and the machine.
+func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, shellArgv[0], shellArgv[1:]...) // #nosec G204 -- a fixed argv
+	cmd.Dir = cwd
+	cmd.Env = append(append(hostEnv(), "ABHED_SANDBOX=none"), shellEnv(TierNone)...)
+	return hangUp(cmd)
+}
+
+// Backend says there is none.
+func (n *None) Backend() string { return "host" }

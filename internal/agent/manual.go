@@ -12,8 +12,9 @@ import (
 
 // Manual runs a tool call made by the person at the keyboard rather than by
 // the model. It passes the same policy, runs the same tool in the same sandbox
-// and leaves the same events, so a person in the workbench holds no power the
-// agent lacks and nothing they do is missing from the record.
+// and leaves the same events as the agent's call would. The interactive
+// terminal is the exception: past the call that opens it, only the sandbox
+// bounds a shell, and its lines are screened and recorded best effort.
 //
 // An Ask is taken as answered: the person who would be asked is the caller.
 // A Deny holds for them as it does for the agent.
@@ -63,6 +64,31 @@ func (l *Loop) ManualObserve(id, call string, result tools.Result, took time.Dur
 		Truncated: result.Truncated, ExitCode: result.ExitCode,
 		DurationMS: took.Milliseconds(),
 	})
+	return err
+}
+
+// ManualScreen judges a line entered at an interactive terminal before the
+// shell is given it. A refusal is recorded as the person's denied bash call
+// with its result; an allowed line is left to ManualTerminalInput.
+func (l *Loop) ManualScreen(id, line string) (*tools.Result, error) {
+	tool, found := l.Tools.Get("bash")
+	if !found {
+		return nil, fmt.Errorf("unknown tool %q", "bash")
+	}
+	args, _ := json.Marshal(map[string]string{"command": line, "description": "entered in the interactive terminal"})
+	if l.Policy.Evaluate("bash", tool.Mutates(), args).Decision != policy.Deny {
+		return nil, nil
+	}
+	_, refused, err := l.ManualAuthorize("bash", id, args)
+	if err != nil || refused == nil {
+		return refused, err
+	}
+	return refused, l.ManualObserve(id, "bash", *refused, 0)
+}
+
+// ManualTerminalInput records a line entered at an interactive terminal.
+func (l *Loop) ManualTerminalInput(in TerminalInput) error {
+	_, err := l.Recorder.Record(EvTerminalInput, ActorUser, Trusted, in)
 	return err
 }
 

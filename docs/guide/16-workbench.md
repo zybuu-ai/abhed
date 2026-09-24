@@ -25,7 +25,7 @@ on, laid out the way an editor is.
 | **Tools** | every tool the agent has, whether it asks before running, and the permission rules in force |
 | **Extensions** | configured extensions and the events they hook, connected MCP servers, loaded skills |
 | **HawkEYE** | the session's totals and [findings](15-hawkeye.md), live |
-| **Terminal** | a terminal in the session's sandbox: each line you type is one recorded, policy-checked command, and the agent's commands appear in it too |
+| **Terminal** | shells in the session's sandbox, one per tab, with a banner saying what contains them; the agent's commands have a read-only tab of their own |
 | **Problems** | HawkEYE's findings, the way an editor lists diagnostics |
 | **Events** | the raw record as it is written, untrusted events marked |
 
@@ -136,17 +136,20 @@ edits are guarded either way.
 
 ## Working by hand
 
-You can edit a file and run a command yourself, beside the agent. Neither is a
-side door. Both go through the same call the agent's tools go through:
+You can edit a file and run a command yourself, beside the agent. A save, a
+review decision and a line in the line-by-line terminal go through the same
+call the agent's tools go through. An interactive shell is different: opening
+it is that call, and after that the sandbox bounds it and the deny rules are a
+screen on each line as typed (see **Terminal** below).
 
 | | The agent | You, in the workbench |
 |---|---|---|
-| Deny rules | refuse | refuse — `shutdown` is denied for you as it is for the agent |
+| Deny rules | refuse | refuse your saves and checked commands; in a shell, screen each line as typed at its Enter — see **Terminal** |
 | Ask rules and mutating tools | a person is asked | taken as answered: you are the person |
 | Workspace boundary | cannot leave it | cannot leave it |
 | `.abhed/`, `.git/`, anything a read rule withholds | not served | cannot be opened or written |
-| Commands | run in the session's sandbox | each line runs in the same sandbox, on a terminal: no network unless the operator allowed it |
-| The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`) |
+| Commands | run in the session's sandbox | your shell runs in the same sandbox: no network unless the operator allowed it |
+| The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`); in a shell, each line you enter, as typed (see below) |
 
 So HawkEYE's report covers what people did as well as what the agent did, and a
 save shows up under **Changes** with a diff like any other edit.
@@ -195,24 +198,124 @@ marked. A line is shown as at most 240 bytes around the match. A session runs
 at most two searches at once. A search changes nothing, so it is not
 recorded.
 
-**Terminal.** The terminal is a real one — `vim`, `top`, a program that asks a
-question all work — but it is not a shell. Each line you enter is judged as a
-`bash` call before it runs, so a deny rule stops it there, and it runs on its
-own pseudo-terminal in the session's sandbox. Shell state does not carry from
-one line to the next: `cd` is followed, `export` is not. The output of each
-command is in the record with the control sequences stripped; what you typed
-is not recorded separately, since a terminal echoes it into the output unless
-the program turned echo off, which is when it should not be kept. A command
-nobody has watched for two minutes is ended. The terminal keeps its own working
-directory, so a `cd` there never moves the agent.
+**Terminal.** Each terminal tab is one long-lived `bash`, started through the
+same sandbox as the agent's commands (`sandbox-exec` or bubblewrap on the
+process tier, a container with a terminal on the container tier), in the
+workspace root. Variables, aliases, functions, history, tab completion, `vim`
+and the like work as in any shell, within what the tier allows. The first lines
+of each tab say what contains it, for example
+`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`, and
+the prompt names the tier: `(sandbox: process) repo $`. On the `none` tier the
+banner says in red that commands run directly on the host, and so does the
+status bar.
 
-Both need a live session, because that is what holds the sandbox. A session
-from before a restart has to be resumed with a message first.
+Tabs are opened with **+**, renamed by double-clicking, and closed with **×**.
+**Kill** ends the shell; Enter then opens a new one. Ctrl+C goes to the
+terminal, which interrupts the program in the foreground, as in any terminal.
+Pasting several lines runs them in turn. The shell keeps its own working
+directory, so a `cd` there never moves the agent. Reloading the page
+reattaches to the shells it had open, with their recent output. A shell nobody
+has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), and one
+is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
+its tab, deleting the session or either limit, hangs it up, and bash hangs up
+the jobs it started in the background; so does typing `exit`. Once the shell
+has exited, and before its process is released, everything still in its
+session is stopped and killed, pass after pass until nothing new appears.
+That covers jobs started with `nohup` or `disown`, run as `( cmd & )`, under
+`trap '' HUP`, or forking again and again. Only processes in that session are
+touched, and only while the exited shell still holds the session's number, so
+the session can never be mistaken for another. On Linux each process is
+signalled through a handle on the process itself, so a process id reused by
+something else is never signalled. On macOS a process is checked and then
+signalled by its number: if its id were reused in between, which needs the
+ids to wrap round within microseconds and is not reachable in practice, the
+stop or the kill would land on a stranger: a stop is undone at once with a
+continue signal, a kill is not.
+Closing that gap strictly would need signalling by audit token. What escapes is
+a process that makes a session of its own, with `setsid` or by daemonising;
+it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
+in the sandbox with the shell, and a container is removed. On the none and
+process tiers a shell runs as the server's user and shares its process limit,
+so a fork bomb there can exhaust it for the server too; a pids cgroup per
+shell is the planned follow-up.
+
+What a shell changes about the checks, stated plainly:
+
+- **The sandbox is the boundary.** Opening a shell is your `bash` call: the
+  policy judges it (plan mode refuses it), it is recorded as yours, and when the
+  shell ends its exit and the last 64 KB of its output are recorded.
+- **Deny rules are a screen, not a guarantee.** The server rebuilds each line
+  from the keys it passes on and, before the Enter reaches the shell, puts it to
+  the policy. A line a deny rule matches is refused, recorded as a denied `bash`
+  call, and discarded. That stops a denied command typed or pasted at the
+  prompt. It does not screen lines typed ahead while a command still runs:
+  they go to the terminal while that command has it, and the shell reads them
+  after. Such a line is not recorded while another program has the terminal,
+  and is recorded without its text while the shell itself is busy (the
+  terminal is then in the mode a password is read in). Nor does it see what
+  the shell makes of a line: history recall (the arrow keys, `!!`, Ctrl-R,
+  Ctrl-O), tab completion, variables and other expansions (`$CMD`), a line continued with `\` onto the
+  next, an alias, a function, a script, or anything typed into another program,
+  including a nested shell.
+- **Lines are recorded as typed, best effort.** Each line is recorded as
+  `terminal.input`, marked `edited` when it used keys the server cannot follow
+  (Tab, the arrow keys), since the shell may then have run something else. When
+  the server cannot be sure the terminal showed a line as it was typed, it
+  records that a line was entered but not its text: when the terminal is in
+  canonical mode, where bash does not read its own prompt (a password prompt,
+  or keys typed while a builtin ran), for a line whose whole text it did not
+  see echoed before the Enter (so keys a program took without an Enter, as
+  `read -s -n` does, never prefix a recorded line), for an edited line, and for a short line where it could not ask the
+  terminal. Keys typed ahead while a command still runs are shown by the
+  terminal as they arrive, so a password typed ahead of its prompt is in the
+  recorded output, as it was on screen.
+  Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
+  in canonical mode too, so from then on every line is recorded without its
+  text; it is still screened.
+- **Which program has the keys.** On the process and none tiers the server
+  asks the terminal which process group is in the foreground: while it is not
+  the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
+  screened nor recorded. On the container tier the engine's CLI holds the
+  terminal, so the server can only watch for a program switching to the
+  alternate screen; a `printf` of that sequence switches the screening and the
+  recording off there until the screen is switched back. Nor can it tell a
+  password prompt there: a password that also appears in what was printed
+  while it was typed, such as a user name in `[sudo] password for root:`, can
+  be recorded.
+
+Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
+tab then runs every line as a `bash` call of its own, judged before it runs, on
+its own pseudo-terminal, and shell state does not carry from one line to the
+next (`cd` is followed, `export` is not). A managed policy
+(`/etc/abhed/config.json`) with deny rules for `bash` gets that mode without
+asking, because a managed rule is an organisation's statement that it holds.
+Even line by line, a rule checks the line, not what a script the line runs
+does. The banner says which mode a tab is in, and why.
+
+**Sessions.** The terminal and the editor work in a session, because that is
+what holds the workspace, the policy and the sandbox. You do not need to ask
+the agent anything to get one: when there is no session, the page opens a
+*workbench session*, which has no prompt and waits. It is owned, listed and
+recorded like any other (its record starts with `session.started`), and the
+first message you send goes to it. **New session** lets you choose the
+permission mode before the next one starts; once a session is open its mode is
+shown and fixed.
+
+After a restart, the terminal reopens the session it was on from its record. If
+that is not possible (the session was not closed cleanly, or is being continued
+on another server), the page opens a fresh workbench session and says so.
+
+The Explorer reloads after a command finishes and keeps the folders you had
+open.
 
 ## What it is not, yet
 
-- **Shell state does not persist between lines.** Every line is its own
-  command, which is what makes every line a policy decision.
+- **A shell's lines are screened as typed, not judged as run.** See
+  *Terminal* above; `sandbox.terminal: "lines"` trades the shell for a policy
+  decision on every line.
+- **Shells reattach only in the same browser tab.** Another tab or browser
+  opens new shells; the old ones end once nobody has watched them for the idle
+  limit.
 - **Files over 4 MB are read-only**, shown in part.
 - **Changes** covers saves and edits made with `write` and `edit`. A file
   changed by a shell command, yours or the agent's, does not appear there.

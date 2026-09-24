@@ -49,8 +49,12 @@ Each is a property Abhed asserts. Breaking any one is a critical finding.
 2. **Egress denial.** With `allow_network: false`, no channel reaches the network
    — including DNS, ICMP, unix sockets to host daemons, and abuse of a permitted
    toolchain (a package manager's fetch, a language runtime's HTTP client).
-3. **Deny is absolute.** No mode, rule ordering, argument encoding, or command
-   chaining produces execution of a denied pattern.
+3. **Deny is absolute for tool calls.** No mode, rule ordering, argument
+   encoding, or command chaining gets a tool call that matches a deny rule
+   executed, whether the agent or a person makes it. Out of scope: what a person
+   runs inside the workbench's interactive shell after it is opened, where deny
+   rules are a documented best-effort screen and the sandbox is the boundary
+   (claims 1 and 2 still hold there).
 4. **Managed policy cannot be escalated past.** A local config or a crafted
    request cannot obtain permissions the org-level config withholds.
 5. **Tenant isolation.** No API call, SSE stream, session id guess, or SQL path

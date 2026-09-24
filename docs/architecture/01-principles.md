@@ -118,7 +118,9 @@ Six-step ordered flow, directly transplantable to an enterprise approval system:
 Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 ```
 
-Deny is absolute: a deny rule blocks the tool **even in the most permissive mode**. Tools
+Deny is absolute: a deny rule blocks the tool call **even in the most permissive mode**,
+whoever makes it. A person's interactive shell in the workbench is the exception the
+sandbox bounds; there a rule is a best-effort screen on each line typed. Tools
 are scoped per-command (`Bash(npm *)`), not per-tool. For multi-tenancy, the load-bearing
 primitive is an **org-level managed setting that a local user config cannot escalate past**.
 
