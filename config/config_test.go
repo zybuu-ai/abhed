@@ -186,3 +186,54 @@ func TestSyntaxCheckSettingIsValidated(t *testing.T) {
 		t.Error("an unknown tools.syntax_check was accepted")
 	}
 }
+
+// The GitHub keys are read only by a paid edition, but a mistake in them is
+// reported here, at load, in every edition.
+func TestGitHubAuthKeysAreValidated(t *testing.T) {
+	good := []GitHubAuthConfig{
+		{},
+		{Orgs: []string{"acme"}},
+		{Teams: []string{"acme/platform"}, Orgs: []string{"acme"}},
+		{AllowAny: true},
+	}
+	for _, g := range good {
+		c := Default()
+		c.Auth.GitHub = g
+		if err := c.Validate(); err != nil {
+			t.Errorf("%+v: %v", g, err)
+		}
+	}
+	bad := []GitHubAuthConfig{
+		{Orgs: []string{""}},
+		{Orgs: []string{"acme/platform"}},
+		{Teams: []string{"platform"}},
+		{Teams: []string{"acme/"}},
+		{Teams: []string{"acme/a/b"}},
+		{AllowAny: true, Orgs: []string{"acme"}},
+	}
+	for _, g := range bad {
+		c := Default()
+		c.Auth.GitHub = g
+		if err := c.Validate(); err == nil {
+			t.Errorf("%+v was accepted", g)
+		}
+	}
+	var c Config
+	err := json.Unmarshal([]byte(`{"auth":{"github":{"orgs":["acme"],"teams":["acme/ops"]},"proxy_logout_url":"/x"}}`), &c)
+	if err != nil || len(c.Auth.GitHub.Orgs) != 1 || c.Auth.GitHub.Teams[0] != "acme/ops" || c.Auth.ProxyLogoutURL != "/x" {
+		t.Fatalf("keys do not load: %+v %v", c.Auth, err)
+	}
+}
+
+func TestProxyLogoutURLIsValidated(t *testing.T) {
+	for url, ok := range map[string]bool{"": true, "/oauth2/sign_out": true,
+		"https://sso.example.com/logout": true, "javascript:alert(1)": false,
+		"//evil.example.com/logout": false, `/\evil.example.com`: false, `\\evil.example.com`: false,
+		"https://": false, "ftp://sso.example.com/": false, "/a\r\nLocation: x": false} {
+		c := Default()
+		c.Auth.ProxyLogoutURL = url
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("%q: %v", url, err)
+		}
+	}
+}

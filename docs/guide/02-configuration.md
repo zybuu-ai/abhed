@@ -177,6 +177,26 @@ points (`ABHED_USERS_FILE` overrides it). A server deployment sets it to a
 directory outside every workspace, so accounts never sit in a tree an agent
 is pointed at. With Postgres, accounts are rows and the file is not used.
 
+### Keys for the paid editions
+
+The Community Edition checks these when it loads a config, so a mistake is
+reported at once, and otherwise ignores them: GitHub sign-in is part of the
+paid editions.
+
+| Key | Meaning |
+|---|---|
+| `auth.github.orgs` | admit members of any of these GitHub organisations |
+| `auth.github.teams` | admit members of any of these teams, each written `org/team-slug` |
+| `auth.github.allow_any` | admit every GitHub account; cannot be combined with `orgs` or `teams` |
+
+```json
+{ "auth": { "github": { "orgs": ["acme"], "teams": ["acme/platform"] } } }
+```
+
+`auth.proxy_logout_url` is the authenticating proxy's own sign-out, in `proxy`
+mode: with it the console offers Sign out and `/logout` redirects there;
+without it there is no Sign out, since the proxy owns the session.
+
 ## Where settings come from
 
 Later sources win, except that an org-managed file cannot be overridden:

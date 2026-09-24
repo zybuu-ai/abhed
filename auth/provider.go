@@ -39,6 +39,14 @@ type Provider interface {
 	SignOut(w http.ResponseWriter, r *http.Request)
 }
 
+// SessionEnder is implemented by a provider that can end the session a
+// request carries without answering it, so a refused session can be cleared.
+// A provider without it is signed out through SignOut, its response discarded
+// except for the cookies it sets.
+type SessionEnder interface {
+	EndRequestSession(w http.ResponseWriter, r *http.Request)
+}
+
 // TokenVerifier validates a bearer token for an API client. Separate from
 // Provider because a token has no session to hold: it is verified on every
 // request, by whatever issued it, and the middleware needs only the verdict.

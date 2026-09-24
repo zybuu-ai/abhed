@@ -223,6 +223,7 @@ footer{border-top:1px solid var(--line);padding:20px 0 30px;font-family:var(--mo
         every action recorded and replayable. Air-gap capable, because the
         teams who need an agent most are the ones who cannot send their data
         to an API.</p>
+      <div class="err" id="refused" role="alert" hidden></div>
       <div class="cta" id="cta"></div>
     </div>
     <div class="viz">
@@ -502,7 +503,7 @@ function signInForm(o){
       if(body.must_change_password){
         try{ sessionStorage.setItem('abhed.must_change', '1'); }catch{}
       }
-      location.href = '/ide';
+      location.href = body.must_change_password ? '/account?must_change=1' : '/ide';
     }catch(e){
       err.textContent = 'Cannot reach the server.';
       err.hidden = false;
@@ -801,6 +802,12 @@ function shortPath(p){
   const parts = p.split('/');
   return parts.length > 4 ? '…/' + parts.slice(-3).join('/') : p;
 }
+
+// A session this deployment refused arrives here with the reason.
+try{
+  const why = new URLSearchParams(location.search).get('refused');
+  if(why){ $('refused').textContent = 'Access refused: ' + why.slice(0, 200); $('refused').hidden = false; }
+}catch{}
 
 load();
 startViz();

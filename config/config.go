@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,23 @@ type AuthConfig struct {
 	// CookieSecure should be true anywhere but local HTTP development.
 	CookieSecure bool `json:"cookie_secure,omitempty"`
 	SessionHours int  `json:"session_hours,omitempty"`
+	// ProxyLogoutURL is the authenticating proxy's own sign-out, in proxy
+	// mode. Without it the console offers no sign-out, since the proxy owns it.
+	ProxyLogoutURL string `json:"proxy_logout_url,omitempty"`
+	// GitHub restricts GitHub sign-in, which only the paid editions provide.
+	// The Community Edition validates these keys and otherwise ignores them.
+	GitHub GitHubAuthConfig `json:"github,omitempty"`
+}
+
+// GitHubAuthConfig says which GitHub accounts may sign in.
+type GitHubAuthConfig struct {
+	// Orgs admits members of any of these organisations.
+	Orgs []string `json:"orgs,omitempty"`
+	// Teams admits members of any of these teams, written org/team-slug.
+	Teams []string `json:"teams,omitempty"`
+	// AllowAny admits every GitHub account; it cannot be combined with a
+	// restriction, which would still apply.
+	AllowAny bool `json:"allow_any,omitempty"`
 }
 
 // WebSearchConfig controls the agent's access to the public web.
@@ -686,6 +704,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("auth.mode is oidc but neither auth.issuer nor " +
 			"auth.provider (google, microsoft) is set")
 	}
+	if err := c.Auth.GitHub.validate(); err != nil {
+		return err
+	}
+	if u := c.Auth.ProxyLogoutURL; u != "" && !validLogoutURL(u) {
+		return fmt.Errorf("auth.proxy_logout_url %q must be an http(s) URL or a path on this host", u)
+	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":
 	default:
@@ -709,6 +733,41 @@ func (c Config) Validate() error {
 	case "none", "process", "container", "vm", "":
 	default:
 		return fmt.Errorf("unknown sandbox.min_tier %q (want none|process|container|vm)", c.Sandbox.MinTier)
+	}
+	return nil
+}
+
+// validLogoutURL accepts an absolute http(s) URL or a path with no host; a
+// "//" or backslash prefix would send the browser to another site.
+func validLogoutURL(s string) bool {
+	if strings.ContainsAny(s, "\\\x00\r\n") {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	if strings.HasPrefix(s, "/") {
+		return u.Host == "" && u.Scheme == "" && !strings.HasPrefix(s, "//")
+	}
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+func (g GitHubAuthConfig) validate() error {
+	for _, o := range g.Orgs {
+		if strings.TrimSpace(o) == "" || strings.Contains(o, "/") {
+			return fmt.Errorf("auth.github.orgs: %q is not an organisation name", o)
+		}
+	}
+	for _, t := range g.Teams {
+		if org, team, ok := strings.Cut(t, "/"); !ok || strings.TrimSpace(org) == "" ||
+			strings.TrimSpace(team) == "" || strings.Contains(team, "/") {
+			return fmt.Errorf("auth.github.teams: %q must be written org/team-slug", t)
+		}
+	}
+	if g.AllowAny && len(g.Orgs)+len(g.Teams) > 0 {
+		return fmt.Errorf("auth.github.allow_any cannot be combined with orgs or teams; " +
+			"the restriction would still apply")
 	}
 	return nil
 }

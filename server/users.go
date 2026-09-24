@@ -3,7 +3,11 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/auth"
 )
 
 // Local-account administration for the single-tenant server. The CLI twin is
@@ -68,20 +72,59 @@ func (s *Server) setUserAdmin(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "username is required")
 		return
 	}
-	// Removing your own admin rights would leave a deployment with no way back
-	// in if you are the only administrator. Refuse rather than let someone
-	// lock themselves out of their own settings.
-	if !req.Admin && req.Username == UserOf(r.Context()) {
-		WriteError(w, http.StatusConflict,
-			"you cannot remove your own administrator rights")
-		return
+	name := strings.ToLower(req.Username)
+	admin := s.adminGroup()
+	s.adminMu.Lock()
+	defer s.adminMu.Unlock()
+	if !req.Admin {
+		// Compared on the subject, not UserOf, which is the email when the
+		// account has one and so never matched a username.
+		if id, ok := auth.FromContext(r.Context()); ok && strings.EqualFold(id.Subject, name) {
+			WriteError(w, http.StatusConflict,
+				"you cannot remove your own administrator rights")
+			return
+		}
+		// Nor may the last administrator go, whoever removes them: with
+		// nobody left, nothing on this deployment can grant it back.
+		users, err := local.ListUsers(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "could not list accounts")
+			return
+		}
+		target, others := false, 0
+		for _, u := range users {
+			if !slices.Contains(u.Groups, admin) {
+				continue
+			}
+			if strings.EqualFold(u.Username, name) {
+				target = true
+			} else {
+				others++
+			}
+		}
+		if target && others == 0 {
+			WriteError(w, http.StatusConflict,
+				"this is the last administrator; make someone else an administrator first")
+			return
+		}
 	}
-	if err := local.SetGroups(r.Context(), req.Username,
-		s.adminGroup(), req.Admin); err != nil {
+	if err := local.SetGroups(r.Context(), name, admin, req.Admin); err != nil {
 		WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.log.Info("admin rights changed", "user", req.Username,
-		"admin", req.Admin, "by", UserOf(r.Context()))
+	action := "user.admin_revoked"
+	if req.Admin {
+		action = "user.admin_granted"
+	}
+	s.adminAudit(r, action, name, map[string]any{"group": admin})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminAudit logs an administrative change and hands it to Options.AdminAudit.
+func (s *Server) adminAudit(r *http.Request, action, target string, detail map[string]any) {
+	s.log.Info("admin action", "action", action, "target", target,
+		"by", UserOf(r.Context()), "detail", detail)
+	if s.opts.AdminAudit != nil {
+		s.opts.AdminAudit(r.Context(), action, target, detail)
+	}
 }

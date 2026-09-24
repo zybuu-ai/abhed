@@ -199,6 +199,10 @@ type Options struct {
 	// Index backs the retrieval tool, for a reindex triggered from settings.
 	Index        *index.Index
 	IndexOptions index.BuildOptions
+	// AdminAudit, when set, is told of every administrative change made
+	// through /v1/admin/*; nil means the server log only. It may run under the
+	// admin-rights lock, so it must not call an admin route itself.
+	AdminAudit func(ctx context.Context, action, target string, detail map[string]any)
 	// DrainTimeout is how long a shutdown waits for running turns to finish
 	// before cancelling them. Zero keeps the old behaviour of ending them at
 	// once, which is what a single-node deployment with no balancer wants.
@@ -223,6 +227,10 @@ type Server struct {
 
 	// mounts added after construction, ahead of the ones in Options.
 	mounts []Mount
+
+	// adminMu serialises admin-rights changes, so two demotions at once
+	// cannot leave nobody an administrator. It holds within one process only.
+	adminMu sync.Mutex
 
 	// state holds what a settings change may replace, behind its own lock.
 	// Separate from opts, which stays immutable — mixing "set once" and
@@ -395,6 +403,17 @@ func (s *Server) Handler() http.Handler {
 			// expect it.
 			mux.HandleFunc("GET /login", s.redirectHome)
 		}
+	case s.authMiddleware().ProxyMode():
+		// The proxy owns sign-in and sign-out; whoami reports whom it named.
+		mux.HandleFunc("GET /v1/whoami", s.whoami)
+		mux.HandleFunc("GET /login", s.authDisabledPage)
+		if u := s.opts.Config.Auth.ProxyLogoutURL; u != "" {
+			mux.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, u, http.StatusFound)
+			})
+		} else {
+			mux.HandleFunc("GET /logout", s.authDisabledPage)
+		}
 	default:
 		// Sign-in is not configured. These routes still answer, because a 404
 		// leaves the console unable to tell "no auth here" from "the server is
@@ -439,7 +458,7 @@ func (s *Server) Handler() http.Handler {
 	// Order matters and is easy to get backwards: authentication must run
 	// BEFORE the layer that reads the identity, so it wraps closest to the
 	// outside. An inverted order silently yields anonymous identities.
-	var handler http.Handler = mux
+	handler := s.mustChangeGate(mux)
 	if s.opts.Config.Auth.RequireGroup != "" {
 		handler = auth.RequireGroup(s.opts.Config.Auth.RequireGroup, handler)
 	}
@@ -1643,29 +1662,74 @@ func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
 // whoami answers for whichever session exists, and says which mechanism
 // holds it, so the console can show the right chip.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	for _, p := range s.signIns() {
-		if id, found := p.Identify(r); found {
-			me := map[string]any{
-				"authenticated": true, "auth_mode": p.Name(),
-				"subject": id.Subject, "email": id.Email, "name": id.Name,
-				"tenant": id.Tenant, "groups": id.Groups,
-			}
-			// Switching user is a fresh sign-in: the identity provider's own
-			// prompt when there is one, the sign-in page for local accounts.
-			switch p.Name() {
-			case "local":
-				me["switch_url"], me["password_url"] = "/logout", "/account"
-			case "oidc":
-				me["switch_url"] = "/switch-user"
-			}
-			WriteJSON(w, http.StatusOK, me)
-			return
+	id, mode, err := s.authMiddleware().Identify(w, r)
+	if id == nil {
+		out := map[string]any{
+			"authenticated": false,
+			"auth_mode":     orDefaultStr(s.opts.Config.Auth.Mode, "none"),
+		}
+		if err != nil {
+			out["reason"] = err.Error()
+		}
+		WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	me := map[string]any{
+		"authenticated": true, "auth_mode": mode,
+		"subject": id.Subject, "email": id.Email, "name": id.Name,
+		"tenant": id.Tenant, "groups": id.Groups,
+		"sign_out_url": "/logout",
+	}
+	// Switching user is a fresh sign-in: the identity provider's own
+	// prompt when there is one, the sign-in page for local accounts.
+	switch mode {
+	case "local":
+		me["switch_url"], me["password_url"] = "/logout", "/account"
+		if local := s.LocalAuth(); local != nil && local.MustChangePassword(r) {
+			me["must_change_password"] = true
+		}
+	case "oidc":
+		me["switch_url"] = "/switch-user"
+	case "proxy":
+		// The proxy owns sign-in, so there is nothing to switch to here, and
+		// sign-out exists only where the operator named the proxy's own.
+		delete(me, "sign_out_url")
+		if u := s.opts.Config.Auth.ProxyLogoutURL; u != "" {
+			me["sign_out_url"] = u
 		}
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{
-		"authenticated": false,
-		"auth_mode":     orDefaultStr(s.opts.Config.Auth.Mode, "none"),
+	WriteJSON(w, http.StatusOK, me)
+}
+
+// mustChangeGate confines a session whose password was set for it to the
+// routes that change it, until it has been changed.
+func (s *Server) mustChangeGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		local := s.LocalAuth()
+		if local == nil || mustChangeAllowed(r) || !local.MustChangePassword(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			http.Redirect(w, r, "/account?must_change=1", http.StatusFound)
+			return
+		}
+		WriteError(w, http.StatusForbidden, "password change required")
 	})
+}
+
+// mustChangeAllowed names what a must-change session may still reach.
+func mustChangeAllowed(r *http.Request) bool {
+	p := r.URL.Path
+	switch {
+	case p == "/account", p == "/v1/whoami", p == "/logout", p == "/v1/health",
+		p == "/favicon.ico", p == "/favicon.svg", strings.HasPrefix(p, "/ide/vendor/"):
+		return true
+	case r.Method == http.MethodPost && (p == "/v1/password" || p == "/v1/signin"):
+		// Signing in again, as someone else, replaces the session outright.
+		return true
+	}
+	return false
 }
 
 // signup creates an account from the sign-in page. Off unless a deployment
@@ -1888,12 +1952,12 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 			o.SignInURL = u + "?return=%2Fconsole"
 			o.ProviderLabel = label
 		}
-		if id, found := p.Identify(r); found {
-			o.Authenticated = true
-			o.User = orDefaultStr(id.Email, id.Subject)
-			o.Admin = slices.Contains(id.Groups, s.adminGroup())
-			o.Tenant = id.Tenant
-		}
+	}
+	if id, _, _ := s.authMiddleware().Identify(w, r); id != nil {
+		o.Authenticated = true
+		o.User = orDefaultStr(id.Email, id.Subject)
+		o.Admin = slices.Contains(id.Groups, s.adminGroup())
+		o.Tenant = id.Tenant
 	}
 
 	// The workspace is an absolute path on the host: it names the operator's

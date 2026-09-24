@@ -44,6 +44,11 @@ type Middleware struct {
 	TrustHeaders bool
 	// PublicPaths bypass authentication (health checks, the console shell).
 	PublicPaths []string
+	// Check, when set, runs after a provider, the verifier or a trusted proxy
+	// has identified someone. An error refuses the request, ends the session a
+	// provider holds, and its text is shown to the person, so keep it plain.
+	// A stream is checked when it opens, not while it runs.
+	Check func(ctx context.Context, id *Identity) error
 }
 
 func (m Middleware) Wrap(next http.Handler) http.Handler {
@@ -71,6 +76,11 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 
 		for _, p := range m.Providers {
 			if id, ok := p.Identify(r); ok {
+				if err := m.check(r.Context(), id); err != nil {
+					endSession(w, r, p)
+					m.refuse(w, r, err)
+					return
+				}
 				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 				return
 			}
@@ -90,6 +100,10 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 				unauthorized(w, err.Error())
 				return
 			}
+			if err := m.check(r.Context(), id); err != nil {
+				m.refuse(w, r, err)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 			return
 		}
@@ -102,13 +116,12 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		if m.TrustHeaders {
-			id := &Identity{
-				Subject: headerOr(r, "X-Abhed-User", "anonymous"),
-				Email:   r.Header.Get("X-Abhed-Email"),
-				Tenant:  headerOr(r, "X-Abhed-Tenant", "default"),
-			}
-			if groups := r.Header.Get("X-Abhed-Groups"); groups != "" {
-				id.Groups = strings.Split(groups, ",")
+			id := headerIdentity(r)
+			if r.Header.Get("X-Abhed-User") != "" {
+				if err := m.check(r.Context(), id); err != nil {
+					m.refuse(w, r, err)
+					return
+				}
 			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 			return
@@ -118,6 +131,98 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 			&Identity{Subject: "anonymous", Tenant: "default"})))
 	})
 }
+
+// headerIdentity is the identity a trusted proxy asserted, anonymous and
+// without groups when it named no user.
+func headerIdentity(r *http.Request) *Identity {
+	id := &Identity{
+		Subject: headerOr(r, "X-Abhed-User", "anonymous"),
+		Email:   r.Header.Get("X-Abhed-Email"),
+		Tenant:  headerOr(r, "X-Abhed-Tenant", "default"),
+	}
+	if groups := r.Header.Get("X-Abhed-Groups"); groups != "" && r.Header.Get("X-Abhed-User") != "" {
+		id.Groups = strings.Split(groups, ",")
+	}
+	return id
+}
+
+// ProxyMode reports whether identity comes from a trusted proxy's headers:
+// no provider holds sessions and no verifier checks tokens.
+func (m Middleware) ProxyMode() bool {
+	return m.TrustHeaders && len(m.Providers) == 0 && m.Verifier == nil
+}
+
+// Identify reports who a request's session or proxy headers name, applying
+// Check, for handlers on public paths that still say who is signed in. mode
+// is the provider's name, or "proxy". A refused session is ended and its
+// reason returned; nil, "", nil means nobody is signed in.
+func (m Middleware) Identify(w http.ResponseWriter, r *http.Request) (id *Identity, mode string, err error) {
+	for _, p := range m.Providers {
+		if id, ok := p.Identify(r); ok {
+			if err := m.check(r.Context(), id); err != nil {
+				endSession(w, r, p)
+				return nil, p.Name(), err
+			}
+			return id, p.Name(), nil
+		}
+	}
+	if m.ProxyMode() && r.Header.Get("X-Abhed-User") != "" {
+		id := headerIdentity(r)
+		if err := m.check(r.Context(), id); err != nil {
+			return nil, "proxy", err
+		}
+		return id, "proxy", nil
+	}
+	return nil, "", nil
+}
+
+func (m Middleware) check(ctx context.Context, id *Identity) error {
+	if m.Check == nil {
+		return nil
+	}
+	return m.Check(ctx, id)
+}
+
+// refuse answers a request whose identity Check turned away: a browser goes
+// to the front door with the reason, an API client gets 403 and the reason.
+func (m Middleware) refuse(w http.ResponseWriter, r *http.Request, err error) {
+	if wantsHTML(r) {
+		http.Redirect(w, r, "/?refused="+url.QueryEscape(clip(err.Error(), 200)), http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden", "reason": err.Error()})
+}
+
+// clip shortens s to at most n runes.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
+// endSession ends the session p holds for r. SignOut is the fallback, with
+// everything but its cookies discarded, since it also answers the request.
+func endSession(w http.ResponseWriter, r *http.Request, p Provider) {
+	if e, ok := p.(SessionEnder); ok {
+		e.EndRequestSession(w, r)
+		return
+	}
+	scratch := &headerOnly{h: http.Header{}}
+	p.SignOut(scratch, r)
+	for _, c := range scratch.h.Values("Set-Cookie") {
+		w.Header().Add("Set-Cookie", c)
+	}
+}
+
+// headerOnly keeps the headers written to it and drops everything else.
+type headerOnly struct{ h http.Header }
+
+func (h *headerOnly) Header() http.Header         { return h.h }
+func (h *headerOnly) Write(b []byte) (int, error) { return len(b), nil }
+func (h *headerOnly) WriteHeader(int)             {}
 
 // challenge answers a request with no credentials. A browser is sent to sign
 // in, keeping where it was going; an API client gets 401 and a reason.

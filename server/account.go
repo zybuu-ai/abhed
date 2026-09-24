@@ -30,6 +30,7 @@ button:disabled{opacity:.6;cursor:default}#msg{margin-top:14px;min-height:1.5em}
 nav{margin-top:22px;display:flex;gap:16px}a{color:var(--acc)}
 </style></head><body><main>
 <h1>Change password</h1><p id="who">Signed in.</p>
+<p id="must" class="bad" hidden>This password was set for you. Change it to continue.</p>
 <form id="f">
 <label for="cur">Current password</label><input id="cur" type="password" autocomplete="current-password" required>
 <label for="nw">New password (at least 10 characters)</label><input id="nw" type="password" autocomplete="new-password" minlength="10" required>
@@ -39,10 +40,12 @@ nav{margin-top:22px;display:flex;gap:16px}a{color:var(--acc)}
 <nav><a href="/ide">Back to the workbench</a><a href="/logout">Sign out</a></nav>
 </main><script>
 const $ = (id) => document.getElementById(id);
+try{ if(new URLSearchParams(location.search).get('must_change')) $('must').hidden = false; }catch{}
 fetch('/v1/whoami').then(r => r.json()).then(me => {
   if(!me.authenticated){ location.href = '/'; return; }
   if(!me.password_url){ document.querySelector('main').textContent = 'This account signs in through your identity provider; change its password there.'; return; }
   $('who').textContent = 'Signed in as ' + (me.email || me.name || me.subject) + '.';
+  if(me.must_change_password) $('must').hidden = false;
 }).catch(() => {});
 $('f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -53,7 +56,7 @@ $('f').addEventListener('submit', async (e) => {
     const r = await fetch('/v1/password', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({current_password: $('cur').value, new_password: $('nw').value})});
     let body = {}; try{ body = await r.json(); }catch{}
-    if(r.ok){ msg.className = 'ok'; msg.textContent = 'Password changed.'; $('f').reset(); }
+    if(r.ok){ msg.className = 'ok'; msg.textContent = 'Password changed.'; $('f').reset(); $('must').hidden = true; }
     else{ msg.className = 'bad'; msg.textContent = body.error || ('Could not change it (' + r.status + ').'); }
   }catch{ msg.className = 'bad'; msg.textContent = 'Cannot reach the server.'; }
   $('go').disabled = false;

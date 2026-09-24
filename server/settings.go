@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -172,8 +174,8 @@ func (s *Server) reloadSkills(w http.ResponseWriter, r *http.Request) {
 	for _, e := range errs {
 		msgs = append(msgs, e.Error())
 	}
-	s.log.Info("skills reloaded", "count", reg.Len(),
-		"errors", len(errs), "by", UserOf(r.Context()))
+	s.adminAudit(r, "skills.reloaded", "", map[string]any{
+		"count": reg.Len(), "errors": len(errs)})
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"loaded":   reg.Len(),
 		"warnings": msgs,
@@ -243,12 +245,28 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
-	s.log.Info("mcp server connected", "name", req.Name,
-		"tools", len(added), "by", UserOf(r.Context()))
+	s.adminAudit(r, "mcp.added", req.Name, mcpAuditDetail(req, added))
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"name":  req.Name,
 		"tools": added,
 	})
+}
+
+// mcpAuditDetail describes an added MCP server without its secrets: the URL
+// keeps scheme, host and path, and the command only its program.
+func mcpAuditDetail(req mcpRequest, added []string) map[string]any {
+	d := map[string]any{"tools": added}
+	if f := strings.Fields(req.Command); len(f) > 0 {
+		d["command"] = f[0]
+	}
+	if req.URL != "" {
+		if u, err := url.Parse(req.URL); err == nil {
+			d["url"] = (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+		} else {
+			d["url"] = "(unparseable)"
+		}
+	}
+	return d
 }
 
 // --------------------------------------------------------------- retrieval
@@ -264,6 +282,7 @@ func (s *Server) reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := UserOf(r.Context())
+	s.adminAudit(r, "index.rebuild_started", "", nil)
 	go func() {
 		// Detached from the request on purpose: the client disconnecting must
 		// not abandon a half-built index.
