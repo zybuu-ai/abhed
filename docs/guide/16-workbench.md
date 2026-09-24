@@ -162,25 +162,37 @@ has its own *Accept* and *Reject*. *Reject* puts the earlier text back for that
 change, which is a save: it goes through the same call as any other and is
 recorded as your write. *Accept* keeps the change and moves the file's
 baseline, so it stops showing as a change and `/undo` returns to it; the
-acceptance is recorded as `change.accepted`. Rejecting everything in a file the
-session created deletes the file, as the Explorer does.
+acceptance is recorded as `change.accepted`. The baseline only moves to text on
+disk, so accepting in a tab with unsaved edits saves them first. Rejecting
+everything in a file the session created deletes the file, as the Explorer
+does.
 
 **Explorer.** A new file is a save of an empty file, refused if the name is
 taken. New folder, rename and delete are each one command, `mkdir -p`,
 `mv -n` or `rm`, run through the same call as a line typed into the terminal,
 so the bash rules, the sandbox and the record apply to it. Before it runs,
-every path it touches is checked against the rules a save to it would meet,
-and for a folder that means everything inside it, up to 5,000 entries: a
-folder cannot be renamed or deleted if anything in it may not be written.
-Rename never replaces what is already at the new name, and deleting a link
-removes the link, not what it points to.
+every path it touches must be one the workbench would open, which rules out
+`.abhed/`, `.git/` and anything a read rule withholds, and one a save to which
+would not be refused by a write rule. Each path is judged as named and with
+its folder's links followed, since that is where the command acts. For a
+folder, the same holds for everything inside it, up to 5,000 entries, and a
+rename judges each entry at its old path and at its new one: a folder cannot
+be moved or deleted if anything in it could not be, and a read-denied file
+cannot reappear under another name. Rename never replaces what is already at
+the new name, and deleting a link removes the link, not what it points to.
+The checks and the command run together, with no other action of yours in
+between, and the command finishes even if the page is closed; an edit the
+agent makes at that moment is not held back, as it is not for a command in
+the terminal.
 
 **Search.** Search reads what the Explorer shows and nothing more: a folder or
 file a read rule withholds is not opened, and neither is `.abhed/`, `.git/` or
 a folder the `grep` tool passes over (`node_modules`, `vendor`, `dist`, `.venv`
 and the like). Binary files are skipped. A regular expression is RE2, as in
-`grep`. A search stops at 2,000 results, 100 in one file, 20,000 files or five
-seconds, and says which. It reads and changes nothing else, so it is not
+`grep`. A search stops at 2,000 results, 20,000 files or five seconds and
+says which; a file with more than 100 matches is listed with its first 100 and
+marked. A line is shown as at most 240 bytes around the match. A session runs
+at most two searches at once. A search changes nothing, so it is not
 recorded.
 
 **Terminal.** The terminal is a real one — `vim`, `top`, a program that asks a
@@ -216,9 +228,13 @@ xterm.js, built into the binary under their own licences (`server/ide/vendor/NOT
 so the page still loads nothing from the network; `web/ide/` rebuilds them.
 Monaco's workers are files served beside it from `/ide/vendor/`, so the page's
 content security policy needs no `blob:`, `worker-src` or `unsafe-eval`; the
-one addition is `font-src 'self'`, for the editor's icon font. The editor's
-files come to about 14 MB, half of it the TypeScript service, which is loaded
-only when a JavaScript or TypeScript file is opened.
+one addition is `font-src 'self'`, for the editor's icon font. Each worker is
+served with a policy of its own, `default-src 'none'; script-src 'self'`, so
+code that reads untrusted file content can load nothing and call nowhere. The
+components are kept gzipped in the binary and sent that way, about 3.5 MB in
+all; a client that does not accept gzip gets them unpacked. Half of that is
+the TypeScript service, which loads only when a JavaScript or TypeScript file
+is opened.
 Tools, rules, extensions, MCP servers and skills
 come from `GET /v1/capabilities`, which any signed-in user may read. An
 extension's name and events are listed; its command line and environment are

@@ -14,14 +14,16 @@ All notable changes to Abhed are recorded here. The format follows
 - Workbench: a **Search** view across the workspace, with match case, whole
   word and RE2 regular expressions, results grouped by file and opened at the
   line (`GET /v1/sessions/{id}/search`). It reads only what the Explorer shows
-  and passes over the folders `grep` does; it stops at 2,000 results, 100 per
-  file, 20,000 files or five seconds, and says which.
+  and passes over the folders `grep` does; it stops at 2,000 results, 20,000
+  files or five seconds and says which, marks a file cut at 100 matches, and
+  runs at most two at once per session.
 - Workbench: the Explorer makes new files and folders, renames (F2) and
   deletes, from its toolbar and a right-click menu (`POST
   /v1/sessions/{id}/folder`, `/rename`, `/delete`). Each is recorded as the
-  person's own command and held to the bash rules and the sandbox, and every
-  path it touches, everything inside a folder included, to the write rules a
-  save would meet.
+  person's own command and held to the bash rules and the sandbox. Every
+  path it touches, as named and with links followed, and everything inside a
+  folder at its old and new path, must be one the workbench would open and a
+  save to which the write rules allow.
 - Workbench: save all (⌥⌘S / Ctrl Alt S), close the editor tab (⌘W / Ctrl W
   where the browser passes it on), Ctrl \` for the terminal, ⇧⌘F for search,
   the file's path and the cursor above the editor, a prompt before leaving
@@ -96,11 +98,13 @@ All notable changes to Abhed are recorded here. The format follows
   bracket matching, go to line and go to symbol, and in-browser language
   services for JSON, CSS, HTML, JavaScript and TypeScript. Review uses its
   diff editor, side by side or inline, with Accept and Reject on each change.
-  The files under `/ide/vendor/` grow from about 1.4 MB to about 14 MB, half
-  of it the TypeScript worker, which loads only for JavaScript and TypeScript.
-  The workbench's content security policy adds `font-src 'self'` for the
-  editor's icon font; its workers are same-origin files, so no `blob:`,
-  `worker-src` or `unsafe-eval` is needed.
+  The components under `/ide/vendor/` are now kept and sent gzipped, about
+  3.5 MB (14 MB unpacked, for a client without gzip), half of it the
+  TypeScript worker, which loads only for JavaScript and TypeScript. The
+  workbench's content security policy adds `font-src 'self'` for the editor's
+  icon font; its workers are same-origin files, so no `blob:`, `worker-src` or
+  `unsafe-eval` is needed, and each is served with its own
+  `default-src 'none'; script-src 'self'`.
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
 - `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
