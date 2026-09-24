@@ -19,6 +19,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -385,6 +386,11 @@ loop:
 		}
 	}
 	run.cancel()
+	// A shell that exited, by exit or otherwise, takes what it left running in
+	// its session with it.
+	if run.capture != nil && run.cmd.Process != nil {
+		sandbox.EndSession(run.cmd.Process.Pid)
+	}
 	// The last output can still be in flight after the process has gone.
 	// Give the pump a moment to read it before the terminal is closed, then
 	// a moment more for the read to return.

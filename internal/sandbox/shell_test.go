@@ -95,22 +95,35 @@ func TestProcessSandboxShellIsInteractiveAndConfined(t *testing.T) {
 
 // Ending a shell ends the jobs it started in the background. An interactive
 // bash gives each its own process group, so killing the shell alone left them
-// running; it is hung up instead, and hangs its jobs up in turn.
+// running; it is hung up instead, and what is left in its session is killed.
 func TestProcessSandboxShellEndsItsBackgroundJobs(t *testing.T) {
 	requireNetNS(t)
-	ws := workspace(t)
-	shellEndsJobs(t, processSandbox(t, ws, false).(Interactive), ws, false)
+	for _, job := range jobForms {
+		ws := workspace(t)
+		shellEndsJobs(t, processSandbox(t, ws, false).(Interactive), ws, job, false)
+	}
+}
+
+// jobForms are the ways a job can be left running: in the job table, out of
+// it in a subshell, and ignoring the hang-up. None may outlive the shell.
+var jobForms = []string{
+	"(sleep 2; touch late) &",
+	"((sleep 2; touch late) & )",
+	"trap '' HUP; (sleep 2; touch late) &",
 }
 
 func TestNoneShellEndsItsBackgroundJobs(t *testing.T) {
+	for _, job := range jobForms {
+		ws := workspace(t)
+		shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, job, false)
+	}
+	// exit hangs up the jobs in the table; the server ends the rest of the session.
 	ws := workspace(t)
-	shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, false)
-	ws = workspace(t)
-	shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, true)
+	shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, jobForms[0], true)
 }
 
 // byExit ends the shell with exit rather than by cancelling it.
-func shellEndsJobs(t *testing.T, s Interactive, ws string, byExit bool) {
+func shellEndsJobs(t *testing.T, s Interactive, ws, job string, byExit bool) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -120,7 +133,7 @@ func shellEndsJobs(t *testing.T, s Interactive, ws string, byExit bool) {
 		t.Fatal(err)
 	}
 	go func() { _, _ = io.Copy(io.Discard, tty) }()
-	_, _ = tty.Write([]byte("(sleep 2; touch late) &\r"))
+	_, _ = tty.Write([]byte(job + "\r"))
 	started := filepath.Join(ws, "started")
 	_, _ = tty.Write([]byte("touch started\r"))
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
@@ -140,7 +153,7 @@ func shellEndsJobs(t *testing.T, s Interactive, ws string, byExit bool) {
 	_ = tty.Close()
 	time.Sleep(3 * time.Second)
 	if _, err := os.Stat(filepath.Join(ws, "late")); err == nil {
-		t.Fatal("a background job outlived its shell")
+		t.Fatalf("%q outlived its shell", job)
 	}
 }
 
