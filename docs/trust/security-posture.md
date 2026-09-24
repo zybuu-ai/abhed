@@ -66,12 +66,12 @@ deny list and plant a users file, and fail if any succeeds. Container and VM
 tiers keep the workspace mount as configured; mount `.abhed` there read-only
 or leave it out of the mount.
 
-On macOS a command can still see the workspace `.abhed` directory, its file
-names and sizes, and list its folders, so `ls -R`, `find`, `git` and pytest's
-collection walk the workspace as they would anywhere; what the files hold
-cannot be read (`TestProcessSandboxWalksPastHarnessState`). So that `git add
--A` does not stop on a file it cannot read, the sandbox writes a `.gitignore`
-of `*` into the directory when there is none, and that one file is readable.
+On macOS a command can stat the workspace `.abhed` directory and what is in
+it, so `ls -R`, pytest's collection and `git add -A` (with a warning that it
+cannot open the directory) pass it by; it cannot list it or read, write, link
+or clone what it holds (`TestProcessSandboxWalksPastHarnessState`). A walk
+that descends into every folder, such as `find .` or `du`, still reports
+`.abhed` and exits 1. Nothing is written into the workspace to achieve this.
 On Linux bubblewrap mounts an empty directory over it instead.
 
 **A person's terminal is sandboxed; its line checks are best effort.** Each
@@ -191,10 +191,10 @@ bind mount has no route to the host filesystem.
 
 With the network off, a command cannot see the host's network either. On
 Linux the network namespace has only loopback. On the macOS process tier,
-Seatbelt also denies the routing sysctls that list interfaces and addresses
-and the system configuration and network services, so `ifconfig`, `netstat
--rn`, `scutil --nwi` and `ipconfig` fail instead of showing the LAN address or
-a VPN tunnel (`TestProcessSandboxHidesTheHostsNetwork`). What remains visible
+Seatbelt also denies the routing sysctls that list interfaces and addresses,
+routing sockets, and the system configuration and network services, so
+`ifconfig`, `netstat -rn`, `route -n get`, `scutil --nwi` and `ipconfig` fail
+instead of showing the LAN address, the gateway or a VPN tunnel (`TestProcessSandboxHidesTheHostsNetwork`). What remains visible
 on macOS: the hardware ports and their MAC addresses, which come from the I/O
 registry (`networksetup -listallhardwareports`, `ioreg`), and the host name.
 Programs that enumerate interfaces get an error rather than a loopback-only

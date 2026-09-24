@@ -143,7 +143,7 @@ func TestProcessSandboxHidesTheHostsNetwork(t *testing.T) {
 	if err != nil {
 		t.Skipf("the host's interfaces cannot be listed: %v", err)
 	}
-	out, _ := runIn(t, s, ws, "ifconfig -a 2>&1; ip -o addr 2>&1; cat /proc/net/dev 2>&1; netstat -rn 2>&1; echo done")
+	out, _ := runIn(t, s, ws, "ifconfig -a 2>&1; ip -o addr 2>&1; cat /proc/net/dev 2>&1; netstat -rn 2>&1; route -n get default 2>&1; route -n get 10.0.0.1 2>&1; echo done")
 	if !strings.Contains(out, "done") {
 		t.Fatalf("the probe did not run:\n%s", out)
 	}
@@ -161,13 +161,18 @@ func TestProcessSandboxHidesTheHostsNetwork(t *testing.T) {
 			}
 		}
 	}
-	// Ordinary tools still work: a Python that imports socket, git.
+	for _, leak := range []string{"gateway:", "interface:"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("the route to the host's network is visible (%s) with the network off:\n%s", leak, out)
+		}
+	}
+	// Ordinary tools still work: a Python that imports socket, git, ls.
 	if _, err := exec.LookPath("python3"); err == nil {
 		if out, err := runIn(t, s, ws, `python3 -c 'import socket, ssl, uuid; print("py", socket.gethostname() != "")'`); err != nil || !strings.Contains(out, "py True") {
 			t.Errorf("python with the network off: %v\n%s", err, out)
 		}
 	}
-	if out, err := runIn(t, s, ws, "git init -q && git status --short && echo git-ok"); err != nil || !strings.Contains(out, "git-ok") {
+	if out, err := runIn(t, s, ws, "git init -q && git status --short && ls -la >/dev/null && echo git-ok"); err != nil || !strings.Contains(out, "git-ok") {
 		t.Errorf("git with the network off: %v\n%s", err, out)
 	}
 }

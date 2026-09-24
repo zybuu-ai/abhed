@@ -195,16 +195,17 @@ All notable changes to Abhed are recorded here. The format follows
   with a value. `app.WithCommand` now also ignores `hawkeye`, `migrate`,
   `resolve`, `acp` and `secret`, which Main always dispatched itself.
 - On the macOS process tier with the network off, a command could list the
-  host's interfaces, LAN address and VPN tunnels (`ifconfig`, `netstat -rn`,
-  `scutil --nwi`). The sandbox now denies the routing sysctls and the system
-  configuration and network services too, as Linux's network namespace does.
+  host's interfaces, LAN address, gateway and VPN tunnels (`ifconfig`,
+  `netstat -rn`, `route -n get`, `scutil --nwi`). The sandbox now denies the
+  routing sysctls, routing sockets, and the system configuration and network
+  services too, as Linux's network namespace does.
   MAC addresses from the I/O registry and the host name stay visible; the
   security posture says so.
-- On the macOS process tier, `pytest`, `ls -R`, `find .` and other walks of
-  the workspace failed with "Operation not permitted" on `.abhed`. The
-  directory's names and folders are now visible to commands and its files
-  still unreadable and unwritable; the sandbox adds `.abhed/.gitignore` (`*`)
-  when missing so `git add -A` passes over it.
+- On the macOS process tier, `pytest` and `ls -R` in the workspace failed
+  with "Operation not permitted" on `.abhed`. A command may now stat it and
+  what it holds, so they pass it by, as `git add -A` does; it still cannot
+  list it or read or write its files. `find .` and `du` still report it and
+  exit 1.
 - A workbench shell ended by the person, by `exit`, Kill, closing its tab,
   closing the session or going unwatched, is recorded with its exit status and
   not as an error, and the record says how it was closed. Only a shell that
