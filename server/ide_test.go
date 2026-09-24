@@ -210,3 +210,29 @@ func TestIDEVendorServesBothEncodings(t *testing.T) {
 		t.Fatal("revalidation does not follow the encoding")
 	}
 }
+
+// Every component in the binary is a gzip stream that unpacks: a damaged one
+// would fail only for the client that cannot take gzip.
+func TestIDEVendorEveryComponentUnpacks(t *testing.T) {
+	entries, err := ideVendor.ReadDir("ide/vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".gz") {
+			continue
+		}
+		seen++
+		f, ok := vendorAsset(strings.TrimSuffix(e.Name(), ".gz"))
+		if !ok {
+			t.Fatalf("%s is embedded but not served", e.Name())
+		}
+		if plain, _, err := f.unpacked(); err != nil || len(plain) == 0 {
+			t.Errorf("%s does not unpack: %v", e.Name(), err)
+		}
+	}
+	if seen < 10 {
+		t.Fatalf("only %d components embedded", seen)
+	}
+}

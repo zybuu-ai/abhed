@@ -100,8 +100,8 @@ All notable changes to Abhed are recorded here. The format follows
   diff editor, side by side or inline, with Accept and Reject on each change.
   The components under `/ide/vendor/` are now kept and sent gzipped, about
   3.5 MB (14 MB unpacked, for a client without gzip), half of it the
-  TypeScript worker, which loads only for JavaScript and TypeScript. The
-  workbench's content security policy adds `font-src 'self'` for the editor's
+  TypeScript worker, which loads only for JavaScript and TypeScript; the
+  binary grows by about 2.4 MB. The workbench's content security policy adds `font-src 'self'` for the editor's
   icon font; its workers are same-origin files, so no `blob:`, `worker-src` or
   `unsafe-eval` is needed, and each is served with its own
   `default-src 'none'; script-src 'self'`.

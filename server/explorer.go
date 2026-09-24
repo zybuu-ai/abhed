@@ -92,12 +92,7 @@ func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 		}
 		return explorerPlan{
 			command: "mv -n -- " + shellQuote(fromAbs) + " " + shellQuote(toAbs), description: "renamed in the explorer", result: to,
-			// mv -n succeeds without moving when something took the name first.
-			done: func() bool {
-				_, gone := os.Lstat(fromAbs)
-				_, there := os.Lstat(toAbs)
-				return gone != nil && there == nil
-			},
+			done: func() bool { return moved(info, fromAbs, toAbs) },
 		}, true
 	})
 }
@@ -290,6 +285,17 @@ func (x *explorerCall) contents(rel string, fn func(sub string, dir bool) bool) 
 		writeViewError(x.w, errNotInView)
 	}
 	return false
+}
+
+// moved reports whether the entry that was at from is now at to. mv -n
+// succeeds without moving when something took the name first, and a folder
+// that did would otherwise pass for the moved one.
+func moved(before os.FileInfo, from, to string) bool {
+	if _, err := os.Lstat(from); err == nil {
+		return false
+	}
+	after, err := os.Lstat(to)
+	return err == nil && os.SameFile(before, after)
 }
 
 // shellQuote makes one word of s for /bin/sh, whatever it contains.

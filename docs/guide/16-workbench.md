@@ -116,14 +116,13 @@ Panels resize by dragging the edges, and the layout is remembered per browser.
 
 ## The editor
 
-The editor is Monaco, the editor engine behind the most widely used desktop
-code editor, with its default keybindings. Multiple cursors (⌥-click, ⌘D,
-⌥⌘↑/↓), the minimap, find and replace, folding, bracket matching and
-colouring, sticky scroll, and syntax highlighting for some eighty languages
-all work as they do there. JSON, CSS, HTML, JavaScript and TypeScript also get
-completion, diagnostics and the symbol outline from language services that run
-in the browser. The path of the open file is shown above it, with the cursor's
-line and column.
+The editor is Monaco, the editor component of Visual Studio Code (MIT), with
+its default keybindings. Multiple cursors (⌥-click, ⌘D, ⌥⌘↑/↓), the minimap,
+find and replace, folding, bracket matching and colouring, sticky scroll, and
+syntax highlighting for some eighty languages all work as they do there. JSON,
+CSS, HTML, JavaScript and TypeScript also get completion, diagnostics and the
+symbol outline from language services that run in the browser. The path of the
+open file is shown above it, with the cursor's line and column.
 
 Each tab keeps its own undo history, cursor and scroll. A tab with unsaved
 edits is marked, closing it takes a second click or keypress, and the page asks
@@ -168,22 +167,23 @@ everything in a file the session created deletes the file, as the Explorer
 does.
 
 **Explorer.** A new file is a save of an empty file, refused if the name is
-taken. New folder, rename and delete are each one command, `mkdir -p`,
-`mv -n` or `rm`, run through the same call as a line typed into the terminal,
-so the bash rules, the sandbox and the record apply to it. Before it runs,
-every path it touches must be one the workbench would open, which rules out
-`.abhed/`, `.git/` and anything a read rule withholds, and one a save to which
-would not be refused by a write rule. Each path is judged as named and with
-its folder's links followed, since that is where the command acts. For a
-folder, the same holds for everything inside it, up to 5,000 entries, and a
-rename judges each entry at its old path and at its new one: a folder cannot
-be moved or deleted if anything in it could not be, and a read-denied file
-cannot reappear under another name. Rename never replaces what is already at
-the new name, and deleting a link removes the link, not what it points to.
-The checks and the command run together, with no other action of yours in
-between, and the command finishes even if the page is closed; an edit the
-agent makes at that moment is not held back, as it is not for a command in
-the terminal.
+taken. New folder, rename and delete are each one command, `mkdir -p`, `mv -n`
+or `rm`, run through the same call as a line typed into the terminal, so the
+bash rules, the sandbox and the record apply to it. Before it runs, every path
+it touches must be one the workbench would open, which rules out `.abhed/`,
+`.git/` and anything a read rule withholds, and one a save to which would not
+be refused by a write rule. Each path is judged as named and with its folder's
+links followed, since that is where the command acts. For a folder, the same
+holds for everything inside it, up to 5,000 entries, and a rename judges each
+entry at its old path and at its new one: a folder cannot be moved or deleted
+if anything in it could not be, and a read-denied file cannot reappear under
+another name. Rename never replaces what is already at the new name, and
+deleting a link removes the link, not what it points to. A link that leads
+outside the workspace is not shown, so removing one is done from the terminal.
+The checks and the command run together, with no other action of yours in this
+session in between, and the command finishes even if the page is closed; an
+edit the agent makes at that moment is not held back, as it is not for a
+command in the terminal.
 
 **Search.** Search reads what the Explorer shows and nothing more: a folder or
 file a read rule withholds is not opened, and neither is `.abhed/`, `.git/` or

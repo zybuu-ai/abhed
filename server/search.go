@@ -100,12 +100,18 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 	// A search can take seconds of CPU; a session gets a couple at a time.
 	n, _ := s.searching.LoadOrStore(r.PathValue("id"), new(atomic.Int32))
 	inFlight := n.(*atomic.Int32)
+	// An idle counter is dropped, so an ended session leaves none behind.
+	release := func() {
+		if inFlight.Add(-1) == 0 {
+			s.searching.CompareAndDelete(r.PathValue("id"), n)
+		}
+	}
 	if inFlight.Add(1) > maxSearchesInFlight {
-		inFlight.Add(-1)
+		release()
 		WriteError(w, http.StatusTooManyRequests, "a search is already running for this session; wait for it to finish")
 		return
 	}
-	defer inFlight.Add(-1)
+	defer release()
 
 	ctx, cancel := context.WithTimeout(r.Context(), searchDeadline)
 	defer cancel()

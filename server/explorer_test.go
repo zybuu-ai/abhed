@@ -209,3 +209,30 @@ func TestExplorerRefusesAFolderTooLargeToCheck(t *testing.T) {
 		t.Fatal("a folder too large to check was deleted")
 	}
 }
+
+// A rename that lost the race for its new name is a failure, even though the
+// old name is gone and something now stands at the new one: mv -n put the
+// entry inside the folder that took the name.
+func TestExplorerRenameCountsOnlyTheEntryItMoved(t *testing.T) {
+	dir := t.TempDir()
+	from, to := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	if err := os.Mkdir(from, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Lstat(from)
+	if err := os.Mkdir(to, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(from, filepath.Join(to, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if moved(before, from, to) {
+		t.Fatal("a folder that took the name first passed for the moved one")
+	}
+	if err := os.Rename(filepath.Join(to, "a"), filepath.Join(dir, "c")); err != nil {
+		t.Fatal(err)
+	}
+	if !moved(before, from, filepath.Join(dir, "c")) {
+		t.Fatal("a real move was not recognised")
+	}
+}

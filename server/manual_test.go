@@ -27,7 +27,7 @@ func manualBench(t *testing.T, edit func(*config.Config)) *workbench {
 		Workspace: dir, Config: cfg, Adapter: stubAdapter{},
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}),
 	})
-	wb := &workbench{t: t, h: s.Handler(), workspace: dir}
+	wb := &workbench{t: t, s: s, h: s.Handler(), workspace: dir}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/sessions", strings.NewReader(`{"prompt":"work"}`))
 	req.Header.Set("X-Abhed-Tenant", "acme")

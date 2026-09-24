@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,5 +143,23 @@ func TestSearchSaysWhatCutItShort(t *testing.T) {
 	searchDeadline = 0
 	if _, r := wb.search("hit", ""); !r.Truncated || r.Why != "time" {
 		t.Fatalf("time limit: truncated=%v why=%q", r.Truncated, r.Why)
+	}
+}
+
+// A session runs a bounded number of searches at once; one more is turned away.
+func TestSearchLimitsConcurrentSearches(t *testing.T) {
+	wb := newWorkbench(t, nil)
+	wb.write("a.txt", "hello\n")
+	n, _ := wb.s.searching.LoadOrStore(wb.session, new(atomic.Int32))
+	n.(*atomic.Int32).Add(maxSearchesInFlight)
+	if code, _ := wb.search("hello", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("search beyond the limit = %d, want 429", code)
+	}
+	n.(*atomic.Int32).Add(-maxSearchesInFlight)
+	if code, _ := wb.search("hello", ""); code != http.StatusOK {
+		t.Fatalf("search after the others finished = %d", code)
+	}
+	if _, left := wb.s.searching.Load(wb.session); left {
+		t.Fatal("an idle search counter was kept")
 	}
 }
