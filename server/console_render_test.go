@@ -96,7 +96,11 @@ func runConsoleCases(t *testing.T, set, harness, casesFile string) (string, erro
 	}
 
 	dir := t.TempDir()
-	extracted, err := exec.Command(py, "testdata/extract.py", "console.go", set).Output()
+	src := "console.go"
+	if strings.HasPrefix(set, "ide") {
+		src = "ide.html"
+	}
+	extracted, err := exec.Command(py, "testdata/extract.py", src, set).Output()
 	if err != nil {
 		t.Fatalf("extract %s: %v", set, err)
 	}

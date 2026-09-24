@@ -3,6 +3,7 @@
 #
 #   extract.py console.go             render() and its helpers
 #   extract.py console.go workbench   what draws a file and a diff
+#   extract.py ide.html ide-md        the workbench's markdown renderer
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
 which = sys.argv[2] if len(sys.argv) > 2 else 'render'
@@ -23,6 +24,8 @@ sets = {
           'function shortPath(p){','function kv(k, v){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
+    # From ide.html: the markdown renderer for replies.
+    'ide-md': ['function mdInline(parent, s){','function md(text){'],
 }
 seen=set(); out=[]
 for fn in sets[which]:
