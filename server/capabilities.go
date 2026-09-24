@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"embed"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,50 +18,123 @@ var ideHTML string
 
 // The editor and terminal components are built into the binary, under their
 // own licences (ide/vendor/NOTICE), so the page still loads nothing from anywhere.
+// They are stored gzipped, as sent to nearly every browser; the rare client
+// that does not take gzip gets them unpacked once and kept.
 //
-//go:embed ide/vendor
+//go:embed ide/vendor/*.gz ide/vendor/NOTICE
 var ideVendor embed.FS
 
-var vendorETags sync.Map
+// vendorFile is one component in both encodings, each with its own ETag.
+type vendorFile struct {
+	gz       []byte
+	gzTag    string
+	once     sync.Once
+	plain    []byte
+	plainTag string
+	err      error
+}
 
-// vendorETag hashes an embedded file once; the content never changes at run time.
-func vendorETag(name string, data []byte) string {
-	if v, ok := vendorETags.Load(name); ok {
-		return v.(string)
+var vendorFiles sync.Map
+
+func etagOf(data []byte, suffix string) string {
+	return fmt.Sprintf(`"%x%s"`, sha256.Sum256(data), suffix)
+}
+
+// vendorAsset finds a component by the name the page asks for.
+func vendorAsset(name string) (*vendorFile, bool) {
+	if f, ok := vendorFiles.Load(name); ok {
+		return f.(*vendorFile), true
 	}
-	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(data))
-	vendorETags.Store(name, etag)
-	return etag
+	f := &vendorFile{}
+	if gz, err := ideVendor.ReadFile("ide/vendor/" + name + ".gz"); err == nil {
+		f.gz, f.gzTag = gz, etagOf(gz, "-gz")
+	} else if name == "NOTICE" {
+		plain, err := ideVendor.ReadFile("ide/vendor/NOTICE")
+		if err != nil {
+			return nil, false
+		}
+		f.once.Do(func() { f.plain, f.plainTag = plain, etagOf(plain, "") })
+	} else {
+		return nil, false
+	}
+	got, _ := vendorFiles.LoadOrStore(name, f)
+	return got.(*vendorFile), true
+}
+
+// unpacked returns the component without its gzip encoding.
+func (f *vendorFile) unpacked() ([]byte, string, error) {
+	f.once.Do(func() {
+		zr, err := gzip.NewReader(bytes.NewReader(f.gz))
+		if err != nil {
+			f.err = err
+			return
+		}
+		f.plain, f.err = io.ReadAll(zr)
+		f.plainTag = etagOf(f.plain, "")
+	})
+	return f.plain, f.plainTag, f.err
+}
+
+// acceptsGzip reads Accept-Encoding for gzip with a non-zero weight.
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		coding, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if !strings.EqualFold(strings.TrimSpace(coding), "gzip") {
+			continue
+		}
+		q := strings.ReplaceAll(strings.TrimSpace(params), " ", "")
+		return q != "q=0" && q != "q=0.0" && q != "q=0.00" && q != "q=0.000"
+	}
+	return false
 }
 
 func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
-	data, err := ideVendor.ReadFile("ide/vendor/" + name)
-	if err != nil {
+	f, ok := vendorAsset(name)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	h := w.Header()
 	switch {
 	case strings.HasSuffix(name, ".js"):
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		h.Set("Content-Type", "text/javascript; charset=utf-8")
 	case strings.HasSuffix(name, ".css"):
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		h.Set("Content-Type", "text/css; charset=utf-8")
 	case strings.HasSuffix(name, ".ttf"):
-		w.Header().Set("Content-Type", "font/ttf")
+		h.Set("Content-Type", "font/ttf")
 	default:
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		h.Set("Content-Type", "text/plain; charset=utf-8")
 	}
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if strings.HasSuffix(name, ".worker.js") {
+		// A worker takes its policy from its own response, not the page's. These
+		// parse untrusted file content, so they may load nothing and call nowhere.
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'")
+	}
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Vary", "Accept-Encoding")
 	// Revalidated on every load, so an upgrade never runs a stale editor
 	// against a new page; the ETag makes the check a 304.
-	etag := vendorETag(name, data)
-	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "private, no-cache")
+	h.Set("Cache-Control", "private, no-cache")
+	var body []byte
+	var etag string
+	if f.gz != nil && acceptsGzip(r) {
+		body, etag = f.gz, f.gzTag
+		h.Set("Content-Encoding", "gzip")
+	} else {
+		plain, tag, err := f.unpacked()
+		if err != nil {
+			http.Error(w, "the component is damaged", http.StatusInternalServerError)
+			return
+		}
+		body, etag = plain, tag
+	}
+	h.Set("ETag", etag)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	_, _ = w.Write(data)
+	_, _ = w.Write(body)
 }
 
 // serveIDE serves the workbench: the agent beside the code it is changing.

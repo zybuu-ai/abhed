@@ -1,6 +1,7 @@
 import { build } from "esbuild";
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,13 @@ const copies = [
 ];
 for (const [src, dst] of copies) {
   copyFileSync(join(here, "node_modules", src), join(out, dst));
+}
+
+// Only the gzipped files are kept and embedded: the server sends them as they
+// are, and unpacks one for a client that does not take gzip.
+for (const f of readdirSync(out)) {
+  writeFileSync(join(out, f + ".gz"), gzipSync(readFileSync(join(out, f)), { level: 9 }));
+  rmSync(join(out, f));
 }
 
 // NOTICE lists every installed package, direct or transitive, that esbuild
