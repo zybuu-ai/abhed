@@ -813,3 +813,52 @@ func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
+
+// A live workbench session has no end yet, and its report does not say it lacks one.
+func TestLiveSessionReportHasNoMissingEnd(t *testing.T) {
+	wb := shellBench(t, nil)
+	if body := wb.get("acme", "hawkeye").Body.String(); strings.Contains(body, `"no-end"`) {
+		t.Fatalf("a live session's report says it has no end: %s", body)
+	}
+}
+
+// A shell the person ends, by exit or by closing it, ends normally: its
+// status is recorded, and it is not an error.
+func TestShellEndIsNotAnError(t *testing.T) {
+	for _, byExit := range []bool{false, true} {
+		wb := shellBench(t, nil)
+		start := wb.startShell()
+		end := step{do: func(string) {
+			if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+				t.Errorf("kill: %d", rec.Code)
+			}
+		}}
+		if byExit {
+			end = step{keys: "exit 3\r", nowait: true}
+		}
+		wb.drive(start.ID, end)
+		var obs *agent.Observation
+		deadline := time.Now().Add(3 * time.Second)
+		for obs == nil && time.Now().Before(deadline) {
+			for _, e := range wb.events() {
+				var o agent.Observation
+				if e.Type == agent.EvObservation && json.Unmarshal(e.Payload, &o) == nil && o.CallID == start.ID {
+					obs = &o
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		switch {
+		case obs == nil:
+			t.Fatalf("exit=%v: the shell's end is not recorded", byExit)
+		case obs.IsError || obs.ExitCode == nil:
+			t.Fatalf("exit=%v: the shell's end is recorded as an error: %+v", byExit, obs)
+		case byExit && *obs.ExitCode != 3:
+			t.Fatalf("exit 3 recorded as %d", *obs.ExitCode)
+		case !byExit && *obs.ExitCode <= 128:
+			t.Fatalf("a shell ended by a signal recorded exit %d, not 128 plus the signal", *obs.ExitCode)
+		case !byExit && !strings.Contains(obs.Content, "closed from the workbench"):
+			t.Fatalf("a closed shell does not say so: %q", obs.Content)
+		}
+	}
+}

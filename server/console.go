@@ -141,6 +141,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .who-chip::before{content:"";width:5px;height:5px;border-radius:50%;
   background:var(--done);flex:none}
 .top a.ghost{text-decoration:none;line-height:1.6}
+.wblink{flex:none;white-space:nowrap}
 
 /* ---------------------------------------------------------------- shell */
 .shell{display:grid;grid-template-columns:var(--rail) minmax(0,1fr) 0;
@@ -601,6 +602,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
        align-items:baseline;gap:8px" title="Overview"><b>Abhed</b><span
        id="ver">console</span></a><!--HOME-->
   </div>
+  <!-- Outside #whobox, which is removed where there is no sign-in. -->
+  <a class="ghost wblink" id="wblink" href="/ide" title="Editor, terminal and agent side by side">Workbench</a>
   <div class="stat"><span class="led" id="led"></span><span id="health">connecting</span></div>
   <div class="spacer"></div>
   <div class="stat">model
@@ -610,7 +613,6 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   <div class="stat">active <b id="active">0</b></div>
   <div class="stat" id="whobox" hidden>
     <span class="who-chip" id="who"></span>
-    <a class="ghost" href="/ide" title="Editor, terminal and agent side by side">Workbench</a>
     <a class="ghost" id="adminlink" href="/admin" hidden
        title="Who has access, and who no longer does">Admin</a>
     <a class="ghost" id="pwlink" href="/account" hidden title="Change your password">Password</a>

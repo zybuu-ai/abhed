@@ -116,8 +116,12 @@ func (s *Process) seatbeltProfile() string {
 	// The harness's own state is out of reach for commands, as it is for the
 	// file tools: the later rule wins, so this holds inside the workspace allow.
 	b.WriteString("\n;; Abhed's own configuration, users and keys.\n")
-	fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(s.policy.Workspace, stateDir))
-	fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(s.policy.Workspace, stateDir))
+	state := filepath.Join(s.policy.Workspace, stateDir)
+	fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", state)
+	fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", state)
+	// A stat of it succeeds, so pytest, ls -R and git pass it by; listing
+	// it and reading what it holds do not.
+	fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
 	if home, err := os.UserHomeDir(); err == nil {
 		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(home, stateDir))
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(home, stateDir))
@@ -128,6 +132,11 @@ func (s *Process) seatbeltProfile() string {
 	if !s.policy.AllowNetwork {
 		b.WriteString("\n;; Egress denied: a successful injection has no channel out.\n")
 		b.WriteString("(deny network*)\n")
+		// Nor a view of the host's network: its interfaces, addresses and
+		// routes, as bwrap's --unshare-net gives on Linux.
+		b.WriteString("(deny sysctl-read (sysctl-name-prefix \"net.route\"))\n")
+		b.WriteString("(deny system-socket (socket-domain AF_ROUTE))\n")
+		b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.SystemConfiguration\") (global-name-prefix \"com.apple.network\"))\n")
 	}
 
 	b.WriteString("\n;; Never writable, regardless of workspace location.\n")

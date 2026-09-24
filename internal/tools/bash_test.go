@@ -35,6 +35,16 @@ func TestBashNonZeroExitIsNotAnError(t *testing.T) {
 	}
 }
 
+// A command ended by a signal reports what a shell would: 128 plus its number,
+// as the workbench terminal does.
+func TestBashSignalExitIsTheShellsStatus(t *testing.T) {
+	s, _ := setup(t)
+	res := run(t, Bash{}, s, bashArgs{Command: "kill -9 $$", Description: "die by a signal"})
+	if res.ExitCode == nil || *res.ExitCode != 137 {
+		t.Fatalf("expected exit 137, got %v: %s", res.ExitCode, res.Content)
+	}
+}
+
 func TestBashCapturesStderr(t *testing.T) {
 	s, _ := setup(t)
 	res := run(t, Bash{}, s, bashArgs{Command: "echo oops >&2", Description: "stderr"})

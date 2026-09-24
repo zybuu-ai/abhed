@@ -81,6 +81,8 @@ type Call struct {
 	Step     string `json:"step,omitempty"`
 	By       string `json:"by,omitempty"` // policy | reviewer | user
 	Reason   string `json:"reason,omitempty"`
+	// Actor is who made the call: the model ("agent") or a person ("user").
+	Actor string `json:"actor,omitempty"`
 
 	Ran        bool   `json:"ran"`
 	IsError    bool   `json:"is_error"`

@@ -155,11 +155,31 @@ func OnServe(h ServeHook) Option {
 	return func(a *App) { a.serveHooks = append(a.serveHooks, h) }
 }
 
-// builtinCommands are the subcommands Main dispatches itself.
-var builtinCommands = map[string]bool{
-	"init": true, "doctor": true, "providers": true, "rpc": true,
-	"user": true, "index": true, "eval": true, "serve": true,
+// subcommands are the ones Main dispatches itself, as its usage lists them.
+var subcommands = []struct{ name, about string }{
+	{"serve", "run the server: the console, the workbench and the API (-addr)"},
+	{"init", "write a starter .abhed/config.json in the workspace"},
+	{"doctor", "check the configuration, the model endpoint and the sandbox"},
+	{"providers", "list the model provider types this build supports"},
+	{"user", "manage local accounts: add, list, passwd, remove, import"},
+	{"secret", "manage stored secrets: set, list, rm"},
+	{"hawkeye", "report on a session, from its id or an exported events file"},
+	{"migrate", "apply the database schema as the owning role"},
+	{"resolve", "work on a forge issue in its own branch and open a pull request"},
+	{"acp", "speak the Agent Client Protocol on stdio, for editors"},
+	{"rpc", "take line-delimited JSON requests on stdin, answer on stdout"},
+	{"index", "build the workspace's search index ahead of a session"},
+	{"eval", "run the evaluation corpus against the configured model"},
 }
+
+// builtinCommands are the subcommands an edition cannot replace.
+var builtinCommands = func() map[string]bool {
+	m := map[string]bool{}
+	for _, c := range subcommands {
+		m[c.name] = true
+	}
+	return m
+}()
 
 // paidFeatures maps each gated feature to the tier that includes it.
 var paidFeatures = map[string]string{

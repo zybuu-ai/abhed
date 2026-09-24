@@ -75,6 +75,17 @@ and none of them is a model's opinion.
 | `cold-cache` | info | under 20% of the prompt was cached across five or more turns whose provider reported a cache figure |
 | `no-end` | info | the record has no terminal event |
 
+Calls a person made by hand in the workbench (`actor: user`: saves, commands,
+shells, Explorer operations) are in the report as theirs, with the `actor`
+field on each call. They count in the totals and the policy figures and can
+raise `sensitive-path`, `denied` and `secret-redacted`, which are about what
+was reached, refused or exposed whoever did it. They never raise the findings
+about the model's behaviour: `repeated-failure`, `slow-tool`, `truncated` and
+`borrowed-host`. `no-end` is not raised for a session still running on the
+server that makes the report. The command line reads only the record, which
+cannot tell a shell still open from a server that stopped with one open, so
+there `no-end` is still raised and says a shell was open.
+
 `borrowed-host` is the one worth understanding. All tool output is untrusted,
 and an injected instruction usually has to name somewhere to send things. A
 call to a host that only tool output supplied is that shape — and it is also

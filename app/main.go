@@ -54,6 +54,26 @@ import (
 	"golang.org/x/term"
 )
 
+// usage prints the synopsis, the subcommands and then the flags.
+func (a *App) usage(fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprintf(w, "Usage: abhed [flags] [command [args]]\n\n")
+	fmt.Fprintf(w, "With no command, abhed opens an interactive session in the workspace;\n-p runs one prompt headless and exits.\n\nCommands:\n")
+	for _, c := range subcommands {
+		fmt.Fprintf(w, "  %-10s %s\n", c.name, c.about)
+	}
+	var own []string
+	for name := range a.commands {
+		own = append(own, name)
+	}
+	sort.Strings(own)
+	for _, name := range own {
+		fmt.Fprintf(w, "  %-10s a command of this edition\n", name)
+	}
+	fmt.Fprintf(w, "\nFlags:\n")
+	fs.PrintDefaults()
+}
+
 // Main runs the command with the given arguments and options and returns
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
@@ -70,8 +90,9 @@ func Main(args []string, opts ...Option) int {
 		allow      = fs.String("allow", "", "comma-separated allow rules, e.g. 'bash(go test*)'")
 		deny       = fs.String("deny", "", "comma-separated deny rules")
 		showVer    = fs.Bool("version", false, "print version and exit")
-		listenAddr = fs.String("addr", ":8080", "listen address for `abhed serve`")
+		listenAddr = fs.String("addr", ":8080", "listen address for abhed serve")
 	)
+	fs.Usage = func() { a.usage(fs) }
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -2209,6 +2230,7 @@ func (a *App) doctor(workspace string) int {
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
 	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
+	unknown := printUnknown(os.Stdout, cfg)
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
 		label := string(sb.Tier())
 		if sb.Tier() == sandbox.TierNone {
@@ -2395,8 +2417,30 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("ok\n  ran a command under the %s tier\n", sb.Tier())
 	}
 
-	fmt.Println("\nReady.")
+	return doctorVerdict(os.Stdout, unknown)
+}
+
+// doctorVerdict ends a doctor run whose checks all passed: ready, unless the
+// configuration has keys nothing reads.
+func doctorVerdict(w io.Writer, unknown bool) int {
+	if unknown {
+		fmt.Fprintln(w, "\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
+		return 1
+	}
+	fmt.Fprintln(w, "\nReady.")
 	return 0
+}
+
+// printUnknown lists the configuration's unknown keys and reports whether there were any.
+func printUnknown(w io.Writer, cfg config.Config) bool {
+	for i, u := range cfg.Unknown {
+		label := "            "
+		if i == 0 {
+			label = "config      "
+		}
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, u)
+	}
+	return len(cfg.Unknown) > 0
 }
 
 func resolveWorkspace(dir string) (string, error) {

@@ -196,7 +196,6 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .tempty{margin:14px 16px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .tempty button{height:26px;padding:0 12px;border-radius:5px;background:var(--accent);color:#fff;font-weight:600}
 .cmd .who{color:var(--muted);font-size:11px;margin-left:6px}
-.call .mine{flex:none;color:var(--muted);font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 5px}
 .diff{font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
 .diff div{padding:0 16px;white-space:pre;tab-size:4}
 .diff .add{background:var(--add-bg);color:var(--add)}.diff .del{background:var(--del-bg);color:var(--del)}
@@ -483,6 +482,7 @@ async function api(path, opts){
 let current = null, live = false, es = null, lastSeq = 0;
 let caps = null, streaming = null, streamBody = null, todoNode = null, thinkBlock = null;
 const calls = new Map();            // call_id -> {node, res, tool, subject, args, out}
+const mineCalls = new Set();        // the person's own calls, kept out of the chat
 const queued = new Map();           // queue id -> bubble waiting for the loop to read it
 const sent = [];                    // bubbles shown on send, not yet matched to their user.message
 const tabs = [];                    // {id, kind:'file'|'diff', path, label}
@@ -1042,7 +1042,7 @@ function drawCaps(){
   line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
   line('deny', c.permissions.deny.join('   ') || '—'); line('ask', c.permissions.ask.join('   ') || '—'); line('allow', c.permissions.allow.join('   ') || '—');
   t.appendChild(r);
-  t.appendChild(el('div', 'empty', 'A deny rule holds in every mode, including auto. Rules are set in the server configuration.'));
+  t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
   [['builtin','Built in'],['mcp','From MCP servers'],['skill','Skills']].forEach(([k, title]) => {
     if(!by[k].length) return;
@@ -1122,7 +1122,7 @@ function setLive(on){
 function resetSession(){
   if(es){ es.close(); es = null; }
   cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
-  current = null; live = false; lastSeq = 0; streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear();
+  current = null; live = false; lastSeq = 0; streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
   queued.clear(); sent.length = 0; waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
@@ -1390,12 +1390,14 @@ function render(ev){
     { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); }
     break;
   case 'action.requested': {
-    const mine = ev.actor === 'user'; if(!mine){ endThinking(at); streaming = null; streamBody = null; }
+    // The chat is the conversation with the agent: what the person did by
+    // hand is in Events, their terminal and the changes view.
+    if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
+    endThinking(at); streaming = null; streamBody = null;
     const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
-    if(mine) s.appendChild(el('span', 'mine', 'you'));
     s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
-    const c = {node:d, res, tool:p.tool, subject:subj, mine, args:p.args, out:null, drawn:0};
+    const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
     // Arguments and output are drawn when the call is opened, so a session of
     // hundreds of calls keeps only their headers in the page.
     d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
@@ -1403,14 +1405,14 @@ function render(ev){
     if(p.tool === 'todo' && p.args && Array.isArray(p.args.items)) drawPlan(p.args.items);
     if(p.requires_approval && live){ waiting(false); askApproval(p); }
     break; }
-  case 'action.approved': { const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : p.by === 'user' ? ' · your own action' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live && !(c && c.mine)) waiting('Running ' + (c ? c.tool : 'tool')); break; }
-  case 'action.denied': { const c = calls.get(p.call_id);
+  case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
+    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
+    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? c.tool : 'tool')); break; }
+  case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }
     settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
   case 'observation': {
-    const c = calls.get(p.call_id), mine = !!(c && c.mine); const body = p.content || '';
+    const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
       c.out = body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''); if(c.node.open) fillCall(c); }
     if(p.tool === 'bash') logTerminal(c ? c.subject : '', p, mine ? 'you' : 'agent');

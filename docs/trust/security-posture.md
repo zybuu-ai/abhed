@@ -66,6 +66,14 @@ deny list and plant a users file, and fail if any succeeds. Container and VM
 tiers keep the workspace mount as configured; mount `.abhed` there read-only
 or leave it out of the mount.
 
+On macOS a command can stat the workspace `.abhed` directory and what is in
+it, so `ls -R`, pytest's collection and `git add -A` (with a warning that it
+cannot open the directory) pass it by; it cannot list it or read, write, link
+or clone what it holds (`TestProcessSandboxWalksPastHarnessState`). A walk
+that descends into every folder, such as `find .` or `du`, still reports
+`.abhed` and exits 1. Nothing is written into the workspace to achieve this.
+On Linux bubblewrap mounts an empty directory over it instead.
+
 **A person's terminal is sandboxed; its line checks are best effort.** Each
 tab of the `/ide` terminal is, by default, one interactive `bash` started
 through the same sandbox backend as the agent's commands (`Shell` in
@@ -149,7 +157,8 @@ exported, and nothing contains it.
 
 `sandbox.terminal: "lines"` returns the terminal to one policy-checked `bash`
 call per line with no shell state, and a managed policy with deny rules for
-`bash` gets that mode automatically. Even then a rule checks the line, not what
+`bash` or for every tool (`*`), or with a policy hook, gets that mode
+automatically. Even then a rule checks the line, not what
 a script the line runs does. On the `none` tier the shell runs on the host, and
 the terminal banner and status bar say so.
 
@@ -179,6 +188,18 @@ backend — the Linux run needs a privileged CI job, since a hosted runner
 cannot unshare a network namespace — per `docs/architecture/03-security.md`
 §7), and a containerised server with no
 bind mount has no route to the host filesystem.
+
+With the network off, a command cannot see the host's network either. On
+Linux the network namespace has only loopback. On the macOS process tier,
+Seatbelt also denies the routing sysctls that list interfaces and addresses,
+routing sockets, and the system configuration and network services, so
+`ifconfig`, `netstat -rn`, `route -n get`, `scutil --nwi` and `ipconfig` fail
+instead of showing the LAN address, the gateway or a VPN tunnel (`TestProcessSandboxHidesTheHostsNetwork`). What remains visible
+on macOS: the hardware ports and their MAC addresses, which come from the I/O
+registry (`networksetup -listallhardwareports`, `ioreg`), and the host name.
+Programs that enumerate interfaces get an error rather than a loopback-only
+list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
+pytest are unaffected.
 
 **`web_search`, when enabled**, is the one narrow, structured exception: a Go
 tool in the server process makes the request, not the sandboxed shell, so a

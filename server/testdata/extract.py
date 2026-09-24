@@ -4,6 +4,7 @@
 #   extract.py console.go             render() and its helpers
 #   extract.py console.go workbench   what draws a file and a diff
 #   extract.py ide.html ide-md        the workbench's markdown renderer
+#   extract.py ide.html ide-render    the workbench's chat render()
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
 which = sys.argv[2] if len(sys.argv) > 2 else 'render'
@@ -26,6 +27,7 @@ sets = {
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
+    'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
 }
 seen=set(); out=[]
 for fn in sets[which]:

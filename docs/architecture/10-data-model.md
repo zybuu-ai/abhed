@@ -146,7 +146,7 @@ Wire format:
 ```json
 {"id":"01J...","seq":42,"type":"action.requested","actor":"agent","trust":"trusted",
  "payload":{"tool":"edit","args":{"path":"/w/auth.go","old_string":"...","new_string":"..."},
-            "requires_approval":true,"reason":"mutating tool in default mode"}}
+            "requires_approval":true,"reason":"changing a file needs approval in default mode"}}
 ```
 
 `Last-Event-ID` resumption is what makes `/resume` and reconnect-after-network-drop work.

@@ -8,6 +8,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `hawkeye.AnalyzeWith` and `hawkeye.Options`, for what the caller knows
+  beyond the record (`Live`: the session is still running there), and
+  `hawkeye.Call.Actor` (`actor` in the JSON report): whether the model or a
+  person made the call. `Analyze` is unchanged.
+- `tools.ExitStatus`, a process's exit code with a signal death given as 128
+  plus the signal's number.
+- A configuration key that nothing reads is reported: it is still ignored, so
+  every configuration that loaded before still loads, but each one is written
+  to standard error once, with its file, its JSON path and, when a known key
+  is close, the one probably meant (`model.provider` → `model.default`).
+  `abhed doctor` lists them and fails. Keys starting with `_` or `$`
+  (`_comment`, `$schema`) are annotations and never reported; one in the
+  managed file says so. `config.Config.Unknown` carries them.
 - `GET /account`, where a local-accounts user changes their own password, and
   `switch_url` and `password_url` in `/v1/whoami`, naming the routes this
   deployment has for switching user and changing a password.
@@ -87,8 +100,17 @@ All notable changes to Abhed are recorded here. The format follows
   new `terminal.input` event. The docs say plainly that the sandbox is the
   boundary and the line checks are best effort. `sandbox.terminal: "lines"`
   keeps the one-checked-command-per-line terminal, which a managed policy
-  with `bash` deny rules also gets. A page reload reattaches to its shells; a
+  also gets when it has deny rules for `bash` or for every tool (`*`), or a
+  policy hook such as an extension. A page reload reattaches to its shells; a
   shell nobody watches ends after 30 minutes (`sandbox.terminal_idle_minutes`).
+  When a shell ends, everything still running in its process session is
+  stopped and killed, pass after pass, including jobs started with `nohup`,
+  `disown` or `trap '' HUP`; a process that starts a session of its own
+  escapes and runs, within the sandbox, until it ends. If the sweep cannot
+  run, the server logs a warning (`the shell's session was not swept`) with
+  the session, the terminal and the reason. On the `none` and `process` tiers
+  a shell runs as the server's user and shares its process limit, so a fork
+  bomb there can exhaust it for the server too.
 - A session can be opened without a prompt (`POST /v1/sessions` with
   `"workbench": true`). The workbench opens one, so the terminal works as soon
   as the page loads; the first message goes to it. It records
@@ -97,13 +119,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The reason given when a call is put to a person is accurate for the tool:
+  "running a command needs approval in default mode" for `bash`, "changing a
+  file needs approval …" for `edit` and `write`, where every such call read
+  "mutating tool requires approval". What is allowed, asked and denied is
+  unchanged; only the `reason` text differs.
 - **Security-relevant default:** the workbench terminal no longer judges each
   line before it runs. After an upgrade it is an interactive shell, bounded by
   the sandbox, in which `bash` deny rules only screen each line as typed and
   miss what the shell expands, recalls or runs from a script. To keep a policy
   decision on every line, set `sandbox.terminal: "lines"`; a managed policy
-  with `bash` deny rules keeps it without that setting. Deny rules still hold
-  for every tool call, the agent's and a person's.
+  keeps it without that setting when it has deny rules for `bash` or for
+  every tool (`*`), or a policy hook such as an extension. Deny rules still
+  hold for every tool call, the agent's and a person's.
 - The workbench streams replies with one DOM append per frame, follows the
   conversation only when you are at the bottom of it, reconnects from the last
   event it drew rather than replaying the session, draws a tool call's body
@@ -165,6 +193,41 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The classic console's **Workbench** link sat with the signed-in user's
+  controls, which the console removes on a server without sign-in, so there
+  was no way back to the workbench there. It now sits beside the brand, at
+  every width.
+- `abhed -h`, and an unknown flag, print a synopsis, every subcommand with
+  what it does, an edition's own commands, and then the flags; they printed
+  the flags alone. `-addr` read as `-addr abhed serve` and now reads as a flag
+  with a value. `app.WithCommand` now also ignores `hawkeye`, `migrate`,
+  `resolve`, `acp` and `secret`, which Main always dispatched itself.
+- On the macOS process tier with the network off, a command could list the
+  host's interfaces, LAN address, gateway and VPN tunnels (`ifconfig`,
+  `netstat -rn`, `route -n get`, `scutil --nwi`). The sandbox now denies the
+  routing sysctls, routing sockets, and the system configuration and network
+  services too, as Linux's network namespace does.
+  MAC addresses from the I/O registry and the host name stay visible; the
+  security posture says so.
+- On the macOS process tier, `pytest` and `ls -R` in the workspace failed
+  with "Operation not permitted" on `.abhed`. A command may now stat it and
+  what it holds, so they pass it by, as `git add -A` does; it still cannot
+  list it or read or write its files. `find .` and `du` still report it and
+  exit 1.
+- A workbench shell ended by the person, by `exit`, Kill, closing its tab,
+  closing the session or going unwatched, is recorded with its exit status and
+  not as an error, and the record says how it was closed. Only a shell that
+  failed to start is an error. A command ended by a signal, the agent's
+  `bash` call or one in the workbench terminal, now records 128 plus the
+  signal's number as its `exit_code`, as a shell reports it, where it
+  recorded -1.
+- HawkEYE no longer attributes a person's workbench calls to the model: calls
+  with `actor: user` never raise `repeated-failure`, `slow-tool`, `truncated`
+  or `borrowed-host`. `no-end` is not raised for a session still running on
+  the server; offline, with a shell still open, it says so.
+- The workbench chat shows the conversation with the agent. The person's own
+  calls (shells, terminal lines, Explorer operations and saves) no longer
+  appear in it; they stay in Events and the record, and saves in Changes.
 - An administrator whose account has an email address could remove their own
   administrator rights: the guard compared the username with the email. It now
   compares the account itself, and the last administrator cannot be removed by

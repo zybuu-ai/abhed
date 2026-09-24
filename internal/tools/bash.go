@@ -10,8 +10,18 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// ExitStatus is a process's exit code, or for one ended by a signal the
+// status a shell reports: 128 plus the signal's number.
+func ExitStatus(ee *exec.ExitError) int {
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ee.ExitCode()
+}
 
 const (
 	defaultTimeoutMS = 120_000
@@ -228,7 +238,7 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if err != nil {
 		var ee *exec.ExitError
 		if ok := asExitError(err, &ee); ok {
-			exitCode = ee.ExitCode()
+			exitCode = ExitStatus(ee)
 		} else {
 			return errf("Failed to run command: %v", err)
 		}

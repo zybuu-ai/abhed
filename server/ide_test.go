@@ -45,6 +45,26 @@ globalThis.__root = new El('div');
 	}
 }
 
+// The chat is the conversation with the agent: the person's own shells,
+// terminal lines and saves stay in the event log, out of the transcript.
+func TestIDEChatLeavesOutThePersonsOwnCalls(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+El.prototype.addEventListener = () => {};
+globalThis.__added = []; globalThis.__logged = 0; globalThis.__changes = 0; globalThis.__agentTerm = [];
+let live = true, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
+const calls = new Map(), mineCalls = new Set();
+const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
+const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}, askApproval = () => {};
+const hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => { __changes++; };
+const fillCall = () => {}, drawPlan = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
+const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); };
+`
+	if out, err := runConsoleCases(t, "ide-render", harness, "ide_render_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's chat render failed:\n%s", out)
+	}
+}
+
 func TestIDEIsServedUnderTheConsolesPolicy(t *testing.T) {
 	rec := httptest.NewRecorder()
 	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/ide", nil))
