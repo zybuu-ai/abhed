@@ -126,27 +126,19 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "command is too long")
 		return
 	}
-	live.manualMu.Lock()
-	defer live.manualMu.Unlock()
-	live.mu.Lock()
-	if live.ptys == nil {
-		live.ptys = map[string]*ptyRun{}
-	}
-	running := 0
-	for _, r := range live.ptys {
-		select {
-		case <-r.done:
-		default:
-			running++
+	// A shell does not share the person's working directory, so it does not
+	// wait on manualMu, which an explorer operation may hold for minutes.
+	if req.Interactive {
+		live.shellMu.Lock()
+		defer live.shellMu.Unlock()
+		if !terminalsFull(w, live) {
+			s.startShell(w, live, sess, req)
 		}
-	}
-	live.mu.Unlock()
-	if running >= maxTerminals {
-		WriteError(w, http.StatusTooManyRequests, "eight terminals or commands are already running in this session")
 		return
 	}
-	if req.Interactive {
-		s.startShell(w, live, sess, req)
+	live.manualMu.Lock()
+	defer live.manualMu.Unlock()
+	if terminalsFull(w, live) {
 		return
 	}
 
@@ -188,6 +180,28 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, ptyStartResponse{ID: run.id, Cwd: sess.Rel(sess.Cwd)})
+}
+
+// terminalsFull refuses another terminal when the session runs maxTerminals.
+func terminalsFull(w http.ResponseWriter, live *liveSession) bool {
+	live.mu.Lock()
+	if live.ptys == nil {
+		live.ptys = map[string]*ptyRun{}
+	}
+	running := 0
+	for _, r := range live.ptys {
+		select {
+		case <-r.done:
+		default:
+			running++
+		}
+	}
+	live.mu.Unlock()
+	if running >= maxTerminals {
+		WriteError(w, http.StatusTooManyRequests, "eight terminals or commands are already running in this session")
+		return true
+	}
+	return false
 }
 
 // withTerm names the terminal. A nil Env means the host's environment, which

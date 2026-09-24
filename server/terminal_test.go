@@ -41,7 +41,7 @@ func shellBench(t *testing.T, edit func(*config.Config)) *workbench {
 	sb := sandbox.NewNone(sandbox.DefaultPolicy(dir))
 	bash := tools.Bash{Sandbox: sb.Command, Shell: sb.Shell, Isolation: tools.Isolation{Tier: "none", Backend: sb.Backend()}}
 	s := New(Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, bash)})
-	wb := &workbench{t: t, h: s.Handler(), workspace: dir}
+	wb := &workbench{t: t, s: s, h: s.Handler(), workspace: dir}
 	wb.session = wb.openIdle("acme")
 	return wb
 }
@@ -376,6 +376,28 @@ func TestShellLeavesAProgramsInputAlone(t *testing.T) {
 	if slices.ContainsFunc(lines, func(in agent.TerminalInput) bool { return strings.Contains(in.Line, "kept") }) ||
 		!slices.ContainsFunc(lines, func(in agent.TerminalInput) bool { return in.Line == "echo back" }) {
 		t.Fatalf("recorded: %+v", lines)
+	}
+}
+
+// A shell opens, and takes keys, while an explorer operation holds the
+// person's working directory.
+func TestShellDoesNotWaitOnTheExplorer(t *testing.T) {
+	wb := shellBench(t, nil)
+	wb.s.mu.RLock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.RUnlock()
+	live.manualMu.Lock()
+	defer live.manualMu.Unlock()
+	done := make(chan ptyStartResponse, 1)
+	go func() { done <- wb.startShell() }()
+	select {
+	case start := <-done:
+		out, _ := wb.typeLines(start.ID, enter("echo free", "exit")...)
+		if !strings.Contains(out, "\nfree") {
+			t.Fatalf("the shell did not run:\n%s", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a shell waited on the explorer's lock")
 	}
 }
 

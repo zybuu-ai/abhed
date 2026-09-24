@@ -276,6 +276,8 @@ type liveSession struct {
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
 	manualMu sync.Mutex
+	// shellMu orders the start of interactive shells, which need no manualMu.
+	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
 	mu   sync.Mutex
