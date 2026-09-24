@@ -23,9 +23,31 @@ All notable changes to Abhed are recorded here. The format follows
   remit, the agent's reasoning and where a call's arguments came from, and
   may only tighten a decision; unavailable means ask, or deny when headless.
   Verdicts are recorded as `monitor.verdict`. The local-model judge follows.
+- Workbench chat: a message shows as soon as it is sent, with a *Thinking…*
+  line and seconds count until the reply starts; reasoning streams into a
+  live block; replies render as markdown built from text, never markup. A
+  message sent while the agent works is queued for the next step with **Send
+  now** and **Cancel**, and marked delivered when the agent reads it. Esc
+  stops a run only when pressed twice.
+- `GET /v1/sessions/{id}/queue` and `DELETE /v1/sessions/{id}/queue/{qid}`
+  list and withdraw queued messages. A follow-up to a busy session answers
+  with a `queue_id`, and the `user.message` that delivers it carries the same
+  id; `"interrupt": true` stops the running turn and sends the message fresh.
+- `agent.reasoning.delta` events carry reasoning as it streams.
+  `agent.reasoning` is unchanged and still follows with the whole text.
+- The event stream takes `?after=<seq>` as well as `Last-Event-ID`.
 
 ### Changed
 
+- The workbench streams replies with one DOM append per frame, follows the
+  conversation only when you are at the bottom of it, reconnects from the last
+  event it drew rather than replaying the session, draws a tool call's body
+  when it is opened, and keeps the Events panel to its latest 500 rows.
+- A message queued while the final turn of a run was answering is now
+  answered in the same run; before, it waited for the next prompt. One left
+  queued by a run that was stopped is delivered ahead of the next prompt.
+- The event stream fills a gap from the record when the store dropped events
+  for a subscriber that fell behind.
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are
   asked to upgrade, and 0.x is no longer supported.
 - `abhed-bench`: `cache_reported` in the JSON output now means the endpoint
