@@ -112,7 +112,19 @@ func (s *Server) setUserAdmin(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.log.Info("admin rights changed", "user", name,
-		"admin", req.Admin, "by", UserOf(r.Context()))
+	action := "user.admin_revoked"
+	if req.Admin {
+		action = "user.admin_granted"
+	}
+	s.adminAudit(r, action, name, map[string]any{"group": admin})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminAudit logs an administrative change and hands it to Options.AdminAudit.
+func (s *Server) adminAudit(r *http.Request, action, target string, detail map[string]any) {
+	s.log.Info("admin action", "action", action, "target", target,
+		"by", UserOf(r.Context()), "detail", detail)
+	if s.opts.AdminAudit != nil {
+		s.opts.AdminAudit(r.Context(), action, target, detail)
+	}
 }

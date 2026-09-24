@@ -172,8 +172,8 @@ func (s *Server) reloadSkills(w http.ResponseWriter, r *http.Request) {
 	for _, e := range errs {
 		msgs = append(msgs, e.Error())
 	}
-	s.log.Info("skills reloaded", "count", reg.Len(),
-		"errors", len(errs), "by", UserOf(r.Context()))
+	s.adminAudit(r, "skills.reloaded", "", map[string]any{
+		"count": reg.Len(), "errors": len(errs)})
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"loaded":   reg.Len(),
 		"warnings": msgs,
@@ -243,8 +243,8 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
-	s.log.Info("mcp server connected", "name", req.Name,
-		"tools", len(added), "by", UserOf(r.Context()))
+	s.adminAudit(r, "mcp.added", req.Name, map[string]any{
+		"tools": added, "command": req.Command, "url": req.URL})
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"name":  req.Name,
 		"tools": added,
@@ -264,6 +264,7 @@ func (s *Server) reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := UserOf(r.Context())
+	s.adminAudit(r, "index.rebuild_started", "", nil)
 	go func() {
 		// Detached from the request on purpose: the client disconnecting must
 		// not abandon a half-built index.

@@ -616,7 +616,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     <a class="ghost" id="pwlink" href="/account" hidden title="Change your password">Password</a>
     <a class="ghost" id="switchuser" href="/logout" hidden
        title="Sign in as a different user">Switch</a>
-    <a class="ghost" id="signout" href="/logout">Sign out</a>
+    <a class="ghost" id="signout" href="/logout" hidden>Sign out</a>
   </div>
 </div>
 
@@ -1999,6 +1999,8 @@ async function whoami(){
   // was a 404 on local accounts.
   if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
   if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
+  // Behind a proxy, sign-out is the proxy's, and offered only when configured.
+  if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
   try{
     if(sessionStorage.getItem('abhed.must_change') === '1'){
       sessionStorage.removeItem('abhed.must_change');

@@ -1325,7 +1325,7 @@ function askAboutSelection(){
     const me = await api('/v1/whoami');
     if(me.authenticated){
       $('who').textContent = me.email || me.name || me.subject || '';
-      $('signout').hidden = false;
+      if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
       if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
       if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
       // A password an administrator set: say so where sign-in now lands.
