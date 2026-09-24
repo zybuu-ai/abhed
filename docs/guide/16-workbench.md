@@ -152,7 +152,9 @@ screen on each line as typed (see **Terminal** below).
 | The record | every call, decision and result | the same events, marked as yours (`actor: user`, `by: user`); in a shell, each line you enter, as typed (see below) |
 
 So HawkEYE's report covers what people did as well as what the agent did, and a
-save shows up under **Changes** with a diff like any other edit.
+save shows up under **Changes** with a diff like any other edit. The chat shows
+the conversation with the agent only: your own saves, commands, shells and
+Explorer operations are in **Events** and the record, not in the chat.
 
 A save is refused if the file changed since you opened it, so you cannot write
 over an edit the agent made in the meantime; reload and try again.
@@ -243,7 +245,9 @@ What a shell changes about the checks, stated plainly:
 
 - **The sandbox is the boundary.** Opening a shell is your `bash` call: the
   policy judges it (plan mode refuses it), it is recorded as yours, and when the
-  shell ends its exit and the last 64 KB of its output are recorded.
+  shell ends its exit and the last 64 KB of its output are recorded. A shell
+  you end, however you end it, is a normal end with its exit status, not an
+  error; only a shell that could not start is recorded as one.
 - **Deny rules are a screen, not a guarantee.** The server rebuilds each line
   from the keys it passes on and, before the Enter reaches the shell, puts it to
   the policy. A line a deny rule matches is refused, recorded as a denied `bash`

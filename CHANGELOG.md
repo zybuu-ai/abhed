@@ -165,6 +165,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A workbench shell ended by the person, by `exit`, Kill, closing its tab,
+  closing the session or going unwatched, is recorded with its exit status and
+  not as an error, and the record says how it was closed. Only a shell that
+  failed to start is an error.
+- The workbench chat shows the conversation with the agent. The person's own
+  calls (shells, terminal lines, Explorer operations and saves) no longer
+  appear in it; they stay in Events and the record, and saves in Changes.
 - An administrator whose account has an email address could remove their own
   administrator rights: the guard compared the username with the email. It now
   compares the account itself, and the last administrator cannot be removed by
