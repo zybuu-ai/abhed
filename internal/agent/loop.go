@@ -125,8 +125,16 @@ type Loop struct {
 
 	// steer carries messages sent while the agent is working. Reading them at
 	// a turn boundary is what lets a user redirect a run instead of killing it.
-	steer   []string
+	steer   []QueuedMessage
 	steerMu sync.Mutex
+}
+
+// QueuedMessage is a message waiting for the next turn boundary. Its ID is
+// carried on the user.message that delivers it, so a client can match the two.
+type QueuedMessage struct {
+	ID   string    `json:"id"`
+	Text string    `json:"text"`
+	At   time.Time `json:"queued_at"`
 }
 
 // Steer delivers a message to a running agent, applied at the next turn
@@ -141,17 +149,43 @@ type Loop struct {
 // It lands between turns rather than mid-turn on purpose: a tool call already
 // in flight finishes and its result is recorded, so the transcript never shows
 // a call with no outcome.
-func (l *Loop) Steer(text string) {
+func (l *Loop) Steer(text string) { l.Queue(text) }
+
+// Queue is Steer that returns the message's id, or "" for a blank message.
+func (l *Loop) Queue(text string) string {
 	if strings.TrimSpace(text) == "" {
-		return
+		return ""
 	}
+	q := QueuedMessage{ID: "q_" + newID(), Text: text, At: time.Now().UTC()}
 	l.steerMu.Lock()
 	defer l.steerMu.Unlock()
-	l.steer = append(l.steer, text)
+	l.steer = append(l.steer, q)
+	return q.ID
+}
+
+// Unqueue withdraws a message that has not been delivered yet. It reports
+// false once the loop has taken it, since the model may already have read it.
+func (l *Loop) Unqueue(id string) bool {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	for i, q := range l.steer {
+		if q.ID == id {
+			l.steer = append(l.steer[:i:i], l.steer[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// Queued returns the messages still waiting, oldest first.
+func (l *Loop) Queued() []QueuedMessage {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return append([]QueuedMessage(nil), l.steer...)
 }
 
 // takeSteering removes and returns any pending steering messages.
-func (l *Loop) takeSteering() []string {
+func (l *Loop) takeSteering() []QueuedMessage {
 	l.steerMu.Lock()
 	defer l.steerMu.Unlock()
 	if len(l.steer) == 0 {
@@ -160,6 +194,20 @@ func (l *Loop) takeSteering() []string {
 	out := l.steer
 	l.steer = nil
 	return out
+}
+
+// deliverQueued records and applies every waiting message, oldest first.
+func (l *Loop) deliverQueued() error {
+	for _, q := range l.takeSteering() {
+		// A steer that cannot be recorded is not applied: the record is the
+		// session, and a message the model saw but the log did not would
+		// make a replay diverge from what happened.
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID}); err != nil {
+			return err
+		}
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
+	}
+	return nil
 }
 
 // Todos returns the current task list.
@@ -245,11 +293,28 @@ func (l *Loop) Continue(ctx context.Context, userPrompt string) (TerminalReason,
 // Calling it again on the same Loop continues the conversation rather than
 // starting over; see Continue.
 func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, error) {
+	// Messages left queued by a run that ended first keep their place ahead
+	// of the new prompt.
+	if err := l.deliverQueued(); err != nil {
+		return TermError, err
+	}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: userPrompt}); err != nil {
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: userPrompt})
+	return l.run(ctx)
+}
 
+// RunQueued continues the conversation with only the queued messages, for a
+// message that arrived after the last run had already decided to end.
+func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
+	if len(l.Queued()) == 0 {
+		return TermCompleted, nil
+	}
+	return l.run(ctx)
+}
+
+func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	for {
 		if ctx.Err() != nil {
 			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
@@ -267,16 +332,8 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 		}
 		// Steering is applied before the turn is counted, so a redirection
 		// never costs the user a turn from the budget.
-		for _, msg := range l.takeSteering() {
-			// A steer that cannot be recorded is not applied: the record is the
-			// session, and a message the model saw but the log did not would
-			// make a replay diverge from what happened.
-			if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: msg}); err != nil {
-				return TermError, err
-			}
-			l.messages = append(l.messages, model.Message{
-				Role: model.RoleUser, Content: msg,
-			})
+		if err := l.deliverQueued(); err != nil {
+			return TermError, err
 		}
 		l.turns++
 		if l.Monitor != nil {
@@ -300,6 +357,11 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 			return TermError, err
 		}
 		if done {
+			// A message queued during the final turn is answered now rather
+			// than left waiting for a prompt that may never come.
+			if reason == TermCompleted && len(l.Queued()) > 0 {
+				continue
+			}
 			return l.finish(reason), nil
 		}
 	}
@@ -426,6 +488,18 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	lastFlush := time.Now()
 	var calls []model.ToolCall
 	var streamErr error
+	var thinking strings.Builder // un-flushed reasoning fragment
+	thinkN := 0
+	lastThink := time.Now()
+	flushThinking := func() {
+		if thinking.Len() == 0 {
+			return
+		}
+		thinkN++
+		l.record(EvAgentReasoningDelta, ActorAgent, Delta{Text: thinking.String(), Seq: thinkN})
+		thinking.Reset()
+		lastThink = time.Now()
+	}
 
 	for chunk := range stream {
 		if firstToken == 0 && chunk.Type != model.ChunkDone {
@@ -433,6 +507,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		switch chunk.Type {
 		case model.ChunkText:
+			flushThinking()
 			text.WriteString(chunk.Text)
 			// Emit the fragment immediately. Waiting for the full reply makes a
 			// 30-second answer feel like a hang; streaming makes the same wall
@@ -457,10 +532,13 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		case model.ChunkReasoning:
 			// Reasoning is recorded for display but never fed back as history:
 			// it is not part of the conversation the model should condition on.
-			// It is accumulated and emitted once at the end of the turn rather
-			// than streamed — a reader opens it after the fact, and per-token
-			// events would flood the stream for text nobody watches live.
+			// It streams in coarser parts than the reply, so a long think shows
+			// progress without an event per token.
 			reasoning.WriteString(chunk.Text)
+			thinking.WriteString(chunk.Text)
+			if thinking.Len() >= 160 || time.Since(lastThink) > 250*time.Millisecond {
+				flushThinking()
+			}
 		case model.ChunkToolCall:
 			calls = append(calls, *chunk.ToolCall)
 		case model.ChunkError:
@@ -477,6 +555,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	}
 
+	flushThinking()
 	if pending.Len() > 0 {
 		deltaN++
 		l.record(EvAgentDelta, ActorAgent,

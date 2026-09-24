@@ -51,6 +51,10 @@ const (
 	// EvContextOffloaded marks old tool results leaving the window for the
 	// record, where recall can reach them.
 	EvContextOffloaded EventType = "context.offloaded"
+	// EvAgentReasoningDelta carries a fragment of the reasoning as it streams.
+	// agent.reasoning still follows with the whole text, so a reader that
+	// ignores the fragments loses nothing.
+	EvAgentReasoningDelta EventType = "agent.reasoning.delta"
 )
 
 type Actor string
@@ -156,6 +160,9 @@ type Observation struct {
 
 type Message struct {
 	Text string `json:"text"`
+	// QueueID is set on a user message that waited in the queue, and matches
+	// the id it was given when it was sent.
+	QueueID string `json:"queue_id,omitempty"`
 }
 
 // Delta is one streamed fragment of an agent message.
@@ -164,10 +171,8 @@ type Delta struct {
 	Seq  int    `json:"n"` // ordinal within this message, for ordering
 }
 
-// Reasoning is the model's thinking for one turn, recorded whole rather than
-// streamed: it is reference material a reader opens after the fact, not
-// something they follow token by token, and one event per turn keeps it out of
-// the way of the reply that matters.
+// Reasoning is the model's thinking for one turn, recorded whole when the turn
+// ends. The agent.reasoning.delta events before it carry the same text in parts.
 type Reasoning struct {
 	Text string `json:"text"`
 	Turn int    `json:"turn"`
