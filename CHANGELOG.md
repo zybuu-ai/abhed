@@ -12,8 +12,6 @@ All notable changes to Abhed are recorded here. The format follows
   beyond the record (`Live`: the session is still running there), and
   `hawkeye.Call.Actor` (`actor` in the JSON report): whether the model or a
   person made the call. `Analyze` is unchanged.
-- `tools.ExitStatus`, a process's exit code with a signal death given as 128
-  plus the signal's number.
 - `config.Config.ManagedKeys`, the settings the managed file set as dotted
   paths, and `Config.ManagedSets` to ask about one; `config.Overrides`,
   `Config.Apply`, which lays a caller's overrides over a configuration so
@@ -26,7 +24,8 @@ All notable changes to Abhed are recorded here. The format follows
   is close, the one probably meant (`model.provider` → `model.default`).
   `abhed doctor` lists them and fails. Keys starting with `_` or `$`
   (`_comment`, `$schema`) are annotations and never reported; one in the
-  managed file says so. `config.Config.Unknown` carries them.
+  managed file says so. `config.Config.Unknown` carries them, and
+  `config.UnknownKey.Managed` marks one found in the managed file.
 - `GET /account`, where a local-accounts user changes their own password, and
   `switch_url` and `password_url` in `/v1/whoami`, naming the routes this
   deployment has for switching user and changing a password.
@@ -125,6 +124,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- **Upgrade note:** `abhed doctor` now exits non-zero when the configuration
+  has a key that nothing reads, in any file, the managed one included. A
+  pipeline that ran `abhed doctor` cleanly on 1.0.1 may fail on 1.1.0
+  until the key is corrected or removed; the warning names the file and the
+  key.
 - The SDK applies the configuration's `permissions.ask` rules, as the CLI and
   server do; it ignored them. This only adds prompts.
 - The reason given when a call is put to a person is accurate for the tool:

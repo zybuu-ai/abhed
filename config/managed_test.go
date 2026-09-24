@@ -11,8 +11,9 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
-// withManaged points the managed path at a file holding body for one test.
-func withManaged(t *testing.T, body string) {
+// withManaged points the managed path at a file holding body for one test,
+// and returns that path.
+func withManaged(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -22,6 +23,7 @@ func withManaged(t *testing.T, body string) {
 	managed.ConfigFile = path
 	t.Cleanup(func() { managed.ConfigFile = old })
 	t.Setenv("HOME", t.TempDir())
+	return path
 }
 
 // Load records each setting the managed file makes, and nothing it does not.

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -80,6 +81,32 @@ func TestUnknownKeyInTheManagedFileSaysSo(t *testing.T) {
 	}
 	if strings.Contains((UnknownKey{File: "a", Path: "b"}).String(), "managed") {
 		t.Fatal("a workspace file is called managed")
+	}
+}
+
+// Load marks an unknown key found in the managed file, and only that one.
+func TestLoadMarksUnknownKeysInTheManagedFile(t *testing.T) {
+	managedPath := withManaged(t, `{"sandbox": {"min_teir": "process"}}`)
+	ws := t.TempDir()
+	project := filepath.Join(ws, ".abhed", "config.json")
+	_ = os.MkdirAll(filepath.Dir(project), 0o755)
+	if err := os.WriteFile(project, []byte(`{"zzz_project": 1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warnOut = io.Discard
+	t.Cleanup(func() { warnOut = os.Stderr })
+
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, u := range cfg.Unknown {
+		got[u.File+" "+u.Path] = u.Managed
+	}
+	want := map[string]bool{managedPath + " sandbox.min_teir": true, project + " zzz_project": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unknown keys = %v, want %v", got, want)
 	}
 }
 
