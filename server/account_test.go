@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -164,5 +165,28 @@ func TestWorkbenchIsTheDestinationAndLinked(t *testing.T) {
 	}
 	if !strings.Contains(consoleHTML, "o.admin && o.admin_url") {
 		t.Error("the console shows Admin without an admin page to open")
+	}
+}
+
+// Without sign-in the console removes #whobox, so the way back to the
+// workbench must not be inside it, nor hidden on a phone.
+func TestConsoleLinksToTheWorkbenchWithoutSignIn(t *testing.T) {
+	start := strings.Index(consoleHTML, `<div class="stat" id="whobox"`)
+	if start < 0 {
+		t.Fatal("the console has no #whobox")
+	}
+	end := start + strings.Index(consoleHTML[start:], "</div>")
+	outside := consoleHTML[:start] + consoleHTML[end:]
+	link := regexp.MustCompile(`<a class="ghost wblink" id="wblink" href="/ide"[^>]*>Workbench</a>`)
+	if !link.MatchString(outside) || strings.Contains(consoleHTML[start:end], `href="/ide"`) {
+		t.Fatal("the workbench link is inside #whobox, which whoami removes without sign-in")
+	}
+	if !strings.Contains(consoleHTML, `box.parentNode.removeChild(box)`) {
+		t.Fatal("the fixture no longer removes #whobox; this test would prove nothing")
+	}
+	for _, hide := range []string{"#wblink{display:none", ".wblink{display:none"} {
+		if strings.Contains(consoleHTML, hide) {
+			t.Fatalf("the workbench link is hidden somewhere: %s", hide)
+		}
 	}
 }

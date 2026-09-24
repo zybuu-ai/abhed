@@ -175,6 +175,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The classic console's **Workbench** link sat with the signed-in user's
+  controls, which the console removes on a server without sign-in, so there
+  was no way back to the workbench there. It now sits beside the brand, at
+  every width.
 - `abhed -h`, and an unknown flag, print a synopsis, every subcommand with
   what it does, an edition's own commands, and then the flags; they printed
   the flags alone. `-addr` read as `-addr abhed serve` and now reads as a flag
