@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -95,31 +97,75 @@ func TestProcessSandboxShellIsInteractiveAndConfined(t *testing.T) {
 
 // Ending a shell ends the jobs it started in the background. An interactive
 // bash gives each its own process group, so killing the shell alone left them
-// running; it is hung up instead, and what is left in its session is killed.
+// running; it is hung up instead, and what is left in its session is ended
+// while the exited shell still holds the session id.
 func TestProcessSandboxShellEndsItsBackgroundJobs(t *testing.T) {
 	requireNetNS(t)
 	for _, job := range jobForms {
-		ws := workspace(t)
-		shellEndsJobs(t, processSandbox(t, ws, false).(Interactive), ws, job, false)
+		for _, byExit := range []bool{false, true} {
+			ws := workspace(t)
+			shellEndsJobs(t, processSandbox(t, ws, false).(Interactive), ws, job, byExit)
+		}
 	}
 }
 
 // jobForms are the ways a job can be left running: in the job table, out of
-// it in a subshell, and ignoring the hang-up. None may outlive the shell.
+// it in a subshell, ignoring the hang-up, and forking again and again. None
+// may outlive the shell.
 var jobForms = []string{
-	"(sleep 2; touch late) &",
-	"((sleep 2; touch late) & )",
-	"trap '' HUP; (sleep 2; touch late) &",
+	"(sleep 3; touch late) &",
+	"((sleep 3; touch late) & )",
+	"trap '' HUP; (sleep 3; touch late) &",
+	"(trap '' HUP; while :; do (sleep 3; touch late) & sleep 0.05; done &)",
 }
 
 func TestNoneShellEndsItsBackgroundJobs(t *testing.T) {
 	for _, job := range jobForms {
-		ws := workspace(t)
-		shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, job, false)
+		for _, byExit := range []bool{false, true} {
+			ws := workspace(t)
+			shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, job, byExit)
+		}
 	}
-	// exit hangs up the jobs in the table; the server ends the rest of the session.
+}
+
+// A session is swept only while the shell that led it is exited but not yet
+// reaped, and only if the process at its pid started when the shell did: a
+// reused pid can never be taken for the shell.
+func TestSweepNeedsTheShellItNamed(t *testing.T) {
 	ws := workspace(t)
-	shellEndsJobs(t, NewNone(DefaultPolicy(ws)), ws, jobForms[0], true)
+	cmd := NewNone(DefaultPolicy(ws)).Shell(context.Background(), ws)
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tty.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, tty) }()
+	l := Lead(cmd)
+	if !l.ok {
+		t.Fatal("the shell's start time could not be read")
+	}
+	_, _ = tty.Write([]byte("(sleep 30 & echo $! > job )\r"))
+	var job int
+	for deadline := time.Now().Add(10 * time.Second); job == 0; time.Sleep(50 * time.Millisecond) {
+		b, _ := os.ReadFile(filepath.Join(ws, "job"))
+		job, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		if time.Now().After(deadline) {
+			t.Fatal("the job did not start")
+		}
+	}
+	defer func() { _ = syscall.Kill(job, syscall.SIGKILL) }()
+
+	if other := (Leader{Pid: l.Pid, start: l.start + 1, ok: true}); other.sweep() {
+		t.Fatal("swept for a leader whose start time does not match")
+	}
+	_, _ = tty.Write([]byte("exit\r"))
+	_ = cmd.Wait() // reaped here, bypassing Leader.Wait
+	if l.sweep() {
+		t.Fatal("swept after the shell was reaped")
+	}
+	if syscall.Kill(job, 0) != nil {
+		t.Fatal("a refused sweep still ended the job")
+	}
 }
 
 // byExit ends the shell with exit rather than by cancelling it.
@@ -132,6 +178,7 @@ func shellEndsJobs(t *testing.T, s Interactive, ws, job string, byExit bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	l := Lead(cmd)
 	go func() { _, _ = io.Copy(io.Discard, tty) }()
 	_, _ = tty.Write([]byte(job + "\r"))
 	started := filepath.Join(ws, "started")
@@ -149,11 +196,11 @@ func shellEndsJobs(t *testing.T, s Interactive, ws, job string, byExit bool) {
 	} else {
 		cancel()
 	}
-	_ = cmd.Wait()
+	_ = l.Wait(cmd)
 	_ = tty.Close()
-	time.Sleep(3 * time.Second)
+	time.Sleep(3500 * time.Millisecond) // past the jobs' three seconds
 	if _, err := os.Stat(filepath.Join(ws, "late")); err == nil {
-		t.Fatalf("%q outlived its shell", job)
+		t.Fatalf("%q outlived its shell (exit=%v)", job, byExit)
 	}
 }
 

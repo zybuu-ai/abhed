@@ -76,6 +76,8 @@ type ptyRun struct {
 	shellPgrp atomic.Int64
 	// idle is how long the run may go unwatched.
 	idle time.Duration
+	// leader names a shell, so what it leaves in its session can be ended safely.
+	leader sandbox.Leader
 
 	mu      sync.Mutex
 	subs    map[chan []byte]struct{}
@@ -232,6 +234,7 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
 		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		run.leader = sandbox.Lead(cmd) // named now, while its pid is certainly its own
 	}
 	live.mu.Lock()
 	live.ptys[id] = run
@@ -369,7 +372,14 @@ func (s *Server) finishPTY(live *liveSession, sess *tools.Session, run *ptyRun) 
 	idle := time.NewTicker(15 * time.Second)
 	defer idle.Stop()
 	waited := make(chan error, 1)
-	go func() { waited <- run.cmd.Wait() }()
+	go func() {
+		if run.capture != nil {
+			// A shell takes what it left running in its session with it.
+			waited <- run.leader.Wait(run.cmd)
+			return
+		}
+		waited <- run.cmd.Wait()
+	}()
 	var err error
 loop:
 	for {
@@ -386,11 +396,6 @@ loop:
 		}
 	}
 	run.cancel()
-	// A shell that exited, by exit or otherwise, takes what it left running in
-	// its session with it.
-	if run.capture != nil && run.cmd.Process != nil {
-		sandbox.EndSession(run.cmd.Process.Pid)
-	}
 	// The last output can still be in flight after the process has gone.
 	// Give the pump a moment to read it before the terminal is closed, then
 	// a moment more for the read to return.
@@ -648,11 +653,14 @@ func (p *ptyRun) ask(e *enteredLine) {
 		return
 	}
 	e.program = false
-	fg, secret, ok := ttyNow(p.tty)
+	fg, canonical, ok := ttyNow(p.tty)
 	if !ok {
 		return
 	}
-	e.known, e.secret, e.program = true, secret, p.isProgram(fg)
+	// A line read in canonical mode is not one typed at bash's prompt: a
+	// password prompt, or keys typed ahead while a builtin ran. Its text is
+	// withheld.
+	e.known, e.secret, e.program = true, canonical, p.isProgram(fg)
 }
 
 // isProgram reports whether fg, the foreground process group, is not the shell's.

@@ -98,8 +98,11 @@ inside it. So, for the terminal:
   never prefix a recorded line, and an edited line is recorded without its
   text. On the container tier, where the terminal cannot be asked, a password
   that also appears in the prompt printed while it was typed can be recorded.
-  Lines typed ahead while a command runs go to that command's terminal and are
-  read by the shell afterwards: neither screened nor recorded. Keys typed ahead
+  Lines typed ahead while a command runs are not screened. While another
+  program has the terminal they are not recorded; while the shell itself is
+  busy (a builtin, the gap between commands) the terminal is in canonical
+  mode, not at bash's prompt, and they are recorded without their text. Keys
+  typed ahead
   while a command runs are echoed as they arrive, so they are in the recorded
   output as they were on screen;
 - which program has the keys is asked of the terminal on the process and none
@@ -110,11 +113,16 @@ inside it. So, for the terminal:
   there until it is switched back;
 - ending a shell (Kill, closing its tab, deleting the session, the idle or
   twelve-hour limit, or `exit`) hangs it up, bash hangs up its background
-  jobs, and then every process left in the shell's session is killed
-  (`EndSession` in `internal/sandbox`), which covers `nohup`, `disown`,
-  `( cmd & )` and `trap '' HUP`. A process that starts a session of its own
-  (`setsid`, a daemon) escapes that and runs until it ends, within the
-  sandbox; bubblewrap and the container tier end everything regardless.
+  jobs, and then every process left in the shell's session is stopped and
+  killed, pass after pass until none is new (`Leader` in
+  `internal/sandbox/leader.go`). That covers `nohup`, `disown`, `( cmd & )`,
+  `trap '' HUP` and a job that keeps forking. The sweep runs only while the
+  exited shell is unreaped, so its process id, and with it the session id,
+  cannot belong to anything else, and only after the shell's recorded start
+  time matches; on Linux each signal goes through a pidfd, on macOS a stop is
+  rechecked before it is kept. A process that starts a session of its own
+  (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
+  bubblewrap and the container tier end everything regardless.
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies

@@ -218,12 +218,16 @@ reattaches to the shells it had open, with their recent output. A shell nobody
 has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), and one
 is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
 its tab, deleting the session or either limit, hangs it up, and bash hangs up
-the jobs it started in the background; so does typing `exit`. A moment later
-everything still in the shell's session is killed, which covers jobs started
-with `nohup` or `disown`, run as `( cmd & )`, or under `trap '' HUP`. What
-escapes is a process that makes a session of its own, with `setsid` or by
-daemonising; it runs until it ends, within the sandbox. On Linux bubblewrap
-ends everything in the sandbox with the shell, and a container is removed.
+the jobs it started in the background; so does typing `exit`. Once the shell
+has exited, and before its process is released, everything still in its
+session is stopped and killed, pass after pass until nothing new appears.
+That covers jobs started with `nohup` or `disown`, run as `( cmd & )`, under
+`trap '' HUP`, or forking again and again. Only processes in that session are
+touched, and only while the exited shell still holds the session's number, so
+nothing that took over a reused process id is ever signalled. What escapes is
+a process that makes a session of its own, with `setsid` or by daemonising;
+it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
+in the sandbox with the shell, and a container is removed.
 
 What a shell changes about the checks, stated plainly:
 
@@ -234,9 +238,11 @@ What a shell changes about the checks, stated plainly:
   from the keys it passes on and, before the Enter reaches the shell, puts it to
   the policy. A line a deny rule matches is refused, recorded as a denied `bash`
   call, and discarded. That stops a denied command typed or pasted at the
-  prompt. It does not see lines typed ahead while a command still runs: they
-  go to the terminal while that command has it, and the shell reads them after,
-  unscreened and unrecorded. Nor does it see what the shell makes of a line:
+  prompt. It does not screen lines typed ahead while a command still runs:
+  they go to the terminal while that command has it, and the shell reads them
+  after. Such a line is not recorded while another program has the terminal,
+  and is recorded without its text while the shell itself is busy (the
+  terminal is then in the mode a password is read in). Nor does it see what the shell makes of a line:
   history recall (the arrow keys, `!!`, Ctrl-R, Ctrl-O), tab completion,
   variables and other expansions (`$CMD`), a line continued with `\` onto the
   next, an alias, a function, a script, or anything typed into another program,
@@ -245,7 +251,9 @@ What a shell changes about the checks, stated plainly:
   `terminal.input`, marked `edited` when it used keys the server cannot follow
   (Tab, the arrow keys), since the shell may then have run something else. When
   the server cannot be sure the terminal showed a line as it was typed, it
-  records that a line was entered but not its text: at a password prompt, for
+  records that a line was entered but not its text: when the terminal is not
+  at bash's own prompt (a password prompt, or keys typed while a builtin ran),
+  for
   a line whose whole text it did not see echoed before the Enter (so keys a
   program took without an Enter, as `read -s -n` does, never prefix a recorded
   line), for an edited line, and for a short line where it could not ask the

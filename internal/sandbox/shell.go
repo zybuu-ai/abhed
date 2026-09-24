@@ -31,15 +31,9 @@ const hangUpDelay = 2 * time.Second
 // hangUp ends a shell the way closing a terminal does. An interactive bash
 // puts each background job in a process group of its own, so killing the
 // shell leaves them running; on SIGHUP it hangs them up too. Jobs that left
-// its job table, `( cmd & )`, or ignore the hang-up are still in the shell's
-// session, and a moment later everything in it is killed.
+// its job table, `( cmd & )`, or ignore the hang-up are ended by Leader.Wait.
 func hangUp(cmd *exec.Cmd) *exec.Cmd {
-	cmd.Cancel = func() error {
-		err := cmd.Process.Signal(syscall.SIGHUP)
-		sid := cmd.Process.Pid // the shell leads its session: the terminal made it so
-		time.AfterFunc(hangUpDelay/2, func() { EndSession(sid) })
-		return err
-	}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGHUP) }
 	cmd.WaitDelay = hangUpDelay
 	return cmd
 }
