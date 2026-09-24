@@ -15,7 +15,8 @@ import (
 // Searching the workspace from the workbench. It reads only what the Explorer
 // would show: each folder and file is put to the view's rules before it is
 // opened, so a read-denied path is never searched, and nothing is recorded,
-// as nothing is changed.
+// as nothing is changed. It passes over the folders the grep tool does, so a
+// person and the agent searching for the same thing find the same files.
 
 const (
 	maxSearchQuery   = 1000
@@ -110,7 +111,7 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 			return nil //nolint:nilerr // the root itself is not a match
 		}
 		if d.IsDir() {
-			if viewerSkip[d.Name()] {
+			if viewerSkip[d.Name()] || tools.SkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			if _, err := v.resolve(rel); err != nil {

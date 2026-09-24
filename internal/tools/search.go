@@ -21,6 +21,9 @@ var skipDirs = map[string]bool{
 	".pytest_cache": true, ".mypy_cache": true, "coverage": true,
 }
 
+// SkipDir reports whether glob and grep pass over a directory of this name.
+func SkipDir(name string) bool { return skipDirs[name] }
+
 const (
 	maxGlobResults  = 1000
 	maxGrepMatches  = 100

@@ -28,7 +28,7 @@ func paths(r searchResponse) string {
 }
 
 // Search reads what the Explorer shows and nothing else: not a read-denied
-// file, the server's state, dependencies or binaries.
+// file, the server's state, what the grep tool passes over, or binaries.
 func TestSearchFindsOnlyWhatTheViewShows(t *testing.T) {
 	wb := newWorkbench(t, func(c *config.Config) {
 		c.Permissions.Deny = append(c.Permissions.Deny, "read(**/.env)")
@@ -38,6 +38,7 @@ func TestSearchFindsOnlyWhatTheViewShows(t *testing.T) {
 	wb.write(".env", "HELLO=secret\n")
 	wb.write(".abhed/config.json", `{"hello":1}`)
 	wb.write("node_modules/x/index.js", "hello\n")
+	wb.write(".venv/lib/site.py", "hello\n")
 	wb.write("blob.bin", "hello\x00\x01")
 
 	code, r := wb.search("hello", "")
