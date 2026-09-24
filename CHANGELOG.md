@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-24
+
 ### Added
 
 - `hawkeye.AnalyzeWith` and `hawkeye.Options`, for what the caller knows
