@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `GET /account`, where a local-accounts user changes their own password, and
+  `switch_url` and `password_url` in `/v1/whoami`, naming the routes this
+  deployment has for switching user and changing a password.
 - `edit` and `write` parse Go, JSON and Python before writing, where a parser
   is available (see the tools guide for Python's conditions). A change that
   would leave a file that parsed no longer parsing is not applied, and the

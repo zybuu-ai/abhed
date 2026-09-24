@@ -1676,7 +1676,7 @@ func (a *App) buildAuth(ctx context.Context, cfg config.Config, workspace string
 	// Only what must answer before a caller is signed in. Anything else added
 	// here is an unauthenticated endpoint on a public port, so the list is
 	// kept short deliberately; each provider adds the paths it owns.
-	public := []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
+	public := server.PublicPaths()
 	mw := &auth.Middleware{}
 
 	var users auth.UserStore

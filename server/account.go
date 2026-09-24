@@ -41,6 +41,7 @@ nav{margin-top:22px;display:flex;gap:16px}a{color:var(--acc)}
 const $ = (id) => document.getElementById(id);
 fetch('/v1/whoami').then(r => r.json()).then(me => {
   if(!me.authenticated){ location.href = '/'; return; }
+  if(!me.password_url){ document.querySelector('main').textContent = 'This account signs in through your identity provider; change its password there.'; return; }
   $('who').textContent = 'Signed in as ' + (me.email || me.name || me.subject) + '.';
 }).catch(() => {});
 $('f').addEventListener('submit', async (e) => {

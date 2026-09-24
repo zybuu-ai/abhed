@@ -63,6 +63,52 @@ func TestWhoamiNamesSwitchAndPasswordRoutesThatExist(t *testing.T) {
 	}
 }
 
+type namedProvider struct {
+	auth.Provider
+	name string
+}
+
+func (p namedProvider) Name() string { return p.name }
+func (p namedProvider) Identify(*http.Request) (*auth.Identity, bool) {
+	return &auth.Identity{Subject: "bob", Tenant: "default"}, true
+}
+
+// Single sign-on has its own switch route and no password here; a deployment
+// without sign-in offers neither.
+func TestWhoamiLinksFollowTheMechanism(t *testing.T) {
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	cfg := config.Default()
+	cfg.Auth.Mode = "oidc"
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{}),
+		Auth: &auth.Middleware{Providers: []auth.Provider{namedProvider{local, "oidc"}}, PublicPaths: []string{"/v1/whoami"}}})
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/whoami", nil))
+	var me map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if me["switch_url"] != "/switch-user" || me["password_url"] != nil {
+		t.Errorf("oidc whoami = %v", me)
+	}
+	rec = httptest.NewRecorder()
+	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/whoami", nil))
+	me = nil
+	_ = json.Unmarshal(rec.Body.Bytes(), &me)
+	if me["switch_url"] != nil || me["password_url"] != nil {
+		t.Errorf("no-auth whoami = %v", me)
+	}
+}
+
+func TestServerPublicPathsIncludeTheIcon(t *testing.T) {
+	for _, p := range []string{"/favicon.ico", "/favicon.svg"} {
+		found := false
+		for _, q := range PublicPaths() {
+			found = found || q == p
+		}
+		if !found {
+			t.Errorf("%s missing from PublicPaths", p)
+		}
+	}
+}
+
 func TestAccountPageNeedsLocalAccounts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/account", nil))
@@ -110,8 +156,8 @@ func TestIDEVendorRevalidates(t *testing.T) {
 
 // Nothing linked to the workbench, so it could only be reached by typing it.
 func TestWorkbenchIsTheDestinationAndLinked(t *testing.T) {
-	if strings.Contains(landingHTML, "location.href = '/console'") {
-		t.Error("sign-in still lands on the classic console")
+	if strings.Count(landingHTML, "'/ide'") < 3 || strings.Contains(landingHTML, "'/console'") {
+		t.Error("sign-in, sign-up and the landing button do not all open the workbench")
 	}
 	if !strings.Contains(consoleHTML, `href="/ide"`) {
 		t.Error("the console does not link to the workbench")

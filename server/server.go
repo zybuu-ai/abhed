@@ -454,6 +454,12 @@ func (s *Server) Handler() http.Handler {
 	return canonicalHost(s.opts.Config.Server.CanonicalHost, headed)
 }
 
+// PublicPaths answer before anyone signs in, whichever providers are
+// configured; each provider adds the paths it owns. Kept short on purpose.
+func PublicPaths() []string {
+	return []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
+}
+
 // Mount adds routes for the next Handler call, for a caller that has the
 // constructed server in hand rather than its Options — a hook that binds a
 // scheduler to this server and then wants to expose its status, say. It must
@@ -532,9 +538,7 @@ func (s *Server) authMiddleware() auth.Middleware {
 	}
 	// Sign-in itself must be reachable without being signed in, or the only
 	// way in is barred by the thing it unlocks.
-	mw := auth.Middleware{PublicPaths: []string{
-		"/", "/v1/health", "/v1/overview", "/login", "/auth/callback", "/logout",
-		"/v1/signin", "/v1/signup", "/v1/whoami", "/favicon.ico", "/favicon.svg"}}
+	mw := auth.Middleware{PublicPaths: append(PublicPaths(), "/auth/callback", "/v1/signin", "/v1/signup")}
 	if s.opts.Config.Auth.Mode == "proxy" {
 		mw.TrustHeaders = true
 	}

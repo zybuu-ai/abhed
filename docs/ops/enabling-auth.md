@@ -16,8 +16,8 @@ much security sounds good.
 | No sign-in, local accounts, or an authenticating proxy | yes | yes | yes |
 | Change your own password at `/account` | yes | yes | yes |
 | OIDC single sign-on (Keycloak, Okta, Entra ID, Auth0, Google and other OIDC providers) and API bearer tokens from the same provider | — | yes | yes |
-| Invites and an admin page | — | yes | yes |
-| Access requests and grants with a recorded reason, tenant mapping | — | — | yes |
+| Invites, an admin page, access requests and grants with a recorded reason | — | yes | yes |
+| Tenant mapping from the identity provider | — | — | yes |
 
 The paid editions are built on this module and document their own setup.
 SAML is not built in to any edition: put a SAML-speaking proxy in front and
@@ -108,7 +108,8 @@ accounts are created by an administrator, which is true and actionable.
   response. The on-disk store uses its own type to persist it, rather than
   relaxing that tag.
 - A password set by an administrator (`user add`, `user passwd`) is flagged
-  `must_change_password`, and the console says so at sign-in.
+  `must_change_password`; the workbench says so at sign-in, and the user sets
+  their own at `/account`.
 
 ## Behind a reverse proxy
 
@@ -131,7 +132,7 @@ only route to the port: bind Abhed to loopback or a private interface and let
 nothing else reach it. Anything that can reach the port directly can claim any
 identity by setting the headers itself.
 
-## Behind a reverse proxy
+## Allowed origins
 
 The server refuses a state-changing request whose `Origin` matches neither its
 own host nor `server.allowed_origins`. A proxy that rewrites `Host` therefore

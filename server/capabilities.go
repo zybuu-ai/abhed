@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 )
 
 //go:embed ide.html
@@ -17,6 +18,18 @@ var ideHTML string
 //
 //go:embed ide/vendor
 var ideVendor embed.FS
+
+var vendorETags sync.Map
+
+// vendorETag hashes an embedded file once; the content never changes at run time.
+func vendorETag(name string, data []byte) string {
+	if v, ok := vendorETags.Load(name); ok {
+		return v.(string)
+	}
+	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(data))
+	vendorETags.Store(name, etag)
+	return etag
+}
 
 func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
@@ -36,7 +49,7 @@ func (s *Server) serveIDEVendor(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// Revalidated on every load, so an upgrade never runs a stale editor
 	// against a new page; the ETag makes the check a 304.
-	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(data))
+	etag := vendorETag(name, data)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, no-cache")
 	if r.Header.Get("If-None-Match") == etag {

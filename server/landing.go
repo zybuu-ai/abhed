@@ -498,7 +498,7 @@ function signInForm(o){
       // A password set by an administrator is temporary; say so rather than
       // letting it quietly become permanent.
       // Not an alert: a modal dialog blocks the page and reads as an error.
-      // The console shows it as a note on arrival.
+      // The workbench shows it as a note on arrival.
       if(body.must_change_password){
         try{ sessionStorage.setItem('abhed.must_change', '1'); }catch{}
       }
