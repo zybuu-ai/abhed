@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 )
@@ -95,5 +98,49 @@ func TestSearchIsBounded(t *testing.T) {
 	}
 	if r.Matches != maxSearchMatches || !r.Truncated || r.Why != "matches" {
 		t.Fatalf("total: %d truncated=%v why=%q", r.Matches, r.Truncated, r.Why)
+	}
+}
+
+// A match longer than the preview window is marked only as far as the window
+// goes, so one long line cannot make the reply megabytes long.
+func TestSearchPreviewIsBounded(t *testing.T) {
+	wb := newWorkbench(t, nil)
+	wb.write("min.js", strings.Repeat("z", 1<<20)+"\n")
+	_, r := wb.search("z+", "&regex=1")
+	m := r.Files[0].Matches[0]
+	if len(m.Text) > maxSearchPreview || m.From != 0 || m.To != len(m.Text) || m.End != 1<<20+1 {
+		t.Fatalf("preview len=%d from=%d to=%d end=%d", len(m.Text), m.From, m.To, m.End)
+	}
+}
+
+// A search follows no link out of the workspace.
+func TestSearchStaysInsideTheWorkspace(t *testing.T) {
+	wb := newWorkbench(t, nil)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wb.write("in.txt", "needle\n")
+	for name, target := range map[string]string{"file-link": filepath.Join(outside, "secret.txt"), "dir-link": outside} {
+		if err := os.Symlink(target, filepath.Join(wb.workspace, name)); err != nil {
+			t.Skip("symlinks unavailable:", err)
+		}
+	}
+	if _, r := wb.search("needle", ""); paths(r) != "in.txt" {
+		t.Fatalf("search reached outside the workspace: %q", paths(r))
+	}
+}
+
+// Each limit that cuts a search short is named in the reply.
+func TestSearchSaysWhatCutItShort(t *testing.T) {
+	wb := newWorkbench(t, nil)
+	wb.write("many.txt", strings.Repeat("hit\n", maxSearchPerFile+1))
+	if _, r := wb.search("hit", ""); !r.Files[0].Truncated || len(r.Files[0].Matches) != maxSearchPerFile {
+		t.Fatalf("per-file cap not reported: %+v", r.Files[0].Truncated)
+	}
+	defer func(d time.Duration) { searchDeadline = d }(searchDeadline)
+	searchDeadline = 0
+	if _, r := wb.search("hit", ""); !r.Truncated || r.Why != "time" {
+		t.Fatalf("time limit: truncated=%v why=%q", r.Truncated, r.Why)
 	}
 }

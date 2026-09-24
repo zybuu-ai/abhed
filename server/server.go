@@ -211,12 +211,14 @@ type Options struct {
 
 // Server holds live sessions and serves the API.
 type Server struct {
-	opts     Options
-	store    EventStore
-	sessions SessionRecorder // nil when the store is not durable
-	log      *slog.Logger
-	mu       sync.RWMutex
-	running  map[string]*liveSession
+	opts Options
+	// searching counts the workspace searches running per session.
+	searching sync.Map
+	store     EventStore
+	sessions  SessionRecorder // nil when the store is not durable
+	log       *slog.Logger
+	mu        sync.RWMutex
+	running   map[string]*liveSession
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool

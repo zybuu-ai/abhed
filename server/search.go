@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -19,13 +20,17 @@ import (
 // person and the agent searching for the same thing find the same files.
 
 const (
-	maxSearchQuery   = 1000
-	maxSearchMatches = 2000
-	maxSearchPerFile = 100
-	maxSearchFiles   = 20000
-	maxSearchPreview = 240
-	searchTimeout    = 5 * time.Second
+	maxSearchQuery      = 1000
+	maxSearchMatches    = 2000
+	maxSearchPerFile    = 100
+	maxSearchFiles      = 20000
+	maxSearchPreview    = 240 // bytes of a line shown around a match
+	searchTimeout       = 5 * time.Second
+	maxSearchesInFlight = 2 // per session
 )
+
+// searchDeadline is searchTimeout, a variable so a test can shorten it.
+var searchDeadline = searchTimeout
 
 type searchMatch struct {
 	Line int `json:"line"`
@@ -41,6 +46,8 @@ type searchMatch struct {
 type searchFile struct {
 	Path    string        `json:"path"`
 	Matches []searchMatch `json:"matches"`
+	// Truncated says the file holds more matches than are listed.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type searchResponse struct {
@@ -90,8 +97,17 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer v.Close()
+	// A search can take seconds of CPU; a session gets a couple at a time.
+	n, _ := s.searching.LoadOrStore(r.PathValue("id"), new(atomic.Int32))
+	inFlight := n.(*atomic.Int32)
+	if inFlight.Add(1) > maxSearchesInFlight {
+		inFlight.Add(-1)
+		WriteError(w, http.StatusTooManyRequests, "a search is already running for this session; wait for it to finish")
+		return
+	}
+	defer inFlight.Add(-1)
 
-	ctx, cancel := context.WithTimeout(r.Context(), searchTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), searchDeadline)
 	defer cancel()
 	out := searchResponse{Files: []searchFile{}}
 	files := 0
@@ -130,14 +146,14 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 		if err != nil || tools.IsBinary(data) {
 			return nil //nolint:nilerr // unreadable and binary files are not searched
 		}
-		hit := searchLines(string(trimPartialRune(data)), re)
+		hit, more := searchLines(string(trimPartialRune(data)), re)
 		if len(hit) == 0 {
 			return nil
 		}
 		if room := maxSearchMatches - out.Matches; len(hit) > room {
-			hit = hit[:room]
+			hit, more = hit[:room], true
 		}
-		out.Files = append(out.Files, searchFile{Path: filepath.ToSlash(rel), Matches: hit})
+		out.Files = append(out.Files, searchFile{Path: filepath.ToSlash(rel), Matches: hit, Truncated: more})
 		if out.Matches += len(hit); out.Matches >= maxSearchMatches {
 			return stop("matches")
 		}
@@ -146,8 +162,9 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, out)
 }
 
-// searchLines returns the matches in one file's text, at most maxSearchPerFile.
-func searchLines(text string, re *regexp.Regexp) []searchMatch {
+// searchLines returns the matches in one file's text, at most
+// maxSearchPerFile, and whether there were more.
+func searchLines(text string, re *regexp.Regexp) ([]searchMatch, bool) {
 	var out []searchMatch
 	for i, line := range strings.Split(text, "\n") {
 		line = strings.TrimSuffix(line, "\r")
@@ -155,32 +172,34 @@ func searchLines(text string, re *regexp.Regexp) []searchMatch {
 			if m[0] == m[1] {
 				continue // an empty match marks nothing
 			}
-			out = append(out, previewMatch(i+1, line, m[0], m[1]))
-			if len(out) >= maxSearchPerFile {
-				return out
+			if len(out) == maxSearchPerFile {
+				return out, true
 			}
+			out = append(out, previewMatch(i+1, line, m[0], m[1]))
 		}
 	}
-	return out
+	return out, false
 }
 
-// previewMatch cuts a long line down to a window around the match.
+// previewMatch cuts a long line down to at most maxSearchPreview bytes around
+// the start of the match; a match longer than that is marked only in part.
 func previewMatch(n int, line string, start, end int) searchMatch {
 	m := searchMatch{Line: n, Col: utf16Len(line[:start]) + 1, End: utf16Len(line[:end]) + 1}
 	from, to := 0, len(line)
 	if len(line) > maxSearchPreview {
 		from = max(0, start-maxSearchPreview/4)
-		to = min(len(line), max(end, from+maxSearchPreview))
-		for from > 0 && !utf8Start(line[from]) {
-			from--
+		to = min(len(line), from+maxSearchPreview)
+		for from < to && !utf8Start(line[from]) {
+			from++
 		}
-		for to < len(line) && !utf8Start(line[to]) {
-			to++
+		for to > from && to < len(line) && !utf8Start(line[to]) {
+			to--
 		}
 	}
+	lo, hi := min(max(start, from), to), min(max(end, from), to)
 	m.Text = line[from:to]
-	m.From = utf16Len(line[from:start])
-	m.To = m.From + utf16Len(line[start:end])
+	m.From = utf16Len(line[from:lo])
+	m.To = m.From + utf16Len(line[lo:hi])
 	return m
 }
 
