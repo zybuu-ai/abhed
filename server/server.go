@@ -680,6 +680,24 @@ type createRequest struct {
 	// Interrupt, on a follow-up to a busy session, stops the running turn and
 	// sends this message as a fresh one instead of queueing it.
 	Interrupt bool `json:"interrupt,omitempty"`
+	// ClientID is the sender's own id for the message, echoed on the
+	// user.message that records it.
+	ClientID string `json:"client_id,omitempty"`
+}
+
+// validClientID keeps a client's id short and plain, since it is recorded.
+func validClientID(id string) bool {
+	if len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type createResponse struct {
@@ -695,6 +713,8 @@ type StartSpec struct {
 	Prompt   string
 	Mode     string
 	Provider string
+	// ClientID is echoed on the first user.message; see createRequest.
+	ClientID string
 	User     string
 	Tenant   string
 	// Unattended means nobody can answer an approval. An "ask" under the
@@ -723,8 +743,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+	if !validClientID(req.ClientID) {
+		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		return
+	}
 	sessionID, err := s.StartSession(r.Context(), StartSpec{
-		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider,
+		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
 		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()),
 	})
 	if err != nil {
@@ -817,7 +841,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	go func() {
 		defer cancel()
 		live.undo.BeginTurn()
-		reason, err := loop.Run(runCtx, spec.Prompt)
+		reason, err := loop.RunMessage(runCtx, agent.Message{Text: spec.Prompt, ClientID: spec.ClientID})
 		for live.settle(runCtx, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
@@ -1219,6 +1243,27 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 
+	// The store drops events for a subscriber that falls behind rather than
+	// stall the loop. Seeing a full buffer, or a gap in seq, means some may
+	// be gone, and they are read back from the record before going on.
+	send := func(batch []agent.Event) (ended bool) {
+		for _, e := range batch {
+			if e.Seq <= lastSeq {
+				continue
+			}
+			lastSeq = e.Seq
+			writeSSE(w, e)
+			ended = ended || e.Type == agent.EvSessionEnded
+		}
+		flusher.Flush()
+		return ended
+	}
+	catchUp := func() bool {
+		missed, err := s.store.Since(id, lastSeq)
+		return err == nil && send(missed)
+	}
+	behind := false
+
 	for {
 		select {
 		case <-r.Context().Done():
@@ -1227,28 +1272,25 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
-			if ev.Seq <= lastSeq {
+			behind = behind || len(events) >= cap(events)-1
+			if ev.Seq > lastSeq+1 {
+				behind = true
+			}
+			if !behind {
+				if send([]agent.Event{ev}) {
+					return
+				}
 				continue
 			}
-			// The store drops events for a subscriber that falls behind rather
-			// than stall the loop; a gap is filled from the record.
-			batch := []agent.Event{ev}
-			if ev.Seq > lastSeq+1 {
-				if missed, err := s.store.Since(id, lastSeq); err == nil && len(missed) > 0 {
-					batch = missed
-				}
+			// Drain what is buffered first, then read the rest back once.
+			if ev.Seq == lastSeq+1 && send([]agent.Event{ev}) {
+				return
 			}
-			ended := false
-			for _, e := range batch {
-				if e.Seq <= lastSeq {
-					continue
-				}
-				lastSeq = e.Seq
-				writeSSE(w, e)
-				ended = ended || e.Type == agent.EvSessionEnded
+			if len(events) > 0 {
+				continue
 			}
-			flusher.Flush()
-			if ended {
+			behind = false
+			if catchUp() {
 				return
 			}
 		case <-keepalive.C:
@@ -1335,6 +1377,11 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+	if !validClientID(req.ClientID) {
+		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
+		return
+	}
+	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
 
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
@@ -1377,7 +1424,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		// at the next turn boundary, so a call in flight still completes and
 		// the transcript never shows one with no result. Queued under the
 		// lock, so a run cannot decide to end between the check and the queue.
-		qid := live.Loop.Queue(req.Prompt)
+		qid := live.Loop.QueueMessage(msg)
 		live.mu.Unlock()
 		WriteJSON(w, http.StatusAccepted, map[string]string{
 			"session_id": id,
@@ -1421,7 +1468,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer cancel()
 		live.undo.BeginTurn()
-		reason, err := live.Loop.Continue(ctx, req.Prompt)
+		reason, err := live.Loop.RunMessage(ctx, msg)
 		for live.settle(ctx, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
@@ -1451,11 +1498,22 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 	return false
 }
 
+// notRunningHere answers for a session this process is not running: 421 with
+// the node that holds it, as approveAction does, or 404.
+func (s *Server) notRunningHere(w http.ResponseWriter, r *http.Request, id string) {
+	if node := s.elsewhere(r.Context(), id); node != "" {
+		w.Header().Set("Abhed-Session-Node", node)
+		WriteError(w, http.StatusMisdirectedRequest, "this session is running on another node; route by session id")
+		return
+	}
+	WriteError(w, http.StatusNotFound, "session not found")
+}
+
 // listQueue returns the messages waiting for the session's next turn boundary.
 func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
 	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
-		WriteError(w, http.StatusNotFound, "session not found")
+		s.notRunningHere(w, r, r.PathValue("id"))
 		return
 	}
 	q := live.Loop.Queued()
@@ -1470,7 +1528,7 @@ func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
 	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
-		WriteError(w, http.StatusNotFound, "session not found")
+		s.notRunningHere(w, r, r.PathValue("id"))
 		return
 	}
 	live.mu.Lock()
@@ -1487,7 +1545,7 @@ func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
-		WriteError(w, http.StatusNotFound, "session not found")
+		s.notRunningHere(w, r, r.PathValue("id"))
 		return
 	}
 	live.mu.Lock()
