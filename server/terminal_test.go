@@ -2,8 +2,11 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,10 +16,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -29,6 +34,12 @@ import (
 // and the sandbox package tests the boundary).
 func shellBench(t *testing.T, edit func(*config.Config)) *workbench {
 	t.Helper()
+	return shellBenchOpts(t, edit, nil)
+}
+
+// shellBenchOpts is shellBench with a change to the server's options.
+func shellBenchOpts(t *testing.T, edit func(*config.Config), opt func(*Options)) *workbench {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
 	if edit != nil {
@@ -40,7 +51,11 @@ func shellBench(t *testing.T, edit func(*config.Config)) *workbench {
 	}
 	sb := sandbox.NewNone(sandbox.DefaultPolicy(dir))
 	bash := tools.Bash{Sandbox: sb.Command, Shell: sb.Shell, Isolation: tools.Isolation{Tier: "none", Backend: sb.Backend()}}
-	s := New(Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, bash)})
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, bash)}
+	if opt != nil {
+		opt(&opts)
+	}
+	s := New(opts)
 	wb := &workbench{t: t, s: s, h: s.Handler(), workspace: dir}
 	wb.session = wb.openIdle("acme")
 	return wb
@@ -376,6 +391,103 @@ func TestShellLeavesAProgramsInputAlone(t *testing.T) {
 	if slices.ContainsFunc(lines, func(in agent.TerminalInput) bool { return strings.Contains(in.Line, "kept") }) ||
 		!slices.ContainsFunc(lines, func(in agent.TerminalInput) bool { return in.Line == "echo back" }) {
 		t.Fatalf("recorded: %+v", lines)
+	}
+}
+
+// A shell is opened and typed into through the same authentication as any
+// other call: a refusal by Middleware.Check, and a password that must be
+// changed, stop both, for a shell already open as for a new one.
+func TestShellRoutesHonourCheckAndMustChange(t *testing.T) {
+	var refuse atomic.Bool
+	check := func(_ context.Context, id *auth.Identity) error {
+		if refuse.Load() && id.Subject == "bob" {
+			return errors.New("bob's access was withdrawn")
+		}
+		return nil
+	}
+	shell := func(o *Options) {
+		sb := sandbox.NewNone(sandbox.DefaultPolicy(o.Workspace))
+		o.Registry = tools.NewRegistry(tools.Read{}, tools.Bash{Sandbox: sb.Command, Shell: sb.Shell,
+			Isolation: tools.Isolation{Tier: "none", Backend: sb.Backend()}})
+	}
+	open := func(g *hookRig, bob *http.Cookie) (session, pty string) {
+		rec := g.do(bob, "POST", "/v1/sessions", `{"workbench":true}`)
+		var created createResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &created)
+		rec = g.do(bob, "POST", "/v1/sessions/"+created.SessionID+"/pty", `{"interactive":true}`)
+		var start ptyStartResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &start)
+		if !start.Interactive {
+			t.Fatalf("setup: %d %s", rec.Code, rec.Body)
+		}
+		return created.SessionID, start.ID
+	}
+	blocked := func(g *hookRig, bob *http.Cookie, session, pty, why string) {
+		t.Helper()
+		for _, c := range []struct{ method, path, body string }{
+			{"POST", "/v1/sessions/" + session + "/pty", `{"interactive":true}`},
+			{"POST", "/v1/sessions/" + session + "/pty/" + pty + "/input", "echo hi\r"},
+			{"POST", "/v1/sessions/" + session + "/pty/" + pty + "/resize", `{"cols":80,"rows":24}`},
+		} {
+			// 403 with the reason, then 401 once the refusal has ended the session.
+			if rec := g.do(bob, c.method, c.path, c.body); rec.Code != http.StatusForbidden && rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s: %s %s = %d %s", why, c.method, c.path, rec.Code, rec.Body)
+			}
+		}
+	}
+
+	g := newHookRig(t, check, shell)
+	bob := g.signIn(t, "bob")
+	session, pty := open(g, bob)
+	refuse.Store(true)
+	blocked(g, bob, session, pty, "refused")
+
+	g = newHookRig(t, nil, shell)
+	bob = g.signIn(t, "bob")
+	session, pty = open(g, bob)
+	u, _ := g.local.Store.Get(context.Background(), "bob")
+	if err := g.local.CreateUserOrReset(context.Background(), u, "temporary-pw-1"); err != nil {
+		t.Fatal(err)
+	}
+	blocked(g, bob, session, pty, "must change")
+}
+
+// fakeRedactor stands in for the secrets store: it replaces one value.
+type fakeRedactor struct{ broken bool }
+
+func (f fakeRedactor) Redact(b []byte) []byte {
+	if f.broken {
+		return append(b, '{')
+	}
+	return bytes.ReplaceAll(b, []byte("S3CR3T-VALUE"), []byte("[redacted]"))
+}
+func (fakeRedactor) Span() int { return 12 }
+
+// What a shell records, the lines typed and its output, passes the redactor
+// as a tool's result does; a redactor that fails withholds the payload.
+func TestShellRecordIsRedacted(t *testing.T) {
+	for _, broken := range []bool{false, true} {
+		wb := shellBenchOpts(t, nil, func(o *Options) { o.Redact = fakeRedactor{broken: broken} })
+		start := wb.startShell()
+		wb.typeLines(start.ID, enter("echo S3CR3T-VALUE", "exit")...)
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			var typed, closed bool
+			for _, e := range wb.events() {
+				if strings.Contains(string(e.Payload), "S3CR3T") {
+					t.Fatalf("broken=%v: a secret reached the record: %s %s", broken, e.Type, e.Payload)
+				}
+				typed = typed || e.Type == agent.EvTerminalInput
+				closed = closed || e.Type == agent.EvObservation
+			}
+			if typed && closed {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("broken=%v: the shell's line or output was not recorded", broken)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 }
 
