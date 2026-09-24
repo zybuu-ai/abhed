@@ -122,9 +122,10 @@ inside it. So, for the terminal:
   cannot belong to anything else, and only after the shell's recorded start
   time matches. On Linux each signal goes through a pidfd, so a reused process
   id is never signalled. On macOS a member is checked with `getsid` and then
-  signalled by number; a stop that lands on a foreign process (its id reused
+  signalled by number, both the SIGSTOP and the SIGKILL. If the id were reused
   in between, which needs a pid wrap within microseconds and is not reachable
-  in practice) is found on the recheck and undone with SIGCONT. A strict fix
+  in practice, the signal would land on a foreign process: a stop is found on
+  the recheck and undone with SIGCONT, a kill is not. A strict fix
   there would need signalling by audit token. When the sweep cannot run (the
   start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
   logs that containment did not run. A process that starts a session of its own

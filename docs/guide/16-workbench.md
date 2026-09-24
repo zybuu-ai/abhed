@@ -229,7 +229,8 @@ signalled through a handle on the process itself, so a process id reused by
 something else is never signalled. On macOS a process is checked and then
 signalled by its number: if its id were reused in between, which needs the
 ids to wrap round within microseconds and is not reachable in practice, the
-stop would land on a stranger and is undone at once with a continue signal.
+stop or the kill would land on a stranger: a stop is undone at once with a
+continue signal, a kill is not.
 Closing that gap strictly would need signalling by audit token. What escapes is
 a process that makes a session of its own, with `setsid` or by daemonising;
 it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
