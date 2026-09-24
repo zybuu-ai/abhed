@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -543,6 +544,23 @@ func TestShellRoutesHonourCheckAndMustChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocked(g, bob, session, pty, "must change")
+}
+
+// A sweep that did not run is one warning line with its reason.
+func TestShellSweepNotRunIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+	live := &liveSession{ID: "s-1"}
+	s.noteSweep(live, &ptyRun{id: "u-1"}, "")
+	if buf.Len() != 0 {
+		t.Fatalf("a sweep that ran was logged: %s", buf.String())
+	}
+	s.noteSweep(live, &ptyRun{id: "u-1"}, "the process at the shell's pid is not the shell")
+	if got := buf.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "not swept") ||
+		!strings.Contains(got, "terminal=u-1") || !strings.Contains(got, "not the shell") {
+		t.Fatalf("log: %s", got)
+	}
 }
 
 // fakeRedactor stands in for the secrets store: it replaces one value.

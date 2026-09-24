@@ -367,6 +367,15 @@ func (p *ptyRun) pump() {
 	}
 }
 
+// noteSweep tells the operator when a shell's session was not swept, so that
+// containment not running is never silent.
+func (s *Server) noteSweep(live *liveSession, run *ptyRun, refused string) {
+	if refused != "" {
+		s.log.Warn("the shell's session was not swept; what it left running may still run",
+			"session", live.ID, "terminal", run.id, "reason", refused)
+	}
+}
+
 // finishPTY waits for the command, records its output and clears it away.
 func (s *Server) finishPTY(live *liveSession, sess *tools.Session, run *ptyRun) {
 	idle := time.NewTicker(15 * time.Second)
@@ -376,9 +385,7 @@ func (s *Server) finishPTY(live *liveSession, sess *tools.Session, run *ptyRun) 
 		if run.capture != nil {
 			// A shell takes what it left running in its session with it.
 			refused, err := run.leader.Wait(run.cmd)
-			if refused != "" {
-				s.log.Warn("the shell's session was not swept; what it left running may still run", "session", live.ID, "terminal", run.id, "reason", refused)
-			}
+			s.noteSweep(live, run, refused)
 			waited <- err
 			return
 		}

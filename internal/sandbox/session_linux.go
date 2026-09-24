@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -74,22 +74,26 @@ func sessionMembers(sid int) []int {
 	return out
 }
 
-var pidfdOnce sync.Once
-var pidfdOK bool
+// pidfdMissing is set once the kernel has said it has no pidfd, or will not
+// give one; a transient failure (no file descriptors or memory) is not kept.
+var pidfdMissing atomic.Bool
 
 // sweepSupported reports whether this kernel can signal through a pidfd,
 // which the sweep needs (Linux 5.3 and later).
 func sweepSupported() (bool, string) {
-	pidfdOnce.Do(func() {
-		if fd, err := unix.PidfdOpen(os.Getpid(), 0); err == nil {
-			_ = unix.Close(fd)
-			pidfdOK = true
-		}
-	})
-	if !pidfdOK {
+	if pidfdMissing.Load() {
 		return false, "this kernel cannot signal through a pidfd (Linux 5.3 or later is needed)"
 	}
-	return true, ""
+	fd, err := unix.PidfdOpen(os.Getpid(), 0)
+	switch {
+	case err == nil:
+		_ = unix.Close(fd)
+		return true, ""
+	case errors.Is(err, unix.ENOSYS), errors.Is(err, unix.EPERM):
+		pidfdMissing.Store(true)
+		return false, "this kernel cannot signal through a pidfd (Linux 5.3 or later is needed)"
+	}
+	return false, "a pidfd could not be opened: " + err.Error()
 }
 
 // signalMember signals pid only if it is in session sid. A pidfd names the

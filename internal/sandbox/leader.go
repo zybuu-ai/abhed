@@ -10,6 +10,14 @@ import "os/exec"
 // by anything else until Wait reaps it. The leader's start time is checked
 // before each sweep as well.
 
+// The sweep's view of the system, replaced in tests.
+var (
+	listMembers = sessionMembers
+	signalOne   = signalMember
+	startOf     = startTime
+	canSweep    = sweepSupported
+)
+
 // maxSweepPasses bounds the passes that stop a session's processes. Each
 // pass stops what it finds, so a job that forks is caught within a few.
 const maxSweepPasses = 50
@@ -59,20 +67,20 @@ func (l Leader) sweep() string {
 	if !l.ok || l.Pid <= 1 {
 		return "the shell was never named"
 	}
-	if ok, why := sweepSupported(); !ok {
+	if ok, why := canSweep(); !ok {
 		return why
 	}
-	if start, ok := startTime(l.Pid); !ok || start != l.start {
+	if start, ok := startOf(l.Pid); !ok || start != l.start {
 		return "the process at the shell's pid is not the shell that started there"
 	}
 	stopped := map[int]bool{}
 	for range maxSweepPasses {
 		fresh := 0
-		for _, pid := range sessionMembers(l.Pid) {
+		for _, pid := range listMembers(l.Pid) {
 			if pid == l.Pid || stopped[pid] {
 				continue
 			}
-			if signalMember(pid, l.Pid, stopSignal) {
+			if signalOne(pid, l.Pid, stopSignal) {
 				stopped[pid] = true
 				fresh++
 			}
@@ -82,19 +90,24 @@ func (l Leader) sweep() string {
 		}
 	}
 	for pid := range stopped {
-		signalMember(pid, l.Pid, killSignal)
+		signalOne(pid, l.Pid, killSignal)
 	}
 	// A stopped group can be continued by the kernel when a member exits, and
 	// a process continued in that instant may fork once more.
 	for range maxSweepPasses {
 		left := 0
-		for _, pid := range sessionMembers(l.Pid) {
-			if pid != l.Pid && signalMember(pid, l.Pid, killSignal) {
+		for _, pid := range listMembers(l.Pid) {
+			if pid != l.Pid && signalOne(pid, l.Pid, killSignal) {
 				left++
 			}
 		}
 		if left == 0 {
-			break
+			return ""
+		}
+	}
+	for _, pid := range listMembers(l.Pid) {
+		if pid != l.Pid {
+			return "processes were still starting in the shell's session after every pass"
 		}
 	}
 	return ""
