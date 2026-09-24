@@ -129,9 +129,10 @@ All notable changes to Abhed are recorded here. The format follows
   pipeline that ran `abhed doctor` cleanly on 1.0.1 may fail on 1.1.0
   until the key is corrected or removed; the warning names the file and the
   key.
-- **Upgrade note:** a managed file (`/etc/abhed/config.json`) that exists but
-  cannot be read, such as one readable only by root, now stops `abhed` for
-  other users instead of being ignored; so does a link there to nothing.
+- **Upgrade note:** a managed file (`/etc/abhed/config.json`) behind a
+  directory that cannot be searched, or a link there to nothing, now stops
+  `abhed` instead of being ignored. The SDK now reads the managed file even
+  without `ConfigDir`, so an embedder on a host with one is bound by it.
 - An unknown permission mode given to `-mode` or the SDK's
   `Options.Mode` is refused; it ran as `default`.
 - The SDK applies the configuration's `permissions.ask` rules, as the CLI and
@@ -326,12 +327,14 @@ All notable changes to Abhed are recorded here. The format follows
   bound as `-mode` is. `abhed eval`, which approves every prompt with nobody
   to ask, refuses to run under a managed file. `abhed resolve` runs in a
   pinned managed mode unless `-mode` says otherwise. A refusal names the
-  managed file. A managed file that cannot be read, including through a
-  directory that cannot be searched, or a link at the managed path to
-  nothing, is an error; each was treated as absent. Keys in the managed file
+  managed file. A managed file behind a directory that cannot be searched,
+  or a link at the managed path to nothing, is an error; both were treated
+  as absent, as the SDK treated the file when `ConfigDir` was empty. Keys in
+  the managed file
   are matched as the JSON decoder matches them, so one it applies, such as
   a key spelt with `ſ`, is also bound and is not reported as unknown.
-  Without a managed file nothing changes.
+  Without a managed file, the only changes are the two under Changed: an
+  unknown mode is refused, and the SDK applies `permissions.ask`.
 
 ## [1.0.1] - 2026-09-22
 
