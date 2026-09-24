@@ -375,7 +375,11 @@ func (s *Server) finishPTY(live *liveSession, sess *tools.Session, run *ptyRun) 
 	go func() {
 		if run.capture != nil {
 			// A shell takes what it left running in its session with it.
-			waited <- run.leader.Wait(run.cmd)
+			refused, err := run.leader.Wait(run.cmd)
+			if refused != "" {
+				s.log.Warn("the shell's session was not swept; what it left running may still run", "session", live.ID, "terminal", run.id, "reason", refused)
+			}
+			waited <- err
 			return
 		}
 		waited <- run.cmd.Wait()

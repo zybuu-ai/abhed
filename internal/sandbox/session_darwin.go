@@ -65,7 +65,8 @@ func sessionMembers(sid int) []int {
 	var out []int
 	for _, p := range procs {
 		pid := int(p.Proc.P_pid)
-		if pid <= 1 || pid == os.Getpid() {
+		// A zombie (SZOMB) has already ended; it is only waiting to be reaped.
+		if pid <= 1 || pid == os.Getpid() || p.Proc.P_stat == 5 {
 			continue
 		}
 		if s, err := unix.Getsid(pid); err == nil && s == sid {
@@ -74,6 +75,9 @@ func sessionMembers(sid int) []int {
 	}
 	return out
 }
+
+// sweepSupported: macOS has what the sweep needs.
+func sweepSupported() (bool, string) { return true, "" }
 
 // signalMember signals pid only if it is in session sid. macOS has no pidfd,
 // so a stop is checked again once it has taken effect, when the process can

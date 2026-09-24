@@ -19,4 +19,6 @@ func waitExited(int) error { return errors.New("not supported") }
 
 func sessionMembers(int) []int { return nil }
 
+func sweepSupported() (bool, string) { return false, "this platform cannot list a session's processes" }
+
 func signalMember(int, int, syscall.Signal) bool { return false }

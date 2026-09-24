@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -65,11 +66,30 @@ func sessionMembers(sid int) []int {
 		if err != nil || pid == os.Getpid() {
 			continue
 		}
-		if f := procStat(pid); len(f) > 3 && f[3] == want {
+		// A zombie has already ended; it is only waiting to be reaped.
+		if f := procStat(pid); len(f) > 3 && f[3] == want && f[0] != "Z" {
 			out = append(out, pid)
 		}
 	}
 	return out
+}
+
+var pidfdOnce sync.Once
+var pidfdOK bool
+
+// sweepSupported reports whether this kernel can signal through a pidfd,
+// which the sweep needs (Linux 5.3 and later).
+func sweepSupported() (bool, string) {
+	pidfdOnce.Do(func() {
+		if fd, err := unix.PidfdOpen(os.Getpid(), 0); err == nil {
+			_ = unix.Close(fd)
+			pidfdOK = true
+		}
+	})
+	if !pidfdOK {
+		return false, "this kernel cannot signal through a pidfd (Linux 5.3 or later is needed)"
+	}
+	return true, ""
 }
 
 // signalMember signals pid only if it is in session sid. A pidfd names the

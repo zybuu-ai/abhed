@@ -35,23 +35,35 @@ func Lead(cmd *exec.Cmd) Leader {
 
 // Wait waits for the shell to exit, ends every process left in its session
 // while the unreaped shell still holds the session id, and then reaps it.
-func (l Leader) Wait(cmd *exec.Cmd) error {
-	if l.ok && waitExited(l.Pid) == nil {
-		l.sweep()
+// refused says why the session was not swept, for the operator's log; it is
+// empty when the sweep ran.
+func (l Leader) Wait(cmd *exec.Cmd) (refused string, err error) {
+	switch {
+	case !l.ok:
+		refused = "the shell's start time could not be read when it started"
+	default:
+		if werr := waitExited(l.Pid); werr != nil {
+			refused = "waiting for the shell to exit failed: " + werr.Error()
+		} else {
+			refused = l.sweep()
+		}
 	}
-	return cmd.Wait()
+	return refused, cmd.Wait()
 }
 
 // sweep stops every process in the leader's session, pass after pass until a
-// pass finds none it has not stopped, then kills them. It does nothing unless
-// the process at the leader's pid is the one Lead named. It reports whether
-// it ran.
-func (l Leader) sweep() bool {
+// pass finds none it has not stopped, then kills them, and kills anything
+// that appears after. It does nothing unless the process at the leader's pid
+// is the one Lead named, and says why when it does nothing.
+func (l Leader) sweep() string {
 	if !l.ok || l.Pid <= 1 {
-		return false
+		return "the shell was never named"
+	}
+	if ok, why := sweepSupported(); !ok {
+		return why
 	}
 	if start, ok := startTime(l.Pid); !ok || start != l.start {
-		return false
+		return "the process at the shell's pid is not the shell that started there"
 	}
 	stopped := map[int]bool{}
 	for range maxSweepPasses {
@@ -72,5 +84,18 @@ func (l Leader) sweep() bool {
 	for pid := range stopped {
 		signalMember(pid, l.Pid, killSignal)
 	}
-	return true
+	// A stopped group can be continued by the kernel when a member exits, and
+	// a process continued in that instant may fork once more.
+	for range maxSweepPasses {
+		left := 0
+		for _, pid := range sessionMembers(l.Pid) {
+			if pid != l.Pid && signalMember(pid, l.Pid, killSignal) {
+				left++
+			}
+		}
+		if left == 0 {
+			break
+		}
+	}
+	return ""
 }

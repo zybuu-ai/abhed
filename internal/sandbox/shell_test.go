@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -128,6 +129,18 @@ func TestNoneShellEndsItsBackgroundJobs(t *testing.T) {
 	}
 }
 
+// A sweep that cannot run says why, so the server can log that containment
+// did not happen rather than pass over it in silence.
+func TestSweepSaysWhyItDidNotRun(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if refused, _ := (Leader{Pid: cmd.Process.Pid}).Wait(cmd); refused == "" {
+		t.Fatal("a leader that was never named was swept without a word")
+	}
+}
+
 // A session is swept only while the shell that led it is exited but not yet
 // reaped, and only if the process at its pid started when the shell did: a
 // reused pid can never be taken for the shell.
@@ -155,12 +168,12 @@ func TestSweepNeedsTheShellItNamed(t *testing.T) {
 	}
 	defer func() { _ = syscall.Kill(job, syscall.SIGKILL) }()
 
-	if other := (Leader{Pid: l.Pid, start: l.start + 1, ok: true}); other.sweep() {
+	if other := (Leader{Pid: l.Pid, start: l.start + 1, ok: true}); other.sweep() == "" {
 		t.Fatal("swept for a leader whose start time does not match")
 	}
 	_, _ = tty.Write([]byte("exit\r"))
 	_ = cmd.Wait() // reaped here, bypassing Leader.Wait
-	if l.sweep() {
+	if l.sweep() == "" {
 		t.Fatal("swept after the shell was reaped")
 	}
 	if syscall.Kill(job, 0) != nil {
@@ -196,7 +209,9 @@ func shellEndsJobs(t *testing.T, s Interactive, ws, job string, byExit bool) {
 	} else {
 		cancel()
 	}
-	_ = l.Wait(cmd)
+	if refused, _ := l.Wait(cmd); refused != "" {
+		t.Fatalf("the sweep did not run: %s", refused)
+	}
 	_ = tty.Close()
 	time.Sleep(3500 * time.Millisecond) // past the jobs' three seconds
 	if _, err := os.Stat(filepath.Join(ws, "late")); err == nil {
