@@ -136,12 +136,15 @@ edits are guarded either way.
 
 ## Working by hand
 
-You can edit a file and run a command yourself, beside the agent. Neither is a
-side door. Both go through the same call the agent's tools go through:
+You can edit a file and run a command yourself, beside the agent. A save, a
+review decision and a line in the line-by-line terminal go through the same
+call the agent's tools go through. An interactive shell is different: opening
+it is that call, and after that the sandbox bounds it and the deny rules are a
+screen on each line as typed (see **Terminal** below).
 
 | | The agent | You, in the workbench |
 |---|---|---|
-| Deny rules | refuse | refuse — `shutdown` is denied for you as it is for the agent |
+| Deny rules | refuse | refuse your saves and checked commands; in a shell, screen each line as typed at its Enter — see **Terminal** |
 | Ask rules and mutating tools | a person is asked | taken as answered: you are the person |
 | Workspace boundary | cannot leave it | cannot leave it |
 | `.abhed/`, `.git/`, anything a read rule withholds | not served | cannot be opened or written |
@@ -210,8 +213,14 @@ Tabs are opened with **+**, renamed by double-clicking, and closed with **×**.
 **Kill** ends the shell; Enter then opens a new one. Ctrl+C goes to the
 terminal, which interrupts the program in the foreground, as in any terminal.
 Pasting several lines runs them in turn. The shell keeps its own working
-directory, so a `cd` there never moves the agent. A shell nobody has watched
-for two minutes is ended, and one is never kept longer than twelve hours.
+directory, so a `cd` there never moves the agent. Reloading the page
+reattaches to the shells it had open, with their recent output. A shell nobody
+has watched for 30 minutes is ended (`sandbox.terminal_idle_minutes`), and one
+is never kept longer than twelve hours. Ending a shell, by **Kill**, closing
+its tab, deleting the session or either limit, hangs it up, and bash hangs up
+the jobs it started in the background; so does typing `exit`. A job started
+with `nohup`, `disown` or `setsid` ignores that and keeps running until it
+ends, within the sandbox.
 
 What a shell changes about the checks, stated plainly:
 
@@ -222,15 +231,27 @@ What a shell changes about the checks, stated plainly:
   from the keys it passes on and, before the Enter reaches the shell, puts it to
   the policy. A line a deny rule matches is refused, recorded as a denied `bash`
   call, and discarded. That stops a denied command typed or pasted at the
-  prompt. It cannot see what history recall, tab completion, an alias, a
-  function, a script, or a program running full screen actually runs, because
-  the shell decides that after the line is sent.
+  prompt. It does not see what the shell makes of the line afterwards:
+  history recall (the arrow keys, `!!`, Ctrl-R, Ctrl-O), tab completion,
+  variables and other expansions (`$CMD`), a line continued with `\` onto the
+  next, an alias, a function, a script, or anything typed into another program,
+  including a nested shell.
 - **Lines are recorded as typed, best effort.** Each line is recorded as
   `terminal.input`, marked `edited` when it used keys the server cannot follow
-  (Tab, the arrow keys), since the shell may then have run something else. A
-  line the terminal did not echo back, as at a password prompt, is recorded
-  without its text. Keys typed inside a full-screen program such as `vim` are
-  not recorded.
+  (Tab, the arrow keys), since the shell may then have run something else. When
+  the server cannot be sure the terminal showed a line as it was typed, it
+  records that a line was entered but not its text: at a password prompt, for
+  a line whose echo it did not see, and for a short line where it could not ask
+  the terminal. Keys typed ahead while a command still runs are shown by the
+  terminal as they arrive, so a password typed ahead of its prompt is in the
+  recorded output, as it was on screen.
+- **Which program has the keys.** On the process and none tiers the server
+  asks the terminal which process group is in the foreground: while it is not
+  the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
+  screened nor recorded. On the container tier the engine's CLI holds the
+  terminal, so the server can only watch for a program switching to the
+  alternate screen; a `printf` of that sequence switches the screening and the
+  recording off there until the screen is switched back.
 
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on
@@ -262,8 +283,9 @@ open.
 - **A shell's lines are screened as typed, not judged as run.** See
   *Terminal* above; `sandbox.terminal: "lines"` trades the shell for a policy
   decision on every line.
-- **Terminals do not survive a page reload.** A reload opens new shells; the
-  old ones end once nobody is watching them.
+- **Shells reattach only in the same browser tab.** Another tab or browser
+  opens new shells; the old ones end once nobody has watched them for the idle
+  limit.
 - **Files over 4 MB are read-only**, shown in part.
 - **Changes** covers saves and edits made with `write` and `edit`. A file
   changed by a shell command, yours or the agent's, does not appear there.

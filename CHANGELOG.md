@@ -87,7 +87,8 @@ All notable changes to Abhed are recorded here. The format follows
   new `terminal.input` event. The docs say plainly that the sandbox is the
   boundary and the line checks are best effort. `sandbox.terminal: "lines"`
   keeps the one-checked-command-per-line terminal, which a managed policy
-  with `bash` deny rules also gets.
+  with `bash` deny rules also gets. A page reload reattaches to its shells; a
+  shell nobody watches ends after 30 minutes (`sandbox.terminal_idle_minutes`).
 - A session can be opened without a prompt (`POST /v1/sessions` with
   `"workbench": true`). The workbench opens one, so the terminal works as soon
   as the page loads; the first message goes to it. It records
@@ -96,6 +97,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- **Security-relevant default:** the workbench terminal no longer judges each
+  line before it runs. After an upgrade it is an interactive shell, bounded by
+  the sandbox, in which `bash` deny rules only screen each line as typed and
+  miss what the shell expands, recalls or runs from a script. To keep a policy
+  decision on every line, set `sandbox.terminal: "lines"`; a managed policy
+  with `bash` deny rules keeps it without that setting. Deny rules still hold
+  for every tool call, the agent's and a person's.
 - The workbench streams replies with one DOM append per frame, follows the
   conversation only when you are at the bottom of it, reconnects from the last
   event it drew rather than replaying the session, draws a tool call's body
@@ -127,7 +135,7 @@ All notable changes to Abhed are recorded here. The format follows
   workbench sessions nobody has messaged, so they can be reopened.
 - A session continued from its record no longer shows the model the calls a
   person made in the workbench, which the model had never seen while the
-  session ran.
+  session ran, and `recall` no longer returns their results.
 - `GET /v1/capabilities` reports the sandbox tier in force and its mechanism,
   not the configured minimum.
 - `SECURITY.md` supports the latest 1.x release; earlier 1.x releases are

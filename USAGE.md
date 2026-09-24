@@ -209,7 +209,9 @@ undoes as one change. Undoing a file the agent *created* deletes it.
 | `auto` | Approve by rule; deny rules and destructive commands still confirm |
 | `bypass` | Dangerous; refusable by org policy, blocked as root |
 
-Deny rules are **absolute** — they hold even in `bypass`. Destructive commands
+Deny rules are **absolute** for every tool call — they hold even in `bypass`.
+In the workbench's interactive terminal, which the sandbox bounds, they are a
+best-effort screen on each line typed; see `docs/guide/16-workbench.md`. Destructive commands
 (`rm -rf`, force push, `find -delete`, `mkfs`…) confirm in *every* mode.
 
 ---

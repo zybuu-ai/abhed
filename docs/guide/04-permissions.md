@@ -44,7 +44,7 @@ are protected when you are not.
 Every call goes through the same six steps, and the order is the design:
 
 1. **Hooks** — extensions, first, so they can veto
-2. **Deny rules** — absolute; they survive every mode, including `bypass`
+2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Destructive commands** — force push, hard reset, disk writes, fork bombs and similar always confirm, in every mode, because there is no undo
 4. **Ask rules** — force a prompt even where a later allow would match
 5. **Mode**

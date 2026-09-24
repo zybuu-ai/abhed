@@ -91,7 +91,9 @@ Layered, because no single control is sufficient:
    text into a system prompt.
 2. **Structural separation.** Untrusted content is delivered in a distinct message role or
    delimited block, never spliced into instructions.
-3. **Action-level policy (L2).** Deny rules are absolute and survive every permission mode.
+3. **Action-level policy (L2).** Deny rules are absolute for every tool call and survive
+   every permission mode. A person's interactive workbench shell is bounded by the sandbox;
+   there they screen each line typed, best effort (`docs/guide/16-workbench.md`).
 4. **Sensitive-action confirmation.** Destructive filesystem ops, credential access, egress,
    and privilege changes require explicit approval regardless of mode — no mode auto-approves
    them.

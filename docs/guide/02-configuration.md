@@ -118,6 +118,8 @@ This is a boundary, not a jail: it is not sufficient for genuinely hostile code.
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
+`"terminal_idle_minutes"` is how long a workbench shell nobody is watching
+stays open; unset means 30.
 
 ## Storage
 
