@@ -152,18 +152,24 @@ func (s *Store) Env(names []string) ([]string, error) {
 	return out, nil
 }
 
-// Redactor returns a function that replaces every stored value in a JSON
-// payload with [secret:NAME]. Values are matched in their JSON-escaped form,
-// which is how they would appear inside an event, and the longest first so a
-// value that contains another is replaced whole.
-func (s *Store) Redactor() func([]byte) []byte {
+// Redactor replaces every stored value in a JSON payload with [secret:NAME].
+// Values are matched in their JSON-escaped form, which is how they would
+// appear inside an event, and the longest first so a value that contains
+// another is replaced whole.
+type Redactor struct {
+	pairs []pair
+}
+
+type pair struct{ needle, label string }
+
+// Redactor returns a redactor for the values stored now.
+func (s *Store) Redactor() *Redactor {
 	s.mu.Lock()
 	m, err := s.load()
 	s.mu.Unlock()
 	if err != nil || len(m) == 0 {
-		return func(b []byte) []byte { return b }
+		return &Redactor{}
 	}
-	type pair struct{ needle, label string }
 	pairs := make([]pair, 0, len(m))
 	for name, value := range m {
 		esc, _ := json.Marshal(value)
@@ -174,11 +180,26 @@ func (s *Store) Redactor() func([]byte) []byte {
 		pairs = append(pairs, pair{needle, "[secret:" + name + "]"})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
-	return func(b []byte) []byte {
-		text := string(b)
-		for _, p := range pairs {
-			text = strings.ReplaceAll(text, p.needle, p.label)
-		}
-		return []byte(text)
+	return &Redactor{pairs: pairs}
+}
+
+// Redact returns the payload with every stored value replaced.
+func (r *Redactor) Redact(b []byte) []byte {
+	if len(r.pairs) == 0 {
+		return b
 	}
+	text := string(b)
+	for _, p := range r.pairs {
+		text = strings.ReplaceAll(text, p.needle, p.label)
+	}
+	return []byte(text)
+}
+
+// Span is the byte length of the longest value in its escaped form, or 0 when
+// none is stored: the most text a caller streaming fragments must hold back.
+func (r *Redactor) Span() int {
+	if len(r.pairs) == 0 {
+		return 0
+	}
+	return len(r.pairs[0].needle)
 }

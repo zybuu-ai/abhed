@@ -151,7 +151,7 @@ type Options struct {
 	Registry *tools.Registry
 	// Redact rewrites every event payload before it is written; the app sets
 	// it from the secrets store. Nil records payloads as they are.
-	Redact func([]byte) []byte
+	Redact agent.Redactor
 	// SkillListing is the rendered skill index for the system prompt. The
 	// server takes the rendered string rather than the registry, because the
 	// registry's only other use is the tool, which is already in Registry.

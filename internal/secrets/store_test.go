@@ -59,7 +59,7 @@ func TestRedactorReplacesStoredValuesInPayloads(t *testing.T) {
 	s := Open(filepath.Join(t.TempDir(), "secrets.json"))
 	_ = s.Set("TOKEN", `tok"en/with\slash`)
 	_ = s.Set("PREFIX", "tok")
-	redact := s.Redactor()
+	redact := s.Redactor().Redact
 
 	payload, _ := json.Marshal(map[string]string{"content": `Authorization: tok"en/with\slash and tok alone`})
 	got := string(redact(payload))
@@ -73,7 +73,7 @@ func TestRedactorReplacesStoredValuesInPayloads(t *testing.T) {
 	if err := json.Unmarshal([]byte(got), &back); err != nil {
 		t.Fatalf("redaction broke the JSON: %v\n%s", err, got)
 	}
-	if string(Open(filepath.Join(t.TempDir(), "none.json")).Redactor()([]byte(`{"a":1}`))) != `{"a":1}` {
+	if string(Open(filepath.Join(t.TempDir(), "none.json")).Redactor().Redact([]byte(`{"a":1}`))) != `{"a":1}` {
 		t.Fatal("an empty store must leave payloads alone")
 	}
 }
