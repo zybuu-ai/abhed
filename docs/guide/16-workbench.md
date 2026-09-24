@@ -88,8 +88,11 @@ The same queue is available to any client: a message posted to a busy session
 answers `202` with `"delivery": "steered"` and a `queue_id`,
 `GET /v1/sessions/{id}/queue` lists what is waiting, and
 `DELETE /v1/sessions/{id}/queue/{qid}` withdraws one. The `user.message` that
-delivers a queued message carries the same id as `queue_id`. Posting with
-`"interrupt": true` is Send now. Streamed reasoning is recorded as
+delivers a queued message carries the same id as `queue_id`, and a
+`client_id` sent with any message comes back on its `user.message` too.
+Posting with `"interrupt": true` is Send now. On a server with node routing,
+the queue routes and `/interrupt` answer `421` with `Abhed-Session-Node` for
+a session running on another node. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
 text, so a reader that ignores the parts is unaffected.
 

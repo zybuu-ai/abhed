@@ -131,6 +131,8 @@ POST /v1/sessions/{id}/messages      → 202, events stream; to a busy session
 GET  /v1/sessions/{id}/events        → SSE (resumable via Last-Event-ID or ?after=seq)
 GET  /v1/sessions/{id}/queue         → messages waiting for the next turn boundary
 DELETE /v1/sessions/{id}/queue/{qid} → 204, or 404 once the loop has read it
+                                       (these and /interrupt: 421 + Abhed-Session-Node
+                                       for a session on another node)
 POST /v1/sessions/{id}/interrupt     → 204
 POST /v1/sessions/{id}/approve       → {event_id, decision, scope}
 POST /v1/sessions/{id}/compact       → 202
