@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -426,6 +427,10 @@ loop:
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		code = ee.ExitCode()
+		// Ended by a signal: the status a shell would report, 128 plus its number.
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			code = 128 + int(ws.Signal())
+		}
 	} else if err != nil {
 		code = -1
 	}

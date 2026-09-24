@@ -855,6 +855,8 @@ func TestShellEndIsNotAnError(t *testing.T) {
 			t.Fatalf("exit=%v: the shell's end is recorded as an error: %+v", byExit, obs)
 		case byExit && *obs.ExitCode != 3:
 			t.Fatalf("exit 3 recorded as %d", *obs.ExitCode)
+		case !byExit && *obs.ExitCode <= 128:
+			t.Fatalf("a shell ended by a signal recorded exit %d, not 128 plus the signal", *obs.ExitCode)
 		case !byExit && !strings.Contains(obs.Content, "closed from the workbench"):
 			t.Fatalf("a closed shell does not say so: %q", obs.Content)
 		}
