@@ -442,6 +442,9 @@ type SandboxConfig struct {
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
+	// TerminalIdleMinutes ends a workbench shell nobody has watched for this
+	// long. Zero means 30.
+	TerminalIdleMinutes int `json:"terminal_idle_minutes,omitempty"`
 }
 
 type LimitsConfig struct {

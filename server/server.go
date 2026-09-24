@@ -925,13 +925,14 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		adapter = a
 	}
 	sessionID := newSessionID()
-	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
-		return "", err
-	}
 	rec := agent.NewRecorder(s.store, sessionID, "")
 	rec.Redact = s.opts.Redact
+	// Built before the row is written, so a failure leaves no empty session listed.
 	live, _, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
 	if err != nil {
+		return "", err
+	}
+	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
 		return "", err
 	}
 	live.State = "idle"

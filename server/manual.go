@@ -17,7 +17,8 @@ import (
 
 // What the person at the workbench does by hand — saving a file, running a
 // command — goes through agent.Loop.Manual: the same policy, the same sandbox
-// and the same record as the agent's own calls. There is no second, softer path.
+// and the same record as the agent's own calls. An interactive shell (pty.go)
+// is judged when it opens and is then bounded by the sandbox alone.
 
 // maxManualCommand bounds a command line typed into the workbench.
 const maxManualCommand = 8 << 10

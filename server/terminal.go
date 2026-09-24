@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -15,31 +16,45 @@ import (
 // sandbox is the terminal's boundary. What the server can still do, from the
 // keys it forwards, is rebuild each line as typed, put it to the deny rules
 // before the Enter reaches the shell, and record it. Both are best effort, and
-// the docs say so (docs/guide/16-workbench.md).
+// the docs say so (docs/guide/16-workbench.md). Where it cannot tell whether a
+// line was a secret, it records the line without its text.
 
 const (
-	// echoWait is how long a line's echo has to arrive before it is judged.
+	// echoWait is how long a pasted line's echo has to arrive before it is judged.
 	echoWait = 300 * time.Millisecond
 	// echoKeep bounds the output kept to find a line's echo in.
 	echoKeep = 8 << 10
-	// probeLen is how much of the end of a line is looked for in the echo.
+	// probeLen is how much of the end of a line is looked for in the echo,
+	// and probeMin the least that counts as a match.
 	probeLen = 12
+	probeMin = 4
+	// maxPending bounds the lines waiting to be judged; more are counted, not kept.
+	maxPending = 64
+	// withheldEcho is why a line's text is not in the record.
+	withheldEcho = "the terminal did not show this line as typed, so its text is not recorded"
 )
 
 // enteredLine is one line, at the Enter that submitted it.
 type enteredLine struct {
 	line   string
 	edited bool
-	// probe is the end of the last stretch typed without an editing key,
-	// which the terminal echoes verbatim when echo is on.
+	// probe is the end of what was typed without an editing key, which a
+	// terminal with echo on shows verbatim.
 	probe string
 	// typedEcho is whether any output arrived while the line was typed.
 	typedEcho bool
-	alt       bool
-	// whole is set when every key of the line is in this chunk, so none of
-	// it has reached the shell yet.
+	// whole is set when every key of the line came in one write, so none of it
+	// reached the shell before the Enter did: a paste.
 	whole bool
-	echo  []byte
+	// echo is the output while the line was typed; for a whole line, the
+	// output just after its Enter.
+	echo []byte
+	// known is set when the terminal was asked at the Enter (process and none
+	// tiers). secret is canonical mode with echo off, how a password is read;
+	// program is another process group in the foreground than the shell.
+	known, secret, program bool
+	// alt is the container tier's guess at a full-screen program.
+	alt bool
 }
 
 // keyChunk is input to forward as it is; enter, when set, is the line its
@@ -55,6 +70,7 @@ type lineCapture struct {
 	mu    sync.Mutex
 	line  []byte
 	run   []byte
+	mark  int // how much of run came in earlier writes
 	esc   int // 0 none, 1 after ESC, 2 in a CSI sequence, 3 after ESC O
 	param []byte
 	edit  bool
@@ -63,9 +79,12 @@ type lineCapture struct {
 	started   bool
 	typedEcho bool
 	echo      []byte
-	// alt is whether a full-screen program has the alternate screen.
+	// alt follows the alternate screen, where the terminal cannot be asked;
+	// tail keeps the end of the last read, for a switch split across two.
 	alt     bool
+	tail    []byte
 	pending []*enteredLine
+	dropped int
 	record  func(agent.TerminalInput)
 	callID  string
 }
@@ -74,12 +93,17 @@ func newLineCapture(callID string, record func(agent.TerminalInput)) *lineCaptur
 	return &lineCapture{callID: callID, record: record}
 }
 
-// keys splits typed input at each Enter and rebuilds the line each submits.
+// isSubmit is a key that hands the line to the shell: Enter, and Ctrl-O,
+// which bash runs as operate-and-get-next.
+func isSubmit(b byte) bool { return b == '\r' || b == '\n' || b == 0x0f }
+
+// keys splits typed input at each submit and rebuilds the line each one hands over.
 func (c *lineCapture) keys(data []byte) []keyChunk {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var out []keyChunk
 	from, here := 0, false
+	c.mark = len(c.run)
 	for i, b := range data {
 		if !c.started {
 			c.started, c.typedEcho, c.echo, here = true, false, nil, true
@@ -113,9 +137,9 @@ func (c *lineCapture) keys(data []byte) []keyChunk {
 			continue
 		}
 		switch {
-		case b == '\r' || b == '\n':
-			e := c.submit()
-			e.whole, here = here, false
+		case isSubmit(b):
+			e := c.submit(here)
+			here = false
 			out = append(out, keyChunk{data: data[from : i+1], enter: e})
 			from = i + 1
 		case b == 0x1b:
@@ -134,7 +158,7 @@ func (c *lineCapture) keys(data []byte) []keyChunk {
 			}
 			c.edited()
 		case b == 0x03 || b == 0x15: // Ctrl-C and Ctrl-U abandon the line
-			c.line, c.run, c.edit = c.line[:0], c.run[:0], false
+			c.line, c.run, c.edit, c.mark = c.line[:0], c.run[:0], false, 0
 		case b < 0x20:
 			c.edited()
 		default:
@@ -152,53 +176,79 @@ func (c *lineCapture) keys(data []byte) []keyChunk {
 	return out
 }
 
+// abandon forgets the line being typed.
+func (c *lineCapture) abandon() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.line, c.run, c.edit, c.started, c.mark = c.line[:0], c.run[:0], false, false, 0
+}
+
 // edited marks the line as changed by a key the capture cannot follow.
 func (c *lineCapture) edited() {
 	c.edit = true
-	c.run = c.run[:0]
+	c.run, c.mark = c.run[:0], 0
 }
 
-// submit ends the current line. Called with c.mu held.
-func (c *lineCapture) submit() *enteredLine {
+// submit ends the current line. Called with c.mu held. A typed line can only
+// be matched against output that came before its Enter, so its probe is what
+// came in earlier writes; a whole line is matched against what follows.
+func (c *lineCapture) submit(whole bool) *enteredLine {
 	probe := c.run
+	if !whole {
+		probe = c.run[:min(c.mark, len(c.run))]
+	}
 	if len(probe) > probeLen {
 		probe = probe[len(probe)-probeLen:]
 		for len(probe) > 0 && !utf8.RuneStart(probe[0]) {
 			probe = probe[1:]
 		}
 	}
-	e := &enteredLine{line: string(c.line), edited: c.edit, probe: string(probe),
-		typedEcho: c.typedEcho, alt: c.alt, echo: append([]byte(nil), c.echo...)}
-	c.line, c.run, c.edit, c.started = c.line[:0], c.run[:0], false, false
+	e := &enteredLine{line: string(c.line), edited: c.edit, probe: string(probe), whole: whole,
+		typedEcho: c.typedEcho, alt: c.alt}
+	if !whole {
+		e.echo = append([]byte(nil), c.echo...)
+	}
+	c.line, c.run, c.edit, c.started, c.mark = c.line[:0], c.run[:0], false, false, 0
 	return e
 }
 
 // output follows what the terminal wrote: the echo of the line being typed,
-// the echo of lines waiting to be judged, and the alternate screen.
+// the echo of pasted lines waiting to be judged, and the alternate screen.
 func (c *lineCapture) output(chunk []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.alt = altScreen(chunk, c.alt)
+	joined := append(append([]byte(nil), c.tail...), chunk...)
+	c.alt = altScreen(joined, c.alt)
+	c.tail = append([]byte(nil), joined[max(0, len(joined)-8):]...)
 	if c.started {
 		c.typedEcho = true
 		c.echo = keepTail(append(c.echo, chunk...), echoKeep)
 	}
 	for _, p := range c.pending {
-		if room := echoKeep - len(p.echo); room > 0 {
+		if room := echoKeep - len(p.echo); p.whole && room > 0 {
 			p.echo = append(p.echo, chunk[:min(room, len(chunk))]...)
 		}
 	}
 }
 
-// entered queues a line that reached the shell, to be judged and recorded
-// once its echo has had time to arrive.
+// entered queues a line that reached the shell, to be judged and recorded:
+// at once when typed, after its echo has had time to arrive when pasted.
 func (c *lineCapture) entered(e *enteredLine) {
-	if e.alt || (e.line == "" && !e.edited) {
-		return // a full-screen program's keys, or an empty line
+	if e.program || (e.line == "" && !e.edited) {
+		return // keys for a program other than the shell, or an empty line
 	}
 	c.mu.Lock()
+	if len(c.pending) >= maxPending {
+		c.dropped++
+		c.mu.Unlock()
+		return
+	}
 	c.pending = append(c.pending, e)
 	c.mu.Unlock()
+	if !e.whole {
+		c.judge(e)
+		return
+	}
 	time.AfterFunc(echoWait, func() { c.judge(e) })
 }
 
@@ -212,8 +262,7 @@ func (c *lineCapture) flush() {
 	}
 }
 
-// judge records a line once. A line the terminal did not echo is recorded
-// without its text: echo off is how a program asks for a password.
+// judge records a line once, without its text unless the terminal showed it.
 func (c *lineCapture) judge(e *enteredLine) {
 	c.mu.Lock()
 	found := false
@@ -224,23 +273,40 @@ func (c *lineCapture) judge(e *enteredLine) {
 			break
 		}
 	}
+	dropped := 0
+	if len(c.pending) == 0 {
+		dropped, c.dropped = c.dropped, 0
+	}
 	c.mu.Unlock()
-	if !found {
-		return
+	if found {
+		in := agent.TerminalInput{CallID: c.callID, Line: e.line, Edited: e.edited}
+		if !e.echoed() {
+			in = agent.TerminalInput{CallID: c.callID, Withheld: withheldEcho}
+		}
+		c.record(in)
 	}
-	in := agent.TerminalInput{CallID: c.callID, Line: e.line, Edited: e.edited}
-	if !e.echoed() {
-		in = agent.TerminalInput{CallID: c.callID, Withheld: "the terminal did not echo this line"}
+	if dropped > 0 {
+		c.record(agent.TerminalInput{CallID: c.callID,
+			Withheld: fmt.Sprintf("%d more lines came faster than they could be followed, and are not recorded", dropped)})
 	}
-	c.record(in)
 }
 
-// echoed reports whether the terminal showed the line as it was typed.
+// echoed reports whether the terminal showed the line as it was typed. When
+// unsure it says no: a line wrongly withheld costs a record its text, a
+// line wrongly kept can put a password in it.
 func (e *enteredLine) echoed() bool {
-	if e.probe == "" {
-		return e.typedEcho
+	if e.secret || e.probe == "" || !strings.Contains(plainText(e.echo), e.probe) {
+		return false
 	}
-	return strings.Contains(plainText(e.echo), e.probe) && (!e.edited || e.typedEcho)
+	if e.edited && !e.typedEcho && !e.whole {
+		return false
+	}
+	if len(e.probe) >= probeMin {
+		return true
+	}
+	// A short line is kept only when the terminal said it was not reading a
+	// password and the whole line, unedited, is what matched.
+	return e.known && !e.edited && e.probe == e.line
 }
 
 // altScreen follows the switches to and from a full-screen program's screen.

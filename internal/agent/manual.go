@@ -12,8 +12,9 @@ import (
 
 // Manual runs a tool call made by the person at the keyboard rather than by
 // the model. It passes the same policy, runs the same tool in the same sandbox
-// and leaves the same events, so a person in the workbench holds no power the
-// agent lacks and nothing they do is missing from the record.
+// and leaves the same events as the agent's call would. The interactive
+// terminal is the exception: past the call that opens it, only the sandbox
+// bounds a shell, and its lines are screened and recorded best effort.
 //
 // An Ask is taken as answered: the person who would be asked is the caller.
 // A Deny holds for them as it does for the agent.

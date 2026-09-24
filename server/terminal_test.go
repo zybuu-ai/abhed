@@ -8,8 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -67,19 +71,69 @@ func (wb *workbench) startShell() ptyStartResponse {
 	return out
 }
 
-// typeLines follows a shell's output while typing each piece into it, a moment
-// apart, and returns the output and the exit once the shell ends.
-func (wb *workbench) typeLines(id string, lines ...string) (string, string) {
+// step is keys to type, then what to wait for in the output before the next
+// step: a prompt by default when the keys end a line, or until when it is set.
+// do, when set, runs instead of typing.
+type step struct {
+	keys  string
+	until string
+	do    func(out string)
+}
+
+// typeLines types each piece into a shell, waiting for its prompt between
+// lines, and returns the output and the exit once the shell ends.
+func (wb *workbench) typeLines(id string, pieces ...string) (string, string) {
+	steps := make([]step, len(pieces))
+	for i, p := range pieces {
+		steps[i] = step{keys: p}
+	}
+	return wb.drive(id, steps...)
+}
+
+// drive follows a shell's output while taking each step once the output
+// shows the previous one landed, rather than after a fixed pause.
+func (wb *workbench) drive(id string, steps ...step) (string, string) {
 	wb.t.Helper()
 	srv := httptest.NewServer(wb.h)
 	defer srv.Close()
+	var mu sync.Mutex
+	var out strings.Builder
+	grew := make(chan struct{}, 1)
+	snapshot := func() string { mu.Lock(); defer mu.Unlock(); return out.String() }
+	waitFor := func(from int, pred func(string) bool) {
+		deadline := time.After(10 * time.Second)
+		for {
+			if s := snapshot(); len(s) >= from && pred(s[from:]) {
+				return
+			}
+			select {
+			case <-grew:
+			case <-deadline:
+				return
+			}
+		}
+	}
+	prompted := func(s string) bool { return strings.HasSuffix(strings.TrimRight(s, " "), "$") }
 	go func() {
-		for _, l := range lines {
-			time.Sleep(400 * time.Millisecond)
-			req, _ := http.NewRequest("POST", srv.URL+"/v1/sessions/"+wb.session+"/pty/"+id+"/input", strings.NewReader(l))
+		waitFor(0, prompted)
+		for _, st := range steps {
+			from := len(snapshot())
+			if st.do != nil {
+				st.do(snapshot())
+				continue
+			}
+			req, _ := http.NewRequest("POST", srv.URL+"/v1/sessions/"+wb.session+"/pty/"+id+"/input", strings.NewReader(st.keys))
 			req.Header.Set("X-Abhed-Tenant", "acme")
 			if resp, err := http.DefaultClient.Do(req); err == nil {
 				resp.Body.Close()
+			}
+			switch {
+			case st.until != "":
+				waitFor(from, func(s string) bool { return strings.Contains(s, st.until) })
+			case strings.HasSuffix(st.keys, "\r"):
+				waitFor(from, prompted)
+			default:
+				waitFor(from, func(s string) bool { return s != "" })
 			}
 		}
 	}()
@@ -90,7 +144,6 @@ func (wb *workbench) typeLines(id string, lines ...string) (string, string) {
 		wb.t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var out strings.Builder
 	exit, event := "", ""
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
@@ -100,12 +153,18 @@ func (wb *workbench) typeLines(id string, lines ...string) (string, string) {
 			event = strings.TrimPrefix(line, "event: ")
 		case strings.HasPrefix(line, "data: ") && event == "out":
 			b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(line, "data: "))
+			mu.Lock()
 			out.Write(b)
+			mu.Unlock()
+			select {
+			case grew <- struct{}{}:
+			default:
+			}
 		case strings.HasPrefix(line, "data: ") && event == "exit":
 			exit = strings.TrimPrefix(line, "data: ")
 		}
 	}
-	return out.String(), exit
+	return snapshot(), exit
 }
 
 // typed returns the lines the record holds as entered at a terminal.
@@ -229,6 +288,97 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 	}
 }
 
+// A secret typed ahead while a command still runs, then edited once the
+// password prompt is up, is never recorded in clear. It was recorded as
+// "s3cretr" before: the one key typed after the edit matched stray output.
+func TestShellWithholdsATypedAheadPassword(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `sleep 1; read -s -p "Password: " pw; echo "got ${#pw}"` + "\r", until: "s -p"},
+		step{keys: "s3cretX", until: "s3cretX"},
+		step{keys: "", until: "Password: "},
+		step{keys: "\x7fr\r", until: "got 7"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "got 7") {
+		t.Fatalf("the prompt did not take the input:\n%s", out)
+	}
+	// Keys typed ahead were echoed while sleep ran, so they are in the output
+	// the record keeps, as they were on screen; the line itself is not.
+	for _, in := range wb.typed() {
+		if strings.Contains(in.Line, "s3cret") || strings.Contains(in.Line, "3cretr") {
+			t.Fatalf("a password reached the record as a line: %+v", in)
+		}
+	}
+	if !slices.ContainsFunc(wb.typed(), func(in agent.TerminalInput) bool { return in.Withheld != "" }) {
+		t.Fatalf("the password line is not marked as withheld: %+v", wb.typed())
+	}
+}
+
+// Kill ends the shell's background jobs too: an interactive bash gives each
+// its own process group, which killing the shell alone left running.
+func TestShellKillEndsBackgroundJobs(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: "sleep 300 & echo job=$!\r", until: "\njob="},
+		step{do: func(string) {
+			if rec := wb.send("acme", "DELETE", "pty/"+start.ID, nil); rec.Code != http.StatusNoContent {
+				t.Errorf("kill: %d", rec.Code)
+			}
+		}})
+	m := regexp.MustCompile(`job=(\d+)`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no job pid:\n%s", out)
+	}
+	pid, _ := strconv.Atoi(m[1])
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("background job %d outlived Kill", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// Switching the terminal to the alternate screen does not switch off the
+// screen: on the process and none tiers, whether a program has the terminal
+// is asked of the terminal, not guessed from what was printed.
+func TestShellScreensAfterAnAlternateScreenSwitch(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.typeLines(start.ID, enter(`printf '\033[?1049h'`, "touch shutdown-alt", "echo after-alt", "exit")...)
+	if fileExists(filepath.Join(wb.workspace, "shutdown-alt")) || !strings.Contains(out, "Denied") {
+		t.Fatalf("a printf turned the screen off:\n%s", out)
+	}
+	if !slices.ContainsFunc(wb.typed(), func(in agent.TerminalInput) bool { return in.Line == "echo after-alt" }) {
+		t.Fatalf("lines after a printf were not recorded: %+v", wb.typed())
+	}
+}
+
+// Keys for a program other than the shell (here, a nested cat) are neither
+// screened nor recorded as shell lines, and the shell's are again after it.
+func TestShellLeavesAProgramsInputAlone(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	wb.drive(start.ID,
+		step{keys: "cat > note.txt\r", until: "note.txt"},
+		step{do: func(string) { time.Sleep(300 * time.Millisecond) }}, // for cat to take the foreground
+		step{keys: "kept shutdown words\r", until: "words"},
+		step{keys: "\x04", until: "(no sandbox)"},
+		step{keys: "echo back\r"},
+		step{keys: "exit\r"})
+	if got, _ := os.ReadFile(filepath.Join(wb.workspace, "note.txt")); string(got) != "kept shutdown words\n" {
+		t.Fatalf("input to a program was screened: %q", got)
+	}
+	lines := wb.typed()
+	if slices.ContainsFunc(lines, func(in agent.TerminalInput) bool { return strings.Contains(in.Line, "kept") }) ||
+		!slices.ContainsFunc(lines, func(in agent.TerminalInput) bool { return in.Line == "echo back" }) {
+		t.Fatalf("recorded: %+v", lines)
+	}
+}
+
 // Where a shell cannot be offered honestly, the terminal judges each line.
 func TestShellFallsBackToLines(t *testing.T) {
 	for name, wb := range map[string]*workbench{
@@ -311,6 +461,93 @@ func TestLineCaptureRebuildsTypedLines(t *testing.T) {
 	c.output([]byte("\x1b[?1049h"))
 	if chunks := c.keys([]byte(":wq\r")); !chunks[0].enter.alt {
 		t.Error("a full-screen program's keys were taken for a shell line")
+	}
+}
+
+// When the capture cannot be sure a line was shown as typed, it keeps the line
+// without its text.
+func TestLineCaptureWithholdsWhenUnsure(t *testing.T) {
+	typed := func(keys string, echo string, known, secret bool) *enteredLine {
+		c := newLineCapture("u1", nil)
+		for i := range keys[:len(keys)-1] {
+			c.keys([]byte{keys[i]})
+			c.output([]byte(echo))
+		}
+		e := c.keys([]byte{keys[len(keys)-1]})[0].enter
+		e.known, e.secret = known, secret
+		return e
+	}
+	for name, tc := range map[string]struct {
+		e    *enteredLine
+		want bool
+	}{
+		"echoed long line":        {typed("git status\r", "git status", false, false), true},
+		"not echoed":              {typed("hunter22\r", "\r\n", true, false), false},
+		"password mode":           {typed("git status\r", "git status", true, true), false},
+		"short, terminal asked":   {typed("ls\r", "ls", true, false), true},
+		"short, terminal unknown": {typed("ls\r", "ls", false, false), false},
+		"edit at the Enter":       {typed("abcdX\x7fr\r", "abcdX", true, false), false},
+	} {
+		if got := tc.e.echoed(); got != tc.want {
+			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)
+		}
+	}
+}
+
+// A switch to the alternate screen split across two reads is still seen.
+func TestLineCaptureSeesASplitScreenSwitch(t *testing.T) {
+	c := newLineCapture("u1", nil)
+	c.output([]byte("vim\x1b[?10"))
+	c.output([]byte("49h~"))
+	if !c.alt {
+		t.Fatal("a switch split across reads was missed")
+	}
+}
+
+// A flood of lines cannot turn into a flood of events.
+func TestLineCaptureBoundsWhatWaits(t *testing.T) {
+	var got []agent.TerminalInput
+	var mu sync.Mutex
+	c := newLineCapture("u1", func(in agent.TerminalInput) { mu.Lock(); got = append(got, in); mu.Unlock() })
+	for _, k := range c.keys([]byte(strings.Repeat("abcdef\r", 500))) {
+		c.entered(k.enter)
+	}
+	c.flush()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != maxPending+1 || !strings.Contains(got[len(got)-1].Withheld, "436 more lines") {
+		t.Fatalf("%d events, last %+v", len(got), got[len(got)-1])
+	}
+}
+
+// Another person in the same tenant cannot reopen someone's session.
+func TestWorkbenchSessionReopensOnlyForItsOwner(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	h := first.Handler()
+	do := func(h http.Handler, method, path, user, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-Abhed-Tenant", "acme")
+		req.Header.Set("X-Abhed-User", user)
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := do(h, "POST", "/v1/sessions", "alice", `{"workbench":true}`)
+	var created createResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	first.drain()
+	h = New(opts).Handler()
+	if rec := do(h, "POST", "/v1/sessions/"+created.SessionID+"/exec", "bob", `{"command":"echo x"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("another user in the tenant: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "POST", "/v1/sessions/"+created.SessionID+"/exec", "alice", `{"command":"echo mine"}`); rec.Code != http.StatusOK {
+		t.Fatalf("the owner: %d %s", rec.Code, rec.Body)
 	}
 }
 

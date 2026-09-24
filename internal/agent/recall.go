@@ -60,6 +60,7 @@ func (r Recall) Run(_ context.Context, _ *tools.Session, raw json.RawMessage) to
 	if err != nil {
 		return tools.Result{Content: "could not read the record: " + err.Error(), IsError: true}
 	}
+	events = withoutPersonsCalls(events)
 	limit := r.MaxChars
 	if limit <= 0 {
 		limit = 12000
@@ -68,6 +69,32 @@ func (r Recall) Run(_ context.Context, _ *tools.Session, raw json.RawMessage) to
 		return recallOne(events, a.CallID, a.Offset, limit)
 	}
 	return recallSearch(events, a.Query, limit)
+}
+
+// withoutPersonsCalls drops the results of calls a person made at the
+// workbench: the model never had them in its conversation, and recall is not
+// a way round that.
+func withoutPersonsCalls(events []Event) []Event {
+	mine := map[string]bool{}
+	for _, e := range events {
+		if e.Type == EvActionRequested && e.Actor == ActorUser {
+			var a ActionRequested
+			if json.Unmarshal(e.Payload, &a) == nil {
+				mine[a.CallID] = true
+			}
+		}
+	}
+	out := events[:0:0]
+	for _, e := range events {
+		if e.Type == EvObservation {
+			var o Observation
+			if json.Unmarshal(e.Payload, &o) == nil && mine[o.CallID] {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func recallOne(events []Event, callID string, offset, limit int) tools.Result {
