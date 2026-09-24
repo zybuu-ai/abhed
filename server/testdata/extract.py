@@ -12,7 +12,7 @@ def grab(fn):
     i = src.index(fn)
     line_end = src.index('\n', i)
     first = src[i:line_end]
-    if first.count('{') == first.count('}') and first.rstrip().endswith('}'):
+    if first.count('{') == first.count('}') and first.rstrip().rstrip(';').endswith('}'):
         return first
     j = src.index('\n}\n', i) + 3
     return src[i:j]
@@ -25,12 +25,12 @@ sets = {
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
-    'ide-md': ['function mdInline(parent, s){','function md(text){'],
+    'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
 }
 seen=set(); out=[]
 for fn in sets[which]:
     if fn not in src: continue
-    name = re.match(r'function (\w+)', fn).group(1)
+    name = re.match(r'(?:function|const) (\w+)', fn).group(1)
     if name in seen: continue
     seen.add(name); out.append(grab(fn))
 if which == 'render':

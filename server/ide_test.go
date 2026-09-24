@@ -36,7 +36,6 @@ func TestIDEPageNeverAssemblesMarkupOrLoadsRemotely(t *testing.T) {
 func TestIDEMarkdownIsBuiltFromText(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
 globalThis.__root = new El('div');
-const el = (tag, cls, text) => { const n = document.createElement(tag); if(cls) n.className = cls; if(text != null) n.textContent = text; return n; };
 `
 	if out, err := runConsoleCases(t, "ide-md", harness, "ide_md_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's markdown renderer failed:\n%s", out)

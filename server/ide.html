@@ -725,10 +725,6 @@ async function loadSessions(){
     row.appendChild(el('span', 'dot ' + s.state)); row.appendChild(el('span', 'name', s.prompt || s.id));
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
   }
-  // The server's word on whether a run is going, e.g. a fresh turn started by
-  // Send now after the interrupted one ended the stream.
-  const mine = sessionList.find(s => s.id === current);
-  if(mine && (mine.state === 'running' || mine.state === 'waiting_approval') && !live){ setLive(true); if(!es) connect(current); }
 }
 function setLive(on){
   live = on; $('stop').hidden = !on;
@@ -915,7 +911,10 @@ function md(text){
 /* ---------------------------------------------------------------- queue */
 // A message sent while the agent works waits for the next step, and can be
 // sent now instead, or withdrawn, until the loop reads it.
-function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; return b; }
+// Every message carries an id of the page's own, echoed on the user.message
+// that records it, so matching never depends on the recorded text.
+const newCid = () => 'c-' + Array.from(crypto.getRandomValues(new Uint8Array(9)), x => x.toString(16).padStart(2, '0')).join('');
+function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = newCid(); return b; }
 function drawQueued(b){
   const old = b.querySelector('.qbar'); if(old) old.remove();
   const bar = el('div', 'qbar');
@@ -931,11 +930,12 @@ function drawQueued(b){
   b.appendChild(bar);
 }
 function forget(b){ const i = sent.indexOf(b); if(i >= 0) sent.splice(i, 1); if(b.qid) queued.delete(b.qid); }
-// A user.message is matched to the bubble shown when it was sent: by queue id
-// when it waited, otherwise by the text that was posted.
+// A user.message is matched to the bubble shown when it was sent: by the
+// page's id for it, then by queue id; by text only for a record without either.
 function claim(p){
-  let b = p.queue_id ? queued.get(p.queue_id) : null;
-  if(!b) b = sent.find(x => !x.classList.contains('failed') && (x.prompt || x.text) === p.text);
+  let b = p.client_id ? sent.find(x => x.cid === p.client_id) || [...queued.values()].find(x => x.cid === p.client_id) : null;
+  if(!b && p.queue_id) b = queued.get(p.queue_id);
+  if(!b && !p.client_id && !p.queue_id) b = sent.find(x => !x.classList.contains('failed') && (x.prompt || x.text) === p.text);
   if(!b) return null;
   forget(b); b.delivered = true; b.qnote = '';
   b.classList.remove('queued', 'pending'); drawQueued(b);
@@ -960,7 +960,7 @@ async function sendNow(b){
   b.qid = null; b.busy = false; b.classList.remove('queued'); b.classList.add('pending'); b.qnote = '';
   sent.push(b); add(b); drawQueued(b); waiting('Stopping the current step');
   try{
-    await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt || b.text, interrupt: true})});
+    await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt || b.text, interrupt: true, client_id: b.cid})});
     if(current !== id) return;
     setLive(true); if(!b.delivered) waiting('Thinking'); if(!es) connect(id);
   }catch(e){ failed(b, e.message); waiting(false); }
@@ -1020,9 +1020,23 @@ function render(ev){
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
   case 'session.ended': { endThinking(at); streaming = streamBody = null; setLive(false); const bad = !['completed','user_interrupt'].includes(p.reason);
     add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
-    for(const b of queued.values()){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
-    loadSessions(); loadChanges(); loadHawkeye(); break; }
+    loadSessions(); loadChanges(); loadHawkeye(); const id = current; setTimeout(() => recheck(id), 600); break; }
   }
+}
+// A run can end just as a queued message arrives, and the server then starts
+// another for it after this stream closed; or Send now's fresh turn starts
+// after the interrupted one ended. Once the end has settled, ask the server.
+async function recheck(id){
+  let list, left;
+  try{ [list, left] = await Promise.all([api('/v1/sessions'), queued.size ? api('/v1/sessions/' + id + '/queue').catch(() => []) : []]); }catch{ return; }
+  if(current !== id) return;
+  const s = list.find(x => x.id === id), running = !!s && (s.state === 'running' || s.state === 'waiting_approval');
+  const still = new Set((left || []).map(q => q.id));
+  // A bubble the server no longer holds was read by a run this page has not seen yet.
+  const read = [...queued.values()].some(b => b.qid && !still.has(b.qid));
+  setLive(running);
+  if(running || read){ if(!es) connect(id); if(running) return; }
+  for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
 }
 function fillCall(c){
   if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', JSON.stringify(c.args, null, 2)), c.node.firstChild.nextSibling); }
@@ -1199,7 +1213,7 @@ async function send(){
   try{
     b.prompt = await withMentions(typed);
     if(id){
-      const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt})});
+      const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
       if(current !== id || b.delivered) return;
       if(r && r.queue_id){
         b.qid = r.queue_id; queued.set(b.qid, b); if(!live) setLive(true);
@@ -1210,7 +1224,7 @@ async function send(){
       }
       drawQueued(b);
     }else{
-      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value})});
+      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid})});
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running'}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
