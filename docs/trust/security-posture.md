@@ -101,8 +101,9 @@ inside it. So, for the terminal:
   Lines typed ahead while a command runs are not screened. While another
   program has the terminal they are not recorded; while the shell itself is
   busy (a builtin, the gap between commands) the terminal is in canonical
-  mode, not at bash's prompt, and they are recorded without their text. Keys
-  typed ahead
+  mode, and they are recorded without their text. So is every line after
+  `set +o emacs +o vi`, which makes bash read its prompt in canonical mode;
+  those lines are still screened. Keys typed ahead
   while a command runs are echoed as they arrive, so they are in the recorded
   output as they were on screen;
 - which program has the keys is asked of the terminal on the process and none
@@ -119,10 +120,19 @@ inside it. So, for the terminal:
   `trap '' HUP` and a job that keeps forking. The sweep runs only while the
   exited shell is unreaped, so its process id, and with it the session id,
   cannot belong to anything else, and only after the shell's recorded start
-  time matches; on Linux each signal goes through a pidfd, on macOS a stop is
-  rechecked before it is kept. A process that starts a session of its own
+  time matches. On Linux each signal goes through a pidfd, so a reused process
+  id is never signalled. On macOS a member is checked with `getsid` and then
+  signalled by number; a stop that lands on a foreign process (its id reused
+  in between, which needs a pid wrap within microseconds and is not reachable
+  in practice) is found on the recheck and undone with SIGCONT. A strict fix
+  there would need signalling by audit token. When the sweep cannot run (the
+  start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
+  logs that containment did not run. A process that starts a session of its own
   (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
-  bubblewrap and the container tier end everything regardless.
+  bubblewrap and the container tier end everything regardless. On the none
+  and process tiers a shell shares the server's user and so its process
+  limit: a fork bomb there can exhaust it for the server too. A pids cgroup
+  per shell is the planned follow-up.
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies

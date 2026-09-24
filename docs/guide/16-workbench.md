@@ -224,10 +224,19 @@ session is stopped and killed, pass after pass until nothing new appears.
 That covers jobs started with `nohup` or `disown`, run as `( cmd & )`, under
 `trap '' HUP`, or forking again and again. Only processes in that session are
 touched, and only while the exited shell still holds the session's number, so
-nothing that took over a reused process id is ever signalled. What escapes is
+the session can never be mistaken for another. On Linux each process is
+signalled through a handle on the process itself, so a process id reused by
+something else is never signalled. On macOS a process is checked and then
+signalled by its number: if its id were reused in between, which needs the
+ids to wrap round within microseconds and is not reachable in practice, the
+stop would land on a stranger and is undone at once with a continue signal.
+Closing that gap strictly would need signalling by audit token. What escapes is
 a process that makes a session of its own, with `setsid` or by daemonising;
 it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
-in the sandbox with the shell, and a container is removed.
+in the sandbox with the shell, and a container is removed. On the none and
+process tiers a shell runs as the server's user and shares its process limit,
+so a fork bomb there can exhaust it for the server too; a pids cgroup per
+shell is the planned follow-up.
 
 What a shell changes about the checks, stated plainly:
 
@@ -242,24 +251,26 @@ What a shell changes about the checks, stated plainly:
   they go to the terminal while that command has it, and the shell reads them
   after. Such a line is not recorded while another program has the terminal,
   and is recorded without its text while the shell itself is busy (the
-  terminal is then in the mode a password is read in). Nor does it see what the shell makes of a line:
-  history recall (the arrow keys, `!!`, Ctrl-R, Ctrl-O), tab completion,
-  variables and other expansions (`$CMD`), a line continued with `\` onto the
+  terminal is then in the mode a password is read in). Nor does it see what
+  the shell makes of a line: history recall (the arrow keys, `!!`, Ctrl-R,
+  Ctrl-O), tab completion, variables and other expansions (`$CMD`), a line continued with `\` onto the
   next, an alias, a function, a script, or anything typed into another program,
   including a nested shell.
 - **Lines are recorded as typed, best effort.** Each line is recorded as
   `terminal.input`, marked `edited` when it used keys the server cannot follow
   (Tab, the arrow keys), since the shell may then have run something else. When
   the server cannot be sure the terminal showed a line as it was typed, it
-  records that a line was entered but not its text: when the terminal is not
-  at bash's own prompt (a password prompt, or keys typed while a builtin ran),
-  for
-  a line whose whole text it did not see echoed before the Enter (so keys a
-  program took without an Enter, as `read -s -n` does, never prefix a recorded
-  line), for an edited line, and for a short line where it could not ask the
+  records that a line was entered but not its text: when the terminal is in
+  canonical mode, where bash does not read its own prompt (a password prompt,
+  or keys typed while a builtin ran), for a line whose whole text it did not
+  see echoed before the Enter (so keys a program took without an Enter, as
+  `read -s -n` does, never prefix a recorded line), for an edited line, and for a short line where it could not ask the
   terminal. Keys typed ahead while a command still runs are shown by the
   terminal as they arrive, so a password typed ahead of its prompt is in the
   recorded output, as it was on screen.
+  Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
+  in canonical mode too, so from then on every line is recorded without its
+  text; it is still screened.
 - **Which program has the keys.** On the process and none tiers the server
   asks the terminal which process group is in the foreground: while it is not
   the shell (`vim`, `python`, `cat`, a nested `bash`), keys are neither
