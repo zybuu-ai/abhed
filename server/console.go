@@ -610,9 +610,11 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   <div class="stat">active <b id="active">0</b></div>
   <div class="stat" id="whobox" hidden>
     <span class="who-chip" id="who"></span>
+    <a class="ghost" href="/ide" title="Editor, terminal and agent side by side">Workbench</a>
     <a class="ghost" id="adminlink" href="/admin" hidden
        title="Who has access, and who no longer does">Admin</a>
-    <a class="ghost" id="switchuser" href="/switch-user"
+    <a class="ghost" id="pwlink" href="/account" hidden title="Change your password">Password</a>
+    <a class="ghost" id="switchuser" href="/logout" hidden
        title="Sign in as a different user">Switch</a>
     <a class="ghost" id="signout" href="/logout">Sign out</a>
   </div>
@@ -1993,10 +1995,15 @@ async function whoami(){
   }
 
   $('who').textContent = me.email || me.name || me.subject;
+  // Only links this deployment can answer: a Switch with no route behind it
+  // was a 404 on local accounts.
+  if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
+  if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
   try{
     if(sessionStorage.getItem('abhed.must_change') === '1'){
       sessionStorage.removeItem('abhed.must_change');
-      note('This password was set for you. Change it: abhed user passwd <you>, or ask your administrator.');
+      note(me.password_url ? 'This password was set for you. Change it under Password, at the top right.'
+                           : 'This password was set for you. Ask your administrator to change it.');
     }
   }catch{}
   $('who').title = 'tenant ' + me.tenant +
@@ -2013,8 +2020,9 @@ async function capabilities(){
   try{
     const o = await api('/v1/overview');
     TOOLS = new Set(o && o.tools ? o.tools : []);
+    // An admin page exists only in editions that serve one.
     const a = $('adminlink');
-    if(a && o && o.admin) a.hidden = false;
+    if(a && o && o.admin && o.admin_url){ a.href = o.admin_url; a.hidden = false; }
   }catch{ TOOLS = new Set(); }
   drawExamples();
 }
@@ -2129,6 +2137,6 @@ a{color:#4C8FD6}
 
 $ abhed user add alice -admin</pre>
   <p>See <code>docs/ops/enabling-auth.md</code>. Sign-in through an identity
-     provider (OIDC) is part of the Enterprise Edition.</p>
+     provider (OIDC) is part of the paid editions, Team and Enterprise.</p>
   <p><a href="/">← Back to Abhed</a></p>
 </div>`

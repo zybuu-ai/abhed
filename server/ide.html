@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Abhed</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/ide/vendor/xterm.css">
 <script src="/ide/vendor/editor.js"></script>
 <script src="/ide/vendor/xterm.js"></script>
@@ -264,7 +265,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
     </span>
     <span class="ws" id="wsname"></span>
     <button id="palette-open" type="button" aria-label="Open the command palette">Go to file, run a command… <kbd id="palkey">⌘K</kbd></button>
-    <span class="right"><span id="who"></span><a href="/console">classic console</a><a href="/docs">docs</a></span>
+    <span class="right"><span id="who"></span><a id="pwlink" href="/account" hidden>password</a><a id="switchuser" href="/logout" hidden>switch</a><a id="signout" href="/logout" hidden>sign out</a><a href="/console">classic console</a><a href="/docs">docs</a></span>
   </header>
 
   <nav id="act" aria-label="Views">
@@ -1025,7 +1026,22 @@ function askAboutSelection(){
   stat.window = caps.model.context_window; drawCaps();
   $('s-sandbox').textContent = 'sandbox ' + caps.sandbox.tier + (caps.sandbox.network ? ' · network on' : ' · no network');
   $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode; $('s-mode').textContent = 'mode ' + caps.permissions.mode;
-  try{ const me = await api('/v1/whoami'); $('who').textContent = me.user || ''; }catch{}
+  try{
+    const me = await api('/v1/whoami');
+    if(me.authenticated){
+      $('who').textContent = me.email || me.name || me.subject || '';
+      $('signout').hidden = false;
+      if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
+      if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
+      // A password an administrator set: say so where sign-in now lands.
+      let mustChange = false;
+      try{ mustChange = sessionStorage.getItem('abhed.must_change') === '1'; sessionStorage.removeItem('abhed.must_change'); }catch{}
+      if(mustChange && me.password_url){
+        $('pwlink').textContent = 'change your password'; $('pwlink').style.color = 'var(--warn, #d9a441)';
+        add(el('div', 'sys bad', 'This password was set for you. Change it with "change your password", at the top right.'));
+      }
+    }
+  }catch{}
   await loadSessions();
   setView(store.get('view', 'explorer')); $('app').dataset.pane = 'agent';
   const last = sessionList[0]; if(last) openSession(last.id, last.state); else loadTree('', $('tree'), 0);

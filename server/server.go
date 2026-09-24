@@ -402,6 +402,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /", s.serveLanding)
 	mux.HandleFunc("GET /console", s.serveConsole)
 	mux.HandleFunc("GET /ide", s.serveIDE)
+	mux.HandleFunc("GET /account", s.serveAccount)
+	mux.HandleFunc("GET /favicon.ico", serveFavicon)
+	mux.HandleFunc("GET /favicon.svg", serveFavicon)
 	mux.HandleFunc("GET /ide/vendor/{file}", s.serveIDEVendor)
 	mux.HandleFunc("GET /v1/capabilities", s.getCapabilities)
 
@@ -449,6 +452,12 @@ func (s *Server) Handler() http.Handler {
 	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
 	return canonicalHost(s.opts.Config.Server.CanonicalHost, headed)
+}
+
+// PublicPaths answer before anyone signs in, whichever providers are
+// configured; each provider adds the paths it owns. Kept short on purpose.
+func PublicPaths() []string {
+	return []string{"/", "/v1/health", "/v1/overview", "/login", "/logout", "/v1/whoami", "/favicon.ico", "/favicon.svg"}
 }
 
 // Mount adds routes for the next Handler call, for a caller that has the
@@ -529,9 +538,7 @@ func (s *Server) authMiddleware() auth.Middleware {
 	}
 	// Sign-in itself must be reachable without being signed in, or the only
 	// way in is barred by the thing it unlocks.
-	mw := auth.Middleware{PublicPaths: []string{
-		"/", "/v1/health", "/v1/overview", "/login", "/auth/callback", "/logout",
-		"/v1/signin", "/v1/signup", "/v1/whoami"}}
+	mw := auth.Middleware{PublicPaths: append(PublicPaths(), "/auth/callback", "/v1/signin", "/v1/signup")}
 	if s.opts.Config.Auth.Mode == "proxy" {
 		mw.TrustHeaders = true
 	}
@@ -1478,11 +1485,20 @@ func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	for _, p := range s.signIns() {
 		if id, found := p.Identify(r); found {
-			WriteJSON(w, http.StatusOK, map[string]any{
+			me := map[string]any{
 				"authenticated": true, "auth_mode": p.Name(),
 				"subject": id.Subject, "email": id.Email, "name": id.Name,
 				"tenant": id.Tenant, "groups": id.Groups,
-			})
+			}
+			// Switching user is a fresh sign-in: the identity provider's own
+			// prompt when there is one, the sign-in page for local accounts.
+			switch p.Name() {
+			case "local":
+				me["switch_url"], me["password_url"] = "/logout", "/account"
+			case "oidc":
+				me["switch_url"] = "/switch-user"
+			}
+			WriteJSON(w, http.StatusOK, me)
 			return
 		}
 	}
