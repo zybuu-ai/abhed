@@ -66,6 +66,14 @@ deny list and plant a users file, and fail if any succeeds. Container and VM
 tiers keep the workspace mount as configured; mount `.abhed` there read-only
 or leave it out of the mount.
 
+On macOS a command can still see the workspace `.abhed` directory, its file
+names and sizes, and list its folders, so `ls -R`, `find`, `git` and pytest's
+collection walk the workspace as they would anywhere; what the files hold
+cannot be read (`TestProcessSandboxWalksPastHarnessState`). So that `git add
+-A` does not stop on a file it cannot read, the sandbox writes a `.gitignore`
+of `*` into the directory when there is none, and that one file is readable.
+On Linux bubblewrap mounts an empty directory over it instead.
+
 **A person's terminal is sandboxed; its line checks are best effort.** Each
 tab of the `/ide` terminal is, by default, one interactive `bash` started
 through the same sandbox backend as the agent's commands (`Shell` in
@@ -179,6 +187,18 @@ backend — the Linux run needs a privileged CI job, since a hosted runner
 cannot unshare a network namespace — per `docs/architecture/03-security.md`
 §7), and a containerised server with no
 bind mount has no route to the host filesystem.
+
+With the network off, a command cannot see the host's network either. On
+Linux the network namespace has only loopback. On the macOS process tier,
+Seatbelt also denies the routing sysctls that list interfaces and addresses
+and the system configuration and network services, so `ifconfig`, `netstat
+-rn`, `scutil --nwi` and `ipconfig` fail instead of showing the LAN address or
+a VPN tunnel (`TestProcessSandboxHidesTheHostsNetwork`). What remains visible
+on macOS: the hardware ports and their MAC addresses, which come from the I/O
+registry (`networksetup -listallhardwareports`, `ioreg`), and the host name.
+Programs that enumerate interfaces get an error rather than a loopback-only
+list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
+pytest are unaffected.
 
 **`web_search`, when enabled**, is the one narrow, structured exception: a Go
 tool in the server process makes the request, not the sandboxed shell, so a

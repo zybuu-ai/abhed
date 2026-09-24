@@ -116,8 +116,14 @@ func (s *Process) seatbeltProfile() string {
 	// The harness's own state is out of reach for commands, as it is for the
 	// file tools: the later rule wins, so this holds inside the workspace allow.
 	b.WriteString("\n;; Abhed's own configuration, users and keys.\n")
-	fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(s.policy.Workspace, stateDir))
-	fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(s.policy.Workspace, stateDir))
+	state := filepath.Join(s.policy.Workspace, stateDir)
+	fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", state)
+	fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", state)
+	// Names and folders stay visible, so pytest, find and ls -R can walk the
+	// workspace; what the files hold does not. git reads the ignore file.
+	fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
+	fmt.Fprintf(&b, "(allow file-read-data (require-all (subpath %q) (vnode-type DIRECTORY)))\n", state)
+	fmt.Fprintf(&b, "(allow file-read-data (literal %q))\n", filepath.Join(state, ".gitignore"))
 	if home, err := os.UserHomeDir(); err == nil {
 		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(home, stateDir))
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(home, stateDir))
@@ -128,6 +134,10 @@ func (s *Process) seatbeltProfile() string {
 	if !s.policy.AllowNetwork {
 		b.WriteString("\n;; Egress denied: a successful injection has no channel out.\n")
 		b.WriteString("(deny network*)\n")
+		// Nor a view of the host's network: its interfaces, addresses and
+		// routes, as bwrap's --unshare-net gives on Linux.
+		b.WriteString("(deny sysctl-read (sysctl-name-prefix \"net.route\"))\n")
+		b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.SystemConfiguration\") (global-name-prefix \"com.apple.network\"))\n")
 	}
 
 	b.WriteString("\n;; Never writable, regardless of workspace location.\n")
@@ -143,6 +153,20 @@ func (s *Process) seatbeltProfile() string {
 		}
 	}
 	return b.String()
+}
+
+// ignoreState keeps git out of the workspace's state directory, which it can
+// list but not read inside the sandbox: `git add -A` would fail on it.
+func ignoreState(workspace string) {
+	dir := filepath.Join(workspace, stateDir)
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) // #nosec G304 -- the workspace's own state directory
+	if err == nil {
+		_, _ = f.WriteString("# Abhed's own state: not for the repository.\n*\n")
+		_ = f.Close()
+	}
 }
 
 // bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev in
@@ -181,6 +205,7 @@ func (s *Process) Backend() string { return s.backend }
 func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...string) *exec.Cmd {
 	switch s.backend {
 	case "sandbox-exec":
+		ignoreState(s.policy.Workspace)
 		profile := s.seatbeltProfile()
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.

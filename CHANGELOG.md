@@ -170,6 +170,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- On the macOS process tier with the network off, a command could list the
+  host's interfaces, LAN address and VPN tunnels (`ifconfig`, `netstat -rn`,
+  `scutil --nwi`). The sandbox now denies the routing sysctls and the system
+  configuration and network services too, as Linux's network namespace does.
+  MAC addresses from the I/O registry and the host name stay visible; the
+  security posture says so.
+- On the macOS process tier, `pytest`, `ls -R`, `find .` and other walks of
+  the workspace failed with "Operation not permitted" on `.abhed`. The
+  directory's names and folders are now visible to commands and its files
+  still unreadable and unwritable; the sandbox adds `.abhed/.gitignore` (`*`)
+  when missing so `git add -A` passes over it.
 - A workbench shell ended by the person, by `exit`, Kill, closing its tab,
   closing the session or going unwatched, is recorded with its exit status and
   not as an error, and the record says how it was closed. Only a shell that

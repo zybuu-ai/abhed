@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -128,6 +130,45 @@ func TestProcessSandboxBlocksNetworkByDefault(t *testing.T) {
 	}
 	if !strings.Contains(out, "BLOCKED") {
 		t.Fatalf("the probe did not run:\n%s", out)
+	}
+}
+
+// With the network off, the host's interfaces and addresses are not visible
+// either: no LAN address or VPN tunnel to learn, as under --unshare-net.
+func TestProcessSandboxHidesTheHostsNetwork(t *testing.T) {
+	requireNetNS(t)
+	ws := workspace(t)
+	s := processSandbox(t, ws, false)
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("the host's interfaces cannot be listed: %v", err)
+	}
+	out, _ := runIn(t, s, ws, "ifconfig -a 2>&1; ip -o addr 2>&1; cat /proc/net/dev 2>&1; netstat -rn 2>&1; echo done")
+	if !strings.Contains(out, "done") {
+		t.Fatalf("the probe did not run:\n%s", out)
+	}
+	for _, in := range ifaces {
+		if in.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if regexp.MustCompile(`(^|\s)` + regexp.QuoteMeta(in.Name) + `\b`).MatchString(out) {
+			t.Errorf("the host's interface %s is visible with the network off:\n%s", in.Name, out)
+		}
+		addrs, _ := in.Addrs()
+		for _, a := range addrs {
+			if ip, _, _ := net.ParseCIDR(a.String()); ip != nil && ip.To4() != nil && strings.Contains(out, ip.String()) {
+				t.Errorf("the host's address %s is visible with the network off:\n%s", ip, out)
+			}
+		}
+	}
+	// Ordinary tools still work: a Python that imports socket, git.
+	if _, err := exec.LookPath("python3"); err == nil {
+		if out, err := runIn(t, s, ws, `python3 -c 'import socket, ssl, uuid; print("py", socket.gethostname() != "")'`); err != nil || !strings.Contains(out, "py True") {
+			t.Errorf("python with the network off: %v\n%s", err, out)
+		}
+	}
+	if out, err := runIn(t, s, ws, "git init -q && git status --short && echo git-ok"); err != nil || !strings.Contains(out, "git-ok") {
+		t.Errorf("git with the network off: %v\n%s", err, out)
 	}
 }
 
