@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -125,4 +126,30 @@ func runConsoleCases(t *testing.T, set, harness, casesFile string) (string, erro
 	out, err := cmd.CombinedOutput()
 	t.Log("\n" + strings.TrimSpace(string(out)))
 	return string(out), err
+}
+
+// The model picker is the console's only way to switch a session's model. A
+// width rule that hides it removes the control, so it must always have a
+// place: the header on wider screens, the rail on a phone.
+func TestConsoleKeepsTheModelPickerReachable(t *testing.T) {
+	for _, want := range []string{`id="mdlstat"`, `id="railmodel"`, "function placeModel()", "matchMedia('(max-width:760px)')",
+		"if(sw && !sw.hidden) $('railmodel').appendChild(sw)", ".rail-model #switchuser:not([hidden])"} {
+		if !strings.Contains(consoleHTML, want) {
+			t.Errorf("the console lost %s", want)
+		}
+	}
+	i := strings.Index(consoleHTML, "@media (min-width:761px) and (max-width:1180px){\n  .top .brand")
+	if i < 0 {
+		t.Fatal("the tablet header rule moved; check the model picker is still shown there")
+	}
+	rule := consoleHTML[i : i+strings.Index(consoleHTML[i:], "}")]
+	for _, hidden := range []string{"#mdlstat", "#mdlpick", ".stat:not", ".top .stat{", "#switchuser"} {
+		if strings.Contains(rule, hidden) {
+			t.Errorf("the tablet header rule hides %s, a control that must stay reachable", hidden)
+		}
+	}
+	// The workbench keeps Switch at every width; the Enterprise guide promises it.
+	if m := regexp.MustCompile(`(?m)^.*#switchuser[^{]*\{[^}]*display:none`).FindString(ideHTML); m != "" {
+		t.Errorf("the workbench hides Switch: %s", m)
+	}
 }

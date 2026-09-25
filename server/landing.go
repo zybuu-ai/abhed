@@ -196,7 +196,8 @@ footer{border-top:1px solid var(--line);padding:20px 0 30px;font-family:var(--mo
   .stats{gap:10px;grid-template-columns:1fr 1fr}
   .posture{grid-template-columns:1fr}
   footer{flex-direction:column;gap:7px;padding:16px 0 26px}
-  .bar{height:auto;min-height:48px;padding:9px 0;flex-wrap:wrap;gap:7px}
+  /* Vertical padding only: the side gutter comes from .wrap on the same element. */
+  .bar{height:auto;min-height:48px;padding-top:9px;padding-bottom:9px;flex-wrap:wrap;gap:7px}
   .bar .sub{display:none}
   .eyebrow{font-size:9.5px;letter-spacing:.08em}
 }

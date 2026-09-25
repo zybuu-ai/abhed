@@ -108,9 +108,9 @@ button,select,textarea,input{font:inherit;color:inherit}
    every width, so nothing has to be rebuilt when the screen rotates. */
 /* The model picker. Only rendered when more than one provider is configured:
    a dropdown offering a single choice implies an option that is not there. */
-#mdlpick{background:var(--sunken);color:var(--ink);border:1px solid var(--line);
+#mdlpick{max-width:180px;text-overflow:ellipsis;background:var(--sunken);color:var(--ink);border:1px solid var(--line);
   border-radius:6px;font-family:var(--mono);font-size:11.5px;padding:2px 6px;
-  max-width:180px;cursor:pointer}
+  cursor:pointer}
 #mdlpick:hover{border-color:var(--accent)}
 #mdlpick:disabled{opacity:.55;cursor:not-allowed}
 .note-line{font-family:var(--mono);font-size:11.5px;color:var(--muted);
@@ -123,7 +123,14 @@ button,select,textarea,input{font:inherit;color:inherit}
 .scrim{display:none}
 @media (max-width:760px){.scrim{display:block}}
 .brand #ver{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
-.top .spacer{flex:1}
+.top .spacer{flex:1 1 0;min-width:0}
+/* Every header item keeps its size except the signed-in name, which shrinks and
+   ellipsizes into what is left, so no name or link count can widen the header. */
+.top > *{flex:none}
+.top #whobox{flex:0 1 auto;min-width:0}
+#whobox > *{flex:none}
+#whobox .who-chip{flex:0 1 auto;min-width:0}
+
 .home{text-decoration:none;color:var(--ink-2);font-family:var(--mono);font-size:11.5px;margin-left:10px;padding:3px 8px;border:1px solid var(--line);border-radius:5px;white-space:nowrap}
 .home:hover{color:var(--accent);border-color:var(--accent)}
 .stat{font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;
@@ -132,7 +139,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .led.up{background:var(--done);box-shadow:0 0 0 3px var(--done-bg)}
 .led.down{background:var(--error);box-shadow:0 0 0 3px var(--error-bg)}
-.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;text-decoration:none;
+.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none;
   border-radius:11px;background:var(--sunken);border:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .who-chip::before{content:"";width:5px;height:5px;border-radius:50%;
@@ -542,15 +549,16 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 
   .railtoggle{display:inline-flex}
 
-  /* The header carries six items that do not fit. Identity and the health
-     LED earn their place; model and session counts are detail a phone can
-     do without, and they are still on the landing page. */
+  /* The header carries more than fits. Identity, sign-out and the health LED
+     stay; the model picker moves to the rail, and the session count goes. */
   .top{gap:9px;padding:0 11px}
   .top .stat{display:none}
+  /* The model picker has no room in the header; it moves to the foot of the rail. */
+  .rail-model .stat{display:flex;padding:12px 14px;border-top:1px solid var(--line)}
+  .rail-model #switchuser:not([hidden]){display:block;margin:0 14px 12px;text-align:center}
   .top .stat#whobox{display:flex;gap:7px}
-  .top .who-chip{max-width:104px;overflow:hidden;text-overflow:ellipsis;
-    white-space:nowrap}
-  #switchuser{display:none}
+  .top #healthstat{display:flex}
+  .top .who-chip{max-width:104px}
   .brand .sub{display:none}
   /* The mark alone, and no Password link: the wordmark and the "console"
      label do not fit, and the name links to the account page instead. */
@@ -575,10 +583,29 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   .msg{padding-left:13px;padding-right:13px}
 }
 
+/* The Admin link does not fit on the narrowest phones; the landing page has one. */
+@media (max-width:400px){
+  #adminlink{display:none!important}
+}
+/* The narrowest phones: tighter spacing; the workbench link stays. */
+@media (max-width:350px){
+  .top{gap:6px;padding:0 8px}
+}
+
 /* Landscape phones and small tablets keep the rail but narrow it, rather than
    spending a third of the width on a list of chat titles. */
 @media (min-width:761px) and (max-width:1180px){
   :root{--rail:212px}
+}
+/* Between phone and desktop the full header does not fit. Drop the wordmark,
+   labels, the active count and Password (the name links to the account page);
+   the model picker, Switch and the LED stay. */
+@media (min-width:761px) and (max-width:1180px){
+  .top .brand .lockup .lk-word,.brand #ver,#activestat,#pwlink{display:none!important}
+}
+/* Below desktop the health text is read out but not shown; the LED carries it. */
+@media (max-width:1180px){
+  .top #health{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 /*{{BRAND_CSS}}*/
@@ -604,13 +631,13 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   </div>
   <!-- Outside #whobox, which is removed where there is no sign-in. -->
   <a class="ghost wblink" id="wblink" href="/ide" title="Editor, terminal and agent side by side">Workbench</a>
-  <div class="stat"><span class="led" id="led"></span><span id="health">connecting</span></div>
+  <div class="stat" id="healthstat"><span class="led" id="led" title="connecting" aria-hidden="true"></span><span id="health">connecting</span></div>
   <div class="spacer"></div>
-  <div class="stat">model
+  <div class="stat" id="mdlstat">model
     <b id="mdl">—</b>
     <select id="mdlpick" hidden title="Run this session on a different model"></select>
   </div>
-  <div class="stat">active <b id="active">0</b></div>
+  <div class="stat" id="activestat">active <b id="active">0</b></div>
   <div class="stat" id="whobox" hidden>
     <a class="who-chip" id="who"></a>
     <a class="ghost" id="adminlink" href="/admin" hidden
@@ -635,6 +662,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     </div>
     <div class="rail-head"><span>Chats</span><span id="count"></span></div>
     <div class="list" id="list"></div>
+    <div class="rail-model" id="railmodel"></div>
   </aside>
 
   <!-- transcript -->
@@ -699,6 +727,22 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
+// On a phone the header has no room for the model picker or Switch, so the same
+// elements move to the foot of the rail and back when the width changes.
+const phone = matchMedia('(max-width:760px)');
+function placeModel(){
+  const m = $('mdlstat'), sw = $('switchuser');
+  if(phone.matches){
+    $('railmodel').appendChild(m);
+    // Only a Switch the deployment offers; a hidden one must stay in #whobox.
+    if(sw && !sw.hidden) $('railmodel').appendChild(sw);
+  } else {
+    if(m.parentNode.id === 'railmodel') $('activestat').before(m);
+    if(sw && sw.parentNode.id === 'railmodel' && $('signout')) $('signout').before(sw);
+  }
+}
+phone.addEventListener('change', placeModel);
+placeModel();
 
 let current = null;      // session id being viewed
 let streamEl = null;     // bubble currently receiving streamed text
@@ -729,12 +773,12 @@ async function api(path, opts){
 async function health(){
   try{
     const h = await api('/v1/health');
-    $('led').className = 'led up';
+    $('led').className = 'led up'; $('led').title = 'connected';
     $('health').textContent = 'connected';
     if($('mdlpick').hidden) $('mdl').textContent = h.model;
     $('active').textContent = h.sessions;
   }catch{
-    $('led').className = 'led down';
+    $('led').className = 'led down'; $('led').title = 'unreachable';
     $('health').textContent = 'unreachable';
   }
 }
@@ -1999,7 +2043,7 @@ async function whoami(){
   $('who').textContent = me.email || me.name || me.subject;
   // Only links this deployment can answer: a Switch with no route behind it
   // was a 404 on local accounts.
-  if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
+  if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; placeModel(); }
   if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; $('who').href = me.password_url; }
   // Behind a proxy, sign-out is the proxy's, and offered only when configured.
   if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
