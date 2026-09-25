@@ -22,8 +22,8 @@ func brandAsset(name string) []byte {
 	return b
 }
 
-func brandURI(name, mime string) string {
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(brandAsset(name))
+func brandURI(name string) string {
+	return "data:image/webp;base64," + base64.StdEncoding.EncodeToString(brandAsset(name))
 }
 
 var brandIcon = brandAsset("icon.png")
@@ -52,12 +52,12 @@ var (
 		"/*{{BRAND_CSS}}*/", brandCSS,
 	)
 	brandImages = strings.NewReplacer(
-		"{{BRAND_MARK}}", brandURI("mark.webp", "image/webp"),
-		"{{BRAND_MARK_REV}}", brandURI("mark-rev.webp", "image/webp"),
-		"{{BRAND_WORD}}", brandURI("word.webp", "image/webp"),
-		"{{BRAND_WORD_REV}}", brandURI("word-rev.webp", "image/webp"),
-		"{{BRAND_HERO}}", brandURI("hero.webp", "image/webp"),
-		"{{BRAND_HERO_REV}}", brandURI("hero-rev.webp", "image/webp"),
+		"{{BRAND_MARK}}", brandURI("mark.webp"),
+		"{{BRAND_MARK_REV}}", brandURI("mark-rev.webp"),
+		"{{BRAND_WORD}}", brandURI("word.webp"),
+		"{{BRAND_WORD_REV}}", brandURI("word-rev.webp"),
+		"{{BRAND_HERO}}", brandURI("hero.webp"),
+		"{{BRAND_HERO_REV}}", brandURI("hero-rev.webp"),
 	)
 )
 
