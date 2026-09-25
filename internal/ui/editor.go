@@ -514,7 +514,7 @@ func (e *editor) redraw() {
 			if selected {
 				b.WriteString("\r\n  " + s.Reverse(" "+row+" "))
 			} else {
-				b.WriteString("\r\n  " + s.Cyan(fmt.Sprintf("%-18s", left)) + "  " + s.Dim(c.Help))
+				b.WriteString("\r\n  " + s.Accent(fmt.Sprintf("%-18s", left)) + "  " + s.Dim(c.Help))
 			}
 			rows++
 		}

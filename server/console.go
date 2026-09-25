@@ -552,6 +552,9 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     white-space:nowrap}
   #switchuser{display:none}
   .brand .sub{display:none}
+  /* The mark alone: the wordmark and the "console" label do not fit beside
+     the rest, and the password page stays reachable from the account page. */
+  .top .brand .lockup .lk-word,.brand #ver,#pwlink{display:none!important}
   /* The way home stays, as the arrow alone: the word does not fit. */
   .home{font-size:0;padding:5px 8px}
   .home span{font-size:12px}
@@ -2103,7 +2106,7 @@ setInterval(refresh, 5000);
 // authDisabledHTML is shown when someone reaches /login or /logout on a server
 // running without authentication. It says what is true and what to change,
 // rather than leaving a 404 that looks like a fault.
-const authDisabledHTML = `<!doctype html><meta charset="utf-8">
+var authDisabledHTML = brandify(`<!doctype html><meta charset="utf-8">
 <title>Sign-in not configured</title>
 <style>
 :root{color-scheme:light dark}
@@ -2114,21 +2117,16 @@ body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0B0B0
   border:1px solid #2A2A2F}
 @media (prefers-color-scheme:light){.card{background:#fff;border-color:#E5E5E0}}
 h1{margin:0 0 10px;font-size:17px;display:flex;align-items:center;gap:9px}
-svg{width:19px;height:19px;fill:#FF7A45}
 p{margin:0 0 12px;color:#9B9BA3}
 pre{background:#141416;border:1px solid #2A2A2F;border-radius:7px;padding:12px 14px;
   font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#C8C8C3;overflow-x:auto}
 @media (prefers-color-scheme:light){pre{background:#F1F1EE;border-color:#E5E5E0;color:#3A3A40}}
 a{color:#FF7A45}
+/*{{BRAND_CSS}}*/
 </style>
 <div class="card">
-  <h1><svg viewBox="0 0 24 24" aria-hidden="true">
-    <rect x="3" y="3" width="18" height="3" rx="1"/>
-    <rect x="9" y="7.5" width="1.6" height="9" rx=".6" opacity=".85"/>
-    <rect x="11.7" y="7.5" width="1.6" height="9" rx=".6"/>
-    <rect x="14.4" y="7.5" width="1.6" height="9" rx=".6" opacity=".85"/>
-    <rect x="3" y="18" width="18" height="3" rx="1"/></svg>
-    Sign-in is not configured</h1>
+  <div style="margin-bottom:18px">{{BRAND_LOCKUP}}</div>
+  <h1>Sign-in is not configured</h1>
   <p>This Abhed server runs with <code>auth.mode: none</code> — a single-tenant
      setup with no user accounts, so there is nobody to sign in or out as.</p>
   <p>To enable sign-in with local accounts, set the mode and issue an account:</p>
@@ -2140,4 +2138,4 @@ $ abhed user add alice -admin</pre>
   <p>See <code>docs/ops/enabling-auth.md</code>. Sign-in through an identity
      provider (OIDC) is part of the paid editions, Team and Enterprise.</p>
   <p><a href="/">← Back to Abhed</a></p>
-</div>`
+</div>`)

@@ -333,6 +333,10 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   #app[data-pane="agent"] #side,#app[data-pane="agent"] #center{display:none}
   #app.noside #side{display:flex}
   #palette-open,#title .ws{display:none}
+  /* The mark alone, and only the links a phone needs: who, docs, sign out. */
+  #title .brand .lockup .lk-word,#pwlink,#switchuser,#title .right a[href="/console"]{display:none!important}
+  #title .right{min-width:0;overflow:hidden}
+  #who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px}
 }
 @media (prefers-reduced-motion:no-preference){.dot.running{animation:pulse 1.6s ease-in-out infinite}}
 @keyframes pulse{50%{opacity:.45}}

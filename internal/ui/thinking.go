@@ -88,7 +88,7 @@ func (t *Thinking) Start() {
 				// \r and clear-to-end: one line, rewritten in place, so the
 				// transcript above is never disturbed.
 				fmt.Fprintf(t.w, "\r\033[2K%s %s%s",
-					t.s.Cyan(frame), t.s.Dim(verb+"…"), el)
+					t.s.Accent(frame), t.s.Dim(verb+"…"), el)
 			}
 		}
 	}(t.end, t.dn)

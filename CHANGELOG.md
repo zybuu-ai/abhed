@@ -6,6 +6,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-25
+
+### Changed
+
+- The terminal carries the new mark: the startup banner draws the Abhed A,
+  and the accent the CLI uses for the prompt, tool calls, headings and inline
+  code is the brand orange instead of cyan.
+- The HawkEYE report uses the console's ink, paper and orange palette in both
+  themes.
+- The page shown when sign-in is not configured carries the Abhed lockup.
+- On a phone, the console and workbench headers show the mark alone and drop
+  the password and switch-user links, so neither page scrolls sideways.
+- The documentation embedded in the binary no longer links web fonts; it uses
+  the system fonts, and loads nothing from outside.
+
 ## [1.1.1] - 2026-09-25
 
 ### Changed

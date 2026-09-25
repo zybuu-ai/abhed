@@ -106,7 +106,7 @@ func SuggestionMenu(s Style, cs []Command, max int) string {
 		if c.Args != "" {
 			left += " " + c.Args
 		}
-		fmt.Fprintf(&b, "  %s  %s\n", s.Cyan(fmt.Sprintf("%-18s", left)), s.Dim(c.Help))
+		fmt.Fprintf(&b, "  %s  %s\n", s.Accent(fmt.Sprintf("%-18s", left)), s.Dim(c.Help))
 	}
 	if more > 0 {
 		fmt.Fprintf(&b, "  %s\n", s.Dim(fmt.Sprintf("… %d more", more)))

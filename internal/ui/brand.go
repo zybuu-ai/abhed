@@ -6,40 +6,47 @@ import (
 	"strings"
 )
 
-// Abhed's mark is an open frame around a single point.
-//
-// The frame is the harness; the point is the model it carries. The research
-// this project rests on found the scaffold around the model, not the model, to
-// be the dominant variable, and the mark says exactly that — the frame is the
-// product. It is drawn open on the right, at the model's eye line, because a
-// harness is something a model is placed into rather than a sealed box.
-//
-// Rendered in three sizes because a mark has to survive both places it lives:
-// a single terminal cell and a 128px browser header.
+// Abhed's mark is an isometric A: a solid frame with an orange strand running up
+// its right side and across its middle, and the small orange square of the
+// wordmark beside it. The terminal draws it in two colours to keep that reading.
 
-// MarkLarge is the startup banner: the octagonal wall of the original mark,
-// with the ring and the lit point inside it.
-//
-// The wall is UNBROKEN, and that is the whole name: abhed means without
-// breach. An earlier revision here drew the frame open on one side, which
-// looked tidier in a terminal and said the opposite of what the mark means.
-// Seven lines, matching the SVG's proportions: eight sides, a faint inner
-// ring, a point at the centre.
-const MarkLarge = `   ▄▄▄▄▄▄▄   
- ▄▀       ▀▄ 
-▐   ▄▄▄▄▄   ▌
-▐  ▐  ◆  ▌  ▌
-▐   ▀▀▀▀▀   ▌
- ▀▄       ▄▀ 
-   ▀▀▀▀▀▀▀   `
+// markLine is one row of the startup mark: pairs of text and whether it is the
+// orange part.
+type markLine []struct {
+	text   string
+	orange bool
+}
+
+// markRows is the startup mark, seven rows so the facts beside it end together.
+var markRows = []markLine{
+	{{"          ", false}, {"▄", true}, {"   ", false}},
+	{{"     ▗▟", false}, {"▙▖", true}, {"     ", false}},
+	{{"    ▗█▛", false}, {"▜█▖", true}, {"    ", false}},
+	{{"   ▗█▛  ", false}, {"▜█▖", true}, {"   ", false}},
+	{{"  ▗█▛", false}, {"▀▀▀▀", true}, {"▜█▖  ", false}},
+	{{" ▗█▛      ▜█▖ ", false}},
+	{{"▗██▖      ▗██▖", false}},
+}
+
+// MarkLarge is the startup mark as plain text, for places that cannot colour it.
+var MarkLarge = func() string {
+	var lines []string
+	for _, row := range markRows {
+		var b strings.Builder
+		for _, seg := range row {
+			b.WriteString(seg.text)
+		}
+		lines = append(lines, b.String())
+	}
+	return strings.Join(lines, "\n")
+}()
 
 // MarkSmall is the two-line form for a compact header.
-const MarkSmall = `▗▛●▜▖
-▝▙▄▟▘`
+const MarkSmall = `▗▟▙▖
+▟▀▀▙`
 
-// Glyph is the single-character form for prompts and log lines: a point inside
-// a ring, which is the one form of the mark that survives one terminal cell.
-const Glyph = "◎"
+// Glyph is the single-character form for prompts and log lines.
+const Glyph = "▲"
 
 // Banner renders the startup identity block.
 //
@@ -66,28 +73,36 @@ func Banner(s Style, version, model, workspace, sandbox, storage string) string 
 		s.Dim("storage  ") + storage,
 	}
 
-	// Pad by RUNE count: the box-drawing characters are multi-byte, so %-11s
-	// would align on bytes and stagger the right-hand column.
+	// Pad by RUNE count: the block characters are multi-byte, so %-14s would
+	// align on bytes and stagger the right-hand column.
 	width := 0
 	for _, line := range col {
 		if n := len([]rune(line)); n > width {
 			width = n
 		}
 	}
-	for i, line := range col {
+	for i, row := range markRows {
 		right := ""
 		if i < len(rows) {
 			right = rows[i]
 		}
-		pad := strings.Repeat(" ", width-len([]rune(line)))
-		fmt.Fprintf(&b, "  %s%s   %s\n", s.Cyan(line), pad, right)
+		var mark strings.Builder
+		for _, seg := range row {
+			if seg.orange {
+				mark.WriteString(s.Accent(seg.text))
+			} else {
+				mark.WriteString(s.Bold(seg.text))
+			}
+		}
+		pad := strings.Repeat(" ", width-len([]rune(col[i])))
+		fmt.Fprintf(&b, "  %s%s   %s\n", mark.String(), pad, right)
 	}
 	return b.String()
 }
 
 // Prompt is the input marker: the glyph, not a bare chevron.
 func Prompt(s Style) string {
-	return s.Cyan(Glyph) + " "
+	return s.Accent(Glyph) + " "
 }
 
 // Rule draws a labelled separator, used between turns so a long session stays

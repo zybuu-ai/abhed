@@ -52,7 +52,10 @@ func (s Style) Red(t string) string    { return s.wrap("31", t) }
 func (s Style) Green(t string) string  { return s.wrap("32", t) }
 func (s Style) Yellow(t string) string { return s.wrap("33", t) }
 func (s Style) Blue(t string) string   { return s.wrap("34", t) }
-func (s Style) Cyan(t string) string   { return s.wrap("36", t) }
+
+// Accent is the brand orange (256-colour 208), readable on dark and light
+// terminals alike; a terminal limited to 16 colours shows its nearest.
+func (s Style) Accent(t string) string { return s.wrap("38;5;208", t) }
 
 // Reverse swaps foreground and background, which is how a selected row in a
 // list reads as selected on every terminal theme — a colour chosen for a dark
@@ -272,7 +275,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 		r.pause()
 		fmt.Fprintf(r.w, "%s %s %s\n",
-			r.s.Cyan("●"), r.s.Bold(a.Tool), r.s.Dim(summarizeArgs(a.Tool, a.Args)))
+			r.s.Accent("●"), r.s.Bold(a.Tool), r.s.Dim(summarizeArgs(a.Tool, a.Args)))
 
 	case agent.EvObservation:
 		var o agent.Observation
