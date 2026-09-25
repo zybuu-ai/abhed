@@ -23,15 +23,22 @@ func TestBrandPlaceholdersAreFilled(t *testing.T) {
 			if !strings.Contains(page, "data:image/webp;base64,") {
 				t.Error("the page carries no embedded brand image")
 			}
-			if !strings.Contains(page, "--on-accent:") {
-				t.Error("the page does not define --on-accent")
+			// Whole, so both --on-accent values are there: without the light
+			// one, light-theme buttons fall back to ink on the deep orange.
+			if !strings.Contains(page, brandCSS) {
+				t.Error("the page does not carry the brand CSS")
+			}
+			for _, v := range []string{":root{--on-accent:#fff}", "{--on-accent:#0B0B0C}"} {
+				if !strings.Contains(page, v) {
+					t.Errorf("the page lacks %s", v)
+				}
 			}
 			if m := external.FindString(page); m != "" {
 				t.Errorf("the page loads from outside: %q", m)
 			}
 			// The brand rules come after the page's palette, so the first
 			// :root block a reader finds is still the palette.
-			if strings.Index(page, ":root{") == strings.Index(page, ":root{--on-accent") {
+			if strings.Index(page, brandCSS) < strings.Index(page, ":root{") {
 				t.Error("the brand CSS is placed before the page's palette")
 			}
 		})

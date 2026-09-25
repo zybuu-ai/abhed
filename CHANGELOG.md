@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-25
+
 ### Changed
 
 - The web console, the sign-in page, the workbench, the account page and the
