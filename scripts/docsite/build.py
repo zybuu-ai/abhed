@@ -506,6 +506,15 @@ def main():
     for name in os.listdir(OUT):
         src_p, dst_p = os.path.join(OUT, name), os.path.join(EMBED, name)
         shutil.copytree(src_p, dst_p) if os.path.isdir(src_p) else shutil.copy2(src_p, dst_p)
+    # The embedded copy never links web fonts, even when this run built the
+    # public site: the binary is read where there is no route out.
+    if FONTS:
+        for dirpath, _, files in os.walk(EMBED):
+            for f in files:
+                if f.endswith(".html"):
+                    fp = os.path.join(dirpath, f)
+                    page = open(fp).read()
+                    open(fp, "w").write(page.replace(FONTS, ""))
 
     print("  rendered %d pages from docs/" % written)
     print("  embedded into internal/docsite/site" + ("" if EMBED_ONLY else " and written to web/zybuu/docs"))

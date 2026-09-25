@@ -60,7 +60,7 @@ func Banner(s Style, version, model, workspace, sandbox, storage string) string 
 	col := strings.Split(MarkLarge, "\n")
 	// Facts sit beside the mark rather than beneath it, so the block stays
 	// seven lines instead of twelve.
-	// Five rows, matching the mark's height so both columns end together.
+	// Seven rows, matching the mark's height so both columns end together.
 	// Model and sandbox are what change between runs and what a reader checks;
 	// the rest is one line of identity.
 	rows := []string{

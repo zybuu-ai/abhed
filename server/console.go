@@ -132,7 +132,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .led.up{background:var(--done);box-shadow:0 0 0 3px var(--done-bg)}
 .led.down{background:var(--error);box-shadow:0 0 0 3px var(--error-bg)}
-.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;
+.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;color:inherit;text-decoration:none;
   border-radius:11px;background:var(--sunken);border:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .who-chip::before{content:"";width:5px;height:5px;border-radius:50%;
@@ -552,8 +552,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     white-space:nowrap}
   #switchuser{display:none}
   .brand .sub{display:none}
-  /* The mark alone: the wordmark and the "console" label do not fit beside
-     the rest, and the password page stays reachable from the account page. */
+  /* The mark alone, and no Password link: the wordmark and the "console"
+     label do not fit, and the name links to the account page instead. */
   .top .brand .lockup .lk-word,.brand #ver,#pwlink{display:none!important}
   /* The way home stays, as the arrow alone: the word does not fit. */
   .home{font-size:0;padding:5px 8px}
@@ -612,7 +612,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   </div>
   <div class="stat">active <b id="active">0</b></div>
   <div class="stat" id="whobox" hidden>
-    <span class="who-chip" id="who"></span>
+    <a class="who-chip" id="who"></a>
     <a class="ghost" id="adminlink" href="/admin" hidden
        title="Who has access, and who no longer does">Admin</a>
     <a class="ghost" id="pwlink" href="/account" hidden title="Change your password">Password</a>
@@ -2000,13 +2000,13 @@ async function whoami(){
   // Only links this deployment can answer: a Switch with no route behind it
   // was a 404 on local accounts.
   if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
-  if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
+  if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; $('who').href = me.password_url; }
   // Behind a proxy, sign-out is the proxy's, and offered only when configured.
   if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
   try{
     if(sessionStorage.getItem('abhed.must_change') === '1'){
       sessionStorage.removeItem('abhed.must_change');
-      note(me.password_url ? 'This password was set for you. Change it under Password, at the top right.'
+      note(me.password_url ? 'This password was set for you. Change it on your account page: select your name at the top right.'
                            : 'This password was set for you. Ask your administrator to change it.');
     }
   }catch{}

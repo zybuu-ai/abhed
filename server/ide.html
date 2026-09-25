@@ -333,7 +333,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   #app[data-pane="agent"] #side,#app[data-pane="agent"] #center{display:none}
   #app.noside #side{display:flex}
   #palette-open,#title .ws{display:none}
-  /* The mark alone, and only the links a phone needs: who, docs, sign out. */
+  /* The mark alone, and only the links a phone needs; the name links to the account page. */
   #title .brand .lockup .lk-word,#pwlink,#switchuser,#title .right a[href="/console"]{display:none!important}
   #title .right{min-width:0;overflow:hidden}
   #who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px}
@@ -349,7 +349,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
     <span class="brand">{{BRAND_LOCKUP}}</span>
     <span class="ws" id="wsname"></span>
     <button id="palette-open" type="button" aria-label="Open the command palette">Go to file, run a command… <kbd id="palkey">⌘K</kbd></button>
-    <span class="right"><span id="who"></span><a id="pwlink" href="/account" hidden>password</a><a id="switchuser" href="/logout" hidden>switch</a><a id="signout" href="/logout" hidden>sign out</a><a href="/console">classic console</a><a href="/docs">docs</a></span>
+    <span class="right"><a id="who"></a><a id="pwlink" href="/account" hidden>password</a><a id="switchuser" href="/logout" hidden>switch</a><a id="signout" href="/logout" hidden>sign out</a><a href="/console">classic console</a><a href="/docs">docs</a></span>
   </header>
 
   <nav id="act" aria-label="Views">
@@ -1958,13 +1958,13 @@ function askAboutSelection(){
       $('who').textContent = me.email || me.name || me.subject || '';
       if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
       if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
-      if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
+      if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; $('who').href = me.password_url; }
       // A password an administrator set: say so where sign-in now lands.
       let mustChange = false;
       try{ mustChange = sessionStorage.getItem('abhed.must_change') === '1'; sessionStorage.removeItem('abhed.must_change'); }catch{}
       if(mustChange && me.password_url){
         $('pwlink').textContent = 'change your password'; $('pwlink').style.color = 'var(--warn, #d9a441)';
-        add(el('div', 'sys bad', 'This password was set for you. Change it with "change your password", at the top right.'));
+        add(el('div', 'sys bad', 'This password was set for you. Change it on your account page: select your name at the top right.'));
       }
     }
   }catch{}

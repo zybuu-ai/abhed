@@ -17,7 +17,9 @@ All notable changes to Abhed are recorded here. The format follows
   themes.
 - The page shown when sign-in is not configured carries the Abhed lockup.
 - On a phone, the console and workbench headers show the mark alone and drop
-  the password and switch-user links, so neither page scrolls sideways.
+  the "console" label and the password, switch-user and classic-console links,
+  so neither page scrolls sideways; the signed-in name links to the account
+  page.
 - The documentation embedded in the binary no longer links web fonts; it uses
   the system fonts, and loads nothing from outside.
 
