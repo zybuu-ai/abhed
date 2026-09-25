@@ -44,6 +44,13 @@ jobs:
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
 
+      # The public build links web fonts; the copy it embeds must not.
+      - name: A public docs build keeps the binary's copy offline
+        run: |
+          python3 scripts/docsite/build.py
+          go test ./internal/docsite/ -count=1
+          rm -rf web/zybuu
+
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
 
