@@ -48,8 +48,8 @@ refuse a record that is not whole.
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
 
-The policy step is one of `hook`, `deny`, `destructive`, `ask`, `mode`, `allow`
-or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that
+The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`,
+`allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that
 decided. Counting them shows which part of a policy is doing the work: a
 session where everything lands on `default` has rules that never match.
 

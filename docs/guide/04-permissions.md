@@ -60,11 +60,13 @@ that you are protected when you are not.
 
 ## The order
 
-Every call goes through the same six steps, and the order is the design:
+Every call goes through the same steps, and the order is the design:
 
 1. **Hooks** — extensions, first, so they can veto
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Destructive commands** — force push, hard reset, disk writes, fork bombs and similar always confirm, in every mode, because there is no undo
+   - a command too long or complex to split into its parts asks while a patterned
+     `bash` deny or ask rule exists, so no mode or allow rule can approve it unchecked
 4. **Ask rules** — force a prompt even where a later allow would match
 5. **Mode**
 6. **Allow rules**, then a default: read-only proceeds, mutations ask
