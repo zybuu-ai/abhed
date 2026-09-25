@@ -19,7 +19,7 @@ All notable changes to Abhed are recorded here. The format follows
 - The sign-in page shows the mark in place of the animated network, and it
   keeps still under reduced motion.
 - `/favicon.ico` is now a PNG; `/favicon.svg` remains an SVG.
-- The lockups in `brand/` are PNG files; the SVG lockups were removed.
+- The lockups and marks in `brand/` are PNG files; the SVGs were removed.
 
 ## [1.1.0] - 2026-09-24
 
