@@ -38,23 +38,66 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	if !found {
 		return nil, nil, fmt.Errorf("unknown tool %q", call)
 	}
-	decision := l.Policy.Evaluate(call, tool.Mutates(), args)
+	refused, err := l.manualDecide(call, id, args, l.Policy.Evaluate(call, tool.Mutates(), args), Unanswered)
+	if err != nil || refused != nil {
+		return nil, refused, err
+	}
+	return tool, nil, nil
+}
 
+// Confirmation is the person's answer to a command that always confirms.
+type Confirmation int
+
+const (
+	Unanswered Confirmation = iota
+	Confirmed
+	Declined
+)
+
+// ManualAuthorizeTyped is ManualAuthorize for a command typed at the
+// line-by-line terminal, where typing it answers every ask but one: a
+// destructive command runs only once confirmed. Unanswered, it comes back as
+// the reason to confirm, with nothing recorded; declined, as the person's refusal.
+func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Confirmation) (tool tools.Tool, refused *tools.Result, confirm string, err error) {
+	tool, found := l.Tools.Get("bash")
+	if !found {
+		return nil, nil, "", fmt.Errorf("unknown tool %q", "bash")
+	}
+	decision := l.Policy.Evaluate("bash", tool.Mutates(), args)
+	if answer == Unanswered && decision.Decision == policy.Ask && decision.Step == "destructive" {
+		return nil, nil, decision.Reason, nil
+	}
+	if refused, err = l.manualDecide("bash", id, args, decision, answer); err != nil || refused != nil {
+		return nil, refused, "", err
+	}
+	return tool, nil, "", nil
+}
+
+func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
+	asked := answer != Unanswered && decision.Decision == policy.Ask && decision.Step == "destructive"
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
-		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Scope,
+		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Scope, RequiresApproval: asked,
 	}); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if decision.Decision == policy.Deny {
 		l.record(EvActionDenied, ActorSystem, map[string]string{
 			"call_id": id, "reason": decision.Reason, "step": decision.Step,
 		})
-		return nil, &tools.Result{Content: "Denied: " + decision.Reason, IsError: true}, nil
+		return &tools.Result{Content: "Denied: " + decision.Reason, IsError: true}, nil
 	}
-	l.record(EvActionApproved, ActorSystem, map[string]string{
-		"call_id": id, "reason": decision.Reason, "step": decision.Step, "by": "user",
-	})
-	return tool, nil, nil
+	if answer == Declined {
+		l.record(EvActionDenied, ActorUser, map[string]string{
+			"call_id": id, "reason": "rejected: " + decision.Reason, "step": decision.Step, "by": "user",
+		})
+		return &tools.Result{Content: "Not run: not confirmed (" + decision.Reason + ")", IsError: true}, nil
+	}
+	approved := map[string]string{"call_id": id, "reason": decision.Reason, "step": decision.Step, "by": "user"}
+	if asked && answer == Confirmed {
+		approved["confirmed"] = "true"
+	}
+	l.record(EvActionApproved, ActorSystem, approved)
+	return nil, nil
 }
 
 // ManualObserve records what the person's call produced.

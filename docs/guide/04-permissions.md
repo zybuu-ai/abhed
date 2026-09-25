@@ -34,8 +34,15 @@ A rule is a tool name, optionally followed by a pattern:
 }
 ```
 
-`*` matches anything; the pattern is matched against the command or path. A
-malformed rule is **refused at startup** rather than silently matching nothing —
+`*` matches anything; the pattern is matched against the command or path. For
+`bash`, an allow rule approves only a single simple command: a command with
+`;`, `&`, `|`, a newline, `$(`, `${`, a backtick, `<`, `>`, `(` or `)` anywhere
+in it, even inside quotes, is never allowed by a rule and falls through to a
+prompt, and no "always allow" scope is offered for it. Deny and ask rules match
+the whole command or any command inside it, split on those operators and taken
+out of substitutions and subshells. The split does not parse the shell's
+quoting, so it can only add a denial or a prompt; the sandbox, not the pattern,
+is the boundary. A malformed rule is **refused at startup** rather than silently matching nothing —
 for a deny rule, quietly accepting one that can never fire tells you that you
 are protected when you are not.
 

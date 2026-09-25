@@ -1679,6 +1679,7 @@ const promptLine = t => { t.term.write(linePrompt(t) + t.line); };
 // shown one at a time, as each runs.
 function linesData(t, d){
   if(t.run){ sendInput(t, d); return; }
+  if(t.confirm){ confirmData(t, d); return; }
   d = d.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
   let quiet = t.busy || t.queue.length > 0, dropped = 0;
   for(const ch of d){
@@ -1705,22 +1706,42 @@ function nextLine(t){
 }
 function lineKeys(t, e){
   if(t.mode !== 'lines' || t.run || e.type !== 'keydown') return true;
+  if(t.confirm) return e.key !== 'Tab' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown';
   if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
     const n = e.key === 'ArrowUp' ? t.at - 1 : t.at + 1; if(n < 0 || n > t.hist.length) return false;
     t.at = n; t.term.write('\b \b'.repeat(t.line.length)); t.line = t.hist[n] || ''; t.term.write(t.line); return false;
   }
   return e.key !== 'Tab';
 }
-async function runLine(t, cmd){
-  t.hist.push(cmd); t.at = t.hist.length; t.busy = true;
-  let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify({command:cmd, cols:t.term.cols, rows:t.term.rows})}); }
+// answer is 'confirmed' or 'declined' when the line is sent again after a confirmation prompt.
+async function runLine(t, cmd, answer){
+  if(!answer){ t.hist.push(cmd); t.at = t.hist.length; }
+  t.busy = true;
+  const body = {command:cmd, cols:t.term.cols, rows:t.term.rows}; if(answer) body[answer] = true;
+  let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
+  if(r.confirm){ t.confirm = cmd; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   if(!r.id || isPlainCd(cmd)){ nextLine(t); return; }
   attach(t, r.id);
 }
-const isPlainCd = c => /^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
+// Only a typed y, then Enter, runs a command that always confirms; anything else cancels it.
+function confirmData(t, d){
+  if(d.startsWith('\x1b')) return;
+  for(const ch of d){
+    if(ch === '\r' || ch === '\n' || ch === '\x03'){
+      const cmd = t.confirm, yes = ch !== '\x03' && /^y$/i.test(t.line.trim());
+      t.confirm = null; t.line = ''; t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
+      if(ch === '\x03') t.queue = [];
+      runLine(t, cmd, yes ? 'confirmed' : 'declined'); return;
+    }
+    if(ch === '\x7f'){ if(t.line){ t.line = t.line.slice(0, -1); t.term.write('\b \b'); } continue; }
+    if(ch < ' ') continue;
+    t.line += ch; t.term.write(ch);
+  }
+}
+const isPlainCd = c =>/^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
 
 // The agent's commands, with their output, in a tab of their own.
 function logTerminal(cmd, p, who){

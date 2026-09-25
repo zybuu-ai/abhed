@@ -98,13 +98,19 @@ type ptyStartRequest struct {
 	Rows    uint16 `json:"rows"`
 	// Interactive asks for a long-lived shell instead of one command.
 	Interactive bool `json:"interactive,omitempty"`
+	// Confirmed and Declined answer a Confirm response for the same command.
+	Confirmed bool `json:"confirmed,omitempty"`
+	Declined  bool `json:"declined,omitempty"`
 }
 
 type ptyStartResponse struct {
 	ID string `json:"id"`
 	// Denied carries the refusal when policy stopped the command before it ran.
 	Denied string `json:"denied,omitempty"`
-	Cwd    string `json:"cwd"`
+	// Confirm is why the command waits for the person to confirm it; nothing
+	// ran and nothing was recorded. It runs when sent again with Confirmed.
+	Confirm string `json:"confirm,omitempty"`
+	Cwd     string `json:"cwd"`
 	// Interactive is set when ID is a shell. Lines, when a shell was asked
 	// for, says why the terminal judges each line instead.
 	Interactive bool   `json:"interactive,omitempty"`
@@ -125,6 +131,10 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	var req ptyStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (!req.Interactive && strings.TrimSpace(req.Command) == "") {
 		WriteError(w, http.StatusBadRequest, "command is required")
+		return
+	}
+	if req.Confirmed && req.Declined {
+		WriteError(w, http.StatusBadRequest, "a command cannot be both confirmed and declined")
 		return
 	}
 	if len(req.Command) > maxManualCommand {
@@ -149,9 +159,20 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 
 	id := "u" + newSessionID()
 	args, _ := json.Marshal(map[string]string{"command": req.Command, "description": "typed into the workbench terminal"})
-	tool, refused, err := live.Loop.ManualAuthorize("bash", id, args)
+	answer := agent.Unanswered
+	switch {
+	case req.Confirmed:
+		answer = agent.Confirmed
+	case req.Declined:
+		answer = agent.Declined
+	}
+	tool, refused, confirm, err := live.Loop.ManualAuthorizeTyped(id, args, answer)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "the command could not be recorded")
+		return
+	}
+	if confirm != "" {
+		WriteJSON(w, http.StatusOK, ptyStartResponse{Confirm: confirm, Cwd: sess.Rel(sess.Cwd)})
 		return
 	}
 	if refused != nil {

