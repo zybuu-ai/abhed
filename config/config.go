@@ -553,6 +553,7 @@ func Load(workspace string) (Config, error) {
 
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
+	warnNeverAllows(cfg.Permissions.Allow)
 	return cfg, cfg.Validate()
 }
 

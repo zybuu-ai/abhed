@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // UnknownKey is a key in a config file that no setting reads. It is ignored,
@@ -58,6 +60,20 @@ func warnUnknown(keys []UnknownKey) {
 		if id := k.File + "\x00" + k.Path; !warned[id] {
 			warned[id] = true
 			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
+		}
+	}
+}
+
+// warnNeverAllows writes, once per process, each bash allow rule whose own
+// pattern holds shell control syntax: no command it could match is ever allowed.
+func warnNeverAllows(rules []string) {
+	warnedMu.Lock()
+	defer warnedMu.Unlock()
+	for _, r := range rules {
+		if id := "allow\x00" + r; !warned[id] && policy.NeverAllows(r) {
+			warned[id] = true
+			fmt.Fprintf(warnOut, "abhed: warning: allow rule %s never matches: "+
+				"an allow rule approves only a single command without ; & | ( ) < > $( ${ ` or a newline, so such a command is asked about\n", r)
 		}
 	}
 }

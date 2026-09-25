@@ -45,6 +45,39 @@ globalThis.__root = new El('div');
 	}
 }
 
+// A destructive line waits at a [y/N] prompt; only y sends it again, confirmed.
+func TestIDELineTerminalConfirmsDestructiveLines(t *testing.T) {
+	harness := `globalThis.__sent = []; globalThis.__replies = []; globalThis.__attached = null;
+const ptyURL = () => '/pty', hawkSoon = () => {}, sendInput = () => {};
+const attach = (t, id) => { __attached = id; t.run = null; };
+const api = async (url, opts) => { __sent.push(JSON.parse(opts.body)); return __replies.shift(); };
+`
+	if out, err := runConsoleCases(t, "ide-lines", harness, "ide_lines_cases.mjs"); err != nil {
+		t.Fatalf("the line-by-line terminal failed:\n%s", out)
+	}
+}
+
+// Only the answer to the prompt may send a line as confirmed.
+func TestIDESendsConfirmedOnlyFromThePrompt(t *testing.T) {
+	start := strings.Index(ideHTML, "function confirmData(t, d){")
+	if start < 0 {
+		t.Fatal("confirmData is missing")
+	}
+	body := ideHTML[start : start+strings.Index(ideHTML[start:], "\n}\n")]
+	if n := strings.Count(ideHTML, "confirmed"); n != 1 || !strings.Contains(body, "'confirmed'") {
+		t.Fatalf("confirmed appears %d times, want once, inside confirmData", n)
+	}
+	answered := 0
+	for _, loc := range regexp.MustCompile(`runLine\([^(),]*,[^(),]*,`).FindAllStringIndex(ideHTML, -1) {
+		if !strings.HasSuffix(ideHTML[:loc[0]], "function ") {
+			answered++
+		}
+	}
+	if answered != 1 || !strings.Contains(body, "runLine(t, cmd, ") {
+		t.Fatalf("a line is sent with an answer from %d places, want only confirmData", answered)
+	}
+}
+
 // The chat is the conversation with the agent: the person's own shells,
 // terminal lines and saves stay in the event log, out of the transcript.
 func TestIDEChatLeavesOutThePersonsOwnCalls(t *testing.T) {

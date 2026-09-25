@@ -82,7 +82,8 @@ type Options struct {
 	// Allow and Deny are policy rules, e.g. "bash(go test*)", added to the
 	// configured ones. Deny is absolute: no mode, extension or approver
 	// overrides it. Allow is refused if the managed configuration sets
-	// permissions.allow.
+	// permissions.allow. A bash allow rule whose pattern holds ; & | ( ) < >
+	// $( ${ a backtick or a newline never matches, and a warning names it.
 	Allow []string
 	Deny  []string
 

@@ -43,9 +43,10 @@ type Result struct {
 	Reason string
 	// Scope is the suggested "always allow" rule, e.g. `bash(npm install *)`.
 	Scope string
-	// Step is which stage of the evaluation order decided: hook, deny, ask,
-	// mode, allow or default. The reason is prose for a person; this is what
-	// lets a reviewer count how often each stage is doing the work.
+	// Step is which stage of the evaluation order decided: hook, deny,
+	// destructive, screen, ask, mode, allow or default. The reason is prose
+	// for a person; this is what lets a reviewer count how often each stage
+	// is doing the work.
 	Step string
 }
 
@@ -54,6 +55,7 @@ type Rule struct {
 	raw     string
 	tool    string
 	pattern *regexp.Regexp // nil means "any argument"
+	glob    string
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -87,14 +89,15 @@ func ParseRule(s string) (Rule, error) {
 		if err != nil {
 			return Rule{}, fmt.Errorf("rule %q: %w", s, err)
 		}
-		r.pattern = re
+		r.pattern, r.glob = re, glob
 	}
 	return r, nil
 }
 
 func globToRegexp(glob string) (*regexp.Regexp, error) {
 	var b strings.Builder
-	b.WriteString("^")
+	// (?s): a * spans newlines, or a newline anywhere would slip past a deny rule.
+	b.WriteString("(?s)^")
 	for i := 0; i < len(glob); i++ {
 		switch c := glob[i]; c {
 		case '*':
@@ -120,6 +123,38 @@ func (r Rule) Matches(tool string, subject string) bool {
 		return true
 	}
 	return r.pattern.MatchString(subject)
+}
+
+// rulesSeeParts reports whether a deny or ask rule with a pattern applies to tool.
+func (e *Engine) rulesSeeParts(tool string) bool {
+	for _, rules := range [][]Rule{e.Deny, e.Ask} {
+		for _, r := range rules {
+			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matchesEverything reports whether the rule names a tool with no narrower pattern.
+func (r Rule) matchesEverything() bool { return r.pattern == nil || r.glob == "*" }
+
+// NeverAllows reports whether an allow rule can never match: its bash pattern
+// holds shell control syntax, which no command an allow rule approves may have.
+func NeverAllows(rule string) bool {
+	r, err := ParseRule(rule)
+	return err == nil && r.tool == "bash" && hasShellControl(r.glob)
+}
+
+// matchesAny reports whether the rule matches any of the subjects.
+func (r Rule) matchesAny(tool string, subjects []string) bool {
+	for _, s := range subjects {
+		if r.Matches(tool, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r Rule) String() string { return r.raw }
@@ -205,6 +240,13 @@ func Subject(tool string, args json.RawMessage) string {
 // Evaluate applies the ordered decision flow.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
 	subject := Subject(tool, args)
+	// Deny and ask rules see each command in a bash chain. A narrow allow rule
+	// approves only a simple command, and never a multi-line subject.
+	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
+	if tool == "bash" {
+		subjects, complete = commandSegments(subject)
+		narrowAllows = !hasShellControl(subject)
+	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
 	for _, h := range e.Hooks {
@@ -218,7 +260,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 
 	// 2. Deny rules — absolute, survive every mode including bypass.
 	for _, r := range e.Deny {
-		if r.Matches(tool, subject) {
+		if r.matchesAny(tool, subjects) {
 			return Result{Decision: Deny, Reason: fmt.Sprintf("denied by rule %s", r), Scope: "", Step: "deny"}
 		}
 	}
@@ -231,9 +273,15 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		}
 	}
 
+	// 2c. A command too long or tangled to split in full may hide a part a
+	// deny or ask rule would match, so no mode or allow rule approves it.
+	if !complete && e.rulesSeeParts(tool) {
+		return Result{Decision: Ask, Reason: "the command is too long or complex to check each part against the rules", Scope: "", Step: "screen"}
+	}
+
 	// 3. Ask rules — force a prompt even if a later allow would match.
 	for _, r := range e.Ask {
-		if r.Matches(tool, subject) {
+		if r.matchesAny(tool, subjects) {
 			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: suggestScope(tool, subject), Step: "ask"}
 		}
 	}
@@ -268,7 +316,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 
 	// 5. Allow rules.
 	for _, r := range e.Allow {
-		if r.Matches(tool, subject) {
+		if (narrowAllows || r.matchesEverything()) && r.Matches(tool, subject) {
 			return Result{Decision: Allow, Reason: fmt.Sprintf("matched allow rule %s", r), Scope: "", Step: "allow"}
 		}
 	}
@@ -303,6 +351,11 @@ func suggestScope(tool, subject string) string {
 		return tool
 	}
 	if tool == "bash" {
+		// No rule approves a chain, and a remembered scope is looked up by
+		// name, so `git status && curl x | sh` must not suggest `git status *`.
+		if hasShellControl(subject) {
+			return ""
+		}
 		fields := strings.Fields(subject)
 		if len(fields) == 0 {
 			return tool

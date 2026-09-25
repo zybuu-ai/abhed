@@ -34,18 +34,39 @@ A rule is a tool name, optionally followed by a pattern:
 }
 ```
 
-`*` matches anything; the pattern is matched against the command or path. A
-malformed rule is **refused at startup** rather than silently matching nothing —
-for a deny rule, quietly accepting one that can never fire tells you that you
-are protected when you are not.
+`*` matches anything, newlines included; the pattern is matched against the
+command or path.
+
+For `bash`, an allow rule with a pattern approves only a single simple command.
+A command with `;`, `&`, `|`, a newline, `$(`, `${`, a backtick, `<`, `>`, `(`
+or `)` anywhere in it, even inside quotes, falls through to a prompt, and no
+"always allow" scope is offered for it. `bash` on its own and `bash(*)` still
+allow every command. An allow rule whose own pattern holds that syntax, such as
+`bash(cd x && go test*)`, can never match, and a warning names it at startup.
+
+Deny and ask rules match the whole command or any command inside it: split on
+those operators, taken out of substitutions and subshells, and past leading
+`VAR=value` assignments, redirections and wrappers such as `sudo`, `env`,
+`nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`. The split does not
+parse the shell's quoting, so it can only add a denial or a prompt; the
+sandbox, not the pattern, is the boundary. A command too long or complex to
+split in full (over 64 KiB, over 1,024 parts, or a wrapper with too many
+readings) is always asked about while any deny or ask rule for `bash` has a
+pattern, in every mode.
+
+A malformed rule is **refused at startup** rather than silently matching
+nothing — for a deny rule, quietly accepting one that can never fire tells you
+that you are protected when you are not.
 
 ## The order
 
-Every call goes through the same six steps, and the order is the design:
+Every call goes through the same steps, and the order is the design:
 
 1. **Hooks** — extensions, first, so they can veto
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Destructive commands** — force push, hard reset, disk writes, fork bombs and similar always confirm, in every mode, because there is no undo
+   - a command too long or complex to split into its parts asks while a patterned
+     `bash` deny or ask rule exists, so no mode or allow rule can approve it unchecked
 4. **Ask rules** — force a prompt even where a later allow would match
 5. **Mode**
 6. **Allow rules**, then a default: read-only proceeds, mutations ask
