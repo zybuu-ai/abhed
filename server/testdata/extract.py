@@ -5,6 +5,7 @@
 #   extract.py console.go workbench   what draws a file and a diff
 #   extract.py ide.html ide-md        the workbench's markdown renderer
 #   extract.py ide.html ide-render    the workbench's chat render()
+#   extract.py ide.html ide-lines     the line-by-line terminal
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
 which = sys.argv[2] if len(sys.argv) > 2 else 'render'
@@ -14,6 +15,8 @@ def grab(fn):
     line_end = src.index('\n', i)
     first = src[i:line_end]
     if first.count('{') == first.count('}') and first.rstrip().rstrip(';').endswith('}'):
+        return first
+    if fn.startswith('const ') and first.rstrip().endswith(';') and first.count('{') == first.count('}'):
         return first
     j = src.index('\n}\n', i) + 3
     return src[i:j]
@@ -28,11 +31,14 @@ sets = {
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
+    # From ide.html: the line-by-line terminal and its confirmation prompt.
+    'ide-lines': ['const linePrompt = ','const promptLine = ','function linesData(t, d){','function nextLine(t){',
+          'function lineKeys(t, e){','async function runLine(t, cmd, answer){','function confirmData(t, d){','const isPlainCd = '],
 }
 seen=set(); out=[]
 for fn in sets[which]:
     if fn not in src: continue
-    name = re.match(r'(?:function|const) (\w+)', fn).group(1)
+    name = re.match(r'(?:async function|function|const) (\w+)', fn).group(1)
     if name in seen: continue
     seen.add(name); out.append(grab(fn))
 if which == 'render':

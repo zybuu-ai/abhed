@@ -107,8 +107,7 @@ type ptyStartResponse struct {
 	ID string `json:"id"`
 	// Denied carries the refusal when policy stopped the command before it ran.
 	Denied string `json:"denied,omitempty"`
-	// Confirm is why the command waits for the person to confirm it; nothing
-	// ran and nothing was recorded. It runs when sent again with Confirmed.
+	// Confirm is why the command waits to be confirmed; nothing ran or was recorded.
 	Confirm string `json:"confirm,omitempty"`
 	Cwd     string `json:"cwd"`
 	// Interactive is set when ID is a shell. Lines, when a shell was asked
@@ -167,6 +166,10 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		answer = agent.Declined
 	}
 	tool, refused, confirm, err := live.Loop.ManualAuthorizeTyped(id, args, answer)
+	if errors.Is(err, agent.ErrNothingToDecline) {
+		WriteJSON(w, http.StatusOK, ptyStartResponse{Denied: "Not run: declined", Cwd: sess.Rel(sess.Cwd)})
+		return
+	}
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "the command could not be recorded")
 		return

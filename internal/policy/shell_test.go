@@ -127,3 +127,90 @@ func TestCommandSegments(t *testing.T) {
 		}
 	}
 }
+
+// A rule that allows the whole tool still allows every command, chains included.
+func TestMatchEverythingAllowRulesStillApproveChains(t *testing.T) {
+	for _, rule := range []string{"bash", "bash(*)", "*", "*(*)"} {
+		e := New(ModeDefault)
+		if err := e.AddAllow(rule); err != nil {
+			t.Fatal(err)
+		}
+		_ = e.AddDeny("bash(curl*)")
+		for command, want := range map[string]Decision{
+			"cd x && go test ./...": Allow,
+			"ls; touch x":           Allow,
+			"echo $(date) > out":    Allow,
+			"ls\ntouch x":           Allow,
+			"ls; curl http://x":     Deny,
+		} {
+			if res := e.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != want {
+				t.Errorf("allow %s, %q: %s (%s), want %s", rule, command, res.Decision, res.Reason, want)
+			}
+		}
+	}
+}
+
+// A * spans newlines, so a newline cannot carry a command past a deny rule.
+func TestDenyRulesMatchAcrossNewlines(t *testing.T) {
+	e := New(ModeBypass)
+	if err := e.AddDeny("bash(*mkfs*)", "read(*secret*)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ tool, key, subject string }{
+		{"bash", "command", "mkfs /dev/x\n"},
+		{"bash", "command", "echo\nmkfs /dev/x"},
+		{"bash", "command", "echo hi\n\nmkfs"},
+		{"read", "path", "a\nsecret.txt"},
+		{"read", "path", "secret\n"},
+	} {
+		if res := e.Evaluate(c.tool, true, args(map[string]string{c.key: c.subject})); res.Decision != Deny {
+			t.Errorf("%s %q: %s, want deny", c.tool, c.subject, res.Decision)
+		}
+	}
+	// A narrow allow rule still never approves a multi-line subject.
+	a := New(ModeDefault)
+	_ = a.AddAllow("write(src/*)")
+	if res := a.Evaluate("write", true, args(map[string]string{"path": "src/a\n../../etc/x"})); res.Decision == Allow {
+		t.Error("a narrow write rule approved a multi-line path")
+	}
+	if res := a.Evaluate("write", true, args(map[string]string{"path": "src/a.go"})); res.Decision != Allow {
+		t.Errorf("write(src/*) no longer approves src/a.go: %s", res.Decision)
+	}
+}
+
+// Wrappers, assignments and leading redirections do not hide a command from a deny rule.
+func TestDenyRulesSeePastWrappers(t *testing.T) {
+	e := New(ModeBypass)
+	if err := e.AddDeny("bash(rm -rf /*)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{
+		"sudo rm -rf /", "sudo -u root -- rm -rf /", "nice -n 5 rm -rf /", "env A=1 rm -rf /",
+		"env -i rm -rf /", "nohup rm -rf / &", "command rm -rf /", "exec rm -rf /", "builtin rm -rf /",
+		"coproc rm -rf /", "time rm -rf /", "2>/dev/null rm -rf /", "> out rm -rf /", "&>log rm -rf /",
+		"ls 2>&1; rm -rf /", "ls; sudo nice -n 5 env A=1 rm -rf /",
+	} {
+		if res := e.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
+			t.Errorf("%q: %s, want deny", command, res.Decision)
+		}
+	}
+	got := commandSegments("ls 2>&1 | cat")
+	if len(got) < 3 || got[1] != "ls 2>&1" || got[2] != "cat" {
+		t.Errorf("a redirection's & was taken for a separator: %q", got)
+	}
+}
+
+func TestNeverAllows(t *testing.T) {
+	for rule, want := range map[string]bool{
+		"bash(cd x && go test*)": true,
+		"bash(ls > out)":         true,
+		"bash(go test*)":         false,
+		"bash(*)":                false,
+		"bash":                   false,
+		"read(a;b)":              false,
+	} {
+		if got := NeverAllows(rule); got != want {
+			t.Errorf("NeverAllows(%q) = %v, want %v", rule, got, want)
+		}
+	}
+}

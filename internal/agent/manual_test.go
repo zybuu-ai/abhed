@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -79,6 +80,18 @@ func TestManualAuthorizeTypedConfirmsDestructive(t *testing.T) {
 	}
 	if tool, _, confirm, _ := l.ManualAuthorizeTyped("u5", bashArgs("touch a"), Unanswered); tool == nil || confirm != "" {
 		t.Fatalf("an ordinary ask was held for confirmation: %q", confirm)
+	}
+	// Declining a line that needed no confirmation runs and records nothing.
+	if tool, refused, _, err := l.ManualAuthorizeTyped("u6", bashArgs("touch a"), Declined); !errors.Is(err, ErrNothingToDecline) || tool != nil || refused != nil {
+		t.Fatalf("declined ordinary line: tool %v refused %v err %v", tool, refused, err)
+	}
+	evs, _ := store.Events("s-manual")
+	for _, e := range evs {
+		var p map[string]any
+		_ = json.Unmarshal(e.Payload, &p)
+		if p["call_id"] == "u6" {
+			t.Fatalf("a declined ordinary line was recorded: %s", e.Type)
+		}
 	}
 }
 

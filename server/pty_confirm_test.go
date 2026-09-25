@@ -128,6 +128,14 @@ func TestTerminalLineConfirmationLeavesOtherDecisions(t *testing.T) {
 		t.Fatalf("plain approval payload: %v", p)
 	}
 
+	// A decline for a line that needed no confirmation: not run, not recorded.
+	if declined := wb.typeLine(ptyStartRequest{Command: "touch declined.txt", Declined: true}); declined.Denied == "" || declined.ID != "" {
+		t.Fatalf("declined ordinary line: %+v", declined)
+	}
+	if _, err := os.Stat(filepath.Join(wb.workspace, "declined.txt")); err == nil || len(requestedIDs(wb, "touch declined.txt")) != 0 {
+		t.Fatal("a declined ordinary line ran or was recorded")
+	}
+
 	if denied := wb.typeLine(ptyStartRequest{Command: "shutdown -h now", Confirmed: true}); !strings.Contains(denied.Denied, "Denied") || denied.Confirm != "" {
 		t.Fatalf("a denied line confirmed: %+v", denied)
 	}

@@ -2,10 +2,8 @@ package policy
 
 import "strings"
 
-// A bash rule's glob matches the whole command line, which a shell may run as
-// several commands. These helpers keep an allow rule to one simple command and
-// let deny and ask rules see each command in a chain. The split is best effort
-// and ignores quoting: the sandbox, not the pattern, is the boundary.
+// A bash rule's glob sees the whole line, which may run several commands. The
+// split below ignores quoting and is best effort: the sandbox is the boundary.
 
 // hasShellControl reports whether command uses syntax that runs, feeds or
 // redirects anything beyond one simple command. A false positive only asks.
@@ -13,9 +11,8 @@ func hasShellControl(command string) bool {
 	return strings.ContainsAny(command, ";&|\n\r`<>()") || strings.Contains(command, "${")
 }
 
-// commandSegments returns the whole command followed by each command it
-// contains: split on control operators and taken out of $(...), backticks,
-// subshells and process substitution.
+// commandSegments returns the whole command, then each command inside it,
+// including those in $(...), backticks, subshells and process substitution.
 func commandSegments(command string) []string {
 	out := []string{command}
 	seen := map[string]bool{command: true}
@@ -25,10 +22,7 @@ func commandSegments(command string) []string {
 			out = append(out, s)
 		}
 	}
-	parts := strings.FieldsFunc(command, func(r rune) bool {
-		return strings.ContainsRune(";&|\n\r`()", r)
-	})
-	for _, p := range parts {
+	for _, p := range splitControl(command) {
 		p = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(p), "$"))
 		p = strings.TrimSpace(strings.TrimRight(p, "<>"))
 		add(p)
@@ -37,20 +31,94 @@ func commandSegments(command string) []string {
 	return out
 }
 
+// splitControl splits on ; & | newlines, backticks and parentheses, keeping
+// the & and | of a redirection such as 2>&1, &> or >| inside its segment.
+func splitControl(command string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch c {
+		case '&', '|':
+			if i > 0 && (command[i-1] == '>' || command[i-1] == '<') {
+				continue
+			}
+			if c == '&' && i+1 < len(command) && command[i+1] == '>' {
+				continue
+			}
+		case ';', '\n', '\r', '`', '(', ')':
+		default:
+			continue
+		}
+		parts = append(parts, command[start:i])
+		start = i + 1
+	}
+	return append(parts, command[start:])
+}
+
 // shellPrefixWords come before a command without being it.
 var shellPrefixWords = map[string]bool{
 	"{": true, "}": true, "!": true, "if": true, "then": true, "else": true, "elif": true,
-	"fi": true, "do": true, "done": true, "while": true, "until": true, "time": true,
+	"fi": true, "do": true, "done": true, "while": true, "until": true,
 }
 
-// stripPrefixWords drops leading keywords and VAR=value assignments.
+// wrapperWords run the command that follows them.
+var wrapperWords = map[string]bool{
+	"env": true, "command": true, "exec": true, "nohup": true, "nice": true,
+	"builtin": true, "sudo": true, "coproc": true, "time": true,
+}
+
+// wrapperOptionArgs are wrapper options that take the next word as their value.
+var wrapperOptionArgs = map[string]bool{"-n": true, "-u": true, "-g": true, "-a": true, "-C": true, "-S": true}
+
+// stripPrefixWords drops leading keywords, wrappers and their options,
+// VAR=value assignments and redirections.
 func stripPrefixWords(segment string) string {
 	fields := strings.Fields(segment)
 	i := 0
-	for i < len(fields) && (shellPrefixWords[fields[i]] || isAssignment(fields[i])) {
-		i++
+	for i < len(fields) {
+		w := fields[i]
+		switch {
+		case shellPrefixWords[w] || isAssignment(w):
+			i++
+		case wrapperWords[w]:
+			i++
+			for i < len(fields) && strings.HasPrefix(fields[i], "-") {
+				if fields[i] == "--" {
+					i++
+					break
+				}
+				if wrapperOptionArgs[fields[i]] {
+					i++
+				}
+				i++
+			}
+		default:
+			redirect, bare := isRedirection(w)
+			if !redirect {
+				return strings.Join(fields[i:], " ")
+			}
+			i++
+			if bare {
+				i++
+			}
+		}
 	}
-	return strings.Join(fields[i:], " ")
+	return ""
+}
+
+// isRedirection reports whether word is a redirection, and whether it is the
+// operator alone, so that its target is the next word.
+func isRedirection(word string) (redirect, bare bool) {
+	w := strings.TrimLeft(word, "0123456789")
+	if strings.HasPrefix(w, "&>") {
+		w = w[1:]
+	}
+	op := strings.TrimLeft(w, "<>&|")
+	if op == w || len(w)-len(op) > 3 {
+		return false, false
+	}
+	return true, op == ""
 }
 
 func isAssignment(word string) bool {

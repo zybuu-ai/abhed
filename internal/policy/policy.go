@@ -54,6 +54,7 @@ type Rule struct {
 	raw     string
 	tool    string
 	pattern *regexp.Regexp // nil means "any argument"
+	glob    string
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -87,14 +88,15 @@ func ParseRule(s string) (Rule, error) {
 		if err != nil {
 			return Rule{}, fmt.Errorf("rule %q: %w", s, err)
 		}
-		r.pattern = re
+		r.pattern, r.glob = re, glob
 	}
 	return r, nil
 }
 
 func globToRegexp(glob string) (*regexp.Regexp, error) {
 	var b strings.Builder
-	b.WriteString("^")
+	// (?s): a * spans newlines, or a newline anywhere would slip past a deny rule.
+	b.WriteString("(?s)^")
 	for i := 0; i < len(glob); i++ {
 		switch c := glob[i]; c {
 		case '*':
@@ -120,6 +122,16 @@ func (r Rule) Matches(tool string, subject string) bool {
 		return true
 	}
 	return r.pattern.MatchString(subject)
+}
+
+// matchesEverything reports whether the rule names a tool with no narrower pattern.
+func (r Rule) matchesEverything() bool { return r.pattern == nil || r.glob == "*" }
+
+// NeverAllows reports whether an allow rule can never match: its bash pattern
+// holds shell control syntax, which no command an allow rule approves may have.
+func NeverAllows(rule string) bool {
+	r, err := ParseRule(rule)
+	return err == nil && r.tool == "bash" && hasShellControl(r.glob)
 }
 
 // matchesAny reports whether the rule matches any of the subjects.
@@ -215,11 +227,11 @@ func Subject(tool string, args json.RawMessage) string {
 // Evaluate applies the ordered decision flow.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
 	subject := Subject(tool, args)
-	// Deny and ask rules see every command in a bash chain; allow rules only
-	// ever approve a single simple command.
-	subjects, allowable := []string{subject}, true
+	// Deny and ask rules see each command in a bash chain. A narrow allow rule
+	// approves only a simple command, and never a multi-line subject.
+	subjects, narrowAllows := []string{subject}, !strings.Contains(subject, "\n")
 	if tool == "bash" {
-		subjects, allowable = commandSegments(subject), !hasShellControl(subject)
+		subjects, narrowAllows = commandSegments(subject), !hasShellControl(subject)
 	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
@@ -284,7 +296,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 
 	// 5. Allow rules.
 	for _, r := range e.Allow {
-		if allowable && r.Matches(tool, subject) {
+		if (narrowAllows || r.matchesEverything()) && r.Matches(tool, subject) {
 			return Result{Decision: Allow, Reason: fmt.Sprintf("matched allow rule %s", r), Scope: "", Step: "allow"}
 		}
 	}

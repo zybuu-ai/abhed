@@ -1713,7 +1713,7 @@ function lineKeys(t, e){
   }
   return e.key !== 'Tab';
 }
-// answer is 'confirmed' or 'declined' when the line is sent again after a confirmation prompt.
+// answer is set only when the line is sent again with the reply to a confirmation prompt.
 async function runLine(t, cmd, answer){
   if(!answer){ t.hist.push(cmd); t.at = t.hist.length; }
   t.busy = true;
@@ -1721,7 +1721,7 @@ async function runLine(t, cmd, answer){
   let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
-  if(r.confirm){ t.confirm = cmd; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
+  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   if(!r.id || isPlainCd(cmd)){ nextLine(t); return; }
   attach(t, r.id);
@@ -1732,8 +1732,10 @@ function confirmData(t, d){
   for(const ch of d){
     if(ch === '\r' || ch === '\n' || ch === '\x03'){
       const cmd = t.confirm, yes = ch !== '\x03' && /^y$/i.test(t.line.trim());
-      t.confirm = null; t.line = ''; t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
-      if(ch === '\x03') t.queue = [];
+      t.confirm = null; t.line = ch === '\x03' ? '' : t.ahead || ''; t.ahead = '';
+      t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
+      // A declined line stops the lines queued behind it, as Ctrl-C does.
+      if(!yes) t.queue = [];
       runLine(t, cmd, yes ? 'confirmed' : 'declined'); return;
     }
     if(ch === '\x7f'){ if(t.line){ t.line = t.line.slice(0, -1); t.term.write('\b \b'); } continue; }
@@ -1741,7 +1743,7 @@ function confirmData(t, d){
     t.line += ch; t.term.write(ch);
   }
 }
-const isPlainCd = c =>/^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
+const isPlainCd = c => /^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
 
 // The agent's commands, with their output, in a tab of their own.
 function logTerminal(cmd, p, who){

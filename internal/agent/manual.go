@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,18 +55,24 @@ const (
 	Declined
 )
 
-// ManualAuthorizeTyped is ManualAuthorize for a command typed at the
-// line-by-line terminal, where typing it answers every ask but one: a
-// destructive command runs only once confirmed. Unanswered, it comes back as
-// the reason to confirm, with nothing recorded; declined, as the person's refusal.
+// ErrNothingToDecline answers a decline for a line that needed no
+// confirmation: nothing is run or recorded.
+var ErrNothingToDecline = errors.New("not run: declined")
+
+// ManualAuthorizeTyped is ManualAuthorize for a line-by-line terminal, where a destructive
+// command needs an answer; "confirmed" records the client's claim that the person gave it.
 func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Confirmation) (tool tools.Tool, refused *tools.Result, confirm string, err error) {
 	tool, found := l.Tools.Get("bash")
 	if !found {
 		return nil, nil, "", fmt.Errorf("unknown tool %q", "bash")
 	}
 	decision := l.Policy.Evaluate("bash", tool.Mutates(), args)
-	if answer == Unanswered && decision.Decision == policy.Ask && decision.Step == "destructive" {
+	needs := decision.Decision == policy.Ask && decision.Step == "destructive"
+	switch {
+	case needs && answer == Unanswered:
 		return nil, nil, decision.Reason, nil
+	case !needs && answer == Declined && decision.Decision != policy.Deny:
+		return nil, nil, "", ErrNothingToDecline
 	}
 	if refused, err = l.manualDecide("bash", id, args, decision, answer); err != nil || refused != nil {
 		return nil, refused, "", err
