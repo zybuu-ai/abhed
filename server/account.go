@@ -15,21 +15,22 @@ func (s *Server) serveAccount(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(accountHTML))
 }
 
-const accountHTML = `<!doctype html>
+var accountHTML = brandify(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Account · Abhed</title><link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<title>Account · Abhed</title><link rel="icon" type="image/png" href="/favicon.ico">
 <style>
-:root{color-scheme:light dark;--bg:#0f1115;--fg:#e6e8ee;--mut:#9aa3b2;--line:#262b36;--acc:#2A8CF0;--bad:#f06a6a;--ok:#3fbf7f}
-@media (prefers-color-scheme:light){:root{--bg:#f7f8fa;--fg:#1f2430;--mut:#5b6474;--line:#dde1e8}}
+:root{color-scheme:light dark;--bg:#0B0B0C;--fg:#F2F2EE;--mut:#9B9BA3;--line:#2A2A2F;--acc:#FF7A45;--acc-ink:#0B0B0C;--bad:#f06a6a;--ok:#3fbf7f}
+@media (prefers-color-scheme:light){:root{--bg:#FAFAF8;--fg:#0B0B0C;--mut:#6B6B72;--line:#E5E5E0;--acc:#C2410C;--acc-ink:#fff}}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
 main{width:100%;max-width:380px}h1{font-size:20px;margin:0 0 4px}p{color:var(--mut);margin:0 0 20px}
 label{display:block;font-size:13px;color:var(--mut);margin:12px 0 4px}
 input{width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit;font:inherit}
-button{margin-top:18px;width:100%;padding:10px;border:0;border-radius:6px;background:var(--acc);color:#fff;font:inherit;cursor:pointer}
+button{margin-top:18px;width:100%;padding:10px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-ink);font:inherit;font-weight:600;cursor:pointer}
 button:disabled{opacity:.6;cursor:default}#msg{margin-top:14px;min-height:1.5em}.bad{color:var(--bad)}.ok{color:var(--ok)}
 nav{margin-top:22px;display:flex;gap:16px}a{color:var(--acc)}
+/*{{BRAND_CSS}}*/
 </style></head><body><main>
-<h1>Change password</h1><p id="who">Signed in.</p>
+<div style="margin-bottom:22px">{{BRAND_LOCKUP}}</div><h1>Change password</h1><p id="who">Signed in.</p>
 <p id="must" class="bad" hidden>This password was set for you. Change it to continue.</p>
 <form id="f">
 <label for="cur">Current password</label><input id="cur" type="password" autocomplete="current-password" required>
@@ -61,4 +62,4 @@ $('f').addEventListener('submit', async (e) => {
   }catch{ msg.className = 'bad'; msg.textContent = 'Cannot reach the server.'; }
   $('go').disabled = false;
 });
-</script></body></html>`
+</script></body></html>`)

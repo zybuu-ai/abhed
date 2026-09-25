@@ -47,45 +47,45 @@ func WithHome(page, home string) string {
 		`<a href="`+esc+`" class="home" title="Back to `+label+`">`+label+` <span aria-hidden="true">&#8599;</span></a>`)
 }
 
-var consoleHTML = strings.ReplaceAll(`<!doctype html>
+var consoleHTML = brandify(strings.ReplaceAll(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Abhed Console</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%20256%20256%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22fwall%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%235CC4FF%22%2F%3E%3Cstop%20offset%3D%2255%25%22%20stop-color%3D%22%232A8CF0%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%230B3C8C%22%2F%3E%3C%2FlinearGradient%3E%3CradialGradient%20id%3D%22fcore%22%20cx%3D%2240%25%22%20cy%3D%2235%25%22%20r%3D%2270%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%23FFFFFF%22%2F%3E%3Cstop%20offset%3D%2270%25%22%20stop-color%3D%22%23DDEFFF%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%239ED2FF%22%2F%3E%3C%2FradialGradient%3E%3CradialGradient%20id%3D%22fglow%22%20cx%3D%2250%25%22%20cy%3D%2250%25%22%20r%3D%2250%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%235CC4FF%22%20stop-opacity%3D%22.55%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%235CC4FF%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%3C%2Fdefs%3E%3Cpath%20d%3D%22M218.6%2090.5%20L165.5%2037.4%20L90.5%2037.4%20L37.4%2090.5%20L37.4%20165.5%20L90.5%20218.6%20L165.5%20218.6%20L218.6%20165.5%20Z%22%20fill%3D%22none%22%20stroke%3D%22url%28%23fwall%29%22%20stroke-width%3D%2224%22%20stroke-linejoin%3D%22round%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2262%22%20fill%3D%22none%22%20stroke%3D%22url%28%23fwall%29%22%20stroke-width%3D%226%22%20opacity%3D%22.45%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2250%22%20fill%3D%22url%28%23fglow%29%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2223%22%20fill%3D%22url%28%23fcore%29%22%2F%3E%3C%2Fsvg%3E">
+<link rel="icon" type="image/png" href="/favicon.ico">
 <style>
 :root{
-  --bg:#F4F6FA; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#E6EBF3;
-  --line:#DCE3EC; --line-strong:#C4CFDD;
-  --ink:#0F141B; --ink-2:#3A4757; --muted:#697786;
-  --accent:#0F63C4; --accent-soft:#E2EDFB; --accent-line:#0F63C4;
-  --running:#1F6FB8; --done:#1A7F4B; --waiting:#9A6A16; --error:#C0392F;
-  --running-bg:#E3EEF8; --done-bg:#E3F3EA; --waiting-bg:#FAF0DC; --error-bg:#FBE9E7;
-  --accent-2:#7A3FE0; --danger:#C0392F; --danger-bg:#FBE9E7; --glow:0 0 0 transparent;
+  --bg:#FAFAF8; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#F1F1EE;
+  --line:#E5E5E0; --line-strong:#D2D2CC;
+  --ink:#0B0B0C; --ink-2:#3A3A40; --muted:#6B6B72;
+  --accent:#C2410C; --accent-soft:#FFF0E8; --accent-line:#C2410C;
+  --running:#C2410C; --done:#1A7F4B; --waiting:#9A6A16; --error:#C0392F;
+  --running-bg:#FFF0E8; --done-bg:#E3F3EA; --waiting-bg:#FAF0DC; --error-bg:#FBE9E7;
+  --accent-2:#B45309; --danger:#C0392F; --danger-bg:#FBE9E7; --glow:0 0 0 transparent;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,Roboto,sans-serif;
   --rail:280px; --drawer:420px;
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --bg:#070B12; --surface:#0E1521; --raised:#16202F; --sunken:#0A101A;
-    --line:#252D3A; --line-strong:#333D4D;
-    --ink:#E8EDF4; --ink-2:#BAC6D4; --muted:#8A96A8;
-    --accent:#3BA9FF; --accent-soft:#0B2540; --accent-line:#3BA9FF;
-    --running:#4C8FD6; --done:#3FAF6C; --waiting:#D4A03C; --error:#E05A52;
-    --running-bg:#132436; --done-bg:#0F2419; --waiting-bg:#241C0C; --error-bg:#2A1412;
-    --accent-2:#8B6CFF; --danger:#FF6B6B; --danger-bg:rgba(255,80,80,.14); --glow:0 0 18px rgba(59,169,255,.35);
+    --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0E0E10;
+    --line:#2A2A2F; --line-strong:#3A3A40;
+    --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
+    --accent:#FF7A45; --accent-soft:#2A1A12; --accent-line:#FF7A45;
+    --running:#FF7A45; --done:#3FAF6C; --waiting:#D4A03C; --error:#E05A52;
+    --running-bg:#2A1A12; --done-bg:#0F2419; --waiting-bg:#241C0C; --error-bg:#2A1412;
+    --accent-2:#FFB547; --danger:#FF6B6B; --danger-bg:rgba(255,80,80,.14); --glow:0 0 18px rgba(255,122,69,.35);
   }
 }
 :root[data-theme="dark"]{
-  --bg:#070B12; --surface:#0E1521; --raised:#16202F; --sunken:#0A101A;
-  --line:#252D3A; --line-strong:#333D4D;
-  --ink:#E8EDF4; --ink-2:#BAC6D4; --muted:#8A96A8;
-  --accent:#3BA9FF; --accent-soft:#0B2540; --accent-line:#3BA9FF;
-  --running:#4C8FD6; --done:#3FAF6C; --waiting:#D4A03C; --error:#E05A52;
-  --running-bg:#132436; --done-bg:#0F2419; --waiting-bg:#241C0C; --error-bg:#2A1412;
-  --accent-2:#8B6CFF; --danger:#FF6B6B; --danger-bg:rgba(255,80,80,.14); --glow:0 0 18px rgba(59,169,255,.35);
+  --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0E0E10;
+  --line:#2A2A2F; --line-strong:#3A3A40;
+  --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
+  --accent:#FF7A45; --accent-soft:#2A1A12; --accent-line:#FF7A45;
+  --running:#FF7A45; --done:#3FAF6C; --waiting:#D4A03C; --error:#E05A52;
+  --running-bg:#2A1A12; --done-bg:#0F2419; --waiting-bg:#241C0C; --error-bg:#2A1412;
+  --accent-2:#FFB547; --danger:#FF6B6B; --danger-bg:rgba(255,80,80,.14); --glow:0 0 18px rgba(255,122,69,.35);
 }
 
 *{box-sizing:border-box}
@@ -122,10 +122,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .railtoggle:active{background:var(--sunken)}
 .scrim{display:none}
 @media (max-width:760px){.scrim{display:block}}
-.mark{width:24px;height:24px;flex:none;
-  filter:drop-shadow(0 0 6px rgba(59,169,255,.35))}
-.brand b{font-size:14.5px;font-weight:700;letter-spacing:-.02em}
-.brand span{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.brand #ver{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .top .spacer{flex:1}
 .home{text-decoration:none;color:var(--ink-2);font-family:var(--mono);font-size:11.5px;margin-left:10px;padding:3px 8px;border:1px solid var(--line);border-radius:5px;white-space:nowrap}
 .home:hover{color:var(--accent);border-color:var(--accent)}
@@ -250,7 +247,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .chipf .x:hover{color:var(--warn)}
 .new{width:100%;display:flex;align-items:center;justify-content:center;gap:7px;
   background:var(--accent);border:1px solid var(--accent);border-radius:9px;
-  padding:9px 12px;font-size:12.5px;font-weight:650;cursor:pointer;color:var(--btn-ink,#04121F);
+  padding:9px 12px;font-size:12.5px;font-weight:650;cursor:pointer;color:var(--on-accent);
   box-shadow:var(--glow);transition:filter .14s,transform .14s}
 .new:hover{filter:brightness(1.08);transform:translateY(-1px)}
 .new span{font-size:15px;line-height:1}
@@ -285,7 +282,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     linear-gradient(135deg,currentColor 50%,transparent 50%);
   background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;
   background-size:5px 5px,5px 5px;background-repeat:no-repeat}
-.go{width:32px;height:32px;flex:none;background:var(--accent);border:0;color:var(--btn-ink,#04121F);
+.go{width:32px;height:32px;flex:none;background:var(--accent);border:0;color:var(--on-accent);
   border-radius:50%;font-size:15px;font-weight:700;line-height:1;cursor:pointer;display:grid;
   place-items:center;transition:transform .12s;box-shadow:var(--glow)}
 .go:hover:not(:disabled){transform:scale(1.06)}
@@ -357,12 +354,12 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
    there is room; the column view is kept for phones, where a wide grid of
    cards would be two half-width cards you cannot read. */
 @media (min-width:700px){.empty .ex{grid-template-columns:1fr 1fr;max-width:600px;gap:8px}}
-.mark-lg{width:56px;height:56px;margin-bottom:6px;filter:drop-shadow(0 0 18px rgba(59,169,255,.45))}
+.mark-lg{height:60px;width:auto;margin-bottom:10px}
 .chip{background:var(--surface);border:1px solid var(--line);border-radius:12px;
   padding:11px 13px;font-size:12.5px;color:var(--ink-2);cursor:pointer;text-align:left;line-height:1.5;
   transition:border-color .14s,transform .14s,box-shadow .14s}
 .chip:hover{border-color:var(--accent);transform:translateY(-2px);color:var(--ink);
-  box-shadow:0 14px 30px -18px rgba(59,169,255,.6)}
+  box-shadow:0 14px 30px -18px rgba(255,122,69,.6)}
 .chip .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:4px;font-weight:600}
 
 /* turn grouping: a vertical spine ties a turn's calls together */
@@ -457,7 +454,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .approve .row{display:flex;gap:8px}
 .approve button{border-radius:5px;padding:5px 13px;font-size:12px;
   font-weight:600;cursor:pointer;border:1px solid var(--line)}
-.approve .yes{background:var(--accent);border-color:var(--accent);color:var(--btn-ink,#04121F);box-shadow:var(--glow)}
+.approve .yes{background:var(--accent);border-color:var(--accent);color:var(--on-accent);box-shadow:var(--glow)}
 .approve .no{background:var(--surface)}
 .approve .always{background:var(--surface)}
 
@@ -581,6 +578,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   :root{--rail:212px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+/*{{BRAND_CSS}}*/
 </style>
 </head>
 <body>
@@ -597,9 +595,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     </svg>
   </button>
   <div class="brand">
-    <svg class="mark" viewBox="0 0 256 256" aria-hidden="true"><defs><linearGradient id="tt-wall" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5CC4FF"/><stop offset="55%" stop-color="#2A8CF0"/><stop offset="100%" stop-color="#0B3C8C"/></linearGradient><radialGradient id="tt-core" cx="40%" cy="35%" r="70%"><stop offset="0%" stop-color="#FFFFFF"/><stop offset="70%" stop-color="#DDEFFF"/><stop offset="100%" stop-color="#9ED2FF"/></radialGradient><radialGradient id="tt-glow" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#5CC4FF" stop-opacity=".55"/><stop offset="100%" stop-color="#5CC4FF" stop-opacity="0"/></radialGradient></defs><path d="M218.6 90.5 L165.5 37.4 L90.5 37.4 L37.4 90.5 L37.4 165.5 L90.5 218.6 L165.5 218.6 L218.6 165.5 Z" fill="none" stroke="url(#tt-wall)" stroke-width="24" stroke-linejoin="round"/><circle cx="128" cy="128" r="62" fill="none" stroke="url(#tt-wall)" stroke-width="6" opacity=".45"/><circle cx="128" cy="128" r="50" fill="url(#tt-glow)"/><circle cx="128" cy="128" r="23" fill="url(#tt-core)"/></svg>
     <a href="/" style="text-decoration:none;color:inherit;display:flex;
-       align-items:baseline;gap:8px" title="Overview"><b>Abhed</b><span
+       align-items:center;gap:10px" title="Overview">{{BRAND_LOCKUP}}<span
        id="ver">console</span></a><!--HOME-->
   </div>
   <!-- Outside #whobox, which is removed where there is no sign-in. -->
@@ -648,7 +645,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     </div>
     <div class="transcript" id="tx">
       <div class="empty">
-        <svg class="mark-lg" viewBox="0 0 256 256" aria-hidden="true"><defs><linearGradient id="tt-wall" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5CC4FF"/><stop offset="55%" stop-color="#2A8CF0"/><stop offset="100%" stop-color="#0B3C8C"/></linearGradient><radialGradient id="tt-core" cx="40%" cy="35%" r="70%"><stop offset="0%" stop-color="#FFFFFF"/><stop offset="70%" stop-color="#DDEFFF"/><stop offset="100%" stop-color="#9ED2FF"/></radialGradient><radialGradient id="tt-glow" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#5CC4FF" stop-opacity=".55"/><stop offset="100%" stop-color="#5CC4FF" stop-opacity="0"/></radialGradient></defs><path d="M218.6 90.5 L165.5 37.4 L90.5 37.4 L37.4 90.5 L37.4 165.5 L90.5 218.6 L165.5 218.6 L218.6 165.5 Z" fill="none" stroke="url(#tt-wall)" stroke-width="24" stroke-linejoin="round"/><circle cx="128" cy="128" r="62" fill="none" stroke="url(#tt-wall)" stroke-width="6" opacity=".45"/><circle cx="128" cy="128" r="50" fill="url(#tt-glow)"/><circle cx="128" cy="128" r="23" fill="url(#tt-core)"/></svg>
+        <img class="mark-lg lk-light" src="{{BRAND_MARK}}" alt="" width="66" height="60"><img class="mark-lg lk-dark" src="{{BRAND_MARK_REV}}" alt="" width="66" height="60">
         <div class="k" id="greet">What should we <span class="hl">work on</span>?</div>
         <div class="s">Ask a question, describe a change, or attach a document. Every
           step the agent takes is recorded; pick any chat on the left to replay it.</div>
@@ -2101,7 +2098,7 @@ setInterval(health, 10000);
 setInterval(refresh, 5000);
 </script>
 </body>
-</html>`, "\x00", "")
+</html>`, "\x00", ""))
 
 // authDisabledHTML is shown when someone reaches /login or /logout on a server
 // running without authentication. It says what is true and what to change,
@@ -2110,19 +2107,19 @@ const authDisabledHTML = `<!doctype html><meta charset="utf-8">
 <title>Sign-in not configured</title>
 <style>
 :root{color-scheme:light dark}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0B0E13;
-  color:#E8EDF4;font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-@media (prefers-color-scheme:light){body{background:#F5F7FA;color:#0F141B}}
-.card{max-width:520px;padding:30px 34px;border-radius:12px;background:#141922;
-  border:1px solid #252D3A}
-@media (prefers-color-scheme:light){.card{background:#fff;border-color:#DCE3EC}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0B0B0C;
+  color:#F2F2EE;font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+@media (prefers-color-scheme:light){body{background:#FAFAF8;color:#0B0B0C}}
+.card{max-width:520px;padding:30px 34px;border-radius:12px;background:#141416;
+  border:1px solid #2A2A2F}
+@media (prefers-color-scheme:light){.card{background:#fff;border-color:#E5E5E0}}
 h1{margin:0 0 10px;font-size:17px;display:flex;align-items:center;gap:9px}
-svg{width:19px;height:19px;fill:#4C8FD6}
-p{margin:0 0 12px;color:#8A96A8}
-pre{background:#0F141C;border:1px solid #252D3A;border-radius:7px;padding:12px 14px;
-  font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#BAC6D4;overflow-x:auto}
-@media (prefers-color-scheme:light){pre{background:#EDF1F6;border-color:#DCE3EC;color:#3A4757}}
-a{color:#4C8FD6}
+svg{width:19px;height:19px;fill:#FF7A45}
+p{margin:0 0 12px;color:#9B9BA3}
+pre{background:#141416;border:1px solid #2A2A2F;border-radius:7px;padding:12px 14px;
+  font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#C8C8C3;overflow-x:auto}
+@media (prefers-color-scheme:light){pre{background:#F1F1EE;border-color:#E5E5E0;color:#3A3A40}}
+a{color:#FF7A45}
 </style>
 <div class="card">
   <h1><svg viewBox="0 0 24 24" aria-hidden="true">

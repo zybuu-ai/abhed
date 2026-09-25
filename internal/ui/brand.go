@@ -17,7 +17,7 @@ import (
 // Rendered in three sizes because a mark has to survive both places it lives:
 // a single terminal cell and a 128px browser header.
 
-// MarkLarge is the startup banner: the octagonal wall of brand/abhed-mark.svg,
+// MarkLarge is the startup banner: the octagonal wall of the original mark,
 // with the ring and the lit point inside it.
 //
 // The wall is UNBROKEN, and that is the whole name: abhed means without
