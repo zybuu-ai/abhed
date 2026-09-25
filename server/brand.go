@@ -12,38 +12,28 @@ import (
 //go:embed brand/*
 var brandFS embed.FS
 
-func brandURI(name, mime string) string {
+// brandAsset reads an embedded image. A missing one can only follow a source
+// rename, so it fails at init rather than serving an empty image.
+func brandAsset(name string) []byte {
 	b, err := brandFS.ReadFile("brand/" + name)
 	if err != nil {
 		panic("server: missing embedded brand asset " + name)
 	}
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b)
+	return b
 }
 
-var brandIcon, _ = brandFS.ReadFile("brand/icon.png")
-
-// brandify fills a page template's brand placeholders: the lockup and its
-// CSS first, then the images they refer to.
-func brandify(page string) string {
-	page = strings.NewReplacer(
-		"{{BRAND_LOCKUP}}", brandLockup,
-		"/*{{BRAND_CSS}}*/", brandCSS,
-	).Replace(page)
-	return strings.NewReplacer(
-		"{{BRAND_MARK}}", brandURI("mark.webp", "image/webp"),
-		"{{BRAND_MARK_REV}}", brandURI("mark-rev.webp", "image/webp"),
-		"{{BRAND_WORD}}", brandURI("word.webp", "image/webp"),
-		"{{BRAND_WORD_REV}}", brandURI("word-rev.webp", "image/webp"),
-		"{{BRAND_HERO}}", brandURI("hero.webp", "image/webp"),
-		"{{BRAND_HERO_REV}}", brandURI("hero-rev.webp", "image/webp"),
-		"{{BRAND_ICON}}", brandURI("icon.png", "image/png"),
-	).Replace(page)
+func brandURI(name, mime string) string {
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(brandAsset(name))
 }
+
+var brandIcon = brandAsset("icon.png")
 
 // brandLockup is the header logo; brandCSS shows the variant for the theme.
-const brandLockup = `<span class="lockup"><img class="lk-light" src="{{BRAND_MARK}}" alt="" width="34" height="32"><img class="lk-light lk-word" src="{{BRAND_WORD}}" alt="Abhed" width="95" height="22"><img class="lk-dark" src="{{BRAND_MARK_REV}}" alt="" width="34" height="32"><img class="lk-dark lk-word" src="{{BRAND_WORD_REV}}" alt="Abhed" width="95" height="22"></span>`
+const brandLockup = `<span class="lockup"><img class="lk-light" src="{{BRAND_MARK}}" alt="" width="26" height="24"><img class="lk-light lk-word" src="{{BRAND_WORD}}" alt="Abhed" width="83" height="17"><img class="lk-dark" src="{{BRAND_MARK_REV}}" alt="" width="26" height="24"><img class="lk-dark lk-word" src="{{BRAND_WORD_REV}}" alt="Abhed" width="83" height="17"></span>`
 
-// brandCSS follows the same theme selectors as the pages' palettes.
+// brandCSS follows the same theme selectors as the pages' palettes, and is
+// placed after them. --on-accent is the text colour on the accent: white on
+// the deep light-theme orange, ink on the bright dark-theme one.
 const brandCSS = `:root{--on-accent:#fff}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--on-accent:#0B0B0C}}
 :root[data-theme="dark"]{--on-accent:#0B0B0C}
@@ -55,3 +45,24 @@ const brandCSS = `:root{--on-accent:#fff}
 :root[data-theme="dark"] .lk-light{display:none!important}
 :root[data-theme="dark"] .lk-dark{display:block!important}
 `
+
+var (
+	brandOuter = strings.NewReplacer(
+		"{{BRAND_LOCKUP}}", brandLockup,
+		"/*{{BRAND_CSS}}*/", brandCSS,
+	)
+	brandImages = strings.NewReplacer(
+		"{{BRAND_MARK}}", brandURI("mark.webp", "image/webp"),
+		"{{BRAND_MARK_REV}}", brandURI("mark-rev.webp", "image/webp"),
+		"{{BRAND_WORD}}", brandURI("word.webp", "image/webp"),
+		"{{BRAND_WORD_REV}}", brandURI("word-rev.webp", "image/webp"),
+		"{{BRAND_HERO}}", brandURI("hero.webp", "image/webp"),
+		"{{BRAND_HERO_REV}}", brandURI("hero-rev.webp", "image/webp"),
+	)
+)
+
+// brandify fills a page template's brand placeholders: the lockup and its
+// CSS first, then the images they refer to.
+func brandify(page string) string {
+	return brandImages.Replace(brandOuter.Replace(page))
+}

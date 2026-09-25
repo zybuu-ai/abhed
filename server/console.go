@@ -55,7 +55,6 @@ var consoleHTML = brandify(strings.ReplaceAll(`<!doctype html>
 <title>Abhed Console</title>
 <link rel="icon" type="image/png" href="/favicon.ico">
 <style>
-/*{{BRAND_CSS}}*/
 :root{
   --bg:#FAFAF8; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#F1F1EE;
   --line:#E5E5E0; --line-strong:#D2D2CC;
@@ -123,8 +122,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .railtoggle:active{background:var(--sunken)}
 .scrim{display:none}
 @media (max-width:760px){.scrim{display:block}}
-.brand b{font-size:14.5px;font-weight:700;letter-spacing:-.02em}
-.brand span{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.brand #ver{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .top .spacer{flex:1}
 .home{text-decoration:none;color:var(--ink-2);font-family:var(--mono);font-size:11.5px;margin-left:10px;padding:3px 8px;border:1px solid var(--line);border-radius:5px;white-space:nowrap}
 .home:hover{color:var(--accent);border-color:var(--accent)}
@@ -249,7 +247,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .chipf .x:hover{color:var(--warn)}
 .new{width:100%;display:flex;align-items:center;justify-content:center;gap:7px;
   background:var(--accent);border:1px solid var(--accent);border-radius:9px;
-  padding:9px 12px;font-size:12.5px;font-weight:650;cursor:pointer;color:var(--btn-ink,#0B0B0C);
+  padding:9px 12px;font-size:12.5px;font-weight:650;cursor:pointer;color:var(--on-accent);
   box-shadow:var(--glow);transition:filter .14s,transform .14s}
 .new:hover{filter:brightness(1.08);transform:translateY(-1px)}
 .new span{font-size:15px;line-height:1}
@@ -284,7 +282,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     linear-gradient(135deg,currentColor 50%,transparent 50%);
   background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;
   background-size:5px 5px,5px 5px;background-repeat:no-repeat}
-.go{width:32px;height:32px;flex:none;background:var(--accent);border:0;color:var(--btn-ink,#0B0B0C);
+.go{width:32px;height:32px;flex:none;background:var(--accent);border:0;color:var(--on-accent);
   border-radius:50%;font-size:15px;font-weight:700;line-height:1;cursor:pointer;display:grid;
   place-items:center;transition:transform .12s;box-shadow:var(--glow)}
 .go:hover:not(:disabled){transform:scale(1.06)}
@@ -456,7 +454,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .approve .row{display:flex;gap:8px}
 .approve button{border-radius:5px;padding:5px 13px;font-size:12px;
   font-weight:600;cursor:pointer;border:1px solid var(--line)}
-.approve .yes{background:var(--accent);border-color:var(--accent);color:var(--btn-ink,#0B0B0C);box-shadow:var(--glow)}
+.approve .yes{background:var(--accent);border-color:var(--accent);color:var(--on-accent);box-shadow:var(--glow)}
 .approve .no{background:var(--surface)}
 .approve .always{background:var(--surface)}
 
@@ -580,6 +578,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   :root{--rail:212px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+/*{{BRAND_CSS}}*/
 </style>
 </head>
 <body>
@@ -646,7 +645,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     </div>
     <div class="transcript" id="tx">
       <div class="empty">
-        <img class="mark-lg lk-light" src="{{BRAND_MARK}}" alt="" width="68" height="64"><img class="mark-lg lk-dark" src="{{BRAND_MARK_REV}}" alt="" width="68" height="64">
+        <img class="mark-lg lk-light" src="{{BRAND_MARK}}" alt="" width="66" height="60"><img class="mark-lg lk-dark" src="{{BRAND_MARK_REV}}" alt="" width="66" height="60">
         <div class="k" id="greet">What should we <span class="hl">work on</span>?</div>
         <div class="s">Ask a question, describe a change, or attach a document. Every
           step the agent takes is recorded; pick any chat on the left to replay it.</div>

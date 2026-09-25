@@ -11,7 +11,6 @@
 <script src="/ide/vendor/xterm.js"></script>
 <script src="/ide/vendor/addon-fit.js"></script>
 <style>
-/*{{BRAND_CSS}}*/
 :root{
   --bg:#FAFAF8; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#F1F1EE; --chrome:#F1F1EE;
   --line:#E5E5E0; --line-strong:#D2D2CC;
@@ -25,7 +24,7 @@
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0B0B0C; --chrome:#141416;
+    --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0F0F11; --chrome:#141416;
     --line:#2A2A2F; --line-strong:#3A3A40;
     --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
     --accent:#FF7A45; --accent-soft:#2A1A12;
@@ -34,7 +33,7 @@
   }
 }
 :root[data-theme="dark"]{
-  --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0B0B0C; --chrome:#141416;
+  --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0F0F11; --chrome:#141416;
   --line:#2A2A2F; --line-strong:#3A3A40;
   --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
   --accent:#FF7A45; --accent-soft:#2A1A12;
@@ -337,6 +336,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 }
 @media (prefers-reduced-motion:no-preference){.dot.running{animation:pulse 1.6s ease-in-out infinite}}
 @keyframes pulse{50%{opacity:.45}}
+/*{{BRAND_CSS}}*/
 </style>
 </head>
 <body>

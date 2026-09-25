@@ -18,7 +18,6 @@ var landingHTML = brandify(`<!doctype html>
 <title>Abhed</title>
 <link rel="icon" type="image/png" href="/favicon.ico">
 <style>
-/*{{BRAND_CSS}}*/
 :root{
   --bg:#FAFAF8; --surface:#FFFFFF; --sunken:#F1F1EE;
   --line:#E5E5E0; --line-strong:#D2D2CC;
@@ -31,8 +30,8 @@ var landingHTML = brandify(`<!doctype html>
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --bg:#0B0B0C; --surface:#141416; --sunken:#0B0B0C;
-    --line:#1C1C1F; --line-strong:#3A3A40;
+    --bg:#0B0B0C; --surface:#141416; --sunken:#0F0F11;
+    --line:#2A2A2F; --line-strong:#3A3A40;
     --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
     --accent:#FF7A45; --accent-2:#FFB547; --accent-soft:#2A1A12; --btn-ink:#0B0B0C;
     --ok:#3DD68C; --ok-bg:#0D2A1D; --warn:#E08A4C; --warn-bg:#2A1A10;
@@ -40,8 +39,8 @@ var landingHTML = brandify(`<!doctype html>
   }
 }
 :root[data-theme="dark"]{
-  --bg:#0B0B0C; --surface:#141416; --sunken:#0B0B0C;
-  --line:#1C1C1F; --line-strong:#3A3A40;
+  --bg:#0B0B0C; --surface:#141416; --sunken:#0F0F11;
+  --line:#2A2A2F; --line-strong:#3A3A40;
   --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
   --accent:#FF7A45; --accent-2:#FFB547; --accent-soft:#2A1A12; --btn-ink:#0B0B0C;
   --ok:#3DD68C; --ok-bg:#0D2A1D; --warn:#E08A4C; --warn-bg:#2A1A10;
@@ -202,6 +201,7 @@ footer{border-top:1px solid var(--line);padding:20px 0 30px;font-family:var(--mo
   .eyebrow{font-size:9.5px;letter-spacing:.08em}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+/*{{BRAND_CSS}}*/
 </style>
 </head>
 <body>
@@ -232,8 +232,8 @@ footer{border-top:1px solid var(--line);padding:20px 0 30px;font-family:var(--mo
       <div class="cta" id="cta"></div>
     </div>
     <div class="viz">
-      <img class="emblem lk-light" src="{{BRAND_HERO}}" alt="" width="282" height="260">
-      <img class="emblem lk-dark" src="{{BRAND_HERO_REV}}" alt="" width="282" height="260">
+      <img class="emblem lk-light" src="{{BRAND_HERO}}" alt="" width="283" height="260">
+      <img class="emblem lk-dark" src="{{BRAND_HERO_REV}}" alt="" width="283" height="260">
     </div>
   </div>
 
