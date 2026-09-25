@@ -32,7 +32,7 @@ func TestBannerKeepsTheFactsAligned(t *testing.T) {
 }
 
 func TestAccentIsTheBrandOrange(t *testing.T) {
-	if got := (Style{enabled: true}).Accent("x"); got != "\x1b[38;5;208mx\x1b[0m" {
+	if got := (Style{enabled: true}).Accent("x"); got != "\x1b[38;5;202mx\x1b[0m" {
 		t.Errorf("Accent = %q", got)
 	}
 	if got := (Style{}).Accent("x"); got != "x" {

@@ -41,10 +41,6 @@ var MarkLarge = func() string {
 	return strings.Join(lines, "\n")
 }()
 
-// MarkSmall is the two-line form for a compact header.
-const MarkSmall = `▗▟▙▖
-▟▀▀▙`
-
 // Glyph is the single-character form for prompts and log lines.
 const Glyph = "▲"
 

@@ -53,9 +53,9 @@ func (s Style) Green(t string) string  { return s.wrap("32", t) }
 func (s Style) Yellow(t string) string { return s.wrap("33", t) }
 func (s Style) Blue(t string) string   { return s.wrap("34", t) }
 
-// Accent is the brand orange (256-colour 208). It is made for the dark
-// terminals most people run; it is fainter on white.
-func (s Style) Accent(t string) string { return s.wrap("38;5;208", t) }
+// Accent is the brand orange: 256-colour 202 (#FF5F00) is the nearest to it
+// and reads on dark terminals and, more faintly, on white.
+func (s Style) Accent(t string) string { return s.wrap("38;5;202", t) }
 
 // Reverse swaps foreground and background, which is how a selected row in a
 // list reads as selected on every terminal theme — a colour chosen for a dark

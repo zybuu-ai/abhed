@@ -16,12 +16,17 @@ All notable changes to Abhed are recorded here. The format follows
 - The HawkEYE report uses the console's ink, paper and orange palette in both
   themes.
 - The page shown when sign-in is not configured carries the Abhed lockup.
-- On a phone, the console and workbench headers show the mark alone and drop
-  the "console" label and the password, switch-user and classic-console links,
-  so neither page scrolls sideways; the signed-in name links to the account
-  page.
-- The documentation embedded in the binary no longer links web fonts; it uses
-  the system fonts, and loads nothing from outside.
+- On a phone, the console and workbench headers show the mark alone, and
+  neither page scrolls sideways: the console drops its "console" label and
+  Password link, and the workbench drops its Password, Switch and classic
+  console links. On both, the signed-in name links to the account page.
+
+### Fixed
+
+- The documentation embedded in the binary linked web fonts, so a connected
+  machine made a request to another host when the docs were opened. It now
+  uses the system fonts and loads nothing from outside, whichever way the
+  binary was built; a test holds it there.
 
 ## [1.1.1] - 2026-09-25
 
