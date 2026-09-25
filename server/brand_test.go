@@ -11,10 +11,11 @@ import (
 func TestBrandPlaceholdersAreFilled(t *testing.T) {
 	external := regexp.MustCompile(`(?i)(src\s*=\s*["']?(https?:)?//|<link[^>]+href\s*=\s*["']?https?:|url\(\s*["']?https?:)`)
 	for name, page := range map[string]string{
-		"landing": landingHTML,
-		"console": consoleHTML,
-		"account": accountHTML,
-		"ide":     idePage,
+		"landing":  landingHTML,
+		"console":  consoleHTML,
+		"account":  accountHTML,
+		"ide":      idePage,
+		"auth-off": authDisabledHTML,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if strings.Contains(page, "{{BRAND_") || strings.Contains(page, "BRAND_CSS") {

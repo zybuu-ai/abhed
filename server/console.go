@@ -132,7 +132,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .led.up{background:var(--done);box-shadow:0 0 0 3px var(--done-bg)}
 .led.down{background:var(--error);box-shadow:0 0 0 3px var(--error-bg)}
-.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;
+.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;text-decoration:none;
   border-radius:11px;background:var(--sunken);border:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .who-chip::before{content:"";width:5px;height:5px;border-radius:50%;
@@ -552,6 +552,9 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
     white-space:nowrap}
   #switchuser{display:none}
   .brand .sub{display:none}
+  /* The mark alone, and no Password link: the wordmark and the "console"
+     label do not fit, and the name links to the account page instead. */
+  .top .brand .lockup .lk-word,.brand #ver,#pwlink{display:none!important}
   /* The way home stays, as the arrow alone: the word does not fit. */
   .home{font-size:0;padding:5px 8px}
   .home span{font-size:12px}
@@ -609,7 +612,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   </div>
   <div class="stat">active <b id="active">0</b></div>
   <div class="stat" id="whobox" hidden>
-    <span class="who-chip" id="who"></span>
+    <a class="who-chip" id="who"></a>
     <a class="ghost" id="adminlink" href="/admin" hidden
        title="Who has access, and who no longer does">Admin</a>
     <a class="ghost" id="pwlink" href="/account" hidden title="Change your password">Password</a>
@@ -1997,13 +2000,13 @@ async function whoami(){
   // Only links this deployment can answer: a Switch with no route behind it
   // was a 404 on local accounts.
   if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }
-  if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; }
+  if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; $('who').href = me.password_url; }
   // Behind a proxy, sign-out is the proxy's, and offered only when configured.
   if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
   try{
     if(sessionStorage.getItem('abhed.must_change') === '1'){
       sessionStorage.removeItem('abhed.must_change');
-      note(me.password_url ? 'This password was set for you. Change it under Password, at the top right.'
+      note(me.password_url ? 'This password was set for you. Change it on your account page: select your name at the top right.'
                            : 'This password was set for you. Ask your administrator to change it.');
     }
   }catch{}
@@ -2103,7 +2106,7 @@ setInterval(refresh, 5000);
 // authDisabledHTML is shown when someone reaches /login or /logout on a server
 // running without authentication. It says what is true and what to change,
 // rather than leaving a 404 that looks like a fault.
-const authDisabledHTML = `<!doctype html><meta charset="utf-8">
+var authDisabledHTML = brandify(`<!doctype html><meta charset="utf-8">
 <title>Sign-in not configured</title>
 <style>
 :root{color-scheme:light dark}
@@ -2114,21 +2117,16 @@ body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0B0B0
   border:1px solid #2A2A2F}
 @media (prefers-color-scheme:light){.card{background:#fff;border-color:#E5E5E0}}
 h1{margin:0 0 10px;font-size:17px;display:flex;align-items:center;gap:9px}
-svg{width:19px;height:19px;fill:#FF7A45}
 p{margin:0 0 12px;color:#9B9BA3}
 pre{background:#141416;border:1px solid #2A2A2F;border-radius:7px;padding:12px 14px;
   font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#C8C8C3;overflow-x:auto}
 @media (prefers-color-scheme:light){pre{background:#F1F1EE;border-color:#E5E5E0;color:#3A3A40}}
 a{color:#FF7A45}
+/*{{BRAND_CSS}}*/
 </style>
 <div class="card">
-  <h1><svg viewBox="0 0 24 24" aria-hidden="true">
-    <rect x="3" y="3" width="18" height="3" rx="1"/>
-    <rect x="9" y="7.5" width="1.6" height="9" rx=".6" opacity=".85"/>
-    <rect x="11.7" y="7.5" width="1.6" height="9" rx=".6"/>
-    <rect x="14.4" y="7.5" width="1.6" height="9" rx=".6" opacity=".85"/>
-    <rect x="3" y="18" width="18" height="3" rx="1"/></svg>
-    Sign-in is not configured</h1>
+  <div style="margin-bottom:18px">{{BRAND_LOCKUP}}</div>
+  <h1>Sign-in is not configured</h1>
   <p>This Abhed server runs with <code>auth.mode: none</code> — a single-tenant
      setup with no user accounts, so there is nobody to sign in or out as.</p>
   <p>To enable sign-in with local accounts, set the mode and issue an account:</p>
@@ -2140,4 +2138,4 @@ $ abhed user add alice -admin</pre>
   <p>See <code>docs/ops/enabling-auth.md</code>. Sign-in through an identity
      provider (OIDC) is part of the paid editions, Team and Enterprise.</p>
   <p><a href="/">← Back to Abhed</a></p>
-</div>`
+</div>`)

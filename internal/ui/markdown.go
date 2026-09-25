@@ -36,7 +36,7 @@ func Markdown(s Style, text string) string {
 				if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
 					break
 				}
-				fmt.Fprintf(&out, "  %s\n", s.Cyan(lines[i]))
+				fmt.Fprintf(&out, "  %s\n", s.Accent(lines[i]))
 			}
 			continue
 		}
@@ -80,7 +80,7 @@ func renderLine(s Style, line string) string {
 		case 2:
 			return "\n" + s.Bold(title)
 		default:
-			return "\n" + s.Cyan(title)
+			return "\n" + s.Accent(title)
 		}
 	}
 
@@ -107,7 +107,7 @@ func renderLine(s Style, line string) string {
 // inline renders emphasis and code spans within a line.
 func inline(s Style, text string) string {
 	text = replacePairs(text, "**", s.Bold)
-	text = replacePairs(text, "`", s.Cyan)
+	text = replacePairs(text, "`", s.Accent)
 	// Single asterisk last, so it cannot consume the halves of a bold pair.
 	text = replacePairs(text, "*", s.Bold)
 	text = renderLinks(s, text)

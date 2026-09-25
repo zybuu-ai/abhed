@@ -1287,7 +1287,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 
 	bs := ui.NewStyle(os.Stdout)
-	fmt.Printf("%s %s %s  %s\n", bs.Cyan(ui.Glyph),
+	fmt.Printf("%s %s %s  %s\n", bs.Accent(ui.Glyph),
 		bs.Bold("ABHED"), bs.Dim(a.version), browsableURL(addr))
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), storageLabel(cfg))
@@ -2246,7 +2246,7 @@ func (a *App) doctor(workspace string) int {
 		return 1
 	}
 
-	fmt.Printf("%s %s\n\n", ui.NewStyle(os.Stdout).Cyan(ui.Glyph),
+	fmt.Printf("%s %s\n\n", ui.NewStyle(os.Stdout).Accent(ui.Glyph),
 		ui.NewStyle(os.Stdout).Bold("abhed doctor"))
 	fmt.Printf("workspace   %s\n", workspace)
 	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
