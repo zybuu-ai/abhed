@@ -18,19 +18,19 @@
    gets a complete palette. This design is dark-first in intent, so the dark
    values are the considered ones and light is the careful inverse. */
 :root {
-  --ground:      #F4F6FA;  /* paper, cool-neutral with a blue bias */
+  --ground:      #FAFAF8;  /* paper, warm-neutral like the logo ground */
   --surface:     #FFFFFF;
-  --sunken:      #E6EBF3;
-  --line:        #D2DAE6;
-  --line-strong: #B0BCCC;
+  --sunken:      #F1F1EE;
+  --line:        #E5E5E0;
+  --line-strong: #D2D2CC;
 
-  --ink:         #0D1218;
-  --ink-2:       #38424F;
-  --muted:       #66727F;
+  --ink:         #0B0B0C;
+  --ink-2:       #3A3A40;
+  --muted:       #6B6B72;
 
-  --live:        #0F63C4;  /* neon blue, darkened to hold on paper */
+  --live:        #C2410C;  /* brand orange, darkened to hold on paper */
   --btn-ink:     #FFFFFF;
-  --live-soft:   #E2EDFB;
+  --live-soft:   #FFF0E8;
   --recorded:    #7A5A9E;  /* violet, the "captured not running" register */
   --recorded-soft:#F0EAF8;
 
@@ -50,19 +50,19 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ground:      #070B12;
-    --surface:     #0E1521;
-    --sunken:      #0A101A;
-    --line:        #1B2636;
-    --line-strong: #2B3B52;
+    --ground:      #0B0B0C;
+    --surface:     #141416;
+    --sunken:      #1C1C1F;
+    --line:        #2A2A2F;
+    --line-strong: #3A3A40;
 
-    --ink:         #E4ECF7;
-    --ink-2:       #AFBED2;
-    --muted:       #77879D;
+    --ink:         #F2F2EE;
+    --ink-2:       #C8C8C3;
+    --muted:       #9B9BA3;
 
-    --live:        #3BA9FF;
-    --btn-ink:     #04121F;
-    --live-soft:   #0B2540;
+    --live:        #FF7A45;
+    --btn-ink:     #0B0B0C;
+    --live-soft:   #2A1A12;
     --recorded:    #B98BFF;
     --recorded-soft:#1E1733;
 
@@ -72,19 +72,19 @@
 }
 
 :root[data-theme="dark"] {
-  --ground:      #070B12;
-  --surface:     #0E1521;
-  --sunken:      #0A101A;
-  --line:        #1B2636;
-  --line-strong: #2B3B52;
+  --ground:      #0B0B0C;
+  --surface:     #141416;
+  --sunken:      #1C1C1F;
+  --line:        #2A2A2F;
+  --line-strong: #3A3A40;
 
-  --ink:         #E4ECF7;
-  --ink-2:       #AFBED2;
-  --muted:       #77879D;
+  --ink:         #F2F2EE;
+  --ink-2:       #C8C8C3;
+  --muted:       #9B9BA3;
 
-  --live:        #3BA9FF;
-  --btn-ink:     #04121F;
-  --live-soft:   #0B2540;
+  --live:        #FF7A45;
+  --btn-ink:     #0B0B0C;
+  --live-soft:   #2A1A12;
   --recorded:    #B98BFF;
   --recorded-soft:#1E1733;
 
@@ -233,7 +233,17 @@ header {
   letter-spacing: -0.02em;
 }
 .logo:hover { text-decoration: none; }
-.logo svg { width: 26px; height: 26px; flex: none; }
+.logo img { display: block; height: auto; flex: none; }
+.logo .lg-mk { height: 28px; width: auto; }
+.logo .lg-wm { height: 19px; width: auto; }
+/* The logo follows the same theme selectors as the palette above. */
+.logo .lg-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .logo .lg-light { display: none; }
+  :root:not([data-theme="light"]) .logo .lg-dark { display: block; }
+}
+:root[data-theme="dark"] .logo .lg-light { display: none; }
+:root[data-theme="dark"] .logo .lg-dark { display: block; }
 .nav { margin-left: auto; display: flex; align-items: center; gap: 20px; }
 /* :not(.btn) matters. Without it .nav a (0,1,1) beats .btn (0,1,0) on the
    cascade, so the header's Open console button rendered muted grey text on
@@ -278,7 +288,6 @@ section { padding: calc(var(--row) * 2) 0; }
 }
 .btn:not(.ghost) { box-shadow: var(--neon); }
 .btn:not(.ghost):hover { box-shadow: 0 0 26px color-mix(in srgb, var(--live) 48%, transparent); }
-.logo svg { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--live) 26%, transparent)); }
 
 /* ---- forms ----------------------------------------------------------- */
 /* Restored: replacing the stylesheet dropped these and the access form

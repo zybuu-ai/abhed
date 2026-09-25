@@ -128,11 +128,11 @@ func TestAccountPageNeedsLocalAccounts(t *testing.T) {
 
 func TestFaviconIsServedBeforeSignIn(t *testing.T) {
 	h, _ := localServer(t)
-	for _, path := range []string{"/favicon.ico", "/favicon.svg"} {
+	for path, want := range map[string]string{"/favicon.ico": "image/png", "/favicon.svg": "image/svg+xml"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
-		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/svg+xml" {
-			t.Errorf("GET %s = %d %q", path, rec.Code, rec.Header().Get("Content-Type"))
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != want || rec.Body.Len() == 0 {
+			t.Errorf("GET %s = %d %q, want 200 %q", path, rec.Code, rec.Header().Get("Content-Type"), want)
 		}
 	}
 }

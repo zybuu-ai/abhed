@@ -6,6 +6,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The web console, the sign-in page, the workbench, the account page and the
+  embedded documentation carry the new Abhed and Zybuu marks and an ink, paper
+  and orange palette, with a dark theme designed alongside the light one. The
+  images are embedded in the binary as data URIs, so the pages still load
+  nothing from anywhere; no route was added.
+- `/favicon.ico` is now a PNG; `/favicon.svg` remains an SVG.
+
 ## [1.1.0] - 2026-09-24
 
 ### Added

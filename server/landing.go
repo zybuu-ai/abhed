@@ -10,19 +10,20 @@ package server
 //
 // Same constraint as the console: one self-contained document, no CDN, no build
 // step, because it ships inside an air-gapped bundle.
-const landingHTML = `<!doctype html>
+var landingHTML = brandify(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Abhed</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%20256%20256%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22fwall%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%235CC4FF%22%2F%3E%3Cstop%20offset%3D%2255%25%22%20stop-color%3D%22%232A8CF0%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%230B3C8C%22%2F%3E%3C%2FlinearGradient%3E%3CradialGradient%20id%3D%22fcore%22%20cx%3D%2240%25%22%20cy%3D%2235%25%22%20r%3D%2270%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%23FFFFFF%22%2F%3E%3Cstop%20offset%3D%2270%25%22%20stop-color%3D%22%23DDEFFF%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%239ED2FF%22%2F%3E%3C%2FradialGradient%3E%3CradialGradient%20id%3D%22fglow%22%20cx%3D%2250%25%22%20cy%3D%2250%25%22%20r%3D%2250%25%22%3E%3Cstop%20offset%3D%220%25%22%20stop-color%3D%22%235CC4FF%22%20stop-opacity%3D%22.55%22%2F%3E%3Cstop%20offset%3D%22100%25%22%20stop-color%3D%22%235CC4FF%22%20stop-opacity%3D%220%22%2F%3E%3C%2FradialGradient%3E%3C%2Fdefs%3E%3Cpath%20d%3D%22M218.6%2090.5%20L165.5%2037.4%20L90.5%2037.4%20L37.4%2090.5%20L37.4%20165.5%20L90.5%20218.6%20L165.5%20218.6%20L218.6%20165.5%20Z%22%20fill%3D%22none%22%20stroke%3D%22url%28%23fwall%29%22%20stroke-width%3D%2224%22%20stroke-linejoin%3D%22round%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2262%22%20fill%3D%22none%22%20stroke%3D%22url%28%23fwall%29%22%20stroke-width%3D%226%22%20opacity%3D%22.45%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2250%22%20fill%3D%22url%28%23fglow%29%22%2F%3E%3Ccircle%20cx%3D%22128%22%20cy%3D%22128%22%20r%3D%2223%22%20fill%3D%22url%28%23fcore%29%22%2F%3E%3C%2Fsvg%3E">
+<link rel="icon" type="image/png" href="/favicon.ico">
 <style>
+/*{{BRAND_CSS}}*/
 :root{
-  --bg:#F5F7FB; --surface:#FFFFFF; --sunken:#E9EEF5;
-  --line:#D6DEE9; --line-strong:#B3BFD0;
-  --ink:#0B1017; --ink-2:#3A4553; --muted:#6A7684;
-  --accent:#0E63C6; --accent-2:#7A3FE0; --accent-soft:#E3EEFB; --btn-ink:#FFFFFF;
+  --bg:#FAFAF8; --surface:#FFFFFF; --sunken:#F1F1EE;
+  --line:#E5E5E0; --line-strong:#D2D2CC;
+  --ink:#0B0B0C; --ink-2:#3A3A40; --muted:#6B6B72;
+  --accent:#C2410C; --accent-2:#B45309; --accent-soft:#FFF0E8; --btn-ink:#FFFFFF;
   --ok:#1F8A4C; --ok-bg:#E3F5EA; --warn:#9A4B16; --warn-bg:#F8E9DF;
   --glow:0 0 0 transparent;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
@@ -30,21 +31,21 @@ const landingHTML = `<!doctype html>
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --bg:#06090F; --surface:#0D131C; --sunken:#090E16;
-    --line:#182231; --line-strong:#27364B;
-    --ink:#E8EEF7; --ink-2:#B0BFD2; --muted:#7A8AA0;
-    --accent:#3BA9FF; --accent-2:#8B6CFF; --accent-soft:#0B2540; --btn-ink:#04121F;
+    --bg:#0B0B0C; --surface:#141416; --sunken:#0B0B0C;
+    --line:#1C1C1F; --line-strong:#3A3A40;
+    --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
+    --accent:#FF7A45; --accent-2:#FFB547; --accent-soft:#2A1A12; --btn-ink:#0B0B0C;
     --ok:#3DD68C; --ok-bg:#0D2A1D; --warn:#E08A4C; --warn-bg:#2A1A10;
-    --glow:0 0 22px rgba(59,169,255,.38);
+    --glow:0 0 22px rgba(255,122,69,.38);
   }
 }
 :root[data-theme="dark"]{
-  --bg:#06090F; --surface:#0D131C; --sunken:#090E16;
-  --line:#182231; --line-strong:#27364B;
-  --ink:#E8EEF7; --ink-2:#B0BFD2; --muted:#7A8AA0;
-  --accent:#3BA9FF; --accent-2:#8B6CFF; --accent-soft:#0B2540; --btn-ink:#04121F;
+  --bg:#0B0B0C; --surface:#141416; --sunken:#0B0B0C;
+  --line:#1C1C1F; --line-strong:#3A3A40;
+  --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
+  --accent:#FF7A45; --accent-2:#FFB547; --accent-soft:#2A1A12; --btn-ink:#0B0B0C;
   --ok:#3DD68C; --ok-bg:#0D2A1D; --warn:#E08A4C; --warn-bg:#2A1A10;
-  --glow:0 0 22px rgba(59,169,255,.38);
+  --glow:0 0 22px rgba(255,122,69,.38);
 }
 
 *{box-sizing:border-box}
@@ -65,6 +66,8 @@ a{color:var(--accent)}
 .field i:nth-child(1){top:-26vw;left:-18vw}
 .field i:nth-child(2){top:-8vw;right:-24vw;animation-duration:34s;animation-delay:-12s;
   background:radial-gradient(circle,color-mix(in srgb,var(--accent-2) 32%,transparent),transparent 62%)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .field i{opacity:.2}}
+:root[data-theme="dark"] .field i{opacity:.2}
 @keyframes drift{from{transform:translate3d(0,0,0) scale(1)}to{transform:translate3d(8vw,6vw,0) scale(1.1)}}
 
 .wrap{max-width:1080px;margin:0 auto;padding:0 26px}
@@ -74,8 +77,6 @@ header{position:sticky;top:0;z-index:5;border-bottom:1px solid var(--line);
   background:color-mix(in srgb,var(--bg) 78%,transparent);backdrop-filter:saturate(160%) blur(12px);
   -webkit-backdrop-filter:saturate(160%) blur(12px)}
 .bar{display:flex;align-items:center;gap:10px;height:58px}
-.bar .mark{width:26px;height:26px;flex:none;filter:drop-shadow(0 0 8px rgba(59,169,255,.3))}
-.bar b{font-size:16px;font-weight:700;letter-spacing:-.02em}
 .bar .sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:2px}
 .bar .spacer{flex:1}
 .bar .who{font-family:var(--mono);font-size:11px;color:var(--ink-2);
@@ -123,12 +124,17 @@ header{position:sticky;top:0;z-index:5;border-bottom:1px solid var(--line);
 .oauth a:hover{border-color:var(--accent)}
 .oauth svg{width:16px;height:16px;flex:none}
 
-/* The hero visual: a live network with the mark sitting at its centre, so
-   the emblem reads as the thing the signals converge on. */
-.viz{position:relative;width:360px;height:270px;flex:none}
-.viz canvas{position:absolute;inset:0;width:100%;height:100%}
-.emblem{position:absolute;left:50%;top:50%;width:92px;height:92px;transform:translate(-50%,-50%);
-  filter:drop-shadow(0 6px 26px rgba(59,169,255,.5))}
+/* The hero visual: the mark on isometric hairlines and a soft glow, as on zybuu.com. */
+.viz{position:relative;width:360px;height:300px;flex:none;display:grid;place-items:center}
+.viz::before{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(30deg,transparent 0 35px,color-mix(in srgb,var(--ink) 7%,transparent) 35px 36px),
+    repeating-linear-gradient(150deg,transparent 0 35px,color-mix(in srgb,var(--ink) 7%,transparent) 35px 36px);
+  -webkit-mask-image:radial-gradient(circle,#000 20%,transparent 70%);mask-image:radial-gradient(circle,#000 20%,transparent 70%)}
+.viz::after{content:"";position:absolute;width:62%;aspect-ratio:1;border-radius:50%;
+  background:radial-gradient(circle,color-mix(in srgb,var(--accent) 34%,transparent),transparent 68%);filter:blur(24px)}
+.emblem{position:relative;z-index:1;width:250px;height:auto;filter:drop-shadow(0 26px 34px rgba(0,0,0,.28))}
+@media (prefers-reduced-motion:no-preference){.emblem{animation:float 7s ease-in-out infinite}}
+@keyframes float{50%{transform:translateY(-6px)}}
 
 /* ---------------------------------------------------------------- panels */
 h2{margin:0 0 14px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:650;
@@ -203,8 +209,7 @@ footer{border-top:1px solid var(--line);padding:20px 0 30px;font-family:var(--mo
 
 <header>
   <div class="wrap bar">
-    <svg class="mark" viewBox="0 0 256 256" aria-hidden="true"><defs><linearGradient id="tt-wall" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5CC4FF"/><stop offset="55%" stop-color="#2A8CF0"/><stop offset="100%" stop-color="#0B3C8C"/></linearGradient><radialGradient id="tt-core" cx="40%" cy="35%" r="70%"><stop offset="0%" stop-color="#FFFFFF"/><stop offset="70%" stop-color="#DDEFFF"/><stop offset="100%" stop-color="#9ED2FF"/></radialGradient><radialGradient id="tt-glow" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#5CC4FF" stop-opacity=".55"/><stop offset="100%" stop-color="#5CC4FF" stop-opacity="0"/></radialGradient></defs><path d="M218.6 90.5 L165.5 37.4 L90.5 37.4 L37.4 90.5 L37.4 165.5 L90.5 218.6 L165.5 218.6 L218.6 165.5 Z" fill="none" stroke="url(#tt-wall)" stroke-width="24" stroke-linejoin="round"/><circle cx="128" cy="128" r="62" fill="none" stroke="url(#tt-wall)" stroke-width="6" opacity=".45"/><circle cx="128" cy="128" r="50" fill="url(#tt-glow)"/><circle cx="128" cy="128" r="23" fill="url(#tt-core)"/></svg>
-    <b>Abhed</b>
+    {{BRAND_LOCKUP}}
     <span class="sub">deep agent harness</span><!--HOME-->
     <span class="spacer"></span>
     <span class="who" id="who" hidden></span>
@@ -227,8 +232,8 @@ footer{border-top:1px solid var(--line);padding:20px 0 30px;font-family:var(--mo
       <div class="cta" id="cta"></div>
     </div>
     <div class="viz">
-      <canvas id="net" aria-hidden="true"></canvas>
-      <svg class="emblem" viewBox="0 0 256 256" aria-hidden="true"><defs><linearGradient id="tte-wall" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#5CC4FF"/><stop offset="55%" stop-color="#2A8CF0"/><stop offset="100%" stop-color="#0B3C8C"/></linearGradient><radialGradient id="tte-core" cx="40%" cy="35%" r="70%"><stop offset="0%" stop-color="#FFFFFF"/><stop offset="70%" stop-color="#DDEFFF"/><stop offset="100%" stop-color="#9ED2FF"/></radialGradient><radialGradient id="tte-glow" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#5CC4FF" stop-opacity=".55"/><stop offset="100%" stop-color="#5CC4FF" stop-opacity="0"/></radialGradient></defs><path d="M218.6 90.5 L165.5 37.4 L90.5 37.4 L37.4 90.5 L37.4 165.5 L90.5 218.6 L165.5 218.6 L218.6 165.5 Z" fill="none" stroke="url(#tte-wall)" stroke-width="24" stroke-linejoin="round"/><circle cx="128" cy="128" r="62" fill="none" stroke="url(#tte-wall)" stroke-width="6" opacity=".45"/><circle cx="128" cy="128" r="50" fill="url(#tte-glow)"/><circle cx="128" cy="128" r="23" fill="url(#tte-core)"/></svg>
+      <img class="emblem lk-light" src="{{BRAND_HERO}}" alt="" width="282" height="260">
+      <img class="emblem lk-dark" src="{{BRAND_HERO_REV}}" alt="" width="282" height="260">
     </div>
   </div>
 
@@ -571,116 +576,6 @@ function oauthButtons(o){
   return wrap;
 }
 
-// ---------------------------------------------------------------- hero viz
-//
-// A layered network with signals propagating left to right. It is decoration,
-// but honest decoration: the shape is a real feed-forward topology, and the
-// pulses travel along actual edges rather than being random sparkle.
-//
-// Drawn on a canvas rather than as animated SVG because a few hundred moving
-// elements in the DOM costs far more than one repainted bitmap, and this page
-// is the first thing a browser loads.
-function startViz(){
-  const c = document.getElementById('net');
-  if(!c) return;
-  const ctx = c.getContext('2d');
-  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  // Layer sizes chosen so the silhouette widens then narrows: it reads as
-  // "many inputs, one considered answer", which is what the agent does.
-  const LAYERS = [5, 8, 8, 5];
-  let nodes = [], edges = [], pulses = [], W = 0, H = 0;
-
-  function accent(){
-    return getComputedStyle(document.documentElement)
-      .getPropertyValue('--accent').trim() || '#1F6FB8';
-  }
-
-  function layout(){
-    const r = c.getBoundingClientRect();
-    const dpr = Math.min(devicePixelRatio || 1, 2);
-    W = r.width; H = r.height;
-    c.width = W * dpr; c.height = H * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    nodes = []; edges = [];
-    const padX = 22, padY = 20;
-    LAYERS.forEach((count, li) => {
-      const x = padX + (W - 2*padX) * (li / (LAYERS.length - 1));
-      for(let i = 0; i < count; i++){
-        const y = count === 1 ? H/2
-          : padY + (H - 2*padY) * (i / (count - 1));
-        nodes.push({x, y, layer: li, phase: Math.random() * Math.PI * 2});
-      }
-    });
-
-    // Connect each layer to the next, skipping the edges that would pass
-    // straight through the emblem in the middle.
-    const cx = W/2, cy = H/2, keepOut = 52;
-    for(let li = 0; li < LAYERS.length - 1; li++){
-      const a = nodes.filter(n => n.layer === li);
-      const b = nodes.filter(n => n.layer === li + 1);
-      for(const p of a) for(const q of b){
-        const mx = (p.x + q.x)/2, my = (p.y + q.y)/2;
-        if(Math.hypot(mx - cx, my - cy) < keepOut) continue;
-        edges.push({a: p, b: q});
-      }
-    }
-  }
-
-  function spawn(){
-    if(!edges.length) return;
-    pulses.push({e: edges[(Math.random() * edges.length) | 0], t: 0,
-                 v: 0.006 + Math.random() * 0.010});
-  }
-
-  let last = 0;
-  function frame(now){
-    const dt = Math.min((now - last) || 16, 50); last = now;
-    ctx.clearRect(0, 0, W, H);
-    const col = accent();
-
-    // Edges, faint.
-    ctx.strokeStyle = col; ctx.globalAlpha = 0.10; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for(const e of edges){
-      ctx.moveTo(e.a.x, e.a.y);
-      ctx.lineTo(e.b.x, e.b.y);
-    }
-    ctx.stroke();
-
-    // Pulses travelling along them.
-    for(const p of pulses){
-      p.t += p.v * (dt / 16);
-      const x = p.e.a.x + (p.e.b.x - p.e.a.x) * p.t;
-      const y = p.e.a.y + (p.e.b.y - p.e.a.y) * p.t;
-      const fade = Math.sin(Math.PI * Math.min(p.t, 1));
-      ctx.globalAlpha = 0.75 * fade;
-      ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(x, y, 2.1, 0, 7); ctx.fill();
-    }
-    pulses = pulses.filter(p => p.t < 1);
-    if(!reduce && pulses.length < 34 && Math.random() < 0.5) spawn();
-
-    // Nodes on top, breathing slightly so a still frame still reads as alive.
-    for(const n of nodes){
-      const b = reduce ? 0.55 : 0.45 + 0.25 * Math.sin(now/900 + n.phase);
-      ctx.globalAlpha = b;
-      ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(n.x, n.y, 3.4, 0, 7); ctx.fill();
-      ctx.globalAlpha = b * 0.25;
-      ctx.beginPath(); ctx.arc(n.x, n.y, 7.5, 0, 7); ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    requestAnimationFrame(frame);
-  }
-
-  layout();
-  addEventListener('resize', layout);
-  // Seed a few pulses so the very first painted frame is not an empty grid.
-  for(let i = 0; i < 12; i++){ spawn(); pulses[pulses.length-1].t = Math.random(); }
-  requestAnimationFrame(frame);
-}
 
 // swapCard exchanges one card for another in place, so sign-in and sign-up
 // share a position on the page instead of navigating.
@@ -810,8 +705,7 @@ try{
 }catch{}
 
 load();
-startViz();
 setInterval(load, 10000);
 </script>
 </body>
-</html>`
+</html>`)

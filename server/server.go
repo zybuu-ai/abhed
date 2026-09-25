@@ -436,7 +436,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ide", s.serveIDE)
 	mux.HandleFunc("GET /account", s.serveAccount)
 	mux.HandleFunc("GET /favicon.ico", serveFavicon)
-	mux.HandleFunc("GET /favicon.svg", serveFavicon)
+	mux.HandleFunc("GET /favicon.svg", serveFaviconSVG)
 	mux.HandleFunc("GET /ide/vendor/{file}", s.serveIDEVendor)
 	mux.HandleFunc("GET /v1/capabilities", s.getCapabilities)
 

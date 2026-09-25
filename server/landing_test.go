@@ -47,7 +47,7 @@ func TestLandingStillRefreshesFacts(t *testing.T) {
 // one is a silent no-op in the browser: the console renders, minus a section.
 func TestLandingDefinesEveryFunctionItCalls(t *testing.T) {
 	for _, fn := range []string{
-		"load", "renderFacts", "startViz", "signInForm", "signUpForm",
+		"load", "renderFacts", "signInForm", "signUpForm",
 		"swapCard", "oauthButtons", "authValue", "authDetail", "card", "stat",
 	} {
 		if !strings.Contains(landingHTML, "function "+fn+"(") {

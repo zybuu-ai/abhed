@@ -18,6 +18,8 @@ import (
 //go:embed ide.html
 var ideHTML string
 
+var idePage = brandify(ideHTML)
+
 // The editor and terminal components are built into the binary, under their
 // own licences (ide/vendor/NOTICE), so the page still loads nothing from anywhere.
 // They are stored gzipped, as sent to nearly every browser; the rare client
@@ -147,7 +149,7 @@ func (s *Server) serveIDE(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-	_, _ = w.Write([]byte(ideHTML))
+	_, _ = w.Write([]byte(idePage))
 }
 
 // capabilities is what the agent on this server can reach: its tools, skills,

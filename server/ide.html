@@ -4,41 +4,42 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Abhed</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" type="image/png" href="/favicon.ico">
 <link rel="stylesheet" href="/ide/vendor/xterm.css">
 <link rel="stylesheet" href="/ide/vendor/editor.css">
 <script src="/ide/vendor/editor.js"></script>
 <script src="/ide/vendor/xterm.js"></script>
 <script src="/ide/vendor/addon-fit.js"></script>
 <style>
+/*{{BRAND_CSS}}*/
 :root{
-  --bg:#F4F6FA; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#E9EDF4; --chrome:#EDF1F7;
-  --line:#DCE3EC; --line-strong:#C4CFDD;
-  --ink:#0F141B; --ink-2:#3A4757; --muted:#697786;
-  --accent:#0F63C4; --accent-soft:#E2EDFB;
+  --bg:#FAFAF8; --surface:#FFFFFF; --raised:#FFFFFF; --sunken:#F1F1EE; --chrome:#F1F1EE;
+  --line:#E5E5E0; --line-strong:#D2D2CC;
+  --ink:#0B0B0C; --ink-2:#3A3A40; --muted:#6B6B72;
+  --accent:#C2410C; --accent-soft:#FFF0E8;
   --ok:#1A7F4B; --ok-bg:#E3F3EA; --warn:#9A6A16; --warn-bg:#FAF0DC; --bad:#C0392F; --bad-bg:#FBE9E7;
-  --add:#1A7F4B; --add-bg:#E6F4EC; --del:#B3362C; --del-bg:#FBEAE8; --hunk-bg:#E8F0FB;
+  --add:#1A7F4B; --add-bg:#E6F4EC; --del:#B3362C; --del-bg:#FBEAE8; --hunk-bg:#FFF0E8;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,Roboto,sans-serif;
   --side:280px; --agent:420px; --panel:220px;
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --bg:#070B12; --surface:#0C121C; --raised:#141D2B; --sunken:#080D15; --chrome:#0A0F18;
-    --line:#1E2633; --line-strong:#303B4C;
-    --ink:#E8EDF4; --ink-2:#BAC6D4; --muted:#7F8C9E;
-    --accent:#3BA9FF; --accent-soft:#0B2540;
+    --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0B0B0C; --chrome:#141416;
+    --line:#2A2A2F; --line-strong:#3A3A40;
+    --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
+    --accent:#FF7A45; --accent-soft:#2A1A12;
     --ok:#3FAF6C; --ok-bg:#0F2419; --warn:#D4A03C; --warn-bg:#241C0C; --bad:#E05A52; --bad-bg:#2A1412;
-    --add:#56C486; --add-bg:#0E2418; --del:#F0736A; --del-bg:#2A1311; --hunk-bg:#0C2038;
+    --add:#56C486; --add-bg:#0E2418; --del:#F0736A; --del-bg:#2A1311; --hunk-bg:#2A1A12;
   }
 }
 :root[data-theme="dark"]{
-  --bg:#070B12; --surface:#0C121C; --raised:#141D2B; --sunken:#080D15; --chrome:#0A0F18;
-  --line:#1E2633; --line-strong:#303B4C;
-  --ink:#E8EDF4; --ink-2:#BAC6D4; --muted:#7F8C9E;
-  --accent:#3BA9FF; --accent-soft:#0B2540;
+  --bg:#0B0B0C; --surface:#141416; --raised:#1C1C1F; --sunken:#0B0B0C; --chrome:#141416;
+  --line:#2A2A2F; --line-strong:#3A3A40;
+  --ink:#F2F2EE; --ink-2:#C8C8C3; --muted:#9B9BA3;
+  --accent:#FF7A45; --accent-soft:#2A1A12;
   --ok:#3FAF6C; --ok-bg:#0F2419; --warn:#D4A03C; --warn-bg:#241C0C; --bad:#E05A52; --bad-bg:#2A1412;
-  --add:#56C486; --add-bg:#0E2418; --del:#F0736A; --del-bg:#2A1311; --hunk-bg:#0C2038;
+  --add:#56C486; --add-bg:#0E2418; --del:#F0736A; --del-bg:#2A1311; --hunk-bg:#2A1A12;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -56,7 +57,8 @@ button:focus-visible,[tabindex]:focus-visible,textarea:focus-visible,input:focus
 #app.noside #side,#app.noside #split-side{display:none}
 #title{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--chrome);border-bottom:1px solid var(--line)}
 #title .brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:.01em}
-#title .brand svg{width:18px;height:18px;color:var(--accent)}
+#title .brand .lockup img{height:20px}
+#title .brand .lockup .lk-word{height:14px}
 #title .ws{font:12px var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #palette-open{margin:0 auto;display:flex;align-items:center;gap:8px;min-width:0;width:min(440px,40vw);height:26px;padding:0 10px;
   border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--muted);font-size:12px}
@@ -71,7 +73,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #act button:hover{color:var(--ink);background:var(--sunken)}
 #act button[aria-pressed="true"]{color:var(--accent)}
 #act button[aria-pressed="true"]::before{content:"";position:absolute;left:-4px;top:8px;bottom:8px;width:2px;background:var(--accent);border-radius:2px}
-#act .badge{position:absolute;right:3px;top:4px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--accent);color:#fff;font:600 10px/15px var(--sans);text-align:center}
+#act .badge{position:absolute;right:3px;top:4px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--on-accent);font:600 10px/15px var(--sans);text-align:center}
 #act .badge.warn{background:var(--warn)}
 #act .grow{flex:1}
 
@@ -131,7 +133,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .rules div{padding:2px 0}.rules .k{display:inline-block;width:44px;color:var(--muted)}
 .empty{margin:8px 12px;padding:10px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--muted);font-size:12px}
 .empty code{font:11px var(--mono);color:var(--ink-2)}
-.primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:#fff;font-weight:600;flex:none}
+.primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600;flex:none}
 .primary:hover{filter:brightness(1.08)}
 .kv{display:grid;grid-template-columns:1fr 1fr;gap:1px;margin:6px 12px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--line)}
 .kv div{background:var(--raised);padding:7px 9px}.kv dt{font:10px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -194,7 +196,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #tpanes{flex:1;min-height:0;position:relative}
 .tpane{position:absolute;inset:0;padding:4px 0 0 8px}.tpane .xterm{height:100%}
 .tempty{margin:14px 16px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-.tempty button{height:26px;padding:0 12px;border-radius:5px;background:var(--accent);color:#fff;font-weight:600}
+.tempty button{height:26px;padding:0 12px;border-radius:5px;background:var(--accent);color:var(--on-accent);font-weight:600}
 .cmd .who{color:var(--muted);font-size:11px;margin-left:6px}
 .diff{font:12.5px/1.6 var(--mono);padding:8px 0;min-width:max-content}
 .diff div{padding:0 16px;white-space:pre;tab-size:4}
@@ -299,7 +301,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #crow{display:flex;align-items:center;gap:8px;margin-top:7px}
 #crow select{font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line-strong);border-radius:5px;padding:3px 6px}
 #crow .hint{flex:1;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#send{height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:#fff;font-weight:600}
+#send{height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600}
 #send:disabled{opacity:.5;cursor:default}
 #slash{position:absolute;left:10px;right:10px;bottom:100%;margin-bottom:4px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 #slash button{display:flex;gap:10px;width:100%;padding:6px 10px;text-align:left}
@@ -340,10 +342,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 <body>
 <div id="app" data-pane="agent">
   <header id="title">
-    <span class="brand">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8.2 2.5h7.6l5.7 5.7v7.6l-5.7 5.7H8.2l-5.7-5.7V8.2z"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
-      Abhed
-    </span>
+    <span class="brand">{{BRAND_LOCKUP}}</span>
     <span class="ws" id="wsname"></span>
     <button id="palette-open" type="button" aria-label="Open the command palette">Go to file, run a command… <kbd id="palkey">⌘K</kbd></button>
     <span class="right"><span id="who"></span><a id="pwlink" href="/account" hidden>password</a><a id="switchuser" href="/logout" hidden>switch</a><a id="signout" href="/logout" hidden>sign out</a><a href="/console">classic console</a><a href="/docs">docs</a></span>
@@ -553,8 +552,8 @@ const edPane = $('editor'), noteBox = el('div', 'notebox'), reviewBar = el('div'
 reviewBar.id = 'review'; edPane.append(noteBox, reviewBar, codeHost, diffHost);
 let code = null, diff = null, uriSeq = 0, diffInline = store.get('diff.inline', '') === '1';
 function isDark(){ const t = document.documentElement.dataset.theme; return t ? t === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches; }
-M.editor.defineTheme('abhed-light', {base:'vs', inherit:true, rules:[], colors:{'editor.background':'#F4F6FA', 'minimap.background':'#F4F6FA', 'editorGutter.background':'#F4F6FA'}});
-M.editor.defineTheme('abhed-dark', {base:'vs-dark', inherit:true, rules:[], colors:{'editor.background':'#070B12', 'minimap.background':'#070B12', 'editorGutter.background':'#070B12'}});
+M.editor.defineTheme('abhed-light', {base:'vs', inherit:true, rules:[], colors:{'editor.background':'#FAFAF8', 'minimap.background':'#FAFAF8', 'editorGutter.background':'#FAFAF8'}});
+M.editor.defineTheme('abhed-dark', {base:'vs-dark', inherit:true, rules:[], colors:{'editor.background':'#0B0B0C', 'minimap.background':'#0B0B0C', 'editorGutter.background':'#0B0B0C'}});
 const editorTheme = () => M.editor.setTheme(isDark() ? 'abhed-dark' : 'abhed-light');
 editorTheme(); matchMedia('(prefers-color-scheme:dark)').addEventListener('change', editorTheme);
 const editorOptions = {
@@ -1487,8 +1486,8 @@ function settleAsk(callID, how){
 // Each tab is one interactive shell in the session's sandbox or, where the
 // server says a shell cannot be offered, a terminal that runs each line as a
 // checked command of its own. The agent's commands have a read-only tab.
-const TERM_DARK = {background:'#070B12', foreground:'#d4d8de', cursor:'#7aa2f7', selectionBackground:'#33467c'};
-const TERM_LIGHT = {background:'#F4F6FA', foreground:'#1f2430', cursor:'#2f6fed', selectionBackground:'#c7d6fb'};
+const TERM_DARK = {background:'#0B0B0C', foreground:'#E4E4DF', cursor:'#FF7A45', selectionBackground:'#4A2A1A'};
+const TERM_LIGHT = {background:'#FAFAF8', foreground:'#0B0B0C', cursor:'#C2410C', selectionBackground:'#FFD9C7'};
 const terms = [];
 let activeTerm = null, agentTerm = null, termSeq = 0;
 const ptyURL = (t, rest) => '/v1/sessions/' + t.session + '/pty' + (rest || '');
