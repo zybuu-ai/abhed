@@ -15,8 +15,8 @@ All notable changes to Abhed are recorded here. The format follows
   newline, `$(`, `${`, a backtick, `<`, `>`, `(` or `)`, even inside quotes;
   any other command falls through to a prompt. `bash`, `bash(*)` and `*`
   still allow every command. An allow rule such as `bash(cd x && go test*)`
-  therefore no longer matches anything, and loading a configuration with one
-  writes a warning naming it.
+  therefore no longer matches anything, and loading a configuration with one,
+  or adding one through the SDK's `Options.Allow`, writes a warning naming it.
 - A chained command is offered no "always allow" scope. A remembered scope is
   looked up by name, so after "always allow `bash(git status *)`",
   `git status && curl x | sh` was approved without asking.
@@ -24,10 +24,12 @@ All notable changes to Abhed are recorded here. The format follows
   line, including commands inside `$(...)`, backticks and subshells:
   `bash(rm -rf /*)` now denies `ls; rm -rf /`. Each command is also matched
   past leading `VAR=value` assignments, redirections and the wrappers `env`,
-  `command`, `exec`, `nohup`, `nice`, `builtin`, `sudo`, `coproc` and `time`
-  with their options, so it denies `sudo -u root rm -rf /` and
-  `nice -n 5 rm -rf /`. The split does not parse quoting, so it can only add
-  a denial or a prompt.
+  `command`, `exec`, `nohup`, `nice`, `builtin`, `sudo`, `doas`, `coproc`,
+  `time`, `timeout` (and its duration), `xargs`, `setsid`, `stdbuf` and
+  `ionice` with their options, named bare or by path (`/usr/bin/sudo`), so it
+  denies `sudo -n rm -rf /` and `timeout -s KILL 5 rm -rf /`. Whether an
+  option takes a value is not known, so both readings are matched. The split
+  does not parse quoting, so it can only add a denial or a prompt.
 - A `*` in any rule now matches newlines. Before, a newline anywhere in the
   subject took it past every deny rule bounded by `*`: `bash(*mkfs*)` did not
   deny `echo` and `mkfs /dev/x` on two lines, nor `read(*secret*)` a path with

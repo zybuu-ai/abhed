@@ -50,9 +50,9 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 type Confirmation int
 
 const (
-	Unanswered Confirmation = iota
-	Confirmed
-	Declined
+	Unanswered Confirmation = iota // no answer was sent
+	Confirmed                      // the client says the person confirmed it
+	Declined                       // the client says the person declined it
 )
 
 // ErrNothingToDecline answers a decline for a line that needed no

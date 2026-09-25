@@ -229,7 +229,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	subject := Subject(tool, args)
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
 	// approves only a simple command, and never a multi-line subject.
-	subjects, narrowAllows := []string{subject}, !strings.Contains(subject, "\n")
+	subjects, narrowAllows := []string{subject}, !strings.ContainsAny(subject, "\n\r")
 	if tool == "bash" {
 		subjects, narrowAllows = commandSegments(subject), !hasShellControl(subject)
 	}

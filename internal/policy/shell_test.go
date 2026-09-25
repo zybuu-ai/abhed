@@ -173,6 +173,9 @@ func TestDenyRulesMatchAcrossNewlines(t *testing.T) {
 	if res := a.Evaluate("write", true, args(map[string]string{"path": "src/a\n../../etc/x"})); res.Decision == Allow {
 		t.Error("a narrow write rule approved a multi-line path")
 	}
+	if res := a.Evaluate("write", true, args(map[string]string{"path": "src/a\r../../etc/x"})); res.Decision == Allow {
+		t.Error("a narrow write rule approved a path with a carriage return")
+	}
 	if res := a.Evaluate("write", true, args(map[string]string{"path": "src/a.go"})); res.Decision != Allow {
 		t.Errorf("write(src/*) no longer approves src/a.go: %s", res.Decision)
 	}
@@ -189,10 +192,25 @@ func TestDenyRulesSeePastWrappers(t *testing.T) {
 		"env -i rm -rf /", "nohup rm -rf / &", "command rm -rf /", "exec rm -rf /", "builtin rm -rf /",
 		"coproc rm -rf /", "time rm -rf /", "2>/dev/null rm -rf /", "> out rm -rf /", "&>log rm -rf /",
 		"ls 2>&1; rm -rf /", "ls; sudo nice -n 5 env A=1 rm -rf /",
+		"sudo -n rm -rf /", "sudo -S rm -rf /", "sudo -n -u root rm -rf /", "/usr/bin/sudo rm -rf /",
+		"timeout 5 rm -rf /", "timeout -s KILL 5s rm -rf /", "timeout --preserve-status 5 rm -rf /",
+		"doas rm -rf /", "doas -u root rm -rf /", "setsid rm -rf /", "stdbuf -o L rm -rf /",
+		"ionice -c 3 rm -rf /", "find . | xargs rm -rf /", "find . | xargs -0 -n 1 rm -rf /",
+		"/usr/bin/env -i /usr/bin/nice rm -rf /",
 	} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
 			t.Errorf("%q: %s, want deny", command, res.Decision)
 		}
+	}
+	curl := New(ModeBypass)
+	_ = curl.AddDeny("bash(curl*)")
+	for _, command := range []string{"sudo -n curl a", "sudo -S curl a", "sudo -u root curl a", "sudo -- curl a"} {
+		if res := curl.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
+			t.Errorf("%q: %s, want deny", command, res.Decision)
+		}
+	}
+	if res := curl.Evaluate("bash", true, args(map[string]string{"command": "sudo -u curl ls"})); res.Decision != Deny {
+		t.Errorf("both readings of an option are tried; got %s", res.Decision)
 	}
 	got := commandSegments("ls 2>&1 | cat")
 	if len(got) < 3 || got[1] != "ls 2>&1" || got[2] != "cat" {

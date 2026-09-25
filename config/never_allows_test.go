@@ -37,3 +37,16 @@ func TestAllowRuleThatNeverMatchesIsWarned(t *testing.T) {
 		t.Errorf("a working allow rule was warned about: %q", out)
 	}
 }
+
+// Allow rules a caller adds, as the SDK does, are checked the same way.
+func TestAppliedAllowRuleThatNeverMatchesIsWarned(t *testing.T) {
+	var warned bytes.Buffer
+	warnOut = &warned
+	t.Cleanup(func() { warnOut = os.Stderr })
+	if _, err := Default().Apply(Overrides{Allow: []string{"bash(make && make install)", "bash(make*)"}}); err != nil {
+		t.Fatal(err)
+	}
+	if out := warned.String(); !strings.Contains(out, "bash(make && make install) never matches") || strings.Contains(out, "bash(make*) never") {
+		t.Errorf("warnings: %q", out)
+	}
+}

@@ -1,6 +1,9 @@
 package policy
 
-import "strings"
+import (
+	"path"
+	"strings"
+)
 
 // A bash rule's glob sees the whole line, which may run several commands. The
 // split below ignores quoting and is best effort: the sandbox is the boundary.
@@ -26,7 +29,9 @@ func commandSegments(command string) []string {
 		p = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(p), "$"))
 		p = strings.TrimSpace(strings.TrimRight(p, "<>"))
 		add(p)
-		add(stripPrefixWords(p))
+		for _, f := range strippedForms(p) {
+			add(f)
+		}
 	}
 	return out
 }
@@ -62,49 +67,62 @@ var shellPrefixWords = map[string]bool{
 	"fi": true, "do": true, "done": true, "while": true, "until": true,
 }
 
-// wrapperWords run the command that follows them.
-var wrapperWords = map[string]bool{
-	"env": true, "command": true, "exec": true, "nohup": true, "nice": true,
-	"builtin": true, "sudo": true, "coproc": true, "time": true,
+// wrapperWords run the command that follows them, after their options and,
+// for timeout, a duration.
+var wrapperWords = map[string]int{
+	"env": 0, "command": 0, "exec": 0, "nohup": 0, "nice": 0, "builtin": 0, "sudo": 0, "doas": 0,
+	"coproc": 0, "time": 0, "timeout": 1, "xargs": 0, "setsid": 0, "stdbuf": 0, "ionice": 0,
 }
 
-// wrapperOptionArgs are wrapper options that take the next word as their value.
-var wrapperOptionArgs = map[string]bool{"-n": true, "-u": true, "-g": true, "-a": true, "-C": true, "-S": true}
-
-// stripPrefixWords drops leading keywords, wrappers and their options,
-// VAR=value assignments and redirections.
-func stripPrefixWords(segment string) string {
+// strippedForms returns the segment without its leading keywords, VAR=value
+// assignments, redirections and wrappers. Whether an option takes a value
+// is not known, so both readings are returned: an extra form only adds a match.
+func strippedForms(segment string) []string {
 	fields := strings.Fields(segment)
-	i := 0
-	for i < len(fields) {
-		w := fields[i]
-		switch {
-		case shellPrefixWords[w] || isAssignment(w):
-			i++
-		case wrapperWords[w]:
-			i++
-			for i < len(fields) && strings.HasPrefix(fields[i], "-") {
-				if fields[i] == "--" {
-					i++
-					break
-				}
-				if wrapperOptionArgs[fields[i]] {
+	var out []string
+	seen := map[[2]int]bool{}
+	var from func(i int)
+	from = func(i int) {
+		for ; i < len(fields); i++ {
+			w := fields[i]
+			if shellPrefixWords[w] || isAssignment(w) {
+				continue
+			}
+			if redirect, bare := isRedirection(w); redirect {
+				if bare {
 					i++
 				}
-				i++
+				continue
 			}
-		default:
-			redirect, bare := isRedirection(w)
-			if !redirect {
-				return strings.Join(fields[i:], " ")
+			if skip, wrapper := wrapperWords[path.Base(w)]; wrapper {
+				wrapperOptions(fields, i+1, skip, seen, from)
+				return
 			}
-			i++
-			if bare {
-				i++
-			}
+			out = append(out, strings.Join(fields[i:], " "))
+			return
 		}
 	}
-	return ""
+	from(0)
+	return out
+}
+
+// wrapperOptions follows a wrapper's options from i, reading each both as a
+// flag and as taking the next word, then skips skip positional words.
+func wrapperOptions(fields []string, i, skip int, seen map[[2]int]bool, next func(int)) {
+	if seen[[2]int{i, skip}] {
+		return
+	}
+	seen[[2]int{i, skip}] = true
+	if i < len(fields) && fields[i] == "--" {
+		next(i + 1 + skip)
+		return
+	}
+	if i < len(fields) && len(fields[i]) > 1 && strings.HasPrefix(fields[i], "-") {
+		wrapperOptions(fields, i+1, skip, seen, next)
+		wrapperOptions(fields, i+2, skip, seen, next)
+		return
+	}
+	next(i + skip)
 }
 
 // isRedirection reports whether word is a redirection, and whether it is the

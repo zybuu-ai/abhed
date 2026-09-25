@@ -190,6 +190,7 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
+	warnNeverAllows(o.Allow)
 	// Copied, so the result never shares a list with the configuration it came from.
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)

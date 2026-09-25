@@ -297,8 +297,8 @@ because a managed rule is an organisation's statement that it holds, and a
 hook may refuse any command.
 A destructive line, one that always confirms, is not run on Enter: the terminal
 shows why and asks `Run it? [y/N]`, and only `y` runs it, recorded as confirmed;
-anything else cancels it and the lines queued behind it, recorded as declined. Any other line is approved by
-typing it.
+anything else cancels it and the lines queued behind it, recorded as declined.
+Any other line is approved by typing it.
 Even line by line, a rule checks the line, not what a script the line runs
 does. The banner says which mode a tab is in, and why.
 

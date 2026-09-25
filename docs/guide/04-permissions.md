@@ -47,7 +47,7 @@ allow every command. An allow rule whose own pattern holds that syntax, such as
 Deny and ask rules match the whole command or any command inside it: split on
 those operators, taken out of substitutions and subshells, and past leading
 `VAR=value` assignments, redirections and wrappers such as `sudo`, `env`,
-`nice`, `nohup`, `exec` and `command`. The split does not parse the shell's
+`nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`. The split does not parse the shell's
 quoting, so it can only add a denial or a prompt; the sandbox, not the pattern,
 is the boundary.
 
