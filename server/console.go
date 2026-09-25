@@ -132,7 +132,7 @@ button,select,textarea,input{font:inherit;color:inherit}
 .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .led.up{background:var(--done);box-shadow:0 0 0 3px var(--done-bg)}
 .led.down{background:var(--error);box-shadow:0 0 0 3px var(--error-bg)}
-.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;color:inherit;text-decoration:none;
+.who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;text-decoration:none;
   border-radius:11px;background:var(--sunken);border:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
 .who-chip::before{content:"";width:5px;height:5px;border-radius:50%;
