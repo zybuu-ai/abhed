@@ -13,9 +13,10 @@ func TestEmbeddedDocsLoadNothingFromOutside(t *testing.T) {
 	if !Available() {
 		t.Skip("no documentation embedded in this build; run scripts/docsite/build.py --embed-only")
 	}
-	loads := regexp.MustCompile(`(?i)<link[^>]+rel="(stylesheet|preconnect|preload|icon|dns-prefetch)"[^>]+href="https?://|` +
-		`<link[^>]+href="https?://[^"]*"[^>]+rel="(stylesheet|preconnect|preload|icon|dns-prefetch)"|` +
-		`<(script|img|iframe)[^>]+src="https?://|@import|url\(\s*["']?https?://`)
+	// Either quote style: the generator uses double quotes, a hand edit may not.
+	loads := regexp.MustCompile(`(?i)<link[^>]+rel=["']?(stylesheet|preconnect|preload|icon|dns-prefetch)["']?[^>]+href=["']?https?://|` +
+		`<link[^>]+href=["']?https?://[^"'>]*["']?[^>]+rel=["']?(stylesheet|preconnect|preload|icon|dns-prefetch)|` +
+		`<(script|img|iframe)[^>]+src=["']?https?://|@import|url\(\s*["']?https?://`)
 	pages := 0
 	err := fs.WalkDir(site, "site", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".html") {
