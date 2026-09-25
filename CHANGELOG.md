@@ -16,6 +16,24 @@ All notable changes to Abhed are recorded here. The format follows
 - A custom client of `POST /v1/sessions/{id}/pty` that ignores the new
   `confirm` response field fails closed: a destructive line is not run.
 
+### Fixed
+
+- On a phone, the sign-in page's header lost its side margin, so the logo sat
+  against the left edge of the screen.
+- Between phone and desktop widths the console header was wider than the
+  screen and the page scrolled sideways. From 761 to 1180 pixels it now shows
+  the mark without the wordmark and "console" label, the health light (its
+  text stays for screen readers), and no active-session count or Password
+  link (for local accounts the signed-in name links to the account page);
+  the model picker and Switch stay. At every width the header items keep
+  their size and the signed-in name shrinks into what is left, so a long name
+  no longer pushes Sign out off the screen.
+- On a phone the console had no model picker and no Switch link, which an
+  identity-provider sign-in needs to change user; both now sit at the foot of
+  the chat rail. The header shows the health light, and below 400 pixels
+  leaves the Admin link to the landing page. The workbench keeps its Switch
+  link at every width.
+
 ### Security
 
 - A `bash` allow rule no longer approves a chained command. With
