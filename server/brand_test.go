@@ -38,7 +38,7 @@ func TestBrandPlaceholdersAreFilled(t *testing.T) {
 			}
 			// The brand rules come after the page's palette, so the first
 			// :root block a reader finds is still the palette.
-			if strings.Index(page, brandCSS) < strings.Index(page, ":root{") {
+			if strings.Index(page, brandCSS) <= strings.Index(page, ":root{") {
 				t.Error("the brand CSS is placed before the page's palette")
 			}
 		})
