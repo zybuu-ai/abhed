@@ -6,6 +6,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- A narrow `bash` allow rule no longer approves a chained or redirected
+  command: `bash(go test*)` no longer runs `go test ./... | tee out` unasked.
+  In a run with no one to approve (`-p`, CI, the SDK), such a command is now
+  refused where it used to run. Split the rule into single commands, use
+  `bash(*)` inside a sandbox tier, or approve interactively.
+- A custom client of `POST /v1/sessions/{id}/pty` that ignores the new
+  `confirm` response field fails closed: a destructive line is not run.
+
 ### Security
 
 - A `bash` allow rule no longer approves a chained command. With
