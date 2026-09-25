@@ -1,6 +1,11 @@
 package policy
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
 
 // An allow rule approves one simple command. A chain, a substitution or a
 // redirection after an allowed prefix falls through to asking.
@@ -113,7 +118,7 @@ func TestNoScopeIsSuggestedForAChain(t *testing.T) {
 
 func TestCommandSegments(t *testing.T) {
 	command := "A=1 ls -la && echo $(rm -rf /) | { cat; }"
-	got := commandSegments(command)
+	got, _ := commandSegments(command)
 	if got[0] != command {
 		t.Errorf("the whole command is not first: %q", got)
 	}
@@ -196,7 +201,7 @@ func TestDenyRulesSeePastWrappers(t *testing.T) {
 		"timeout 5 rm -rf /", "timeout -s KILL 5s rm -rf /", "timeout --preserve-status 5 rm -rf /",
 		"doas rm -rf /", "doas -u root rm -rf /", "setsid rm -rf /", "stdbuf -o L rm -rf /",
 		"ionice -c 3 rm -rf /", "find . | xargs rm -rf /", "find . | xargs -0 -n 1 rm -rf /",
-		"/usr/bin/env -i /usr/bin/nice rm -rf /",
+		"/usr/bin/env -i /usr/bin/nice rm -rf /", "env - rm -rf /", "nice - rm -rf /",
 	} {
 		if res := e.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
 			t.Errorf("%q: %s, want deny", command, res.Decision)
@@ -204,7 +209,7 @@ func TestDenyRulesSeePastWrappers(t *testing.T) {
 	}
 	curl := New(ModeBypass)
 	_ = curl.AddDeny("bash(curl*)")
-	for _, command := range []string{"sudo -n curl a", "sudo -S curl a", "sudo -u root curl a", "sudo -- curl a"} {
+	for _, command := range []string{"sudo -n curl a", "sudo -S curl a", "sudo -u root curl a", "sudo -- curl a", "env - curl a", "nice - curl a"} {
 		if res := curl.Evaluate("bash", true, args(map[string]string{"command": command})); res.Decision != Deny {
 			t.Errorf("%q: %s, want deny", command, res.Decision)
 		}
@@ -212,7 +217,7 @@ func TestDenyRulesSeePastWrappers(t *testing.T) {
 	if res := curl.Evaluate("bash", true, args(map[string]string{"command": "sudo -u curl ls"})); res.Decision != Deny {
 		t.Errorf("both readings of an option are tried; got %s", res.Decision)
 	}
-	got := commandSegments("ls 2>&1 | cat")
+	got, _ := commandSegments("ls 2>&1 | cat")
 	if len(got) < 3 || got[1] != "ls 2>&1" || got[2] != "cat" {
 		t.Errorf("a redirection's & was taken for a separator: %q", got)
 	}
@@ -230,5 +235,48 @@ func TestNeverAllows(t *testing.T) {
 		if got := NeverAllows(rule); got != want {
 			t.Errorf("NeverAllows(%q) = %v, want %v", rule, got, want)
 		}
+	}
+}
+
+// A hostile command costs linear time, and one past a bound is never approved
+// while a rule could have matched a part of it.
+func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
+	e := New(ModeBypass)
+	_ = e.AddAllow("bash(*)")
+	if err := e.AddDeny("bash(curl*)", "bash(rm -rf /*)", "bash(*mkfs*)"); err != nil {
+		t.Fatal(err)
+	}
+	var many strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&many, "ls %d;", i)
+	}
+	for _, c := range []struct {
+		name, command string
+		bounded       bool
+	}{
+		{"over the byte bound", strings.Repeat("timeout -k -k ", 100<<10/14) + "ls", true},
+		{"many wrapper readings", strings.Repeat("timeout -k -k ", 4000) + "ls", true},
+		{"many segments", many.String(), true},
+		{"many assignments", strings.Repeat("A=1 ", 15000) + "ls", false},
+		{"many options", "sudo " + strings.Repeat("-x ", 20000) + "ls", false},
+	} {
+		start := time.Now()
+		res := e.Evaluate("bash", true, args(map[string]string{"command": c.command}))
+		// Linear work is tens of milliseconds here; the quadratic split took 40 s.
+		if took := time.Since(start); took > slowdown*250*time.Millisecond {
+			t.Errorf("%s (%d bytes): took %v", c.name, len(c.command), took)
+		}
+		if c.bounded && (res.Decision != Ask || res.Step != "screen") {
+			t.Errorf("%s (%d bytes): %s at %s (%s), want ask at screen", c.name, len(c.command), res.Decision, res.Step, res.Reason)
+		}
+	}
+	// Without a rule that could match a part, a long command is judged as before.
+	plain := New(ModeBypass)
+	if res := plain.Evaluate("bash", true, args(map[string]string{"command": strings.Repeat("echo hi; ", 10000)})); res.Decision != Allow {
+		t.Errorf("a long command with no rules to hide from: %s (%s)", res.Decision, res.Reason)
+	}
+	// A deny rule still matches the whole of a command past the bound.
+	if res := e.Evaluate("bash", true, args(map[string]string{"command": strings.Repeat("x", 70<<10) + " curl a"})); res.Decision != Deny && res.Decision != Ask {
+		t.Errorf("past the bound: %s", res.Decision)
 	}
 }

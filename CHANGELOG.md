@@ -28,8 +28,12 @@ All notable changes to Abhed are recorded here. The format follows
   `time`, `timeout` (and its duration), `xargs`, `setsid`, `stdbuf` and
   `ionice` with their options, named bare or by path (`/usr/bin/sudo`), so it
   denies `sudo -n rm -rf /` and `timeout -s KILL 5 rm -rf /`. Whether an
-  option takes a value is not known, so both readings are matched. The split
-  does not parse quoting, so it can only add a denial or a prompt.
+  option takes a value is not known, so both readings are matched; a lone `-`
+  (`env -`) is an option. The split does not parse quoting, so it can only
+  add a denial or a prompt. Its work is linear in the command's length, and a
+  command it cannot split in full (over 64 KiB, over 1,024 parts, or a
+  wrapper with more than 16 readings) is asked about in every mode, with the
+  new step `screen`, while any `bash` deny or ask rule has a pattern.
 - A `*` in any rule now matches newlines. Before, a newline anywhere in the
   subject took it past every deny rule bounded by `*`: `bash(*mkfs*)` did not
   deny `echo` and `mkfs /dev/x` on two lines, nor `read(*secret*)` a path with

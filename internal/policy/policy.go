@@ -43,9 +43,10 @@ type Result struct {
 	Reason string
 	// Scope is the suggested "always allow" rule, e.g. `bash(npm install *)`.
 	Scope string
-	// Step is which stage of the evaluation order decided: hook, deny, ask,
-	// mode, allow or default. The reason is prose for a person; this is what
-	// lets a reviewer count how often each stage is doing the work.
+	// Step is which stage of the evaluation order decided: hook, deny,
+	// destructive, screen, ask, mode, allow or default. The reason is prose
+	// for a person; this is what lets a reviewer count how often each stage
+	// is doing the work.
 	Step string
 }
 
@@ -122,6 +123,18 @@ func (r Rule) Matches(tool string, subject string) bool {
 		return true
 	}
 	return r.pattern.MatchString(subject)
+}
+
+// rulesSeeParts reports whether a deny or ask rule with a pattern applies to tool.
+func (e *Engine) rulesSeeParts(tool string) bool {
+	for _, rules := range [][]Rule{e.Deny, e.Ask} {
+		for _, r := range rules {
+			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // matchesEverything reports whether the rule names a tool with no narrower pattern.
@@ -229,9 +242,10 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	subject := Subject(tool, args)
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
 	// approves only a simple command, and never a multi-line subject.
-	subjects, narrowAllows := []string{subject}, !strings.ContainsAny(subject, "\n\r")
+	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
 	if tool == "bash" {
-		subjects, narrowAllows = commandSegments(subject), !hasShellControl(subject)
+		subjects, complete = commandSegments(subject)
+		narrowAllows = !hasShellControl(subject)
 	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
@@ -257,6 +271,12 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		if what, destructive := tools.IsDestructive(subject); destructive {
 			return Result{Decision: Ask, Reason: fmt.Sprintf("%s — always requires confirmation", what), Scope: "", Step: "destructive"}
 		}
+	}
+
+	// 2c. A command too long or tangled to split in full may hide a part a
+	// deny or ask rule would match, so no mode or allow rule approves it.
+	if !complete && e.rulesSeeParts(tool) {
+		return Result{Decision: Ask, Reason: "the command is too long or complex to check each part against the rules", Scope: "", Step: "screen"}
 	}
 
 	// 3. Ask rules — force a prompt even if a later allow would match.

@@ -47,9 +47,12 @@ allow every command. An allow rule whose own pattern holds that syntax, such as
 Deny and ask rules match the whole command or any command inside it: split on
 those operators, taken out of substitutions and subshells, and past leading
 `VAR=value` assignments, redirections and wrappers such as `sudo`, `env`,
-`nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`. The split does not parse the shell's
-quoting, so it can only add a denial or a prompt; the sandbox, not the pattern,
-is the boundary.
+`nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`. The split does not
+parse the shell's quoting, so it can only add a denial or a prompt; the
+sandbox, not the pattern, is the boundary. A command too long or complex to
+split in full (over 64 KiB, over 1,024 parts, or a wrapper with too many
+readings) is always asked about while any deny or ask rule for `bash` has a
+pattern, in every mode.
 
 A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you

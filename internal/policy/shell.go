@@ -14,10 +14,22 @@ func hasShellControl(command string) bool {
 	return strings.ContainsAny(command, ";&|\n\r`<>()") || strings.Contains(command, "${")
 }
 
+// Bounds on the split, so a hostile command costs linear time. Past one, the
+// split is incomplete and the caller must not allow the command.
+const (
+	maxSplitBytes   = 64 << 10
+	maxSegments     = 1024
+	maxFormsPerPart = 16
+)
+
 // commandSegments returns the whole command, then each command inside it,
 // including those in $(...), backticks, subshells and process substitution.
-func commandSegments(command string) []string {
-	out := []string{command}
+// complete is false when a bound stopped the split short.
+func commandSegments(command string) (out []string, complete bool) {
+	out = []string{command}
+	if len(command) > maxSplitBytes {
+		return out, false
+	}
 	seen := map[string]bool{command: true}
 	add := func(s string) {
 		if s = strings.TrimSpace(s); s != "" && !seen[s] {
@@ -29,11 +41,15 @@ func commandSegments(command string) []string {
 		p = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(p), "$"))
 		p = strings.TrimSpace(strings.TrimRight(p, "<>"))
 		add(p)
-		for _, f := range strippedForms(p) {
+		forms, whole := strippedForms(p)
+		for _, f := range forms {
 			add(f)
 		}
+		if !whole || len(out) > maxSegments {
+			return out, false
+		}
 	}
-	return out
+	return out, true
 }
 
 // splitControl splits on ; & | newlines, backticks and parentheses, keeping
@@ -77,13 +93,18 @@ var wrapperWords = map[string]int{
 // strippedForms returns the segment without its leading keywords, VAR=value
 // assignments, redirections and wrappers. Whether an option takes a value
 // is not known, so both readings are returned: an extra form only adds a match.
-func strippedForms(segment string) []string {
+// complete is false when the readings exceed maxFormsPerPart.
+func strippedForms(segment string) (forms []string, complete bool) {
 	fields := strings.Fields(segment)
-	var out []string
-	seen := map[[2]int]bool{}
+	starts := map[int]bool{}
+	// Each word is visited at most once per role, so the work is linear and
+	// the recursion depth is at most the number of words.
+	visited := map[int]bool{}
+	optionsSeen := map[[2]int]bool{}
 	var from func(i int)
 	from = func(i int) {
-		for ; i < len(fields); i++ {
+		for ; i < len(fields) && !visited[i]; i++ {
+			visited[i] = true
 			w := fields[i]
 			if shellPrefixWords[w] || isAssignment(w) {
 				continue
@@ -95,19 +116,28 @@ func strippedForms(segment string) []string {
 				continue
 			}
 			if skip, wrapper := wrapperWords[path.Base(w)]; wrapper {
-				wrapperOptions(fields, i+1, skip, seen, from)
+				wrapperOptions(fields, i+1, skip, optionsSeen, from)
 				return
 			}
-			out = append(out, strings.Join(fields[i:], " "))
+			starts[i] = true
 			return
 		}
 	}
 	from(0)
-	return out
+	if len(starts) > maxFormsPerPart {
+		return nil, false
+	}
+	for i := range fields {
+		if starts[i] {
+			forms = append(forms, strings.Join(fields[i:], " "))
+		}
+	}
+	return forms, true
 }
 
 // wrapperOptions follows a wrapper's options from i, reading each both as a
-// flag and as taking the next word, then skips skip positional words.
+// flag and as taking the next word, then skips skip positional words. A lone
+// "-" is an option too (env - is env -i).
 func wrapperOptions(fields []string, i, skip int, seen map[[2]int]bool, next func(int)) {
 	if seen[[2]int{i, skip}] {
 		return
@@ -117,7 +147,7 @@ func wrapperOptions(fields []string, i, skip int, seen map[[2]int]bool, next fun
 		next(i + 1 + skip)
 		return
 	}
-	if i < len(fields) && len(fields[i]) > 1 && strings.HasPrefix(fields[i], "-") {
+	if i < len(fields) && strings.HasPrefix(fields[i], "-") {
 		wrapperOptions(fields, i+1, skip, seen, next)
 		wrapperOptions(fields, i+2, skip, seen, next)
 		return
