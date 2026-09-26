@@ -159,6 +159,7 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 			// Input ended or was cancelled. A cancelled context is an error the
 			// loop must see; an ended input is a refusal, not an error.
 			if err := ctx.Err(); err != nil {
+				fmt.Fprintln(a.Out)
 				return false, err
 			}
 			// EOF (piped input, no TTY): refuse rather than silently proceeding.
@@ -166,7 +167,9 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 			return false, nil
 		}
 		switch strings.TrimSpace(line) {
-		case "a", "y", "":
+		case "a", "y":
+			// Only an explicit key accepts. Enter alone used to, so a line of
+			// typing that ended in Enter approved whatever was on screen.
 			fmt.Fprintln(a.Out)
 			return true, nil
 		case "r", "n":
@@ -179,6 +182,10 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 				return true, nil
 			}
 			fmt.Fprintf(a.Out, "\n  no scope available; [a]ccept or [r]eject: ")
+		case string(approvalHeld):
+			fmt.Fprintf(a.Out, "\n  %s\n  %s ", s.Dim("typing is kept as a steering message: Enter sends it, Ctrl-U clears it"), options)
+		case string(approvalBusy):
+			fmt.Fprintf(a.Out, "\n  %s\n  %s ", s.Dim("the line is not empty: Ctrl-U clears it, Enter sends it as steering"), options)
 		default:
 			// An unrecognised key just re-shows the choices. In raw mode a
 			// single keypress arrives with no echo, so without this a stray key

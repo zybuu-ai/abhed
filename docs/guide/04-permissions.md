@@ -43,6 +43,8 @@ or `)` anywhere in it, even inside quotes, falls through to a prompt, and no
 "always allow" scope is offered for it. `bash` on its own and `bash(*)` still
 allow every command. An allow rule whose own pattern holds that syntax, such as
 `bash(cd x && go test*)`, can never match, and a warning names it at startup.
+A rule for an interpreter allows whatever it can run: `bash(vim -es*)` allows
+any command, since a vim script runs shell commands with `:!`.
 
 Deny and ask rules match the whole command or any command inside it: split on
 those operators, taken out of substitutions and subshells, and past leading

@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -54,40 +55,129 @@ type editor struct {
 
 	mu sync.Mutex
 
-	// approveCh, when non-nil, receives each decision keypress instead of the
-	// key being applied to the line. An approval prompt sets it through
-	// beginApproval, so the one reader the editor owns also answers approvals —
-	// a single keypress — rather than a second reader racing
-	// it for stdin and waiting on an Enter raw mode delivers as "\r".
+	// approveCh, when non-nil, receives deliberate decision keys instead of
+	// the line, so the one reader the editor owns also answers approvals.
 	approveMu sync.Mutex
 	approveCh chan rune
+	approveAt time.Time // when the choices were last drawn; zero until then
+	heldSent  bool      // the approval has been told typing is being held
+	pending   rune      // a decision key waiting for quiet before it counts
+	pendingN  int       // which pending key a timer belongs to
+
+	now     func() time.Time
+	after   func(time.Duration, func()) // time.AfterFunc, replaceable in tests
+	lastKey time.Time                   // arrival of the previous byte
 }
 
-// beginApproval routes subsequent decision keys to the returned channel until
-// endApproval. Letters and Enter are delivered; arrows and other escape
-// sequences are swallowed, so an Up arrow ("\x1b[A") can never read as "A".
+// approvalGuard is the quiet a decision key needs before the prompt, after the
+// previous key and after itself; faster than that it is typing.
+const approvalGuard = 300 * time.Millisecond
+
+// Notices on the approval channel: typing is being kept as steering, or a
+// decision key was pressed on a line that already holds text.
+const (
+	approvalHeld rune = 0
+	approvalBusy rune = 1
+)
+
+// beginApproval routes deliberate decision keys to the returned channel until
+// endApproval. Nothing answers until armApproval says the choices are drawn.
 func (e *editor) beginApproval() <-chan rune {
-	ch := make(chan rune, 1)
+	ch := make(chan rune, 8)
 	e.approveMu.Lock()
 	e.approveCh = ch
+	e.approveAt = time.Time{}
+	e.heldSent = false
+	e.pending = 0
 	e.approveMu.Unlock()
 	return ch
+}
+
+// armApproval starts the guard from now: the choices have just been drawn.
+func (e *editor) armApproval() {
+	e.approveMu.Lock()
+	if e.approveCh != nil {
+		e.approveAt = e.now()
+	}
+	e.approveMu.Unlock()
 }
 
 func (e *editor) endApproval() {
 	e.approveMu.Lock()
 	e.approveCh = nil
+	e.pending = 0
 	e.approveMu.Unlock()
 }
 
-func (e *editor) approvalChan() chan rune {
+func (e *editor) approvalChan() (chan rune, time.Time) {
 	e.approveMu.Lock()
 	defer e.approveMu.Unlock()
-	return e.approveCh
+	return e.approveCh, e.approveAt
+}
+
+// notify sends a notice to a waiting approval; approvalHeld only once.
+func (e *editor) notify(ch chan rune, n rune) {
+	e.approveMu.Lock()
+	defer e.approveMu.Unlock()
+	if e.approveCh != ch || (n == approvalHeld && e.heldSent) {
+		return
+	}
+	if n == approvalHeld {
+		e.heldSent = true
+	}
+	select {
+	case ch <- n:
+	default:
+	}
+}
+
+// hold answers with a decision key only if no key follows it within the guard
+// (twice that for A), so "Actually no" cannot answer with its "A".
+func (e *editor) hold(ch chan rune, k rune) {
+	e.approveMu.Lock()
+	e.pending = k
+	e.pendingN++
+	n := e.pendingN
+	e.approveMu.Unlock()
+	wait := approvalGuard
+	if k == 'A' {
+		wait = 2 * approvalGuard // it allows for the rest of the session
+	}
+	e.after(wait, func() {
+		e.approveMu.Lock()
+		defer e.approveMu.Unlock()
+		if e.approveCh != ch || e.pendingN != n || e.pending == 0 {
+			return
+		}
+		select {
+		case ch <- e.pending:
+		default:
+		}
+		e.pending = 0
+	})
+}
+
+// reclaim takes back a held key that another key followed, returning it (or 0).
+func (e *editor) reclaim() rune {
+	e.approveMu.Lock()
+	defer e.approveMu.Unlock()
+	k := e.pending
+	e.pending = 0
+	return k
+}
+
+// isDecisionKey reports whether k is one of the approval prompt's answers.
+func isDecisionKey(k rune) bool {
+	switch k {
+	case 'y', 'a', 'A', 'n', 'r':
+		return true
+	}
+	return false
 }
 
 func newEditor(in io.Reader, out io.Writer, prompt string) *editor {
-	return &editor{in: in, out: out, prompt: prompt, menuSel: -1}
+	return &editor{in: in, out: out, prompt: prompt, menuSel: -1, now: time.Now,
+		after: func(d time.Duration, f func()) { time.AfterFunc(d, f) }}
 }
 
 const (
@@ -138,22 +228,38 @@ func (e *editor) readLine() (string, error) {
 			continue
 		}
 		k := rune(buf[0])
+		at := e.now()
+		gap := at.Sub(e.lastKey)
+		e.lastKey = at
 
-		// While an approval is waiting, decision keys go to it and nothing is
-		// applied to the line. This is what makes a single keypress answer the
-		// prompt without racing a second reader, and keeps the answer off the
-		// line the user is composing.
-		if ch := e.approvalChan(); ch != nil {
+		// At an approval only a decision key pressed alone, on an empty line,
+		// answers; any other typing stays on the line as steering.
+		if ch, armed := e.approvalChan(); ch != nil {
+			if held := e.reclaim(); held != 0 {
+				if k == keyEnter && len(e.line) == 0 {
+					e.notify(ch, keyEnter) // a key then Enter: neither answer nor steering
+					continue
+				}
+				e.insert(held) // another key followed it: it was typing
+				e.notify(ch, approvalHeld)
+			}
+			empty := len(e.line) == 0
+			quiet := !armed.IsZero() && at.Sub(armed) >= approvalGuard && gap >= approvalGuard
 			switch {
 			case k == keyEsc:
 				e.discardEscape() // swallow arrows so "[A" cannot read as "A"
-			case k == keyEnter || (k >= 'a' && k <= 'z') || (k >= 'A' && k <= 'Z'):
-				select {
-				case ch <- k:
-				default:
-				}
+				continue
+			case k == keyEnter && empty:
+				e.notify(ch, keyEnter) // never an answer; the choices are shown again
+				continue
+			case isDecisionKey(k) && empty && quiet:
+				e.hold(ch, k)
+				continue
+			case isDecisionKey(k) && quiet:
+				e.notify(ch, approvalBusy)
+			case k != keyCtrlC && k != keyEnter && unicode.IsPrint(k):
+				e.notify(ch, approvalHeld)
 			}
-			continue
 		}
 
 		switch k {
@@ -628,6 +734,9 @@ func visibleLen(s string) int {
 // errInterrupted is Ctrl-C on a line being typed: the line is abandoned and
 // the prompt returns, which is not the same as ending the session.
 var errInterrupted = errors.New("interrupted")
+
+// ErrCtrlC is what ReadLine returns for Ctrl-C, for callers that script it.
+var ErrCtrlC = errInterrupted
 
 // ErrInterrupted reports whether a read ended in Ctrl-C.
 func ErrInterrupted(err error) bool { return errors.Is(err, errInterrupted) }

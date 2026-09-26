@@ -86,7 +86,7 @@ func Main(args []string, opts ...Option) int {
 		workdir    = fs.String("C", "", "workspace directory (default: current)")
 		addDirs    = fs.String("add-dir", "", "comma-separated extra directories the agent may read and write")
 		maxTurns   = fs.Int("max-turns", 0, "override the turn limit")
-		format     = fs.String("output-format", "text", "text|json")
+		format     = fs.String("output-format", "text", "text|json (json is one event per line)")
 		allow      = fs.String("allow", "", "comma-separated allow rules, e.g. 'bash(go test*)'")
 		deny       = fs.String("deny", "", "comma-separated deny rules")
 		showVer    = fs.Bool("version", false, "print version and exit")
@@ -100,9 +100,15 @@ func Main(args []string, opts ...Option) int {
 		return 2
 	}
 
-	if *showVer {
+	if *showVer || fs.Arg(0) == "version" {
 		fmt.Println("abhed", a.version, a.edition)
 		return 0
+	}
+	// An unknown format used to print text, so a script asking for another
+	// format parsed prose without noticing.
+	if !validFormat(*format) {
+		fmt.Fprintf(os.Stderr, "abhed: unknown -output-format %q; use %s\n", *format, strings.Join(outputFormats, " or "))
+		return 2
 	}
 
 	workspace, err := resolveWorkspace(*workdir)
@@ -111,6 +117,8 @@ func Main(args []string, opts ...Option) int {
 	}
 
 	switch fs.Arg(0) {
+	case "version":
+		return 0 // printed above, before the workspace is needed
 	case "init":
 		path := filepath.Join(workspace, ".abhed", "config.json")
 		if err := config.WriteDefault(path); err != nil {
@@ -155,14 +163,31 @@ func Main(args []string, opts ...Option) int {
 		_ = serveFlags.Parse(fs.Args()[1:])
 		return a.serveCmd(workspace, *serveAddr)
 	default:
-		// An edition's own subcommand. Anything else is not a command at all
-		// and falls through to a session, as it always has.
+		// An edition's own subcommand. Any other word is an error: opening a
+		// session for a mistyped command looked like the command had run.
 		if cmd, ok := a.commands[fs.Arg(0)]; ok {
 			return cmd(workspace, fs.Args()[1:])
+		}
+		if fs.NArg() > 0 {
+			fmt.Fprintf(os.Stderr, "abhed: unknown command %q; run a prompt with -p \"...\", or see abhed -h\n", fs.Arg(0))
+			return 2
 		}
 	}
 
 	return run(a, workspace, *prompt, *mode, *modelID, *maxTurns, *format, *allow, *deny, *addDirs)
+}
+
+// outputFormats are the values -output-format takes. json is one event per
+// line, so it already streams.
+var outputFormats = []string{"text", "json"}
+
+func validFormat(f string) bool {
+	for _, v := range outputFormats {
+		if f == v {
+			return true
+		}
+	}
+	return false
 }
 
 // applyFlags lays the command line over the configuration. The managed
@@ -491,17 +516,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			wasThinking := r.PauseThinking()
 			if editor.Raw() {
 				// Raw TTY: answer with a single keypress.
-				keys := editor.BeginApproval()
-				read := func() (string, bool) {
-					select {
-					case k := <-keys:
-						return string(k), true
-					case <-ctx.Done():
-						return "", false
-					}
-				}
+				read, end := editor.ApprovalKeys(ctx)
 				cleanup := func() {
-					editor.EndApproval()
+					end()
 					if wasThinking {
 						r.StartThinking()
 					}
@@ -521,22 +538,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	}
 
 	lines := make(chan string)
+	interruptCh := make(chan struct{})
 	readErr := make(chan struct{})
-	go func() {
-		for {
-			line, err := editor.ReadLine()
-			if ui.ErrInterrupted(err) {
-				// Ctrl-C abandons the line being typed; it does not end the
-				// session. Ctrl-D on an empty line is what exits.
-				continue
-			}
-			if err != nil {
-				close(readErr)
-				return
-			}
-			lines <- strings.TrimSpace(line)
-		}
-	}()
+	go readInput(editor, lines, interruptCh, readErr)
 	turn := 0
 	// Outside the turn loop: a fresh Loop is built per turn, and a budget
 	// built with it would reset the allowance every time.
@@ -560,6 +564,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			return 0
 		case <-ctx.Done():
 			return 0
+		case <-interruptCh:
+			// At the prompt, Ctrl-C only abandons the line being typed.
+			continue
 		case line = <-lines:
 		}
 		if line == "" {
@@ -612,8 +619,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// Run on a goroutine so the reader stays live: anything typed now is a
 		// steering message, applied at the next turn boundary rather than
 		// killing the run.
-		type outcome struct{ err error }
-		finished := make(chan outcome, 1)
+		finished := make(chan turnOutcome, 1)
 		// The indicator runs from the moment the turn starts until the first
 		// output arrives. A cold local model can take thirty seconds to its
 		// first token, and an unmoving prompt in that window is
@@ -624,15 +630,32 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		r.StartThinking()
 		go func() {
 			_, err := loop.Run(taskCtx, line)
-			finished <- outcome{err}
+			finished <- turnOutcome{err}
 		}()
 
 		var runErr error
 		var queued []string
 		eof := false
+		interrupts := 0
 	steering:
 		for {
 			select {
+			case <-interruptCh:
+				// Ctrl-C stops the turn, and a pending approval with it: its
+				// wait ends on the cancelled context, so the call is refused.
+				interrupts++
+				if interrupts > 1 {
+					r.StopThinking()
+					fmt.Printf("  %s\n", s.Dim("interrupted again — exiting"))
+				}
+				if code := interruptTurn(interrupts, cancelTask, finished, exitGrace); code != 0 {
+					return code
+				}
+				wasOn := r.PauseThinking()
+				fmt.Printf("  %s\n", s.Dim("interrupting…"))
+				if wasOn {
+					r.StartThinking()
+				}
 			case o := <-finished:
 				// The turn is over however it ended; the indicator goes with it.
 				r.StopThinking()
@@ -707,6 +730,48 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if ctx.Err() != nil {
 			return 130
 		}
+	}
+}
+
+// turnOutcome is how a turn's run ended.
+type turnOutcome struct{ err error }
+
+// exitGrace is how long a second Ctrl-C waits for the turn to stop before exiting.
+const exitGrace = 1500 * time.Millisecond
+
+// interruptTurn handles the nth Ctrl-C of a turn: it cancels the turn, and on
+// a second one waits up to grace for it to stop and returns 130 to exit.
+func interruptTurn(n int, cancel func(), finished <-chan turnOutcome, grace time.Duration) int {
+	cancel()
+	if n < 2 {
+		return 0
+	}
+	select {
+	case <-finished:
+	case <-time.After(grace):
+	}
+	return 130
+}
+
+// lineSource is the part of the line reader the input goroutine uses.
+type lineSource interface {
+	ReadLine() (string, error)
+}
+
+// readInput feeds typed lines to the session and reports each Ctrl-C: in raw
+// mode Ctrl-C is a key, not a signal, so a turn only hears it through here.
+func readInput(in lineSource, lines chan<- string, interrupts chan<- struct{}, readErr chan<- struct{}) {
+	for {
+		line, err := in.ReadLine()
+		if ui.ErrInterrupted(err) {
+			interrupts <- struct{}{}
+			continue
+		}
+		if err != nil {
+			close(readErr)
+			return
+		}
+		lines <- strings.TrimSpace(line)
 	}
 }
 

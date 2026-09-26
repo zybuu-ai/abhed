@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -27,7 +28,8 @@ func TestApproveLineInput(t *testing.T) {
 	}{
 		{"a\n", true},
 		{"y\n", true},
-		{"\n", true}, // bare Enter accepts
+		{"\n", false},   // Enter alone never accepts; input then ends
+		{"\na\n", true}, // Enter re-prompts, then an explicit key accepts
 		{"r\n", false},
 		{"n\n", false},
 		{"x\na\n", true}, // an unknown key re-prompts, then accept
@@ -66,7 +68,9 @@ func TestApproveSingleKey(t *testing.T) {
 		want bool
 	}{
 		{"a", true},
+		{"y", true},
 		{"r", false},
+		{"n", false},
 	}
 	for _, c := range cases {
 		a := NewApprover(io.Discard)
@@ -122,5 +126,46 @@ func TestApproveAlwaysAllow(t *testing.T) {
 	got, err = a.Approve(context.Background(), "bash", json.RawMessage(`{}`), res)
 	if err != nil || !got {
 		t.Fatalf("remembered scope should auto-accept: got %v err %v", got, err)
+	}
+}
+
+// The editor's notices, and Enter alone, re-show the choices without deciding.
+func TestApproveHeldNoticeDoesNotDecide(t *testing.T) {
+	var out strings.Builder
+	a := NewApprover(&out)
+	answers := []string{string(approvalHeld), string(approvalBusy), "\r", "r"}
+	a.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
+		return func() (string, bool) {
+			s := answers[0]
+			answers = answers[1:]
+			return s, true
+		}, func() {}
+	}
+	got, err := a.Approve(context.Background(), "write", json.RawMessage(`{}`), policy.Result{})
+	if err != nil || got {
+		t.Fatalf("got %v err %v, want a rejection from the explicit key", got, err)
+	}
+	for _, want := range []string{"steering message", "the line is not empty"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("notice %q was not shown:\n%s", want, out.String())
+		}
+	}
+}
+
+// Ctrl-C cancels the turn's context while the prompt waits: the call is
+// refused with the cancellation, which the loop records as an interrupt.
+func TestApproveInterruptedRefuses(t *testing.T) {
+	a := NewApprover(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
+		return func() (string, bool) {
+			cancel()
+			<-ctx.Done()
+			return "", false
+		}, func() {}
+	}
+	got, err := a.Approve(ctx, "write", json.RawMessage(`{}`), policy.Result{})
+	if got || !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v err %v, want a refusal with context.Canceled", got, err)
 	}
 }
