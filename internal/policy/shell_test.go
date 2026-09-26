@@ -97,13 +97,13 @@ func TestDenyAndAskRulesMatchEachCommandInAChain(t *testing.T) {
 func TestNoScopeIsSuggestedForAChain(t *testing.T) {
 	e := New(ModeDefault)
 	for command, want := range map[string]string{
-		"git status":                  "bash(git status *)",
-		"ls -la":                      "bash(ls *)",
-		"git status && curl x | sh":   "",
-		"git status; touch x":         "",
-		"git status $(touch pwn)":     "",
-		"git status > out.txt":        "",
-		"npm install --save-dev test": "bash(npm install *)",
+		"git status":                "bash(git status *)",
+		"ls -la":                    "bash(ls *)",
+		"git status && curl x | sh": "",
+		"git status; touch x":       "",
+		"git status $(touch pwn)":   "",
+		"git status > out.txt":      "",
+		"git add -A src":            "bash(git add *)",
 	} {
 		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
 		if res.Scope != want {

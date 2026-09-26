@@ -186,4 +186,26 @@ render(ev(3, 'user.message', {text:'new'}));
 check('an unshown request does not outlive its turn', asks.size === 0);
 await tick(700);
 
+// Send now while the server drains: the message is not withdrawn, since
+// nothing it sends instead would be taken.
+fresh('s15', true); __routes.length = 0;
+const held = userBubble('while draining', 'queued'); held.qid = 'q9'; queued.set('q9', held);
+__defer('GET /v1/health').resolve({status:'ok', draining:true});
+await sendNow(held);
+check('Send now during a drain leaves the message queued',
+  !__routes.some(r => r.startsWith('DELETE')) && queued.get('q9') === held && held.classList.contains('queued'));
+check('and says why', held.qnote.includes('shutting down') && held.qnote.includes('still queued'));
+
+// The drain starts between the check and the send: the message is out of the
+// queue, so the page says so and puts its text back in the box.
+fresh('s16', true); $('q').value = '';
+const late = userBubble('just too late', 'queued'); late.qid = 'q10'; queued.set('q10', late);
+__defer('DELETE /v1/sessions/s16/queue/q10').resolve(null);
+__defer('POST /v1/sessions/s16/messages').reject(Object.assign(new Error('server is shutting down; retry'), {status:503}));
+await sendNow(late);
+check('a 503 after the withdrawal says it is no longer queued',
+  late.classList.contains('failed') && late.qnote.includes('no longer queued'));
+check('and its text is back in the message box',
+  $('q').value === 'just too late' && late.qnote.includes('back in the message box'));
+
 if(!ok) process.exit(1);

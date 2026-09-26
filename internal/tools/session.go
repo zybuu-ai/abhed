@@ -14,7 +14,7 @@ import (
 // scopes all filesystem access, and the read-tracking that makes editing safe.
 type Session struct {
 	Root string // absolute workspace root
-	Cwd  string // persists across bash calls (shell state does not)
+	Cwd  string // where the next bash call starts; only a line that is just `cd <folder>` moves it
 
 	// rawRoot and rawRoots hold the roots before symlink resolution, used
 	// only by the lexical traversal check. See lexicalRoots.

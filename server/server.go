@@ -2124,10 +2124,13 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	n := len(s.running)
 	s.mu.RUnlock()
+	// draining lets the workbench leave a queued message where it is rather
+	// than withdraw it for a Send now the server would refuse.
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"status":   "ok",
 		"sessions": n,
 		"model":    s.opts.Adapter.Profile().Name,
+		"draining": s.draining.Load(),
 	})
 }
 

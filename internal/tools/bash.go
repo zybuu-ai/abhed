@@ -245,8 +245,7 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	} else {
 		cmd = exec.CommandContext(runCtx, "bash", "-c", a.Command)
 		cmd.Dir = s.Cwd
-		// Minimal environment: the agent should not inherit the operator's
-		// credentials by accident.
+		// No sandbox: the server's own environment, less BASH_ENV and CDPATH.
 		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
 	// A stopped turn ends what the command started, not only its shell.

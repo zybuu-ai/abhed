@@ -6,6 +6,7 @@
 #   extract.py ide.html ide-md        the workbench's markdown renderer
 #   extract.py ide.html ide-render    the workbench's chat render()
 #   extract.py ide.html ide-chat      sending, live state and approvals
+#   extract.py ide.html ide-conn      the connection indicator
 #   extract.py ide.html ide-lines     the line-by-line terminal
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
@@ -35,6 +36,8 @@ sets = {
     'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){'],
+    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){',
+          'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
     'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',

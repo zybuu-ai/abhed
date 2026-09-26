@@ -476,7 +476,8 @@ const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 const fmt = n => (n || 0).toLocaleString('en-US');
 
 async function api(path, opts){
-  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts});
+  let r; try{ r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts}); }
+  catch(e){ connLost(false); throw e; }
   if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} const e = new Error(m); e.status = r.status; e.node = r.headers.get('Abhed-Session-Node'); throw e; }
   return r.status === 204 ? null : r.json();
 }
@@ -1175,8 +1176,8 @@ function connect(id){
   es.onopen = () => setConn(true);
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
   es.onerror = () => { if(!es) return; es.close(); es = null;
-    if(live && current === id) setTimeout(() => { if(current === id && !es) connect(id); }, 1000);
-    else if(current === id) loadHawkeye(); };
+    if(live && current === id){ connLost(true); setTimeout(() => { if(current === id && !es) connect(id); }, 1000); }
+    else{ connLost(false); if(current === id) loadHawkeye(); } };
 }
 // Messages still queued on the server, for a page opened while a run is going.
 async function loadQueue(id){
@@ -1185,7 +1186,30 @@ async function loadQueue(id){
   if(qbox.parentNode !== tx()) tx().appendChild(qbox);
   for(const q of items || []) if(!queued.has(q.id)){ const b = userBubble(q.text, 'queued'); b.qid = q.id; queued.set(q.id, b); qbox.appendChild(b); drawQueued(b); }
 }
-function setConn(on){ const n = $('s-conn'); n.className = on ? 'on' : 'off'; n.textContent = on ? '● connected' : '● offline'; }
+// true, false, or 'retry' while a live stream is being reopened.
+let connState = null, connTimer = 0, connWait = 0;
+function setConn(on){
+  connState = on; const n = $('s-conn'); n.className = on === true ? 'on' : 'off';
+  n.textContent = on === true ? '● connected' : on ? '● reconnecting…' : '● offline';
+}
+// A closed stream does not mean the server has gone: a finished session's
+// replay closes too. Its health says which, and is asked until it answers.
+function connLost(retrying){
+  if(leaving) return;
+  if(retrying && connState === true) setConn('retry');
+  if(connTimer) return;
+  connWait = 0; connTimer = setTimeout(connProbe, 0);
+}
+// Asked less often the longer the server is away, and not from a hidden tab.
+async function connProbe(){
+  if(document.hidden){ document.addEventListener('visibilitychange', connProbe, {once:true}); return; }
+  let up = false; try{ up = (await fetch('/v1/health', {credentials:'same-origin', cache:'no-store'})).status < 500; }catch{}
+  if(!up){
+    setConn(false); connWait = Math.min(connWait ? connWait * 2 : 3000, 30000);
+    connTimer = setTimeout(connProbe, connWait); return;
+  }
+  connTimer = 0; setConn(true);
+}
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
@@ -1370,7 +1394,17 @@ async function unqueue(b){
 // Send now: withdraw it from the queue, stop the running step, and send it
 // as a fresh turn. The server waits for the step to stop before starting it.
 async function sendNow(b){
-  const id = current; if(!(await unqueue(b))) return;
+  const id = current;
+  // A draining server refuses Send now and could not queue a withdrawn message
+  // again. Behind a balancer the check may ask another node; the 503 path covers that.
+  b.busy = true; drawQueued(b);
+  let h = null; try{ h = await api('/v1/health'); }catch{}
+  b.busy = false; if(b.delivered) return;
+  if(h && h.draining){
+    b.qnote = 'The server is shutting down, so Send now is off — still queued for the next step';
+    drawQueued(b); return;
+  }
+  if(!(await unqueue(b))) return;
   b.qid = null; b.busy = false; b.classList.remove('queued'); b.classList.add('pending'); b.qnote = '';
   sent.push(b); add(b); drawQueued(b); waiting('Stopping the current step');
   try{
@@ -1378,7 +1412,17 @@ async function sendNow(b){
     // Delivered first: the stream set the page live, and may since have seen this turn end.
     if(current !== id || b.delivered) return;
     setLive(true); waiting('Thinking'); if(!es) connect(id);
-  }catch(e){ failed(b, e.message); waiting(false); }
+  }catch(e){
+    waiting(false);
+    // The drain began after the check: the message is out of the queue, and no other POST is taken.
+    if(e.status === 503){
+      const kept = !$('q').value || $('q').value === b.text;
+      failed(b, 'the server began shutting down, so it is no longer queued' +
+        (kept ? '; its text is back in the message box' : ''));
+      return;
+    }
+    failed(b, e.message);
+  }
 }
 
 function render(ev){
@@ -1667,6 +1711,7 @@ function attach(t, id, reattach){
   es.addEventListener('out', e => { t.term.write(bytesOf(e.data)); if(t.watch) treeSoon(); });
   es.addEventListener('exit', e => ended(t, id, e.data));
   es.onerror = () => {
+    connLost(false);
     if(es.readyState !== EventSource.CLOSED) return;
     if(reattach && !opened && t.run === id){ endRun(t, false); t.term.reset(); startTerm(t); return; }
     ended(t, id, null);

@@ -41,7 +41,7 @@ type Result struct {
 	// Reason is shown to the user in the approval prompt and recorded in the
 	// audit log, so it must name the rule that fired.
 	Reason string
-	// Scope is the suggested "always allow" rule, e.g. `bash(npm install *)`.
+	// Scope is the suggested "always allow" rule, e.g. `bash(git commit *)`.
 	Scope string
 	// Step is which stage of the evaluation order decided: hook, deny,
 	// destructive, screen, ask, mode, allow or default. The reason is prose
@@ -345,7 +345,7 @@ func askReason(tool string, mode Mode) string {
 }
 
 // suggestScope proposes a narrow "always allow" rule for the approval prompt.
-// Narrow by construction: allowing `npm install *` must never allow `rm`.
+// Narrow by construction: allowing `git commit *` must never allow `rm`.
 func suggestScope(tool, subject string) string {
 	if subject == "" {
 		return tool
@@ -360,10 +360,9 @@ func suggestScope(tool, subject string) string {
 		if len(fields) == 0 {
 			return tool
 		}
-		// Two tokens capture the meaningful verb ("npm install", "git status").
-		prefix := fields[0]
-		if len(fields) > 1 && !strings.HasPrefix(fields[1], "-") {
-			prefix += " " + fields[1]
+		prefix := bashScope(fields)
+		if prefix == "" {
+			return ""
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)
 	}

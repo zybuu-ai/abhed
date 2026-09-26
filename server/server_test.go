@@ -63,8 +63,15 @@ func TestHealth(t *testing.T) {
 	}
 	var body map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &body)
-	if body["status"] != "ok" {
+	if body["status"] != "ok" || body["draining"] != false {
 		t.Fatalf("body %v", body)
+	}
+	s.draining.Store(true)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/health", nil))
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["draining"] != true {
+		t.Fatalf("a draining server does not say so: %v", body)
 	}
 }
 

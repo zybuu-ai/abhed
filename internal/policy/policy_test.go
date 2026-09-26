@@ -175,8 +175,8 @@ func TestHookShortCircuits(t *testing.T) {
 
 func TestScopeSuggestionIsNarrow(t *testing.T) {
 	e := New(ModeDefault)
-	res := e.Evaluate("bash", true, args(map[string]string{"command": "npm install --save-dev vitest"}))
-	if res.Scope != "bash(npm install *)" {
+	res := e.Evaluate("bash", true, args(map[string]string{"command": "git commit --amend --no-edit"}))
+	if res.Scope != "bash(git commit *)" {
 		t.Fatalf("scope should capture verb but not args, got %q", res.Scope)
 	}
 }

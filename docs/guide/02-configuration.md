@@ -201,6 +201,11 @@ grace period, is what ends it sooner.
 Started with hang-ups ignored, as under `nohup`, the server keeps ignoring
 them.
 
+A second SIGTERM, or a SIGINT (Ctrl-C) sent after the first, does not cut the
+drain short: once shutdown has begun, both are ignored, and the server exits
+when the drain budget and the waits above have run out. To stop it sooner,
+send SIGKILL, and accept that turns still running then record no end.
+
 ## Accounts
 
 With `auth.mode` set to `local` and no database, accounts live in a file:
