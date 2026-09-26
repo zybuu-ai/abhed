@@ -18,6 +18,9 @@ signal's number (130, 143, 129); `serve` exits `0` once it has drained.
 `serve` ignores further signals while it drains; `-p`, `eval` and `resolve`
 end at once on a second signal.
 
+A bad invocation, such as an unknown `-output-format` (`text` or `json`) or a
+word that is not a command, exits `2` before anything runs.
+
 There is no one to approve, so anything needing approval is refused. Name what
 may run with `-allow`, and keep the list narrow.
 

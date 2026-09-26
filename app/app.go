@@ -170,6 +170,7 @@ var subcommands = []struct{ name, about string }{
 	{"rpc", "take line-delimited JSON requests on stdin, answer on stdout"},
 	{"index", "build the workspace's search index ahead of a session"},
 	{"eval", "run the evaluation corpus against the configured model"},
+	{"version", "print the version and exit"},
 }
 
 // builtinCommands are the subcommands an edition cannot replace.

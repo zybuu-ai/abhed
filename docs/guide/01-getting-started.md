@@ -68,11 +68,26 @@ results it has already gathered are kept:
 
 A slash command typed mid-run is queued and runs when the turn finishes.
 
+When it needs approval it stops and shows the change:
+
+```
+● write notes.txt
+  + hello
+  [a]ccept  [r]eject  [A]lways allow write(notes.txt)
+```
+
+Press `a` or `y` to accept, `r` or `n` to reject, `A` to allow that scope for
+the rest of the session. A key answers only on its own, on an empty line, with
+300 ms of quiet before and after it (600 ms after `A`); Enter alone never
+accepts. Anything else, "Actually no" included, is typing: it is kept as a
+steering message and sent with Enter. Ctrl-C refuses the request and stops the turn; a second Ctrl-C, if
+the turn has not stopped, ends the session.
+
 ## The prompt
 
 Arrow keys move and recall history; Home, End, Ctrl-A, Ctrl-E, Ctrl-U, Ctrl-K
-and Ctrl-W do what they do in a shell. Ctrl-C interrupts the task without ending
-the session; Ctrl-D exits.
+and Ctrl-W do what they do in a shell. Ctrl-C stops the running turn without
+ending the session; at the prompt it clears the line. Ctrl-D exits.
 
 | Command | |
 |---|---|
@@ -97,6 +112,11 @@ abhed -p "add a test for Valid" -output-format json > events.jsonl
 
 Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
 `5` retries exhausted · `130` interrupted.
+
+`-output-format` is `text` or `json`, one event per line; any other value is
+refused. A word after the flags must be a command (`abhed -h` lists them,
+`abhed version` prints the version): anything else exits 2 rather than
+opening a session, so pass a prompt with `-p`.
 
 ## Next
 

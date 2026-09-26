@@ -69,6 +69,45 @@ func TestBashRejectsInteractive(t *testing.T) {
 	}
 }
 
+// Vim in silent Ex mode runs a script and exits, so the agent may use it; the
+// editor, and Ex mode that is not silent, still wait for a terminal.
+func TestBashInteractiveExemptsSilentEx(t *testing.T) {
+	for _, cmd := range []string{
+		"vim -es -c '%s/a/b/g' -c wq f.txt",
+		"vim -e -s f.txt < script.vim",
+		"vi -Es -c wq f.txt",
+		"vim -E -s f.txt",
+		"vim -N -u NONE -es f.txt",
+		"ex -s f.txt < script.ex",
+	} {
+		if isInteractive(cmd) {
+			t.Errorf("%q is a batch edit and should run", cmd)
+		}
+	}
+	// Through the tool: whether or not vim is installed, it is not refused.
+	s, _ := setup(t)
+	res := run(t, Bash{}, s, bashArgs{Command: "vim -es -c q", Description: "x"})
+	if strings.Contains(res.Content, "Refusing to run an interactive command") {
+		t.Errorf("vim -es was refused as interactive: %s", res.Content)
+	}
+	for _, cmd := range []string{
+		"vim f.txt",
+		"vim -e f.txt",
+		"vim -s keys.txt f.txt",
+		"vim -- -es",
+		"nano -s f.txt",
+		"vim -s keys.txt -e f.txt",
+		"vim -se f.txt",
+		"vim f.txt; vim -es g.txt",
+		"vim f.txt && vim -es g.txt",
+		"git rebase -i HEAD~3 && vim -es f.txt",
+	} {
+		if !isInteractive(cmd) {
+			t.Errorf("%q waits for a terminal and should be refused", cmd)
+		}
+	}
+}
+
 func TestBashTimeout(t *testing.T) {
 	s, _ := setup(t)
 	res := run(t, Bash{}, s, bashArgs{Command: "sleep 5", Description: "sleep", TimeoutMS: 200})

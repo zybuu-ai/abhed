@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -59,22 +60,20 @@ func (l *LineReader) ReadLine() (string, error) {
 // when it is not.
 func (l *LineReader) Raw() bool { return l.raw }
 
-// BeginApproval routes the next decision keypresses to the returned channel
-// instead of the edit line, so an approval prompt is answered by a single key
-// through the one reader the editor owns. EndApproval restores normal editing.
-// Only meaningful in raw mode; returns nil otherwise.
-func (l *LineReader) BeginApproval() <-chan rune {
-	if !l.raw {
-		return nil
+// ApprovalKeys routes decision keys to an approval until end, in raw mode. read
+// arms the key guard each call: the approver calls it just after drawing.
+func (l *LineReader) ApprovalKeys(ctx context.Context) (read func() (string, bool), end func()) {
+	keys := l.ed.beginApproval()
+	read = func() (string, bool) {
+		l.ed.armApproval()
+		select {
+		case k := <-keys:
+			return string(k), true
+		case <-ctx.Done():
+			return "", false
+		}
 	}
-	return l.ed.beginApproval()
-}
-
-// EndApproval restores normal line editing after BeginApproval.
-func (l *LineReader) EndApproval() {
-	if l.raw {
-		l.ed.endApproval()
-	}
+	return read, l.ed.endApproval
 }
 
 // Quiet suspends the prompt while a turn is running, so the reader can stay

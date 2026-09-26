@@ -93,14 +93,58 @@ type bashArgs struct {
 	Secrets     []string `json:"secrets"`
 }
 
+// editorPattern matches full-screen programs; vim in silent Ex mode is exempt.
+var editorPattern = regexp.MustCompile(`^\s*(vim?|nano|emacs|less|more|top|htop)\b`)
+
 // Commands that hang forever waiting for a TTY. Rejecting them with guidance
 // is far better than a 10-minute timeout.
 var interactivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bgit\s+(rebase|add|commit)\s+.*-i\b`),
 	regexp.MustCompile(`\bgit\s+(rebase|add)\s+--interactive\b`),
-	regexp.MustCompile(`^\s*(vim?|nano|emacs|less|more|top|htop)\b`),
+	editorPattern,
 	// ssh without -T allocates a TTY and blocks; -T is the non-interactive form.
 	regexp.MustCompile(`^\s*ssh\s+(?:-[^T\s]*\s+)*[^-\s]`),
+}
+
+// viStart captures a leading vi or vim's arguments, up to the first ; | or &.
+var viStart = regexp.MustCompile(`^\s*vim?\s+([^|;&]*)`)
+
+// isInteractive reports whether a command would wait for a terminal. Vim in
+// silent Ex mode (-es, -e -s, -Es) runs a script and exits: a batch edit.
+func isInteractive(command string) bool {
+	for _, re := range interactivePatterns {
+		if re.MatchString(command) && (re != editorPattern || !silentEx(command)) {
+			return true
+		}
+	}
+	return false
+}
+
+func silentEx(command string) bool {
+	m := viStart.FindStringSubmatch(command)
+	if m == nil {
+		return false
+	}
+	var ex, silent bool
+	for _, arg := range strings.Fields(m[1]) {
+		if arg == "--" {
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+			continue
+		}
+		// Vim reads -s as silent only after -e or -E; before them it names a
+		// file of Normal-mode keys, and the editor opens.
+		for _, c := range arg[1:] {
+			switch {
+			case c == 'e' || c == 'E':
+				ex = true
+			case c == 's' && ex:
+				silent = true
+			}
+		}
+	}
+	return silent
 }
 
 // Patterns that require confirmation in every mode, including the most
@@ -180,10 +224,8 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		a.Description = summarizeCommand(a.Command)
 	}
 
-	for _, re := range interactivePatterns {
-		if re.MatchString(a.Command) {
-			return errf("Refusing to run an interactive command: %s\nInteractive commands wait for a terminal that is not attached and will hang.\nUse a non-interactive equivalent (for example `git rebase --onto` instead of `git rebase -i`, or `cat` instead of `less`).", a.Command)
-		}
+	if isInteractive(a.Command) {
+		return errf("Refusing to run an interactive command: %s\nInteractive commands wait for a terminal that is not attached and will hang.\nUse a non-interactive equivalent (for example `git rebase --onto` instead of `git rebase -i`, or `cat` instead of `less`).", a.Command)
 	}
 
 	timeout := time.Duration(a.TimeoutMS) * time.Millisecond

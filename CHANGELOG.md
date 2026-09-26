@@ -77,6 +77,14 @@ All notable changes to Abhed are recorded here. The format follows
   person running the CLI; give it its input another way. On the host, an
   "Operation not permitted" result no longer carries the note that the
   sandbox denied it.
+- `abhed` now refuses a word that is not a command, with exit code 2, where
+  it used to open an interactive session, so `abhed version` looked like it
+  had run; run a prompt with `-p`. `abhed version` now prints the version. An
+  unknown `-output-format`, such as `stream-json`, exits 2 with the valid ones
+  named instead of printing text: the formats are `text` and `json` (one
+  event per line).
+- A piped interactive session that answered an approval with an empty line
+  now has to send `a` or `y`: an empty line no longer accepts.
 
 ### Added
 
@@ -142,6 +150,18 @@ All notable changes to Abhed are recorded here. The format follows
   HawkEYE says who decided from the event itself, so the person's own
   decline at the line terminal no longer reads "by reviewer", and a headless
   refusal or a remembered scope no longer counts as asking a reviewer.
+- Ctrl-C in an interactive session did nothing while a turn was running or
+  an approval was waiting, though the banner says it interrupts. It now
+  stops the turn and refuses a waiting approval; a turn stopped at an
+  approval, a running command or while waiting for the model ends as
+  `user_interrupt`. At the prompt Ctrl-C
+  still only clears the line; Ctrl-D exits. A second Ctrl-C during a turn
+  that has not stopped ends the session with exit code 130.
+- The agent's `bash` refused `vim -es`, `vim -e -s`, `vim -E -s` and other
+  silent Ex mode edits as interactive. They run a script and exit, so they
+  now run; `vim` without them, `vim -e` or `vim -s` alone, and `-s` before
+  `-e` (a file of keys, not silent mode) are still refused. An allow rule
+  such as `bash(vim -es*)` allows any command, through `:!`.
 - In the line-by-line workbench terminal, `vi` seemed to hang after `:wq`:
   the process sandbox refuses writes to the home directory, and vim waited at
   "Press ENTER" after failing to save its history file. Every process-tier
@@ -204,6 +224,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Keys typed while the interactive approval prompt was showing answered it:
+  "Wait, stop", typed as the prompt appeared, approved a write with its `a`,
+  and Enter on its own accepted. Now only one of the prompt's keys pressed
+  on its own answers it: on an empty line, with at least 300 ms of quiet
+  after the choices are drawn and after the previous key, and 300 ms after
+  the key itself (600 ms for `A`, which allows for the whole session), so a
+  sentence that starts with one ("Actually no") or a held-down key does not
+  answer. A key followed at once by Enter shows the choices again, and Enter
+  alone never accepts. Other typing is kept on the line and sent as a
+  steering message on Enter, and the prompt says so.
 - An approval could answer a different request from the one it was shown
   for. `POST /v1/sessions/{id}/approve` named no call, so after Send now a
   click on the interrupted run's prompt approved the new run's call; and an

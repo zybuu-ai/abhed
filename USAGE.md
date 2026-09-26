@@ -158,7 +158,7 @@ Exit codes let CI distinguish outcomes:
 |---:|---|
 | 0 | Completed |
 | 1 | Error |
-| 2 | Turn limit reached |
+| 2 | Turn limit reached, or a bad invocation (unknown flag, `-output-format` or command) |
 | 3 | Budget exhausted |
 | 4 | Policy denied |
 | 5 | Retries exhausted |
@@ -179,7 +179,7 @@ shutdown cause, so it does not exit with them.
 | `-max-turns N` | Override the turn cap |
 | `-allow '<rule>'` | Extra allow rules, comma-separated |
 | `-deny '<rule>'` | Extra deny rules |
-| `-output-format json` | Emit the event stream |
+| `-output-format json` | Emit the event stream, one JSON event per line (`text` or `json`) |
 
 ### Slash commands
 
