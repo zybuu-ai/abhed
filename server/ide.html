@@ -478,8 +478,18 @@ const fmt = n => (n || 0).toLocaleString('en-US');
 async function api(path, opts){
   let r; try{ r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts}); }
   catch(e){ connLost(false); throw e; }
+  if(r.status === 401) signInEnded();
   if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} const e = new Error(m); e.status = r.status; e.node = r.headers.get('Abhed-Session-Node'); throw e; }
   return r.status === 204 ? null : r.json();
+}
+// A 401 means the sign-in ended: a restart, a sign-out elsewhere, or an administrator.
+let signedIn = false, signInGone = false;
+function signInEnded(){
+  if(signInGone) return; signInGone = true;
+  if(es){ es.close(); es = null; }
+  setLive(false); setConn(false);
+  const n = el('div', 'sys bad', 'Your sign-in ended. '), a = el('a', '', 'Sign in again');
+  a.href = '/?return=/ide'; n.appendChild(a); add(n);
 }
 
 /* ---------------------------------------------------------------- state */
@@ -1189,8 +1199,8 @@ async function loadQueue(id){
 // true, false, or 'retry' while a live stream is being reopened.
 let connState = null, connTimer = 0, connWait = 0;
 function setConn(on){
-  connState = on; const n = $('s-conn'); n.className = on === true ? 'on' : 'off';
-  n.textContent = on === true ? '● connected' : on ? '● reconnecting…' : '● offline';
+  connState = on; const n = $('s-conn'); n.className = on === true && !signInGone ? 'on' : 'off';
+  n.textContent = signInGone ? '● signed out' : on === true ? '● connected' : on ? '● reconnecting…' : '● offline';
 }
 // A closed stream does not mean the server has gone: a finished session's
 // replay closes too. Its health says which, and is asked until it answers.
@@ -1209,6 +1219,9 @@ async function connProbe(){
     connTimer = setTimeout(connProbe, connWait); return;
   }
   connTimer = 0; setConn(true);
+  // The server is back, but a restart ends every sign-in.
+  // A 503 is an account store that cannot answer, not a sign-in that ended.
+  if(signedIn && !signInGone) try{ const w = await fetch('/v1/whoami', {credentials:'same-origin', cache:'no-store'}); if(w.ok && !(await w.json()).authenticated) signInEnded(); }catch{}
 }
 
 /* ---------------------------------------------------------------- transcript */
@@ -2128,6 +2141,17 @@ function askAboutSelection(){
   q.style.height = 'auto'; q.style.height = Math.min(q.scrollHeight, 260) + 'px';
 }
 
+// Sign-out is a POST, so that another site cannot sign anyone out with a link.
+function postSignOut(e){
+  const u = new URL(e.currentTarget.href, location.href);
+  if(u.origin !== location.origin || u.pathname !== '/logout') return;
+  e.preventDefault();
+  const f = document.createElement('form'); f.method = 'post'; f.action = '/logout';
+  document.body.appendChild(f); f.submit();
+}
+$('signout').addEventListener('click', postSignOut);
+$('switchuser').addEventListener('click', postSignOut);
+
 /* ---------------------------------------------------------------- boot */
 (async () => {
   welcome();
@@ -2141,6 +2165,7 @@ function askAboutSelection(){
   try{
     const me = await api('/v1/whoami');
     if(me.authenticated){
+      signedIn = true;
       $('who').textContent = me.email || me.name || me.subject || '';
       if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
       if(me.switch_url){ $('switchuser').href = me.switch_url; $('switchuser').hidden = false; }

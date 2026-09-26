@@ -189,7 +189,8 @@ type AuthConfig struct {
 	JWKSURL     string `json:"jwks_url,omitempty"`
 	TenantClaim string `json:"tenant_claim,omitempty"`
 	GroupsClaim string `json:"groups_claim,omitempty"`
-	// RequireGroup gates all access on membership, above tenancy.
+	// RequireGroup gates all access on membership, above tenancy, once the
+	// caller is signed in; sign-in, sign-out and health stay reachable.
 	RequireGroup string `json:"require_group,omitempty"`
 	// AdminGroup gates the administrative routes — settings, users, invites —
 	// rather than the whole server.

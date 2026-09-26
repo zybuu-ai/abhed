@@ -19,6 +19,9 @@ type browserSession struct {
 	// mustChange confines the session to changing its password.
 	mustChange atomic.Bool
 	lastSeen   atomic.Int64 // unix nanoseconds
+	// checked is the last time a local session read its account.
+	checked atomic.Pointer[accountCheck]
+	epoch   atomic.Uint64 // bumped by forget, so a read in flight is not trusted
 }
 
 // SessionInfo describes one browser session for an administrator. ID is a

@@ -762,12 +762,26 @@ const stats = {turns:0, tin:0, tout:0, cached:0, tools:{}, reason:null, compacti
 /* ------------------------------------------------------------------ api */
 async function api(path, opts){
   const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  if(r.status === 401) signInEnded();
   if(!r.ok){
     let msg = r.statusText;
     try { msg = (await r.json()).error || msg; } catch {}
     throw new Error(msg);
   }
   return r.status === 204 ? null : r.json();
+}
+
+// A 401 means the sign-in ended: a restart, a sign-out elsewhere, or an administrator.
+let signInGone = false;
+function signInEnded(){
+  if(signInGone) return; signInGone = true;
+  if(es){ es.close(); es = null; }
+  hideThinking();
+  const t = $('tx'); if(!t) return;
+  const n = document.createElement('div'); n.className = 'note-line';
+  n.textContent = 'Your sign-in ended. ';
+  const a = document.createElement('a'); a.href = '/?return=/console'; a.textContent = 'Sign in again';
+  n.appendChild(a); t.appendChild(n); t.scrollTop = t.scrollHeight;
 }
 
 /* ------------------------------------------------------------------ chrome */
@@ -2035,6 +2049,14 @@ $('stop').onclick = async () => {
 
 // Show who is signed in when authentication is configured. A 401 simply means
 // this deployment runs without it, which is a valid single-tenant setup.
+// Sign-out is a POST, so that another site cannot sign anyone out with a link.
+function postSignOut(e){
+  const u = new URL(e.currentTarget.href, location.href);
+  if(u.origin !== location.origin || u.pathname !== '/logout') return;
+  e.preventDefault();
+  const f = document.createElement('form'); f.method = 'post'; f.action = '/logout';
+  document.body.appendChild(f); f.submit();
+}
 async function whoami(){
   let me = null;
   try{ me = await api('/v1/whoami'); }catch{}
@@ -2056,6 +2078,8 @@ async function whoami(){
   if(me.password_url){ $('pwlink').href = me.password_url; $('pwlink').hidden = false; $('who').href = me.password_url; }
   // Behind a proxy, sign-out is the proxy's, and offered only when configured.
   if(me.sign_out_url){ $('signout').href = me.sign_out_url; $('signout').hidden = false; }
+  $('signout').addEventListener('click', postSignOut);
+  $('switchuser').addEventListener('click', postSignOut);
   try{
     if(sessionStorage.getItem('abhed.must_change') === '1'){
       sessionStorage.removeItem('abhed.must_change');

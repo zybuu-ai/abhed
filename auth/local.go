@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -57,12 +60,19 @@ type UserStore interface {
 	Delete(ctx context.Context, username string) error
 }
 
+// VersionedUserStore is a UserStore that can say cheaply whether any account
+// changed, so a live session re-reads its account only when one did.
+type VersionedUserStore interface {
+	Version() (string, error)
+}
+
 // MemoryUserStore keeps accounts in memory. Adequate for a single-process
 // pilot; a durable deployment should use the Postgres store so accounts
 // survive a restart.
 type MemoryUserStore struct {
 	mu    sync.RWMutex
 	users map[string]*User
+	gen   atomic.Uint64
 }
 
 func NewMemoryUserStore() *MemoryUserStore {
@@ -85,6 +95,7 @@ func (m *MemoryUserStore) Put(_ context.Context, u *User) error {
 	defer m.mu.Unlock()
 	copy := *u
 	m.users[strings.ToLower(u.Username)] = &copy
+	m.gen.Add(1)
 	return nil
 }
 
@@ -102,8 +113,18 @@ func (m *MemoryUserStore) List(_ context.Context) ([]*User, error) {
 func (m *MemoryUserStore) Delete(_ context.Context, username string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.users, strings.ToLower(username))
+	key := strings.ToLower(username)
+	if _, found := m.users[key]; !found {
+		return ErrNoSuchUser
+	}
+	delete(m.users, key)
+	m.gen.Add(1)
 	return nil
+}
+
+// Version changes with every write.
+func (m *MemoryUserStore) Version() (string, error) {
+	return strconv.FormatUint(m.gen.Load(), 10), nil
 }
 
 // LocalAuth handles username/password sign-in.
@@ -149,9 +170,10 @@ func (l *LocalAuth) reap() {
 
 var validUsername = regexp.MustCompile(`^[a-zA-Z0-9._-]{2,64}$`)
 
-// CreateUser adds an account.
-func (l *LocalAuth) CreateUser(ctx context.Context, u User, password string) error {
-	if !validUsername.MatchString(u.Username) {
+// CheckNewUser reports why CreateUser would refuse this username and
+// password, without creating anything.
+func (l *LocalAuth) CheckNewUser(ctx context.Context, username, password string) error {
+	if !validUsername.MatchString(username) {
 		return fmt.Errorf("username must be 2-64 characters of letters, digits, dot, dash or underscore")
 	}
 	// Ten characters is a deliberate floor: short enough that people will not
@@ -159,8 +181,16 @@ func (l *LocalAuth) CreateUser(ctx context.Context, u User, password string) err
 	if len(password) < 10 {
 		return ErrWeakPassword
 	}
-	if existing, _ := l.Store.Get(ctx, u.Username); existing != nil {
+	if existing, _ := l.Store.Get(ctx, username); existing != nil {
 		return ErrUserExists
+	}
+	return nil
+}
+
+// CreateUser adds an account.
+func (l *LocalAuth) CreateUser(ctx context.Context, u User, password string) error {
+	if err := l.CheckNewUser(ctx, u.Username, password); err != nil {
+		return err
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -254,29 +284,147 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	})
 }
 
-// FromCookie resolves a session cookie to an identity.
+// FromCookie resolves a session cookie to an identity, as the account stands
+// now rather than as it stood at sign-in.
 func (l *LocalAuth) FromCookie(r *http.Request) (*Identity, bool) {
-	s, ok := l.session(r)
+	sid, s, ok := l.lookup(r)
 	if !ok {
 		return nil, false
 	}
+	id, err := l.current(r.Context(), sid, s)
+	if err != nil {
+		return nil, false
+	}
 	s.lastSeen.Store(time.Now().UnixNano())
-	return s.Identity, true
+	return id, true
+}
+
+// ErrAccountUnchecked is Verify's answer when the account store cannot be read.
+var ErrAccountUnchecked = errors.New("could not check your sign-in; try again shortly")
+
+// errSessionGone is current's answer for a session that has ended.
+var errSessionGone = errors.New("session ended")
+
+// Verify re-reads the account behind the request's session, if it names one.
+// It returns ErrAccountUnchecked when the store cannot answer, so a caller can
+// tell an outage from a sign-in that ended; any other outcome is nil.
+func (l *LocalAuth) Verify(r *http.Request) error {
+	sid, s, ok := l.lookup(r)
+	if !ok {
+		return nil
+	}
+	if _, err := l.current(r.Context(), sid, s); errors.Is(err, ErrAccountUnchecked) {
+		return err
+	}
+	return nil
+}
+
+// HasSession reports whether the request's cookie names a live session,
+// without reading its account.
+func (l *LocalAuth) HasSession(r *http.Request) bool {
+	_, _, ok := l.lookup(r)
+	return ok
+}
+
+// How long a session trusts its last reading of its account; a versioned store
+// is re-read as soon as it changes, and after the longer bound regardless.
+const (
+	accountRecheck          = 2 * time.Second
+	accountRecheckVersioned = 30 * time.Second
+)
+
+// accountCheck is when a session last read its account, and the store
+// version it read.
+type accountCheck struct {
+	version string
+	at      time.Time
+}
+
+// current re-reads a session's account when it may have changed, so a change
+// made anywhere applies on the next request; a removed account ends the session.
+func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) (*Identity, error) {
+	l.mu.RLock()
+	old := s.Identity
+	l.mu.RUnlock()
+	if old == nil {
+		return nil, errSessionGone
+	}
+	if l.Store == nil {
+		return old, nil
+	}
+	now := time.Now()
+	version, maxAge := "", accountRecheck
+	if v, ok := l.Store.(VersionedUserStore); ok {
+		if got, err := v.Version(); err == nil {
+			version, maxAge = got, accountRecheckVersioned
+		}
+	}
+	if c := s.checked.Load(); c != nil && c.version == version && now.Sub(c.at) < maxAge {
+		return old, nil
+	}
+	epoch := s.epoch.Load()
+	u, err := l.Store.Get(ctx, old.Subject)
+	if errors.Is(err, ErrNoSuchUser) || (err == nil && u == nil) {
+		l.mu.Lock()
+		delete(l.sessions, sid)
+		l.mu.Unlock()
+		return nil, errSessionGone
+	}
+	if err != nil {
+		// Refused, not ended: a store that cannot answer has not removed anyone.
+		return nil, ErrAccountUnchecked
+	}
+	id := &Identity{
+		Subject: u.Username, Email: u.Email, Name: u.Name,
+		Tenant: u.Tenant, Groups: slices.Clone(u.Groups),
+		IssuedAt: old.IssuedAt, Expires: old.Expires,
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, live := l.sessions[sid]; !live {
+		return nil, errSessionGone
+	}
+	s.Identity = id
+	s.mustChange.Store(u.MustChange)
+	// Not trusted if forget ran during the read: that read may predate the change.
+	if s.epoch.Load() == epoch {
+		s.checked.Store(&accountCheck{version: version, at: now})
+	}
+	return id, nil
 }
 
 // session finds the live session a request's cookie names.
 func (l *LocalAuth) session(r *http.Request) (*browserSession, bool) {
+	_, s, ok := l.lookup(r)
+	return s, ok
+}
+
+// lookup finds the live session a request's cookie names, and its key.
+func (l *LocalAuth) lookup(r *http.Request) (string, *browserSession, bool) {
 	c, err := r.Cookie(l.CookieName)
 	if err != nil {
-		return nil, false
+		return "", nil, false
 	}
 	l.mu.RLock()
 	s, found := l.sessions[c.Value]
 	l.mu.RUnlock()
 	if !found || time.Now().After(s.Expires) {
-		return nil, false
+		return "", nil, false
 	}
-	return s, true
+	return c.Value, s, true
+}
+
+// forget makes every live session of username re-read its account on its
+// next request, for a change made through this process.
+func (l *LocalAuth) forget(username string) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, s := range l.sessions {
+		if s.Identity != nil && strings.EqualFold(s.Identity.Subject, username) {
+			s.epoch.Add(1)
+			s.checked.Store(nil)
+		}
+	}
 }
 
 // MustChangePassword reports whether the request's session belongs to an
@@ -468,10 +616,8 @@ func (l *LocalAuth) ListUsers(ctx context.Context) ([]*User, error) {
 // admin toggle that overwrote Groups would silently discard whatever else an
 // OIDC deployment or an operator had put there.
 //
-// Existing sessions are NOT re-issued. A user promoted while signed in gets
-// their new rights on next sign-in, because the session Identity was copied at
-// issue time (see issue). That is the safe direction — a demotion likewise
-// takes effect at the next sign-in rather than mid-request.
+// Live sessions pick the change up on their next request (see current); a
+// caller removing rights should also end them with RevokeUser.
 func (l *LocalAuth) SetGroups(ctx context.Context, username, group string, member bool) error {
 	u, err := l.Store.Get(ctx, username)
 	if err != nil || u == nil {
@@ -492,7 +638,11 @@ func (l *LocalAuth) SetGroups(ctx context.Context, username, group string, membe
 		out = append(out, group)
 	}
 	u.Groups = out
-	return l.Store.Put(ctx, u)
+	if err := l.Store.Put(ctx, u); err != nil {
+		return err
+	}
+	l.forget(u.Username)
+	return nil
 }
 
 // RevokeUser drops every live session belonging to a username.

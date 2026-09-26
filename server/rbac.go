@@ -32,11 +32,8 @@ func (s *Server) adminGroup() string {
 
 // Admin wraps a handler so only members of the admin group reach it.
 //
-// Registered per-route rather than around the mux. Config.Auth.RequireGroup
-// wraps the entire handler, which is the wrong granularity for this: it also
-// covers the paths the auth layer deliberately made public, so a deployment
-// that sets it locks users out of the sign-in page they need in order to
-// acquire the group.
+// Registered per-route rather than around the mux, as Config.Auth.RequireGroup
+// is: that one says who may use the deployment at all, this who may change it.
 //
 // Ordering works out because auth.Middleware.Wrap sits outside the mux: by the
 // time a route is dispatched, the identity is already in the context. Exported

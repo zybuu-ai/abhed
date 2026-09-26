@@ -36,7 +36,7 @@ sets = {
     'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){'],
-    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){',
+    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function signInEnded(){',
           'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
