@@ -79,7 +79,7 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 				note = strings.TrimSpace(diffNote + "\n" + note)
 			}
 			s.recordChange(path)
-			if err := atomicWrite(path, []byte(a.NewString), 0o644); err != nil {
+			if err := s.atomicWrite(path, []byte(a.NewString), 0o644); err != nil {
 				return errf("Create failed for %s: %v", a.Path, err)
 			}
 			s.MarkRead(path, a.NewString)
@@ -101,7 +101,7 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("%s changed on disk since you read it. Re-read it before editing.", a.Path)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := s.readFile(path)
 	if err != nil {
 		return errf("Cannot read %s: %v", a.Path, err)
 	}
@@ -137,7 +137,7 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 
 	mode := info.Mode().Perm()
 	s.recordChange(path)
-	if err := atomicWrite(path, []byte(updated), mode); err != nil {
+	if err := s.atomicWrite(path, []byte(updated), mode); err != nil {
 		return errf("Write failed for %s: %v", a.Path, err)
 	}
 	s.MarkRead(path, updated)

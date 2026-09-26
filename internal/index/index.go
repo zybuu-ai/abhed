@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Doc is one indexed chunk.
@@ -142,7 +144,15 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 	}
 
 	var docs []Doc
-	err := filepath.WalkDir(ix.root, func(path string, d os.DirEntry, err error) error {
+	state := tools.NewStateSet(ix.root)
+	// Files are read under the root held open, so a folder swapped for a link
+	// during the walk cannot lead a read out of it.
+	within, err := state.Confine(ix.root)
+	if err != nil {
+		return err
+	}
+	defer within.Close()
+	err = filepath.WalkDir(ix.root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the index
 		}
@@ -150,9 +160,14 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if path != ix.root && skipDirs[d.Name()] {
+			if path != ix.root && (skipDirs[d.Name()] || state.HasEntry(d)) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Links are not followed, since one can lead out of the workspace or
+		// into Abhed's state, and nor is a state file under another name.
+		if d.Type()&os.ModeSymlink != 0 || state.HasEntry(d) {
 			return nil
 		}
 		if !exts[strings.ToLower(filepath.Ext(path))] {
@@ -162,7 +177,11 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 		if err != nil || info.Size() > opts.MaxFileSize {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the index
 		}
-		content, err := os.ReadFile(path)
+		rel, err := filepath.Rel(ix.root, path)
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the index
+		}
+		content, err := within.ReadEntry(rel, info)
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the index
 		}
@@ -201,8 +220,14 @@ func (ix *Index) Update(ctx context.Context, path string) error {
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("index: %s is outside the indexed root", path)
 		}
+		if real := tools.RealPath(abs); !strings.HasPrefix(real+string(filepath.Separator), tools.RealPath(ix.root)+string(filepath.Separator)) {
+			return fmt.Errorf("index: %s leads outside the indexed root", path)
+		}
+		if tools.IsState(abs, ix.root) {
+			return fmt.Errorf("index: %s is Abhed's own state", path)
+		}
 	}
-	content, err := os.ReadFile(path)
+	content, err := ix.readConfined(path)
 	if err != nil {
 		return err
 	}
@@ -221,6 +246,24 @@ func (ix *Index) Update(ctx context.Context, path string) error {
 	ix.docs = kept
 	ix.rebuildLocked()
 	return nil
+}
+
+// readConfined reads a file under the root, with links followed only inside
+// it and Abhed's state refused; without a root it reads as asked.
+func (ix *Index) readConfined(path string) ([]byte, error) {
+	if ix.root == "" {
+		return os.ReadFile(path)
+	}
+	c, err := tools.NewStateSet(ix.root).Confine(ix.root, tools.RealPath(ix.root))
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return c.ReadFile(abs)
 }
 
 // rebuildLocked recomputes the derived structures. Caller holds the write lock.

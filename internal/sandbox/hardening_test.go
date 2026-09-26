@@ -33,6 +33,7 @@ func TestContainerFlagsForUntrustedSessions(t *testing.T) {
 		{"--ulimit fsize=", "an unbounded write fills the host disk"},
 		{"--cpus", "one session must not be able to starve every other"},
 		{"--ipc private", "no shared memory with any other session"},
+		{"--hostname abhed", "the host's name stays hidden, and a host UTS namespace is refused"},
 		{"--rm", "the container is destroyed with the command; nothing survives it"},
 	} {
 		if !strings.Contains(got, w.flag) {
@@ -47,6 +48,23 @@ func TestContainerFlagsForUntrustedSessions(t *testing.T) {
 	for _, forbidden := range []string{"--privileged", "--cap-add", "-v /:", "/var/run/docker.sock"} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("container grants %q, which defeats the sandbox", forbidden)
+		}
+	}
+}
+
+// Podman reads PID and UTS from containers.conf, so they are pinned there;
+// Docker refuses "private" for both and never shares them unasked.
+func TestPodmanPinsPIDAndUTS(t *testing.T) {
+	for _, rt := range []struct {
+		runtime string
+		want    bool
+	}{{"/usr/bin/podman", true}, {"docker", false}} {
+		c := &Container{runtime: rt.runtime, policy: Policy{Workspace: "/w"}}
+		got := strings.Join(c.Command(context.Background(), "/w", "x").Args, " ")
+		for _, f := range []string{"--pid private", "--uts private"} {
+			if strings.Contains(got, f) != rt.want {
+				t.Errorf("%s: %q present = %v, want %v", rt.runtime, f, !rt.want, rt.want)
+			}
 		}
 	}
 }

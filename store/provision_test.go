@@ -128,8 +128,13 @@ func TestRuntimeRoleCanDoItsJob(t *testing.T) {
 	must("save checkpoint", p.SaveCheckpoint(ctx, id, 1, "a.go", []byte("before")))
 	apID, err := p.AskApproval(ctx, Approval{SessionID: id, Tool: "bash"})
 	must("ask approval", err)
-	_, err = p.AnswerApproval(ctx, apID, true, "reviewer")
+	_, err = p.AnswerApproval(ctx, apID, true, "bash(ls *)", "reviewer")
 	must("answer approval", err)
+	_, _, _, err = p.ApprovalResult(ctx, apID)
+	must("read approval result", err)
+	must("end approval", p.EndApproval(ctx, apID))
+	_, _, err = p.PendingApproval(ctx, id)
+	must("read pending approval", err)
 	if ok, err := p.ClaimResume(ctx, id); err != nil || !ok {
 		t.Fatalf("claim resume = %v, %v", ok, err)
 	}

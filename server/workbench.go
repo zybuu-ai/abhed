@@ -32,8 +32,11 @@ const (
 )
 
 // viewerSkip is never listed and never served. .git and node_modules are
-// noise; .abhed is this server's own config and password hashes.
+// noise; .abhed is this server's own config and password hashes. Names are
+// matched without case, as a case-insensitive disk opens them.
 var viewerSkip = map[string]bool{".git": true, "node_modules": true, ".abhed": true}
+
+func skipInView(name string) bool { return viewerSkip[strings.ToLower(name)] }
 
 var (
 	errNotInView = errors.New("file not found")
@@ -42,9 +45,11 @@ var (
 
 // workspaceView is one request's scoped, policy-checked window on the workspace.
 type workspaceView struct {
-	sess *tools.Session
-	pol  *policy.Engine
-	root *os.Root
+	sess  *tools.Session
+	pol   *policy.Engine
+	root  *os.Root
+	state *tools.StateSet
+	conf  *tools.Confined
 }
 
 func (s *Server) openView() (*workspaceView, error) {
@@ -60,10 +65,37 @@ func (s *Server) openView() (*workspaceView, error) {
 	}
 	// The mode decides how a mutation gets approved, and a viewer makes none.
 	// What is left of the evaluation is the hooks and the deny and ask rules.
-	return &workspaceView{sess: sess, pol: s.newPolicy(policy.ModeDefault), root: root}, nil
+	return &workspaceView{sess: sess, pol: s.newPolicy(policy.ModeDefault), root: root, state: sess.FreezeState()}, nil
 }
 
-func (v *workspaceView) Close() { _ = v.root.Close() }
+func (v *workspaceView) Close() {
+	_ = v.root.Close()
+	if v.conf != nil {
+		v.conf.Close()
+	}
+}
+
+// confined is the view's root for opens that must stay inside it and away
+// from Abhed's state, opened on first use.
+func (v *workspaceView) confined() *tools.Confined {
+	if v.conf == nil {
+		c, err := v.state.Confine(v.sess.Root)
+		if err != nil {
+			return nil
+		}
+		v.conf = c
+	}
+	return v.conf
+}
+
+// readAll reads a whole file of the view, as confined as read.
+func (v *workspaceView) readAll(rel string) ([]byte, error) {
+	c := v.confined()
+	if c == nil {
+		return nil, errNotInView
+	}
+	return c.ReadFile(filepath.Join(v.sess.Root, rel))
+}
 
 // resolve turns a client path into one relative to the workspace root, with
 // symlinks followed, or refuses it.
@@ -82,10 +114,14 @@ func (v *workspaceView) resolve(p string) (string, error) {
 	}
 	if rel != "." {
 		for _, part := range strings.Split(rel, string(filepath.Separator)) {
-			if viewerSkip[part] {
+			if skipInView(part) {
 				return "", errNotInView
 			}
 		}
+	}
+	// Abhed's state by any spelling or link, judged as the agent's read is.
+	if v.state.Has(clean) || v.state.Has(real) {
+		return "", errNotInView
 	}
 	info, err := os.Stat(real)
 	dir := err == nil && info.IsDir()
@@ -113,22 +149,8 @@ func (v *workspaceView) allowed(abs string, dir bool) bool {
 	return true
 }
 
-// realPath follows symlinks in the part of p that exists, so a path to a
-// deleted file still lands under the resolved root.
-func realPath(p string) string {
-	rest := ""
-	for cur := p; ; {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return p
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
-	}
-}
+// realPath follows symlinks in the part of p that exists; see tools.RealPath.
+func realPath(p string) string { return tools.RealPath(p) }
 
 func writeViewError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errDenied) {
@@ -188,6 +210,10 @@ func (s *Server) treeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer dir.Close()
+	if info, err := dir.Stat(); err != nil || v.state.HasFile(info) {
+		writeViewError(w, errNotInView)
+		return
+	}
 	listed, err := dir.ReadDir(maxDirEntries + 1)
 	if err != nil && !errors.Is(err, io.EOF) {
 		writeViewError(w, errNotInView)
@@ -199,7 +225,7 @@ func (s *Server) treeSession(w http.ResponseWriter, r *http.Request) {
 		listed, out.Truncated = listed[:maxDirEntries], true
 	}
 	for _, e := range listed {
-		if viewerSkip[e.Name()] {
+		if skipInView(e.Name()) {
 			continue
 		}
 		child := filepath.Join(rel, e.Name())
@@ -294,6 +320,22 @@ func (v *workspaceView) read(rel string) ([]byte, int64, error) {
 		return nil, 0, err
 	}
 	if !info.Mode().IsRegular() {
+		return nil, 0, errNotInView
+	}
+	// The path was judged before the open, and a link can be swapped in
+	// between. What was opened is judged too: it must be what the confined
+	// open finds for the same path, following links only inside the root.
+	c := v.confined()
+	if c == nil {
+		return nil, 0, errNotInView
+	}
+	g, err := c.OpenRead(filepath.Join(v.sess.Root, rel))
+	if err != nil {
+		return nil, 0, errNotInView
+	}
+	checked, err := g.Stat()
+	_ = g.Close()
+	if err != nil || v.state.HasFile(info) || !os.SameFile(info, checked) {
 		return nil, 0, errNotInView
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxViewBytes))

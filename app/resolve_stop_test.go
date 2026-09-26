@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -36,18 +35,8 @@ func TestResolveKeepsTheWorktreeOfAFailedOrStoppedRun(t *testing.T) {
 	}{
 		{"failed", func(context.Context, string) error { return errors.New("the model endpoint went away") }, 1},
 		{"commit failed", func(_ context.Context, dir string) error {
-			// A change, and a hook that refuses to commit it.
-			hooks := filepath.Join(dir, ".git-hooks")
-			if err := os.MkdirAll(hooks, 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-				return err
-			}
-			if out, err := exec.Command("git", "-C", dir, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
-				return errors.New(string(out))
-			}
-			return os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o600)
+			// A change holding a repository of its own, which is not committed.
+			return os.MkdirAll(filepath.Join(dir, "sub", ".git"), 0o755)
 		}, 1},
 		{"stopped", func(ctx context.Context, _ string) error {
 			_ = syscall.Kill(os.Getpid(), syscall.SIGINT) // this test process, whose resolve is catching it

@@ -263,3 +263,43 @@ func tiersOf(hits []Hit) []string {
 	}
 	return out
 }
+
+// The index reads no file through a link and no state file under another
+// name: either could put a password hash or a key into search results.
+func TestBuildDoesNotFollowLinksOutOfBounds(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	users := filepath.Join(dir, ".abhed", "users.json")
+	if err := os.WriteFile(users, []byte("zzsecrethash\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(outside, "id_rsa")
+	if err := os.WriteFile(key, []byte("zzsecretkey\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(users, filepath.Join(dir, "u1.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(key, filepath.Join(dir, "key.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(users, filepath.Join(dir, "hard.txt")); err != nil {
+		t.Fatal(err)
+	}
+	ix := New(dir)
+	if err := ix.Build(context.Background(), DefaultBuildOptions()); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"zzsecrethash", "zzsecretkey"} {
+		hits, _ := ix.Search(context.Background(), q, 10)
+		if len(hits) > 0 {
+			t.Errorf("%s was indexed: %+v", q, hits[0])
+		}
+	}
+	if err := ix.Update(context.Background(), filepath.Join(dir, "key.txt")); err == nil {
+		t.Error("Update read through a link out of the root")
+	}
+}

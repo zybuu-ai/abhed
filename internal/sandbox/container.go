@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +122,11 @@ func (c *Container) Describe() string {
 	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, Image)
 }
 
+// engine is the runtime's program name, such as docker or podman.
+func (c *Container) engine() string {
+	return filepath.Base(c.runtime)
+}
+
 // runArgs is everything up to the image: the confinement both a command and
 // a shell run under. It begins with "run --rm -i".
 func (c *Container) runArgs(cwd string) []string {
@@ -162,9 +168,14 @@ func (c *Container) runArgs(cwd string) []string {
 	// session that pins every core is indistinguishable from an outage.
 	args = append(args, "--cpus", "2")
 
-	// No IPC or UTS sharing with anything else, and a private PID namespace,
-	// so one session cannot see or signal another's processes.
-	args = append(args, "--ipc", "private", "--uts", "private")
+	// No IPC sharing, and a hostname of its own: the engine refuses a hostname
+	// with the host's UTS namespace, so the flag also fails closed.
+	args = append(args, "--ipc", "private", "--hostname", "abhed")
+	// Docker's PID and UTS are always private and it refuses "private"; Podman
+	// takes both from containers.conf, which could say host, so pin them there.
+	if c.engine() == "podman" {
+		args = append(args, "--pid", "private", "--uts", "private")
+	}
 
 	if !c.policy.AllowNetwork {
 		args = append(args, "--network", "none")

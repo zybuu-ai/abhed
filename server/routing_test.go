@@ -122,6 +122,8 @@ type fakeApprovals struct {
 	mu        sync.Mutex
 	pending   map[string]store.Approval
 	answered  map[string]bool
+	scopes    map[string]string
+	ended     map[string]bool
 	askErr    error
 	answerErr error
 	asked     int
@@ -134,7 +136,8 @@ func (f *fakeApprovals) askedCount() int {
 }
 
 func newFakeApprovals() *fakeApprovals {
-	return &fakeApprovals{pending: map[string]store.Approval{}, answered: map[string]bool{}}
+	return &fakeApprovals{pending: map[string]store.Approval{}, answered: map[string]bool{},
+		scopes: map[string]string{}, ended: map[string]bool{}}
 }
 
 func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string, error) {
@@ -149,30 +152,41 @@ func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string
 	return a.ID, nil
 }
 
-func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bool, _ string) (bool, error) {
+func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bool, scope, _ string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.answerErr != nil {
 		return false, f.answerErr
 	}
-	if _, already := f.answered[id]; already {
+	if _, already := f.answered[id]; already || f.ended[id] {
 		return false, nil
 	}
-	f.answered[id] = approved
+	f.answered[id], f.scopes[id] = approved, scope
 	return true, nil
 }
 
-func (f *fakeApprovals) ApprovalResult(_ context.Context, id string) (bool, bool, error) {
+func (f *fakeApprovals) ApprovalResult(_ context.Context, id string) (bool, bool, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, ok := f.answered[id]
-	return a, ok, nil
+	return a, ok, f.scopes[id], nil
+}
+
+func (f *fakeApprovals) EndApproval(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ended[id] = true
+	return nil
 }
 
 func (f *fakeApprovals) PendingApproval(_ context.Context, sessionID string) (store.Approval, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, ok := f.pending[sessionID]
+	if _, answered := f.answered[a.ID]; answered {
+		return store.Approval{}, false, nil
+	}
+	a.Ended = f.ended[a.ID]
 	return a, ok, nil
 }
 
@@ -205,7 +219,7 @@ func TestApprovalIsRecordedDurably(t *testing.T) {
 		for f.askedCount() == 0 {
 			time.Sleep(time.Millisecond)
 		}
-		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "reviewer")
+		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "", "reviewer")
 	}()
 
 	ok, err := l.Approve(context.Background(), "bash",
@@ -238,29 +252,40 @@ func TestApproveStillWorksWhenRecordingFails(t *testing.T) {
 	}
 }
 
-// An "always allow" scope is remembered whichever path answered.
+// An "always allow" scope is remembered whichever path answered, and only
+// when the answer chose it: "approve once" read from the row stays once.
 func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
-	f := newFakeApprovals()
-	l := &liveSession{
-		ID:      "s-3",
-		allowed: map[string]bool{}, durable: f,
-	}
-	go func() {
-		for f.askedCount() == 0 {
-			time.Sleep(time.Millisecond)
-		}
-		_, _ = f.AnswerApproval(context.Background(), "ap-test", true, "reviewer")
-	}()
+	for _, c := range []struct {
+		name, answer string
+		remembered   bool
+	}{
+		{"always allow", "bash(go test*)", true},
+		{"approve once", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeApprovals()
+			l := &liveSession{
+				ID:      "s-3",
+				allowed: map[string]bool{}, durable: f,
+			}
+			go func() {
+				for f.askedCount() == 0 {
+					time.Sleep(time.Millisecond)
+				}
+				_, _ = f.AnswerApproval(context.Background(), "ap-test", true, c.answer, "reviewer")
+			}()
 
-	if _, err := l.Approve(context.Background(), "bash", []byte(`{}`),
-		policy.Result{Scope: "bash(go test*)"}); err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
-	l.mu.Lock()
-	remembered := l.allowed["bash(go test*)"]
-	l.mu.Unlock()
-	if !remembered {
-		t.Fatal("the scope was not remembered, so the next matching call re-prompts")
+			if ok, err := l.Approve(context.Background(), "bash", []byte(`{}`),
+				policy.Result{Scope: "bash(go test*)"}); err != nil || !ok {
+				t.Fatalf("Approve: %v, %v", ok, err)
+			}
+			l.mu.Lock()
+			remembered := l.allowed["bash(go test*)"]
+			l.mu.Unlock()
+			if remembered != c.remembered {
+				t.Fatalf("remembered = %v, want %v", remembered, c.remembered)
+			}
+		})
 	}
 }
 

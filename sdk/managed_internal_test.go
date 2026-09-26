@@ -184,3 +184,31 @@ func TestNoManagedLayerIsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// Options.Sandbox builds the configured tier, and a tier the host cannot give
+// fails New rather than leaving bash on the host.
+func TestSandboxOptionBuildsTheConfiguredTier(t *testing.T) {
+	managedFile(t, "")
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".abhed", "config.json"), []byte(`{"sandbox": {"min_tier": "vm"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Workspace: dir, ConfigDir: dir, Provider: testProvider, Sandbox: true}
+	a, err := New(context.Background(), opts)
+	if err == nil {
+		a.Close()
+		t.Skip("this host can give the vm tier")
+	}
+	if !strings.Contains(err.Error(), "minimum tier") {
+		t.Fatalf("want the tier refused, got %v", err)
+	}
+	opts.Sandbox = false
+	a, err = New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("without Sandbox the configured tier is not built: %v", err)
+	}
+	a.Close()
+}

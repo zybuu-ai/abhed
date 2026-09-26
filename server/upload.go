@@ -3,10 +3,10 @@ package server
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -143,12 +143,16 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// under the same boundary as any other workspace file, with no special
 	// case in the policy engine.
 	dir := filepath.Join(s.opts.Workspace, uploadDirName, sessionID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		WriteError(w, http.StatusInternalServerError, "create upload directory: "+err.Error())
-		return
-	}
 	dest := filepath.Join(dir, name)
-	if err := os.WriteFile(dest, data, 0o600); err != nil {
+	// The upload folder is in the workspace, where the agent can plant a
+	// link: a write through one could replace Abhed's state or leave it. The
+	// file is created new under the workspace held open as a root, so no
+	// link, even one swapped in now, leads it out or into the state.
+	if err := s.createUpload(dest, data); err != nil {
+		if errors.Is(err, tools.ErrState) || errors.Is(err, tools.ErrOutside) {
+			WriteError(w, http.StatusForbidden, "the upload folder leads outside the workspace or into Abhed's state; remove the link in "+uploadDirName)
+			return
+		}
 		WriteError(w, http.StatusInternalServerError, "save upload: "+err.Error())
 		return
 	}
@@ -273,4 +277,21 @@ func isProbablyBinary(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// createUpload writes a new upload under the workspace root.
+func (s *Server) createUpload(dest string, data []byte) error {
+	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+	if err != nil {
+		return err
+	}
+	c, err := tools.NewStateSet(s.opts.Workspace).Confine(root, s.opts.Workspace)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := c.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return err
+	}
+	return c.CreateNew(dest, data, 0o600)
 }

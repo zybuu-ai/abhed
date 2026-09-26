@@ -166,7 +166,8 @@ POST /v1/sessions/{id}/approve       {approved, scope?, request_id?} → on the 
                                        Retry-After too many answers waiting; 503 row not
                                        written in time. Elsewhere: 421
                                        for a bound answer, 204 for an unbound one recorded on
-                                       the store (request_id: the action.requested event's id)
+                                       the store, 409 when no node runs the session or its
+                                       request ended (request_id: the action.requested event's id)
 POST /v1/sessions/{id}/compact       → 202
 GET  /v1/sessions/{id}/replay        → full event list
 DELETE /v1/sessions/{id}             → end session

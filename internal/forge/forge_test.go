@@ -146,6 +146,9 @@ func TestResolveWorksInAWorktreeAndPushes(t *testing.T) {
 		t.Skip("git is not installed")
 	}
 	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	noWritableAreas(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	run(t, "", "init", "-q", "--bare", remote)
 	repo := filepath.Join(t.TempDir(), "repo")
@@ -177,14 +180,17 @@ func TestResolveWorksInAWorktreeAndPushes(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(repo, "a.txt")); string(got) != "one\n" {
 		t.Fatalf("the checkout was touched: %q", got)
 	}
-	if err := w.Push(ctx, "origin", "Basic dXNlcjp0b2s="); err != nil {
+	// The production path pushes over https only; the test repository is
+	// local, so file:// is allowed for this push alone.
+	if err := push(ctx, repo, w.Dir, "file://"+remote, "https://git.example/", w.Branch, "Basic dXNlcjp0b2s=", "",
+		[]string{"GIT_ALLOW_PROTOCOL=https:file"}); err != nil {
 		t.Fatal(err)
 	}
 	if out := run(t, "", "--git-dir", remote, "branch", "--list", "abhed/issue-5"); !strings.Contains(out, "abhed/issue-5") {
 		t.Fatalf("branch not on the remote: %q", out)
 	}
-	if !strings.Contains(w.Diff(ctx), "a.txt") {
-		t.Fatalf("diff: %q", w.Diff(ctx))
+	if !strings.Contains(w.Diff(ctx, repo), "a.txt") {
+		t.Fatalf("diff: %q", w.Diff(ctx, repo))
 	}
 	w.Cleanup(ctx, repo)
 	if _, err := os.Stat(w.Dir); err == nil {

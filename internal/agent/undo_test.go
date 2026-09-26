@@ -12,7 +12,7 @@ func TestUndoRestoresModifiedFile(t *testing.T) {
 	p := filepath.Join(dir, "a.go")
 	os.WriteFile(p, []byte("original\n"), 0o644)
 
-	u := NewUndoLog()
+	u := newTestUndo()
 	u.BeginTurn()
 	before, _ := os.ReadFile(p)
 	u.Record(p, before, true)
@@ -36,7 +36,7 @@ func TestUndoRemovesCreatedFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "new.go")
 
-	u := NewUndoLog()
+	u := newTestUndo()
 	u.BeginTurn()
 	u.Record(p, nil, false) // did not exist
 	os.WriteFile(p, []byte("created\n"), 0o644)
@@ -57,7 +57,7 @@ func TestUndoRemovesCreatedFile(t *testing.T) {
 func TestUndoRevertsWholeTurn(t *testing.T) {
 	dir := t.TempDir()
 	var paths []string
-	u := NewUndoLog()
+	u := newTestUndo()
 	u.BeginTurn()
 	for _, name := range []string{"a.go", "b.go", "c.go"} {
 		p := filepath.Join(dir, name)
@@ -89,7 +89,7 @@ func TestUndoIsPerTurn(t *testing.T) {
 	p := filepath.Join(dir, "a.go")
 	os.WriteFile(p, []byte("v1\n"), 0o644)
 
-	u := NewUndoLog()
+	u := newTestUndo()
 
 	u.BeginTurn()
 	u.Record(p, []byte("v1\n"), true)
@@ -122,7 +122,7 @@ func TestUndoUsesEarliestCheckpointWithinTurn(t *testing.T) {
 	p := filepath.Join(dir, "a.go")
 	os.WriteFile(p, []byte("original\n"), 0o644)
 
-	u := NewUndoLog()
+	u := newTestUndo()
 	u.BeginTurn()
 	u.Record(p, []byte("original\n"), true)
 	os.WriteFile(p, []byte("intermediate\n"), 0o644)
@@ -137,7 +137,7 @@ func TestUndoUsesEarliestCheckpointWithinTurn(t *testing.T) {
 }
 
 func TestUndoOnEmptyLog(t *testing.T) {
-	u := NewUndoLog()
+	u := newTestUndo()
 	if _, err := u.Undo(); err == nil {
 		t.Fatal("expected an error with nothing to undo")
 	}
@@ -155,7 +155,7 @@ func TestNilUndoLogIsSafe(t *testing.T) {
 }
 
 func TestChangedListsFiles(t *testing.T) {
-	u := NewUndoLog()
+	u := newTestUndo()
 	u.BeginTurn()
 	u.Record("/w/b.go", []byte("x"), true)
 	u.Record("/w/a.go", []byte("y"), true)
@@ -171,7 +171,7 @@ func TestChangedListsFiles(t *testing.T) {
 }
 
 func TestPersistHookCalled(t *testing.T) {
-	u := NewUndoLog()
+	u := newTestUndo()
 	var persisted int
 	u.Persist = func(cp Checkpoint) error { persisted++; return nil }
 
@@ -186,11 +186,36 @@ func TestPersistHookCalled(t *testing.T) {
 
 // A persistence failure must not prevent the edit from being recorded.
 func TestPersistFailureIsNotFatal(t *testing.T) {
-	u := NewUndoLog()
+	u := newTestUndo()
 	u.Persist = func(cp Checkpoint) error { return os.ErrPermission }
 	u.BeginTurn()
 	u.Record("/w/a.go", []byte("x"), true)
 	if u.Pending() != 1 {
 		t.Fatal("checkpoint should still be recorded in memory")
+	}
+}
+
+// newTestUndo writes and removes by path, for tests of the log itself; a
+// session's RestoreFile and RemoveFile are what the CLI and server pass.
+func newTestUndo() *UndoLog {
+	return NewUndoLog(func(p string, b []byte) error { return os.WriteFile(p, b, 0o600) }, os.Remove)
+}
+
+// Undo without its write and remove functions refuses rather than writing
+// or removing by path.
+func TestUndoNeedsItsFileFunctions(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(p, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u := NewUndoLog(nil, nil)
+	u.BeginTurn()
+	u.Record(p, []byte("original"), true)
+	if _, err := u.Undo(); err == nil {
+		t.Fatal("undo wrote without a write function")
+	}
+	if got, _ := os.ReadFile(p); string(got) != "changed" {
+		t.Fatalf("the file was written by path: %q", got)
 	}
 }

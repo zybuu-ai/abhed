@@ -156,7 +156,9 @@ ABHED_DATABASE_URL='postgres://abhed_runtime:…@db/abhed' abhed serve
 `abhed migrate` applies the schema as the owner and grants the runtime role
 exactly what the server uses: `INSERT` and `SELECT` on `events`, and nothing
 that changes or removes one. Keep the owner's credentials off the host that
-runs the server; whoever holds them can alter the record.
+runs the server; whoever holds them can alter the record. After an upgrade
+that adds columns, run `abhed migrate` again before starting the server: on a
+schema older than the binary it refuses to start and names what is missing.
 
 **Abhed refuses to start** if the role in `storage.dsn` could alter the record
 — if it owns `events`, or holds `UPDATE`, `DELETE` or `TRUNCATE` on it — and

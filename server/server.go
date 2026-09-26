@@ -81,8 +81,12 @@ type SessionRouter interface {
 // and loses the answer behind a load balancer.
 type ApprovalStore interface {
 	AskApproval(ctx context.Context, a store.Approval) (string, error)
-	AnswerApproval(ctx context.Context, id string, approved bool, by string) (bool, error)
-	ApprovalResult(ctx context.Context, id string) (approved, answered bool, err error)
+	// AnswerApproval records a decision and the "always allow" scope it
+	// carried, empty for this call only; it refuses an answered or ended row.
+	AnswerApproval(ctx context.Context, id string, approved bool, scope, by string) (bool, error)
+	ApprovalResult(ctx context.Context, id string) (approved, answered bool, scope string, err error)
+	// EndApproval closes the row once its request stops waiting.
+	EndApproval(ctx context.Context, id string) error
 	PendingApproval(ctx context.Context, sessionID string) (store.Approval, bool, error)
 }
 
@@ -1010,7 +1014,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	}
 
 	pol := s.newPolicy(policy.Mode(mode))
-	undo := agent.NewUndoLog()
+	undo := agent.NewUndoLog(sess.RestoreFile, sess.RemoveFile)
 	sess.Checkpoint = undo.Record
 
 	live := &liveSession{
@@ -2220,7 +2224,18 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	if err != nil || !found {
 		return false
 	}
-	answered, err := d.AnswerApproval(r.Context(), pending.ID, req.Approved, UserOf(r.Context()))
+	// Only a node running the session waits on the row. A row left by a
+	// request that ended, or by a node that is gone, would be approved for
+	// nothing, and read as approved in the record.
+	if pending.Ended || s.elsewhere(r.Context(), sessionID) == "" {
+		WriteError(w, http.StatusConflict, "that approval is no longer pending")
+		return true
+	}
+	if req.Scope != "" && req.Scope != pending.Scope {
+		WriteError(w, http.StatusBadRequest, "scope must be empty or the scope this request offered")
+		return true
+	}
+	answered, err := d.AnswerApproval(r.Context(), pending.ID, req.Approved, req.Scope, UserOf(r.Context()))
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "could not record the decision")
 		return true

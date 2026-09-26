@@ -72,6 +72,8 @@ func rpcCmd(workspace string) int {
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode,
 				Allow: req.Allow, Deny: req.Deny,
+				// bash runs in the configured tier, as it would from the terminal.
+				Sandbox: true,
 				// Events are forwarded as they happen so a caller can render
 				// progress rather than waiting for the final answer.
 				OnEvent: func(ev agent.Event) {

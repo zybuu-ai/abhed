@@ -135,10 +135,27 @@ that, and is set by the operator — never by the model.
 
 `.abhed/` — the configuration, the users file and the keys, in the workspace
 and in the home directory — is out of the agent's reach in every mode. The file
-tools refuse it and the sandbox hides it from commands, so no prompt can talk
-the agent into dropping a deny rule or adding a user for the next start. It is
-a boundary rather than a rule, because a rule lives in the file it would be
-protecting. The operator edits that file by hand; the one exception is
+tools and the server's file endpoints refuse it by any spelling the disk
+resolves to it (`.ABHED` on a case-insensitive disk, a file or folder symlink
+to it, even one swapped in while the path is checked, or a hardlink to its
+users, config or secrets file), glob, grep and the index pass over it and
+follow no file symlinks, and the process sandbox hides it from commands, so
+no prompt can talk the agent into dropping a deny rule or adding a user for
+the next start. It is a boundary rather than a rule, because a rule lives in
+the file it would be protecting. A hardlink to another file in a state
+directory is recognised for the first 4,096 files and folders there.
+
+A users file set with `auth.users_file`, or a secrets file set with
+`ABHED_SECRETS_FILE`, is refused by the file tools and the server the same
+way. Keep it outside everywhere commands can write — the workspace, added
+directories, temp folders and toolchain caches — or under the workspace's or
+the home directory's `.abhed/` (a real folder, not a link elsewhere): Abhed
+refuses to start otherwise, because a command could move a folder above it.
+
+On the container tier, commands can read and write `.abhed/` and a configured
+state file inside the mount unless it is mounted read-only or left out.
+
+The operator edits these files by hand; the one exception is
 `~/.abhed/skills`, which commands may read, since a skill can ship a script.
 
 Content read from files, tool output and search results is **data, never

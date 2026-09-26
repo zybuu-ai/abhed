@@ -67,13 +67,27 @@ func stubResolve(t *testing.T, fg *fakeForge, change string) {
 			if opts.Workspace != dir {
 				t.Errorf("the run's workspace is %s, not the worktree %s", opts.Workspace, dir)
 			}
+			if !opts.Sandbox {
+				t.Error("the run does not ask for the configured sandbox")
+			}
 			if change == "" {
 				return nil
 			}
 			return os.WriteFile(filepath.Join(dir, "a.txt"), []byte(change), 0o600)
 		}, nil
 	}
-	t.Cleanup(func() { newForge, newResolveRunner = oldForge, oldRunner })
+	oldPush := pushWork
+	pushWork = func(_ context.Context, w *forge.Work, repo string, ref forge.Ref, _, _ string) error {
+		if ref.Host != "git.example" || ref.Owner != "t" || ref.Repo != "r" {
+			t.Errorf("pushed for %+v, not the issue's repository", ref)
+		}
+		out, err := exec.Command("git", "-C", repo, "push", "-q", "origin", w.Branch).CombinedOutput()
+		if err != nil {
+			t.Errorf("push: %v\n%s", err, out)
+		}
+		return err
+	}
+	t.Cleanup(func() { newForge, newResolveRunner, pushWork = oldForge, oldRunner, oldPush })
 }
 
 func branchOnRemote(t *testing.T, remote string) bool {

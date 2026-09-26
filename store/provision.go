@@ -162,3 +162,25 @@ func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 }
 
 var errNoSchema = errors.New("the schema has not been applied")
+
+// requiredColumns are columns this build writes that an older schema lacks.
+// The runtime role cannot add them, so a missing one is found at start rather
+// than as a failed write the first time someone answers an approval.
+var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}}
+
+// missingColumns names the required columns the connected database lacks.
+func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+	var missing []string
+	for _, c := range requiredColumns {
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`, c[0], c[1]).Scan(&n); err != nil {
+			return nil, fmt.Errorf("check schema: %w", err)
+		}
+		if n == 0 {
+			missing = append(missing, c[0]+"."+c[1])
+		}
+	}
+	return missing, nil
+}

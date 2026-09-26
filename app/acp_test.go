@@ -176,6 +176,10 @@ func TestACPTurnIsDrivenFromTheWire(t *testing.T) {
 	if sess.SessionID == "" || made == nil || made.opts.Workspace != "/ws" {
 		t.Fatalf("session/new: %s", created.Result)
 	}
+	// bash runs in the configured tier, as it would from the terminal.
+	if !made.opts.Sandbox {
+		t.Fatal("session/new did not ask for the configured sandbox")
+	}
 
 	res, updates := cl.collect(3, "session/prompt", map[string]any{"sessionId": sess.SessionID,
 		"prompt": []any{map[string]any{"type": "text", "text": "write a file"},

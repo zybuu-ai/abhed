@@ -133,7 +133,7 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 			return nil //nolint:nilerr // the root itself is not a match
 		}
 		if d.IsDir() {
-			if viewerSkip[d.Name()] || tools.SkipDir(d.Name()) {
+			if skipInView(d.Name()) || tools.SkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			if _, err := v.resolve(rel); err != nil {

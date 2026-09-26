@@ -73,6 +73,25 @@ CREATE TABLE IF NOT EXISTS approvals (
   answered_by TEXT
 );
 
+-- The "always allow" scope an answer carried, empty for this call only: the
+-- waiting node widens the session's allow list only from this.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS answer_scope TEXT NOT NULL DEFAULT '';
+-- Set when the request stopped waiting, answered or not. An ended row takes
+-- no answer, so nothing is approved after the turn it was asked in. When the
+-- column is first added, the rows already there are from turns that are no
+-- longer waiting, so they are closed once; later starts leave rows alone.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = 'approvals' AND column_name = 'ended_at') THEN
+    ALTER TABLE approvals ADD COLUMN ended_at TIMESTAMPTZ;
+    -- Every tenant's rows: row security would otherwise limit the owner too.
+    ALTER TABLE approvals NO FORCE ROW LEVEL SECURITY;
+    UPDATE approvals SET ended_at = asked_at WHERE ended_at IS NULL;
+    ALTER TABLE approvals FORCE ROW LEVEL SECURITY;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS approvals_session ON approvals (tenant_id, session_id, asked_at DESC);
 CREATE INDEX IF NOT EXISTS approvals_open    ON approvals (tenant_id, session_id) WHERE answered_at IS NULL;
 

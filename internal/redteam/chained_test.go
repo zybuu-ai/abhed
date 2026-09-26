@@ -25,7 +25,7 @@ import (
 func TestAttack_UndoRestoresDeletedSecret(t *testing.T) {
 	dir := workspace(t)
 	s := session(t, dir)
-	undo := agent.NewUndoLog()
+	undo := agent.NewUndoLog(s.RestoreFile, s.RemoveFile)
 	s.Checkpoint = undo.Record
 
 	secret := filepath.Join(dir, "secret.txt")

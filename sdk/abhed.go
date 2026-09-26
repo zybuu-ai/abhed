@@ -16,9 +16,10 @@
 // is set: Options may tighten what it sets and never loosen it, and New
 // returns an error for an option that would.
 //
-// One guarantee does NOT come with it: this package builds no sandbox unless
-// the managed configuration sets one. Otherwise bash runs with the privileges
-// of the process that embedded it, where the CLI would have wrapped it in the
+// One guarantee does NOT come with it by default: this package builds no
+// sandbox unless the managed configuration sets one or Options.Sandbox asks
+// for the configured one. Otherwise bash runs with the privileges of the
+// process that embedded it, where the CLI would have wrapped it in the
 // configured tier. A host that needs isolation owns it — a container, a jail,
 // a separate user — exactly as for any other library that shells out.
 package abhed
@@ -35,6 +36,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -109,6 +111,11 @@ type Options struct {
 
 	// Extensions are subprocesses that may veto a tool call.
 	Extensions []ExtensionConfig
+
+	// Sandbox runs bash in the tier the configuration's sandbox section asks
+	// for (process by default), as the CLI does. New returns an error when
+	// that tier is not available here, rather than running bash without it.
+	Sandbox bool
 }
 
 // Provider names a model endpoint.
@@ -194,14 +201,23 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: allow rule: %w", err)
 	}
 
-	// A managed sandbox setting binds here too; otherwise bash is unsandboxed.
+	// A managed sandbox setting binds here too; otherwise bash is unsandboxed
+	// unless the caller asked for the configured sandbox.
 	bash := tools.Bash{}
-	if cfg.ManagedSets("sandbox") {
+	if opts.Sandbox || cfg.ManagedSets("sandbox") {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace)
 		if err != nil {
 			return nil, fmt.Errorf("abhed: %w", err)
 		}
-		bash.Sandbox, bash.Isolation.Tier = sb.Command, string(sb.Tier())
+		bash.Sandbox = sb.Command
+		bash.Isolation = tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}
+		if in, ok := sb.(sandbox.Interactive); ok {
+			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+		}
+	}
+	// A users or secrets file kept outside .abhed is state all the same.
+	for _, p := range sandboxconfig.StatePaths(cfg, opts.Workspace) {
+		tools.AddStatePath(p)
 	}
 
 	host := extension.NewHost(nil)

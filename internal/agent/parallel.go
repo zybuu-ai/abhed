@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -189,8 +192,9 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 
 // ------------------------------------------------------------------ git
 
-func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+// git runs one command on r, whose drivers were read once for the operation.
+func git(ctx context.Context, r *hostgit.Repo, args ...string) (string, error) {
+	cmd := r.Command(ctx, args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -207,7 +211,7 @@ func requireGitRepo(ctx context.Context, ws string) error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return fmt.Errorf("git is not installed")
 	}
-	_, err := git(ctx, ws, "rev-parse", "--git-dir")
+	_, err := git(ctx, hostgit.New(ctx, ws), "rev-parse", "--git-dir")
 	return err
 }
 
@@ -227,20 +231,23 @@ func addWorktree(ctx context.Context, ws string) (*worktree, error) {
 	}
 	// Keep the worktrees out of `git status` for the main tree without
 	// touching the repository's tracked .gitignore: info/exclude is local.
-	excludeWorktrees(ws)
-	if _, err := git(ctx, ws, "worktree", "add", "-b", branch, dir, "HEAD"); err != nil {
+	r := hostgit.New(ctx, ws)
+	excludeWorktrees(ctx, r)
+	if _, err := git(ctx, r, "worktree", "add", "-b", branch, dir, "HEAD"); err != nil {
 		return nil, err
 	}
 	return &worktree{Dir: dir, Branch: branch}, nil
 }
 
 func removeWorktree(ctx context.Context, ws string, wt *worktree) {
-	_, _ = git(ctx, ws, "worktree", "remove", "--force", wt.Dir)
-	_, _ = git(ctx, ws, "branch", "-D", wt.Branch)
+	r := hostgit.New(ctx, ws)
+	_, _ = git(ctx, r, "worktree", "remove", "--force", wt.Dir)
+	_, _ = git(ctx, r, "branch", "-D", wt.Branch)
 }
 
-func excludeWorktrees(ws string) {
-	gitDir, err := git(context.Background(), ws, "rev-parse", "--git-common-dir")
+func excludeWorktrees(ctx context.Context, r *hostgit.Repo) {
+	ws := r.Dir
+	gitDir, err := git(ctx, r, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return
 	}
@@ -248,28 +255,41 @@ func excludeWorktrees(ws string) {
 		gitDir = filepath.Join(ws, gitDir)
 	}
 	p := filepath.Join(gitDir, "info", "exclude")
-	existing, _ := os.ReadFile(p)
-	if bytes.Contains(existing, []byte(WorktreeDir)) {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// The git directory is the agent's to change, so the file is written as
+	// the file tools write: under the workspace held open, never through a
+	// link that leads out of it or into Abhed's state. A git directory
+	// outside the workspace is left alone.
+	c, err := tools.NewStateSet(ws).Confine(tools.RealPath(ws), ws)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	fmt.Fprintf(f, "\n# Abhed subagent worktrees\n%s/\n", WorktreeDir)
+	defer c.Close()
+	if !c.Contains(p) {
+		return
+	}
+	existing, err := c.ReadFile(p)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if bytes.Contains(existing, []byte(WorktreeDir)) {
+		return
+	}
+	if err := c.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return
+	}
+	_ = c.WriteAtomic(p, append(existing, []byte("\n# Abhed subagent worktrees\n"+WorktreeDir+"/\n")...), 0o644)
 }
 
 // worktreeChanges summarises what a subagent left behind: a diff stat and
 // the number of changed paths, counting untracked files as changes too.
 func worktreeChanges(ctx context.Context, dir string) (string, int) {
-	status, err := git(ctx, dir, "status", "--porcelain")
+	r := hostgit.New(ctx, dir)
+	status, err := git(ctx, r, "status", "--porcelain")
 	if err != nil || status == "" {
 		return "", 0
 	}
 	n := len(strings.Split(status, "\n"))
-	stat, _ := git(ctx, dir, "diff", "--stat", "HEAD")
+	stat, _ := git(ctx, r, "diff", "--stat", "HEAD")
 	if stat == "" {
 		stat = status
 	}

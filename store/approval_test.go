@@ -37,16 +37,16 @@ func TestAnswerIsVisibleToTheWaitingNode(t *testing.T) {
 		t.Fatalf("ask: %v", err)
 	}
 
-	if _, answered, _ := waiting.ApprovalResult(ctx, id); answered {
+	if _, answered, _, _ := waiting.ApprovalResult(ctx, id); answered {
 		t.Fatal("reported answered before anyone answered")
 	}
 
-	ok, err := answering.AnswerApproval(ctx, id, true, "reviewer")
+	ok, err := answering.AnswerApproval(ctx, id, true, "", "reviewer")
 	if err != nil || !ok {
 		t.Fatalf("answer: ok=%v err=%v", ok, err)
 	}
 
-	approved, answered, err := waiting.ApprovalResult(ctx, id)
+	approved, answered, _, err := waiting.ApprovalResult(ctx, id)
 	if err != nil {
 		t.Fatalf("result: %v", err)
 	}
@@ -63,13 +63,13 @@ func TestAnAnsweredApprovalCannotBeAnsweredAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ask: %v", err)
 	}
-	if ok, _ := pg.AnswerApproval(ctx, id, false, "first"); !ok {
+	if ok, _ := pg.AnswerApproval(ctx, id, false, "", "first"); !ok {
 		t.Fatal("first answer was refused")
 	}
-	if ok, _ := pg.AnswerApproval(ctx, id, true, "second"); ok {
+	if ok, _ := pg.AnswerApproval(ctx, id, true, "", "second"); ok {
 		t.Fatal("ATTACK SUCCEEDED: a denial was overturned by answering twice")
 	}
-	approved, answered, _ := pg.ApprovalResult(ctx, id)
+	approved, answered, _, _ := pg.ApprovalResult(ctx, id)
 	if !answered || approved {
 		t.Fatalf("result is answered=%v approved=%v, want the first answer to stand", answered, approved)
 	}
@@ -92,7 +92,7 @@ func TestPendingIsFoundBySession(t *testing.T) {
 		t.Fatalf("tool = %q, want write", got.Tool)
 	}
 	// Once answered it is no longer pending.
-	if _, err := pg.AnswerApproval(ctx, got.ID, true, "r"); err != nil {
+	if _, err := pg.AnswerApproval(ctx, got.ID, true, "", "r"); err != nil {
 		t.Fatalf("answer: %v", err)
 	}
 	if _, found, _ := pg.PendingApproval(ctx, "s-ap-3"); found {
@@ -113,11 +113,65 @@ func TestApprovalsAreTenantIsolated(t *testing.T) {
 	if _, found, _ := attacker.PendingApproval(ctx, "s-ap-4"); found {
 		t.Fatal("ATTACK SUCCEEDED: another tenant read a pending approval")
 	}
-	if ok, _ := attacker.AnswerApproval(ctx, id, true, "attacker"); ok {
+	if ok, _ := attacker.AnswerApproval(ctx, id, true, "", "attacker"); ok {
 		t.Fatal("ATTACK SUCCEEDED: another tenant answered an approval")
 	}
-	if _, answered, _ := victim.ApprovalResult(ctx, id); answered {
+	if _, answered, _, _ := victim.ApprovalResult(ctx, id); answered {
 		t.Fatal("ATTACK SUCCEEDED: the approval was answered across the tenant boundary")
 	}
 	_ = time.Now
+}
+
+// The row keeps whether the reviewer chose "always allow": a node reading
+// the answer back must not widen "approve once" to the scope offered.
+func TestAnswerKeepsTheChosenScope(t *testing.T) {
+	pg, ctx := approvalStore(t, "default")
+	for scope, want := range map[string]string{"": "", "bash(go test*)": "bash(go test*)"} {
+		id, err := pg.AskApproval(ctx, Approval{SessionID: "s-ap-5", Tool: "bash", Scope: "bash(go test*)"})
+		if err != nil {
+			t.Fatalf("ask: %v", err)
+		}
+		if ok, err := pg.AnswerApproval(ctx, id, true, scope, "reviewer"); err != nil || !ok {
+			t.Fatalf("answer: ok=%v err=%v", ok, err)
+		}
+		approved, answered, got, err := pg.ApprovalResult(ctx, id)
+		if err != nil || !answered || !approved || got != want {
+			t.Fatalf("answered with %q: result approved=%v answered=%v scope=%q err=%v, want scope %q",
+				scope, approved, answered, got, err, want)
+		}
+	}
+}
+
+// A request that stopped waiting closes its row: it takes no answer, and it
+// is reported as ended rather than as waiting.
+func TestAnEndedApprovalTakesNoAnswer(t *testing.T) {
+	pg, ctx := approvalStore(t, "default")
+	id, err := pg.AskApproval(ctx, Approval{SessionID: "s-ap-6", Tool: "bash"})
+	if err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	if err := pg.EndApproval(ctx, id); err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	got, found, err := pg.PendingApproval(ctx, "s-ap-6")
+	if err != nil || !found || got.ID != id || !got.Ended {
+		t.Fatalf("pending = %+v found=%v err=%v, want the row marked ended", got, found, err)
+	}
+	if ok, _ := pg.AnswerApproval(ctx, id, true, "", "late"); ok {
+		t.Fatal("an ended approval was answered")
+	}
+	if _, answered, _, _ := pg.ApprovalResult(ctx, id); answered {
+		t.Fatal("an ended approval reads as answered")
+	}
+	// Ending an answered row keeps the answer, as the record of what was said.
+	id2, _ := pg.AskApproval(ctx, Approval{SessionID: "s-ap-6", Tool: "bash"})
+	if ok, _ := pg.AnswerApproval(ctx, id2, false, "", "reviewer"); !ok {
+		t.Fatal("answer refused")
+	}
+	if err := pg.EndApproval(ctx, id2); err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if approved, answered, _, _ := pg.ApprovalResult(ctx, id2); !answered || approved {
+		t.Fatalf("ending changed the answer: answered=%v approved=%v", answered, approved)
+	}
 }

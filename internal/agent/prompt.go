@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/hostgit"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // CorePrompt is layer 1 of the prompt stack (docs §07): stable across all
@@ -184,7 +187,7 @@ func BuildSystemPrompt(opts BuildOptions) string {
 	}
 
 	for _, path := range opts.MemoryFiles {
-		data, err := os.ReadFile(path)
+		data, err := ReadMemoryFile(opts.Workspace, path)
 		if err != nil || len(data) == 0 {
 			continue
 		}
@@ -194,6 +197,32 @@ func BuildSystemPrompt(opts BuildOptions) string {
 	}
 
 	return b.String()
+}
+
+// ReadMemoryFile reads a memory file for the system prompt or /memory. A file
+// in the workspace is the agent's to change, so it is read as the file tools
+// read: a link planted there cannot put .abhed/users.json or a file outside
+// the workspace into the prompt. The operator's files, in ~/.abhed and
+// /etc/abhed, are read as they are, but never through a link.
+func ReadMemoryFile(workspace, path string) ([]byte, error) {
+	if workspace != "" {
+		ws, err := filepath.Abs(workspace)
+		if err == nil {
+			for _, root := range []string{ws, tools.RealPath(ws)} {
+				if rel, err := filepath.Rel(root, path); err == nil && filepath.IsLocal(rel) {
+					return tools.ReadInWorkspace(ws, path)
+				}
+			}
+		}
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return os.ReadFile(path) // #nosec G304 -- an operator's memory file, not a link
 }
 
 // DiscoverMemoryFiles finds ABHED.md files in precedence order (docs §07).
@@ -217,14 +246,18 @@ func DiscoverMemoryFiles(workspace string) []string {
 }
 
 func gitState(dir string) (branch string, dirty int, isRepo bool) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+	// Run on the host on every prompt build, in a repository the agent can
+	// write: hostgit keeps its configuration from running a program.
+	ctx := context.Background()
+	r := hostgit.New(ctx, dir)
+	cmd := r.Command(ctx, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", 0, false
 	}
 	branch = strings.TrimSpace(string(out))
 
-	cmd = exec.Command("git", "-C", dir, "status", "--porcelain")
+	cmd = r.Command(ctx, "status", "--porcelain")
 	if out, err := cmd.Output(); err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			if strings.TrimSpace(line) != "" {

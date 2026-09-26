@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -88,12 +89,14 @@ type approvalRows struct {
 	mu      sync.Mutex
 	n       int
 	rows    map[string]*bool
+	scopes  map[string]string
+	ended   map[string]bool
 	askHook func(ctx context.Context) error
 	ansHook func()
 }
 
 func newApprovalRows(es EventStore) *approvalRows {
-	return &approvalRows{EventStore: es, rows: map[string]*bool{}}
+	return &approvalRows{EventStore: es, rows: map[string]*bool{}, scopes: map[string]string{}, ended: map[string]bool{}}
 }
 
 func (r *approvalRows) AskApproval(ctx context.Context, _ store.Approval) (string, error) {
@@ -110,26 +113,40 @@ func (r *approvalRows) AskApproval(ctx context.Context, _ store.Approval) (strin
 	return id, nil
 }
 
-func (r *approvalRows) AnswerApproval(_ context.Context, id string, ok bool, _ string) (bool, error) {
+func (r *approvalRows) AnswerApproval(_ context.Context, id string, ok bool, scope, _ string) (bool, error) {
 	r.mu.Lock()
 	v, found := r.rows[id]
-	if found && v == nil {
-		r.rows[id] = &ok
+	open := found && v == nil && !r.ended[id]
+	if open {
+		r.rows[id], r.scopes[id] = &ok, scope
 	}
 	r.mu.Unlock()
 	if r.ansHook != nil {
 		r.ansHook()
 	}
-	return found && v == nil, nil
+	return open, nil
 }
 
-func (r *approvalRows) ApprovalResult(_ context.Context, id string) (bool, bool, error) {
+func (r *approvalRows) ApprovalResult(_ context.Context, id string) (bool, bool, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if v := r.rows[id]; v != nil {
-		return *v, true, nil
+		return *v, true, r.scopes[id], nil
 	}
-	return false, false, nil
+	return false, false, "", nil
+}
+
+func (r *approvalRows) EndApproval(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended[id] = true
+	return nil
+}
+
+func (r *approvalRows) isEnded(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ended[id]
 }
 
 func (r *approvalRows) PendingApproval(context.Context, string) (store.Approval, bool, error) {
@@ -526,5 +543,155 @@ func TestApproveRefusesAScopeTheRequestDidNotOffer(t *testing.T) {
 	defer live.mu.Unlock()
 	if live.allowed["bash(*)"] || !live.allowed["bash(ls *)"] {
 		t.Fatalf("allowed = %v, want only the offered scope", live.allowed)
+	}
+}
+
+// A request that ends without an answer closes its row, so no later answer
+// is recorded on it as an approval nothing acted on.
+func TestAnEndedRequestClosesItsRow(t *testing.T) {
+	h, live, r, id := approvalSession(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	c := askTurn(ctx, live, "ev-a")
+	<-waitAsked(live, "ev-a").ready
+	cancel()
+	if res := <-c; res.err == nil {
+		t.Fatalf("the turn did not report the interrupt: %+v", res)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !r.isEnded("ap-1") {
+		if time.Now().After(deadline) {
+			t.Fatal("the interrupted request left its row open")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ok, _ := r.AnswerApproval(context.Background(), "ap-1", true, "", "late"); ok {
+		t.Fatal("an ended row took an answer")
+	}
+	if code := approve(h, id, `{"approved":true}`); code != http.StatusConflict {
+		t.Fatalf("a late answer = %d, want 409", code)
+	}
+	if v := r.row("ap-1"); v != nil {
+		t.Fatalf("the ended row was answered: %v", *v)
+	}
+}
+
+// A row written after the turn gave up on it is closed too.
+func TestARowWrittenAfterTheTurnGaveUpIsClosed(t *testing.T) {
+	_, live, r, _ := approvalSession(t, true)
+	release := make(chan struct{})
+	r.askHook = func(context.Context) error { <-release; return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	c := askTurn(ctx, live, "ev-a")
+	waitAsked(live, "ev-a")
+	cancel()
+	if res := <-c; res.err == nil {
+		t.Fatalf("the turn did not report the interrupt: %+v", res)
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for !r.isEnded("ap-1") {
+		if time.Now().After(deadline) {
+			t.Fatal("the row written after the turn gave up was left open")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// On a node not running the session, an unbound answer is refused when no
+// node runs it or its request has ended: nothing waits on that row.
+func TestApproveElsewhereRefusesARowNothingWaitsOn(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		node  string
+		ended bool
+	}{
+		{"no node runs the session", "", false},
+		{"its request ended", "node-b", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeApprovals()
+			f.pending["s-far"] = store.Approval{ID: "ap-far", SessionID: "s-far"}
+			if c.ended {
+				_ = f.EndApproval(context.Background(), "ap-far")
+			}
+			s := &Server{store: routedApprovals{f, c.node}, opts: Options{NodeID: "node-a"},
+				running: map[string]*liveSession{}, log: discardLogger()}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(`{"approved":true}`))
+			req.SetPathValue("id", "s-far")
+			s.approveAction(rec, req)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("answer = %d, want 409", rec.Code)
+			}
+			if answered := f.answer("ap-far"); answered {
+				t.Fatal("a row nothing waits on was marked answered")
+			}
+		})
+	}
+}
+
+// An answer relayed through another node keeps its choice: "approve once"
+// stays once when the owner reads it from the row.
+func TestApproveElsewhereRecordsTheChosenScope(t *testing.T) {
+	f := newFakeApprovals()
+	f.pending["s-far"] = store.Approval{ID: "ap-far", SessionID: "s-far", Scope: "bash(ls *)"}
+	s := &Server{store: routedApprovals{f, "node-b"}, opts: Options{NodeID: "node-a"},
+		running: map[string]*liveSession{}, log: discardLogger()}
+	send := func(body string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(body))
+		req.SetPathValue("id", "s-far")
+		s.approveAction(rec, req)
+		return rec.Code
+	}
+	if code := send(`{"approved":true,"scope":"bash(*)"}`); code != http.StatusBadRequest {
+		t.Fatalf("a wider scope = %d, want 400", code)
+	}
+	if code := send(`{"approved":true}`); code != http.StatusNoContent {
+		t.Fatalf("approve once = %d, want 204", code)
+	}
+	if _, _, scope, _ := f.ApprovalResult(context.Background(), "ap-far"); scope != "" {
+		t.Fatalf("approve once was recorded with scope %q", scope)
+	}
+}
+
+// timedOutRow commits the row and then reports a failure, as a write whose
+// client timed out after the database committed it would.
+type timedOutRow struct{ *fakeApprovals }
+
+func (r timedOutRow) AskApproval(_ context.Context, a store.Approval) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pending[a.SessionID] = a
+	return "", errors.New("timeout: context deadline exceeded")
+}
+
+// A row whose write reported failure may still exist; it is closed by the id
+// the server chose for it.
+func TestARowWhoseWriteFailedIsClosed(t *testing.T) {
+	f := newFakeApprovals()
+	l := &liveSession{ID: "s-lost", allowed: map[string]bool{}, durable: timedOutRow{f}}
+	go answerWhenAsked(l, false, "")
+	if _, err := l.Approve(context.Background(), "bash", []byte(`{}`), policy.Result{}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	f.mu.Lock()
+	id := f.pending["s-lost"].ID
+	f.mu.Unlock()
+	if id == "" {
+		t.Fatal("the server did not choose the row's id")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		ended := f.ended[id]
+		f.mu.Unlock()
+		if ended {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the row whose write failed was left open")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
