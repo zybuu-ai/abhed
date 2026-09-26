@@ -32,7 +32,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -169,7 +169,7 @@ jobs:
       image: golang:1.26
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install bubblewrap and vim
         run: apt-get update && apt-get install -y --no-install-recommends bubblewrap vim
       - name: Every process-sandbox boundary runs under bubblewrap
@@ -211,7 +211,7 @@ jobs:
     name: Container image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the image
         run: docker build -t abhed:ci -f Dockerfile .
       - name: The image runs and reports its version
@@ -221,7 +221,7 @@ jobs:
     name: CVE scans and report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
