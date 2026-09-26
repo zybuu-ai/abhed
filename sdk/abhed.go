@@ -91,8 +91,10 @@ type Options struct {
 	// them, which is the safe default when there is nobody to ask.
 	Approve func(ctx context.Context, tool string, args json.RawMessage, d Decision) (bool, error)
 
-	// OnEvent receives every event as it happens. It must not block for long:
-	// the agent waits on it.
+	// OnEvent receives every event, in the order the store records them, from
+	// a goroutine of its own. The agent does not wait on it: events waiting for
+	// a slow or stuck OnEvent are held in memory until it catches up or the
+	// agent is closed. Agent.Flush waits for it to catch up.
 	OnEvent func(Event)
 
 	// MaxTurns bounds one conversation. Zero uses the default, or the managed
@@ -128,6 +130,7 @@ type Agent struct {
 	store    *agent.MemStore
 	host     *extension.Host
 	id       string
+	fwd      *forwarder
 }
 
 // New builds an agent.
@@ -198,7 +201,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("abhed: %w", err)
 		}
-		bash.Sandbox = sb.Command
+		bash.Sandbox, bash.Isolation.Tier = sb.Command, string(sb.Tier())
 	}
 
 	host := extension.NewHost(nil)
@@ -212,7 +215,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	store := agent.NewMemStore()
 	id := fmt.Sprintf("embedded-%d", time.Now().UnixNano())
-	rec := agent.NewRecorder(store, id, "")
+	// Every write goes through the forwarder, so OnEvent misses none, from the
+	// first event on.
+	fwd := newForwarder(store, opts.OnEvent != nil)
+	rec := agent.NewRecorder(fwd, id, "")
 
 	system := opts.SystemPrompt
 	if system == "" {
@@ -240,13 +246,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		sess, rec, loopCfg)
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 
-	a := &Agent{loop: loop, store: store, host: host, id: id, registry: registry}
+	a := &Agent{loop: loop, store: store, host: host, id: id, registry: registry, fwd: fwd}
 	if opts.OnEvent != nil {
-		go func() {
-			for ev := range store.Subscribe(id) {
-				opts.OnEvent(ev)
-			}
-		}()
+		go fwd.run(opts.OnEvent)
 	}
 	return a, nil
 }
@@ -364,8 +366,22 @@ func (a *Agent) SetModel(p Provider) error {
 	return nil
 }
 
-// Close releases the extensions.
-func (a *Agent) Close() { a.host.Close() }
+// Flush waits until OnEvent has returned for every event recorded before the
+// call, or ctx ends, and says which; once the agent is closed it returns an
+// error, since nothing more is delivered. Call it
+// before exiting on a stopped run, so the run's end is delivered. Give it a
+// deadline, and never call it from OnEvent: the events it waits for are
+// delivered by the goroutine that called OnEvent, so it could only wait out ctx.
+func (a *Agent) Flush(ctx context.Context) error { return a.fwd.flush(ctx) }
+
+// errClosed is Flush's answer once the agent is closed and delivery has stopped.
+var errClosed = errors.New("abhed: the agent is closed; no more events are delivered")
+
+// Close releases the extensions and stops delivering events.
+func (a *Agent) Close() {
+	a.fwd.close()
+	a.host.Close()
+}
 
 // Providers lists the model provider types this build supports.
 func Providers() []string { return model.Providers() }

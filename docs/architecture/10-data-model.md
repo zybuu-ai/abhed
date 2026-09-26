@@ -37,16 +37,35 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args | agent |
-| `action.approved` / `.denied` | rule matched, actor | policy |
-| `observation` | result, truncated, exit code | tool |
+| `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it | policy |
+| `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
+| `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |
 | `subagent.spawned` / `.returned` | prompt, summary, tokens | orchestrator |
 | `compaction.started` / `.completed` | before/after tokens, summary | context mgr |
 | `plan.updated` / `todo.updated` | items | agent |
 | `session.ended` | terminal reason, totals | system |
 
+**Who settled a call** is in `by` on every `action.approved` and `action.denied`:
+
+| `by` | Meaning | Actor |
+|---|---|---|
+| `policy` | a rule or the mode decided; no one was asked | system |
+| `reviewer` | a person was asked and answered | system (approved), user (denied) |
+| `user` | the person made the call at the workbench | system (approved), user (denied) |
+| `session-scope` | an "always allow" chosen earlier in the session let it through; `scope` names it | system |
+| `headless` | nobody could be asked (`-p`, `rpc`, an SDK run without an approver, a subagent, `abhed eval`), so the run's fixed answer applied; a refusal's reason starts `no approver:` | system |
+| `system` | the harness: an unknown tool (step `unknown`); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
+
+Every `action.requested` is followed by one of the two, so a record never holds
+a request with no outcome. Records written before `by` was on denials say it
+only through the actor: `user` for a reviewer's refusal, `system` for policy.
+
 **Terminal reasons** are an enum, not a string — CI exit codes and the eval harness both
 depend on distinguishing them (§09):
-`completed · max_turns · max_budget · policy_denied · user_interrupt · error · shutdown · retry_exhausted`
+`completed · max_turns · max_budget · policy_denied · user_interrupt · error · shutdown · retry_exhausted · stalled · deadline`
+
+`deadline` means the run's own time limit passed (a context deadline, as the eval harness sets per task);
+it used to be recorded as `user_interrupt`.
 
 `shutdown` means the node exited while the turn was running, and it is
 deliberately distinct from `user_interrupt`: nobody asked for it to stop, so it
@@ -54,6 +73,10 @@ is a turn to resume rather than a decision to respect. With `server.drain_second
 set, a shutdown first stops accepting turns — new requests get 503 with
 `Retry-After` so a balancer moves on — and waits for the running ones, so a
 rolling deploy records no `shutdown` at all unless a turn outlives the budget.
+A turn stopped before the model's first reply ends as `user_interrupt`,
+`shutdown` or `deadline`, like any other. Messages still queued for a turn that ends as
+`shutdown` are recorded as `message.dropped` before `session.ended`; they are
+not delivered after a restart. An interrupt leaves them queued for the next turn.
 
 ## 2. Schema
 

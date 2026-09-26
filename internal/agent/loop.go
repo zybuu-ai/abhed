@@ -20,11 +20,14 @@ import (
 // server stopping rather than by the user interrupting.
 var ErrShutdown = errors.New("server shutdown")
 
-// terminalForCancel distinguishes the two ways a run is cancelled. The audit
-// log has to tell "someone stopped this" from "the process went away".
+// terminalForCancel distinguishes the ways a run is cancelled. The audit log
+// has to tell "someone stopped this" from "the process went away" or "time ran out".
 func terminalForCancel(ctx context.Context) TerminalReason {
-	if errors.Is(context.Cause(ctx), ErrShutdown) {
+	switch {
+	case errors.Is(context.Cause(ctx), ErrShutdown):
 		return TermShutdown
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return TermDeadline
 	}
 	return TermUserInterrupt
 }
@@ -47,11 +50,72 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 
+// Who settled a call, as action.approved and action.denied record it in "by".
+const (
+	ByPolicy   = "policy"   // a policy rule or the mode decided, and no one was asked
+	ByReviewer = "reviewer" // a person was asked and answered
+	ByUser     = "user"     // the person made the call themselves, at the workbench
+	// BySessionScope is an "always allow" a reviewer chose earlier in the session.
+	BySessionScope = "session-scope"
+	ByHeadless     = "headless" // nobody could be asked, and the run's fixed answer applied
+	BySystem       = "system"   // the harness, with no rule or person involved
+)
+
+// Answer is what an Approver reports when a request was settled by someone
+// other than the person it would ask; see NoteAnswer.
+type Answer struct {
+	By     string
+	Scope  string // the remembered scope that allowed it, for BySessionScope
+	Reason string // why no one answered, said in place of "rejected"
+	// Held is an answer that arrived but lost to the stop that ended the wait.
+	Held bool
+}
+
+type answerKey struct{}
+
+// ExpectAnswer returns ctx with room for an Approver's NoteAnswer, and the
+// Answer it fills. The loop asks every Approver this way.
+func ExpectAnswer(ctx context.Context) (context.Context, *Answer) {
+	a := &Answer{}
+	return context.WithValue(ctx, answerKey{}, a), a
+}
+
+// NoteAnswer tells the loop who settled the request an Approver is deciding,
+// so the record does not credit a reviewer who was never asked. A By that is
+// none of the By values is ignored, and the answer is recorded as a reviewer's.
+func NoteAnswer(ctx context.Context, a Answer) {
+	switch a.By {
+	case "", ByPolicy, ByReviewer, ByUser, BySessionScope, ByHeadless, BySystem:
+	default:
+		return
+	}
+	if p, ok := ctx.Value(answerKey{}).(*Answer); ok {
+		*p = a
+	}
+}
+
 // AutoApprove is for headless runs and tests where policy alone decides.
 type AutoApprove struct{ Yes bool }
 
-func (a AutoApprove) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+func (a AutoApprove) Approve(ctx context.Context, _ string, _ json.RawMessage, _ policy.Result) (bool, error) {
+	NoteAnswer(ctx, Answer{By: ByHeadless, Reason: "no approver"})
 	return a.Yes, nil
+}
+
+// unanswered says why a request ended while its approval was still awaited,
+// or, when held, why an answer that had arrived was not acted on.
+func unanswered(ctx context.Context, held bool) string {
+	what := "before an answer"
+	if held {
+		what = "before the answer was applied"
+	}
+	switch {
+	case errors.Is(context.Cause(ctx), ErrShutdown):
+		return "server shut down " + what
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "deadline passed " + what
+	}
+	return "interrupted " + what
 }
 
 type Config struct {
@@ -498,6 +562,12 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	callStart := time.Now()
 	stream, err := l.Adapter.Complete(ctx, req)
 	if err != nil {
+		// Stopped before the first reply: an interrupt or a shutdown, not a
+		// model failure, just as for a stream cut part way.
+		if ctx.Err() != nil {
+			l.record(EvModelCall, ActorSystem, ModelCall{Turn: l.turns, LatencyMS: time.Since(callStart).Milliseconds()})
+			return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+		}
 		l.record(EvModelCall, ActorSystem, ModelCall{
 			Turn: l.turns, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
 		})
@@ -749,6 +819,17 @@ func truncateKey(k string) string {
 func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.Result, TerminalReason) {
 	tool, found := l.Tools.Get(call.Name)
 	if !found {
+		// Recorded like any refused call, so the record accounts for every
+		// call the model made, not only those naming a real tool.
+		why := fmt.Sprintf("unknown tool %q", call.Name)
+		if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why,
+		}); err != nil {
+			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+		}
+		l.record(EvActionDenied, ActorSystem, map[string]string{
+			"call_id": call.ID, "reason": why, "step": "unknown", "by": BySystem,
+		})
 		return false, tools.Result{
 			Content: fmt.Sprintf("Unknown tool %q. Available tools: %s.",
 				call.Name, strings.Join(l.Tools.Names(), ", ")),
@@ -787,13 +868,17 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 	}
 	if doomed != nil {
+		l.record(EvActionDenied, ActorSystem, map[string]string{
+			"call_id": call.ID, "reason": doomed.Error(), "step": "precheck", "by": BySystem,
+		})
 		return false, tools.Result{Content: doomed.Error(), IsError: true}, ""
 	}
 
+	answer := &Answer{}
 	switch decision.Decision {
 	case policy.Deny:
 		l.record(EvActionDenied, ActorSystem, map[string]string{
-			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step,
+			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
 		})
 		// Feed the denial back so the model can choose another approach.
 		return false, tools.Result{
@@ -802,16 +887,35 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}, ""
 
 	case policy.Ask:
-		approved, err := l.Approver.Approve(WithRequestID(ctx, asked.ID), call.Name, call.Args, decision)
+		var actx context.Context
+		actx, answer = ExpectAnswer(WithRequestID(ctx, asked.ID))
+		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			// The request still gets an outcome, so no action.requested is
+			// left without one when the turn ends here.
+			cancelled := ctx.Err() != nil || errors.Is(err, context.Canceled)
+			why := "approval failed: " + err.Error()
+			if cancelled {
+				why = unanswered(ctx, answer.Held)
+			}
+			l.record(EvActionDenied, ActorSystem, map[string]string{
+				"call_id": call.ID, "reason": why, "step": "ask", "by": BySystem,
+			})
+			if cancelled {
 				return false, tools.Result{Content: "Interrupted.", IsError: true}, terminalForCancel(ctx)
 			}
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
 		if !approved {
-			l.record(EvActionDenied, ActorUser, map[string]string{
-				"call_id": call.ID, "reason": "rejected: " + decision.Reason, "step": decision.Step,
+			actor, by, why := ActorUser, ByReviewer, "rejected: "+decision.Reason
+			if answer.By != "" {
+				actor, by = ActorSystem, answer.By
+				if answer.Reason != "" {
+					why = answer.Reason + ": " + decision.Reason
+				}
+			}
+			l.record(EvActionDenied, actor, map[string]string{
+				"call_id": call.ID, "reason": why, "step": decision.Step, "by": by,
 			})
 			// Say WHY, and name the rule that would have allowed it. A bare
 			// "rejected" makes the model re-phrase the same command forever:
@@ -831,14 +935,21 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}
 	}
 
-	// by says who let it through: the policy on its own, or a person asked.
-	by := "policy"
-	if decision.Decision == policy.Ask {
-		by = "reviewer"
+	// by says who let it through: the policy on its own, a person asked, or
+	// what the approver reported in their place.
+	approvedBy := map[string]string{
+		"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
 	}
-	l.record(EvActionApproved, ActorSystem, map[string]string{
-		"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": by,
-	})
+	if decision.Decision == policy.Ask {
+		approvedBy["by"] = ByReviewer
+		if answer.By != "" {
+			approvedBy["by"] = answer.By
+		}
+		if answer.Scope != "" {
+			approvedBy["scope"] = answer.Scope
+		}
+	}
+	l.record(EvActionApproved, ActorSystem, approvedBy)
 	return true, tools.Result{}, ""
 }
 
@@ -895,6 +1006,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		Truncated:  result.Truncated,
 		ExitCode:   result.ExitCode,
 		DurationMS: elapsed.Milliseconds(),
+		Sandbox:    result.Tier,
 	}); err != nil {
 		return result, TermError
 	}
@@ -902,6 +1014,16 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 }
 
 func (l *Loop) finish(reason TerminalReason) TerminalReason {
+	// A shutdown ends the process holding the queue, so a message accepted
+	// but not yet delivered is recorded as dropped rather than lost unseen.
+	if reason == TermShutdown {
+		for _, q := range l.takeSteering() {
+			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
+				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At,
+				Reason: "server shut down before it was delivered",
+			})
+		}
+	}
 	l.usage.Turns = l.turns
 	ctxTokens, window := l.contextSize()
 	l.record(EvSessionEnded, ActorSystem, SessionEnded{

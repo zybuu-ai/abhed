@@ -28,6 +28,10 @@ var shellArgv = []string{"/bin/bash", "--noprofile", "--norc", "-l", "-O", "hupo
 // before it is killed.
 const hangUpDelay = 2 * time.Second
 
+// commandWaitDelay is how long Wait reads a command's output after it has
+// exited or been cancelled, before closing pipes something else still holds.
+const commandWaitDelay = 2 * time.Second
+
 // hangUp ends a shell the way closing a terminal does. An interactive bash
 // puts each background job in a process group of its own, so killing the
 // shell leaves them running; on SIGHUP it hangs them up too. Jobs that left

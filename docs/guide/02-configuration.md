@@ -184,13 +184,22 @@ control that is silently off is worse than one that is visibly missing.
 On SIGTERM the server stops taking turns (a message that would start a
 turn, steer a running one or send it now gets 503 with `Retry-After`),
 waits up to `drain_seconds` for running turns to finish, then ends those
-still running, recorded as `shutdown` (a turn stopped before the model's
-first reply is still recorded as `error`). It then waits up to five
-seconds for them to record their end, and up to ten more for open HTTP
-requests. The worst case is `drain_seconds` + 15 seconds, so give the
+still running, recorded as `shutdown`, including a turn stopped before the
+model's first reply, and kills the command each is running with everything
+it started. A message steered into a turn that is ended this way is recorded
+as `message.dropped`, not delivered. The terminals of an idle workbench
+session are closed and their results recorded before its end. It then waits
+up to five seconds for turns to record their end, and up to ten more for
+open HTTP requests. The worst case is `drain_seconds` + 15 seconds, so give the
 process at least that much grace: with Kubernetes' default
 `terminationGracePeriodSeconds` of 30, keep `drain_seconds` at 15 or less.
-Without `drain_seconds`, running turns are ended at once.
+Without `drain_seconds`, running turns are ended at once. SIGINT and a
+hang-up (SIGHUP) stop the server the same way; a hang-up is not a reload.
+Signals that arrive while it drains are ignored, so a second SIGTERM does
+not cut the drain short; SIGKILL, as an orchestrator sends at the end of its
+grace period, is what ends it sooner.
+Started with hang-ups ignored, as under `nohup`, the server keeps ignoring
+them.
 
 ## Accounts
 

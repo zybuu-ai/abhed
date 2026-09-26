@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -150,6 +149,21 @@ func IsDestructive(command string) (string, bool) {
 }
 
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
+	res := b.run(ctx, s, raw)
+	res.Tier = b.tier()
+	return res
+}
+
+// tier is the sandbox tier commands run under, "none" without one, and ""
+// when a sandbox is set but not described.
+func (b Bash) tier() string {
+	if b.Sandbox == nil {
+		return "none"
+	}
+	return b.Isolation.Tier
+}
+
+func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	var a bashArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for bash: %v", err)
@@ -193,6 +207,8 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		// credentials by accident.
 		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
+	// A stopped turn ends what the command started, not only its shell.
+	sandbox.EndWithCommand(cmd)
 
 	if len(a.Secrets) > 0 {
 		if b.Secrets == nil {
@@ -205,15 +221,15 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		cmd.Env = append(cmd.Env, env...)
 	}
 
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
+	output, err := newBashOutput(cmd)
+	if err != nil {
+		return errf("Failed to run command: %v", err)
+	}
 	start := time.Now()
-	err := cmd.Run()
+	content, held, err := output.run(cmd, bashOutputWait)
 	elapsed := time.Since(start)
 
-	content := out.String()
+	full := len(content)
 	truncated := false
 	if len(content) > maxOutputChars {
 		// Keep head and tail: the command's intent is at the start, the error
@@ -221,10 +237,14 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		head := content[:maxOutputChars/2]
 		tail := content[len(content)-maxOutputChars/2:]
 		content = fmt.Sprintf("%s\n\n[... %d characters truncated ...]\n\n%s",
-			head, len(out.String())-maxOutputChars, tail)
+			head, full-maxOutputChars, tail)
 		truncated = true
 	}
 
+	// The run's own limit, not this call's: raising timeout_ms would not help.
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return Result{Content: "Command stopped: the run's time limit passed.\n" + content, IsError: true, Truncated: truncated}
+	}
 	if runCtx.Err() == context.DeadlineExceeded {
 		return Result{
 			Content: fmt.Sprintf("Command timed out after %s.\n%s\n\nIf this command is expected to run long, raise timeout_ms (max %d).",
@@ -238,6 +258,10 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	exitCode := 0
+	var bgNote string
+	if held {
+		bgNote = "[a process it started is still running; its later output is not shown]"
+	}
 	if err != nil {
 		var ee *exec.ExitError
 		if ok := asExitError(err, &ee); ok {
@@ -257,6 +281,9 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if content == "" {
 		content = "[no output]"
 	}
+	if bgNote != "" {
+		content += "\n\n" + bgNote
+	}
 	if cdNote != "" {
 		content += "\n\n" + cdNote
 	}
@@ -264,7 +291,8 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// A non-zero exit is a valid observation the model must reason about, not a
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
-	if hint := sandboxHint(content); hint != "" {
+	// On the host the same text is the operating system's refusal, not a sandbox's.
+	if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
 		content += "\n\n" + hint
 	}
 	return Result{

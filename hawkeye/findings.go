@@ -28,7 +28,7 @@ var (
 		"error": "the run failed", "stalled": "the model stopped making progress",
 		"max_turns": "the turn limit was reached", "max_budget": "the token budget was spent",
 		"shutdown": "the server shut down mid-turn", "retry_exhausted": "the model endpoint kept failing",
-		"policy_denied": "policy ended the run",
+		"policy_denied": "policy ended the run", "deadline": "the run's time limit passed",
 	}
 
 	rank = map[Severity]int{Critical: 0, Warn: 1, Info: 2}
@@ -92,6 +92,10 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		if c.Decision == "denied" {
 			add(Info, "denied", "Denied: "+c.Tool,
 				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.By), c.Seq)
+		}
+		if c.SandboxDenied {
+			add(Info, "sandbox-denied", "The sandbox refused part of a command",
+				fmt.Sprintf("%s — the command ran, but the sandbox denied an operation in it, whatever its exit status says.", clip(c.Subject, 160)), c.Seq)
 		}
 		if strings.Contains(c.Output, "[secret:") {
 			add(Warn, "secret-redacted", "A stored secret's value was written out and redacted",

@@ -61,6 +61,8 @@ type Result struct {
 	// that call is accepted. Without it the model would have to say something
 	// afterwards to terminate the turn, and that something is not the answer.
 	Final bool
+	// Tier is the sandbox tier a command ran under, for the record; see Bash.tier.
+	Tier string
 }
 
 func ok(format string, a ...any) Result {

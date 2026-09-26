@@ -120,11 +120,11 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
       <span class="seq">#{{.Seq}}</span>
       <span>{{.Tool}}</span>
       <span class="subj">{{.Subject}}</span>
-      <span class="step {{.Decision}}">{{.Decision}}{{if .IsError}} <span class="err">· err</span>{{end}}</span>
+      <span class="step {{.Decision}}">{{.Decision}}{{if and (eq .Decision "allowed") (not .Ran)}} <span class="err">· not run</span>{{end}}{{if .IsError}} <span class="err">· err</span>{{end}}{{if .SandboxDenied}} <span class="err">· sandbox refused</span>{{end}}</span>
       <span class="t seq">{{ms .DurationMS}}</span>
     </summary>
     <div class="body">
-      <p>{{.Decision}} at step <b>{{.Step}}</b>{{if .By}} by {{.By}}{{end}} — {{.Reason}}</p>
+      <p>{{.Decision}} at step <b>{{.Step}}</b>{{if .By}} by {{.By}}{{end}}{{if .Scope}} ({{.Scope}}){{end}} — {{.Reason}}</p>
       <pre>{{.Args}}</pre>
       {{if .Ran}}<p><span class="tag">untrusted output</span> · {{n .OutputLen}} bytes{{if .Truncated}} · truncated before the model saw it{{end}}{{if .ExitCode}} · {{exit .ExitCode}}{{end}}</p><pre>{{.Output}}</pre>{{end}}
     </div>

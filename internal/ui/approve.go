@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -116,6 +117,7 @@ func NewApprover(out io.Writer) *Approver {
 
 func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
 	if res.Scope != "" && a.Session.Has(res.Scope) {
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: res.Scope})
 		return true, nil
 	}
 

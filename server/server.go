@@ -2374,7 +2374,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // With no budget configured this is the old behaviour: end everything at once.
 func (s *Server) drain() {
 	s.draining.Store(true)
-	s.closeIdle()
+	// Alongside the drain, so closing terminals adds nothing to the worst case.
+	idleClosed := make(chan struct{})
+	go func() { defer close(idleClosed); s.closeIdle() }()
+	defer func() { <-idleClosed }()
 
 	if s.opts.DrainTimeout > 0 {
 		deadline := time.NewTimer(s.opts.DrainTimeout)
@@ -2414,8 +2417,24 @@ func (s *Server) closeIdle() {
 		live.mu.Unlock()
 	}
 	s.mu.Unlock()
+	// All at once, then the ends: a terminal's result is recorded as it
+	// closes, and it belongs before the session's end, not after it.
+	var closing []<-chan struct{}
 	for _, live := range idle {
-		live.closeTerminals()
+		closing = append(closing, live.closeTerminals()...)
+	}
+	deadline := time.NewTimer(turnEndWait)
+	defer deadline.Stop()
+wait:
+	for _, done := range closing {
+		select {
+		case <-done:
+		case <-deadline.C:
+			s.log.Warn("terminals did not record their end before shutdown")
+			break wait
+		}
+	}
+	for _, live := range idle {
 		_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
 			agent.SessionEnded{Reason: agent.TermShutdown})
 	}

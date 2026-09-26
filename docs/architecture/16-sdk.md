@@ -40,6 +40,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Steer` | redirect a run already in progress, from another goroutine |
 | `Fork` | rebuild the conversation up to a sequence number |
 | `Events` | everything recorded; the stream is the session |
+| `Flush` | wait until `OnEvent` has returned for every event recorded so far, before exiting on a stopped run; give it a deadline, and never call it from `OnEvent` |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
 | `SetModel` | swap providers mid-conversation, keeping history |

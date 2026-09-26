@@ -89,7 +89,7 @@ func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision poli
 	}
 	if decision.Decision == policy.Deny {
 		l.record(EvActionDenied, ActorSystem, map[string]string{
-			"call_id": id, "reason": decision.Reason, "step": decision.Step,
+			"call_id": id, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
 		})
 		return &tools.Result{Content: "Denied: " + decision.Reason, IsError: true}, nil
 	}
@@ -112,7 +112,7 @@ func (l *Loop) ManualObserve(id, call string, result tools.Result, took time.Dur
 	_, err := l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{
 		CallID: id, Tool: call, Content: result.Content, IsError: result.IsError,
 		Truncated: result.Truncated, ExitCode: result.ExitCode,
-		DurationMS: took.Milliseconds(),
+		DurationMS: took.Milliseconds(), Sandbox: result.Tier,
 	})
 	return err
 }
