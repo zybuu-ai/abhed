@@ -18,6 +18,8 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
@@ -241,7 +243,16 @@ func (a *App) loadConfig(workspace string) (config.Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	registerState(cfg, workspace)
 	return cfg, a.checkEdition(cfg)
+}
+
+// registerState marks the state files a configuration moves out of .abhed,
+// so the agent's tools and the server's readers refuse them there too.
+func registerState(cfg config.Config, workspace string) {
+	for _, p := range sandboxconfig.StatePaths(cfg, workspace) {
+		tools.AddStatePath(p)
+	}
 }
 
 // buildLocal is the Community identity mechanism: accounts Abhed holds

@@ -157,6 +157,16 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"and connect as a separate runtime role, or set storage.single_role to accept the weaker "+
 			"guarantee (see docs/guide/02-configuration.md)", exposure)
 	}
+	missing, err := missingColumns(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if len(missing) > 0 {
+		pool.Close()
+		return nil, fmt.Errorf("the database schema is older than this server: %s missing. "+
+			"Run `abhed migrate` as the owner (see docs/guide/02-configuration.md)", strings.Join(missing, ", "))
+	}
 	p.protected = true
 	return p, nil
 }
@@ -449,6 +459,11 @@ type Approval struct {
 	Answered   bool
 	Approved   bool
 	AnsweredBy string
+	// AnswerScope is the "always allow" scope the answer carried; empty for
+	// an answer that approves this call only.
+	AnswerScope string
+	// Ended is set once the request stopped waiting, answered or not.
+	Ended bool
 }
 
 // AskApproval records a pending approval and returns its id.
@@ -475,28 +490,40 @@ func (p *Postgres) AskApproval(ctx context.Context, a Approval) (string, error) 
 	return id, nil
 }
 
-// AnswerApproval records a reviewer's decision. It reports false when the
-// approval is unknown or already answered, so a second click cannot overturn
-// the first and a stale browser cannot answer a question that has moved on.
-func (p *Postgres) AnswerApproval(ctx context.Context, id string, approved bool, by string) (bool, error) {
+// AnswerApproval records a reviewer's decision and the "always allow" scope
+// it carried, empty for this call only. It reports false when the approval is
+// unknown, already answered or ended, so a second click cannot overturn the
+// first and a stale browser cannot answer a question that has moved on.
+func (p *Postgres) AnswerApproval(ctx context.Context, id string, approved bool, scope, by string) (bool, error) {
 	tag, err := p.pool.Exec(ctx, `
-		UPDATE approvals SET answered_at = now(), approved = $2, answered_by = $3
-		WHERE id = $1 AND answered_at IS NULL`, id, approved, by)
+		UPDATE approvals SET answered_at = now(), approved = $2, answer_scope = $3, answered_by = $4
+		WHERE id = $1 AND answered_at IS NULL AND ended_at IS NULL`, id, approved, scope, by)
 	if err != nil {
 		return false, fmt.Errorf("answer approval %s: %w", id, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
 
-// PendingApproval returns the session's unanswered approval, if any.
+// EndApproval records that the request stopped waiting, so the row takes no
+// later answer. An answer already on it stays, as the record of what was said.
+func (p *Postgres) EndApproval(ctx context.Context, id string) error {
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE approvals SET ended_at = now() WHERE id = $1 AND ended_at IS NULL`, id); err != nil {
+		return fmt.Errorf("end approval %s: %w", id, err)
+	}
+	return nil
+}
+
+// PendingApproval returns the session's newest unanswered approval, if any,
+// with Ended set when its request no longer waits.
 func (p *Postgres) PendingApproval(ctx context.Context, sessionID string) (Approval, bool, error) {
 	var a Approval
 	err := p.pool.QueryRow(ctx, `
-		SELECT id, session_id, tool, args, reason, scope, asked_at
+		SELECT id, session_id, tool, args, reason, scope, asked_at, ended_at IS NOT NULL
 		FROM approvals
 		WHERE session_id = $1 AND answered_at IS NULL
 		ORDER BY asked_at DESC LIMIT 1`, sessionID).
-		Scan(&a.ID, &a.SessionID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt)
+		Scan(&a.ID, &a.SessionID, &a.Tool, &a.Args, &a.Reason, &a.Scope, &a.AskedAt, &a.Ended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, false, nil
 	}
@@ -506,21 +533,21 @@ func (p *Postgres) PendingApproval(ctx context.Context, sessionID string) (Appro
 	return a, true, nil
 }
 
-// ApprovalResult reports a decision once one exists.
-func (p *Postgres) ApprovalResult(ctx context.Context, id string) (approved, answered bool, err error) {
+// ApprovalResult reports a decision, and the scope it carried, once one exists.
+func (p *Postgres) ApprovalResult(ctx context.Context, id string) (approved, answered bool, scope string, err error) {
 	var ans *bool
 	e := p.pool.QueryRow(ctx,
-		`SELECT approved FROM approvals WHERE id = $1 AND answered_at IS NOT NULL`, id).Scan(&ans)
+		`SELECT approved, answer_scope FROM approvals WHERE id = $1 AND answered_at IS NOT NULL`, id).Scan(&ans, &scope)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	if e != nil {
-		return false, false, fmt.Errorf("approval result %s: %w", id, e)
+		return false, false, "", fmt.Errorf("approval result %s: %w", id, e)
 	}
 	if ans == nil {
-		return false, false, nil
+		return false, false, "", nil
 	}
-	return *ans, true, nil
+	return *ans, true, scope, nil
 }
 
 // ClaimNode records that this node holds the session's turn in flight, so a

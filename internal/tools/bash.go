@@ -442,7 +442,7 @@ func detectCd(command string, s *Session) (next, why string) {
 		target = s.Cwd + "/" + target
 	}
 	resolved, err := s.Resolve(target)
-	if err != nil && isHarnessState(filepath.Clean(target)) {
+	if err != nil && s.isState(filepath.Clean(target)) {
 		return "", "cd: " + arg + " is Abhed's own state, out of reach" + stays
 	}
 	if err != nil {

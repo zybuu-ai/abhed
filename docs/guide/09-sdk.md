@@ -109,8 +109,10 @@ An option the managed file forbids is an error from `New`, a
 A managed file makes the engine managed as it does for the CLI and the server,
 so `bypass` reaching it from a lower file is refused there too, and its deny
 and ask rules apply. If it sets any `sandbox` key, bash runs in the sandbox
-that setting selects, and `New` fails when no backend meets `sandbox.min_tier`;
-otherwise the SDK builds no sandbox and bash runs as the embedding process.
+that setting selects, and `New` fails when no backend meets `sandbox.min_tier`.
+`Sandbox: true` does the same from the configuration `ConfigDir` names, as the
+CLI does (`abhed rpc`, `abhed acp` and `abhed resolve` set it). Otherwise the
+SDK builds no sandbox and bash runs as the embedding process.
 
 Not bound by the managed file:
 

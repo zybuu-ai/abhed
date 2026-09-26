@@ -273,7 +273,7 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	}
 	s := &acpSession{id: "s-" + acpID(), cwd: cwd, always: map[string]bool{}, calls: map[string]string{}}
 	opts := abhed.Options{
-		Workspace: cwd, ConfigDir: cwd,
+		Workspace: cwd, ConfigDir: cwd, Sandbox: true,
 		OnEvent: func(ev abhed.Event) { c.forward(s, ev) },
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)

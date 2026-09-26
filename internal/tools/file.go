@@ -68,7 +68,7 @@ func (r Read) Run(_ context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("%s is a directory, not a file. Use glob(%q) to list its contents.", a.Path, a.Path+"/**")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := s.readFile(path)
 	if err != nil {
 		if os.IsPermission(err) {
 			return errf("Permission denied reading %s.", a.Path)
@@ -232,7 +232,7 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 			mode = info.Mode().Perm()
 		}
 		if s.Syntax != SyntaxOff {
-			if before, err = os.ReadFile(path); err != nil {
+			if before, err = s.readFile(path); err != nil {
 				return errf("Cannot read %s: %v", a.Path, err)
 			}
 		}
@@ -243,7 +243,7 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	s.recordChange(path)
-	if err := atomicWrite(path, []byte(a.Content), mode); err != nil {
+	if err := s.atomicWrite(path, []byte(a.Content), mode); err != nil {
 		return errf("Write failed for %s: %v", a.Path, err)
 	}
 	s.MarkRead(path, a.Content)
@@ -261,28 +261,82 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 
 // atomicWrite writes via a temp file in the same directory then renames, so a
 // crash mid-write leaves the original intact rather than a truncated file.
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".abhed-*")
+// It works inside the root holding the path; see Confined.WriteAtomic.
+func (s *Session) atomicWrite(path string, data []byte, mode os.FileMode) error {
+	c, at, err := s.confine(path)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
+	defer c.Close()
+	return c.WriteAtomic(at, data, mode)
+}
 
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
+// readFile reads a file the session resolved, inside the root holding it;
+// see Confined.OpenRead.
+func (s *Session) readFile(path string) ([]byte, error) {
+	c, at, err := s.confine(path)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.ReadFile(at)
+}
+
+// ReadFile reads a file of the session's roots as the file tools do: inside
+// the root that holds it, never through a link that leads out or into
+// Abhed's state. For callers outside the tools, such as /diff.
+func (s *Session) ReadFile(path string) ([]byte, error) { return s.readFile(path) }
+
+// RestoreFile writes a file's earlier content back, as the file tools write,
+// for /undo.
+func (s *Session) RestoreFile(path string, data []byte) error {
+	return s.atomicWrite(path, data, 0o600)
+}
+
+// RemoveFile removes a file inside the root that holds it, for /undo of a
+// creation; a link swapped in cannot send the removal elsewhere.
+func (s *Session) RemoveFile(path string) error {
+	c, at, err := s.confine(path)
+	if err != nil {
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
+	defer c.Close()
+	return c.Remove(at)
+}
+
+// confine opens the session root that holds path, by either spelling, and
+// returns the path to use in it. A path under one root that a link leads into
+// another, such as an added directory, is used as it resolves.
+func (s *Session) confine(path string) (*Confined, string, error) {
+	s.mu.Lock()
+	type pair struct{ dir, alt string }
+	pairs := []pair{{s.Root, s.rawRoot}}
+	for i, r := range s.Roots {
+		alt := ""
+		if i < len(s.rawRoots) {
+			alt = s.rawRoots[i]
+		}
+		pairs = append(pairs, pair{r, alt})
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	s.mu.Unlock()
+	set := s.stateSet()
+	real := RealPath(path)
+	for _, want := range []string{path, real} {
+		for _, p := range pairs {
+			c, err := set.Confine(p.dir, p.alt)
+			if err != nil {
+				continue
+			}
+			// The path must be where it resolves, too: a lexical match whose
+			// link leads into another root is placed in that root instead.
+			if c.Contains(want) && c.Contains(real) {
+				return c, want, nil
+			}
+			if want == real && c.Contains(real) {
+				return c, real, nil
+			}
+			c.Close()
+		}
 	}
-	if err := os.Chmod(tmpName, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return nil, "", ErrOutside
 }

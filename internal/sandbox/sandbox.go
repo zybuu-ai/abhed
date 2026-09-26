@@ -65,6 +65,10 @@ type Policy struct {
 	AllowNetwork bool
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
+	// StatePaths are files or folders holding Abhed's state outside .abhed,
+	// such as a configured users file. Commands can neither read nor write
+	// them, as for .abhed.
+	StatePaths []string
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7).
 	MaxMemoryMB int
 	MaxProcs    int

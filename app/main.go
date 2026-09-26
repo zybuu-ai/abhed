@@ -204,6 +204,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	if err != nil {
 		fail(err)
 	}
+	registerState(cfg, workspace)
 	if modelFlag != "" {
 		cfg.Model.Default = modelFlag
 	}
@@ -546,7 +547,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// built with it would reset the allowance every time.
 	turnBudget := sessionBudget(appCfg)
 	// Session-level state the slash commands operate on.
-	undo := agent.NewUndoLog()
+	undo := agent.NewUndoLog(sess.RestoreFile, sess.RemoveFile)
 	sess.Checkpoint = undo.Record
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, undo: undo,
@@ -934,7 +935,7 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 				rel = r
 			}
 			before, existed, _ := st.undo.Original(path)
-			after, readErr := os.ReadFile(path)
+			after, readErr := sess.ReadFile(path)
 			switch {
 			case !existed:
 				fmt.Printf("  %s %s\n", s.Green("+"), rel)
@@ -962,7 +963,7 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			return false
 		}
 		for _, f := range files {
-			data, err := os.ReadFile(f)
+			data, err := agent.ReadMemoryFile(sess.Root, f)
 			if err != nil {
 				continue
 			}

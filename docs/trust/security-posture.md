@@ -78,17 +78,65 @@ shipped entry points and programs that load configuration with `config.Load`;
 a `config.Config` built by hand carries no managed keys.
 
 **The agent cannot reach its own configuration.** `.abhed/` in the workspace
-and in the home directory holds the policy, the users file and the keys. The
-file tools refuse any path with that component (`internal/tools/session.go`,
-`isHarnessState`) and the process sandbox denies commands both reading and
-writing it (`internal/sandbox/process.go`), with `~/.abhed/skills` the one
-readable part. This is enforced before the rules are consulted, because a
-rule that protects the file the rules live in can be removed by editing
-that file. `internal/tools/state_test.go` and
-`internal/sandbox/state_test.go` try to read the configuration, rewrite the
-deny list and plant a users file, and fail if any succeeds. Container and VM
-tiers keep the workspace mount as configured; mount `.abhed` there read-only
-or leave it out of the mount.
+and in the home directory holds the policy, the users file and the keys. One
+check, `tools.StateSet` (`internal/tools/state.go`), is shared by the agent's
+file tools, glob, grep, the code index and the server's download, viewer,
+search and upload endpoints. It compares path components with `.abhed`
+without case, judges both the path as given and the path with every link
+followed, and asks the filesystem, by identity (`os.SameFile`), whether the
+path or a folder above it is a state directory or a state file; the users,
+config and secrets files are always known, and other files and folders there
+up to 4,096. Files are opened under the workspace held open as an `os.Root`
+(`internal/tools/confined.go`), so a link swapped in after the check leads
+neither out of the workspace nor into the state, and what was opened is
+judged again. The process sandbox denies commands reading and writing
+`.abhed/` (`internal/sandbox/process.go`), with `~/.abhed/skills` the one
+readable part.
+
+A users file set with `auth.users_file`, or a secrets file set with
+`ABHED_SECRETS_FILE`, is refused by the same check. Abhed refuses to start
+when one lies where commands can write (the workspace, an added directory, a
+temp folder or a toolchain cache) unless it is under the workspace's or the
+home directory's `.abhed/`, since a command there could move a folder above
+it (`internal/sandboxconfig`). This is enforced before the rules are
+consulted, because a rule that protects the file the rules live in can be
+removed by editing that file. `internal/tools/state_test.go`,
+`internal/sandbox/state_test.go` and `server/state_paths_test.go` try the
+spellings, links, swaps and hardlinks, and fail if any succeeds.
+
+Abhed's own git commands run on the host, outside the sandbox, in a repository
+the agent can write: the branch and change count in each prompt, worktrees for
+parallel runs, and a resolved issue's commit and push. They switch off, in
+git's command-line scope (through `GIT_CONFIG_COUNT`, which names any driver),
+the settings known to name a program git would run for these commands:
+fsmonitor, hooks, clean and smudge filters, merge drivers, textconv and
+external diffs, signing, credential helpers and every transport but https.
+They do not enter submodules, refuse to commit a change holding a repository
+of its own, and drop git's environment variables (`internal/hostgit`). This is
+a list, so it is best effort: a setting a later git adds is not covered until
+it is listed. Running these commands inside the sandbox is the complete
+answer, and is tracked as follow-up work. A resolved issue's branch is pushed
+to an https address built from the issue, from a temporary repository with no
+configuration of its own that borrows the checkout's objects, so the
+agent-writable repository configuration cannot choose where the token goes;
+`GIT_ALLOW_PROTOCOL=https` holds against any per-protocol setting. The
+operator's global configuration still applies, and is trusted only while the
+agent cannot write it. Assuming the process sandbox tier, the push is refused
+when `~/.gitconfig`, `~/.config/git/config` or `$XDG_CONFIG_HOME/git/config`,
+or the folder it would be made in, lies in the run's worktree or a writable
+area of the sandbox (temp folders, toolchain caches). The temporary repository
+is made in `~/.abhed/push`, a private folder sandboxed commands cannot write;
+when that folder is in a writable area, is a file or a link, or is not the
+operator's own (not checked on Windows), the push is refused rather than made
+elsewhere. Not checked: files the global configuration pulls in with
+`include.path` or `includeIf`, and a system gitconfig under a git installed in
+a writable folder, which the operator writes; and on the `none` tier, or in a
+container that mounts the home directory, the run can write the global
+configuration and `~/.abhed/push`, and the push is not refused.
+
+The container and VM tiers mount the workspace as configured and do not hide
+`.abhed/` or a configured state file: a command there can read and write
+them unless they are mounted read-only or left out of the mount.
 
 On macOS a command can stat the workspace `.abhed` directory and what is in
 it, so `ls -R`, pytest's collection and `git add -A` (with a warning that it

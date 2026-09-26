@@ -11,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // downloadEntry is one file a session produced.
@@ -53,23 +54,36 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	abs, err := s.resolveInWorkspace(rel)
 	// The same message whether the path escaped, is withheld or simply is not
 	// there: a distinct reply would confirm what exists behind the boundary.
-	if err != nil || !s.mayServe(abs) {
+	if err != nil || !s.mayServe(abs) || tools.IsState(s.requested(rel), s.opts.Workspace) {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
 
-	info, err := os.Stat(abs)
-	if err != nil || info.IsDir() {
+	// The path was judged before this open, and a link can be swapped in
+	// between; so the file is opened under the workspace held open as a root,
+	// and what was opened is judged again.
+	root, err := filepath.EvalSymlinks(s.opts.Workspace)
+	if err != nil {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
-
-	f, err := os.Open(abs)
+	c, err := tools.NewStateSet(s.opts.Workspace).Confine(root, s.opts.Workspace)
+	if err != nil {
+		WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	defer c.Close()
+	f, err := c.OpenRead(abs)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "file not found")
 		return
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		WriteError(w, http.StatusNotFound, "file not found")
+		return
+	}
 
 	name := filepath.Base(abs)
 	ctype := mime.TypeByExtension(filepath.Ext(name))
@@ -104,16 +118,24 @@ func (s *Server) mayServe(abs string) bool {
 	if err != nil {
 		return false
 	}
-	// The server's own state is never a deliverable, whatever the rules say.
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		if part == ".abhed" {
-			return false
-		}
+	// The server's own state is never a deliverable, whatever the rules say,
+	// under any spelling or link that reaches it.
+	if !filepath.IsLocal(rel) || tools.IsState(abs, root, s.opts.Workspace) {
+		return false
 	}
 	// Then the operator's rules, asked the way the agent's read is asked.
 	// Anything short of allow is a refusal: nobody can answer a prompt here.
 	args, _ := json.Marshal(map[string]string{"path": abs})
 	return s.newPolicy(policy.ModeDefault).Evaluate("read", false, args).Decision == policy.Allow
+}
+
+// requested is the path a client named, joined to the workspace but with no
+// link followed, so the state check sees the spelling as well as the target.
+func (s *Server) requested(rel string) string {
+	if filepath.IsAbs(rel) {
+		return filepath.Clean(rel)
+	}
+	return filepath.Join(s.opts.Workspace, rel)
 }
 
 // resolveInWorkspace turns a client-supplied path into an absolute one that is

@@ -37,9 +37,18 @@ type UndoLog struct {
 	// restart. Failure to persist is logged, not fatal — losing undo history is
 	// better than failing the edit that was about to happen.
 	Persist func(cp Checkpoint) error
+	// writeFile and removeFile restore and remove a file. They are the
+	// session's, so undo is held to the workspace as the file tools are.
+	writeFile  func(path string, data []byte) error
+	removeFile func(path string) error
 }
 
-func NewUndoLog() *UndoLog { return &UndoLog{} }
+// NewUndoLog records checkpoints that undo restores with write and removes
+// with remove. Both are required: a session passes RestoreFile and
+// RemoveFile, so a link swapped in cannot send undo out of the workspace.
+func NewUndoLog(write func(path string, data []byte) error, remove func(path string) error) *UndoLog {
+	return &UndoLog{writeFile: write, removeFile: remove}
+}
 
 // BeginTurn groups subsequent checkpoints, so undo reverts a whole turn's worth
 // of edits rather than one file at a time. A model that edits four files to
@@ -115,7 +124,7 @@ func (u *UndoLog) Undo() ([]string, error) {
 		cp := earliest[path]
 		if !cp.Existed {
 			// Undoing a creation means removing the file.
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			if err := u.remove(path); err != nil && !os.IsNotExist(err) {
 				failures = append(failures, fmt.Sprintf("%s: %v", path, err))
 				continue
 			}
@@ -123,7 +132,7 @@ func (u *UndoLog) Undo() ([]string, error) {
 			continue
 		}
 		// A snapshot holds whatever the file held, secrets included: owner-only.
-		if err := os.WriteFile(path, cp.Before, 0o600); err != nil {
+		if err := u.write(path, cp.Before); err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", path, err))
 			continue
 		}
@@ -135,6 +144,20 @@ func (u *UndoLog) Undo() ([]string, error) {
 			strings.Join(failures, "; "))
 	}
 	return restored, nil
+}
+
+func (u *UndoLog) write(path string, data []byte) error {
+	if u.writeFile == nil {
+		return fmt.Errorf("undo has no way to write files")
+	}
+	return u.writeFile(path, data)
+}
+
+func (u *UndoLog) remove(path string) error {
+	if u.removeFile == nil {
+		return fmt.Errorf("undo has no way to remove files")
+	}
+	return u.removeFile(path)
 }
 
 // Pending reports how many turns can still be undone.

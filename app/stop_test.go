@@ -19,6 +19,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 )
 
 // TestStopHelper is the command a test below starts and signals: rpc or eval,
@@ -120,6 +124,7 @@ func TestRPCExitsOnSIGTERMAndEndsItsCommand(t *testing.T) {
 	pidFile := filepath.Join(dir, "child.pid")
 	url, _ := stubModel(t, `{"command":"sh -c 'echo $$ > `+pidFile+`; exec sleep 60'; true","description":"long"}`)
 	ws, helper, stdin, out := stopWorkspace(t, url, "rpc")
+	requireHostTier(t, ws)
 	stderr := &strings.Builder{}
 	helper.Stderr = stderr // stdout alone is the protocol
 	if err := helper.Start(); err != nil {
@@ -213,6 +218,7 @@ func TestACPExitsOnSIGTERMAfterTheStopReason(t *testing.T) {
 	pidFile := filepath.Join(dir, "child.pid")
 	url, _ := stubModel(t, `{"command":"sh -c 'echo $$ > `+pidFile+`; exec sleep 60'; true","description":"long"}`)
 	ws, helper, stdin, _ := stopWorkspace(t, url, "acp")
+	requireHostTier(t, ws)
 	helper.Stdout = nil
 	stdout, err := helper.StdoutPipe()
 	if err != nil {
@@ -293,5 +299,21 @@ func TestACPExitsOnSIGTERMAfterTheStopReason(t *testing.T) {
 		if syscall.Kill(pid, 0) == nil {
 			t.Fatalf("the command %d outlived acp", pid)
 		}
+	}
+}
+
+// requireHostTier skips where rpc and acp would run the command somewhere its
+// pid is not the host's: a container, or a sandbox this machine cannot start.
+func requireHostTier(t *testing.T, ws string) {
+	t.Helper()
+	sb, err := sandboxconfig.Build(config.Config{}, ws)
+	if err != nil {
+		t.Skipf("no sandbox here: %v", err)
+	}
+	if sb.Tier() == sandbox.TierContainer || sb.Tier() == sandbox.TierVM {
+		t.Skipf("the %s tier gives the command a pid namespace of its own", sb.Tier())
+	}
+	if out, err := sb.Command(t.Context(), ws, "true").CombinedOutput(); err != nil {
+		t.Skipf("the %s tier cannot run a command here: %v: %s", sb.Tier(), err, out)
 	}
 }

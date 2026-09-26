@@ -57,6 +57,11 @@ Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
 per run.
 
+Commands run in the sandbox tier the workspace's configuration sets
+(`sandbox.min_tier`, `process` by default), as from the terminal: `start`
+answers `{"type":"error"}` when no backend meets that tier, rather than running
+`bash` on the host.
+
 On Ctrl-C, SIGTERM or a hang-up, `abhed rpc` and `abhed acp` end the prompt
 that is running, and the command it was running with everything that command
 started, wait for it to record its end, then exit with 128 plus the signal's
@@ -81,7 +86,44 @@ The token is `GITHUB_TOKEN`, `GITLAB_TOKEN` or `GITEA_TOKEN` from the
 environment, or the same name in [`abhed secret`](04-permissions.md#secrets).
 It is used here, outside the session — the run sees the issue text and the
 checkout, never the token — and it reaches `git push` through the
-environment, not the command line.
+environment, not the command line, scoped to the forge's host.
+
+The branch is pushed over https to the issue's own repository, at an
+address built from the issue URL; a git remote, which the run could have
+changed, is not consulted, and `-remote` is ignored. The push starts from a
+temporary repository that borrows your checkout's objects and has no
+configuration of its own, so your global git configuration applies but the
+repository's does not: nothing the run wrote there (a proxy, a TLS setting,
+an address rewrite) decides where the token goes. The temporary repository
+is outside your checkout, so `includeIf "gitdir:…"` sections of your global
+configuration do not match it: give a forge's certificate authority with
+`-ca`, and scope a proxy or TLS setting to the host with `http.<url>.*`.
+
+On the process sandbox tier, the push is refused, rather than trusting a file
+the run could have written, when `~/.gitconfig`, `~/.config/git/config` or
+`$XDG_CONFIG_HOME/git/config`, or the folder it would be made in, lies in the
+run's worktree, a temp folder or a toolchain cache (for example a home
+directory under `/tmp`). The rest of the checkout is not the run's to write,
+so a home directory kept as a dotfiles checkout still pushes. The temporary
+repository is made in `~/.abhed/push`, which sandboxed commands cannot write;
+if that folder is in one of those areas, or is a file, a link or not your own
+(ownership is not checked on Windows), the push is refused. On the `none`
+tier, or in a container that mounts your home directory, the run can write
+your global configuration and `~/.abhed/push`, and the push is not refused.
+
+The commit, diff and push run with the program-running settings switched
+off: hooks (including your own pre-commit and pre-push hooks), commit
+signing, clean and smudge filters (so Git LFS does not run), textconv and
+external diffs, credential helpers and every transport but https. git's own
+environment variables are dropped too, so `GIT_SSL_CAINFO` does not apply:
+use `-ca`. A change that holds a git repository of its own, such as a nested
+checkout or a submodule the run made, is not committed.
+
+If your global configuration rewrites https addresses to ssh (a
+`url."git@github.com:".insteadOf https://github.com/`), the push stops with
+"transport 'ssh' not allowed". Keep pushes to that host on https with
+`git config --global url.https://github.com/.pushInsteadOf https://github.com/`;
+fetches keep using ssh.
 
 Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule

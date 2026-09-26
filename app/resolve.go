@@ -39,6 +39,12 @@ var newResolveRunner = func(ctx context.Context, opts abhed.Options) (forge.Runn
 	}, nil
 }
 
+// pushWork sends the branch to the issue's repository. A variable so the test
+// can push to a local repository instead of a forge.
+var pushWork = func(ctx context.Context, w *forge.Work, repo string, ref forge.Ref, auth, ca string) error {
+	return w.Push(ctx, repo, ref, auth, ca)
+}
+
 // resolveMode is the run's mode. The default, auto, yields to a mode the
 // managed configuration pins; a mode asked for by flag is judged as given.
 func resolveMode(cfg config.Config, fs *flag.FlagSet, mode string) string {
@@ -54,7 +60,7 @@ func resolveCmd(workspace string, args []string) int {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	kind := fs.String("kind", "", "github, gitlab or gitea; inferred from the host when empty")
 	base := fs.String("base", "", "branch the pull request targets (default: the repository's default branch)")
-	remote := fs.String("remote", "origin", "git remote to push to")
+	remote := fs.String("remote", "", "ignored: the branch is pushed to the issue's repository")
 	ca := fs.String("ca", os.Getenv("ABHED_FORGE_CA"), "PEM file with the certificate authority of a self-hosted forge")
 	mode := fs.String("mode", "auto", "permission mode for the run; a mode the managed configuration pins replaces the default")
 	allow := fs.String("allow", "", "comma-separated allow rules for the run, e.g. 'bash(go test*)'")
@@ -145,7 +151,7 @@ func resolveCmd(workspace string, args []string) int {
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
 		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode,
-		Allow: splitRules(*allow),
+		Allow: splitRules(*allow), Sandbox: true,
 		OnEvent: func(ev abhed.Event) {
 			if ev.Type == "agent.message" {
 				var p struct {
@@ -201,10 +207,15 @@ func resolveCmd(workspace string, args []string) int {
 		return fail(fmt.Errorf("opening a pull request needs approval: pass -y, or add the rule forge_pr(%s/%s) to permissions.allow", ref.Owner, ref.Repo))
 	}
 
-	if err := work.Push(ctx, *remote, fg.PushAuth()); err != nil {
+	// The branch goes to the issue's own repository, from the operator's
+	// checkout: a remote the agent could have changed is not consulted.
+	if *remote != "" {
+		fmt.Fprintf(os.Stderr, "abhed: -remote is ignored; pushing to %s\n", ref.Host)
+	}
+	if err := pushWork(ctx, work, workspace, ref, fg.PushAuth(), *ca); err != nil {
 		return fail(err)
 	}
-	body := fmt.Sprintf("Resolves %s.\n\n```\n%s\n```\n", is.URL, work.Diff(ctx))
+	body := fmt.Sprintf("Resolves %s.\n\n```\n%s\n```\n", is.URL, work.Diff(ctx, workspace))
 	url, err := fg.OpenPullRequest(ctx, ref, forge.PullRequest{Head: work.Branch, Base: target,
 		Title: fmt.Sprintf("Resolve #%d: %s", ref.Number, is.Title), Body: body})
 	if err != nil {

@@ -63,6 +63,8 @@ func TestDownloadRefusesServerStateAndDeniedFiles(t *testing.T) {
 	for _, path := range []string{
 		".abhed/users.json", ".abhed/config.json", "./.abhed/users.json",
 		filepath.Join(ws, ".abhed", "users.json"),
+		// A case-insensitive disk opens these as the same files.
+		".ABHED/users.json", ".Abhed/config.json", filepath.Join(ws, ".ABHED", "users.json"),
 		".env", "secrets/key.pem",
 	} {
 		rec := get(path)

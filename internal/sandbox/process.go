@@ -79,6 +79,48 @@ func (s *Process) Describe() string {
 // stateDir mirrors tools.StateDir; the package is kept free of tool imports.
 const stateDir = ".abhed"
 
+// tempAreas are the system temp folders commands may write.
+var tempAreas = []string{"/private/tmp", "/private/var/tmp"}
+
+// userTemp is the per-user TMPDIR, resolved.
+func userTemp() string {
+	tmp := strings.TrimSuffix(os.Getenv("TMPDIR"), "/")
+	if tmp == "" {
+		return ""
+	}
+	// Trim the trailing slash BEFORE resolving: EvalSymlinks on a path with
+	// one can resolve somewhere other than intended.
+	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = resolved
+	}
+	return tmp
+}
+
+// cacheAreas are the toolchain caches under home that commands may write.
+func cacheAreas() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range []string{".cache", "Library/Caches", ".npm", ".cargo/registry", "go/pkg/mod"} {
+		out = append(out, filepath.Join(home, c))
+	}
+	return out
+}
+
+// WritableAreas are the folders beyond the workspace that a sandboxed
+// command may write on some backend: temp folders and toolchain caches. A
+// file there cannot be protected by the sandbox's rules, since a command can
+// move the folder around it.
+func WritableAreas() []string {
+	out := append([]string{"/tmp", "/var/tmp", os.TempDir()}, tempAreas...)
+	if tmp := userTemp(); tmp != "" {
+		out = append(out, tmp)
+	}
+	return append(out, cacheAreas()...)
+}
+
 func (s *Process) seatbeltProfile() string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
@@ -86,7 +128,7 @@ func (s *Process) seatbeltProfile() string {
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")
 	fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", s.policy.Workspace)
-	for _, p := range []string{"/private/tmp", "/private/var/tmp", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/urandom", "/dev/dtracehelper"} {
+	for _, p := range append(tempAreas[:len(tempAreas):len(tempAreas)], "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/urandom", "/dev/dtracehelper") {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
 	}
 	// A command on a terminal reopens its tty; the workbench runs one that way.
@@ -96,21 +138,14 @@ func (s *Process) seatbeltProfile() string {
 	// `cargo build` inside the sandbox fails with "operation not permitted" —
 	// which reads as an agent error rather than a sandbox one. Found by running
 	// the USAGE.md quickstart end to end.
-	if tmp := strings.TrimSuffix(os.Getenv("TMPDIR"), "/"); tmp != "" {
-		// Trim the trailing slash BEFORE resolving: EvalSymlinks on a path with
-		// one can resolve somewhere other than intended.
-		if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
-			tmp = resolved
-		}
+	if tmp := userTemp(); tmp != "" {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", tmp)
 	}
 
 	// Toolchains need writable caches or builds fail in ways that look like
 	// agent errors rather than sandbox errors.
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, c := range []string{".cache", "Library/Caches", ".npm", ".cargo/registry", "go/pkg/mod"} {
-			fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", filepath.Join(home, c))
-		}
+	for _, c := range cacheAreas() {
+		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", c)
 	}
 
 	// The harness's own state is out of reach for commands, as it is for the
@@ -127,6 +162,11 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(home, stateDir))
 		// Skills are the one part of it a command may need: a skill can ship a script.
 		fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(home, stateDir, "skills"))
+	}
+
+	for _, p := range s.statePaths() {
+		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
+		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
 	}
 
 	if !s.policy.AllowNetwork {
@@ -239,6 +279,18 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		for _, p := range s.policy.ReadOnlyPaths {
 			args = append(args, "--ro-bind-try", p, p)
 		}
+		// State kept outside .abhed is hidden where a bind above would show
+		// it: a folder by an empty one, a file by /dev/null.
+		for _, p := range s.statePaths() {
+			if !s.visibleInside(p) {
+				continue
+			}
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				args = append(args, "--tmpfs", p)
+			} else if err == nil {
+				args = append(args, "--ro-bind", "/dev/null", p)
+			}
+		}
 		args = append(args, argv...)
 
 		cmd := exec.CommandContext(ctx, "bwrap", args...)
@@ -250,6 +302,34 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 	// Unreachable when Available() gated correctly, but fail closed rather than
 	// silently running unsandboxed.
 	return exec.CommandContext(ctx, "false")
+}
+
+// statePaths returns the policy's state paths, each also as its links
+// resolve, since a profile rule names the path the kernel sees.
+func (s *Process) statePaths() []string {
+	var out []string
+	for _, p := range s.policy.StatePaths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, abs)
+		if real, err := filepath.EvalSymlinks(abs); err == nil && real != abs {
+			out = append(out, real)
+		}
+	}
+	return out
+}
+
+// visibleInside reports whether p is under a path bwrap binds into the
+// sandbox; anything else is not there to hide.
+func (s *Process) visibleInside(p string) bool {
+	for _, root := range append([]string{s.policy.Workspace}, s.policy.ReadOnlyPaths...) {
+		if rel, err := filepath.Rel(root, p); err == nil && filepath.IsLocal(rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // env builds a minimal environment. The agent should not inherit the operator's
@@ -304,14 +384,25 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 // HostCommandEnv is the server's environment for a command run on the host,
 // without what would make bash run a file first (BASH_ENV) or send a plain cd
 // somewhere other than the folder named (CDPATH), which the tracker follows.
+// Exported functions and shell options go too: BASH_FUNC_cd%% redefines cd,
+// and SHELLOPTS or BASHOPTS change how every line is run.
 func HostCommandEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "BASH_ENV=") && !strings.HasPrefix(kv, "CDPATH=") {
+		if !hostDropped(kv) {
 			out = append(out, kv)
 		}
 	}
 	return out
+}
+
+func hostDropped(kv string) bool {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_"} {
+		if strings.HasPrefix(kv, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Shell starts an interactive bash directly on the host, with nothing

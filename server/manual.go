@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -126,7 +125,7 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 	abs := filepath.Join(v.sess.Root, rel)
 
 	// Refuse to write over a file that changed since the editor loaded it.
-	current, err := os.ReadFile(abs) // #nosec G304 -- resolved inside the workspace and judged by policy above
+	current, err := v.readAll(rel)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if req.Base != "" {

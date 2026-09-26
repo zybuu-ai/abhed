@@ -81,6 +81,7 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("Invalid glob pattern %q: %v", a.Pattern, err)
 	}
 
+	state := s.stateSet()
 	type hit struct {
 		path string
 		mod  int64
@@ -95,9 +96,18 @@ func (Glob) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if path != root && skipDirs[d.Name()] {
+			if path != root && (skipDirs[d.Name()] || state.HasEntry(d)) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// A link is listed only if a read of it would be allowed: it may lead
+		// out of the workspace or into Abhed's state.
+		if d.Type()&fs.ModeSymlink != 0 {
+			if _, err := s.resolveWith(path, state); err != nil {
+				return nil //nolint:nilerr // a link out of bounds is left out, not an error
+			}
+		} else if state.HasEntry(d) {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
@@ -294,6 +304,16 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	var results []fileHit
 	total := 0
 
+	state := s.stateSet()
+	// Files are read under the searched folder held open as a root, so a
+	// folder swapped for a link during the walk cannot lead the read out.
+	var within *Confined
+	if info, err := os.Stat(root); err == nil && info.IsDir() {
+		if within, err = state.Confine(root); err != nil {
+			return errf("Cannot search %s: %v", root, err)
+		}
+		defer within.Close()
+	}
 	walk := func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
@@ -302,7 +322,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if path != root && skipDirs[d.Name()] {
+			if path != root && (skipDirs[d.Name()] || state.HasEntry(d)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -313,11 +333,25 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 				return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
 			}
 		}
+		// Links are not followed: one could lead out of the workspace or into
+		// Abhed's state. A file that is a state file by another name (a
+		// hardlink) is refused by ReadEntry, which judges what it opened. A
+		// link named as the path was already resolved.
+		if path != root && d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		info, ierr := d.Info()
 		if ierr != nil || info.Size() > maxGrepFileSize {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
 		}
-		data, rerr := os.ReadFile(path)
+		var data []byte
+		var rerr error
+		if within != nil {
+			rel, _ := filepath.Rel(root, path)
+			data, rerr = within.ReadEntry(rel, info)
+		} else {
+			data, rerr = s.readFile(path)
+		}
 		if rerr != nil || IsBinary(data) {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
 		}

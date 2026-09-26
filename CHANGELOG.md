@@ -20,6 +20,36 @@ All notable changes to Abhed are recorded here. The format follows
   as `bash(go test*)`, inside a sandbox tier, since it approves whatever the
   agent writes into the tests or the Makefile. A refusal in a run with no one
   to approve no longer names a rule for these commands.
+- `abhed resolve` pushes to the issue's repository over https, built from the
+  issue URL, and ignores `-remote`. Its git runs without hooks, signing,
+  filters (Git LFS included) or `GIT_*` variables; pass `-ca` rather than
+  `GIT_SSL_CAINFO`. A change holding a nested repository is not committed. A
+  global `insteadOf` that rewrites https to ssh now stops the push; add a
+  matching `url.<https base>.pushInsteadOf` to keep pushes on https. The
+  push runs outside the checkout, so `includeIf "gitdir:…"` sections of the
+  global configuration no longer apply to it: use `-ca`, or host-scoped
+  `http.<url>.*` settings. On the process sandbox tier, a push is refused
+  when the global git configuration, or the folder it would be made in,
+  lies in the run's worktree, a temp folder or a toolchain cache (a home
+  directory under `/tmp`, say), and when `~/.abhed/push` is in one of those,
+  is a file or a link, or is not your own (not checked on Windows). On the
+  `none` tier, or in a container that mounts the home directory, the run can
+  write both, and the push is not refused.
+- A start with `auth.users_file` or `ABHED_SECRETS_FILE` pointing inside
+  the workspace, an added directory, a temp folder or a toolchain cache is now
+  refused, unless the file is under the workspace's or the home directory's
+  `.abhed/`. Move it to a state directory outside them.
+- The `approvals` table gains `answer_scope` and `ended_at`. With two
+  database roles, run `abhed migrate` as the owner before starting the new
+  server: it refuses to start on the older schema and says so. The migration
+  closes the approval rows already in the table, whose turns are not waiting.
+- An unbound answer (no `request_id`) to a session no node is running, or
+  whose request has ended, now gets `409` instead of `204`: nothing was
+  waiting on it.
+- `abhed rpc`, `abhed acp` and `abhed resolve` now run `bash` in the
+  configured sandbox tier, `process` by default. On a host without one
+  (Linux without bubblewrap), a session no longer starts; install it, or set
+  `sandbox.min_tier` to `none` for a trusted repository.
 - A narrow `bash` allow rule no longer approves a chained or redirected
   command: `bash(go test*)` no longer runs `go test ./... | tee out` unasked.
   In a run with no one to approve (`-p`, CI, the SDK), such a command is now
@@ -117,8 +147,27 @@ All notable changes to Abhed are recorded here. The format follows
   an open `$(`. Ctrl \` leaves the terminal from the keyboard, now that Tab
   stays in it.
 
+### Changed
+
+- `server.ApprovalStore` changed for the approval fixes below: `AnswerApproval`
+  takes the answer's scope, `ApprovalResult` returns it, and `EndApproval` is
+  new. `store.Postgres` implements the new methods, and `store.Approval` gains
+  `AnswerScope` and `Ended`. A store written against the old interface must
+  add them.
+- `agent.NewUndoLog` takes the functions that restore and remove a file;
+  both are required, and the CLI and the server pass the session's
+  `RestoreFile` and `RemoveFile`. Undo without them refuses rather than
+  writing by path.
+- `sandbox.Policy` gains `StatePaths`, the state files a configuration keeps
+  outside `.abhed/`, which the process sandbox also denies to commands. A
+  start with one where commands can write is refused (see Security).
+
 ### Fixed
 
+- The container sandbox tier failed every command on Docker, which refuses
+  `--uts private`; it now runs there as it does on Podman. The sandbox's
+  hostname is now always `abhed`, and on Podman its PID and UTS namespaces
+  are pinned private whatever `containers.conf` says.
 - On Debian and Ubuntu, the container image included, commands linked
   through `/etc/alternatives` (`vi`, `vim`, `editor`, `awk` and others) could
   not start in the Linux process sandbox.
@@ -259,6 +308,100 @@ All notable changes to Abhed are recorded here. The format follows
   answer. A key followed at once by Enter shows the choices again, and Enter
   alone never accepts. Other typing is kept on the line and sent as a
   steering message on Enter, and the prompt says so.
+- Project memory (`ABHED.md`, `ABHED.local.md`) was read with no check, so
+  a link the agent planted there put `.abhed/users.json`, the secrets file or
+  a file outside the workspace into the system prompt, and `/memory` printed
+  it. Workspace memory files are now read as the file tools read; the
+  operator's files in `~/.abhed` and `/etc/abhed` are read only when they
+  are not links.
+- The git commands Abhed runs itself on the host (the branch and change
+  count in every prompt, worktrees for parallel runs, and a resolved issue's
+  commit, diff and push) ran whatever the repository's own configuration
+  named: an fsmonitor, hooks, clean and smudge filters, textconv and
+  external diffs, a signing program, a credential helper or a transport. The
+  agent can write that configuration, so it ran with the server's privileges
+  outside the sandbox. The settings known to do so are now switched off in
+  git's command-line scope, submodules are not entered, a change holding a
+  repository of its own is not committed, and git's own environment
+  variables are dropped. The list is best effort; running this git inside
+  the sandbox is follow-up work.
+- `abhed resolve` pushed with the forge token to whatever the named remote
+  pointed at, which the run could change, sending the token to another host.
+  It now pushes to an https address built from the issue, from a temporary
+  repository with no configuration of its own, so the repository's
+  configuration (TLS checks, proxies, address rewrites, transports allowed
+  by name) no longer decides where the token goes; only the operator's
+  global configuration applies.
+- The line that keeps parallel-run worktrees out of `git status` was
+  appended to `.git/info/exclude` through any link there, so a link to
+  `.abhed/users.json` corrupted it. It is now written as the file tools
+  write, and not at all when the git directory is outside the workspace.
+- "Approve once" could become "always allow". A node reading an answer from
+  the store, because it landed on another node or the turn read the row
+  first, remembered the request's scope whatever the reviewer chose. The
+  approval row now keeps the scope the answer carried (`answer_scope`), and
+  only an answer that chose "always allow" widens the session.
+- An approval row stayed open after its request ended unanswered
+  (interrupted, shut down, timed out or its turn failed), including one
+  written after the turn gave up waiting for it. After a restart, an answer
+  with no `request_id` then marked it approved with `204` though nothing
+  was waiting, and the record showed an approval no one acted on. A request
+  now closes its row when it ends (`ended_at`), a closed row takes no
+  answer, and an unbound answer on a node not running the session is
+  recorded only when another node is running it.
+- `abhed rpc`, `abhed acp` and `abhed resolve` ignored the workspace's
+  `sandbox` configuration: `bash` ran on the host with the operator's whole
+  environment, the model's API key variable included, and could write outside
+  the workspace. They now run it in the configured tier, as the terminal does,
+  and refuse to start a session when no backend meets `sandbox.min_tier`. The
+  SDK gains `Options.Sandbox` to ask for the same; without it, and without a
+  managed `sandbox` setting, an embedded agent still builds no sandbox.
+- A command run without a sandbox (the `none` tier, and the unsandboxed
+  fallback of the bash tool and the workbench terminal) no longer inherits
+  the server's exported bash functions (`BASH_FUNC_*`), `SHELLOPTS` or
+  `BASHOPTS`, alongside `BASH_ENV` and `CDPATH`. An exported `cd` or `pwd`
+  function ran in place of the builtin, and `SHELLOPTS` changed how every
+  line was run.
+- Abhed's own state (`.abhed/`, and a users or secrets file configured
+  elsewhere) could be reached under another name. On a case-insensitive disk,
+  the macOS default, `.ABHED/users.json` and `.Abhed/config.json` open the
+  files in `.abhed/`; a file or folder symlink in the workspace pointing into
+  it did the same, even one whose target did not exist yet. Through these the
+  agent's read, write, edit and a followed `cd` reached it, and so did the
+  server's `download`, `file`, `tree` and `search` endpoints, which returned
+  the password hashes in `users.json`. Every one of them, and the rest of the
+  workbench's path endpoints, now uses one check: names compare without case,
+  both the path as given and the path with every link followed are judged,
+  and the filesystem is asked whether the path or a folder above it is a
+  state directory or a state file. A link swapped in between that check and
+  the open is caught too: files are opened under the workspace root held
+  open, each folder is judged by identity once opened, and what was opened
+  is judged again (see the entry on leaving the workspace below). An upload
+  is refused when its folder leads out of the workspace or into the state.
+  A hardlink is recognised for the users, config and secrets files, and for
+  up to 4,096 other files and folders in the state directories.
+- A users file set with `auth.users_file`, or a secrets file set with
+  `ABHED_SECRETS_FILE`, could sit where sandboxed commands write, such as a
+  folder in the workspace or a temp folder, and be read or replaced. Abhed
+  now refuses to start when one does, unless it is under the workspace's or
+  the home directory's `.abhed/`; a path that does not exist yet is judged
+  by its deepest existing folder, with links followed.
+- `glob`, `grep` and the code index followed file symlinks with no check, so
+  a link in the workspace to `~/.ssh/id_rsa` or into `.abhed/` was searched
+  and printed. `grep` and the index no longer read through links, and none of
+  them read a file that is a state file under another name (a hardlink, as
+  bounded above) or descend into `.abhed/`; `glob` lists a link only when a
+  read of it would be allowed. A write through a link whose target does not
+  exist yet is judged by where the target would be.
+- `read`, `write`, `edit` and `/undo` could leave the workspace through a
+  folder swapped for a link after the path was checked, which a background
+  command can do: a read returned a file outside, a write or an undone edit
+  replaced one, and an undone creation removed one, including
+  `.abhed/users.json`. Files are now opened, written, removed and
+  snapshotted under the workspace root held open as an `os.Root`, following
+  links only while they stay inside it; the same holds for `/diff`, the
+  server's download, viewer, save and upload, and the code index. A link
+  into a directory added with `--add-dir` is used in that directory.
 - An approval could answer a different request from the one it was shown
   for. `POST /v1/sessions/{id}/approve` named no call, so after Send now a
   click on the interrupted run's prompt approved the new run's call; and an

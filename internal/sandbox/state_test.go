@@ -129,3 +129,27 @@ func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
+
+// A users file the configuration keeps outside .abhed is hidden from commands
+// as .abhed is: not readable, and not replaceable.
+func TestProcessSandboxShieldsConfiguredStatePaths(t *testing.T) {
+	requireNetNS(t)
+	ws := workspace(t)
+	accounts := filepath.Join(ws, "accounts.json")
+	if err := os.WriteFile(accounts, []byte(`{"admin":"hash-123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.StatePaths = []string{accounts}
+	s := NewProcess(p)
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	out, _ := runIn(t, s, ws, "cat accounts.json 2>&1; echo ---; echo '{}' > accounts.json 2>&1; echo done")
+	if strings.Contains(out, "hash-123") {
+		t.Fatalf("the users file was readable from a command:\n%s", out)
+	}
+	if got, _ := os.ReadFile(accounts); !strings.Contains(string(got), "hash-123") {
+		t.Fatalf("a command replaced the users file:\n%s", out)
+	}
+}

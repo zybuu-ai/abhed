@@ -46,8 +46,9 @@ type Session struct {
 	// syntax. The zero value refuses it.
 	Syntax SyntaxMode
 
-	mu    sync.Mutex
-	reads map[string]string // abs path -> content hash at time of read
+	mu     sync.Mutex
+	reads  map[string]string // abs path -> content hash at time of read
+	frozen *StateSet         // set by FreezeState
 }
 
 // snapshot captures a file's current content before it is modified. Called by
@@ -56,7 +57,7 @@ func (s *Session) recordChange(path string) {
 	if s.Checkpoint == nil {
 		return
 	}
-	data, err := os.ReadFile(path)
+	data, err := s.readFile(path)
 	if err != nil {
 		// A missing file is a valid checkpoint: undo means "delete it again".
 		s.Checkpoint(path, nil, false)
@@ -175,6 +176,12 @@ func within(path string, roots []string) bool {
 // turns after a cd), and it stays inside the workspace. Both failures return
 // messages that tell the model how to correct the call.
 func (s *Session) Resolve(path string) (string, error) {
+	return s.resolveWith(path, nil)
+}
+
+// resolveWith is Resolve judged against a state set the caller already
+// gathered, such as a walk's; nil gathers one.
+func (s *Session) resolveWith(path string, state *StateSet) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
@@ -184,7 +191,10 @@ func (s *Session) Resolve(path string) (string, error) {
 	}
 
 	clean := filepath.Clean(path)
-	if isHarnessState(clean) {
+	if state == nil {
+		state = s.stateSet()
+	}
+	if state.Has(clean) {
 		return "", fmt.Errorf("%s is Abhed's own state (%s holds its policy, users and keys). "+
 			"The agent cannot read or change it in any mode; the operator edits it by hand. Do not retry",
 			path, StateDir)
@@ -217,6 +227,11 @@ func (s *Session) Resolve(path string) (string, error) {
 	if !within(clean, roots) && !within(clean, s.lexicalRoots()) {
 		return "", s.denied(path, roots)
 	}
+	// And where a link that does not resolve yet would lead: a write through
+	// it creates its target.
+	if !within(RealPath(clean), roots) {
+		return "", s.denied(path, roots)
+	}
 	return clean, nil
 }
 
@@ -224,19 +239,34 @@ func (s *Session) Resolve(path string) (string, error) {
 // holds Abhed's own configuration, users and keys.
 const StateDir = ".abhed"
 
-// isHarnessState reports whether a cleaned path has StateDir as a component.
-//
-// It is a boundary and not a rule: a rule can be edited away by whoever can
-// write the configuration, and this is what stops the agent being that
-// whoever. A prompt-injected agent that could rewrite its own deny list, or
-// add a user for the next start, would have no boundary at all.
-func isHarnessState(clean string) bool {
-	for _, part := range strings.Split(clean, string(filepath.Separator)) {
-		if part == StateDir {
-			return true
-		}
+// isState reports whether a path names Abhed's state by any spelling; see
+// StateSet.
+func (s *Session) isState(clean string) bool {
+	return s.stateSet().Has(clean)
+}
+
+// FreezeState makes the session judge every path against the state as it is
+// now, rather than reading it again per call: for a short-lived session that
+// resolves many paths, such as one request's view of the workspace.
+func (s *Session) FreezeState() *StateSet {
+	set := s.stateSet()
+	s.mu.Lock()
+	s.frozen = set
+	s.mu.Unlock()
+	return set
+}
+
+// stateSet gathers the state reachable from this session's roots.
+func (s *Session) stateSet() *StateSet {
+	s.mu.Lock()
+	if s.frozen != nil {
+		defer s.mu.Unlock()
+		return s.frozen
 	}
-	return false
+	bases := append([]string{s.Root, s.rawRoot}, s.Roots...)
+	bases = append(bases, s.rawRoots...)
+	s.mu.Unlock()
+	return NewStateSet(bases...)
 }
 
 // lexicalRoots returns the roots as given, before symlink resolution, so the
@@ -293,7 +323,7 @@ func (s *Session) ChangedSinceRead(path string) bool {
 	if !found {
 		return false
 	}
-	data, err := os.ReadFile(path)
+	data, err := s.readFile(path)
 	if err != nil {
 		return false
 	}

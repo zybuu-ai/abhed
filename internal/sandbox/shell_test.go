@@ -281,6 +281,26 @@ func TestNoneCommandLeavesOutBashEnvAndCdpath(t *testing.T) {
 	}
 }
 
+// Nor does it inherit exported functions or shell options, which would
+// redefine cd and pwd or change how every line runs.
+func TestNoneCommandLeavesOutFunctionsAndShellOptions(t *testing.T) {
+	ws := workspace(t)
+	t.Setenv("BASH_FUNC_cd%%", "() { echo HIJACKED-CD; }")
+	t.Setenv("BASH_FUNC_pwd%%", "() { echo HIJACKED-PWD; }")
+	t.Setenv("SHELLOPTS", "xtrace")
+	t.Setenv("BASHOPTS", "cdable_vars")
+	out, err := NewNone(DefaultPolicy(ws)).Command(context.Background(), ws, `cd . ; pwd; echo "[$SHELLOPTS]" | grep -c xtrace; env | grep -c BASH_FUNC_; true`).CombinedOutput()
+	if err != nil || strings.Contains(string(out), "HIJACKED") || strings.Contains(string(out), "+ ") ||
+		!strings.Contains(string(out), "\n0\n0\n") {
+		t.Fatalf("the host command kept an exported function or shell option: %v\n%s", err, out)
+	}
+	for _, kv := range HostCommandEnv() {
+		if strings.HasPrefix(kv, "BASH_FUNC_") || strings.HasPrefix(kv, "SHELLOPTS=") || strings.HasPrefix(kv, "BASHOPTS=") {
+			t.Errorf("HostCommandEnv kept %s", kv)
+		}
+	}
+}
+
 // vim in the sandbox quits on :wq; a failed history write under home left it
 // waiting at "Press ENTER", which read as a terminal that hung.
 func TestProcessSandboxVimQuitsOnWriteQuit(t *testing.T) {

@@ -19,7 +19,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -440,9 +439,9 @@ func TestShellKillEndsBackgroundJobs(t *testing.T) {
 			}
 			pid, _ := strconv.Atoi(m[1])
 			deadline := time.Now().Add(5 * time.Second)
-			for syscall.Kill(pid, 0) == nil {
+			for processAlive(pid) {
 				if time.Now().After(deadline) {
-					_ = syscall.Kill(pid, syscall.SIGKILL)
+					killProcess(pid)
 					t.Fatalf("%s (exit=%v): job %d outlived its shell", name, byExit, pid)
 				}
 				time.Sleep(50 * time.Millisecond)

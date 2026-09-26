@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -51,6 +53,8 @@ const (
 	maxParked = 8
 	// endedKept is how many requests that stopped waiting a session remembers.
 	endedKept = 64
+	// rowEndWait bounds closing a request's row once it stops waiting.
+	rowEndWait = 5 * time.Second
 )
 
 // move makes one transition, under l.mu, and reports whether it was made.
@@ -166,13 +170,17 @@ func (s *Server) answerHere(w http.ResponseWriter, r *http.Request, live *liveSe
 	// record it decides, and the turn reads it whichever node answered.
 	recorded := false
 	if d := s.approvalStore(); d != nil && durableID != "" {
-		answered, err := d.AnswerApproval(r.Context(), durableID, req.Approved, UserOf(r.Context()))
+		answered, err := d.AnswerApproval(r.Context(), durableID, req.Approved, req.Scope, UserOf(r.Context()))
 		if err != nil {
 			WriteError(w, http.StatusInternalServerError, "could not record the decision")
 			return
 		}
 		if !answered {
-			WriteError(w, http.StatusConflict, "this approval was already answered")
+			// Either another answer won the row, or the request ended and closed it.
+			live.mu.Lock()
+			state = p.state
+			live.mu.Unlock()
+			refuse(w, state)
 			return
 		}
 		recorded = true
@@ -255,7 +263,13 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			l.pending = nil
 		}
 		l.forget(p.RequestID)
+		durableID := p.DurableID
 		l.mu.Unlock()
+		// However the request ended, its row takes no later answer. Closed
+		// off the turn's path, so a slow store does not delay its end.
+		if durableID != "" {
+			go l.endRow(ctx, durableID)
+		}
 	}()
 
 	// Record it durably where the store can. The answer may arrive at
@@ -269,12 +283,22 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 		err error
 	}
 	written := make(chan row, 1)
+	// The id is chosen here, so a row whose write timed out after it committed
+	// can still be found and closed.
+	rowID := newApprovalID()
 	if l.durable != nil {
 		go func() {
-			id, err := l.durable.AskApproval(ctx, store.Approval{
-				SessionID: l.ID, Tool: tool, Args: args,
+			// Not cut short by the interrupt: a write cancelled mid-flight may
+			// still commit, and then nothing would know to close its row.
+			wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalReadyWait)
+			defer cancel()
+			id, err := l.durable.AskApproval(wctx, store.Approval{
+				ID: rowID, SessionID: l.ID, Tool: tool, Args: args,
 				Reason: res.Reason, Scope: res.Scope,
 			})
+			if err != nil {
+				go l.endRow(ctx, rowID)
+			}
 			written <- row{id, err}
 		}()
 	} else {
@@ -287,6 +311,12 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			durableID = w.id
 		}
 	case <-ctx.Done():
+		// The turn has given up; a row written after this is closed here.
+		go func() {
+			if w := <-written; w.err == nil && w.id != "" {
+				l.endRow(ctx, w.id)
+			}
+		}()
 	}
 	l.mu.Lock()
 	p.DurableID = durableID
@@ -346,7 +376,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			return approved, nil
 
 		case <-poll:
-			approved, answered, err := l.durable.ApprovalResult(ctx, durableID)
+			approved, answered, scope, err := l.durable.ApprovalResult(ctx, durableID)
 			if err != nil || !answered {
 				continue
 			}
@@ -355,15 +385,17 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 				return false, ctx.Err()
 			}
 			l.mu.Lock()
-			took := l.move(p, askTaken, approved, "")
+			took := l.move(p, askTaken, approved, scope)
 			l.mu.Unlock()
 			if !took {
 				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
 			}
-			if approved && res.Scope != "" {
+			// Only an answer that chose "always allow" widens the session, and
+			// only to the scope this request offered.
+			if approved && scope != "" && scope == res.Scope {
 				l.mu.Lock()
-				l.allowed[res.Scope] = true
+				l.allowed[scope] = true
 				l.mu.Unlock()
 			}
 			return approved, nil
@@ -374,4 +406,21 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			return false, nil
 		}
 	}
+}
+
+// newApprovalID is an unguessable id for a request's row: the id is the
+// capability to answer it.
+func newApprovalID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("server: crypto/rand unavailable: " + err.Error())
+	}
+	return "ap-" + hex.EncodeToString(b[:])
+}
+
+// endRow closes a request's row, bounded by rowEndWait.
+func (l *liveSession) endRow(ctx context.Context, id string) {
+	ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rowEndWait)
+	defer cancel()
+	_ = l.durable.EndApproval(ectx, id)
 }
