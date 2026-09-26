@@ -15,9 +15,51 @@ All notable changes to Abhed are recorded here. The format follows
   `bash(*)` inside a sandbox tier, or approve interactively.
 - A custom client of `POST /v1/sessions/{id}/pty` that ignores the new
   `confirm` response field fails closed: a destructive line is not run.
+- Only a `bash` call that is just `cd <folder>` now carries its directory to
+  the next call, for the agent and the line-by-line terminal. A chain such as
+  `mkdir x && cd x` no longer does: send the `cd` as a call of its own.
+
+### Added
+
+- The line-by-line workbench terminal completes a file or folder name on Tab,
+  from the workspace listing and relative to the terminal's directory; a
+  second Tab lists the candidates. Nothing is run to complete. Names are
+  quoted as bash quotes them, and a name with control, invisible or
+  text-direction characters is never offered, so a completed line runs as
+  it reads; nothing is completed inside an open quote, open backticks or
+  an open `$(`. Ctrl \` leaves the terminal from the keyboard, now that Tab
+  stays in it.
 
 ### Fixed
 
+- On Debian and Ubuntu, the container image included, commands linked
+  through `/etc/alternatives` (`vi`, `vim`, `editor`, `awk` and others) could
+  not start in the Linux process sandbox.
+- In the line-by-line workbench terminal, `vi` seemed to hang after `:wq`:
+  the process sandbox refuses writes to the home directory, and vim waited at
+  "Press ENTER" after failing to save its history file. Every process-tier
+  command, the agent's included, now starts vim with that file turned off,
+  after reading the person's own vimrc (a vim without scripting, such as
+  vim.tiny, reads none). Neovim's history file is turned off the same way,
+  untested. On Linux the sandbox shows no home directory, so vim there runs
+  with its defaults.
+- Tab in the line-by-line terminal moved focus out of it, to the agent's
+  composer, so the next keys went there. Esc, Left and Right no longer put
+  `[D`-style text into the line, and a program that is killed no longer
+  leaves its screen or key modes behind for the line prompt.
+- A `cd` whose folder name was quoted, as `web\ app` or `"web app"`, left
+  the line-by-line terminal where it was without a word, so the next line
+  ran in the old folder. The quoting is now read as bash reads it, and a
+  bare `cd` goes to the workspace root instead of doing nothing.
+- The tracked directory, for the line-by-line terminal and the agent's
+  commands alike, now moves only for a line that is just `cd <folder>`. It
+  used to follow the last `cd` of a chain such as `mkdir x && cd x`, and
+  could land in the wrong folder when an earlier part of the line had
+  changed directory. A line with `cd`, `pushd`, `popd`, `CDPATH`, `eval` or
+  `source` in it, or a `cd` to a folder that is missing or cannot be read
+  with confidence, leaves it where it was and says so, naming where the next
+  line runs; the agent's result carries the same note. Commands run without
+  a sandbox no longer get the server's `BASH_ENV` or `CDPATH`.
 - On a phone, the sign-in page's header lost its side margin, so the logo sat
   against the left edge of the screen.
 - Between phone and desktop widths the console header was wider than the

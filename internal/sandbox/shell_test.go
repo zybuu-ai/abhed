@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -258,5 +259,99 @@ func TestNoneShellLeavesOutTheServersSettings(t *testing.T) {
 		if strings.HasPrefix(kv, "ABHED_DATABASE_URL=") {
 			t.Fatalf("the shell has %s", kv)
 		}
+	}
+}
+
+// A command on the host runs no BASH_ENV file first, and its cd goes where
+// it says rather than through CDPATH, which the directory tracker follows.
+func TestNoneCommandLeavesOutBashEnvAndCdpath(t *testing.T) {
+	ws := workspace(t)
+	hook := filepath.Join(ws, "hook.sh")
+	if err := os.WriteFile(hook, []byte("echo HOOK-RAN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "elsewhere", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASH_ENV", hook)
+	t.Setenv("CDPATH", filepath.Join(ws, "elsewhere"))
+	out, err := NewNone(DefaultPolicy(ws)).Command(context.Background(), ws, `echo "[$BASH_ENV][$CDPATH]"; cd x 2>/dev/null; pwd`).CombinedOutput()
+	if err != nil || strings.Contains(string(out), "HOOK-RAN") || !strings.HasPrefix(string(out), "[][]\n") || strings.Contains(string(out), "elsewhere") {
+		t.Fatalf("the host command kept BASH_ENV or CDPATH: %v\n%s", err, out)
+	}
+}
+
+// vim in the sandbox quits on :wq; a failed history write under home left it
+// waiting at "Press ENTER", which read as a terminal that hung.
+func TestProcessSandboxVimQuitsOnWriteQuit(t *testing.T) {
+	requireNetNS(t)
+	vim, err := exec.LookPath("vim")
+	if err != nil {
+		t.Skip("vim is not installed")
+	}
+	ws, home := workspace(t), workspace(t)
+	// Without a TMPDIR the sandbox writes only to the workspace and /tmp, so
+	// macOS lets it read this home and not write it, as it is the person's own.
+	t.Setenv("TMPDIR", "")
+	t.Setenv("HOME", home)
+	// vim only complains when it has a history file to replace.
+	if err := os.WriteFile(filepath.Join(home, ".viminfo"), []byte("# viminfo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The person's own vimrc is still read: this one leaves a mark on the way out.
+	rc := "autocmd VimLeave * call writefile([$MYVIMRC], 'rc-read')\n"
+	if err := os.WriteFile(filepath.Join(home, ".vimrc"), []byte(rc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := processSandbox(t, ws, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := s.Command(ctx, ws, vim+" note.md")
+	cmd.Env = append(cmd.Env, "TERM=xterm-256color")
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("start vim: %v", err)
+	}
+	defer func() { _ = tty.Close() }()
+	var mu sync.Mutex
+	var out bytes.Buffer
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := tty.Read(buf)
+			mu.Lock()
+			out.Write(buf[:n])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	for _, k := range []string{"i", "hi", "\x1b", ":wq", "\r"} {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = tty.Write([]byte(k))
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("vim exited with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("vim did not quit after :wq; the terminal showed:\n%q", out.String())
+	}
+	if got, _ := os.ReadFile(filepath.Join(ws, "note.md")); string(got) != "hi\n" {
+		t.Fatalf("the file holds %q, want the typed line", got)
+	}
+	// bwrap shows no home directory, so on Linux vim runs with its defaults.
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if got, _ := os.ReadFile(filepath.Join(ws, "rc-read")); string(got) != filepath.Join(home, ".vimrc")+"\n" {
+		t.Fatalf("the person's vimrc was not read, or $MYVIMRC not set: %q", got)
 	}
 }

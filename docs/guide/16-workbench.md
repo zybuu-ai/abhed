@@ -290,8 +290,21 @@ What a shell changes about the checks, stated plainly:
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the
-next (`cd` is followed, `export` is not). A managed policy
-(`/etc/abhed/config.json`) with deny rules for `bash` or for every tool (`*`),
+next (`cd` is followed, `export` is not). Only a line that is just
+`cd <folder>`, with one folder and nothing else, moves the terminal: the
+folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
+`'web app'`, `$'web app'`), and a bare `cd` or `cd ~` goes to the workspace
+root. A line that is just `cd` and a folder that is missing, outside the
+workspace, or cannot be read with confidence (a variable, a glob, `cd -`)
+leaves the terminal where it was and says so. So does any other line with
+`cd`, `pushd`, `popd`, `CDPATH`, `eval` or `source` (or `.` as a command) in
+it, quoted or not, such as `mkdir x && cd x`, `ls; cd x`, `builtin "cd" x`
+or `eval "cd x"`: the note names the folder the next line runs in. Each line
+starts in the tracked folder, so a line that changes directory some other
+way only misses the note; it never moves the next one.
+A `cd` in a command that failed is not followed either. The agent's
+commands follow `cd` by the same rule, and its result carries the same note.
+A managed policy (`/etc/abhed/config.json`) with deny rules for `bash` or for every tool (`*`),
 or with a policy hook such as an extension, gets that mode without asking,
 because a managed rule is an organisation's statement that it holds, and a
 hook may refuse any command.
@@ -299,6 +312,35 @@ A destructive line, one that always confirms, is not run on Enter: the terminal
 shows why and asks `Run it? [y/N]`, and only `y` runs it, recorded as confirmed;
 anything else cancels it and the lines queued behind it, recorded as declined.
 Any other line is approved by typing it.
+Once a line runs, the program it started owns the terminal until it exits:
+`vi`, `less`, `top` or a Python prompt gets every key as typed, Esc, the arrow
+keys, Ctrl-C and Enter included, and nothing it is sent is judged or queued,
+because the line was judged when it was entered. **Kill** ends a program that
+will not quit, and the line prompt comes back either way. In the process tier
+the sandbox does not let a program write to your home directory, so vim is
+started with its history file (`viminfo`) turned off; without that, it
+stopped at "Press ENTER" after every `:wq`. Your own vimrc (or `~/.exrc`) is
+still read, through `VIMINIT`, except by a vim built without scripting, such
+as `vim.tiny`, which then reads none. On Linux the sandbox shows no home
+directory, so vim there runs with its defaults. Neovim gets the same
+treatment for its history file, untested. The setting is part of every
+process-tier command's environment, so the agent's commands have it too.
+While you edit a line, Tab completes the last word, or the part after an
+`=`, against the files and folders in the terminal's directory, from the
+workspace listing the explorer uses, so completing runs nothing: one match is
+filled in (a folder with `/`), several are filled in as far as they agree,
+and a second Tab lists them. Names go in quoted as bash quotes them (`my\
+notes.md`, and `./-rf` for a name that starts with `-`), so what you see is
+what runs; a name with control, invisible or text-direction characters,
+which could make the line look like something it is not, is never offered.
+Nothing is completed inside an open quote (`'`, `"` or `$'`), open
+backticks or an open `$(`, after a lone backslash, after `~` or `/`, or
+after `$`. The first word completes against
+files too: there is no completion of program names from `PATH`. The arrow
+keys recall earlier lines; Esc and the other arrows do nothing.
+Because Tab stays in the terminal, leave it from the keyboard with
+Ctrl \`, which hides the terminal and returns to the editor (press it again
+to come back); on a Mac, ⌘L also goes to the agent's composer.
 Even line by line, a rule checks the line, not what a script the line runs
 does. The banner says which mode a tab is in, and why.
 

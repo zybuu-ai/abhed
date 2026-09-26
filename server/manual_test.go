@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -33,8 +34,21 @@ func manualBench(t *testing.T, edit func(*config.Config)) *workbench {
 	req.Header.Set("X-Abhed-Tenant", "acme")
 	wb.h.ServeHTTP(rec, req)
 	var created createResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if rec.Code/100 != 2 || json.Unmarshal(rec.Body.Bytes(), &created) != nil {
+		t.Fatalf("create the session: %d %s", rec.Code, rec.Body.String())
+	}
 	wb.session = created.SessionID
+	// The session's first events are recorded as its run starts, after the
+	// create returns; a replay before then finds nothing and answers 404.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var evs []agent.Event
+		if rec := wb.get("acme", "replay"); rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &evs) == nil && len(evs) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %s recorded no events within 5s of being created", wb.session)
+		}
+	}
 	return wb
 }
 

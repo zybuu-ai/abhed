@@ -45,10 +45,13 @@ globalThis.__root = new El('div');
 	}
 }
 
-// A destructive line waits at a [y/N] prompt; only y sends it again, confirmed.
+// A destructive line waits at [y/N] and only y confirms it; a running program
+// gets every key raw, and Tab completes from the workspace listing.
 func TestIDELineTerminalConfirmsDestructiveLines(t *testing.T) {
 	harness := `globalThis.__sent = []; globalThis.__replies = []; globalThis.__attached = null;
-const ptyURL = () => '/pty', hawkSoon = () => {}, sendInput = () => {};
+globalThis.__input = []; globalThis.__listed = []; globalThis.__tree = {};
+const ptyURL = () => '/pty', hawkSoon = () => {}, sendInput = (t, d) => __input.push(d);
+const listDir = async (t, dir) => { __listed.push(dir); return __tree[dir] || []; };
 const attach = (t, id) => { __attached = id; t.run = null; };
 const api = async (url, opts) => { __sent.push(JSON.parse(opts.body)); return __replies.shift(); };
 `

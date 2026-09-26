@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // ExitStatus is a process's exit code, or for one ended by a signal the
@@ -64,7 +67,7 @@ func (Bash) Name() string  { return "bash" }
 func (Bash) Mutates() bool { return true }
 
 func (b Bash) Description() string {
-	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: the working directory persists between calls, but shell state (variables, functions) does not."
+	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: a call that is just `cd <folder>` sets the working directory for later calls; shell state (variables, functions) and a cd inside a longer command do not carry over."
 	if len(b.SecretNames) > 0 {
 		d += " Secrets available by name, as environment variables for one command when listed in `secrets`: " + strings.Join(b.SecretNames, ", ") + ". You never see their values."
 	}
@@ -188,7 +191,7 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		cmd.Dir = s.Cwd
 		// Minimal environment: the agent should not inherit the operator's
 		// credentials by accident.
-		cmd.Env = append(os.Environ(), "ABHED_SESSION=1")
+		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
 
 	if len(a.Secrets) > 0 {
@@ -244,14 +247,18 @@ func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		}
 	}
 
-	// Track cd so the working directory persists across calls, matching the
-	// documented contract. Shell state deliberately does not persist.
-	if newCwd := detectCd(a.Command, s); newCwd != "" {
-		s.Cwd = newCwd
+	// A call that is just `cd <folder>` and succeeded moves later calls; the model
+	// is told when a cd was not followed, so it knows where the next call starts.
+	var cdNote string
+	if exitCode == 0 {
+		cdNote = s.FollowCd(a.Command)
 	}
 
 	if content == "" {
 		content = "[no output]"
+	}
+	if cdNote != "" {
+		content += "\n\n" + cdNote
 	}
 
 	// A non-zero exit is a valid observation the model must reason about, not a
@@ -325,36 +332,132 @@ func asExitError(err error, target **exec.ExitError) bool {
 	return ok
 }
 
-// detectCd resolves a trailing `cd` so the next call starts where this one
-// ended. Only handles the simple leading/trailing forms models actually emit.
 // FollowCd moves the session's working directory the way a run of command
 // through the bash tool would, for a runner that executes commands itself.
-func (s *Session) FollowCd(command string) {
-	if next := detectCd(command, s); next != "" {
+// It returns why a cd was not followed, or "" when it was or there was none.
+func (s *Session) FollowCd(command string) string {
+	next, why := detectCd(command, s)
+	if next != "" {
 		s.Cwd = next
 	}
+	return why
 }
 
-func detectCd(command string, s *Session) string {
-	parts := strings.Split(command, "&&")
-	last := strings.TrimSpace(parts[len(parts)-1])
-	if !strings.HasPrefix(last, "cd ") {
-		return ""
+// detectCd says where a line that is just `cd <folder>` leaves the shell, so
+// the next call starts there. Any other line that could change directory is
+// not followed, and says so: guessing at the rest of a line went wrong.
+func detectCd(command string, s *Session) (next, why string) {
+	line := strings.Trim(strings.TrimSuffix(strings.Trim(command, " \t"), "\n"), " \t")
+	stays := "; still in " + s.Rel(s.Cwd)
+	unfollowed := "cd: not followed: only a line that is just `cd <folder>` is" + stays
+	// A bare cd goes home, and home here is the workspace root.
+	if line == "cd" {
+		return s.Root, ""
 	}
-	target := strings.TrimSpace(strings.TrimPrefix(last, "cd "))
-	target = strings.Trim(target, `"'`)
-	if target == "" || target == "~" {
-		return s.Root
+	if !IsCdLine(line) {
+		if changesDir.MatchString(unquoted.Replace(line)) {
+			return "", unfollowed
+		}
+		return "", ""
+	}
+	arg := strings.Trim(line[2:], " \t")
+	if arg == "~" {
+		return s.Root, ""
+	}
+	// One word, with nothing after it: shellWord refuses separators and blanks.
+	target, ok := shellWord(arg)
+	if !ok || target == "" || strings.HasPrefix(target, "-") {
+		return "", unfollowed
 	}
 	if !strings.HasPrefix(target, "/") {
 		target = s.Cwd + "/" + target
 	}
 	resolved, err := s.Resolve(target)
+	if err != nil && isHarnessState(filepath.Clean(target)) {
+		return "", "cd: " + arg + " is Abhed's own state, out of reach" + stays
+	}
 	if err != nil {
-		return "" // refuse to cd outside the workspace
+		return "", "cd: " + arg + " is outside the workspace" + stays
 	}
 	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
-		return ""
+		return "", "cd: no such directory: " + arg + stays
 	}
-	return resolved
+	return resolved, ""
+}
+
+// changesDir finds a word that could change the shell's directory: cd, pushd,
+// popd, eval, source or CDPATH anywhere, or . as a command. It is matched with
+// quotes and backslashes taken out, so "cd", 'cd' and c\d count as cd.
+var changesDir = regexp.MustCompile("(?:^|[\\s;&|(){}`!])(?:cd|pushd|popd|eval|source)(?:$|[\\s;&|(){}`])|CDPATH|(?:^|[;&|(){}`!])\\s*\\.(?:$|\\s)")
+
+// unquoted drops a line's quotes and backslashes, for changesDir.
+var unquoted = strings.NewReplacer(`"`, "", `'`, "", `\`, "")
+
+// IsCdLine reports a line that is the cd command with an argument: cd, then
+// a space or a tab, the only blanks bash splits a line's words on.
+func IsCdLine(line string) bool {
+	return len(line) > 2 && line[:2] == "cd" && (line[2] == ' ' || line[2] == '\t')
+}
+
+// shellWord reads s as one bash word and undoes its quoting: backslashes,
+// '...', "..." and $'...'. It reports false for anything it would have to
+// guess at: an expansion, a glob, an unfinished quote or several words.
+func shellWord(s string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\\':
+			// A backslash before a newline joins lines; that is not read here.
+			if i++; i == len(s) || s[i] == '\n' {
+				return "", false
+			}
+			b.WriteByte(s[i])
+		case c == '\'':
+			j := strings.IndexByte(s[i+1:], '\'')
+			if j < 0 {
+				return "", false
+			}
+			b.WriteString(s[i+1 : i+1+j])
+			i += j + 1
+		case c == '$' && i+1 < len(s) && s[i+1] == '\'':
+			// Only the ANSI-C escapes that stand for the character itself; bash
+			// keeps the backslash of one it does not know, such as "\ ".
+			for i += 2; ; i++ {
+				if i == len(s) {
+					return "", false
+				}
+				if s[i] == '\'' {
+					break
+				}
+				if s[i] == '\\' {
+					if i+1 == len(s) || !strings.ContainsRune(`\'"?`, rune(s[i+1])) {
+						return "", false
+					}
+					i++
+				}
+				b.WriteByte(s[i])
+			}
+		case c == '"':
+			for i++; ; i++ {
+				if i == len(s) {
+					return "", false
+				}
+				if s[i] == '"' {
+					break
+				}
+				if s[i] == '$' || s[i] == '`' || s[i] == '\\' && i+1 < len(s) && s[i+1] == '\n' {
+					return "", false
+				}
+				if s[i] == '\\' && i+1 < len(s) && strings.ContainsRune("$`\"\\", rune(s[i+1])) {
+					i++
+				}
+				b.WriteByte(s[i])
+			}
+		case strings.IndexByte(" \t\n\r\v\f$`*?[{;&|<>()!#", c) >= 0, c == '~' && i == 0:
+			return "", false
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), true
 }

@@ -1645,6 +1645,9 @@ function ended(t, id, code){
   if(t.run !== id || leaving) return;
   endRun(t, false); drawTermTabs(); changesSoon(); hawkSoon(); treeSoon();
   if(t.mode === 'shell'){ t.term.write('\r\n\x1b[2m' + (code == null ? 'disconnected' : 'the shell exited with ' + code) + ' · press Enter for a new one\x1b[0m\r\n'); t.dead = true; return; }
+  // A program that was killed leaves its screen and key modes behind; the line editor needs neither.
+  if(t.term.buffer.active.type === 'alternate') t.term.write('\x1b[?1049l');
+  t.term.write('\x1b[!p\x1b[0m\x1b[?25h\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?2004l\x1b>');
   if(code != null) t.term.write('\r\n\x1b[2mexit ' + code + '\x1b[0m');
   nextLine(t);
 }
@@ -1675,12 +1678,17 @@ function sendInput(t, d){
 const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : t.cwd + ' ') + '$\x1b[0m ';
 // Shows the prompt, and whatever has been typed ahead of it.
 const promptLine = t => { t.term.write(linePrompt(t) + t.line); };
+// An unfinished sequence ends at a line break, so it never swallows the next line.
+const keySeq = /\x1b(\[[0-?]*[ -\/]*[@-~]|O[^\r\n]|[\]P_^][^\x07\x1b\r\n]*(\x07|\x1b\\)?|[^\[\]OP_^\x1b\r\n])?/gu;
 // A paste of several lines: the first is on screen already, the rest are
 // shown one at a time, as each runs.
 function linesData(t, d){
   if(t.run){ sendInput(t, d); return; }
   if(t.confirm){ confirmData(t, d); return; }
-  d = d.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+  if(t.held != null){ t.held += d; return; }
+  // Esc, Left and Right, and a terminal's replies to a program that has just
+  // ended are keys for a program, never text for the line.
+  d = d.replace(keySeq, '').replace(/\r\n/g, '\r').replace(/\n/g, '\r');
   let quiet = t.busy || t.queue.length > 0, dropped = 0;
   for(const ch of d){
     if(ch === '\r'){
@@ -1704,15 +1712,90 @@ function nextLine(t){
   if(!shown) t.term.write(linePrompt(t) + cmd + '\r\n');
   runLine(t, cmd);
 }
+// While a command runs, every key is its own: the line was judged when it was entered.
 function lineKeys(t, e){
-  if(t.mode !== 'lines' || t.run || e.type !== 'keydown') return true;
-  if(t.confirm) return e.key !== 'Tab' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown';
+  // Ctrl+` stays the page's, to leave the terminal by keyboard now that Tab stays inside it.
+  if(e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'Backquote') return false;
+  if(t.mode !== 'lines' || t.run) return true;
+  // Left to the browser, Tab would move focus out of the terminal.
+  if(e.key === 'Tab'){ e.preventDefault(); if(e.type === 'keydown' && !e.shiftKey && !t.confirm && t.held == null) completeLine(t); return false; }
+  if(e.type !== 'keydown') return true;
+  // While a redraw is pending or a line still runs, what is on screen is not the
+  // line being edited; recalling history now would put another line under it.
+  if((t.held != null || t.busy || t.queue.length) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) return false;
+  if(t.confirm) return e.key !== 'ArrowUp' && e.key !== 'ArrowDown';
   if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
     const n = e.key === 'ArrowUp' ? t.at - 1 : t.at + 1; if(n < 0 || n > t.hist.length) return false;
     t.at = n; t.term.write('\b \b'.repeat(t.line.length)); t.line = t.hist[n] || ''; t.term.write(t.line); return false;
   }
-  return e.key !== 'Tab';
+  return true;
 }
+// Tab completes the last word against the workspace's listing, from the
+// terminal's directory; a second Tab lists what it could be. Nothing is run.
+async function completeLine(t){
+  if(t.busy || t.queue.length) return;
+  // The word starts after an = too, as in --out=path; one after $ is a variable, not a name.
+  const line = t.line, raw = line.match(/(?:\\.|[^\s'"`$|&;<>()\\=])*$/)[0], before = line.slice(0, line.length - raw.length);
+  // Inside a quote, backticks or $( the shell reads a name differently, so none is put there.
+  if(/^[~\/]/.test(raw) || before.endsWith('$') || unclosed(before)){ t.tabbed = null; return; }
+  const word = raw.replace(/\\(.)/g, '$1'), cut = word.lastIndexOf('/') + 1, stem = word.slice(cut);
+  const dir = [t.cwd === '.' ? '' : t.cwd, word.slice(0, cut).replace(/\/+$/, '')].filter(Boolean).join('/');
+  let entries; try{ entries = await listDir(t, dir); }catch{ return; }
+  if(t.line !== line || t.run || t.busy || t.confirm) return;
+  // Names are the agent's to choose: one that could hide or reorder text is never offered.
+  const hits = entries.filter(e => e.name.startsWith(stem) && (stem.startsWith('.') || !e.name.startsWith('.')) && !unsafeName.test(e.name));
+  const put = (s, end) => {
+    // A name that starts with - would be read as an option.
+    const next = before + (cut === 0 && s.startsWith('-') ? './' : '') + shellQuote(word.slice(0, cut) + s) + end;
+    if(next.startsWith(line)) t.term.write(next.slice(line.length));
+    // Measured once what was written before has been drawn.
+    // Keys typed before the redraw are held and replayed after it, so none is drawn and then wiped.
+    else{
+      t.held = '';
+      t.term.write('', () => {
+        const up = wrappedRows(t); t.term.write((up ? '\x1b[' + up + 'A' : '') + '\r\x1b[J' + linePrompt(t).slice(2) + next);
+        const d = t.held; t.held = null; if(d) linesData(t, d);
+      });
+    }
+    t.line = next;
+  };
+  if(hits.length === 1){ t.tabbed = null; put(hits[0].name, hits[0].dir ? '/' : ' '); return; }
+  let common = hits.length ? [...hits[0].name] : [];
+  for(const h of hits){ const c = [...h.name]; let n = 0; while(n < common.length && common[n] === c[n]) n++; common.length = n; }
+  common = common.join('');
+  if(common.length > stem.length){ put(common, ''); t.tabbed = t.line; return; }
+  if(hits.length && t.tabbed === line){ t.term.write('\r\n' + hits.map(h => shellQuote(h.name) + (h.dir ? '/' : '')).join('  ')); promptLine(t); }
+  t.tabbed = line;
+}
+// Any space but the plain one, too: a no-break or ideographic space reads as a plain one.
+const unsafeName = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|(?! )\p{Zs}/u;
+// The rows above the cursor that its line wrapped onto, as the terminal drew
+// them, so a redraw never guesses at how wide a character is.
+function wrappedRows(t){
+  const b = t.term.buffer.active; let y = b.baseY + b.cursorY, n = 0;
+  for(let l = b.getLine(y); y > 0 && l && l.isWrapped; l = b.getLine(--y)) n++;
+  return n;
+}
+// Whether text leaves a quote, backticks or $( open, or ends on a lone backslash.
+function unclosed(s){
+  const open = [];
+  for(let i = 0; i < s.length; i++){
+    const c = s[i], top = open[open.length - 1];
+    if(top === "'"){ if(c === "'") open.pop(); continue; }
+    if(c === '\\'){ if(++i === s.length) return true; continue; }
+    // In $'...' a backslash escapes, as it does above, so only a bare ' ends it.
+    if(top === "$'"){ if(c === "'") open.pop(); continue; }
+    if(c === top && (c === '"' || c === '`') || c === ')' && top === '$('){ open.pop(); continue; }
+    if(c === '$' && s[i + 1] === "'" && top !== '"'){ open.push("$'"); i++; }
+    else if(c === '$' && s[i + 1] === '('){ open.push('$('); i++; }
+    else if(c === '`' || c === '"' && top !== '"' || c === "'" && top !== '"') open.push(c);
+  }
+  return open.length > 0;
+}
+// Quoted as bash quotes a completed name: a backslash before any ASCII the shell could read
+// as syntax. Its syntax is all ASCII, and names with unsafe characters never get this far.
+const shellQuote = s => s.replace(/[\x00-\x7f]/g, c => /[A-Za-z0-9._\/+\-@%,:=]/.test(c) ? c : '\\' + c);
+const listDir = async (t, dir) => (await api('/v1/sessions/' + t.session + '/tree?path=' + encodeURIComponent(dir))).entries;
 // answer is set only when the line is sent again with the reply to a confirmation prompt.
 async function runLine(t, cmd, answer){
   if(!answer){ t.hist.push(cmd); t.at = t.hist.length; }
@@ -1723,12 +1806,15 @@ async function runLine(t, cmd, answer){
   t.busy = false; t.cwd = r.cwd || '.';
   if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
+  // A cd that was not followed says so, rather than leaving the next line to run elsewhere.
+  if(r.note) t.term.write('\x1b[33m' + r.note.replace(/\p{Cc}/gu, '?') + '\x1b[0m');
   if(!r.id || isPlainCd(cmd)){ nextLine(t); return; }
   attach(t, r.id);
 }
 // Only a typed y, then Enter, runs a command that always confirms; anything else cancels it.
 function confirmData(t, d){
-  if(d.startsWith('\x1b')) return;
+  // Escape keys are no answer, wherever they fall in what arrived.
+  d = d.replace(keySeq, '');
   for(const ch of d){
     if(ch === '\r' || ch === '\n' || ch === '\x03'){
       const cmd = t.confirm, yes = ch !== '\x03' && /^y$/i.test(t.line.trim());
@@ -1743,7 +1829,7 @@ function confirmData(t, d){
     t.line += ch; t.term.write(ch);
   }
 }
-const isPlainCd = c => /^cd(\s|$)/.test(c.trim()) && !/[&|;`$(]/.test(c);
+const isPlainCd = c => /^cd([ \t]|$)/.test(c.trim()) && !/[&|;`$(]/.test(c.replaceAll("$'", "'"));
 
 // The agent's commands, with their output, in a tab of their own.
 function logTerminal(cmd, p, who){

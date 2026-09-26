@@ -222,6 +222,8 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			"--ro-bind-try", "/lib64", "/lib64",
 			"--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
 			"--ro-bind-try", "/etc/ssl", "/etc/ssl",
+			// Debian links vi, awk, editor and others through /etc/alternatives.
+			"--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
 			// /tmp first: a workspace under it is bound on top afterwards, or
 			// the tmpfs would hide it and every command would fail to start.
 			"--tmpfs", "/tmp",
@@ -257,7 +259,7 @@ func (s *Process) env() []string {
 		"GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE",
 		"NODE_PATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME",
 		"JAVA_HOME", "PYTHONPATH", "VIRTUAL_ENV"}
-	out := []string{"ABHED_SANDBOX=" + string(s.Tier())}
+	out := []string{"ABHED_SANDBOX=" + string(s.Tier()), "VIMINIT=" + vimInit}
 	for _, k := range keep {
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)
@@ -265,6 +267,15 @@ func (s *Process) env() []string {
 	}
 	return out
 }
+
+// vimInit reads the person's vim config, then turns off the history file: the sandbox
+// refuses that write in home, and vim then waits at "Press ENTER" after :wq.
+const vimInit = `if 1 | if has('nvim') | let g:abhed_rc = stdpath('config') . (filereadable(stdpath('config') . '/init.lua') ? '/init.lua' : '/init.vim')` +
+	` | if filereadable(g:abhed_rc) | let $MYVIMRC = g:abhed_rc | exe 'source' fnameescape(g:abhed_rc) | endif | unlet g:abhed_rc | set shada=` +
+	` | else | let g:abhed_rc = filter(['~/.vimrc', '~/.vim/vimrc', '~/.config/vim/vimrc', '~/.exrc'], 'filereadable(expand(v:val))')` +
+	` | if !empty(g:abhed_rc) | let $MYVIMRC = expand(g:abhed_rc[0]) | exe 'source' fnameescape($MYVIMRC)` +
+	` | elseif filereadable($VIMRUNTIME . '/defaults.vim') | exe 'source' fnameescape($VIMRUNTIME . '/defaults.vim') | endif` +
+	` | unlet g:abhed_rc | endif | endif | silent! set viminfo=`
 
 // None runs commands directly on the host.
 //
@@ -286,8 +297,21 @@ func (n *None) Describe() string {
 func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "ABHED_SANDBOX=none")
+	cmd.Env = append(HostCommandEnv(), "ABHED_SANDBOX=none")
 	return cmd
+}
+
+// HostCommandEnv is the server's environment for a command run on the host,
+// without what would make bash run a file first (BASH_ENV) or send a plain cd
+// somewhere other than the folder named (CDPATH), which the tracker follows.
+func HostCommandEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "BASH_ENV=") && !strings.HasPrefix(kv, "CDPATH=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // Shell starts an interactive bash directly on the host, with nothing

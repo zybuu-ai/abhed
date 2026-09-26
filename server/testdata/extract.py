@@ -32,8 +32,8 @@ sets = {
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
-    'ide-lines': ['const linePrompt = ','const promptLine = ','function linesData(t, d){','function nextLine(t){',
-          'function lineKeys(t, e){','async function runLine(t, cmd, answer){','function confirmData(t, d){','const isPlainCd = '],
+    'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',
+          'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','function confirmData(t, d){','const isPlainCd = '],
 }
 seen=set(); out=[]
 for fn in sets[which]:
