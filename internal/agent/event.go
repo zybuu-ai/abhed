@@ -164,7 +164,7 @@ type ActionRequested struct {
 	RequiresApproval bool            `json:"requires_approval"`
 	Reason           string          `json:"reason,omitempty"`
 	// Scope is the narrow "always allow" rule policy suggests for this call,
-	// e.g. `bash(npm install *)`. Carried on the event so a reviewer in the
+	// e.g. `bash(git commit *)`. Carried on the event so a reviewer in the
 	// web console can choose to allow the rule for the rest of the session,
 	// the way the CLI's [A] option does — without it, default mode re-prompts
 	// for every mutating call with no way to stop.

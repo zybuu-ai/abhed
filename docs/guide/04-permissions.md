@@ -46,6 +46,42 @@ allow every command. An allow rule whose own pattern holds that syntax, such as
 A rule for an interpreter allows whatever it can run: `bash(vim -es*)` allows
 any command, since a vim script runs shell commands with `:!`.
 
+A one-click "always allow" is offered only for a short list of well-understood
+tools and subcommands; anything else can be approved once or allowed with a
+rule you write. The list:
+
+- `git` with `status`, `diff`, `log`, `show`, `branch`, `add`, `commit`,
+  `restore`, `switch`, `checkout`, `stash`, `rev-parse`, `ls-files`, `blame`
+  or `tag`
+- `ls`, `cat`, `head`, `tail`, `wc`, `pwd`, `echo`, `which`, `file`, `stat`,
+  `du`, `df`, `tree`, `grep`, `jq`, `diff`, `uniq`, `cut`, `tr`, `mkdir`,
+  `touch`, `cp` and `mv`
+- `npm` with `ls` or `outdated`; `pip` and `pip3` with `list`, `show` or
+  `freeze`; `docker` with `ps`, `images`, `logs` or `version`
+
+The scope is the program and its subcommand, as in `bash(git commit *)`, or
+the program alone, as in `bash(ls *)`. The program must be spelled exactly so:
+`/usr/bin/git`, `Git`, a wrapper or a `VAR=value` assignment in front gets no
+scope. Nor does a command with `--eval` or `--exec` among its arguments, or any
+single-dash word containing `c` or `e`, such as `-ec`, `wc -c` or `head -c`;
+nor one with a quote, backslash, `$`, glob, brace or backtick in the words the
+scope keeps. Interpreters, shells, package runners, `make`, `npm install` and
+`npm test`, `go` (a `toolchain` line in `go.mod` makes it run another go
+binary), `yarn`, `pnpm`, `cargo` and `kubectl` are left off because a word on
+the line, or a file the agent can write, can make them run anything. With
+corepack enabled for npm, the `packageManager` field in `package.json` chooses
+the npm that runs, so the sandbox is the boundary there too.
+
+git is on the list, but it runs the repository's own hooks and config: hooks,
+`core.fsmonitor`, diff and filter drivers and the pager. An agent that can
+write under `.git`, with the write tool, an allowed `cp` or `mv`, or
+`git log --output`, can make an allowed git command run code of its choosing.
+The sandbox tier is what contains that, not the scope.
+
+A rule you write by hand for a script approves the file by name, not its
+contents: `bash(python3 script.py *)` also allows whatever the agent later
+writes into `script.py`.
+
 Deny and ask rules match the whole command or any command inside it: split on
 those operators, taken out of substitutions and subshells, and past leading
 `VAR=value` assignments, redirections and wrappers such as `sudo`, `env`,
@@ -55,6 +91,19 @@ sandbox, not the pattern, is the boundary. A command too long or complex to
 split in full (over 64 KiB, over 1,024 parts, or a wrapper with too many
 readings) is always asked about while any deny or ask rule for `bash` has a
 pattern, in every mode.
+
+A deny pattern matches the words as written, so it is easy to step around.
+`bash(curl *)` does not catch any of these, and every one of them runs curl:
+
+- an absolute or relative path to the program: `/usr/bin/curl x`
+- a command handed to another shell: `bash -c 'curl x'`, `sh -c "curl x"`
+- a quoted or escaped name: `'curl' x`, `$'curl' x`, `\curl x`, `c\url x`
+- flags in another place or split up: `bash(rm -rf *)` does not match
+  `rm x -rf` or `rm -r -f x`
+
+Deny rules guard against mistakes, not against a command written to get past
+them. What a command can reach is decided by the sandbox, and that is the
+boundary to rely on.
 
 A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you
@@ -99,13 +148,23 @@ instructions is reported, not obeyed.
 
 ## When it asks
 
-The prompt names the tool, the full arguments, and the rule that would have
+The prompt names the tool and the full arguments, and offers the rule that
+would allow such calls when one is offered:
+
+```
+  git commit -m "Add the parser"
+  [a]ccept  [r]eject  [A]lways allow bash(git commit *)
+```
+
+For a command with no rule offered, such as `go test ./pkg/auth/`, the prompt
+has accept and reject only: approve it once, or write the rule yourself.
+A call that is not approved, by a person or because no one can be asked, is
+refused with its reason and, when one is offered, the rule that would have
 allowed it:
 
 ```
-Approval required — bash
-  go test ./pkg/auth/
-  It would be permitted by the rule bash(go test*), which is not configured.
+This action was not approved (running a command needs approval in default mode).
+It would be permitted by the rule bash(git commit *), which is not configured.
 ```
 
 Rejecting feeds the reason back so the model adapts rather than rephrasing the

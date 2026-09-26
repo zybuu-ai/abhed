@@ -11,6 +11,15 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed -p` stopped by a hang-up (SIGHUP) now ends its run and exits 130,
   as for Ctrl-C and SIGTERM; the signal used to end it outright, and the
   shell saw 129.
+- `npm install` and `npm test`, `go`, `make`, `cargo`, `kubectl`, `yarn`,
+  `pnpm`, interpreters, package runners and any command behind a `VAR=value`
+  assignment no longer get a one-click "Always allow"; approve them once
+  instead. Allow rules in the configuration and `-allow` flags match exactly
+  as before, and a remembered "Always allow" only ever lasted one session, so
+  nothing saved is lost. To keep the old flow, write the rule yourself, such
+  as `bash(go test*)`, inside a sandbox tier, since it approves whatever the
+  agent writes into the tests or the Makefile. A refusal in a run with no one
+  to approve no longer names a rule for these commands.
 - A narrow `bash` allow rule no longer approves a chained or redirected
   command: `bash(go test*)` no longer runs `go test ./... | tee out` unasked.
   In a run with no one to approve (`-p`, CI, the SDK), such a command is now
@@ -154,14 +163,30 @@ All notable changes to Abhed are recorded here. The format follows
   an approval was waiting, though the banner says it interrupts. It now
   stops the turn and refuses a waiting approval; a turn stopped at an
   approval, a running command or while waiting for the model ends as
-  `user_interrupt`. At the prompt Ctrl-C
-  still only clears the line; Ctrl-D exits. A second Ctrl-C during a turn
-  that has not stopped ends the session with exit code 130.
+  `user_interrupt`. At the prompt Ctrl-C still only clears the line; Ctrl-D
+  exits. A second Ctrl-C during a turn that has not stopped ends the session
+  with exit code 130.
 - The agent's `bash` refused `vim -es`, `vim -e -s`, `vim -E -s` and other
   silent Ex mode edits as interactive. They run a script and exit, so they
   now run; `vim` without them, `vim -e` or `vim -s` alone, and `-s` before
   `-e` (a file of keys, not silent mode) are still refused. An allow rule
   such as `bash(vim -es*)` allows any command, through `:!`.
+- The "always allow" offered for `python3 -m unittest -q test_calc` was
+  `bash(python3 *)`, which also approved `python3 -c …`. A one-click
+  always-allow is now offered only for a short list of well-understood tools
+  and subcommands (`git status`, `git commit`, `ls`, `cat`, `grep`, `mkdir`,
+  `npm ls`, `docker ps` and a few more, listed in the permissions guide);
+  anything else can be approved once or allowed with a rule you write.
+  `npm install`, which used to be offered one, is not: it runs package
+  scripts. Nor is a command with a `VAR=value` assignment in front.
+- Send now during a server drain took the message out of the queue before the
+  server refused it, so it was lost to the server and kept only in the page.
+  The workbench now asks `/v1/health`, which reports `draining`, and leaves
+  the message queued; if the drain starts in between, it says the message is
+  no longer queued and puts its text back in the message box.
+- The workbench kept showing "connected" after the server had gone. A dropped
+  event or shell stream, or a request that cannot reach the server, now shows
+  "reconnecting…" or "offline" until the server answers again.
 - In the line-by-line workbench terminal, `vi` seemed to hang after `:wq`:
   the process sandbox refuses writes to the home directory, and vim waited at
   "Press ENTER" after failing to save its history file. Every process-tier
@@ -265,10 +290,12 @@ All notable changes to Abhed are recorded here. The format follows
     request offered; any other is refused with 400, so a client cannot
     widen what is remembered for the session.
   - Two answers at once, with or without a store: one is taken and the other
-    refused with 409 "this approval was already answered", so a Deny is
-    never acknowledged while the turn runs the Allow. With a store, the
-    answer is recorded on that request's own row, not the session's newest,
-    and the first recorded decides.
+    refused with 409, so a Deny is never acknowledged while the turn runs the
+    Allow. The refusal says "this approval was already answered", or "that
+    approval is no longer pending" when it arrives after the turn has moved
+    on; which one depends on timing, and a client should treat both alike.
+    With a store, the answer is recorded on that request's own row, not the
+    session's newest, and the first recorded decides.
   - On a node that is not running the session, an answer naming a request is
     not recorded, since the stored row cannot be checked against it; the
     reply is the usual 421 with `Abhed-Session-Node`, so it can be sent to

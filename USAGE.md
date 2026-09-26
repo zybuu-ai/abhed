@@ -143,6 +143,12 @@ Type a task, or /help for commands. Ctrl-C interrupts, Ctrl-D exits.
   [a]ccept  [r]eject  [A]lways allow edit(auth.go)
 ```
 
+At an approval, `a` or `y` accepts, `r` or `n` rejects and `A` allows the scope
+for the session. A key counts only on an empty line with 300 ms of quiet before
+and after it (600 ms after `A`), and Enter alone never accepts; see
+[Getting started](docs/guide/01-getting-started.md). Ctrl-C stops the turn and
+refuses the approval; a second Ctrl-C, if the turn has not stopped, exits 130.
+
 ### Headless
 
 ```bash

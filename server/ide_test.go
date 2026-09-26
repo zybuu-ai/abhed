@@ -126,9 +126,9 @@ const requestAnimationFrame = f => f();
 // a route given to __defer answers when the test resolves it.
 let __sessions = [], __delays = []; const __pending = {};
 globalThis.__defer = route => { let resolve, reject; const p = new Promise((r, j) => { resolve = r; reject = j; }); __pending[route] = p; return {resolve, reject}; };
-globalThis.__posted = [];
+globalThis.__posted = []; globalThis.__routes = [];
 const api = async (url, opts) => {
-  const route = ((opts && opts.method) || 'GET') + ' ' + url;
+  const route = ((opts && opts.method) || 'GET') + ' ' + url; __routes.push(route);
   if(opts && opts.body) __posted.push({route, body: JSON.parse(opts.body)});
   if(__pending[route]){ const p = __pending[route]; delete __pending[route]; return p; }
   if(url === '/v1/sessions'){ const snap = __sessions, d = __delays.shift() || 0; if(d) await new Promise(r => setTimeout(r, d)); return snap; }
@@ -137,6 +137,34 @@ const api = async (url, opts) => {
 `
 	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_chat_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's approval prompt failed:\n%s", out)
+	}
+}
+
+// The status bar says connected only while the server answers: a stream that
+// drops, a shell's stream and a failed request all send the page to ask.
+func TestIDEShowsWhenTheServerHasGone(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+let current = 's1', live = true, es = null, lastSeq = 0, leaving = false, activeTerm = null;
+let connState = null, connTimer = 0, connWait = 0;
+const ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
+// Every wait is cut short, and what was asked for is kept in __waits.
+globalThis.__waits = []; const setTimeout = (f, ms) => { __waits.push(ms); return globalThis.setTimeout(f, Math.min(ms, 30)); };
+globalThis.__docOn = {}; document.addEventListener = (type, f) => { __docOn[type] = f; };
+const render = () => {}, loadHawkeye = () => {}, ptyURL = () => '/pty', drawTermTabs = () => {}, fitActive = () => {};
+const bytesOf = s => s, treeSoon = () => {}, endRun = () => {}, startTerm = () => {}, ended = () => {};
+// The server is up while __up is true; a stream fails until it is.
+globalThis.__up = true; globalThis.__streams = [];
+globalThis.__fetches = 0;
+globalThis.fetch = async () => {
+  __fetches++; if(!__up) throw new TypeError('Failed to fetch');
+  return {ok:true, status:200, json: async () => ({})};
+};
+class EventSource { constructor(url){ this.url = url; this.readyState = 0; __streams.push(this); }
+  close(){ this.readyState = 2; } addEventListener(){} }
+EventSource.CLOSED = 2;
+`
+	if out, err := runConsoleCases(t, "ide-conn", harness, "ide_conn_cases.mjs"); err != nil {
+		t.Fatalf("the connection indicator failed:\n%s", out)
 	}
 }
 

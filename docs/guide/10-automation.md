@@ -19,7 +19,9 @@ signal's number (130, 143, 129); `serve` exits `0` once it has drained.
 end at once on a second signal.
 
 A bad invocation, such as an unknown `-output-format` (`text` or `json`) or a
-word that is not a command, exits `2` before anything runs.
+word that is not a command, exits `2` before anything runs. Its stderr line
+tells the cases apart from a turn limit and from each other: `unknown
+-output-format` or `unknown command`.
 
 There is no one to approve, so anything needing approval is refused. Name what
 may run with `-allow`, and keep the list narrow.
@@ -107,12 +109,13 @@ binary:
 ```
 
 The editor's approval dialog is the approver: an `ask` decision becomes a
-permission request with *Allow once*, *Always allow* the rule policy suggests,
-and *Deny*. It can answer an ask; it cannot lift a deny rule, and the sandbox
-tier and the workspace boundary are whatever the configuration says, exactly
-as from the terminal. The agent's text, its reasoning, every tool call with
-its outcome, the plan and the context usage stream to the editor as
-`session/update` notifications, and the session is recorded like any other.
+permission request with *Allow once*, *Always allow* the rule policy suggests
+when one is offered, and *Deny*. It can answer an ask; it cannot lift a deny
+rule, and the sandbox tier and the workspace boundary are whatever the
+configuration says, exactly as from the terminal. The agent's text, its
+reasoning, every tool call with its outcome, the plan and the context usage
+stream to the editor as `session/update` notifications, and the session is
+recorded like any other.
 
 Not yet supported: `session/load` (resuming an editor session from the
 record) and editor-side modes. A conformance test drives the adapter with a

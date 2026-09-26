@@ -31,9 +31,9 @@ on, laid out the way an editor is.
 
 The agent panel works the way a terminal agent does. A call that needs a person
 stops and asks: **Allow once**, **Always allow** the narrow rule the policy
-suggests, or **Deny**. The plan the agent keeps is drawn as a checklist. `/` in
-the composer opens commands — `/changes`, `/tools`, `/hawkeye`, `/stop` and the
-rest — and the permission mode is chosen beside it.
+suggests, when one is offered, or **Deny**. The plan the agent keeps is drawn
+as a checklist. `/` in the composer opens commands — `/changes`, `/tools`,
+`/hawkeye`, `/stop` and the rest — and the permission mode is chosen beside it.
 
 | Key | |
 |---|---|
@@ -87,8 +87,17 @@ message still queued when a run stops is read with your next one. Esc stops a
 run only when pressed twice, so a stray key never costs work; the **Stop**
 button stops it at once.
 
+While the server is shutting down, Send now leaves the message queued and
+says so, since the server would refuse the fresh turn. The page asks
+`/v1/health` first. Behind a balancer that check can reach a node other than
+the one running the session; the message is then taken out of the queue, the
+send gets `503`, and the page says the message is no longer queued and puts
+its text back in the message box if the box is empty.
+
 If the connection drops, the page reconnects and asks only for what it has
-not drawn yet, rather than replaying the session.
+not drawn yet, rather than replaying the session. The status bar shows
+*reconnecting…* while it finds out whether the server is there, and
+*offline* until it answers again.
 
 | Key | In the composer |
 |---|---|
@@ -291,7 +300,8 @@ What a shell changes about the checks, stated plainly:
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the
-next (`cd` is followed, `export` is not). Only a line that is just
+next (variables, `export` and aliases are lost; the folder moves only as
+follows). Only a line that is just
 `cd <folder>`, with one folder and nothing else, moves the terminal: the
 folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
 `'web app'`, `$'web app'`), and a bare `cd` or `cd ~` goes to the workspace
