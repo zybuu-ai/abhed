@@ -135,3 +135,20 @@ func TestGrepCountMode(t *testing.T) {
 		t.Fatalf("count mode should summarize:\n%s", res.Content)
 	}
 }
+
+// The worktrees of isolated subagents are copies of the workspace; glob and
+// grep pass over them, as over vendored code.
+func TestSearchSkipsWorktrees(t *testing.T) {
+	s, dir := seedRepo(t)
+	p := filepath.Join(dir, WorktreesDir, "k3f9q2", "main.go")
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte("package main\n\nfunc handleRequest() {}\n"), 0o644)
+	for _, res := range []Result{
+		run(t, Glob{}, s, globArgs{Pattern: "**/*.go"}),
+		run(t, Grep{}, s, grepArgs{Pattern: "handleRequest"}),
+	} {
+		if strings.Contains(res.Content, WorktreesDir) {
+			t.Fatalf("a worktree was searched:\n%s", res.Content)
+		}
+	}
+}

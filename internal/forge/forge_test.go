@@ -167,7 +167,7 @@ func TestResolveWorksInAWorktreeAndPushes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.Dir == repo || !strings.Contains(w.Dir, ".abhed/worktrees/issue-5") {
+	if w.Dir == repo || !strings.Contains(w.Dir, filepath.Join(".abhed-worktrees", "issue-5")) {
 		t.Fatalf("worktree at %s", w.Dir)
 	}
 	if err := os.WriteFile(filepath.Join(w.Dir, "a.txt"), []byte("one\ntwo\n"), 0o600); err != nil {
@@ -189,6 +189,10 @@ func TestResolveWorksInAWorktreeAndPushes(t *testing.T) {
 	if out := run(t, "", "--git-dir", remote, "branch", "--list", "abhed/issue-5"); !strings.Contains(out, "abhed/issue-5") {
 		t.Fatalf("branch not on the remote: %q", out)
 	}
+	// The sha Commit returned, which the approval prompt names, is what was pushed.
+	if tip := strings.TrimSpace(run(t, "", "--git-dir", remote, "rev-parse", "abhed/issue-5")); !strings.HasPrefix(tip, sha) {
+		t.Fatalf("Commit returned %s, the pushed tip is %s", sha, tip)
+	}
 	if !strings.Contains(w.Diff(ctx, repo), "a.txt") {
 		t.Fatalf("diff: %q", w.Diff(ctx, repo))
 	}
@@ -200,6 +204,18 @@ func TestResolveWorksInAWorktreeAndPushes(t *testing.T) {
 	w2, _ := Begin(ctx, repo, is, "")
 	if _, err := w2.Commit(ctx); !errors.Is(err, ErrNoChange) {
 		t.Fatalf("empty commit: %v", err)
+	}
+	// A commit the run made itself on the branch is the change, and its sha is returned.
+	if err := os.WriteFile(filepath.Join(w2.Dir, "a.txt"), []byte("one\nthree\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(t, w2.Dir, "commit", "-q", "-am", "mine")
+	sha2, err := w2.Commit(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip := strings.TrimSpace(run(t, repo, "rev-parse", "refs/heads/abhed/issue-5")); sha2 == "" || !strings.HasPrefix(tip, sha2) {
+		t.Fatalf("Commit returned %q for the run's own commit, the branch is at %s", sha2, tip)
 	}
 }
 

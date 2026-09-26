@@ -51,7 +51,7 @@ func TestResolveKeepsTheWorktreeOfAFailedOrStoppedRun(t *testing.T) {
 			if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}); code != tc.code {
 				t.Fatalf("exit %d, want %d", code, tc.code)
 			}
-			if _, err := os.Stat(filepath.Join(repo, ".abhed", "worktrees", "issue-5")); err != nil {
+			if _, err := os.Stat(filepath.Join(repo, ".abhed-worktrees", "issue-5")); err != nil {
 				t.Fatalf("the worktree was not kept: %v", err)
 			}
 			if fg.opened != nil || branchOnRemote(t, remote) {

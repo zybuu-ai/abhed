@@ -32,6 +32,36 @@ func (l *Loop) Manual(ctx context.Context, sess *tools.Session, call string, id 
 	return result, l.ManualObserve(id, call, result, time.Since(start))
 }
 
+// ManualAs judges and records a person's action with no tool of its own, such as an
+// explorer delete, as action; the tool named run then carries it out, not judged as itself.
+// also are further arguments the action is judged by, such as a rename's new name;
+// a refusal on any is recorded as the action's.
+func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id string, args json.RawMessage, run string, runArgs json.RawMessage, also ...json.RawMessage) (tools.Result, error) {
+	tool, found := l.Tools.Get(run)
+	if !found {
+		return tools.Result{}, fmt.Errorf("unknown tool %q", run)
+	}
+	decision := l.Policy.Evaluate(action, true, args)
+	for _, a := range also {
+		if decision.Decision == policy.Deny {
+			break
+		}
+		if d := l.Policy.Evaluate(action, true, a); d.Decision == policy.Deny {
+			decision = d
+		}
+	}
+	refused, err := l.manualDecide(action, id, args, decision, Unanswered)
+	if err != nil || refused != nil {
+		return orEmpty(refused), err
+	}
+	start := time.Now()
+	result := tool.Run(ctx, sess, runArgs)
+	if red := l.Recorder.redactor(); red != nil {
+		result.Content = redactedText(red.Redact, result.Content)
+	}
+	return result, l.ManualObserve(id, action, result, time.Since(start))
+}
+
 // ManualAuthorize records the person's call and puts it to the policy. A
 // refusal comes back as the result the record holds, with no tool to run.
 func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Tool, *tools.Result, error) {

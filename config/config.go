@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
 type Config struct {
@@ -55,6 +56,8 @@ type Config struct {
 	ManagedKeys []string `json:"-"`
 	// Unknown lists the keys in the files that no setting reads.
 	Unknown []UnknownKey `json:"-"`
+	// SetKeys are the settings any file made, as dotted paths; see Sets.
+	SetKeys []string `json:"-"`
 }
 
 type ModelConfig struct {
@@ -444,8 +447,10 @@ type SandboxConfig struct {
 	MinTier       string   `json:"min_tier"` // none|process|container|vm
 	AllowNetwork  bool     `json:"allow_network"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
-	MaxMemoryMB   int      `json:"max_memory_mb"`
-	MaxProcs      int      `json:"max_procs"`
+	// MaxMemoryMB applies on the container and vm tiers only; MaxProcs on
+	// every tier but none.
+	MaxMemoryMB int `json:"max_memory_mb"`
+	MaxProcs    int `json:"max_procs"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
@@ -558,7 +563,14 @@ func Load(workspace string) (Config, error) {
 	return cfg, cfg.Validate()
 }
 
+// mergeFile merges the workspace's or the home directory's config. One with a
+// second name is refused: a command could rewrite it through that name.
 func mergeFile(cfg *Config, path string) error {
+	if n, err := nlink.Linked(path); err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	} else if n > 0 {
+		return fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
+	}
 	_, err := readMerge(cfg, path)
 	return err
 }
@@ -579,6 +591,7 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
+	cfg.SetKeys = append(cfg.SetKeys, managedKeys(data)...)
 	return data, nil
 }
 

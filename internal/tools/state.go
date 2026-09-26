@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
 // maxStateEntries bounds how many files and folders of the state directories
@@ -65,6 +67,7 @@ func registeredState() []string {
 type StateSet struct {
 	dirs  []os.FileInfo
 	files []os.FileInfo
+	paths []string // where each of files was found
 	named []string // registered paths, lexical and resolved
 }
 
@@ -122,10 +125,11 @@ func (set *StateSet) addFile(path string) {
 		return
 	}
 	set.files = append(set.files, info)
+	set.paths = append(set.paths, path)
 }
 
 // walk records a state directory's folders and files, up to the bound. The
-// worktrees the parallel runs keep there are copies of the workspace, not
+// worktrees earlier versions kept there are copies of the workspace, not
 // state, and are passed over.
 func (set *StateSet) walk(dir string) {
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -147,6 +151,7 @@ func (set *StateSet) walk(dir string) {
 		case d.Type().IsRegular():
 			if !set.seen(set.files, info) {
 				set.files = append(set.files, info)
+				set.paths = append(set.paths, path)
 			}
 		}
 		return nil
@@ -229,6 +234,18 @@ func (set *StateSet) same(info os.FileInfo) bool {
 		return set.seen(set.dirs, info)
 	}
 	return set.seen(set.files, info)
+}
+
+// Linked lists the state files that have more than one name. The sandbox
+// guards the state by path, so a second name elsewhere is a way in.
+func (set *StateSet) Linked() []string {
+	var out []string
+	for i, info := range set.files {
+		if nlink.Of(info) > 1 {
+			out = append(out, set.paths[i])
+		}
+	}
+	return out
 }
 
 // HasFile reports whether an opened file or folder is state, by identity:

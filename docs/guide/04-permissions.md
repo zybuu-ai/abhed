@@ -188,6 +188,18 @@ the next start. It is a boundary rather than a rule, because a rule lives in
 the file it would be protecting. A hardlink to another file in a state
 directory is recognised for the first 4,096 files and folders there.
 
+The command sandbox guards `.abhed/` by path, not by file: a hardlink to a
+state file elsewhere in the workspace is an ordinary path to it, which a
+command could rewrite. The agent cannot make one on macOS, but one that
+already exists would carry writes through. So Abhed refuses to start — the
+CLI, the server, `abhed rpc`, `abhed acp` and `abhed resolve` — and
+`abhed doctor` fails, when a state file has more than one name, and a
+configuration file with more than one name is not loaded at all. The message
+names the file and how to fix it: find the other name with
+`find / -xdev -samefile <file>` and remove it, or give the file a single name
+again with `cp -p <file> <file>.new && mv <file>.new <file>`. Link counts are
+not read on Windows.
+
 A users file set with `auth.users_file`, or a secrets file set with
 `ABHED_SECRETS_FILE`, is refused by the file tools and the server the same
 way. Keep it outside everywhere commands can write — the workspace, added

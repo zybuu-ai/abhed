@@ -133,6 +133,7 @@ var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true, "target": true,
 	"dist": true, "build": true, "__pycache__": true, ".venv": true,
 	"venv": true, ".next": true, ".cache": true, ".abhed": true,
+	tools.WorktreesDir: true,
 }
 
 // Build walks the workspace and indexes it. Incremental updates go through

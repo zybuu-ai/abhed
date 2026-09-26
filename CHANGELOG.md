@@ -8,6 +8,30 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- On the process tier a command or workbench shell can start at most
+  `sandbox.max_procs` (512 by default) more processes than your user already
+  runs; a build that needs more, such as a very wide `make -j`, fails to
+  fork past it. Raise `max_procs` if it does.
+- The Explorer's New folder, rename and delete are recorded as `mkdir`,
+  `rename` and `delete` actions instead of `bash` calls, and `bash(...)`
+  rules no longer apply to them. To stop a delete from the Explorer, write a
+  rule for the action, such as `delete(**/keep/**)`, or a `write(...)` rule
+  on the path. A policy hook or extension that screened these as `bash`
+  calls now sees `mkdir`, `rename` or `delete`, with the path in `path`
+  (and a rename's new name in `to`).
+- Isolated subagents (`tasks` with `"isolation": "worktree"`) and
+  `abhed resolve` now make their worktrees in `<repository>/.abhed-worktrees/`
+  instead of `.abhed/worktrees/`, and add `/.abhed-worktrees/` to
+  `.git/info/exclude`. Worktrees left under `.abhed/worktrees/` by an earlier
+  version are no longer used; remove them with `git worktree remove --force
+  <path>` (or delete the folder and run `git worktree prune`) and delete their
+  `abhed/<id>` or `abhed/issue-<n>` branches.
+- Abhed no longer starts when a state file (`.abhed/config.json`,
+  `users.json`, the secrets file, or another file under `.abhed/`) has more
+  than one name. Find the other name with `find / -xdev -samefile <file>` and
+  remove it, or run `cp -p <file> <file>.new && mv <file>.new <file>`.
+  `abhed doctor` now fails, rather than reporting ready, when the sandbox
+  cannot be built.
 - "Always allow" is no longer offered for `git restore`, `git checkout`,
   `git stash` (except `git stash list` and `git stash show`), `cp`, `mv`,
   `uniq` or `tree`; approve those once, or write a rule. Nor is it offered on
@@ -173,6 +197,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `config.Config.SetKeys`, the settings any configuration file set, as
+  dotted paths, and `Config.Sets` to ask about one, whatever value the file
+  gave it.
 - `action.approved` and `action.denied` answered by a person carry
   `approver`, the signed-in subject who answered in the console or over the
   API, and an approval carries `granted_scope`, the scope the person chose to
@@ -222,6 +249,35 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The process tier never applied `sandbox.max_procs` or
+  `sandbox.max_memory_mb`, while the security checklist marked resource
+  exhaustion done on the strength of a test that ran a busy loop, not a fork
+  bomb. A command or workbench shell on the process tier now starts with a
+  process limit of what the user runs plus `max_procs`, so it can start at
+  most that many more; memory is still bounded only on the container and vm
+  tiers, which the docs now say; `abhed doctor` warns when `max_memory_mb`
+  is set for a tier that ignores it, and when root runs the process tier. A
+  command stopped at its timeout now also ends the processes it started that
+  left its group with `setsid`, while their parent still ran.
+- On a configuration that denies `rm` by its command text, such as the
+  console's `bash(rm -*)`, every Delete in the Explorer was refused: a
+  delete was screened as the line `rm -- '<path>'`. New folder, rename and
+  delete are now judged and recorded as actions of their own, `mkdir`,
+  `rename` and `delete`, still carried out in the sandbox and recorded as the
+  person's (`by: user`). Write rules on the paths, rules naming the action
+  (`delete(**/keep/**)`) and plan mode still refuse them.
+- Isolated subagents and `abhed resolve` could not change anything: their
+  worktrees were made under `.abhed/worktrees/`, inside Abhed's own state,
+  which the file tools and the command sandbox refuse, so every write in a
+  worktree was refused and resolve always reported that the agent changed
+  nothing. Worktrees are now made in `.abhed-worktrees/`, beside the state,
+  and a link planted there is refused. A subagent's worktree is removed
+  with its branch only when it is exactly as it was made (no change, commit
+  or ignored file), and so are a resolve's worktree and `abhed/issue-<n>`
+  branch. A resolve run's own commits on its branch are pushed; commits left
+  on a detached HEAD or another branch stop resolve, which keeps the
+  worktree and says where they are. A resolve run's commands can no longer
+  read the repository's own `.abhed/` from the worktree.
 - Under ACP, a call allowed by the editor's earlier "Always allow" was
   recorded `by: reviewer` with no scope; it is now `by: session-scope` with
   the `scope`, as on the CLI and the server.
@@ -364,6 +420,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A hard link in the workspace to a state file let a sandboxed command rewrite
+  `.abhed/config.json` (and so drop a deny rule for the next start): the file
+  tools refused the link, but the command sandbox guards `.abhed` by path,
+  and a second name is an ordinary path. The agent cannot make such a link
+  on macOS; one that already existed was enough. Every entry point that
+  builds the sandbox (the CLI, the server, `abhed rpc`, `abhed acp`,
+  `abhed resolve`) now refuses to start, and `abhed doctor` fails, when a
+  state file has more than one name, and a configuration file with more than
+  one name is not loaded. The message names the file and how to fix it.
+- An upload refused because the `uploads` folder was a link into Abhed's
+  state (`uploads -> .ABHED`, a link through another link, or a link to a
+  folder of `.abhed` not made yet) still made an empty folder inside
+  `.abhed` before the refusal. Folders are now made one step at a time under
+  the workspace, each step judged by name and, once opened, by identity, and
+  a step that is or leads into the state is refused before anything is made.
 - One "Always allow" on a harmless git command approved the ones that
   discard work: taking it on `git restore --staged x`, `git checkout HEAD --
   x` or `git stash list` let `git restore .`, `git checkout .`,

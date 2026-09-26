@@ -4,7 +4,11 @@ package sandbox
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -57,5 +61,37 @@ func TestCancelKillsOnlyAGroupTheCommandLeads(t *testing.T) {
 		if len(got) != want || (leads && got[0] != pid) {
 			t.Errorf("leads=%v: groups signalled %v, want only the command's own (%d) when it leads one", leads, got, pid)
 		}
+	}
+}
+
+// A process is stopped for the tree only once its parent is checked to be in
+// it; one whose parent is not is left running, never signalled for good.
+func TestTreeStopsOnlyProcessesWhoseParentIsInIt(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("the process table is read on Linux and macOS only")
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	state := func() string {
+		out, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		return strings.TrimSpace(string(out))
+	}
+	if _, ok := stopMember(pid, map[int]bool{os.Getpid() + 1: true}); ok {
+		t.Fatal("a process whose parent is not in the tree was taken into it")
+	}
+	if s := state(); strings.HasPrefix(s, "T") || s == "" {
+		t.Fatalf("the process outside the tree was left stopped or ended: %q", s)
+	}
+	m, ok := stopMember(pid, map[int]bool{os.Getpid(): true})
+	if !ok || !strings.HasPrefix(state(), "T") {
+		t.Fatalf("a child of the tree was not stopped: %v %q", ok, state())
+	}
+	m.kill()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("the stopped member was not killed")
 	}
 }

@@ -45,6 +45,10 @@ var pushWork = func(ctx context.Context, w *forge.Work, repo string, ref forge.R
 	return w.Push(ctx, repo, ref, auth, ca)
 }
 
+// workUntouched reports whether a worktree is as it was made. A variable so
+// the test can stand in a git that fails.
+var workUntouched = func(ctx context.Context, w *forge.Work) (bool, error) { return w.Untouched(ctx) }
+
 // resolveMode is the run's mode. The default, auto, yields to a mode the
 // managed configuration pins; a mode asked for by flag is judged as given.
 func resolveMode(cfg config.Config, fs *flag.FlagSet, mode string) string {
@@ -176,6 +180,17 @@ func resolveCmd(workspace string, args []string) int {
 	sha, err := work.Commit(ctx)
 	if errors.Is(err, forge.ErrNoChange) {
 		fmt.Fprintln(os.Stderr, "abhed: the agent changed nothing; no branch pushed, no pull request opened")
+		switch untouched, uerr := workUntouched(ctx, work); {
+		case uerr != nil:
+			kept = true
+			fmt.Fprintf(os.Stderr, "abhed: the worktree %s could not be checked (%v), so it and its branch are kept\n", work.Dir, uerr)
+			return 2
+		case !untouched:
+			kept = true
+			fmt.Fprintf(os.Stderr, "abhed: the worktree %s holds ignored files, so it and its branch are kept\n", work.Dir)
+			return 2
+		}
+		work.Discard(context.WithoutCancel(ctx), workspace)
 		return 2
 	}
 	if err != nil {

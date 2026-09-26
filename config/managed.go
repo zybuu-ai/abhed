@@ -109,6 +109,17 @@ func (c Config) ManagedSets(path string) bool {
 	return false
 }
 
+// Sets reports whether a configuration file made the setting at path, a
+// dotted path such as "sandbox.max_memory_mb", whatever value it gave.
+func (c Config) Sets(path string) bool {
+	for _, k := range c.SetKeys {
+		if k == path || strings.HasPrefix(k, path+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // Overrides are what a caller sets over the loaded configuration: flags on
 // the command line, Options in the SDK. Empty fields change nothing.
 type Overrides struct {

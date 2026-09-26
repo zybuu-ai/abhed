@@ -165,8 +165,18 @@ asserted. Current state:
 - [x] **Credential access** — a key under the home directory unreadable on both
       backends (`TestProcessSandboxBlocksCredentialRead`)
 - [x] **Own configuration** — `.abhed/` unreadable and unwritable from a command
-      (`TestProcessSandboxShieldsHarnessState`)
-- [x] **Resource exhaustion** — runaway commands bounded (`TestResourceLimitsRejectForkBomb`)
+      (`TestProcessSandboxShieldsHarnessState`). The rule is by path, so a start with a
+      state file that has a second name (a hard link) is refused
+      (`TestStateFileWithASecondNameIsRefused`, `TestConfigWithASecondNameIsRefused`)
+- [x] **Runaway commands** — a command is stopped at its timeout with everything it
+      started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
+      `TestBashTimeoutEndsADetachedChild`)
+- [x] **Process exhaustion, process tier** — a command can start at most `max_procs`
+      more processes than the user ran (`TestProcessLimitHoldsForTheCommand`); the
+      kernel counts all the user's processes, so a fork bomb can still crowd out the
+      server's own, and root is not bounded
+- [ ] **Memory exhaustion, process tier** — not bounded; `max_memory_mb` applies to the
+      container and vm tiers only, and `abhed doctor` warns when it is set on another
 - [x] **Tier honesty** — no silent downgrade; `Select` fails with what it tried
       (`TestSelectRefusesToDowngrade`)
 - [x] **Cross-tenant leakage** — session list and replay isolated (`server`)

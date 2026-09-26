@@ -19,6 +19,7 @@ var skipDirs = map[string]bool{
 	"dist": true, "build": true, "__pycache__": true, ".venv": true,
 	"venv": true, ".next": true, ".cache": true, ".idea": true,
 	".pytest_cache": true, ".mypy_cache": true, "coverage": true,
+	WorktreesDir: true,
 }
 
 // SkipDir reports whether glob and grep pass over a directory of this name.

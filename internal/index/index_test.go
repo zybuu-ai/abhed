@@ -209,6 +209,9 @@ func TestSkipsVendorDirectories(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, "node_modules/pkg"), 0o755)
 	os.WriteFile(filepath.Join(dir, "node_modules/pkg/index.js"), []byte("function vendored(){}"), 0o644)
+	// A subagent's worktree is a copy of the workspace, not more of it.
+	_ = os.MkdirAll(filepath.Join(dir, ".abhed-worktrees/k3f9q2"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".abhed-worktrees/k3f9q2/app.js"), []byte("function copied(){}"), 0o644)
 	os.WriteFile(filepath.Join(dir, "app.js"), []byte("function mine(){}"), 0o644)
 
 	ix := New(dir)
@@ -216,8 +219,8 @@ func TestSkipsVendorDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range ix.docs {
-		if strings.Contains(d.Path, "node_modules") {
-			t.Fatal("vendored code must not be indexed")
+		if strings.Contains(d.Path, "node_modules") || strings.Contains(d.Path, ".abhed-worktrees") {
+			t.Fatalf("vendored code or a worktree was indexed: %s", d.Path)
 		}
 	}
 }
