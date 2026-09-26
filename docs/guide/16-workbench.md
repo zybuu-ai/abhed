@@ -31,9 +31,14 @@ on, laid out the way an editor is.
 
 The agent panel works the way a terminal agent does. A call that needs a person
 stops and asks: **Allow once**, **Always allow** the narrow rule the policy
-suggests, when one is offered, or **Deny**. The plan the agent keeps is drawn
-as a checklist. `/` in the composer opens commands — `/changes`, `/tools`,
-`/hawkeye`, `/stop` and the rest — and the permission mode is chosen beside it.
+suggests, when one is offered, or **Deny**. A call that matched an ask rule,
+such as the console's `web_search`, or a destructive command, such as
+`git restore .`, offers no **Always allow** and asks every time, whatever was
+allowed before ([which scopes are offered](04-permissions.md)). The chat line
+under an approved call names who approved it and any scope they chose. The
+plan the agent keeps is drawn as a checklist. `/` in the composer opens
+commands — `/changes`, `/tools`, `/hawkeye`, `/stop` and the rest — and the
+permission mode is chosen beside it.
 
 | Key | |
 |---|---|

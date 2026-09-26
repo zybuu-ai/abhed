@@ -111,7 +111,7 @@ func TestApprovalAttribution(t *testing.T) {
 		reason    string
 	}{
 		{"reviewer allows", approverFunc(func(context.Context, policy.Result) (bool, error) { return true, nil }),
-			EvActionApproved, ActorSystem, ByReviewer, "", ""},
+			EvActionApproved, ActorUser, ByReviewer, "", ""},
 		{"reviewer refuses", approverFunc(func(context.Context, policy.Result) (bool, error) { return false, nil }),
 			EvActionDenied, ActorUser, ByReviewer, "", "rejected: "},
 		{"remembered scope", approverFunc(func(ctx context.Context, _ policy.Result) (bool, error) {
@@ -135,6 +135,65 @@ func TestApprovalAttribution(t *testing.T) {
 				t.Fatalf("outcome %s %s %v", e.Type, e.Actor, p)
 			}
 		})
+	}
+}
+
+// A person's answer is the user's on both outcomes, names them where the
+// approver knows who they are, and carries the scope they chose to always allow.
+func TestTheRecordNamesTheApproverAndTheGrantedScope(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		answer   Answer
+		approved bool
+		typ      EventType
+		want     map[string]string
+	}{
+		{"always allow", Answer{By: ByReviewer, Approver: "olga@example.com", Granted: "write(*)"}, true, EvActionApproved,
+			map[string]string{"by": ByReviewer, "approver": "olga@example.com", "granted_scope": "write(*)", "scope": ""}},
+		{"refusal", Answer{By: ByReviewer, Approver: "olga@example.com"}, false, EvActionDenied,
+			map[string]string{"by": ByReviewer, "approver": "olga@example.com", "granted_scope": ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := tempDir(t)
+			l, store := harnessIn(t, dir, writeTurns(dir), policy.ModeDefault, false)
+			l.Approver = approverFunc(func(ctx context.Context, _ policy.Result) (bool, error) {
+				NoteAnswer(ctx, tc.answer)
+				return tc.approved, nil
+			})
+			if _, err := l.Run(context.Background(), "write it"); err != nil {
+				t.Fatal(err)
+			}
+			evs, _ := store.Events("sess1")
+			e, p := outcome(t, evs, "cwrite")
+			if e.Type != tc.typ || e.Actor != ActorUser {
+				t.Fatalf("outcome %s %s %v", e.Type, e.Actor, p)
+			}
+			for k, v := range tc.want {
+				if p[k] != v {
+					t.Fatalf("%s = %q, want %q (%v)", k, p[k], v, p)
+				}
+			}
+		})
+	}
+}
+
+// The request records only the scope a person may choose: none for a step
+// that asks every time, here a hook's, whatever scope the step carries.
+func TestTheRequestRecordsTheOfferedScope(t *testing.T) {
+	dir := tempDir(t)
+	l, store := harnessIn(t, dir, writeTurns(dir), policy.ModeDefault, false)
+	l.Policy.Hooks = append(l.Policy.Hooks, func(string, json.RawMessage) *policy.Result {
+		return &policy.Result{Decision: policy.Ask, Reason: "hook", Scope: "write(*)", Step: "hook"}
+	})
+	if _, err := l.Run(context.Background(), "write it"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	for _, e := range evs {
+		var a ActionRequested
+		if e.Type == EvActionRequested && json.Unmarshal(e.Payload, &a) == nil && a.Scope != "" {
+			t.Fatalf("the request offers %q", a.Scope)
+		}
 	}
 }
 

@@ -20,3 +20,12 @@ func TestNoteAnswerReachesTheLoop(t *testing.T) {
 		t.Fatalf("an unknown By was kept: %+v", got)
 	}
 }
+
+// A person's name and the scope they chose pass through to the record as given.
+func TestNoteAnswerPassesTheApproverAndGrantedScope(t *testing.T) {
+	ctx, got := agent.ExpectAnswer(context.Background())
+	NoteAnswer(ctx, Answer{By: ByReviewer, Approver: "olga@example.com", Granted: "bash(mkdir *)"})
+	if got.By != agent.ByReviewer || got.Approver != "olga@example.com" || got.Granted != "bash(mkdir *)" {
+		t.Fatalf("answer %+v", got)
+	}
+}

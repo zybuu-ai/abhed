@@ -139,6 +139,9 @@ func TestAnswerKeepsTheChosenScope(t *testing.T) {
 			t.Fatalf("answered with %q: result approved=%v answered=%v scope=%q err=%v, want scope %q",
 				scope, approved, answered, got, err, want)
 		}
+		if by, err := pg.ApprovalAnsweredBy(ctx, id); err != nil || by != "reviewer" {
+			t.Fatalf("answered by = %q, %v; want the reviewer who answered", by, err)
+		}
 	}
 }
 

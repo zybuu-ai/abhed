@@ -51,32 +51,50 @@ tools and subcommands; anything else can be approved once or allowed with a
 rule you write. The list:
 
 - `git` with `status`, `diff`, `log`, `show`, `branch`, `add`, `commit`,
-  `restore`, `switch`, `checkout`, `stash`, `rev-parse`, `ls-files`, `blame`
-  or `tag`
+  `switch`, `rev-parse`, `ls-files`, `blame` or `tag`, and `git stash list`
+  or `git stash show`
 - `ls`, `cat`, `head`, `tail`, `wc`, `pwd`, `echo`, `which`, `file`, `stat`,
-  `du`, `df`, `tree`, `grep`, `jq`, `diff`, `uniq`, `cut`, `tr`, `mkdir`,
-  `touch`, `cp` and `mv`
+  `du`, `df`, `grep`, `jq`, `diff`, `cut`, `tr`, `mkdir` and `touch`
 - `npm` with `ls` or `outdated`; `pip` and `pip3` with `list`, `show` or
   `freeze`; `docker` with `ps`, `images`, `logs` or `version`
 
-The scope is the program and its subcommand, as in `bash(git commit *)`, or
-the program alone, as in `bash(ls *)`. The program must be spelled exactly so:
-`/usr/bin/git`, `Git`, a wrapper or a `VAR=value` assignment in front gets no
-scope. Nor does a command with `--eval` or `--exec` among its arguments, or any
-single-dash word containing `c` or `e`, such as `-ec`, `wc -c` or `head -c`;
-nor one with a quote, backslash, `$`, glob, brace or backtick in the words the
-scope keeps. Interpreters, shells, package runners, `make`, `npm install` and
-`npm test`, `go` (a `toolchain` line in `go.mod` makes it run another go
-binary), `yarn`, `pnpm`, `cargo` and `kubectl` are left off because a word on
-the line, or a file the agent can write, can make them run anything. With
-corepack enabled for npm, the `packageManager` field in `package.json` chooses
-the npm that runs, so the sandbox is the boundary there too.
+The scope is the program and its subcommand, as in `bash(git commit *)`, or the
+program alone, as in `bash(ls *)`; for `git stash`, the one read-only word
+after it too, as in `bash(git stash list *)`. The program must be spelled
+exactly so: `/usr/bin/git`, `Git`, a wrapper or a `VAR=value` assignment in
+front gets no scope. Nor does a command with `--eval` or `--exec` among its
+arguments, or any single-dash word containing `c` or `e`, such as `-ec`,
+`wc -c` or `head -c`; nor one with a quote, backslash, `$`, glob, brace or
+backtick in the words the scope keeps. Interpreters, shells, package runners,
+`make`, `npm install` and `npm test`, `go` (a `toolchain` line in `go.mod`
+makes it run another go binary), `yarn`, `pnpm`, `cargo` and `kubectl` are left
+off because a word on the line, or a file the agent can write, can make them
+run anything. With corepack enabled for npm, the `packageManager` field in
+`package.json` chooses the npm that runs, so the sandbox is the boundary there
+too.
+
+A scope covers every later command that starts with its words, so the list
+leaves out tools whose harmless calls sit beside ones that throw work away:
+
+- `git restore`, `git checkout` and `git stash` get none, because
+  `git restore --staged x` sits beside `git restore .`, `git checkout main`
+  beside `git checkout .`, and `git stash list` beside `git stash drop`. Only
+  `git stash list` and `git stash show` are offered, each on its own.
+- `cp`, `mv`, `uniq` and `tree` get none: each can write over a file (`uniq`
+  with an output file, `tree -o`), and `mv` can move a folder out of the
+  workspace, which is a delete.
+- The discarding forms Abhed knows of the subcommands that keep a scope, such
+  as `git branch -D` or `-f`, `git tag -d`, `git switch --discard-changes`
+  and `--output=<file>` on `git log` or `git stash list`, are destructive
+  commands (below). A destructive command offers no scope and always
+  confirms, whatever was allowed before.
+  That check reads the command's words, so it is best effort: the sandbox
+  and your commits are what protect work, not the scope.
 
 git is on the list, but it runs the repository's own hooks and config: hooks,
 `core.fsmonitor`, diff and filter drivers and the pager. An agent that can
-write under `.git`, with the write tool, an allowed `cp` or `mv`, or
-`git log --output`, can make an allowed git command run code of its choosing.
-The sandbox tier is what contains that, not the scope.
+write under `.git`, with the write tool, can make an allowed git command run
+code of its choosing. The sandbox tier is what contains that, not the scope.
 
 A rule you write by hand for a script approves the file by name, not its
 contents: `bash(python3 script.py *)` also allows whatever the agent later
@@ -115,10 +133,35 @@ Every call goes through the same steps, and the order is the design:
 
 1. **Hooks** — extensions, first, so they can veto
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
-3. **Destructive commands** — force push, hard reset, disk writes, fork bombs and similar always confirm, in every mode, because there is no undo
+3. **Destructive commands** — force push, hard reset, disk writes, fork bombs
+   and similar always confirm, in every mode, because there is no undo. For git
+   these are the forms that discard work which Abhed recognises: `git restore`
+   of the working tree (anything but `--staged` alone), `git checkout` with a
+   pathspec (`.`, `:/`, a glob, a path after `--`, two operands) or `-f`,
+   `git switch --discard-changes` or `-f`, `git stash drop` and `clear`,
+   `git branch -d`, `-D`, `-f`, `-M` or `-C`, `git tag -d` or `-f`,
+   `git worktree remove -f`, `git clean` other than a dry run,
+   `git reset --hard`, `git push` with `-f`, `--force`, `--delete`, `--mirror`
+   or a `+` or `:` refspec, and `--output` on any git command, such as
+   `git diff`, `log`, `show`, `stash show` or `stash list`. Long options are
+   recognised shortened, as git accepts them (`--del`, `--har`), and a later
+   `--no-dry-run` or `--no-staged` takes back the flag that made a command
+   safe. They are found wherever git takes options, among the operands too, in
+   any part of a chain, after git's own options such as `-C dir`, and behind a
+   wrapper; a single command with more than 16 words named `git` is taken as
+   destructive. The list is best effort, like the rest of this step, and the
+   sandbox is the boundary. It misses, among others: `git checkout FILE` with a
+   single word, which git reads as a branch first and otherwise as a path; a
+   git alias (`git -c alias.x=…`, or one in the repository's config);
+   `git commit --amend`, which the reflog can undo; and a command spelled so
+   the shell builds the words, such as `git${IFS}…`
+   - no scope is offered for a destructive command, and none remembered
+     satisfies it
    - a command too long or complex to split into its parts asks while a patterned
      `bash` deny or ask rule exists, so no mode or allow rule can approve it unchecked
-4. **Ask rules** — force a prompt even where a later allow would match
+4. **Ask rules** — force a prompt even where a later allow would match. They
+   offer no "always allow", and no scope chosen earlier in the session
+   satisfies them: an ask rule asks every time
 5. **Mode**
 6. **Allow rules**, then a default: read-only proceeds, mutations ask
 
@@ -174,7 +217,13 @@ would allow such calls when one is offered:
 ```
 
 For a command with no rule offered, such as `go test ./pkg/auth/`, the prompt
-has accept and reject only: approve it once, or write the rule yourself.
+has accept and reject only: approve it once, or write the rule yourself. The
+same holds for a call that matched an ask rule and for a destructive command,
+which must be asked about every time.
+
+The record names the scope on the approval that chose it (`granted_scope`),
+and in the console and the API the person who answered (`approver`); a call a
+remembered scope let through later is `by: session-scope` with that `scope`.
 A call that is not approved, by a person or because no one can be asked, is
 refused with its reason and, when one is offered, the rule that would have
 allowed it:

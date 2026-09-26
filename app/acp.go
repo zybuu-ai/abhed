@@ -367,15 +367,17 @@ func (c *acpConn) prompt(msg rpcMessage) {
 
 // askEditor puts an ask decision to the editor as a permission request.
 func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
+	scope := d.Offer()
 	s.mu.Lock()
-	remembered := d.Scope != "" && s.always[d.Scope]
+	remembered := scope != "" && s.always[scope]
 	s.mu.Unlock()
 	if remembered {
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
 		return true, nil
 	}
 	options := []map[string]any{{"optionId": "once", "name": "Allow once", "kind": "allow_once"}}
-	if d.Scope != "" {
-		options = append(options, map[string]any{"optionId": "always", "name": "Always allow " + d.Scope, "kind": "allow_always"})
+	if scope != "" {
+		options = append(options, map[string]any{"optionId": "always", "name": "Always allow " + scope, "kind": "allow_always"})
 	}
 	options = append(options, map[string]any{"optionId": "reject", "name": "Deny", "kind": "reject_once"})
 	res, err := c.call(ctx, "session/request_permission", map[string]any{
@@ -396,9 +398,14 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	_ = json.Unmarshal(res, &out)
 	switch out.Outcome.OptionID {
 	case "always":
+		// An editor may send an option it was not offered.
+		if scope == "" {
+			return true, nil
+		}
 		s.mu.Lock()
-		s.always[d.Scope] = true
+		s.always[scope] = true
 		s.mu.Unlock()
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: scope})
 		return true, nil
 	case "once":
 		return true, nil

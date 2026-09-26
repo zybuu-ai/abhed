@@ -6,20 +6,24 @@ import (
 )
 
 // scopeTools are the only programs offered a one-click "always allow": no word
-// on the line can make them run a command. git still runs the repository's own
-// hooks and config, which the sandbox tier contains. A tool with subcommands
-// maps to the ones allowed; nil means its scope is the program alone.
+// on the line can make them run a command, and none can delete or write over
+// work. git still runs the repository's own hooks and config, which the
+// sandbox tier contains. A tool with subcommands maps to the ones allowed;
+// nil means its scope is the program alone.
 var scopeTools = map[string]map[string]bool{
 	// Not config (aliases run commands), fetch (--upload-pack), grep (-O runs a pager)
 	// or remote (update fetches; add -f runs a remote helper the URL names).
-	"git": set("status", "diff", "log", "show", "branch", "add", "commit", "restore", "switch",
-		"checkout", "stash", "rev-parse", "ls-files", "blame", "tag"),
+	// Not restore, checkout or stash, whose everyday forms sit beside ones that
+	// discard work; stash offers only its read-only list and show.
+	"git": set("status", "diff", "log", "show", "branch", "add", "commit", "switch",
+		"stash", "rev-parse", "ls-files", "blame", "tag"),
 	"ls": nil, "cat": nil, "head": nil, "tail": nil, "wc": nil, "pwd": nil, "echo": nil,
-	"which": nil, "file": nil, "stat": nil, "du": nil, "df": nil, "tree": nil, "grep": nil,
-	"jq": nil, "diff": nil, "uniq": nil, "cut": nil, "tr": nil,
-	// File operations the agent can already do with write. Not sort (--compress-program)
-	// or rg (--pre), which run a program named in their arguments.
-	"mkdir": nil, "touch": nil, "cp": nil, "mv": nil,
+	"which": nil, "file": nil, "stat": nil, "du": nil, "df": nil, "grep": nil,
+	"jq": nil, "diff": nil, "cut": nil, "tr": nil,
+	// Not sort (--compress-program) or rg (--pre), which run a program named in
+	// their arguments; nor cp, mv, uniq or tree (-o), which can write over a
+	// file, and mv can move a folder out of the workspace.
+	"mkdir": nil, "touch": nil,
 	// Not install, ci or audit, which run package scripts, nor test, run, exec, x or dlx.
 	// yarn and pnpm are left out: the workspace can choose the code either runs.
 	"npm": set("ls", "outdated"),
@@ -30,6 +34,11 @@ var scopeTools = map[string]map[string]bool{
 	// Left out: go, whose go.mod toolchain line can run a go<version> found on PATH;
 	// cargo, whose --config can set a rustc wrapper anywhere on the line; and
 	// kubectl, whose --kubeconfig can name a credential plugin to run.
+}
+
+// scopeSubs narrows a listed subcommand to the words after it that may be scoped.
+var scopeSubs = map[string]map[string]bool{
+	"git stash": set("list", "show"),
 }
 
 func set(words ...string) map[string]bool {
@@ -59,6 +68,12 @@ func bashScope(fields []string) string {
 			return ""
 		}
 		n++
+		if next, nested := scopeSubs[strings.Join(fields[:n], " ")]; nested {
+			if n == len(fields) || !next[fields[n]] {
+				return ""
+			}
+			n++
+		}
 	}
 	for _, a := range fields[1:] {
 		if codeFlag(a) {

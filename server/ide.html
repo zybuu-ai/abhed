@@ -1478,7 +1478,7 @@ function render(ev){
     if(p.requires_approval){ asks.set(p.call_id, {p, rid: ev.id, shown:false}); if(live) offerAsks(); }
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
+    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
     settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? c.tool : 'tool')); break; }
   case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }

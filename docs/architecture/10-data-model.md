@@ -37,7 +37,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args | agent |
-| `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it | policy |
+| `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |
 | `subagent.spawned` / `.returned` | prompt, summary, tokens | orchestrator |
@@ -50,11 +50,21 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `by` | Meaning | Actor |
 |---|---|---|
 | `policy` | a rule or the mode decided; no one was asked | system |
-| `reviewer` | a person was asked and answered | system (approved), user (denied) |
-| `user` | the person made the call at the workbench | system (approved), user (denied) |
+| `reviewer` | a person was asked and answered | user |
+| `user` | the person made the call at the workbench | user |
 | `session-scope` | an "always allow" chosen earlier in the session let it through; `scope` names it | system |
 | `headless` | nobody could be asked (`-p`, `rpc`, an SDK run without an approver, a subagent, `abhed eval`), so the run's fixed answer applied; a refusal's reason starts `no approver:` | system |
 | `system` | the harness: an unknown tool (step `unknown`); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
+
+When a person answered, two more fields say what they did:
+
+| Field | On | Meaning |
+|---|---|---|
+| `approver` | `by: reviewer`, approved or denied | who answered: the signed-in subject (the email where the identity has one) of the console or API request that answered. Absent where no one signed in, and where the approver cannot know, as at the terminal or in an editor over ACP. From the SDK it is what the embedder's approver asserts, unverified |
+| `granted_scope` | `by: reviewer`, approved | the scope the person chose to always allow with this answer. Later calls it lets through are `by: session-scope` with `scope` set to it |
+
+Records written before these fields have neither, and record a reviewer's
+approval, and a workbench call the person ran, as `actor: system`.
 
 Every `action.requested` is followed by one of the two, so a record never holds
 a request with no outcome. Records written before `by` was on denials say it

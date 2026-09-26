@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/store"
@@ -38,6 +39,7 @@ type pendingApproval struct {
 	state    askState
 	approved bool
 	scope    string // the "always allow" scope sent with the answer
+	approver string // who sent the answer, when they signed in
 	// ready is closed once DurableID is settled, answer when an answer is
 	// held, and final when the request is taken or ended.
 	ready, answer, final chan struct{}
@@ -188,6 +190,9 @@ func (s *Server) answerHere(w http.ResponseWriter, r *http.Request, live *liveSe
 
 	live.mu.Lock()
 	held := live.move(p, askAnswered, req.Approved, req.Scope)
+	if held {
+		p.approver = approverOf(r.Context())
+	}
 	state = p.state
 	live.mu.Unlock()
 	// Having won the row, this answer is the decision even if the turn read
@@ -237,18 +242,20 @@ func writeRecordedNotApplied(w http.ResponseWriter) {
 // cancelled. This is what enables headless runs with a human gate.
 func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
 	// Already allowed for this session: a reviewer chose "always allow" for
-	// this scope earlier, so proceed without asking again.
-	if res.Scope != "" {
+	// this scope earlier, so proceed without asking again. An ask rule or a
+	// destructive command offers no scope, so it always asks.
+	offer := res.Offer()
+	if offer != "" {
 		l.mu.Lock()
-		remembered := l.allowed[res.Scope]
+		remembered := l.allowed[offer]
 		l.mu.Unlock()
 		if remembered {
-			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: res.Scope})
+			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: offer})
 			return true, nil
 		}
 	}
 
-	p := &pendingApproval{RequestID: agent.RequestIDOf(ctx), Tool: tool, Args: args, Reason: res.Reason, Scope: res.Scope,
+	p := &pendingApproval{RequestID: agent.RequestIDOf(ctx), Tool: tool, Args: args, Reason: res.Reason, Scope: offer,
 		ready: make(chan struct{}), answer: make(chan struct{}), final: make(chan struct{})}
 	l.mu.Lock()
 	l.State = "waiting_approval"
@@ -294,7 +301,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			defer cancel()
 			id, err := l.durable.AskApproval(wctx, store.Approval{
 				ID: rowID, SessionID: l.ID, Tool: tool, Args: args,
-				Reason: res.Reason, Scope: res.Scope,
+				Reason: res.Reason, Scope: offer,
 			})
 			if err != nil {
 				go l.endRow(ctx, rowID)
@@ -360,7 +367,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			}
 			l.mu.Lock()
 			took := l.move(p, askTaken, false, "")
-			approved, scope := p.approved, p.scope
+			approved, scope, approver := p.approved, p.scope, p.approver
 			l.mu.Unlock()
 			if !took {
 				agent.NoteAnswer(ctx, agent.Answer{Held: true})
@@ -368,11 +375,14 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			}
 			// "Always allow" carries the scope back; remember it so the next call
 			// matching the same rule is not re-prompted.
-			if approved && scope != "" {
+			if approved && scope != "" && scope == offer {
 				l.mu.Lock()
 				l.allowed[scope] = true
 				l.mu.Unlock()
+			} else {
+				scope = ""
 			}
+			agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Approver: approver, Granted: scope})
 			return approved, nil
 
 		case <-poll:
@@ -393,11 +403,22 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			}
 			// Only an answer that chose "always allow" widens the session, and
 			// only to the scope this request offered.
-			if approved && scope != "" && scope == res.Scope {
+			if approved && scope != "" && scope == offer {
 				l.mu.Lock()
 				l.allowed[scope] = true
 				l.mu.Unlock()
+			} else {
+				scope = ""
 			}
+			var approver string
+			if a, ok := l.durable.(approvalAnswerer); ok {
+				approver, _ = a.ApprovalAnsweredBy(ctx, durableID)
+			}
+			// The row says "anonymous" when no one signed in; the record names no one then.
+			if approver == "anonymous" {
+				approver = ""
+			}
+			agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Approver: approver, Granted: scope})
 			return approved, nil
 
 		case <-deadline.C:
@@ -406,6 +427,20 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			return false, nil
 		}
 	}
+}
+
+// approvalAnswerer is a store that can also say who answered a request.
+type approvalAnswerer interface {
+	ApprovalAnsweredBy(ctx context.Context, id string) (string, error)
+}
+
+// approverOf is the signed-in person sending an answer, or "" when there is
+// none: the auth layer names an unsigned request "anonymous".
+func approverOf(ctx context.Context) string {
+	if id, _ := auth.FromContext(ctx); id == nil || UserOf(ctx) == "anonymous" {
+		return ""
+	}
+	return UserOf(ctx)
 }
 
 // newApprovalID is an unguessable id for a request's row: the id is the

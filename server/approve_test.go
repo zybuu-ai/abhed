@@ -46,7 +46,7 @@ func waitAsked(l *liveSession, rid string) *pendingApproval {
 // re-prompting on every mutating call.
 func TestApproveRemembersAlwaysAllow(t *testing.T) {
 	live := &liveSession{allowed: map[string]bool{}}
-	res := policy.Result{Scope: "bash(npm install *)"}
+	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(npm install *)"}
 
 	// First call: reviewer chooses "always allow", which sends the scope back.
 	go answerWhenAsked(live, true, res.Scope)
@@ -73,7 +73,7 @@ func TestApproveRemembersAlwaysAllow(t *testing.T) {
 // not widen into a standing allowance.
 func TestApproveWithoutScopeIsNotRemembered(t *testing.T) {
 	live := &liveSession{allowed: map[string]bool{}}
-	res := policy.Result{Scope: "bash(npm install *)"}
+	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(npm install *)"}
 	go answerWhenAsked(live, true, "") // no scope: approve once only
 	if ok, err := live.Approve(context.Background(), "bash", nil, res); err != nil || !ok {
 		t.Fatalf("approval should accept: ok=%v err=%v", ok, err)
@@ -614,7 +614,7 @@ func TestApproveRefusesAScopeTheRequestDidNotOffer(t *testing.T) {
 	h, live, _, id := approvalSession(t, false)
 	c := make(chan turnResult, 1)
 	go func() {
-		ok, err := live.Approve(agent.WithRequestID(context.Background(), "ev-a"), "bash", nil, policy.Result{Scope: "bash(ls *)"})
+		ok, err := live.Approve(agent.WithRequestID(context.Background(), "ev-a"), "bash", nil, policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)"})
 		c <- turnResult{ok, err}
 	}()
 	<-waitAsked(live, "ev-a").ready

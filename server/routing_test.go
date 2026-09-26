@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -123,6 +124,7 @@ type fakeApprovals struct {
 	pending   map[string]store.Approval
 	answered  map[string]bool
 	scopes    map[string]string
+	by        map[string]string
 	ended     map[string]bool
 	askErr    error
 	answerErr error
@@ -137,7 +139,7 @@ func (f *fakeApprovals) askedCount() int {
 
 func newFakeApprovals() *fakeApprovals {
 	return &fakeApprovals{pending: map[string]store.Approval{}, answered: map[string]bool{},
-		scopes: map[string]string{}, ended: map[string]bool{}}
+		scopes: map[string]string{}, by: map[string]string{}, ended: map[string]bool{}}
 }
 
 func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string, error) {
@@ -152,7 +154,7 @@ func (f *fakeApprovals) AskApproval(_ context.Context, a store.Approval) (string
 	return a.ID, nil
 }
 
-func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bool, scope, _ string) (bool, error) {
+func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bool, scope, by string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.answerErr != nil {
@@ -161,8 +163,14 @@ func (f *fakeApprovals) AnswerApproval(_ context.Context, id string, approved bo
 	if _, already := f.answered[id]; already || f.ended[id] {
 		return false, nil
 	}
-	f.answered[id], f.scopes[id] = approved, scope
+	f.answered[id], f.scopes[id], f.by[id] = approved, scope, by
 	return true, nil
+}
+
+func (f *fakeApprovals) ApprovalAnsweredBy(_ context.Context, id string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.by[id], nil
 }
 
 func (f *fakeApprovals) ApprovalResult(_ context.Context, id string) (bool, bool, string, error) {
@@ -272,12 +280,17 @@ func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
 				for f.askedCount() == 0 {
 					time.Sleep(time.Millisecond)
 				}
-				_, _ = f.AnswerApproval(context.Background(), "ap-test", true, c.answer, "reviewer")
+				_, _ = f.AnswerApproval(context.Background(), "ap-test", true, c.answer, "olga@example.com")
 			}()
 
-			if ok, err := l.Approve(context.Background(), "bash", []byte(`{}`),
-				policy.Result{Scope: "bash(go test*)"}); err != nil || !ok {
+			ctx, answer := agent.ExpectAnswer(context.Background())
+			if ok, err := l.Approve(ctx, "bash", []byte(`{}`),
+				policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(go test*)"}); err != nil || !ok {
 				t.Fatalf("Approve: %v, %v", ok, err)
+			}
+			// The record names who answered, and the scope they chose, on this approval.
+			if answer.By != agent.ByReviewer || answer.Approver != "olga@example.com" || answer.Granted != c.answer {
+				t.Fatalf("answer %+v", answer)
 			}
 			l.mu.Lock()
 			remembered := l.allowed["bash(go test*)"]

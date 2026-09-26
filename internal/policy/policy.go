@@ -50,6 +50,15 @@ type Result struct {
 	Step string
 }
 
+// Offer is the scope a person may "always allow", and the only one a
+// remembered choice may satisfy: none unless the call asks by default.
+func (r Result) Offer() string {
+	if r.Decision != Ask || r.Step != "default" {
+		return ""
+	}
+	return r.Scope
+}
+
 // Rule matches a tool call. Patterns are `tool` or `tool(arg-glob)`.
 type Rule struct {
 	raw     string
@@ -279,10 +288,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		return Result{Decision: Ask, Reason: "the command is too long or complex to check each part against the rules", Scope: "", Step: "screen"}
 	}
 
-	// 3. Ask rules — force a prompt even if a later allow would match.
+	// 3. Ask rules — force a prompt even if a later allow would match, so they
+	// offer no scope: a remembered one would stop them asking.
 	for _, r := range e.Ask {
 		if r.matchesAny(tool, subjects) {
-			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: suggestScope(tool, subject), Step: "ask"}
+			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: "", Step: "ask"}
 		}
 	}
 

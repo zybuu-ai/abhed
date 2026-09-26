@@ -550,6 +550,20 @@ func (p *Postgres) ApprovalResult(ctx context.Context, id string) (approved, ans
 	return *ans, true, scope, nil
 }
 
+// ApprovalAnsweredBy reports who answered an approval, "" before an answer.
+func (p *Postgres) ApprovalAnsweredBy(ctx context.Context, id string) (string, error) {
+	var by *string
+	err := p.pool.QueryRow(ctx,
+		`SELECT answered_by FROM approvals WHERE id = $1 AND answered_at IS NOT NULL`, id).Scan(&by)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && by == nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("approval answered by %s: %w", id, err)
+	}
+	return *by, nil
+}
+
 // ClaimNode records that this node holds the session's turn in flight, so a
 // request about that session can be routed back to the process that has it.
 //
