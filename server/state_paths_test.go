@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -201,4 +202,80 @@ func TestSwappedLinkNeverLeavesTheWorkspace(t *testing.T) {
 	if ents, _ := os.ReadDir(outside); len(ents) != 1 {
 		t.Fatalf("an upload was written outside the workspace: %d entries", len(ents))
 	}
+}
+
+// A refused upload leaves the state exactly as it was: no folder is made
+// through the link before the refusal, whichever way the link is planted.
+func TestRefusedUploadLeavesTheStateUntouched(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for name, links := range map[string][][2]string{
+		"to the state folder":  {{uploadDirName, ".ABHED"}},
+		"through two links":    {{"sub/statelink", "../.abhed"}, {uploadDirName, "sub/statelink"}},
+		"to a folder not made": {{uploadDirName, ".abhed/skills"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, id, ws := downloadServer(t)
+			for _, l := range links {
+				target := l[1]
+				if target == ".ABHED" {
+					if _, err := os.Stat(filepath.Join(ws, ".ABHED")); err != nil {
+						target = ".abhed" // a disk that tells case apart
+					}
+				}
+				at := filepath.Join(ws, l[0])
+				if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, at); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			before := snapshot(t, filepath.Join(ws, ".abhed"))
+			body := &bytes.Buffer{}
+			mw := multipart.NewWriter(body)
+			fw, err := mw.CreateFormFile("file", "notes.txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = fw.Write([]byte("hello"))
+			_ = mw.Close()
+			req := httptest.NewRequest("POST", "/v1/sessions/"+id+"/upload", body)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("upload through the link = %d: %s", rec.Code, rec.Body)
+			}
+			if after := snapshot(t, filepath.Join(ws, ".abhed")); after != before {
+				t.Fatalf("a refused upload changed the state:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+// snapshot lists every entry under dir with its kind, mode and content.
+func snapshot(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		fmt.Fprintf(&b, "%s %v", rel, info.Mode())
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&b, " %q", data)
+		}
+		b.WriteString("\n")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
 }

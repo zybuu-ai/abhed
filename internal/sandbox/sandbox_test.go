@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -270,7 +271,7 @@ func TestTierOrdering(t *testing.T) {
 	}
 }
 
-func TestResourceLimitsRejectForkBomb(t *testing.T) {
+func TestRunawayCommandEndsAtItsDeadline(t *testing.T) {
 	if testing.Short() {
 		t.Skip("resource exhaustion test is slow")
 	}
@@ -284,5 +285,96 @@ func TestResourceLimitsRejectForkBomb(t *testing.T) {
 	_ = s.Command(ctx, ws, "while true; do :; done").Run()
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("runaway command was not bounded: ran %s", elapsed)
+	}
+}
+
+// forkScript tries up to 300 forks, each child exiting within two seconds and
+// all killed before it ends, and prints how many started and why it stopped.
+const forkScript = `my @kids; my $err = ""; for (1..300) { my $p = fork; if (!defined $p) { $err = "$!"; last } if ($p == 0) { sleep 2; exit 0 } push @kids, $p } kill "KILL", @kids; waitpid($_, 0) for @kids; print scalar(@kids), " $err\n"`
+
+// forksUnder runs forkScript through cmd and returns how many forks started
+// and the error that stopped them.
+func forksUnder(t *testing.T, cmd *exec.Cmd) (int, string) {
+	t.Helper()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("perl: %v\n%s", err, out)
+	}
+	n, why, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	started, err := strconv.Atoi(n)
+	if err != nil {
+		t.Fatalf("perl printed %q", out)
+	}
+	return started, why
+}
+
+// needsBoundedUser skips where the kernel bounds nothing: root, or no perl.
+func needsBoundedUser(t *testing.T) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		t.Skip("the kernel does not bound root's processes")
+	}
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl is not installed")
+	}
+}
+
+// A command started with the process limit can start at most max_procs more
+// processes than the user runs: the forks stop on the kernel's refusal, far
+// short of the attempt. Other processes of the user may end meanwhile, so the
+// count is not checked as exact.
+func TestProcessLimitHoldsForTheCommand(t *testing.T) {
+	needsBoundedUser(t)
+	s := NewProcess(Policy{MaxProcs: 40})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n, why := forksUnder(t, s.bounded(ctx, "/bin/bash", []string{"-c", "perl -e '" + forkScript + "'"}))
+	if n >= 300 || !strings.Contains(why, "Resource temporarily unavailable") {
+		t.Fatalf("max_procs 40 let the command start %d processes (stopped by %q)", n, why)
+	}
+	limit := s.procLimit()
+	running, _ := userProcesses()
+	if soft, ok := procSoftLimit(); !ok || soft >= uint64(running+40) {
+		if limit < uint64(running) || limit > uint64(running+40+50) {
+			t.Fatalf("limit %d for a user running %d processes, want about %d", limit, running, running+40)
+		}
+	}
+}
+
+// The limit never rises above the one already in force, which the operator
+// may have lowered on purpose.
+func TestProcessLimitStaysUnderTheLimitInForce(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root is not bounded")
+	}
+	running, ok := userProcesses()
+	if !ok {
+		t.Skip("the process table is not read here")
+	}
+	old := procSoftLimit
+	t.Cleanup(func() { procSoftLimit = old })
+	procSoftLimit = func() (uint64, bool) { return uint64(running + 3), true }
+	if got := NewProcess(Policy{MaxProcs: 500}).procLimit(); got != uint64(running+3) {
+		t.Fatalf("limit %d, want the %d in force", got, running+3)
+	}
+}
+
+// The same bound holds through the sandbox backend, bubblewrap's user
+// namespace included.
+func TestBoundedProcessesUnderTheSandbox(t *testing.T) {
+	needsBoundedUser(t)
+	requireNetNS(t)
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.MaxProcs = 40
+	s := NewProcess(p)
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	n, why := forksUnder(t, s.Command(ctx, ws, "perl -e '"+forkScript+"'"))
+	if n >= 300 || !strings.Contains(why, "Resource temporarily unavailable") {
+		t.Fatalf("max_procs 40 let the sandboxed command start %d processes (stopped by %q)", n, why)
 	}
 }

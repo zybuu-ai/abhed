@@ -76,11 +76,15 @@ abhed resolve https://git.example.com/team/tool/issues/12 -allow 'bash(go test*)
 ```
 
 reads the issue, works on it in a branch of its own (`abhed/issue-12`, in a
-worktree, so your checkout is untouched), commits what changed, pushes, and
+worktree at `.abhed-worktrees/issue-12`, so your checkout is untouched),
+commits what changed, pushes, and
 opens a pull request that links the issue and summarises the diff. **GitHub,
 GitLab and Gitea/Forgejo** are one command; a self-hosted instance is the
 ordinary case: the kind is inferred from the host, `-kind` names it, and
 `-ca file.pem` (or `ABHED_FORGE_CA`) trusts your certificate authority.
+
+The run is sandboxed in the worktree, and your checkout's `.abhed/` is
+Abhed's state for it as well: its commands can neither read nor write it.
 
 The token is `GITHUB_TOKEN`, `GITLAB_TOKEN` or `GITEA_TOKEN` from the
 environment, or the same name in [`abhed secret`](04-permissions.md#secrets).
@@ -129,7 +133,12 @@ Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
 the terminal. No mode opens a pull request on its own. A run that changes
-nothing pushes nothing and exits 2. A run that fails, or a resolve stopped by
+nothing pushes nothing, removes its worktree and its branch, and exits 2; if
+it left ignored files, the worktree and branch are kept for them. The run is
+asked not to commit, but a commit it made on its branch, on top of where it
+started, is pushed as the change. A run that leaves the worktree on a detached
+HEAD or another branch, or rewrites the branch, pushes nothing: resolve fails,
+says where the commits are, and keeps the worktree. A run that fails, or a resolve stopped by
 Ctrl-C, SIGTERM or a hang-up, leaves the worktree for inspection and says
 where; a stopped one pushes nothing it had not pushed and exits with 128 plus
 the signal's number. Otherwise the worktree is removed when resolve ends, and

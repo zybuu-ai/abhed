@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,7 +67,12 @@ func (s *Process) Describe() string {
 	if s.policy.AllowNetwork {
 		net = "network allowed"
 	}
-	return fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s", s.backend, net)
+	procs := "processes not bounded"
+	if s.policy.MaxProcs > 0 && os.Getuid() != 0 {
+		procs = fmt.Sprintf("at most %d more processes per command", s.policy.MaxProcs)
+	}
+	return fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory not bounded",
+		s.backend, net, procs)
 }
 
 // seatbeltProfile renders a macOS Seatbelt profile.
@@ -233,7 +239,7 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		profile := s.seatbeltProfile()
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
-		cmd := exec.CommandContext(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...)...)
+		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
 		cmd.Dir = cwd
 		cmd.Env = env
 		return cmd
@@ -293,7 +299,7 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		}
 		args = append(args, argv...)
 
-		cmd := exec.CommandContext(ctx, "bwrap", args...)
+		cmd := s.bounded(ctx, "bwrap", args)
 		cmd.Dir = cwd
 		cmd.Env = env
 		return cmd
@@ -302,6 +308,39 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 	// Unreachable when Available() gated correctly, but fail closed rather than
 	// silently running unsandboxed.
 	return exec.CommandContext(ctx, "false")
+}
+
+// bounded starts the backend under the process limit: a bash sets it and execs the
+// backend, so it holds for all the command starts, bubblewrap's namespace included.
+func (s *Process) bounded(ctx context.Context, name string, args []string) *exec.Cmd {
+	n := s.procLimit()
+	if n == 0 {
+		return exec.CommandContext(ctx, name, args...) // #nosec G204 -- the sandbox backend with its own argv
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		name = p
+	}
+	wrapped := append([]string{"-c", `ulimit -u "$1" && shift && exec "$@"`, "abhed-limit", strconv.FormatUint(n, 10), name}, args...)
+	return exec.CommandContext(ctx, "/bin/bash", wrapped...) // #nosec G204 -- fixed script; the argv is passed as "$@"
+}
+
+// procLimit is what the user runs now plus MaxProcs, as the kernel counts all the
+// user's processes, so concurrent commands and the desktop share that headroom;
+// zero (no bound asked, root, or no count) leaves the limit alone.
+func (s *Process) procLimit() uint64 {
+	if s.policy.MaxProcs <= 0 || os.Getuid() == 0 {
+		return 0
+	}
+	running, ok := userProcesses()
+	if !ok {
+		return 0
+	}
+	limit := uint64(running) + uint64(s.policy.MaxProcs) // #nosec G115 -- both are positive
+	// Never above the limit in force, which the operator may have lowered.
+	if soft, ok := procSoftLimit(); ok && soft < limit {
+		limit = soft
+	}
+	return limit
 }
 
 // statePaths returns the policy's state paths, each also as its links

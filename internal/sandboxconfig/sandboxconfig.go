@@ -8,15 +8,16 @@ import (
 	"path/filepath"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// Build selects an execution backend meeting the configured minimum tier.
-// Select never silently downgrades, so an error is a configuration problem.
-func Build(cfg config.Config, workspace string) (sandbox.Sandbox, error) {
-	if err := CheckStatePaths(cfg, workspace); err != nil {
+// Build selects an execution backend meeting the configured minimum tier; Select
+// never downgrades. stateRoots' .abhed is state too, as a worktree's repository's is.
+func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Sandbox, error) {
+	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
 		return nil, err
 	}
 	p := sandbox.DefaultPolicy(workspace)
@@ -26,6 +27,11 @@ func Build(cfg config.Config, workspace string) (sandbox.Sandbox, error) {
 	p.AllowNetwork = cfg.Sandbox.AllowNetwork
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.StatePaths = StatePaths(cfg, workspace)
+	for _, r := range stateRoots {
+		if filepath.Clean(r) != filepath.Clean(workspace) {
+			p.StatePaths = append(p.StatePaths, filepath.Join(r, tools.StateDir))
+		}
+	}
 	if cfg.Sandbox.MaxMemoryMB > 0 {
 		p.MaxMemoryMB = cfg.Sandbox.MaxMemoryMB
 	}
@@ -57,7 +63,7 @@ func StatePaths(cfg config.Config, workspace string) []string {
 // there, since a command can rename a folder above it or plant a link where
 // it will be created. A path that does not exist yet is judged by its deepest
 // existing parent, with links followed.
-func CheckStatePaths(cfg config.Config, workspace string) error {
+func CheckStatePaths(cfg config.Config, workspace string, stateRoots ...string) error {
 	// A .abhed is a shield only where it really is: not a link to a folder
 	// elsewhere, which the sandbox's rule for it would not cover.
 	var shielded []string
@@ -93,6 +99,24 @@ func CheckStatePaths(cfg config.Config, workspace string) error {
 					"ABHED_SECRETS_FILE outside the workspace, added directories, temp folders and "+
 					"caches, or under the workspace's or the home directory's .abhed", p, a)
 			}
+		}
+	}
+	return checkLinks(cfg, workspace, stateRoots)
+}
+
+// checkLinks refuses a state file with a second name: the sandbox guards the
+// state by path, so a command could rewrite the file through the other name.
+func checkLinks(cfg config.Config, workspace string, stateRoots []string) error {
+	roots := append(append([]string{workspace}, cfg.AdditionalDirs...), stateRoots...)
+	linked := tools.NewStateSet(roots...).Linked()
+	linked = append(linked, StatePaths(cfg, workspace)...)
+	for _, p := range linked {
+		n, err := nlink.Linked(p)
+		if err != nil {
+			return fmt.Errorf("refusing to start: the state file %s cannot be checked: %w", p, err)
+		}
+		if n > 0 {
+			return fmt.Errorf("refusing to start: %w", nlink.Refusal(p, n))
 		}
 	}
 	return nil

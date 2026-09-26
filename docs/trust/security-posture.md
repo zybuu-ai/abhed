@@ -47,7 +47,12 @@ call even in `bypass` mode — the most permissive mode Abhed has
 org policy") — whether the agent or a person makes it. One scope limit: what a
 person runs inside the workbench's interactive shell is bounded by the sandbox,
 and there deny rules are a best-effort screen on each line as typed (see "A
-person's terminal is sandboxed" below). Rules are
+person's terminal is sandboxed" below). The workbench Explorer's New folder,
+rename and delete are judged as actions of their own (`mkdir`, `rename`,
+`delete`), not as command text, so `bash(...)` rules do not apply to them;
+`write(...)` rules on their paths and rules naming the action do (a
+`rename(...)` rule is matched against both names). Hooks and extensions see
+those action names, not `bash`. Rules are
 scoped per-command, not per-tool: allowing `bash(npm test)` never allows
 `bash(rm -rf /)`. A deployment's deny list should block reads of SSH keys,
 cloud credentials and `.env` files, and no allow rule should pre-approve an interpreter or file-reading command that could be
@@ -89,9 +94,18 @@ config and secrets files are always known, and other files and folders there
 up to 4,096. Files are opened under the workspace held open as an `os.Root`
 (`internal/tools/confined.go`), so a link swapped in after the check leads
 neither out of the workspace nor into the state, and what was opened is
-judged again. The process sandbox denies commands reading and writing
+judged again. A folder an upload needs is made one step at a time the same
+way, so a link into the state is refused before anything is made there. The
+process sandbox denies commands reading and writing
 `.abhed/` (`internal/sandbox/process.go`), with `~/.abhed/skills` the one
-readable part.
+readable part. That denial is by path, not by file: a hard link to a state
+file elsewhere in the workspace is a path the sandbox does not guard. The
+agent cannot make one on macOS, and one that already exists stops Abhed: every
+entry point that builds the sandbox refuses to start, and `abhed doctor`
+fails, when a state file (the users, config and secrets files and the other
+files the state check knows) has more than one name, and `config.Load` refuses
+a configuration file with more than one name (`internal/nlink`,
+`internal/sandboxconfig`). Link counts are not read on Windows.
 
 A users file set with `auth.users_file`, or a secrets file set with
 `ABHED_SECRETS_FILE`, is refused by the same check. Abhed refuses to start
@@ -210,10 +224,11 @@ inside it. So, for the terminal:
   start time unreadable, or no pidfd on a Linux kernel before 5.3) the server
   logs that containment did not run. A process that starts a session of its own
   (`setsid`, a daemon) escapes and runs until it ends, within the sandbox;
-  bubblewrap and the container tier end everything regardless. On the none
-  and process tiers a shell shares the server's user and so its process
-  limit: a fork bomb there can exhaust it for the server too. A pids cgroup
-  per shell is the planned follow-up.
+  bubblewrap and the container tier end everything regardless. A shell runs
+  as the server's user; on the process tier it can start at most
+  `sandbox.max_procs` more processes than that user ran when it opened (see
+  "Resource limits" below), and on the none tier nothing bounds it. A pids
+  cgroup per shell is the planned follow-up.
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies
@@ -233,6 +248,27 @@ call per line with no shell state, and a managed policy with deny rules for
 automatically. Even then a rule checks the line, not what
 a script the line runs does. On the `none` tier the shell runs on the host, and
 the terminal banner and status bar say so.
+
+**Resource limits.** On the process tier each command and each shell starts
+with a process limit (`RLIMIT_NPROC`, set by `ulimit -u` before the sandbox
+backend starts) of what the server's user runs at that moment plus
+`sandbox.max_procs`, 512 by default (`procLimit` in
+`internal/sandbox/process.go`, `TestProcessLimitHoldsForTheCommand`). The kernel
+counts every process of the user (every thread, on Linux) against it, so a
+fork bomb stops after that many more, not after that many of its own, and can
+still crowd out the server's own processes until it is stopped; the kernel
+does not bound root at all. The headroom is shared: the user's other programs
+and concurrent commands use it too, and a long-lived workbench shell keeps the
+limit it opened with. The limit never exceeds the one already in force, and
+the server itself runs without it. `sandbox.max_memory_mb` is applied only on the
+container and vm tiers; the none and process tiers do not bound memory, and
+`abhed doctor` warns when it is set for one of them, as it does for
+`max_procs` on the none tier or under root. The none tier bounds neither. A command past its
+timeout is stopped with everything descended from it, including a child that
+left its group with `setsid` while its parent still ran
+(`TestBashTimeoutEndsADetachedChild`); a process whose parent had already
+exited, such as a daemon that forked twice, is not reached on the none tier or
+the macOS process tier, and bubblewrap ends everything in its namespace.
 
 **Extensions may only veto, never permit.** `internal/extension/extension.go`
 states the rule directly: "An extension may VETO, never PERMIT." Hooks run

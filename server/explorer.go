@@ -16,11 +16,11 @@ import (
 )
 
 // Creating a folder, renaming and deleting from the Explorer have no tool of
-// their own. Each is one shell command run through agent.Loop.Manual, so it has
-// the policy, the sandbox and the record of a command typed into the terminal.
-// Before that, every path it touches, and for a folder everything inside it at
-// the old name and the new, is held to the view's rules and to the write rules
-// a save would meet, which a command line alone would not carry.
+// their own. Each is judged and recorded as its own action (mkdir, rename,
+// delete) through agent.Loop.ManualAs, not as command text, and carried out as
+// one shell command in the sandbox. Before that, every path it touches, and for
+// a folder everything inside it at the old name and the new, is held to the
+// view's rules and to the write rules a save would meet.
 //
 // Checks and command run under the person's manual lock, so no other workbench
 // action lands between them. The agent's own writes can still: that race is the
@@ -45,8 +45,12 @@ type explorerResponse struct {
 	Path string `json:"path"`
 }
 
-// explorerPlan is the command a request comes to, once every check has passed.
+// explorerPlan is the action a request comes to, once every check has passed,
+// and the command that carries it out.
 type explorerPlan struct {
+	action               string            // what the policy judges and the record names
+	args                 map[string]string // the action's paths
+	also                 map[string]string // further paths the action is judged by, if any
 	command, description string
 	result               string      // the workspace path reported back
 	done                 func() bool // whether the change is on disk afterwards
@@ -61,6 +65,7 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 			return explorerPlan{}, false
 		}
 		return explorerPlan{
+			action: "mkdir", args: map[string]string{"path": abs},
 			command: "mkdir -p -- " + shellQuote(abs), description: "created a folder in the explorer", result: rel,
 			done: func() bool { info, err := os.Stat(abs); return err == nil && info.IsDir() },
 		}, true
@@ -90,7 +95,10 @@ func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 		}) {
 			return explorerPlan{}, false
 		}
+		// A rule on the action is put to the new name as well as the old.
 		return explorerPlan{
+			action: "rename", args: map[string]string{"path": fromAbs, "to": toAbs},
+			also:    map[string]string{"path": toAbs, "to": toAbs},
 			command: "mv -n -- " + shellQuote(fromAbs) + " " + shellQuote(toAbs), description: "renamed in the explorer", result: to,
 			done: func() bool { return moved(info, fromAbs, toAbs) },
 		}, true
@@ -117,6 +125,7 @@ func (s *Server) deletePath(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		return explorerPlan{
+			action: "delete", args: map[string]string{"path": abs},
 			command: cmd + shellQuote(abs), description: "deleted in the explorer", result: rel,
 			done: func() bool { _, err := os.Lstat(abs); return err != nil },
 		}, true
@@ -161,8 +170,15 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 	// Detached from the request: a client that goes away must not stop an rm -r half way.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), explorerTimeout)
 	defer cancel()
-	args, _ := json.Marshal(map[string]string{"command": p.command, "description": p.description})
-	res, err := live.Loop.Manual(ctx, sess, "bash", "u"+newSessionID(), args)
+	p.args["runs"] = p.command
+	args, _ := json.Marshal(p.args)
+	runArgs, _ := json.Marshal(map[string]string{"command": p.command, "description": p.description})
+	var also []json.RawMessage
+	if p.also != nil {
+		a, _ := json.Marshal(p.also)
+		also = append(also, a)
+	}
+	res, err := live.Loop.ManualAs(ctx, sess, p.action, "u"+newSessionID(), args, "bash", runArgs, also...)
 	switch {
 	case err != nil:
 		WriteError(w, http.StatusInternalServerError, "the change could not be recorded, so it was not made")

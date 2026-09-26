@@ -187,9 +187,17 @@ everything in a file the session created deletes the file, as the Explorer
 does.
 
 **Explorer.** A new file is a save of an empty file, refused if the name is
-taken. New folder, rename and delete are each one command, `mkdir -p`, `mv -n`
-or `rm`, run through the same call as a line typed into the terminal, so the
-bash rules, the sandbox and the record apply to it. Before it runs, every path
+taken. New folder, rename and delete are each an action of their own —
+`mkdir`, `rename` and `delete` — judged by the policy and recorded under that
+name, as yours (`by: user`), and each is carried out as one command (`mkdir -p`,
+`mv -n` or `rm`) in the session's sandbox. Rules written for command text, such
+as `bash(rm -*)`, do not apply to them, so a console that denies `rm` flags to
+the agent and the terminal still lets you delete a file from the Explorer; a
+rule naming the action with a path, such as `delete(**/keep/**)`, does, as do
+deny rules and plan mode. A `rename(...)` rule is matched against the old name
+and the new one. Policy hooks and extensions are shown the action (`mkdir`,
+`rename` or `delete`, with a `path` and, for a rename, a `to`), not a `bash`
+call; a rename reaches them twice, once for each name. Before it runs, every path
 it touches must be one the workbench would open, which rules out `.abhed/`,
 `.git/` and anything a read rule withholds, and one a save to which would not
 be refused by a write rule. Each path is judged as named and with its folder's
@@ -251,10 +259,14 @@ continue signal, a kill is not.
 Closing that gap strictly would need signalling by audit token. What escapes is
 a process that makes a session of its own, with `setsid` or by daemonising;
 it runs until it ends, within the sandbox. On Linux bubblewrap ends everything
-in the sandbox with the shell, and a container is removed. On the none and
-process tiers a shell runs as the server's user and shares its process limit,
-so a fork bomb there can exhaust it for the server too; a pids cgroup per
-shell is the planned follow-up.
+in the sandbox with the shell, and a container is removed. A shell runs as
+the server's user. On the process tier it starts with a process limit of what
+that user runs plus `sandbox.max_procs` (512 by default), so a fork bomb
+there stops at that many more processes; the kernel counts all of the user's
+processes, so it can still crowd out the server's own for a while, and root
+is not bounded at all. On the none tier nothing bounds it. Memory is bounded
+only on the container and vm tiers; a pids cgroup per shell is the planned
+follow-up.
 
 What a shell changes about the checks, stated plainly:
 

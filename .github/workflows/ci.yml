@@ -180,6 +180,32 @@ jobs:
             echo "a boundary test skipped under a privileged runner:"; grep -B3 -- "--- SKIP" sandbox.log; exit 1
           fi
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
+      # The kernel does not bound root's processes, and this job runs as root,
+      # so the process limit is checked as an unprivileged user.
+      - name: The process limit binds an unprivileged user's commands
+        run: |
+          set -euo pipefail
+          # Ubuntu's AppArmor refuses user namespaces to unprivileged users;
+          # bubblewrap needs one. Lift that for this job, however it is exposed.
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || echo 0 > "$knob" || true
+          fi
+          useradd -m abhedci
+          # An environment that cannot give the user a sandbox is named as such,
+          # not read as a boundary that stopped holding.
+          if ! runuser -u abhedci -- bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc true 2>probe.err; then
+            echo "ENVIRONMENT: an unprivileged user cannot start bubblewrap here ($(cat probe.err));"
+            [ -e "$knob" ] && echo "  $knob = $(cat "$knob")"
+            exit 1
+          fi
+          go test -c -o /tmp/sandbox.test ./internal/sandbox/
+          chmod 755 /tmp/sandbox.test
+          cd /tmp
+          runuser -u abhedci -- /tmp/sandbox.test -test.run 'TestProcessLimitHoldsForTheCommand|TestBoundedProcessesUnderTheSandbox' -test.count=1 -test.v > limit.log 2>&1 || { cat limit.log; exit 1; }
+          for t in TestProcessLimitHoldsForTheCommand TestBoundedProcessesUnderTheSandbox; do
+            grep -q -- "--- PASS: $t" limit.log || { echo "$t did not run and pass:"; cat limit.log; exit 1; }
+          done
 
   container:
     name: Container image

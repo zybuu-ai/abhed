@@ -239,6 +239,10 @@ func (s *Session) resolveWith(path string, state *StateSet) (string, error) {
 // holds Abhed's own configuration, users and keys.
 const StateDir = ".abhed"
 
+// WorktreesDir holds the checkouts of isolated subagents and resolved issues,
+// outside StateDir so the agent can work in them.
+const WorktreesDir = ".abhed-worktrees"
+
 // isState reports whether a path names Abhed's state by any spelling; see
 // StateSet.
 func (s *Session) isState(clean string) bool {

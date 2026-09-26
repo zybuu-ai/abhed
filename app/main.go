@@ -2351,6 +2351,9 @@ func (a *App) doctor(workspace string) int {
 			label += "  ⚠"
 		}
 		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
+		for _, w := range limitWarnings(cfg, sb.Tier()) {
+			fmt.Printf("            ⚠ %s\n", w)
+		}
 	} else {
 		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
 	}
@@ -2514,7 +2517,9 @@ func (a *App) doctor(workspace string) int {
 	// bwrap" and nothing else, because it never tried. Now it tries.
 	fmt.Print("checking sandbox exec... ")
 	if sb, err := buildSandbox(cfg, workspace); err != nil {
-		fmt.Printf("SKIPPED\n  %v\n", err)
+		// A session would not start either, so this is not ready.
+		fmt.Printf("FAILED\n  %v\n", err)
+		return 1
 	} else {
 		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		out, err := sb.Command(sctx, workspace, "echo abhed-sandbox-ok").CombinedOutput()
@@ -2533,6 +2538,27 @@ func (a *App) doctor(workspace string) int {
 
 	return doctorVerdict(os.Stdout, unknown)
 }
+
+// limitWarnings names the configured limits the tier in force does not apply:
+// memory is bounded on the container and vm tiers only, processes on all but
+// none, and not for root on the process tier. A memory limit no file set, the
+// default, is not warned about.
+func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
+	var out []string
+	if m := cfg.Sandbox.MaxMemoryMB; m > 0 && cfg.Sets("sandbox.max_memory_mb") && tier.Strength() < sandbox.TierContainer.Strength() {
+		out = append(out, fmt.Sprintf("sandbox.max_memory_mb (%d) is not applied on the %s tier; only the container and vm tiers bound memory", m, tier))
+	}
+	switch {
+	case cfg.Sandbox.MaxProcs > 0 && tier == sandbox.TierNone:
+		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied on the none tier", cfg.Sandbox.MaxProcs))
+	case cfg.Sandbox.MaxProcs > 0 && tier == sandbox.TierProcess && runningAsRoot():
+		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied: this runs as root, whose processes the kernel does not bound", cfg.Sandbox.MaxProcs))
+	}
+	return out
+}
+
+// runningAsRoot is replaced in tests.
+var runningAsRoot = func() bool { return os.Getuid() == 0 }
 
 // doctorVerdict ends a doctor run whose checks all passed: ready, unless the
 // configuration has keys nothing reads.

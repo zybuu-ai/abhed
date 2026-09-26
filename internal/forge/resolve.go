@@ -23,6 +23,7 @@ type Work struct {
 	Branch string
 	Dir    string // the worktree
 	Base   string
+	Start  string // the commit the worktree was made at
 }
 
 // Runner does the actual work in the worktree. It is the agent session; the
@@ -54,9 +55,15 @@ func Begin(ctx context.Context, repo string, is Issue, base string) (*Work, erro
 		return nil, fmt.Errorf("%s is not a git repository", repo)
 	}
 	branch := fmt.Sprintf("abhed/issue-%d", is.Ref.Number)
-	dir := filepath.Join(repo, ".abhed", "worktrees", fmt.Sprintf("issue-%d", is.Ref.Number))
-	if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
+	parent, err := r.Worktrees(ctx)
+	if err != nil {
 		return nil, err
+	}
+	dir := filepath.Join(parent, fmt.Sprintf("issue-%d", is.Ref.Number))
+	// Earlier versions made the worktree inside .abhed; it would hold the branch.
+	if legacy := filepath.Join(repo, ".abhed", "worktrees", fmt.Sprintf("issue-%d", is.Ref.Number)); exists(legacy) {
+		return nil, fmt.Errorf("an earlier version's worktree for this issue is at %s; remove it with "+
+			"`git worktree remove --force %s && git branch -D %s`, then resolve again", legacy, legacy, branch)
 	}
 	start := "HEAD"
 	if base != "" {
@@ -69,23 +76,50 @@ func Begin(ctx context.Context, repo string, is Issue, base string) (*Work, erro
 	// A branch left by an earlier attempt is replaced, not built on.
 	_, _ = git(ctx, r, "worktree", "remove", "--force", dir)
 	_, _ = git(ctx, r, "branch", "-D", branch)
+	if err := hostgit.NewWorktreeDir(dir); err != nil {
+		return nil, err
+	}
 	if _, err := git(ctx, r, "worktree", "add", "-b", branch, dir, start); err != nil {
 		return nil, err
 	}
-	return &Work{Issue: is, Branch: branch, Dir: dir, Base: base}, nil
+	w := &Work{Issue: is, Branch: branch, Dir: dir, Base: base}
+	if err := r.Placed(ctx, dir); err != nil {
+		_, _ = git(ctx, r, "branch", "-D", branch)
+		return nil, err
+	}
+	if w.Start, err = hostgit.Head(ctx, dir); err != nil {
+		w.Discard(ctx, repo)
+		return nil, err
+	}
+	return w, nil
+}
+
+func exists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }
 
 // ErrEmbeddedRepo refuses a commit when the agent left a repository inside
 // the worktree: git would enter it, and run what its own configuration names.
 var ErrEmbeddedRepo = errors.New("the change holds a git repository of its own")
 
-// Commit records what the agent changed, as one commit that names the issue.
-// The author is the repository's configured one: the person who ran this.
+// ErrOffBranch refuses a commit when the run left the worktree off its branch:
+// what is pushed is the branch, so its work would not go with it.
+var ErrOffBranch = errors.New("the run left the worktree off its branch")
+
+// Commit records what the agent changed, as one commit that names the issue,
+// on the worktree's branch, and returns the branch's commit. The author is the
+// repository's configured one: the person who ran this. A run that committed
+// itself, though asked not to, has its commits taken as the change, if they
+// are on the branch and build on the commit it started from.
 func (w *Work) Commit(ctx context.Context) (string, error) {
 	if nested := embeddedRepo(w.Dir); nested != "" {
 		return "", fmt.Errorf("%w (%s); remove it and resolve again", ErrEmbeddedRepo, nested)
 	}
 	r := hostgit.New(ctx, w.Dir)
+	if err := w.onBranch(ctx, r); err != nil {
+		return "", err
+	}
 	if _, err := git(ctx, r, "add", "-A"); err != nil {
 		return "", err
 	}
@@ -93,14 +127,42 @@ func (w *Work) Commit(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(status) == "" {
-		return "", ErrNoChange
+	if strings.TrimSpace(status) != "" {
+		msg := fmt.Sprintf("Resolve #%d: %s\n\nSee %s", w.Issue.Ref.Number, w.Issue.Title, w.Issue.URL)
+		if _, err := git(ctx, r, "commit", "-q", "-m", msg); err != nil {
+			return "", err
+		}
 	}
-	msg := fmt.Sprintf("Resolve #%d: %s\n\nSee %s", w.Issue.Ref.Number, w.Issue.Title, w.Issue.URL)
-	if _, err := git(ctx, r, "commit", "-q", "-m", msg); err != nil {
+	ref := "refs/heads/" + w.Branch
+	tip, err := git(ctx, r, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
 		return "", err
 	}
-	return git(ctx, r, "rev-parse", "--short", "HEAD")
+	if tip == w.Start {
+		return "", ErrNoChange
+	}
+	if _, err := git(ctx, r, "merge-base", "--is-ancestor", w.Start, ref); err != nil {
+		return "", fmt.Errorf("%w: branch %s no longer builds on the commit the run started from (%s)",
+			ErrOffBranch, w.Branch, w.Start[:min(12, len(w.Start))])
+	}
+	return git(ctx, r, "rev-parse", "--short", ref)
+}
+
+// onBranch refuses a worktree whose HEAD is not its branch, naming where the
+// run's commits are instead.
+func (w *Work) onBranch(ctx context.Context, r *hostgit.Repo) error {
+	ref, err := git(ctx, r, "symbolic-ref", "-q", "HEAD")
+	if err == nil && ref == "refs/heads/"+w.Branch {
+		return nil
+	}
+	where := "a detached HEAD"
+	if head, herr := hostgit.Head(ctx, w.Dir); herr == nil && err != nil {
+		where += " at " + head[:min(12, len(head))]
+	} else if err == nil {
+		where = "branch " + strings.TrimPrefix(ref, "refs/heads/")
+	}
+	return fmt.Errorf("%w: the worktree is on %s, not on %s, so nothing was pushed; its commits are there",
+		ErrOffBranch, where, w.Branch)
 }
 
 // embeddedRepo finds a .git, folder or file, below the worktree's top: a
@@ -304,6 +366,19 @@ func (w *Work) Diff(ctx context.Context, repo string) string {
 // Cleanup removes the worktree; the branch stays, since it was pushed.
 func (w *Work) Cleanup(ctx context.Context, repo string) {
 	_, _ = git(ctx, hostgit.New(ctx, repo), "worktree", "remove", "--force", w.Dir)
+	hostgit.RemoveWorktrees(repo)
+}
+
+// Discard removes the worktree and its branch, for a run that changed nothing.
+func (w *Work) Discard(ctx context.Context, repo string) {
+	w.Cleanup(ctx, repo)
+	_, _ = git(ctx, hostgit.New(ctx, repo), "branch", "-D", w.Branch)
+}
+
+// Untouched reports whether the worktree is as it was made: nothing changed,
+// committed, untracked or ignored, so discarding it loses nothing.
+func (w *Work) Untouched(ctx context.Context) (bool, error) {
+	return hostgit.Untouched(ctx, w.Dir, w.Start)
 }
 
 // git runs one command on r, whose drivers were read once for the operation.

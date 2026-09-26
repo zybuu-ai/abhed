@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -203,9 +204,16 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	// A managed sandbox setting binds here too; otherwise bash is unsandboxed
 	// unless the caller asked for the configured sandbox.
+	// The configuration's own folder may hold the workspace, as a worktree;
+	// its .abhed is state all the same.
+	var stateRoots []string
+	if opts.ConfigDir != "" {
+		stateRoots = append(stateRoots, opts.ConfigDir)
+		tools.AddStatePath(filepath.Join(opts.ConfigDir, tools.StateDir))
+	}
 	bash := tools.Bash{}
 	if opts.Sandbox || cfg.ManagedSets("sandbox") {
-		sb, err := sandboxconfig.Build(cfg, opts.Workspace)
+		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {
 			return nil, fmt.Errorf("abhed: %w", err)
 		}

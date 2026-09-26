@@ -8,12 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
@@ -195,4 +199,72 @@ func runsHere(box sandbox.Sandbox, ws, why string) string {
 		return fmt.Sprintf("a trial command failed: %v: %s", err, out)
 	}
 	return ""
+}
+
+// A command that times out ends with everything it started, even a child
+// that left its group and session with setsid while its parent still ran.
+func TestBashTimeoutEndsADetachedChild(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl is not installed")
+	}
+	tiers := []struct {
+		name string
+		box  func(ws string) (sandbox.Sandbox, string)
+	}{
+		{"host", func(string) (sandbox.Sandbox, string) { return nil, "" }},
+		{"none", func(ws string) (sandbox.Sandbox, string) { return sandbox.NewNone(sandbox.DefaultPolicy(ws)), "" }},
+		{"process", func(ws string) (sandbox.Sandbox, string) {
+			s := sandbox.NewProcess(sandbox.DefaultPolicy(ws))
+			_, why := s.Available()
+			return s, runsHere(s, ws, why)
+		}},
+	}
+	for _, tier := range tiers {
+		t.Run(tier.name, func(t *testing.T) {
+			// bubblewrap's pid namespace ends everything, and its pids are not the host's.
+			if tier.name == "process" && runtime.GOOS == "linux" {
+				t.Skip("bubblewrap ends its namespace whole")
+			}
+			s, dir := setup(t)
+			b := Bash{}
+			box, unavailable := tier.box(dir)
+			if unavailable != "" {
+				t.Skipf("%s sandbox unavailable: %s", tier.name, unavailable)
+			}
+			if box != nil {
+				b.Sandbox = box.Command
+			}
+			pidFile := filepath.Join(dir, "detached.pid")
+			// The parent stays, sleeping; its child starts a session of its own.
+			script := `if (my $p = fork) { sleep 30; exit } POSIX::setsid(); open(F, ">", $ARGV[0]); print F $$; close F; sleep 30`
+			args, _ := json.Marshal(bashArgs{
+				Command:     `perl -MPOSIX -e '` + script + `' ` + pidFile + ` >/dev/null 2>&1; echo after`,
+				Description: "a command that detaches a child", TimeoutMS: 1500,
+			})
+			done := make(chan Result, 1)
+			go func() { done <- b.Run(context.Background(), s, args) }()
+			pid := waitForPid(t, pidFile, done)
+			t.Cleanup(func() {
+				if alive(pid) {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+			if sid, err := unix.Getsid(pid); err != nil || sid != pid {
+				t.Fatalf("the child did not start a session of its own: sid %d, %v", sid, err)
+			}
+			select {
+			case res := <-done:
+				if !strings.Contains(res.Content, "timed out") {
+					t.Errorf("result: %q", res.Content)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the command held the call past its timeout")
+			}
+			for deadline := time.Now().Add(2 * time.Second); alive(pid); time.Sleep(20 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the detached child %d outlived the timeout", pid)
+				}
+			}
+		})
+	}
 }

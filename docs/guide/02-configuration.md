@@ -115,6 +115,16 @@ finishes. Zero means no cap.
 Shell commands run under process isolation with writes scoped to the workspace.
 This is a boundary, not a jail: it is not sufficient for genuinely hostile code.
 
+`"max_procs"` (512 by default) bounds how many more processes a command can
+start: on the process tier, as a limit of what your user runs plus this many
+(the kernel counts all of the user's processes, and does not bound root), and
+on the container and vm tiers, as the container's own limit. The none tier
+ignores it. `"max_memory_mb"` (4096) is applied on the container and vm tiers
+only; the none and process tiers do not bound memory. `abhed doctor` warns when
+you set `max_memory_mb` on a tier that ignores it, when `max_procs` meets the
+none tier, and when root runs the process tier, whose processes the kernel
+does not bound.
+
 `"terminal": "lines"` makes the workbench terminal run each line as a
 policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.

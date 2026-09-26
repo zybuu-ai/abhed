@@ -11,6 +11,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 func gitRepo(t *testing.T) string {
@@ -165,5 +170,162 @@ func TestParallelTasksReportPartialFailure(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "FAILED") || !strings.Contains(res.Content, "[1 of 2 tasks failed]") {
 		t.Errorf("report does not name the failure:\n%s", res.Content)
+	}
+}
+
+// workdirAdapter plays turns planned from the working directory the system
+// prompt names, which for an isolated subagent is its worktree.
+type workdirAdapter struct {
+	scriptedAdapter
+	plan func(dir string) []scriptedTurn
+}
+
+func (w *workdirAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	if w.turns == nil {
+		_, after, _ := strings.Cut(req.System, "Working directory: ")
+		dir, _, _ := strings.Cut(after, "\n")
+		w.turns = w.plan(dir)
+	}
+	return w.scriptedAdapter.Complete(ctx, req)
+}
+
+// An isolated subagent really works in its worktree: its file tools and its
+// sandboxed commands write there, and nothing lands in the main tree.
+func TestIsolatedSubagentWritesInItsWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ws := gitRepo(t)
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry(tools.Read{}, tools.Write{})
+	sandboxed := false
+	// Where the sandbox cannot run a command here (no network namespace on a
+	// hosted runner), only the file tools are tried.
+	if sb := sandbox.NewProcess(sandbox.DefaultPolicy(ws)); sb.Command(context.Background(), ws, "true").Run() == nil {
+		reg = tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{Sandbox: sb.Command})
+		sandboxed = true
+	}
+	var worktree string
+	adapter := &workdirAdapter{plan: func(dir string) []scriptedTurn {
+		worktree = dir
+		turns := []scriptedTurn{{calls: []model.ToolCall{call("write", map[string]string{
+			"path": filepath.Join(dir, "MARKER.txt"), "content": "from the subagent\n"})}}}
+		if sandboxed {
+			turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{
+				"command": "echo ran > BASH.txt", "description": "write a file"})}})
+		}
+		return append(turns, scriptedTurn{text: "Wrote the marker."})
+	}}
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &SubagentFactory{Adapter: adapter, Tools: reg, Policy: policy.New(policy.ModeDefault),
+		Approver: AutoApprove{Yes: true}, Session: sess, Store: NewMemStore(),
+		Budget: NewBudget(1_000_000, 10, false), Config: DefaultConfig(), Workspace: ws}
+	args, _ := json.Marshal(map[string]any{"isolation": "worktree",
+		"tasks": []map[string]any{{"prompt": "write the marker", "description": "marker"}}})
+	res := Tasks{Spawn: f.Spawn, Workspace: ws}.Run(context.Background(), nil, args)
+	if res.IsError || !strings.Contains(res.Content, "UNCOMMITTED") {
+		t.Fatalf("tasks: %s", res.Content)
+	}
+	if !strings.HasPrefix(worktree, filepath.Join(ws, WorktreeDir)+string(filepath.Separator)) {
+		t.Fatalf("the subagent worked in %q", worktree)
+	}
+	if got, _ := os.ReadFile(filepath.Join(worktree, "MARKER.txt")); string(got) != "from the subagent\n" {
+		t.Fatalf("the subagent's write did not land in its worktree: %q\n%s", got, res.Content)
+	}
+	if got, _ := os.ReadFile(filepath.Join(worktree, "BASH.txt")); sandboxed && string(got) != "ran\n" {
+		t.Fatalf("the subagent's command did not run in its worktree: %q\n%s", got, res.Content)
+	}
+	for _, f := range []string{"MARKER.txt", "BASH.txt"} {
+		if _, err := os.Stat(filepath.Join(ws, f)); err == nil {
+			t.Errorf("%s leaked into the main tree", f)
+		}
+	}
+}
+
+// A worktree the subagent left unchanged is removed, with its branch.
+func TestUnchangedWorktreeIsRemoved(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := gitRepo(t)
+	spawn := func(context.Context, SubagentRequest) (string, error) { return "nothing to do", nil }
+	args, _ := json.Marshal(map[string]any{"isolation": "worktree",
+		"tasks": []map[string]any{{"prompt": "look", "description": "look"}}})
+	res := Tasks{Spawn: spawn, Workspace: ws}.Run(context.Background(), nil, args)
+	if !strings.Contains(res.Content, "no changes; removed") {
+		t.Fatalf("report: %s", res.Content)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, WorktreeDir)); err == nil {
+		t.Error("the empty worktree was left behind")
+	}
+	if out, _ := exec.Command("git", "-C", ws, "branch", "--list", "abhed/*").Output(); len(out) != 0 {
+		t.Errorf("the branch was left behind: %s", out)
+	}
+}
+
+// A worktree is removed only when it is exactly as it was made. One whose
+// subagent committed, left only ignored files, or whose state cannot be read
+// is kept with its branch: any of them may hold the work.
+func TestWorktreeHoldingWorkIsKept(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for name, c := range map[string]struct {
+		work func(t *testing.T, dir string)
+		want string
+	}{
+		"committed": {func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("done\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"add", "work.txt"}, {"commit", "-q", "-m", "work"}} {
+				cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+				cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %s", args, out)
+				}
+			}
+		}, "holds commits or ignored files"},
+		"only ignored files": {func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "report.log"), []byte("findings\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "holds commits or ignored files"},
+		"state unreadable": {func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("not a gitdir\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "could not be read"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := gitRepo(t)
+			if err := os.MkdirAll(filepath.Join(ws, ".git", "info"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(ws, ".git", "info", "exclude"), []byte("*.log\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var dir string
+			spawn := func(_ context.Context, req SubagentRequest) (string, error) {
+				dir = req.Workspace
+				c.work(t, dir)
+				return "worked", nil
+			}
+			args, _ := json.Marshal(map[string]any{"isolation": "worktree",
+				"tasks": []map[string]any{{"prompt": "work", "description": "work"}}})
+			res := Tasks{Spawn: spawn, Workspace: ws}.Run(context.Background(), nil, args)
+			if !strings.Contains(res.Content, c.want) || strings.Contains(res.Content, "removed") {
+				t.Fatalf("report: %s", res.Content)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Fatalf("the worktree was removed: %v", err)
+			}
+			if out, _ := exec.Command("git", "-C", ws, "branch", "--list", "abhed/*").Output(); len(out) == 0 {
+				t.Fatal("the branch was deleted")
+			}
+		})
 	}
 }

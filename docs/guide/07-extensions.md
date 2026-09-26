@@ -48,6 +48,12 @@ exactly one reply.
 Declaring no `events` subscribes to all of them. An empty reply `{}` means no
 opinion.
 
+A `tool_call` is not always one call. The workbench Explorer's New folder,
+rename and delete arrive as `mkdir`, `rename` and `delete`, with a `path` (and
+for a rename a `to`), not as `bash`. A rename is judged on both names, so it
+reaches a hook twice, first with `path` the old name, then with `path` the
+new one; a hook that keeps a count or a log should expect that.
+
 ## Configuration
 
 ```json

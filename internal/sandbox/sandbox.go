@@ -69,7 +69,8 @@ type Policy struct {
 	// such as a configured users file. Commands can neither read nor write
 	// them, as for .abhed.
 	StatePaths []string
-	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7).
+	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
+	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
 	// TimeoutSeconds is a hard ceiling enforced by the backend, independent of

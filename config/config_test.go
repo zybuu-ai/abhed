@@ -237,3 +237,43 @@ func TestProxyLogoutURLIsValidated(t *testing.T) {
 		}
 	}
 }
+
+// A configuration with a second name is not loaded: a command could rewrite
+// it through that name, and the next start would lose its rules.
+func TestConfigWithASecondNameIsRefused(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ws := t.TempDir()
+	path := filepath.Join(ws, ".abhed", "config.json")
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	if err := os.WriteFile(path, []byte(`{"permissions":{"deny":["bash(curl*)"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, filepath.Join(ws, "notes.json")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if _, err := Load(ws); err == nil || !strings.Contains(err.Error(), "2 names") {
+		t.Fatalf("a configuration with a second name was loaded: %v", err)
+	}
+}
+
+// A setting a file makes is known as set, even at its default value.
+func TestSetsNamesWhatAFileSet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ws := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{"sandbox":{"max_memory_mb":4096}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sets("sandbox.max_memory_mb") || cfg.Sets("sandbox.max_procs") {
+		t.Fatalf("set keys: %v", cfg.SetKeys)
+	}
+}

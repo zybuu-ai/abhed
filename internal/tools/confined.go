@@ -245,13 +245,41 @@ func (c *Confined) Remove(path string) error {
 	return d.Remove(filepath.Base(rel))
 }
 
-// MkdirAll creates a folder and its parents under the root.
+// MkdirAll creates a folder and its parents under the root one step at a time,
+// each step judged by name and, once opened, by identity before anything is made in it.
 func (c *Confined) MkdirAll(path string, perm os.FileMode) error {
 	rel, err := c.rel(path)
+	if err != nil || rel == "." {
+		return err
+	}
+	parent, err := c.root.OpenRoot(".")
 	if err != nil {
 		return err
 	}
-	return outside(c.root.MkdirAll(rel, perm))
+	defer func() { _ = parent.Close() }()
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		sofar := filepath.Join(parts[:i+1]...)
+		if c.state.Has(filepath.Join(c.dirs[0], sofar)) {
+			return ErrState
+		}
+		if err := parent.Mkdir(part, perm); err != nil && !errors.Is(err, fs.ErrExist) {
+			return outside(err)
+		}
+		next, err := c.root.OpenRoot(sofar)
+		if err != nil {
+			return outside(err)
+		}
+		_ = parent.Close()
+		parent = next
+		if info, err := parent.Stat("."); err != nil || c.state.HasFile(info) {
+			if err != nil {
+				return err
+			}
+			return ErrState
+		}
+	}
+	return nil
 }
 
 // ReadInWorkspace reads a file of the workspace as the file tools read it:

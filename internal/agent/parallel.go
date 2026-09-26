@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -88,6 +85,7 @@ type taskOutcome struct {
 type worktree struct {
 	Dir    string
 	Branch string
+	Start  string // the commit it was made at
 }
 
 func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
@@ -172,22 +170,35 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		}
 		if o.worktree != nil {
 			rel, _ := filepath.Rel(t.Workspace, o.worktree.Dir)
-			stat, n := worktreeChanges(ctx, o.worktree.Dir)
-			if n == 0 {
-				fmt.Fprintf(&b, "Worktree %s (branch %s): no changes. Remove with `git worktree remove %s`.\n\n",
-					rel, o.worktree.Branch, rel)
-			} else {
-				fmt.Fprintf(&b, "Worktree %s (branch %s): %d file(s) changed, UNCOMMITTED.\n%s\n"+
-					"To take these changes: review with `git -C %s diff`, commit there, then "+
-					"`git merge %s` from the main tree. To discard: `git worktree remove --force %s && git branch -D %s`.\n\n",
-					rel, o.worktree.Branch, n, stat, rel, o.worktree.Branch, rel, o.worktree.Branch)
-			}
+			b.WriteString(t.settle(ctx, rel, o.worktree))
 		}
 	}
 	if failed > 0 {
 		fmt.Fprintf(&b, "[%d of %d tasks failed]\n", failed, len(outcomes))
 	}
 	return tools.Result{Content: b.String(), IsError: failed == len(outcomes)}
+}
+
+// settle removes a worktree the subagent left as it was made, with its branch,
+// and otherwise keeps it and says what it holds and how to take it.
+func (t Tasks) settle(ctx context.Context, rel string, wt *worktree) string {
+	untouched, err := hostgit.Untouched(ctx, wt.Dir, wt.Start)
+	if err != nil {
+		return fmt.Sprintf("Worktree %s (branch %s): its state could not be read (%v); it is kept.\n\n", rel, wt.Branch, err)
+	}
+	if untouched {
+		removeWorktree(context.WithoutCancel(ctx), t.Workspace, wt)
+		return fmt.Sprintf("Worktree %s (branch %s): no changes; removed with its branch.\n\n", rel, wt.Branch)
+	}
+	discard := fmt.Sprintf("To discard: `git worktree remove --force %s && git branch -D %s`.", rel, wt.Branch)
+	if stat, n := worktreeChanges(ctx, wt.Dir); n > 0 {
+		return fmt.Sprintf("Worktree %s (branch %s): %d file(s) changed, UNCOMMITTED.\n%s\n"+
+			"To take these changes: review with `git -C %s diff`, commit there, then "+
+			"`git merge %s` from the main tree. %s\n\n", rel, wt.Branch, n, stat, rel, wt.Branch, discard)
+	}
+	return fmt.Sprintf("Worktree %s (branch %s): nothing uncommitted, but it holds commits or ignored files, "+
+		"so it is kept. Review with `git log %s..%s`, then `git merge %s` from the main tree. %s\n\n",
+		rel, wt.Branch, wt.Start[:min(12, len(wt.Start))], wt.Branch, wt.Branch, discard)
 }
 
 // ------------------------------------------------------------------ git
@@ -215,73 +226,51 @@ func requireGitRepo(ctx context.Context, ws string) error {
 	return err
 }
 
-// WorktreeDir is where isolated checkouts live, inside the workspace so the
-// parent's scoping boundary already covers them.
-const WorktreeDir = ".abhed/worktrees"
+// WorktreeDir is where isolated checkouts live: inside the workspace, and outside
+// Abhed's state so the subagents can write there.
+const WorktreeDir = tools.WorktreesDir
 
 func addWorktree(ctx context.Context, ws string) (*worktree, error) {
 	id := newID()
 	if len(id) > 8 {
 		id = id[len(id)-8:]
 	}
-	dir := filepath.Join(ws, WorktreeDir, id)
-	branch := "abhed/" + id
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	r := hostgit.New(ctx, ws)
+	parent, err := r.Worktrees(ctx)
+	if err != nil {
 		return nil, err
 	}
-	// Keep the worktrees out of `git status` for the main tree without
-	// touching the repository's tracked .gitignore: info/exclude is local.
-	r := hostgit.New(ctx, ws)
-	excludeWorktrees(ctx, r)
+	dir := filepath.Join(parent, id)
+	if err := hostgit.NewWorktreeDir(dir); err != nil {
+		return nil, err
+	}
+	branch := "abhed/" + id
 	if _, err := git(ctx, r, "worktree", "add", "-b", branch, dir, "HEAD"); err != nil {
 		return nil, err
 	}
-	return &worktree{Dir: dir, Branch: branch}, nil
+	wt := &worktree{Dir: dir, Branch: branch}
+	if err := r.Placed(ctx, dir); err != nil {
+		_, _ = git(ctx, r, "branch", "-D", branch)
+		return nil, err
+	}
+	start, err := hostgit.Head(ctx, dir)
+	if err != nil {
+		removeWorktree(ctx, ws, wt)
+		return nil, err
+	}
+	wt.Start = start
+	return wt, nil
 }
 
 func removeWorktree(ctx context.Context, ws string, wt *worktree) {
 	r := hostgit.New(ctx, ws)
 	_, _ = git(ctx, r, "worktree", "remove", "--force", wt.Dir)
 	_, _ = git(ctx, r, "branch", "-D", wt.Branch)
+	hostgit.RemoveWorktrees(ws)
 }
 
-func excludeWorktrees(ctx context.Context, r *hostgit.Repo) {
-	ws := r.Dir
-	gitDir, err := git(ctx, r, "rev-parse", "--git-common-dir")
-	if err != nil {
-		return
-	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(ws, gitDir)
-	}
-	p := filepath.Join(gitDir, "info", "exclude")
-	// The git directory is the agent's to change, so the file is written as
-	// the file tools write: under the workspace held open, never through a
-	// link that leads out of it or into Abhed's state. A git directory
-	// outside the workspace is left alone.
-	c, err := tools.NewStateSet(ws).Confine(tools.RealPath(ws), ws)
-	if err != nil {
-		return
-	}
-	defer c.Close()
-	if !c.Contains(p) {
-		return
-	}
-	existing, err := c.ReadFile(p)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return
-	}
-	if bytes.Contains(existing, []byte(WorktreeDir)) {
-		return
-	}
-	if err := c.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return
-	}
-	_ = c.WriteAtomic(p, append(existing, []byte("\n# Abhed subagent worktrees\n"+WorktreeDir+"/\n")...), 0o644)
-}
-
-// worktreeChanges summarises what a subagent left behind: a diff stat and
-// the number of changed paths, counting untracked files as changes too.
+// worktreeChanges summarises what a subagent left uncommitted: a diff stat
+// and the number of changed paths, untracked included.
 func worktreeChanges(ctx context.Context, dir string) (string, int) {
 	r := hostgit.New(ctx, dir)
 	status, err := git(ctx, r, "status", "--porcelain")

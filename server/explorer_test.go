@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -234,5 +235,98 @@ func TestExplorerRenameCountsOnlyTheEntryItMoved(t *testing.T) {
 	}
 	if !moved(before, from, filepath.Join(dir, "c")) {
 		t.Fatal("a real move was not recognised")
+	}
+}
+
+// Rules on command text (the console denies rm flags) do not refuse the
+// Explorer's actions, which are recorded under their own names, by the person.
+func TestExplorerActionsAreNotJudgedAsCommandText(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny,
+			"bash(rm -*)", "bash(* rm -*)", "bash(mv -*)", "bash(mkdir -*)")
+	})
+	wb.write("a.txt", "one\n")
+	wb.write("old/inner.txt", "x\n")
+	wb.write("gone.txt", "x\n")
+	for _, step := range []struct {
+		endpoint string
+		body     any
+	}{
+		{"folder", folderRequest{Path: "new"}},
+		{"rename", renameRequest{From: "a.txt", To: "new/a.txt"}},
+		{"delete", folderRequest{Path: "gone.txt"}},
+		{"delete", folderRequest{Path: "old"}},
+	} {
+		if rec := wb.send("acme", "POST", step.endpoint, step.body); rec.Code != http.StatusOK {
+			t.Errorf("%s %v: %d %s", step.endpoint, step.body, rec.Code, rec.Body)
+		}
+	}
+	for _, gone := range []string{"a.txt", "gone.txt", "old"} {
+		if _, err := os.Lstat(filepath.Join(wb.workspace, gone)); err == nil {
+			t.Errorf("%s is still there", gone)
+		}
+	}
+	calls := map[string]string{}
+	byUser := map[string]bool{}
+	for _, e := range wb.events() {
+		var p struct {
+			CallID string `json:"call_id"`
+			Tool   string `json:"tool"`
+			By     string `json:"by"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		switch {
+		case e.Type == agent.EvActionRequested && e.Actor == agent.ActorUser:
+			calls[p.CallID] = p.Tool
+		case e.Type == agent.EvActionApproved && p.By == "user":
+			byUser[calls[p.CallID]] = true
+		}
+	}
+	for _, action := range []string{"mkdir", "rename", "delete"} {
+		if !byUser[action] {
+			t.Errorf("%s is not in the record as the person's own action: %v %v", action, calls, byUser)
+		}
+	}
+}
+
+// Rules on paths still hold for the Explorer's actions: a write rule and a
+// rule naming the action both refuse a delete, and a rename rule sees the new name.
+func TestExplorerDeleteStillMeetsPathRules(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "write(**/locked/**)", "delete(**/keep.txt)", "rename(**/final.txt)")
+	})
+	wb.write("locked/a.txt", "a\n")
+	wb.write("keep.txt", "k\n")
+	wb.write("draft.txt", "d\n")
+	if rec := wb.send("acme", "POST", "rename", renameRequest{From: "draft.txt", To: "final.txt"}); rec.Code != http.StatusForbidden {
+		t.Errorf("rename onto a name a rename rule denies: %d %s", rec.Code, rec.Body)
+	}
+	// The refusal is in the record, as the person's denied rename.
+	renames, denied := map[string]bool{}, false
+	for _, e := range wb.events() {
+		var p struct {
+			CallID string `json:"call_id"`
+			Tool   string `json:"tool"`
+		}
+		_ = json.Unmarshal(e.Payload, &p)
+		switch e.Type {
+		case agent.EvActionRequested:
+			renames[p.CallID] = p.Tool == "rename"
+		case agent.EvActionDenied:
+			denied = denied || renames[p.CallID]
+		}
+	}
+	if !denied {
+		t.Error("the refused rename is not recorded as a denied action")
+	}
+	for _, p := range []string{"locked/a.txt", "locked", "keep.txt"} {
+		if rec := wb.send("acme", "POST", "delete", folderRequest{Path: p}); rec.Code != http.StatusForbidden {
+			t.Errorf("delete %s: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	for _, kept := range []string{"locked/a.txt", "keep.txt"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was deleted against a rule", kept)
+		}
 	}
 }
