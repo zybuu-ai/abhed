@@ -108,7 +108,7 @@ func TestApproveAlwaysAllow(t *testing.T) {
 			return s, true
 		}, func() {}
 	}
-	res := policy.Result{Scope: "bash(ls*)"}
+	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(ls*)"}
 	got, err := a.Approve(context.Background(), "bash", json.RawMessage(`{}`), res)
 	if err != nil || !got {
 		t.Fatalf("always-allow should accept: got %v err %v", got, err)

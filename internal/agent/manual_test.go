@@ -70,7 +70,7 @@ func TestManualAuthorizeTypedConfirmsDestructive(t *testing.T) {
 	if len(ds) == 1 {
 		_ = json.Unmarshal(ds[0].Payload, &p)
 	}
-	if len(ds) != 1 || ds[0].Type != EvActionApproved || p["confirmed"] != "true" || p["step"] != "destructive" || p["by"] != "user" {
+	if len(ds) != 1 || ds[0].Type != EvActionApproved || ds[0].Actor != ActorUser || p["confirmed"] != "true" || p["step"] != "destructive" || p["by"] != "user" {
 		t.Fatalf("confirmed record: %+v %v", ds, p)
 	}
 
@@ -118,5 +118,24 @@ func TestManualAuthorizeAndScreenAreUnchanged(t *testing.T) {
 	}
 	if refused, err := l.ManualScreen("u3", "ls; curl http://x"); err != nil || refused == nil {
 		t.Fatalf("ManualScreen passed a denied command in a chain: %v %v", refused, err)
+	}
+}
+
+// A request records only the scope a person may choose: none where a step,
+// here a hook, forces an ask that must be answered every time.
+func TestManualRequestRecordsTheOfferedScope(t *testing.T) {
+	l, store := manualLoop(t)
+	l.Policy.Hooks = append(l.Policy.Hooks, func(string, json.RawMessage) *policy.Result {
+		return &policy.Result{Decision: policy.Ask, Reason: "hook", Scope: "bash(ls *)", Step: "hook"}
+	})
+	if _, _, err := l.ManualAuthorize("bash", "u1", bashArgs("ls")); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("s-manual")
+	for _, e := range evs {
+		var a ActionRequested
+		if e.Type == EvActionRequested && json.Unmarshal(e.Payload, &a) == nil && a.Scope != "" {
+			t.Fatalf("the request offers %q", a.Scope)
+		}
 	}
 }

@@ -67,6 +67,10 @@ type Answer struct {
 	By     string
 	Scope  string // the remembered scope that allowed it, for BySessionScope
 	Reason string // why no one answered, said in place of "rejected"
+	// Approver names the person who answered, where the approver knows them.
+	Approver string
+	// Granted is the scope a person chose to always allow with this answer.
+	Granted string
 	// Held is an answer that arrived but lost to the stop that ended the wait.
 	Held bool
 }
@@ -92,6 +96,15 @@ func NoteAnswer(ctx context.Context, a Answer) {
 	if p, ok := ctx.Value(answerKey{}).(*Answer); ok {
 		*p = a
 	}
+}
+
+// actorFor is the actor of an approval or denial: a person's decision is the
+// user's, and everything else the system's.
+func actorFor(by string) Actor {
+	if by == ByReviewer || by == ByUser {
+		return ActorUser
+	}
+	return ActorSystem
 }
 
 // AutoApprove is for headless runs and tests where policy alone decides.
@@ -862,7 +875,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		Args:             call.Args,
 		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
-		Scope:            decision.Scope,
+		Scope:            decision.Offer(),
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -907,16 +920,18 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
 		if !approved {
-			actor, by, why := ActorUser, ByReviewer, "rejected: "+decision.Reason
+			by, why := ByReviewer, "rejected: "+decision.Reason
 			if answer.By != "" {
-				actor, by = ActorSystem, answer.By
+				by = answer.By
 				if answer.Reason != "" {
 					why = answer.Reason + ": " + decision.Reason
 				}
 			}
-			l.record(EvActionDenied, actor, map[string]string{
-				"call_id": call.ID, "reason": why, "step": decision.Step, "by": by,
-			})
+			denied := map[string]string{"call_id": call.ID, "reason": why, "step": decision.Step, "by": by}
+			if answer.Approver != "" {
+				denied["approver"] = answer.Approver
+			}
+			l.record(EvActionDenied, actorFor(by), denied)
 			// Say WHY, and name the rule that would have allowed it. A bare
 			// "rejected" makes the model re-phrase the same command forever:
 			// the first real run against a local model burned 20 turns doing
@@ -945,11 +960,13 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		if answer.By != "" {
 			approvedBy["by"] = answer.By
 		}
-		if answer.Scope != "" {
-			approvedBy["scope"] = answer.Scope
+		for k, v := range map[string]string{"scope": answer.Scope, "approver": answer.Approver, "granted_scope": answer.Granted} {
+			if v != "" {
+				approvedBy[k] = v
+			}
 		}
 	}
-	l.record(EvActionApproved, ActorSystem, approvedBy)
+	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
 }
 

@@ -58,13 +58,24 @@ answers without asking anyone, it says so with `NoteAnswer`, passing the
 
 ```go
 Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
-    if remembered[d.Scope] {
-        abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: d.Scope})
+    if s := d.Offer(); s != "" && remembered[s] {
+        abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: s})
         return true, nil
     }
     return askTheUser(tool, args, d.Reason)
 },
 ```
+
+`d.Offer()` is the scope a person may choose to always allow, and the only
+one a remembered choice may satisfy. It is empty for an ask rule, a
+destructive command, or anything else that must ask every time, even where
+`d.Scope` is set, so check it rather than `d.Scope`.
+
+A person's answer can say who they are and the scope they chose, recorded on
+that approval or refusal as `approver` and `granted_scope`:
+`abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Approver: "olga@example.com", Granted: s})`.
+`Approver` is recorded as your approver asserts it; Abhed does not verify it,
+so authenticate the person before you name them.
 
 | `By` | When |
 |---|---|

@@ -124,7 +124,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
       <span class="t seq">{{ms .DurationMS}}</span>
     </summary>
     <div class="body">
-      <p>{{.Decision}} at step <b>{{.Step}}</b>{{if .By}} by {{.By}}{{end}}{{if .Scope}} ({{.Scope}}){{end}} — {{.Reason}}</p>
+      <p>{{.Decision}} at step <b>{{.Step}}</b>{{if .By}} by {{.By}}{{end}}{{if .Approver}} ({{.Approver}}){{end}}{{if .Scope}} ({{.Scope}}){{end}}{{if .GrantedScope}}, always allowing {{.GrantedScope}}{{end}} — {{.Reason}}</p>
       <pre>{{.Args}}</pre>
       {{if .Ran}}<p><span class="tag">untrusted output</span> · {{n .OutputLen}} bytes{{if .Truncated}} · truncated before the model saw it{{end}}{{if .ExitCode}} · {{exit .ExitCode}}{{end}}</p><pre>{{.Output}}</pre>{{end}}
     </div>

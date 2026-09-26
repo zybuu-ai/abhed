@@ -92,13 +92,18 @@ type Answer struct {
 	By     string // one of the By values
 	Scope  string // the remembered scope that allowed it, for BySessionScope
 	Reason string // why no one answered, said in place of "rejected"
+	// Approver names the person who answered, recorded as "approver" as the
+	// embedder asserts it: Abhed does not verify it.
+	Approver string
+	// Granted is the scope the person chose to always allow, recorded as "granted_scope".
+	Granted string
 }
 
 // NoteAnswer reports a from inside Options.Approve, with the ctx it was
 // given. Without it the record says a reviewer answered. A By that is not
 // one of the By values is ignored.
 func NoteAnswer(ctx context.Context, a Answer) {
-	agent.NoteAnswer(ctx, agent.Answer{By: a.By, Scope: a.Scope, Reason: a.Reason})
+	agent.NoteAnswer(ctx, agent.Answer{By: a.By, Scope: a.Scope, Reason: a.Reason, Approver: a.Approver, Granted: a.Granted})
 }
 
 // Rule is one permission rule as written in configuration, and ParseRule

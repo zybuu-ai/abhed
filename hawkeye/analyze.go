@@ -90,6 +90,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
+			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.Decision = "allowed"
 			if e.Type == agent.EvActionDenied {
 				c.Decision = "denied"

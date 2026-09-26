@@ -69,7 +69,7 @@ and none of them is a model's opinion.
 | `abnormal-end` | warn | the session ended as anything other than completed or a user interrupt |
 | `repeated-failure` | warn | the same call failed three times unchanged |
 | `context-pressure` | warn | a turn used 85% or more of the window |
-| `denied` | info | a call was refused; the detail says by whom, from the event's `by` (policy, reviewer, the person, headless, or system for a request that ended unanswered) |
+| `denied` | info | a call was refused; the detail says by whom, from the event's `by` (policy, reviewer, the person, headless, or system for a request that ended unanswered), and names the `approver` where the record does |
 | `sandbox-denied` | info | a `bash` command ran under a sandbox tier (its observation's `sandbox` is not `none`) but the sandbox refused an operation in it, whatever its exit status says; records without the tier do not raise it |
 | `truncated` | info | tool results were cut before the model saw them |
 | `slow-tool` | info | a tool call ran longer than a minute |

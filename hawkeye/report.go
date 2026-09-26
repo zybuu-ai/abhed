@@ -81,8 +81,12 @@ type Call struct {
 	Step     string `json:"step,omitempty"`
 	By       string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
 	// Scope is the remembered "always allow" rule that let it through, when By is session-scope.
-	Scope  string `json:"scope,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Scope string `json:"scope,omitempty"`
+	// Approver is the signed-in person who answered, when the record names one.
+	Approver string `json:"approver,omitempty"`
+	// GrantedScope is the "always allow" rule the person chose with this answer.
+	GrantedScope string `json:"granted_scope,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 	// Actor is who made the call: the model ("agent") or a person ("user").
 	Actor string `json:"actor,omitempty"`
 

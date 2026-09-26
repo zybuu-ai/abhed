@@ -107,3 +107,23 @@ func TestAttributionIsTheEventsOwn(t *testing.T) {
 		}
 	}
 }
+
+// Where the record names who settled a call, the report does too, with the
+// scope they chose to always allow.
+func TestTheReportNamesTheApprover(t *testing.T) {
+	r := (&rec{}).user("go").model(1200, 900, 32768)
+	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"mkdir a"}`)})
+	r.add(agent.EvActionApproved, agent.ActorUser, agent.Trusted, map[string]string{"call_id": "c1", "step": "default", "by": "reviewer", "approver": "olga@example.com", "granted_scope": "bash(mkdir *)"})
+	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c2", Tool: "bash", Args: json.RawMessage(`{"command":"git tag -d v1"}`)})
+	r.add(agent.EvActionDenied, agent.ActorUser, agent.Trusted, map[string]string{"call_id": "c2", "step": "destructive", "by": "reviewer", "approver": "olga@example.com", "reason": "rejected: delete or replace a tag"})
+	got := Analyze("s", r.end(agent.TermCompleted).evs)
+	if c := got.Calls[0]; c.Approver != "olga@example.com" || c.GrantedScope != "bash(mkdir *)" {
+		t.Errorf("call %+v", c)
+	}
+	if f := has(got, "denied"); f == nil || !strings.Contains(f.Detail, "by reviewer olga@example.com") {
+		t.Errorf("the refusal does not name who refused: %+v", f)
+	}
+	if html, err := HTML(got); err != nil || !strings.Contains(html, "olga@example.com") || !strings.Contains(html, "always allowing bash(mkdir *)") {
+		t.Errorf("the page does not name the approver or the scope: %v", err)
+	}
+}

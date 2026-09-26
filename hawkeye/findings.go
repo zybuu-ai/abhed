@@ -39,6 +39,14 @@ var (
 // about the model's behaviour: repeats, slow calls, truncation and borrowed hosts.
 func (c Call) byPerson() bool { return c.Actor == string(agent.ActorUser) }
 
+// settledBy is who settled the call, naming the person where the record does.
+func (c Call) settledBy() string {
+	if c.Approver != "" {
+		return c.By + " " + c.Approver
+	}
+	return c.By
+}
+
 // shellOpen reports a shell the person opened that has not ended yet.
 func (c Call) shellOpen() bool {
 	return c.byPerson() && c.Tool == "bash" && c.Decision == "allowed" && !c.Ran &&
@@ -91,7 +99,7 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		}
 		if c.Decision == "denied" {
 			add(Info, "denied", "Denied: "+c.Tool,
-				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.By), c.Seq)
+				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.settledBy()), c.Seq)
 		}
 		if c.SandboxDenied {
 			add(Info, "sandbox-denied", "The sandbox refused part of a command",

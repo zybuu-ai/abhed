@@ -83,7 +83,7 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
 	asked := answer != Unanswered && decision.Decision == policy.Ask && decision.Step == "destructive"
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
-		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Scope, RequiresApproval: asked,
+		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Offer(), RequiresApproval: asked,
 	}); err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision poli
 	if asked && answer == Confirmed {
 		approved["confirmed"] = "true"
 	}
-	l.record(EvActionApproved, ActorSystem, approved)
+	l.record(EvActionApproved, actorFor(ByUser), approved)
 	return nil, nil
 }
 

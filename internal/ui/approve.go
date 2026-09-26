@@ -116,8 +116,9 @@ func NewApprover(out io.Writer) *Approver {
 }
 
 func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
-	if res.Scope != "" && a.Session.Has(res.Scope) {
-		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: res.Scope})
+	scope := res.Offer()
+	if scope != "" && a.Session.Has(scope) {
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: scope})
 		return true, nil
 	}
 
@@ -142,8 +143,8 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	}
 
 	options := "[a]ccept  [r]eject"
-	if res.Scope != "" {
-		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(res.Scope))
+	if scope != "" {
+		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(scope))
 	}
 	fmt.Fprintf(a.Out, "  %s ", options)
 
@@ -176,8 +177,9 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 			fmt.Fprintln(a.Out)
 			return false, nil
 		case "A":
-			if res.Scope != "" {
-				a.Session.Add(res.Scope)
+			if scope != "" {
+				a.Session.Add(scope)
+				agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
 				fmt.Fprintln(a.Out)
 				return true, nil
 			}

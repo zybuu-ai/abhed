@@ -189,7 +189,7 @@ func IsDestructive(command string) (string, bool) {
 			return d.what, true
 		}
 	}
-	return "", false
+	return gitDestructive(command)
 }
 
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {

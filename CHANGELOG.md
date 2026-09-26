@@ -8,6 +8,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- "Always allow" is no longer offered for `git restore`, `git checkout`,
+  `git stash` (except `git stash list` and `git stash show`), `cp`, `mv`,
+  `uniq` or `tree`; approve those once, or write a rule. Nor is it offered on
+  a call that matched an ask rule, and a scope chosen earlier no longer
+  satisfies one, so an ask rule such as the console's `web_search` asks every
+  time. More git commands now confirm as destructive in every mode, `bypass`
+  and allow rules included: `git restore` of the working tree, `git checkout`
+  with a pathspec or `-f`, `git switch --discard-changes` or `-f`,
+  `git stash drop` and `clear`, `git branch -d`, `-D`, `-f`, `-M` and `-C`,
+  `git tag -d` and `-f`, `git worktree remove -f`, any `git clean` but a dry
+  run, `git push -f`, `--delete`, `--mirror` or a `+`/`:` refspec, and
+  `--output` on any git command (`git diff`, `log`, `show`, `stash show`,
+  `stash list` and the rest), with long options shortened too. In a run with
+  no one to approve (`-p`, CI, the SDK) these are now refused where an allow
+  rule used to run them.
+- A reviewer's approval, and a command the person ran at the workbench, are
+  now recorded as `actor: user`, as a reviewer's refusal already was, where
+  they were `actor: system`; a filter on `actor: system` for approvals no
+  longer counts them. `by` is unchanged.
+- An SDK approver that remembers scopes should check `Decision.Offer()`, not
+  `Decision.Scope`: it is empty for a call that must ask every time.
 - In `auth`, `MemoryUserStore.Delete` and `FileUserStore.Delete` now return
   `ErrNoSuchUser` for an account that does not exist, where they returned
   nil, as the Postgres store already did. `SetGroups` now reaches the
@@ -152,6 +173,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `action.approved` and `action.denied` answered by a person carry
+  `approver`, the signed-in subject who answered in the console or over the
+  API, and an approval carries `granted_scope`, the scope the person chose to
+  always allow with it. HawkEYE and the workbench's chat line name the
+  approver. In the SDK: `Answer.Approver`, `Answer.Granted` and
+  `Decision.Offer()`.
 - In `auth`: `VersionedUserStore`, an account store that can say whether
   any account changed, implemented by `MemoryUserStore.Version` and
   `FileUserStore.Version`; `(*LocalAuth).CheckNewUser`, which reports why an
@@ -195,6 +222,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Under ACP, a call allowed by the editor's earlier "Always allow" was
+  recorded `by: reviewer` with no scope; it is now `by: session-scope` with
+  the `scope`, as on the CLI and the server.
 - A failed invite sign-up, for a taken name or a short password, no longer
   uses up the invite: the account is checked before the code is redeemed.
 - The workbench and the console notice a sign-in that ended, whether by a
@@ -334,6 +364,23 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- One "Always allow" on a harmless git command approved the ones that
+  discard work: taking it on `git restore --staged x`, `git checkout HEAD --
+  x` or `git stash list` let `git restore .`, `git checkout .`,
+  `git stash drop` and `git stash clear` run unasked for the rest of the
+  session, and uncommitted work or a stash was lost. Those subcommands no
+  longer get a subcommand-wide scope, and the discarding forms of git that
+  Abhed recognises, listed in the permissions guide and matched with long
+  options shortened as git accepts them, are destructive commands that
+  confirm in every mode, which no remembered scope or allow rule satisfies.
+  The check is best effort: a single-file `git checkout FILE`, a git alias
+  and `git commit --amend` are not caught, and the sandbox stays the
+  boundary. `mv`, `cp`, `uniq` and `tree`, which can move a folder out of the
+  workspace or write over a file, no longer get a scope.
+- "Always allow" on a prompt raised by an ask rule turned that rule off for
+  the rest of the session, on the CLI, over ACP and in the console, the
+  console's `web_search` rule included. An ask rule now offers no scope, and
+  no remembered scope satisfies any call but one that asks by default.
 - Removing administrator rights through `POST /v1/admin/users/admin` left
   the person's live session with them until it expired: it could grant
   itself the rights back, reset passwords, add MCP servers and mint invites.
