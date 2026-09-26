@@ -215,6 +215,20 @@ With `auth.mode` set to `local` and no database, accounts live in a file:
 points (`ABHED_USERS_FILE` overrides it). A server deployment sets it to a
 directory outside every workspace, so accounts never sit in a tree an agent
 is pointed at. With Postgres, accounts are rows and the file is not used.
+`abhed user add`, `passwd` and `import` refuse a `users_file` that `serve`
+would refuse to start with, with the same message.
+
+A change to an account reaches its live sessions on their next request,
+whichever process made it: an account removed with `abhed user remove` is
+signed out, and a group added or removed applies at once. Removing
+administrator rights through `POST /v1/admin/users/admin` also ends that
+person's sessions.
+
+`auth.require_group` names a group everyone must be in to use the server.
+It is checked once someone has signed in: the sign-in page, sign-in,
+sign-out, `/v1/whoami` and `/v1/health` stay reachable. A signed-in person
+outside the group is signed out and told why, on the front page in a browser
+and as `403` with the reason to an API client.
 
 ### Keys for the paid editions
 
@@ -235,6 +249,10 @@ paid editions.
 `auth.proxy_logout_url` is the authenticating proxy's own sign-out, in `proxy`
 mode: with it the console offers Sign out and `/logout` redirects there;
 without it there is no Sign out, since the proxy owns the session.
+
+Signing out of Abhed's own sessions is `POST /logout`, from a page on this
+server; `GET /logout` shows a page with a Sign out button and ends nothing,
+so another site cannot sign anyone out with a link or an image.
 
 ## Where settings come from
 

@@ -145,8 +145,11 @@ const api = async (url, opts) => {
 func TestIDEShowsWhenTheServerHasGone(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
 let current = 's1', live = true, es = null, lastSeq = 0, leaving = false, activeTerm = null;
-let connState = null, connTimer = 0, connWait = 0;
+let connState = null, connTimer = 0, connWait = 0, signedIn = false, signInGone = false;
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
+const el = (tag, cls, text) => { const n = new El(tag); if(cls) n.className = cls; if(text != null) n.textContent = text; return n; };
+globalThis.__added = []; globalThis.__liveOff = 0;
+const add = n => __added.push(n), setLive = on => { live = on; if(!on) __liveOff++; };
 // Every wait is cut short, and what was asked for is kept in __waits.
 globalThis.__waits = []; const setTimeout = (f, ms) => { __waits.push(ms); return globalThis.setTimeout(f, Math.min(ms, 30)); };
 globalThis.__docOn = {}; document.addEventListener = (type, f) => { __docOn[type] = f; };
@@ -154,10 +157,12 @@ const render = () => {}, loadHawkeye = () => {}, ptyURL = () => '/pty', drawTerm
 const bytesOf = s => s, treeSoon = () => {}, endRun = () => {}, startTerm = () => {}, ended = () => {};
 // The server is up while __up is true; a stream fails until it is.
 globalThis.__up = true; globalThis.__streams = [];
-globalThis.__fetches = 0;
-globalThis.fetch = async () => {
+globalThis.__fetches = 0; globalThis.__status = 200; globalThis.__me = {}; globalThis.__meStatus = 200;
+globalThis.fetch = async url => {
   __fetches++; if(!__up) throw new TypeError('Failed to fetch');
-  return {ok:true, status:200, json: async () => ({})};
+  if(url === '/v1/health') return {ok:true, status:200, json: async () => ({})};
+  if(url === '/v1/whoami') return {ok:__meStatus < 400, status:__meStatus, json: async () => __me};
+  return {ok:__status < 400, status:__status, headers:{get:() => null}, json: async () => ({})};
 };
 class EventSource { constructor(url){ this.url = url; this.readyState = 0; __streams.push(this); }
   close(){ this.readyState = 2; } addEventListener(){} }

@@ -28,6 +28,7 @@ input{width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid var(--l
 button{margin-top:18px;width:100%;padding:10px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-ink);font:inherit;font-weight:600;cursor:pointer}
 button:disabled{opacity:.6;cursor:default}#msg{margin-top:14px;min-height:1.5em}.bad{color:var(--bad)}.ok{color:var(--ok)}
 nav{margin-top:22px;display:flex;gap:16px}a{color:var(--acc)}
+nav form{margin:0}button.link{margin:0;width:auto;padding:0;background:none;color:var(--acc);font-weight:400;text-decoration:underline}
 /*{{BRAND_CSS}}*/
 </style></head><body><main>
 <div style="margin-bottom:22px">{{BRAND_LOCKUP}}</div><h1>Change password</h1><p id="who">Signed in.</p>
@@ -38,7 +39,7 @@ nav{margin-top:22px;display:flex;gap:16px}a{color:var(--acc)}
 <label for="nw2">New password, again</label><input id="nw2" type="password" autocomplete="new-password" minlength="10" required>
 <button id="go" type="submit">Change password</button><div id="msg" role="status"></div>
 </form>
-<nav><a href="/ide">Back to the workbench</a><a href="/logout">Sign out</a></nav>
+<nav><a href="/ide">Back to the workbench</a><form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form></nav>
 </main><script>
 const $ = (id) => document.getElementById(id);
 try{ if(new URLSearchParams(location.search).get('must_change')) $('must').hidden = false; }catch{}
@@ -63,3 +64,29 @@ $('f').addEventListener('submit', async (e) => {
   $('go').disabled = false;
 });
 </script></body></html>`)
+
+// serveSignOut asks before signing out. Signing out is a POST: a GET that
+// ended the session let any page sign a person out with a link or an image.
+func (s *Server) serveSignOut(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	_, _ = w.Write([]byte(signOutHTML))
+}
+
+var signOutHTML = brandify(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign out · Abhed</title><link rel="icon" type="image/png" href="/favicon.ico">
+<style>
+:root{color-scheme:light dark;--bg:#0B0B0C;--fg:#F2F2EE;--mut:#9B9BA3;--acc:#FF7A45;--acc-ink:#0B0B0C}
+@media (prefers-color-scheme:light){:root{--bg:#FAFAF8;--fg:#0B0B0C;--mut:#6B6B72;--acc:#C2410C;--acc-ink:#fff}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
+main{width:100%;max-width:380px}h1{font-size:20px;margin:0 0 4px}p{color:var(--mut);margin:0 0 20px}
+button{width:100%;padding:10px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-ink);font:inherit;font-weight:600;cursor:pointer}
+a{color:var(--acc)}nav{margin-top:22px}
+/*{{BRAND_CSS}}*/
+</style></head><body><main>
+<div style="margin-bottom:22px">{{BRAND_LOCKUP}}</div><h1>Sign out</h1><p>End your session on this browser.</p>
+<form method="post" action="/logout"><button type="submit" autofocus>Sign out</button></form>
+<nav><a href="/ide">Back to the workbench</a></nav>
+</main></body></html>`)

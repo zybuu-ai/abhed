@@ -1599,6 +1599,20 @@ func userCmd(workspace string, args []string) int {
 		return 1
 	}
 
+	action := "list"
+	if len(args) > 0 {
+		action = args[0]
+	}
+	switch action {
+	case "add", "passwd", "import":
+		// The same check serve makes, so an account is not written to a file
+		// the server will then refuse to start with.
+		if err := sandboxconfig.CheckStatePaths(cfg, workspace); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 1
+		}
+	}
+
 	us, err := userStore(cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -1610,11 +1624,6 @@ func userCmd(workspace string, args []string) int {
 	}
 	la := auth.NewLocalAuth(us, 0, cfg.Auth.CookieSecure)
 	ctx := context.Background()
-
-	action := "list"
-	if len(args) > 0 {
-		action = args[0]
-	}
 
 	switch action {
 	case "add":
@@ -1643,9 +1652,12 @@ func userCmd(workspace string, args []string) int {
 			fmt.Println("  (change it after first sign-in)")
 		}
 
+		// A password an administrator chose or was shown is temporary: the
+		// person changes it at first sign-in.
 		u := auth.User{
 			Username: username, Email: *email, Name: *name,
-			Tenant: orDefault(*tenant, orDefault(cfg.Storage.Tenant, "default")),
+			Tenant:     orDefault(*tenant, orDefault(cfg.Storage.Tenant, "default")),
+			MustChange: true,
 		}
 		if *groups != "" {
 			u.Groups = splitRules(*groups)
@@ -1668,6 +1680,7 @@ func userCmd(workspace string, args []string) int {
 			return 1
 		}
 		fmt.Printf("created %s (tenant %s)\n", username, u.Tenant)
+		fmt.Println("  must set a new password at first sign-in")
 		if *admin {
 			fmt.Println("  administrator — can manage settings and users")
 		}
@@ -1712,7 +1725,11 @@ func userCmd(workspace string, args []string) int {
 			return 2
 		}
 		if err := us.Delete(ctx, args[1]); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			if errors.Is(err, auth.ErrNoSuchUser) {
+				fmt.Fprintf(os.Stderr, "abhed: no such user: %s\n", args[1])
+			} else {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			}
 			return 1
 		}
 		fmt.Printf("removed %s\n", args[1])

@@ -59,7 +59,7 @@ Then open the server in a browser and sign in with it.
 | `abhed user add <name>` | Create an account. `-password` sets one; omitted, one is generated. `-admin` puts it in the admin group |
 | `abhed user list` | Show accounts, emails, tenants and groups |
 | `abhed user passwd <name>` | Reset a forgotten password to a new generated one |
-| `abhed user remove <name>` | Delete an account |
+| `abhed user remove <name>` | Delete an account and sign it out; an unknown name fails with "no such user" |
 
 ### Where accounts live
 
@@ -107,8 +107,8 @@ accounts are created by an administrator, which is true and actionable.
 - `User.Hash` is tagged `json:"-"`, so a hash cannot fall out of an HTTP
   response. The on-disk store uses its own type to persist it, rather than
   relaxing that tag.
-- A password set by an administrator (`user add`, `user passwd`) is flagged
-  `must_change_password`, and until the user sets their own at `/account` the
+- A password set by an administrator (`user add`, with or without
+  `-password`, and `user passwd`) is flagged `must_change_password`, and until the user sets their own at `/account` the
   session reaches nothing else: only `/account`, `POST /v1/password`,
   `/v1/whoami`, sign-out and static files. A browser is sent to `/account`
   with a note; an API call gets `403 {"error":"password change required"}`.
@@ -128,9 +128,18 @@ sharing a Postgres account store can each remove the other's last
 co-administrator at the same moment. If that happens, create a new
 administrator from the command line with `abhed user add <new-name> -admin`.
 
-Must-change is enforced on the node that holds the session. A reset reaches
-the live sessions on the node that made it; on another node a session already
-open stays unconfined until it signs in again.
+A live session re-reads its account before a request once the account may
+have changed: at once for the users file, within a couple of seconds for
+Postgres. An account removed with `abhed user remove`, even while the server
+runs, is signed out there; a group change, a reset or a must-change flag
+applies on every node without a new sign-in. Removing administrator rights
+also ends the person's sessions on the node that removed them. A terminal or
+event stream already open is checked when it opens, not while it runs.
+
+While the account store cannot be read, a request with a local session gets
+`503 {"error":"could not check your sign-in; try again shortly"}` rather
+than `401`: the session is kept, and the workbench does not report it as
+signed out. Sign-out and `/v1/health` still answer.
 
 ## Behind a reverse proxy
 
@@ -166,6 +175,26 @@ redirects there:
 ```json
 { "auth": { "mode": "proxy", "proxy_logout_url": "/oauth2/sign_out" } }
 ```
+
+## Signing out
+
+`POST /logout` ends the session, and is refused from another origin like
+every other state-changing request. `GET /logout` only shows a page with a
+Sign out button, so a link or an image on another site cannot sign anyone
+out. The console, the workbench and the account page sign out with a POST.
+
+## Requiring a group
+
+```json
+{ "auth": { "mode": "local", "require_group": "abhed-users" } }
+```
+
+Only members of the group may use the server. The check runs once someone is
+signed in, so the sign-in page, sign-in itself, sign-out, `/v1/whoami` and
+`/v1/health` answer everyone. A signed-in person outside the group is signed
+out and told why: a browser lands on the front page with the reason, and an
+API client gets `403` with it. Add the group to an account with
+`abhed user add <name> -groups abhed-users`.
 
 ## Allowed origins
 

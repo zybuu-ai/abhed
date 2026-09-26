@@ -482,6 +482,23 @@ func (r routedApprovals) NodeFor(context.Context, string, time.Duration) (string
 	return r.node, nil
 }
 
+// storedSessions stands in for the durable session rows.
+type storedSessions []store.SessionRecord
+
+func (storedSessions) CreateSession(context.Context, store.SessionRecord) error { return nil }
+func (s storedSessions) ListSessions(context.Context, int) ([]store.SessionRecord, error) {
+	return s, nil
+}
+
+// farSession is s-far's row: priya's, in the default tenant.
+var farSession = storedSessions{{ID: "s-far", Tenant: "default", User: "priya"}}
+
+// asUser is a request as the middleware leaves it for a signed-in user.
+func asUser(req *http.Request, tenant, user string) *http.Request {
+	ctx := context.WithValue(req.Context(), ctxUser, user)
+	return req.WithContext(context.WithValue(ctx, ctxTenant, tenant))
+}
+
 func (f *fakeApprovals) answer(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -496,10 +513,10 @@ func TestApproveElsewhereLeavesABoundAnswerToTheOwner(t *testing.T) {
 	f := newFakeApprovals()
 	f.pending["s-far"] = store.Approval{ID: "ap-far", SessionID: "s-far"}
 	s := &Server{store: routedApprovals{f, "node-b"}, opts: Options{NodeID: "node-a"},
-		running: map[string]*liveSession{}, log: discardLogger()}
+		sessions: farSession, running: map[string]*liveSession{}, log: discardLogger()}
 	send := func(body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(body))
+		req := asUser(httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(body)), "default", "priya")
 		req.SetPathValue("id", "s-far")
 		s.approveAction(rec, req)
 		return rec
@@ -516,6 +533,78 @@ func TestApproveElsewhereLeavesABoundAnswerToTheOwner(t *testing.T) {
 	}
 	if answered := f.answer("ap-far"); !answered {
 		t.Fatal("an unbound answer elsewhere was not recorded")
+	}
+}
+
+// On a node not running the session, only its owner may answer its pending
+// approval, as on the node that runs it: another user, another tenant, or a
+// session with no stored row gets no answer recorded.
+func TestApproveElsewhereChecksTheOwner(t *testing.T) {
+	for _, c := range []struct {
+		name, tenant, user string
+		rows               storedSessions
+		want               bool
+	}{
+		{"the owner", "default", "priya", farSession, true},
+		{"another user", "default", "omar", farSession, false},
+		{"another tenant", "acme", "priya", farSession, false},
+		{"no stored row", "default", "priya", storedSessions{}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeApprovals()
+			f.pending["s-far"] = store.Approval{ID: "ap-owner", SessionID: "s-far"}
+			s := &Server{store: routedApprovals{f, "node-b"}, opts: Options{NodeID: "node-a"},
+				sessions: c.rows, running: map[string]*liveSession{}, log: discardLogger()}
+			rec := httptest.NewRecorder()
+			req := asUser(httptest.NewRequest("POST", "/v1/sessions/s-far/approve",
+				strings.NewReader(`{"approved":true}`)), c.tenant, c.user)
+			req.SetPathValue("id", "s-far")
+			s.approveAction(rec, req)
+			if got := f.answer("ap-owner"); got != c.want {
+				t.Fatalf("answer recorded = %v (status %d), want %v", got, rec.Code, c.want)
+			}
+			if !c.want && rec.Code == http.StatusNoContent {
+				t.Fatal("a refused answer was reported as recorded")
+			}
+		})
+	}
+}
+
+// gettableSessions finds a row by id that the recent list no longer holds.
+type gettableSessions struct{ storedSessions }
+
+func (gettableSessions) ListSessions(context.Context, int) ([]store.SessionRecord, error) {
+	return nil, nil
+}
+func (g gettableSessions) GetSession(_ context.Context, id string) (store.SessionRecord, error) {
+	for _, r := range g.storedSessions {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	return store.SessionRecord{}, store.ErrNotFound
+}
+
+// The owner of a session older than the recent list can still answer it: the
+// row is found by id.
+func TestApproveElsewhereFindsAnOlderSessionById(t *testing.T) {
+	f := newFakeApprovals()
+	f.pending["s-far"] = store.Approval{ID: "ap-old", SessionID: "s-far"}
+	s := &Server{store: routedApprovals{f, "node-b"}, opts: Options{NodeID: "node-a"},
+		sessions: gettableSessions{farSession}, running: map[string]*liveSession{}, log: discardLogger()}
+	answer := func(user string) int {
+		rec := httptest.NewRecorder()
+		req := asUser(httptest.NewRequest("POST", "/v1/sessions/s-far/approve",
+			strings.NewReader(`{"approved":true}`)), "default", user)
+		req.SetPathValue("id", "s-far")
+		s.approveAction(rec, req)
+		return rec.Code
+	}
+	if code := answer("omar"); code == http.StatusNoContent || f.answer("ap-old") {
+		t.Fatalf("another user's answer = %d, recorded %v", code, f.answer("ap-old"))
+	}
+	if code := answer("priya"); code != http.StatusNoContent || !f.answer("ap-old") {
+		t.Fatalf("the owner's answer = %d, recorded %v; want 204 and recorded", code, f.answer("ap-old"))
 	}
 }
 
@@ -615,9 +704,9 @@ func TestApproveElsewhereRefusesARowNothingWaitsOn(t *testing.T) {
 				_ = f.EndApproval(context.Background(), "ap-far")
 			}
 			s := &Server{store: routedApprovals{f, c.node}, opts: Options{NodeID: "node-a"},
-				running: map[string]*liveSession{}, log: discardLogger()}
+				sessions: farSession, running: map[string]*liveSession{}, log: discardLogger()}
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(`{"approved":true}`))
+			req := asUser(httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(`{"approved":true}`)), "default", "priya")
 			req.SetPathValue("id", "s-far")
 			s.approveAction(rec, req)
 			if rec.Code != http.StatusConflict {
@@ -636,10 +725,10 @@ func TestApproveElsewhereRecordsTheChosenScope(t *testing.T) {
 	f := newFakeApprovals()
 	f.pending["s-far"] = store.Approval{ID: "ap-far", SessionID: "s-far", Scope: "bash(ls *)"}
 	s := &Server{store: routedApprovals{f, "node-b"}, opts: Options{NodeID: "node-a"},
-		running: map[string]*liveSession{}, log: discardLogger()}
+		sessions: farSession, running: map[string]*liveSession{}, log: discardLogger()}
 	send := func(body string) int {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(body))
+		req := asUser(httptest.NewRequest("POST", "/v1/sessions/s-far/approve", strings.NewReader(body)), "default", "priya")
 		req.SetPathValue("id", "s-far")
 		s.approveAction(rec, req)
 		return rec.Code

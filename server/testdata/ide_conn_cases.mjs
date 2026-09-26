@@ -56,4 +56,31 @@ document.hidden = false; __docOn.visibilitychange(); await tick(10);
 check('and probes when it is shown', __fetches === 2 && shown() === '● offline');
 __up = true; await tick(200);
 
+// A 401 means the sign-in ended: say so, with the way back, and stop the run's indicator.
+live = true; __status = 401; __liveOff = 0; __added.length = 0;
+try{ await api('/v1/sessions'); }catch{}
+const endedNote = __added.find(n => n.textContent.startsWith('Your sign-in ended.'));
+check('a 401 says the sign-in ended', !!endedNote && shown() === '● signed out');
+check('and links to sign in again, back to the workbench', !!endedNote && endedNote.childNodes.some(c => c.href === '/?return=/ide'));
+check('and stops the run', __liveOff === 1 && !live);
+try{ await api('/v1/sessions'); }catch{}
+check('and says it once', __added.filter(n => n.textContent.startsWith('Your sign-in ended.')).length === 1);
+__up = true; await tick(200);
+check('a server that answers again does not claim the sign-in is back', shown() === '● signed out');
+
+// An account store that cannot answer (503) is not a sign-in that ended.
+signInGone = false; signedIn = true; __added.length = 0; __status = 503; __meStatus = 503; __me = {error:'could not check your sign-in'};
+try{ await api('/v1/sessions'); }catch{}
+__up = false; try{ await api('/v1/sessions'); }catch{} await tick();
+__up = true; await tick(200);
+check('a 503 does not say the sign-in ended', !__added.some(n => n.textContent.startsWith('Your sign-in ended.')) && shown() === '● connected');
+__meStatus = 200;
+
+// A restart ends every sign-in: once the server is back, the probe asks who is signed in.
+signInGone = false; signedIn = true; __status = 200; __added.length = 0; __me = {authenticated:false};
+__up = false; try{ await api('/v1/sessions'); }catch{} await tick();
+__up = true; await tick(200);
+check('a server back from a restart with the sign-in gone says so', shown() === '● signed out' &&
+  __added.some(n => n.textContent.startsWith('Your sign-in ended.')));
+
 if(!ok) process.exit(1);

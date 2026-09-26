@@ -8,6 +8,31 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- In `auth`, `MemoryUserStore.Delete` and `FileUserStore.Delete` now return
+  `ErrNoSuchUser` for an account that does not exist, where they returned
+  nil, as the Postgres store already did. `SetGroups` now reaches the
+  account's live sessions on their next request, and a local session whose
+  account was removed is ended on its next request.
+- While the account store cannot be read, a request carrying a local session
+  now gets `503` "could not check your sign-in", where it got `401`; the
+  session is kept, and `/v1/health` and sign-out still answer.
+- Signing out is now `POST /logout`. `GET /logout` shows a page with a
+  Sign out button and no longer ends the session, so a bookmark or a script
+  that fetched it must post instead; a POST from another origin is refused.
+  The console, the workbench and the account page already post.
+- `auth.require_group` now applies once someone is signed in, and no longer
+  to the sign-in page, sign-in, sign-out, `/v1/whoami` or `/v1/health`, which
+  it used to refuse to everyone, members included. A signed-in person outside
+  the group is signed out and gets the reason: a browser on the front page,
+  an API client as `403` with `error` saying which group is missing.
+- `abhed user add` now flags the account's password as one to change at first
+  sign-in, with or without `-password`, as the documentation said it did. An
+  operator creating their own first account sets a new password at
+  `/account` once signed in.
+- `abhed user remove` of an account that does not exist now prints
+  "no such user" and exits 1, where it printed "removed" and exited 0.
+- `abhed user add`, `passwd` and `import` refuse a `users_file` that `serve`
+  refuses to start with, with the same message, where they used to write it.
 - `abhed -p` stopped by a hang-up (SIGHUP) now ends its run and exits 130,
   as for Ctrl-C and SIGTERM; the signal used to end it outright, and the
   shell saw 129.
@@ -127,6 +152,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- In `auth`: `VersionedUserStore`, an account store that can say whether
+  any account changed, implemented by `MemoryUserStore.Version` and
+  `FileUserStore.Version`; `(*LocalAuth).CheckNewUser`, which reports why an
+  account could not be created without creating it; `(*LocalAuth).Verify`
+  and `ErrAccountUnchecked`, to tell an account store that cannot answer from
+  a sign-in that ended; and `(*LocalAuth).HasSession`.
 - In the SDK: `NoteAnswer` and `Answer`, for an approver to say who settled
   a call when no person was asked, and the `By` values it takes
   (`ByPolicy`, `ByReviewer`, `ByUser`, `BySessionScope`, `ByHeadless`,
@@ -164,6 +195,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A failed invite sign-up, for a taken name or a short password, no longer
+  uses up the invite: the account is checked before the code is redeemed.
+- The workbench and the console notice a sign-in that ended, whether by a
+  restart, a sign-out elsewhere or an administrator: they say "Your sign-in
+  ended" with a link to sign in again, and stop showing the run as live.
 - The container sandbox tier failed every command on Docker, which refuses
   `--uts private`; it now runs there as it does on Podman. The sandbox's
   hostname is now always `abhed`, and on Podman its PID and UTS namespaces
@@ -298,6 +334,22 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Removing administrator rights through `POST /v1/admin/users/admin` left
+  the person's live session with them until it expired: it could grant
+  itself the rights back, reset passwords, add MCP servers and mint invites.
+  Removing them now ends that person's sessions, and every local session
+  re-reads its account when it may have changed, so any group change applies
+  on the next request rather than at the next sign-in.
+- An account removed with `abhed user remove` while the server ran kept its
+  live sessions, an administrator's included, until they expired. The server
+  now signs a session out on its next request once its account is gone. A
+  terminal or event stream already open is checked only when it opens, so it
+  runs on until it closes.
+- `GET /logout` ended the session, so any page could sign a person out with
+  an image or a link. Signing out is now a POST behind the same-origin check.
+- On a multi-node deployment, an approval pending on another node could be
+  answered by anyone signed in who held the session id; it is now answered
+  only by the session's owner, as on the node that runs it.
 - Keys typed while the interactive approval prompt was showing answered it:
   "Wait, stop", typed as the prompt appeared, approved a write with its `a`,
   and Enter on its own accepted. Now only one of the prompt's keys pressed

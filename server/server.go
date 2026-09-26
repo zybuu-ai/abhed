@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -395,7 +396,10 @@ func (s *Server) Handler() http.Handler {
 	}
 	switch {
 	case len(providers) > 0:
-		mux.HandleFunc("GET /logout", s.signOut)
+		// Sign-out is a POST, behind the same-origin check, so another page
+		// cannot end a session with a link or an image; GET asks first.
+		mux.HandleFunc("GET /logout", s.serveSignOut)
+		mux.HandleFunc("POST /logout", s.signOut)
 		mux.HandleFunc("GET /v1/whoami", s.whoami)
 		if s.LocalAuth() != nil {
 			// Registered whenever local accounts exist. The handler decides
@@ -466,16 +470,14 @@ func (s *Server) Handler() http.Handler {
 	// BEFORE the layer that reads the identity, so it wraps closest to the
 	// outside. An inverted order silently yields anonymous identities.
 	handler := s.mustChangeGate(mux)
-	if s.opts.Config.Auth.RequireGroup != "" {
-		handler = auth.RequireGroup(s.opts.Config.Auth.RequireGroup, handler)
-	}
+	handler = s.requireGroup(handler)
 	handler = s.withMiddleware(handler) // reads identity, logs
 
 	// Sign-in is throttled OUTSIDE authentication, because an unauthenticated
 	// attacker is precisely who this limits: by the time the auth layer has
 	// rejected a password, the bcrypt comparison has already been paid for.
 	authed := s.authMiddleware().Wrap(handler) // establishes identity
-	limited := s.throttle(authed)
+	limited := s.throttle(s.accountOutage(authed))
 
 	// Origin is checked before anything reads a cookie, and headers are set
 	// outermost so they are present on rejections too — an error response is
@@ -562,18 +564,85 @@ func (s *Server) throttle(next http.Handler) http.Handler {
 	})
 }
 
+// accountOutage answers 503 when a local session's account cannot be read, so
+// an outage of the account store is not mistaken for a sign-in that ended.
+func (s *Server) accountOutage(next http.Handler) http.Handler {
+	local := s.LocalAuth()
+	if local == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health says whether the server is up, and sign-out must work regardless.
+		if r.URL.Path != "/v1/health" && r.URL.Path != "/logout" {
+			if _, routed := auth.FromContext(r.Context()); !routed && errors.Is(local.Verify(r), auth.ErrAccountUnchecked) {
+				WriteError(w, http.StatusServiceUnavailable, auth.ErrAccountUnchecked.Error())
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // authMiddleware builds the identity layer from config unless one was injected.
 func (s *Server) authMiddleware() auth.Middleware {
+	var mw auth.Middleware
 	if s.opts.Auth != nil {
-		return *s.opts.Auth
+		mw = *s.opts.Auth
+	} else {
+		// Sign-in itself must be reachable without being signed in, or the
+		// only way in is barred by the thing it unlocks.
+		mw = auth.Middleware{PublicPaths: append(PublicPaths(), "/auth/callback", "/v1/signin", "/v1/signup")}
+		if s.opts.Config.Auth.Mode == "proxy" {
+			mw.TrustHeaders = true
+		}
 	}
-	// Sign-in itself must be reachable without being signed in, or the only
-	// way in is barred by the thing it unlocks.
-	mw := auth.Middleware{PublicPaths: append(PublicPaths(), "/auth/callback", "/v1/signin", "/v1/signup")}
-	if s.opts.Config.Auth.Mode == "proxy" {
-		mw.TrustHeaders = true
+	if group := s.opts.Config.Auth.RequireGroup; group != "" {
+		// Checked once someone is identified, so a non-member's session is
+		// ended and the person told why, rather than every request refused.
+		next := mw.Check
+		mw.Check = func(ctx context.Context, id *auth.Identity) error {
+			if !slices.Contains(id.Groups, group) {
+				return notMember(group)
+			}
+			if next != nil {
+				return next(ctx, id)
+			}
+			return nil
+		}
 	}
 	return mw
+}
+
+// notMember is what a signed-in person outside auth.require_group is told.
+func notMember(group string) error {
+	return fmt.Errorf("your account is not in the %s group, which this server requires; ask an administrator to add you", group)
+}
+
+// requireGroup refuses an identified caller outside auth.require_group, leaving
+// the paths needed to sign in or out open, since nobody has a group before that.
+func (s *Server) requireGroup(next http.Handler) http.Handler {
+	group := s.opts.Config.Auth.RequireGroup
+	if group == "" {
+		return next
+	}
+	public := append(slices.Clone(s.authMiddleware().PublicPaths), "/logout")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if slices.Contains(public, r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if id, ok := auth.FromContext(r.Context()); ok && slices.Contains(id.Groups, group) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		why := notMember(group).Error()
+		if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			http.Redirect(w, r, "/?refused="+url.QueryEscape(why), http.StatusFound)
+			return
+		}
+		WriteJSON(w, http.StatusForbidden, map[string]string{
+			"error": why, "reason": "requires group " + group})
+	})
 }
 
 // withMiddleware applies identity and logging. Authentication is delegated to
@@ -1282,6 +1351,25 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 	return false
 }
 
+// sessionGetter is a store that finds one session row by id.
+type sessionGetter interface {
+	GetSession(ctx context.Context, id string) (store.SessionRecord, error)
+}
+
+// ownsStored reports whether the caller owns a session this node is not
+// running, found by id where the store can, so an older session is not missed.
+func (s *Server) ownsStored(r *http.Request, id string) bool {
+	g, ok := s.sessions.(sessionGetter)
+	if !ok {
+		return s.mayAccess(r, id)
+	}
+	rec, err := g.GetSession(r.Context(), id)
+	if err != nil {
+		return false
+	}
+	return ownsSession(rec.Tenant, rec.User, TenantOf(r.Context()), UserOf(r.Context()))
+}
+
 // ownsSession reports whether a caller may see a session.
 //
 // One definition used by both the list and the single-session lookup, because
@@ -1777,6 +1865,11 @@ func (s *Server) redirectHome(w http.ResponseWriter, r *http.Request) {
 // holding a session the first provider still gets the request: an identity
 // provider may hold its own session that needs ending too.
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
+	// The local session the cookie names ends even when its account cannot be read.
+	if l := s.LocalAuth(); l != nil && l.HasSession(r) {
+		l.SignOut(w, r)
+		return
+	}
 	providers := s.signIns()
 	for _, p := range providers {
 		if _, found := p.Identify(r); found {
@@ -1901,6 +1994,12 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.Invite) == "" {
 			WriteJSON(w, http.StatusForbidden, map[string]string{
 				"error": "an invite code is required to register here"})
+			return
+		}
+		// Checked before the code is spent, so a taken name or a short
+		// password does not use up the invite.
+		if err := local.CheckNewUser(r.Context(), req.Username, req.Password); err != nil {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		if err := s.opts.Invites.Redeem(r.Context(), req.Invite, req.Username); err != nil {
@@ -2218,6 +2317,11 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 	// The store's rows do not carry the request id, so an answer naming one
 	// is left to the node running the session, which can check it.
 	if d == nil || req.RequestID != "" {
+		return false
+	}
+	// The same owner check the local path makes, against the stored row:
+	// without it anyone signed in could answer another person's card.
+	if !s.ownsStored(r, sessionID) {
 		return false
 	}
 	pending, found, err := d.PendingApproval(r.Context(), sessionID)

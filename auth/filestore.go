@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // FileUserStore keeps accounts in a JSON file next to the workspace config.
@@ -25,6 +26,7 @@ import (
 type FileUserStore struct {
 	path string
 	mu   sync.RWMutex
+	gen  atomic.Uint64
 }
 
 func NewFileUserStore(path string) (*FileUserStore, error) {
@@ -83,6 +85,7 @@ func (f *FileUserStore) save(users map[string]*User) error {
 	if err != nil {
 		return err
 	}
+	f.gen.Add(1)
 	tmp := f.path + ".tmp"
 	// 0600: the file holds password hashes. Group- or world-readable is a
 	// standing offer to run bcrypt offline.
@@ -139,6 +142,23 @@ func (f *FileUserStore) Delete(_ context.Context, username string) error {
 	if err != nil {
 		return err
 	}
-	delete(users, strings.ToLower(username))
+	key := strings.ToLower(username)
+	if _, found := users[key]; !found {
+		return ErrNoSuchUser
+	}
+	delete(users, key)
 	return f.save(users)
+}
+
+// Version changes whenever the file does, whichever process wrote it: its
+// modification time and size, and a count of this process's own writes.
+func (f *FileUserStore) Version() (string, error) {
+	fi, err := os.Stat(f.path)
+	if os.IsNotExist(err) {
+		return fmt.Sprintf("%d:none", f.gen.Load()), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d:%d:%d", f.gen.Load(), fi.ModTime().UnixNano(), fi.Size()), nil
 }

@@ -112,11 +112,15 @@ func (s *Server) setUserAdmin(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	action := "user.admin_revoked"
-	if req.Admin {
-		action = "user.admin_granted"
+	detail := map[string]any{"group": admin}
+	action := "user.admin_granted"
+	if !req.Admin {
+		// Ended here, not left to the page: an API caller or a failed second
+		// request would otherwise leave the rights on a live session.
+		action = "user.admin_revoked"
+		detail["sessions_ended"] = local.RevokeUser(name)
 	}
-	s.adminAudit(r, action, name, map[string]any{"group": admin})
+	s.adminAudit(r, action, name, detail)
 	w.WriteHeader(http.StatusNoContent)
 }
 

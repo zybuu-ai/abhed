@@ -98,6 +98,8 @@ func TestAdminMutationsReachTheAuditHook(t *testing.T) {
 	g := newHookRig(t, nil, func(o *Options) { o.SkillRoots = []string{roots} })
 	alice := g.signIn(t, "alice")
 	g.do(alice, "POST", "/v1/admin/users/admin", `{"username":"bob","admin":true}`)
+	g.signIn(t, "bob")
+	g.signIn(t, "bob")
 	g.do(alice, "POST", "/v1/admin/users/admin", `{"username":"bob","admin":false}`)
 	if rec := g.do(alice, "POST", "/v1/admin/skills/reload", ``); rec.Code != http.StatusOK {
 		t.Fatalf("reload = %d %s", rec.Code, rec.Body)
@@ -115,6 +117,9 @@ func TestAdminMutationsReachTheAuditHook(t *testing.T) {
 	}
 	if g.audit[0].target != "bob" {
 		t.Errorf("grant target = %q", g.audit[0].target)
+	}
+	if n := g.audit[1].detail["sessions_ended"]; n != 2 {
+		t.Errorf("revoke recorded sessions_ended = %v, want bob's 2", n)
 	}
 }
 
@@ -309,7 +314,7 @@ func TestMustChangeConfinesTheSession(t *testing.T) {
 	if rec := g.do(bob, "GET", "/v1/sessions", ""); rec.Code != http.StatusOK {
 		t.Fatalf("after the change = %d", rec.Code)
 	}
-	if rec := g.do(bob, "GET", "/logout", ""); rec.Code != http.StatusFound {
+	if rec := g.do(bob, "POST", "/logout", ""); rec.Code != http.StatusFound {
 		t.Fatalf("logout = %d", rec.Code)
 	}
 }
