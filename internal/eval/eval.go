@@ -266,7 +266,11 @@ func Inspect(events []agent.Event, task Task) []Flag {
 			}
 
 		case agent.EvActionDenied:
-			deniedCount++
+			// An unknown tool, or a request cut off unanswered, is not the policy refusing it.
+			var d map[string]string
+			if json.Unmarshal(ev.Payload, &d) == nil && d["by"] != agent.BySystem {
+				deniedCount++
+			}
 		}
 	}
 
@@ -439,10 +443,16 @@ func (s Summary) Render() string {
 // or a scripted one in tests.
 type Runner func(ctx context.Context, workspace string, task Task) ([]agent.Event, Result, error)
 
-// Run executes the corpus and returns results.
+// Run executes the corpus and returns results. Once ctx is cancelled it stops,
+// returning the results so far, the task cut short failed, and the cause.
 func Run(ctx context.Context, tasks []Task, workRoot string, run Runner) ([]Result, error) {
 	var results []Result
 	for _, task := range tasks {
+		// A stopped run seeds and checks nothing more: a task run on a dead
+		// context takes no turns, and its untouched seed would pass a check.
+		if ctx.Err() != nil {
+			return results, context.Cause(ctx)
+		}
 		dir := filepath.Join(workRoot, task.ID)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -458,9 +468,18 @@ func Run(ctx context.Context, tasks []Task, workRoot string, run Runner) ([]Resu
 		if err != nil {
 			res.Failures = append(res.Failures, err.Error())
 		}
+		if ctx.Err() != nil {
+			res.Failures = append(res.Failures, "stopped before it finished: "+context.Cause(ctx).Error())
+			results = append(results, res)
+			return results, context.Cause(ctx)
+		}
 
 		res.Failures = append(res.Failures, task.CheckWith(dir, finalAnswer(events))...)
 		res.Flags = Inspect(events, task)
+		// An interrupted or shut-down run did not finish the task, whatever the files say.
+		if res.Terminal == string(agent.TermUserInterrupt) || res.Terminal == string(agent.TermShutdown) {
+			res.Failures = append(res.Failures, "the run was stopped ("+res.Terminal+") before it finished")
+		}
 		// A blocking flag fails the task even when every assertion passed.
 		res.Passed = len(res.Failures) == 0 && !Blocking(res.Flags)
 

@@ -235,6 +235,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 		remembered := l.allowed[res.Scope]
 		l.mu.Unlock()
 		if remembered {
+			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySessionScope, Scope: res.Scope})
 			return true, nil
 		}
 	}
@@ -324,6 +325,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			// Interrupted as the answer arrived: the interrupt wins, and the
 			// sender is told the request ended.
 			if ctx.Err() != nil {
+				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
 			}
 			l.mu.Lock()
@@ -331,6 +333,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			approved, scope := p.approved, p.scope
 			l.mu.Unlock()
 			if !took {
+				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
 			}
 			// "Always allow" carries the scope back; remember it so the next call
@@ -348,12 +351,14 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 				continue
 			}
 			if ctx.Err() != nil {
+				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
 			}
 			l.mu.Lock()
 			took := l.move(p, askTaken, approved, "")
 			l.mu.Unlock()
 			if !took {
+				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
 			}
 			if approved && res.Scope != "" {
@@ -365,6 +370,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 
 		case <-deadline.C:
 			// Fail closed: an unanswered approval must not become an approval.
+			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: "no answer within 30 minutes"})
 			return false, nil
 		}
 	}

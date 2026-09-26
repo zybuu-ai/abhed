@@ -1,6 +1,8 @@
 package abhed
 
 import (
+	"context"
+
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -38,6 +40,7 @@ const (
 	EvTodoUpdated     = agent.EvTodoUpdated
 	EvSessionEnded    = agent.EvSessionEnded
 	EvTerminalInput   = agent.EvTerminalInput
+	EvMessageDropped  = agent.EvMessageDropped
 
 	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
 
@@ -56,6 +59,7 @@ const (
 	TermUserInterrupt = agent.TermUserInterrupt
 	TermError         = agent.TermError
 	TermShutdown      = agent.TermShutdown
+	TermDeadline      = agent.TermDeadline
 )
 
 // Event payloads, one per kind that carries structure.
@@ -69,7 +73,33 @@ type (
 	Todo            = agent.Todo
 	TodoList        = agent.TodoList
 	Compaction      = agent.Compaction
+	DroppedMessage  = agent.DroppedMessage
 )
+
+// Who settled a call, as action.approved and action.denied record it in "by".
+const (
+	ByPolicy       = agent.ByPolicy
+	ByReviewer     = agent.ByReviewer
+	ByUser         = agent.ByUser
+	BySessionScope = agent.BySessionScope
+	ByHeadless     = agent.ByHeadless
+	BySystem       = agent.BySystem
+)
+
+// Answer is what an approver reports when someone other than the person it
+// would ask settled a request, such as a scope it remembered.
+type Answer struct {
+	By     string // one of the By values
+	Scope  string // the remembered scope that allowed it, for BySessionScope
+	Reason string // why no one answered, said in place of "rejected"
+}
+
+// NoteAnswer reports a from inside Options.Approve, with the ctx it was
+// given. Without it the record says a reviewer answered. A By that is not
+// one of the By values is ignored.
+func NoteAnswer(ctx context.Context, a Answer) {
+	agent.NoteAnswer(ctx, agent.Answer{By: a.By, Scope: a.Scope, Reason: a.Reason})
+}
 
 // Rule is one permission rule as written in configuration, and ParseRule
 // reads one, so a tool that validates a policy file applies the same parser

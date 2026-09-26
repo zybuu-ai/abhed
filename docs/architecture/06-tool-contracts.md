@@ -278,6 +278,12 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
 - `description` is required because it's what the human sees in the approval prompt. A tool
   that asks for approval without saying what it does is unusable.
 - Background mode returns a handle; output retrievable and the process killable.
+- The command runs in a session of its own, with no controlling terminal, so a read of
+  `/dev/tty` fails at once. A cancelled call (an interrupt, Send now, a shutdown, the
+  timeout) kills that session's process group, in every sandbox tier, and a container is
+  removed. A job started with `&` that still holds the output when the command exits
+  does not hold the call, whatever the exit status: the result says it is still running,
+  and its later output is not shown.
 - **Interactive commands are rejected** with guidance (`git rebase -i`, `vim`, anything
   needing a TTY) — they hang forever otherwise.
 

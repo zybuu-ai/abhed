@@ -491,6 +491,11 @@ loop:
 	// failure to start one is an error.
 	res := tools.Result{Content: fmt.Sprintf("exit %d · %s\n%s", code, how, text), ExitCode: &code,
 		IsError: code != 0 && run.capture == nil, Truncated: clipped}
+	if tool, ok := live.Loop.Tools.Get("bash"); ok {
+		if in := isolationOf(tool); in != nil {
+			res.Tier = in.Tier // the same tier the agent's bash observations carry
+		}
+	}
 	_ = live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started))
 	close(run.done)
 
@@ -793,10 +798,14 @@ func (p *ptyRun) stop(why string) {
 }
 
 // closeTerminals ends every shell and command the session has on a terminal.
-func (l *liveSession) closeTerminals() {
+// Each returned channel closes once that run's result is on the record.
+func (l *liveSession) closeTerminals() []<-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	var done []<-chan struct{}
 	for _, r := range l.ptys {
 		r.stop("closed with the session")
+		done = append(done, r.done)
 	}
+	return done
 }

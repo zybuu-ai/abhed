@@ -89,13 +89,16 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			if c == nil {
 				continue
 			}
-			c.Step, c.Reason = d["step"], d["reason"]
-			if e.Type == agent.EvActionApproved {
-				c.Decision, c.By = "allowed", d["by"]
-			} else {
-				c.Decision, c.By = "denied", "policy"
+			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
+			c.Decision = "allowed"
+			if e.Type == agent.EvActionDenied {
+				c.Decision = "denied"
+			}
+			// A record written before denials carried "by" says only the actor.
+			if c.By == "" && e.Type == agent.EvActionDenied {
+				c.By = agent.ByPolicy
 				if e.Actor == agent.ActorUser {
-					c.By = "reviewer"
+					c.By = agent.ByReviewer
 				}
 			}
 
@@ -110,6 +113,8 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Ran, c.IsError, c.ExitCode = true, o.IsError, o.ExitCode
+			// Only where a sandbox was in force: on the host the same words are the system's.
+			c.SandboxDenied = c.Tool == "bash" && o.Sandbox != "" && o.Sandbox != "none" && sandboxRefused(o.Content)
 			c.Truncated, c.DurationMS = o.Truncated, o.DurationMS
 			c.Output, c.OutputLen = clip(o.Content, outputKeep), len(o.Content)
 
@@ -186,7 +191,7 @@ func (r *Report) totals(ended agent.SessionEnded) {
 		case "denied":
 			r.Policy.Denied++
 		}
-		if c.By == "reviewer" {
+		if c.By == agent.ByReviewer {
 			r.Policy.Reviewer++
 		}
 		if c.Step != "" {
@@ -234,6 +239,13 @@ func integrity(evs []agent.Event, ordered bool) Integrity {
 		}
 	}
 	return in
+}
+
+// sandboxRefused spots the note bash adds to its result when the sandbox
+// denied an operation (tools.sandboxHint). The command ran; part of it did not.
+func sandboxRefused(output string) bool {
+	return strings.Contains(output, "NOTE: the sandbox denied this operation") ||
+		strings.Contains(output, "NOTE: Abhed's sandbox blocks")
 }
 
 // touch counts file access from the arguments of the file tools. bash is left

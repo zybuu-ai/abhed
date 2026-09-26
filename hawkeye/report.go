@@ -79,18 +79,23 @@ type Call struct {
 	Subject  string `json:"subject"`
 	Decision string `json:"decision"` // allowed | denied | pending
 	Step     string `json:"step,omitempty"`
-	By       string `json:"by,omitempty"` // policy | reviewer | user
-	Reason   string `json:"reason,omitempty"`
+	By       string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
+	// Scope is the remembered "always allow" rule that let it through, when By is session-scope.
+	Scope  string `json:"scope,omitempty"`
+	Reason string `json:"reason,omitempty"`
 	// Actor is who made the call: the model ("agent") or a person ("user").
 	Actor string `json:"actor,omitempty"`
 
-	Ran        bool   `json:"ran"`
-	IsError    bool   `json:"is_error"`
-	ExitCode   *int   `json:"exit_code,omitempty"`
-	Truncated  bool   `json:"truncated"`
-	DurationMS int64  `json:"duration_ms"`
-	Output     string `json:"output,omitempty"`
-	OutputLen  int    `json:"output_len"`
+	// Ran is set only when the record holds the call's result.
+	Ran bool `json:"ran"`
+	// SandboxDenied marks a command the sandbox refused part of.
+	SandboxDenied bool   `json:"sandbox_denied,omitempty"`
+	IsError       bool   `json:"is_error"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	Truncated     bool   `json:"truncated"`
+	DurationMS    int64  `json:"duration_ms"`
+	Output        string `json:"output,omitempty"`
+	OutputLen     int    `json:"output_len"`
 }
 
 type PolicyStats struct {

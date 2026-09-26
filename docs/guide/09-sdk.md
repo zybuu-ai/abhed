@@ -37,10 +37,44 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Steer` | redirect a run in progress, from another goroutine |
 | `Fork` | rebuild the conversation up to a sequence number |
 | `Events` | everything recorded; the stream is the session |
+| `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
 | `SetModel` | swap providers mid-conversation |
 | `Providers` | the provider types this build supports |
+
+`OnEvent` gets every event, in the order the store records them, from a
+goroutine of its own, so a slow one falls behind and loses nothing; what it
+has not taken yet is held in memory. Before a process exits on a stopped
+run, call `Flush` with a deadline so the run's end reaches `OnEvent`. Never
+call it from `OnEvent`, whose own goroutine delivers what it waits for.
+
+## Who settled a call
+
+Every `action.approved` and `action.denied` says who settled it in `by`.
+When `Approve` answers, the record says `reviewer`, a person asked. When it
+answers without asking anyone, it says so with `NoteAnswer`, passing the
+`ctx` it was given:
+
+```go
+Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
+    if remembered[d.Scope] {
+        abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: d.Scope})
+        return true, nil
+    }
+    return askTheUser(tool, args, d.Reason)
+},
+```
+
+| `By` | When |
+|---|---|
+| `BySessionScope` | allowed by a scope a person chose to always allow earlier; set `Scope` |
+| `ByHeadless` | nobody could be asked, and a fixed answer applied; `Reason` says why, in place of "rejected" |
+| `BySystem` | the request ended with no answer, such as a timeout; `Reason` says why |
+| `ByReviewer`, `ByUser`, `ByPolicy` | a person answered, the person made the call, or policy decided; rarely needed from an approver |
+
+A `By` that is none of these is ignored, and the record says `reviewer`. The
+events and their fields are in the [data model](../architecture/10-data-model.md).
 
 ## What does not change when embedded
 

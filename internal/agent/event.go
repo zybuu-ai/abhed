@@ -59,6 +59,9 @@ const (
 	// EvTerminalInput is a line a person entered in an interactive workbench
 	// terminal, as typed. Best effort: see TerminalInput.
 	EvTerminalInput EventType = "terminal.input"
+	// EvMessageDropped is a message accepted into the queue that was never
+	// delivered, because the server stopped first. See DroppedMessage.
+	EvMessageDropped EventType = "message.dropped"
 )
 
 type Actor string
@@ -100,6 +103,9 @@ const (
 	// Distinct from completed because nothing was answered, and distinct from
 	// error because nothing failed.
 	TermStalled TerminalReason = "stalled"
+	// TermDeadline: the run's own time limit passed, as the eval harness sets
+	// one. Nobody stopped it and the node did not go away.
+	TermDeadline TerminalReason = "deadline"
 )
 
 // ExitCode maps a terminal reason to a process exit code for headless runs.
@@ -119,6 +125,8 @@ func (r TerminalReason) ExitCode() int {
 		return 5
 	case TermShutdown:
 		return 6
+	case TermDeadline:
+		return 7
 	default:
 		return 1
 	}
@@ -171,6 +179,8 @@ type Observation struct {
 	Truncated  bool   `json:"truncated"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
+	// Sandbox is the tier a command ran under ("none" on the host), when known.
+	Sandbox string `json:"sandbox,omitempty"`
 }
 
 type Message struct {
@@ -181,6 +191,16 @@ type Message struct {
 	// ClientID is an id the sender chose for the message, echoed so a client
 	// can match its own message without comparing text.
 	ClientID string `json:"client_id,omitempty"`
+}
+
+// DroppedMessage is a queued message the model never saw. It is not a
+// user.message, so a replay or fork does not put it into the conversation.
+type DroppedMessage struct {
+	QueueID  string    `json:"queue_id"`
+	ClientID string    `json:"client_id,omitempty"`
+	Text     string    `json:"text"`
+	QueuedAt time.Time `json:"queued_at"`
+	Reason   string    `json:"reason"`
 }
 
 // Delta is one streamed fragment of an agent message.

@@ -19,13 +19,11 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -246,7 +244,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	vault := openVault()
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault)},
+		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier())}},
 		tools.Todo{OnUpdate: func(items []tools.TodoItem, note string) {
 			todos.RecordTodos(toAgentTodos(items), note)
 		}},
@@ -384,8 +382,9 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		approver = ui.NewApprover(ui.LazyStdout{})
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	stopper := cancelOnStop(stopReturns)
+	defer stopper.stop()
+	ctx := stopper.ctx
 
 	if headless {
 		return runOnce(ctx, store, renderer, jsonOut, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, todos)
@@ -1270,8 +1269,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	srv := server.New(opts)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	stopper := cancelOnStop(stopDrains)
+	defer stopper.stop()
+	ctx := stopper.ctx
 
 	for _, h := range a.serveHooks {
 		stopHook, err := h(ctx, srv, cfg)
@@ -1389,7 +1389,7 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		vault := openVault()
 		registry := tools.NewRegistry(
 			tools.Read{}, tools.Write{}, tools.Edit{},
-			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault)},
+			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier())}},
 		)
 		// Skills and web search are part of the agent under test, not extras.
 		// Without them a corpus that exercises a retrieval skill measures an
@@ -1444,7 +1444,15 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		}, runErr
 	}
 
-	results, err := eval.Run(context.Background(), tasks, workRoot, runner)
+	stopper := cancelOnStop(stopReturns)
+	defer stopper.stop()
+	results, err := eval.Run(stopper.ctx, tasks, workRoot, runner)
+	// A stopped run is not a result: tasks it cut short would read as passed or failed.
+	if code, stopped := stopCode(stopper.ctx); stopped {
+		fmt.Fprintf(os.Stderr, "abhed: eval %s after %d of %d tasks; no summary or report written\n",
+			context.Cause(stopper.ctx), len(results), len(tasks))
+		return code
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1

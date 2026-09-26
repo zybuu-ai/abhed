@@ -78,13 +78,15 @@ func Text(r Report) string {
 	}
 
 	if len(r.Calls) > 0 {
-		b.WriteString("\n  Calls\n")
+		b.WriteString("\n  Calls   ✓ ran · ! failed or refused by the sandbox · ✗ denied · - not run\n")
 		for _, c := range r.Calls {
 			mark := "✓"
 			switch {
 			case c.Decision == "denied":
 				mark = "✗"
-			case c.IsError:
+			case !c.Ran:
+				mark = "-"
+			case c.IsError || c.SandboxDenied:
 				mark = "!"
 			}
 			fmt.Fprintf(&b, "  %s #%-4d %-6s %-52s %-8s %s\n", mark, c.Seq, c.Tool, clip(oneLine(c.Subject), 52), c.Step, dur(c.DurationMS))

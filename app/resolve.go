@@ -71,8 +71,26 @@ func resolveCmd(workspace string, args []string) int {
 		fs.Usage()
 		return 2
 	}
-	fail := func(err error) int { fmt.Fprintf(os.Stderr, "abhed: resolve: %v\n", err); return 1 }
-	ctx := context.Background()
+	stopper := cancelOnStop(stopReturns)
+	defer stopper.stop()
+	ctx := stopper.ctx
+	// kept is set when the worktree is left for inspection: the run failed, or
+	// resolve was stopped once it existed.
+	var worktree string
+	kept := false
+	fail := func(err error) int {
+		// Stopped by a signal: exit as a shell reports one, 128 plus its number.
+		if code, stopped := stopCode(ctx); stopped {
+			fmt.Fprintf(os.Stderr, "abhed: resolve %s: %v\n", context.Cause(ctx), err)
+			if worktree != "" && !kept {
+				kept = true
+				fmt.Fprintf(os.Stderr, "abhed: the worktree %s is kept for inspection\n", worktree)
+			}
+			return code
+		}
+		fmt.Fprintf(os.Stderr, "abhed: resolve: %v\n", err)
+		return 1
+	}
 
 	ref, err := forge.Parse(fs.Arg(0))
 	if err != nil {
@@ -118,7 +136,12 @@ func resolveCmd(workspace string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	defer work.Cleanup(ctx, workspace)
+	worktree = work.Dir
+	defer func() {
+		if !kept {
+			work.Cleanup(context.WithoutCancel(ctx), workspace)
+		}
+	}()
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
 		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode,
@@ -136,7 +159,11 @@ func resolveCmd(workspace string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if err := runner(ctx, work.Dir, forge.Prompt(is)); err != nil {
+	if err := runner(ctx, work.Dir, forge.Prompt(is)); err != nil || ctx.Err() != nil {
+		if err == nil {
+			err = context.Cause(ctx)
+		}
+		kept = true
 		return fail(fmt.Errorf("the run ended with: %w (the worktree %s is kept for inspection)", err, work.Dir))
 	}
 
@@ -146,7 +173,9 @@ func resolveCmd(workspace string, args []string) int {
 		return 2
 	}
 	if err != nil {
-		return fail(err)
+		// The run's change is only in the worktree until it is committed.
+		kept = true
+		return fail(fmt.Errorf("committing the change failed: %w (the worktree %s is kept for inspection)", err, work.Dir))
 	}
 
 	// Opening the request is a mutating action of its own, judged like one.

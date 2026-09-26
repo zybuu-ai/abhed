@@ -31,6 +31,8 @@ const acpProtocolVersion = 1
 type acpAgent interface {
 	Run(ctx context.Context, prompt string) (string, error)
 	Steer(text string)
+	// Flush waits until every event of the run has been forwarded.
+	Flush(ctx context.Context) error
 	Close()
 }
 
@@ -71,6 +73,10 @@ type acpConn struct {
 	outMu   sync.Mutex
 	version string
 	base    string // the workspace given on the command line, when cwd is absent
+	// ctx ends every agent and prompt on a stop signal, and busy holds the
+	// exit that follows until a prompt has ended; nil for neither.
+	ctx  context.Context
+	busy func() func()
 
 	sessMu   sync.Mutex
 	sessions map[string]*acpSession
@@ -80,9 +86,19 @@ type acpConn struct {
 	nextID  int64
 }
 
+// root is the context every agent and prompt runs under.
+func (c *acpConn) root() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
 // acpCmd serves one editor for the life of the process.
 func acpCmd(workspace, version string) int {
-	c := &acpConn{out: os.Stdout, version: version, base: workspace,
+	stopper := cancelOnStop(stopExits)
+	defer stopper.stop()
+	c := &acpConn{out: os.Stdout, version: version, base: workspace, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
 	err := c.serve(os.Stdin)
 	c.closeAll()
@@ -263,7 +279,7 @@ func (c *acpConn) newSession(msg rpcMessage) {
 			return c.askEditor(ctx, s, tool, args, d)
 		},
 	}
-	a, err := newACPAgent(context.Background(), opts)
+	a, err := newACPAgent(c.root(), opts)
 	if err != nil {
 		c.reply(msg.ID, nil, &rpcError{-32000, err.Error()})
 		return
@@ -316,7 +332,10 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		c.reply(msg.ID, nil, &rpcError{-32602, "unknown session"})
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	if c.busy != nil {
+		defer c.busy()()
+	}
+	ctx, cancel := context.WithCancel(c.root())
 	s.mu.Lock()
 	s.cancel = cancel
 	s.mu.Unlock()
@@ -328,6 +347,10 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}()
 
 	_, err := s.agent.Run(ctx, promptText(p.Prompt))
+	// Every session/update of the run goes out before the reply that ends it.
+	flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
+	_ = s.agent.Flush(flushed)
+	cancelFlush()
 	stop := "end_turn"
 	switch {
 	case ctx.Err() != nil:

@@ -164,6 +164,10 @@ Exit codes let CI distinguish outcomes:
 | 5 | Retries exhausted |
 | 130 | Interrupted |
 
+An embedder reading `TerminalReason.ExitCode()` from the SDK also gets 6 for
+`shutdown` and 7 for `deadline`; `abhed -p` sets neither a deadline nor a
+shutdown cause, so it does not exit with them.
+
 ### Flags
 
 | Flag | Purpose |

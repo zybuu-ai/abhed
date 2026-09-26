@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	abhed "github.com/zybuu-ai/abhed/sdk"
@@ -27,6 +28,9 @@ func rpcCmd(workspace string) int {
 	in.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	out := json.NewEncoder(os.Stdout)
 
+	stopper := cancelOnStop(stopExits)
+	defer stopper.stop()
+	ctx := stopper.ctx
 	var a *abhed.Agent
 	defer func() {
 		if a != nil {
@@ -34,7 +38,11 @@ func rpcCmd(workspace string) int {
 		}
 	}()
 
+	// Events arrive from the agent's own goroutine, so writes take turns.
+	var outMu sync.Mutex
 	emit := func(v any) {
+		outMu.Lock()
+		defer outMu.Unlock()
 		if err := out.Encode(v); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: rpc write failed: %v\n", err)
 		}
@@ -71,7 +79,7 @@ func rpcCmd(workspace string) int {
 				},
 			}
 			var err error
-			a, err = abhed.New(context.Background(), opts)
+			a, err = abhed.New(ctx, opts)
 			if err != nil {
 				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error()})
 				continue
@@ -84,13 +92,20 @@ func rpcCmd(workspace string) int {
 					Error: "no session: send start first"})
 				continue
 			}
-			answer, err := a.Run(context.Background(), req.Prompt)
+			done := stopper.busy()
+			answer, err := a.Run(ctx, req.Prompt)
+			// The run's events, its end included, go out before its reply, and
+			// both before an exit on a stop signal is let through.
+			flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
+			_ = a.Flush(flushed)
+			cancelFlush()
 			if err != nil {
 				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error(),
 					Answer: answer})
-				continue
+			} else {
+				emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer})
 			}
-			emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer})
+			done()
 
 		case "steer":
 			if a == nil {

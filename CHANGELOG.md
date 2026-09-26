@@ -8,6 +8,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- `abhed -p` stopped by a hang-up (SIGHUP) now ends its run and exits 130,
+  as for Ctrl-C and SIGTERM; the signal used to end it outright, and the
+  shell saw 129.
 - A narrow `bash` allow rule no longer approves a chained or redirected
   command: `bash(go test*)` no longer runs `go test ./... | tee out` unasked.
   In a run with no one to approve (`-p`, CI, the SDK), such a command is now
@@ -27,9 +30,67 @@ All notable changes to Abhed are recorded here. The format follows
   an answer recorded after its turn stopped waiting gets `200`
   `{"recorded":true,"applied":false}`; a bound answer on a node not running the
   session gets `421` with `Abhed-Session-Node`.
+- `action.denied` now carries `by`, as `action.approved` does, and both say
+  who settled the call: `policy`, `reviewer`, `user`, `session-scope` (with
+  the remembered `scope`), `headless` or `system`. A refusal in a run with no
+  one to approve (`-p`, `rpc`, an SDK run without an approver) is now
+  `actor: system`, `by: headless`, with a reason starting `no approver:`,
+  where it was `actor: user` and "rejected"; a filter on `actor: user` for
+  reviewers' refusals no longer counts them. A call allowed by an earlier
+  "always allow" is `by: session-scope`, not `by: reviewer`. A call that
+  needed approval in a run that approves on its own (subagents, `abhed
+  eval`) is `by: headless`, where it was `by: reviewer`.
+- A request that ends while waiting for approval now records `action.denied`
+  (`actor: system`, `by: system`, step `ask`); so does a call refused before
+  approval because it could not succeed (step `precheck`), and a call to an
+  unknown tool records `action.requested` and `action.denied` (step
+  `unknown`). A consumer that pairs every request with an outcome no longer
+  finds requests without one.
+- A turn stopped before the model's first reply now ends as
+  `user_interrupt` or `shutdown`, not `error`. A run ended by its own
+  deadline, as `abhed eval` sets per task, now ends with the new reason
+  `deadline` at any point, where it was `user_interrupt`: for `abhed eval`
+  that is the `terminal_reason` in its report, not its exit status. For an
+  embedder, `TerminalReason.ExitCode()` gives 7 for it; `abhed -p` never
+  ends this way.
+- A new event, `message.dropped`, records a steered message that a shutdown
+  kept from being delivered. An `observation` of a `bash` call, the agent's
+  or one run on a workbench terminal, now carries `sandbox`, the tier it ran
+  under (`none` on the host).
+- `abhed serve` now treats a hang-up (SIGHUP) as it treats SIGTERM, draining
+  and ending turns, unless it was started with hang-ups ignored (`nohup`).
+  `abhed -p`, the interactive CLI, `rpc`, `acp`, `eval` and `resolve` end
+  their runs on Ctrl-C, SIGTERM or a hang-up. `rpc`, `acp`, `eval` and
+  `resolve` then exit with 128 plus the signal's number (130, 143, 129), where
+  the signal used to end them outright. `rpc` and `acp` first write the
+  stopped prompt's events, its end included, and then its reply, so the reply
+  is the last thing on stdout; a second signal exits at once. A stopped
+  `abhed eval` runs no further task, prints no summary and writes no `-json`
+  report, and a task whose run was interrupted or shut down never passes. A
+  stopped `abhed resolve` keeps its worktree, as a failed run does, and says
+  where. With the interactive CLI, `-p`, `eval` and `resolve`, a second
+  signal after the first now ends them at once; `serve` ignores signals
+  while it drains, so a second SIGTERM does not cut the drain short.
+- An agent's `bash` command now runs in a session of its own, with no
+  terminal. A command that reads `/dev/tty`, such as a `sudo`, `ssh` or git
+  credential prompt, fails at once instead of waiting on the terminal of the
+  person running the CLI; give it its input another way. On the host, an
+  "Operation not permitted" result no longer carries the note that the
+  sandbox denied it.
 
 ### Added
 
+- In the SDK: `NoteAnswer` and `Answer`, for an approver to say who settled
+  a call when no person was asked, and the `By` values it takes
+  (`ByPolicy`, `ByReviewer`, `ByUser`, `BySessionScope`, `ByHeadless`,
+  `BySystem`); `DroppedMessage` and `EvMessageDropped` for the new
+  `message.dropped` event; `TermDeadline` for the new `deadline` terminal
+  reason. See [the SDK guide](docs/guide/09-sdk.md#who-settled-a-call).
+- `Agent.Flush` in the SDK waits until `OnEvent` has returned for every
+  event recorded before the call, or its context ends. `OnEvent` is now
+  given every event, in order, however slow it is; before, events recorded
+  while it was busy could be dropped, and so could one recorded the moment
+  `New` returned. Give `Flush` a deadline, and do not call it from `OnEvent`.
 - The line-by-line workbench terminal completes a file or folder name on Tab,
   from the workspace listing and relative to the terminal's directory; a
   second Tab lists the candidates. Nothing is run to complete. Names are
@@ -44,6 +105,43 @@ All notable changes to Abhed are recorded here. The format follows
 - On Debian and Ubuntu, the container image included, commands linked
   through `/etc/alternatives` (`vi`, `vim`, `editor`, `awk` and others) could
   not start in the Linux process sandbox.
+- A request that ended while waiting for approval, by an interrupt, Send
+  now, a shutdown or a deadline, recorded no outcome: the record went from
+  `action.requested` straight to `session.ended`. It now records
+  `action.denied` saying why no one answered, such as "interrupted before an
+  answer" or "server shut down before an answer".
+- The record credited a reviewer who was never asked. A refusal in a run
+  with no one to approve read as a person's rejection, and a call allowed by
+  an earlier "always allow" read as a reviewer's approval with no scope. Each
+  now says who settled it, and the scope that allowed it.
+- A turn stopped before the model's first reply, by an interrupt, Send now or
+  a shutdown, was recorded as `error`, as if the model had failed.
+- Stopping a turn, or the server, did not stop an approved long-running
+  command: the turn ended only when the command did, and on SIGTERM what the
+  command started could outlive the server. A cancel now kills everything
+  the command started while it runs, in every sandbox tier, and removes a
+  container command's container. A job the command leaves running in the
+  background after it exits is not killed, but no longer holds the call
+  open, and the result says it is still running. Closing the terminal the
+  CLI runs in, or losing the ssh session, ends the command the same way.
+  A command stopped by the run's own time limit says so, instead of
+  suggesting a longer `timeout_ms`.
+- A message steered into a running turn (202 "steered") just before a
+  shutdown was lost with no trace. It is now recorded as `message.dropped`.
+  It is still not delivered after a restart.
+- When a shutdown ended a command on an idle workbench's terminal, its result
+  was recorded after the session's end. It is now recorded before it.
+- A call to a tool that does not exist left no action on the record, only
+  the model call that asked for it, and a call refused before approval
+  because it could not succeed (a relative path, an edit whose text is not
+  in the file) left its request with no outcome.
+- HawkEYE showed a call with no result as run (✓), including one whose
+  approval was never answered; it is now marked not run. A command the
+  sandbox refused part of is marked and raises a `sandbox-denied` finding,
+  for records that say the command ran under a sandbox.
+  HawkEYE says who decided from the event itself, so the person's own
+  decline at the line terminal no longer reads "by reviewer", and a headless
+  refusal or a remembered scope no longer counts as asking a reviewer.
 - In the line-by-line workbench terminal, `vi` seemed to hang after `:wq`:
   the process sandbox refuses writes to the home directory, and vim waited at
   "Press ENTER" after failing to save its history file. Every process-tier
@@ -90,8 +188,8 @@ All notable changes to Abhed are recorded here. The format follows
   seconds, for cancelled turns to record their end before it returns, and a
   turn waiting for approval no longer waits on a slow approval write once
   cancelled. Such a turn ends with reason `shutdown`, as other cancelled
-  turns do, where it used to record `user_interrupt`; a turn stopped before
-  the model's first reply is still recorded as `error`. A turn started by a
+  turns do, where it used to record `user_interrupt`, and so does a turn
+  stopped before the model's first reply. A turn started by a
   message to an open session, which is every workbench turn, is now ended
   on shutdown too; before, the server waited on it and exited with no end
   recorded. While the server is stopping, a message to a session gets 503

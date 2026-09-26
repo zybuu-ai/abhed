@@ -200,12 +200,34 @@ func (c *Container) runArgs(cwd string) []string {
 }
 
 func (c *Container) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	args := append(c.runArgs(cwd), Image, "/bin/sh", "-c", command)
-	cmd := exec.CommandContext(ctx, c.runtime, args...)
+	// Named, so a cancel can remove the container: killing the engine's CLI
+	// leaves what runs inside it running.
+	name := containerName("abhed-cmd-")
+	args := append(c.runArgs(cwd), "--name", name, Image, "/bin/sh", "-c", command)
+	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the command runs inside the container
 	// The engine's CLI needs the host's PATH, HOME and DOCKER_HOST; only the
 	// -e flags above reach the container.
 	cmd.Env = os.Environ()
+	cmd.Cancel = c.remove(cmd, name)
 	return cmd
+}
+
+// containerName is a fresh name for a container this process starts.
+func containerName(prefix string) string {
+	var nonce [4]byte
+	_, _ = rand.Read(nonce[:])
+	return prefix + strconv.FormatInt(time.Now().UnixNano(), 36) + hex.EncodeToString(nonce[:])
+}
+
+// remove is a cancel that removes the named container, then kills the CLI.
+func (c *Container) remove(cmd *exec.Cmd, name string) func() error {
+	runtime := c.runtime
+	return func() error {
+		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
+		defer cancel()
+		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
+		return cmd.Process.Kill()
+	}
 }
 
 // containerShell prefers bash where the image has it.
@@ -227,9 +249,7 @@ func (c *Container) shellLabel() string {
 // terminal (-t). The container is named so that ending the shell removes it,
 // even when the engine's CLI is killed before it can.
 func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	var nonce [4]byte
-	_, _ = rand.Read(nonce[:])
-	name := "abhed-term-" + strconv.FormatInt(time.Now().UnixNano(), 36) + hex.EncodeToString(nonce[:])
+	name := containerName("abhed-term-")
 	args := []string{"run", "--rm", "-i", "-t", "--name", name, "--label", c.shellLabel()}
 	args = append(args, c.runArgs(cwd)[3:]...)
 	for _, kv := range shellEnv(c.Tier()) {
@@ -238,13 +258,7 @@ func (c *Container) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	args = append(args, "-e", "HOME=/tmp", Image, "/bin/sh", "-c", containerShell)
 	cmd := exec.CommandContext(ctx, c.runtime, args...) // #nosec G204 -- the configured engine; the shell is fixed
 	cmd.Env = os.Environ()
-	runtime := c.runtime
-	cmd.Cancel = func() error {
-		rmCtx, cancel := context.WithTimeout(context.Background(), engineWait)
-		defer cancel()
-		_ = exec.CommandContext(rmCtx, runtime, "rm", "-f", name).Run() // #nosec G204 -- the configured engine and a name this process made
-		return cmd.Process.Kill()
-	}
+	cmd.Cancel = c.remove(cmd, name)
 	cmd.WaitDelay = hangUpDelay
 	return cmd
 }

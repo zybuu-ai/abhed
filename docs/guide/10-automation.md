@@ -12,6 +12,11 @@ abhed -p "add a test for Valid" -output-format json > events.jsonl
 
 Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
 `5` retries exhausted · `130` interrupted. A CI job can branch on those.
+`abhed -p` and the interactive CLI report `130` for any stop signal (Ctrl-C,
+SIGTERM or a hang-up); `rpc`, `acp`, `eval` and `resolve` report 128 plus the
+signal's number (130, 143, 129); `serve` exits `0` once it has drained.
+`serve` ignores further signals while it drains; `-p`, `eval` and `resolve`
+end at once on a second signal.
 
 There is no one to approve, so anything needing approval is refused. Name what
 may run with `-allow`, and keep the list narrow.
@@ -47,6 +52,13 @@ Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
 per run.
 
+On Ctrl-C, SIGTERM or a hang-up, `abhed rpc` and `abhed acp` end the prompt
+that is running, and the command it was running with everything that command
+started, wait for it to record its end, then exit with 128 plus the signal's
+number (130, 143, 129), as a shell reports a process the signal ended. A
+second signal exits at once. Before, the signal ended the process outright and
+left the command running.
+
 ## Resolving an issue
 
 ```bash
@@ -70,8 +82,12 @@ Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
 the terminal. No mode opens a pull request on its own. A run that changes
-nothing pushes nothing and exits 2; a run that fails leaves the worktree for
-inspection.
+nothing pushes nothing and exits 2. A run that fails, or a resolve stopped by
+Ctrl-C, SIGTERM or a hang-up, leaves the worktree for inspection and says
+where; a stopped one pushes nothing it had not pushed and exits with 128 plus
+the signal's number. Otherwise the worktree is removed when resolve ends, and
+the branch stays. `abhed eval` stopped the same way prints no summary, writes
+no `-json` report, and exits the same way.
 
 Not here: the bot that reacts to labels and comments. That is a multi-user
 feature and lives with the server.

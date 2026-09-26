@@ -335,7 +335,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .pill.completed,.pill.done{background:var(--done-bg);color:var(--done)}
 .pill.waiting_approval{background:var(--waiting-bg);color:var(--waiting)}
 .pill.error,.pill.max_turns,.pill.policy_denied,.pill.retry_exhausted,
-.pill.max_budget,.pill.user_interrupt{background:var(--error-bg);color:var(--error)}
+.pill.max_budget,.pill.user_interrupt,.pill.deadline,.pill.shutdown,
+.pill.stalled{background:var(--error-bg);color:var(--error)}
 
 /* ---------------------------------------------------------------- stage */
 .stage-head{height:38px;display:flex;align-items:center;gap:10px;padding:0 18px;

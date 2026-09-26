@@ -51,8 +51,9 @@ func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, erro
 	emit(agent.EvAgentDelta, map[string]string{"text": "Done."})
 	return "Done.", nil
 }
-func (a *scriptedACPAgent) Steer(string) {}
-func (a *scriptedACPAgent) Close()       {}
+func (a *scriptedACPAgent) Steer(string)                {}
+func (a *scriptedACPAgent) Flush(context.Context) error { return nil } // OnEvent is called inline
+func (a *scriptedACPAgent) Close()                      {}
 
 // acpClient drives the adapter over pipes, the way an editor would.
 type acpClient struct {
