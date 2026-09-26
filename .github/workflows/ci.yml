@@ -41,8 +41,8 @@ jobs:
       # The process tier is bubblewrap on Linux. Without it the sandbox tests
       # skip, and the filesystem, egress and credential boundaries the trust
       # docs call verified would go unexercised on the platform that ships.
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Install bubblewrap and vim
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap vim
 
       # The public build links web fonts; the copy it embeds must not.
       - name: A public docs build keeps the binary's copy offline
@@ -170,8 +170,8 @@ jobs:
       options: --privileged
     steps:
       - uses: actions/checkout@v4
-      - name: Install bubblewrap
-        run: apt-get update && apt-get install -y --no-install-recommends bubblewrap
+      - name: Install bubblewrap and vim
+        run: apt-get update && apt-get install -y --no-install-recommends bubblewrap vim
       - name: Every process-sandbox boundary runs under bubblewrap
         run: |
           set -euo pipefail

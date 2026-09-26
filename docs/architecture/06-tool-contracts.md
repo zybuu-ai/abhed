@@ -267,9 +267,10 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
 
 **Semantics**
 - Runs inside the session microVM (§03-security I3). Never on the host.
-- **Working directory persists** across calls within a session; shell state (env vars,
-  functions) does **not** — each call is a fresh shell. Document this explicitly: models
-  assume otherwise and it causes confusing failures.
+- **Only a call that is just `cd <folder>` carries its directory to the next call**;
+  a cd inside a longer command, and shell state (env vars, functions), do **not** — each
+  call is a fresh shell. Document this explicitly: models assume otherwise and it causes
+  confusing failures.
 - Combined stdout+stderr, capped at 30k chars with head+tail retained on truncation (the
   middle is usually least useful; the error is at the end).
 - Exit code always reported. Non-zero is **not** a tool error — it's a valid observation the

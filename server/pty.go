@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/creack/pty"
 
@@ -109,7 +110,9 @@ type ptyStartResponse struct {
 	Denied string `json:"denied,omitempty"`
 	// Confirm is why the command waits to be confirmed; nothing ran or was recorded.
 	Confirm string `json:"confirm,omitempty"`
-	Cwd     string `json:"cwd"`
+	// Note says why a cd line left the directory where it was.
+	Note string `json:"note,omitempty"`
+	Cwd  string `json:"cwd"`
 	// Interactive is set when ID is a shell. Lines, when a shell was asked
 	// for, says why the terminal judges each line instead.
 	Interactive bool   `json:"interactive,omitempty"`
@@ -186,10 +189,13 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 
 	// A bare cd never needs a terminal, and this is where the directory follows.
 	if isPlainCd(req.Command) {
-		sess.FollowCd(req.Command)
+		note := sess.FollowCd(req.Command)
 		res := tools.Result{Content: sess.Rel(sess.Cwd)}
+		if note != "" {
+			res.Content += "\n" + note
+		}
 		_ = live.Loop.ManualObserve(id, "bash", res, 0)
-		WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Cwd: sess.Rel(sess.Cwd)})
+		WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Cwd: sess.Rel(sess.Cwd), Note: note})
 		return
 	}
 
@@ -200,7 +206,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cmd = exec.CommandContext(ctx, "bash", "-c", req.Command)
 		cmd.Dir = sess.Cwd
-		cmd.Env = append(os.Environ(), "ABHED_SESSION=1")
+		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
 	}
 	cmd.Env = withTerm(cmd.Env)
 	run, err := s.launch(live, sess, id, req.Command, cmd, cancel, req.Cols, req.Rows, nil)
@@ -338,10 +344,11 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	WriteJSON(w, http.StatusOK, resp)
 }
 
-// isPlainCd reports a command that only changes directory.
+// isPlainCd reports a command that only changes directory. A $ is let
+// through only as $'...', a quote the cd tracking reads.
 func isPlainCd(command string) bool {
 	c := strings.TrimSpace(command)
-	return c == "cd" || strings.HasPrefix(c, "cd ") && !strings.ContainsAny(c, "&|;`$(")
+	return c == "cd" || tools.IsCdLine(c) && !strings.ContainsAny(strings.ReplaceAll(c, "$'", "'"), "&|;`$(")
 }
 
 // pump copies terminal output to every reader and to the record.
@@ -453,6 +460,16 @@ loop:
 	} else if err != nil {
 		code = -1
 	}
+	// A command's cd moves the terminal only if it succeeded; one that is not
+	// followed says so, on the terminal and in the record.
+	if run.capture == nil && code == 0 {
+		live.manualMu.Lock()
+		note := sess.FollowCd(run.command)
+		live.manualMu.Unlock()
+		if note != "" {
+			run.note(note)
+		}
+	}
 	run.mu.Lock()
 	run.exit = code
 	text := plainText(run.record)
@@ -469,10 +486,6 @@ loop:
 			how += ", " + *by
 		}
 		how += "; the latest output follows"
-	} else {
-		live.manualMu.Lock()
-		sess.FollowCd(run.command)
-		live.manualMu.Unlock()
 	}
 	// A shell's end is the person's doing, whatever its status; only a
 	// failure to start one is an error.
@@ -516,6 +529,28 @@ func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *
 		return nil, nil, false
 	}
 	return live, run, true
+}
+
+// note shows a line from the server on the terminal and keeps it in the
+// record, so a late reader and the observation both have it.
+func (p *ptyRun) note(text string) {
+	// The note quotes the typed line, whose control characters must not drive the terminal.
+	safe := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, text)
+	msg := []byte("\r\n\x1b[33m" + safe + "\x1b[0m")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.record = append(p.record, msg...)
+	for ch := range p.subs {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
 }
 
 // say shows a line from the server on the terminal, outside the record.

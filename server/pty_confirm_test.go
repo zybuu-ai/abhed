@@ -143,3 +143,64 @@ func TestTerminalLineConfirmationLeavesOtherDecisions(t *testing.T) {
 		t.Fatalf("confirmed and declined: %d", rec.Code)
 	}
 }
+
+// A cd line that Tab completed, name quoted, moves the terminal there; one the
+// server cannot follow says so instead of leaving the next line elsewhere.
+func TestTerminalLineFollowsAQuotedCd(t *testing.T) {
+	wb := manualBench(t, nil)
+	if err := os.MkdirAll(filepath.Join(wb.workspace, "packages", "web app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := wb.typeLine(ptyStartRequest{Command: `cd packages/web\ app/`}); got.Cwd != "packages/web app" || got.Note != "" {
+		t.Fatalf("quoted cd: %+v", got)
+	}
+	got := wb.typeLine(ptyStartRequest{Command: "cd missing"})
+	if got.Cwd != "packages/web app" || !strings.Contains(got.Note, "no such directory: missing") || !strings.Contains(got.Note, "still in packages/web app") {
+		t.Fatalf("cd to a missing folder: %+v", got)
+	}
+	if got := wb.typeLine(ptyStartRequest{Command: "cd"}); got.Cwd != "." || got.Note != "" {
+		t.Fatalf("bare cd: %+v", got)
+	}
+	// $'...' is read without a shell, and says so when the folder is missing.
+	if got := wb.typeLine(ptyStartRequest{Command: `cd $'missing'`}); got.ID == "" || !strings.Contains(got.Note, "no such directory: $'missing'") {
+		t.Fatalf("ANSI-C quoted cd: %+v", got)
+	}
+	if got := wb.typeLine(ptyStartRequest{Command: `cd	$'packages/web app'`}); got.Cwd != "packages/web app" {
+		t.Fatalf("cd, a tab and an ANSI-C quote: %+v", got)
+	}
+	wb.typeLine(ptyStartRequest{Command: "cd"})
+	// A cd that runs in a shell, and that the server cannot follow, says so as it ends.
+	ran := wb.typeLine(ptyStartRequest{Command: `cd "$HOME"`})
+	out, exit := wb.ptyOutput(ran.ID, "")
+	if exit != "0" || !strings.Contains(out, "cd: not followed: only a line that is just `cd <folder>` is") || !strings.Contains(out, "still in .") {
+		t.Fatalf("unfollowed cd in a shell: exit %s, output %q", exit, out)
+	}
+	recorded := false
+	for _, e := range wb.events() {
+		recorded = recorded || e.Type == agent.EvObservation && strings.Contains(string(e.Payload), ran.ID) && strings.Contains(string(e.Payload), "not followed")
+	}
+	if !recorded {
+		t.Fatal("the note is not in the command's record")
+	}
+	// A cd behind a command that failed never ran, so nothing moves or is said.
+	failed := wb.typeLine(ptyStartRequest{Command: "false && cd packages"})
+	if out, exit := wb.ptyOutput(failed.ID, ""); exit != "1" || strings.Contains(out, "cd:") {
+		t.Fatalf("failed command: exit %s, output %q", exit, out)
+	}
+	if got := wb.typeLine(ptyStartRequest{Command: "cd nowhere"}); !strings.Contains(got.Note, "still in .") {
+		t.Fatalf("the failed command moved the terminal: %+v", got)
+	}
+}
+
+// A note quotes the typed line; its control characters reach neither the
+// terminal nor the record.
+func TestTerminalNoteNeutralisesControlCharacters(t *testing.T) {
+	ch := make(chan []byte, 1)
+	run := &ptyRun{subs: map[chan []byte]struct{}{ch: {}}}
+	run.note("cd: \"a\x1b]0;x\x07\u009bb\" is not followed")
+	sent := string(<-ch)
+	body := strings.TrimSuffix(strings.TrimPrefix(sent, "\r\n\x1b[33m"), "\x1b[0m")
+	if strings.ContainsAny(body, "\x1b\x07\u009b") || body != `cd: "a?]0;x??b" is not followed` || string(run.record) != sent {
+		t.Fatalf("note sent %q, recorded %q", sent, run.record)
+	}
+}

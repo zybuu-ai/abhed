@@ -1,6 +1,9 @@
 package tools
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -87,6 +90,170 @@ func TestBashCwdPersists(t *testing.T) {
 	res := run(t, Bash{}, s, bashArgs{Command: "pwd", Description: "pwd"})
 	if !strings.Contains(res.Content, "sub") {
 		t.Fatalf("next command should run in the new cwd: %s", res.Content)
+	}
+}
+
+// A cd is followed with its quoting undone as bash would, so a name that
+// Tab completed as web\ app is the folder the shell went to. What cannot be
+// read with confidence is not followed, and says why.
+func TestDetectCdUndoesQuotingAndSaysWhatItDidNotFollow(t *testing.T) {
+	s, dir := setup(t)
+	for _, d := range []string{"packages/web app", "it's", `a"b`, "plain"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ cmd, want, why string }{
+		{`cd packages/web\ app/`, "packages/web app", ""},
+		{`cd "packages/web app"`, "packages/web app", ""},
+		{`cd 'packages/web app'`, "packages/web app", ""},
+		{`cd packages/'web app'`, "packages/web app", ""},
+		{`cd $'packages/web app'`, "packages/web app", ""},
+		{`cd it\'s`, "it's", ""},
+		{`cd "it's"`, "it's", ""},
+		{`cd $'it\'s'`, "it's", ""},
+		{`cd a\"b`, `a"b`, ""},
+		{`cd "a\"b"`, `a"b`, ""},
+		{`cd`, ".", ""},
+		{`cd ~`, ".", ""},
+		{"  cd\tplain \t", "plain", ""},
+		{"cd plain\n", "plain", ""},
+		{`cd missing`, "", "no such directory: missing"},
+		{`cd file.txt`, "", "no such directory: file.txt"},
+		{`cd /etc`, "", "outside the workspace"},
+		{`cd .abhed`, "", "Abhed's own state"},
+		// Only a line that is just cd and one folder is followed.
+		{`ls && cd plain`, "", "only a line that is just `cd <folder>` is"},
+		{`mkdir x && cd x`, "", "not followed"},
+		{`cd plain && cd packages`, "", "not followed"},
+		{`cd plain && cd`, "", "not followed"},
+		{`cd plain && cd ""`, "", "not followed"},
+		{`ls; cd plain && cd packages`, "", "not followed"},
+		{`builtin cd plain && cd packages`, "", "not followed"},
+		{`command cd plain`, "", "not followed"},
+		{`\cd plain`, "", "not followed"},
+		{`{ cd plain; } && cd packages`, "", "not followed"},
+		{`(cd plain) && cd packages`, "", "not followed"},
+		{`pushd plain >/dev/null`, "", "not followed"},
+		{`popd`, "", "not followed"},
+		{`CDPATH=plain && cd packages`, "", "not followed"},
+		{`# && cd plain`, "", "not followed"},
+		{`echo x #&& cd plain`, "", "not followed"},
+		{`cd plain; ls`, "", "not followed"},
+		{`cd plain | cat`, "", "not followed"},
+		{`cd plain &`, "", "not followed"},
+		{`cd plain || true`, "", "not followed"},
+		{"cd plain\nls", "", "not followed"},
+		{`cd -- plain`, "", "not followed"},
+		{`cd packages/web app`, "", "not followed"},
+		{`cd "$HOME"`, "", "not followed"},
+		{"cd `pwd`", "", "not followed"},
+		{`cd pla*`, "", "not followed"},
+		{`cd "unfinished`, "", "not followed"},
+		{`cd $'a\nb'`, "", "not followed"},
+		{`cd -`, "", "not followed"},
+		{`cd ~/x`, "", "not followed"},
+		{`cd ""`, "", "not followed"},
+		{`cd $'a\ b'`, "", "not followed"},
+		{"cd a\\\nb", "", "not followed"},
+		{"cd plain\r", "", "not followed"},
+		{"cd plain\v", "", "not followed"},
+		{"cd plain\f", "", "not followed"},
+		{"cd\nplain", "", "not followed"},
+		// A line with no way to change directory says nothing.
+		{`ls`, "", ""},
+		{`git checkout -b cd-fix`, "", ""},
+		{`echo abcd`, "", ""},
+		{`ls .`, "", ""},
+		{`./run.sh`, "", ""},
+		{`echo sourced evaluate`, "", ""},
+		// Quoted, escaped or indirect ways to change directory still get the note.
+		{`"cd" plain`, "", "not followed"},
+		{`'cd' plain`, "", "not followed"},
+		{`c\d plain`, "", "not followed"},
+		{`builtin "cd" plain`, "", "not followed"},
+		{`eval "cd plain"`, "", "not followed"},
+		{`eval x`, "", "not followed"},
+		{`source env.sh`, "", "not followed"},
+		{`. env.sh`, "", "not followed"},
+		{`true; . env.sh`, "", "not followed"},
+		{"echo `cd plain`", "", "not followed"},
+	} {
+		s.Cwd = dir
+		next, why := detectCd(c.cmd, s)
+		got := ""
+		if next != "" {
+			got = s.Rel(next)
+		}
+		if got != c.want || (c.why == "") != (why == "") || !strings.Contains(why, c.why) {
+			t.Errorf("%s: went to %q, said %q; want %q, saying %q", c.cmd, got, why, c.want, c.why)
+		}
+	}
+}
+
+// shellWord reads a word as bash reads it, or not at all: every word it
+// accepts is checked against what bash itself makes of it.
+func TestShellWordAgreesWithBash(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	words := []string{`a\ b`, `"a b"`, `'a b'`, `a'b c'd`, `$'a b'`, `$'it\'s'`, `$'a\\b'`, `$'a\"b'`, `$'a\?b'`,
+		`"a\"b"`, `"a\\b"`, `"a\b"`, `"a\zb"`, `a\\b`, `'a\b'`, `a"b"'c'`, `web\ app/`, "\xc3\xa9\\ \xc3\xbc",
+		`$'a\ b'`, "a\\\nb", "\"a\\\nb\"", `$'a\nb'`, `$HOME`, `"$HOME"`, "`pwd`", `a*`, `{a,b}`, `a b`, `"open`, `~x`}
+	refused := map[string]bool{`$'a\ b'`: true, "a\\\nb": true, "\"a\\\nb\"": true, `$'a\nb'`: true}
+	for _, w := range words {
+		got, ok := shellWord(w)
+		if refused[w] && ok {
+			t.Errorf("%q: read as %q, want it refused", w, got)
+		}
+		if !ok {
+			continue
+		}
+		out, err := exec.Command(bash, "-c", "printf %s "+w).Output()
+		if err != nil || string(out) != got {
+			t.Errorf("%q: read as %q, bash makes it %q (%v)", w, got, out, err)
+		}
+	}
+}
+
+// The model is told where it still is when its cd was not followed, and a
+// cd that did not run, behind a failed command, does not move the tracker.
+func TestBashToolReportsACdItDidNotFollow(t *testing.T) {
+	s, dir := setup(t)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := run(t, Bash{}, s, bashArgs{Command: `cd "$PWD"`, Description: "cd"})
+	if s.Cwd != dir || !strings.Contains(res.Content, "not followed") || !strings.Contains(res.Content, "still in .") {
+		t.Fatalf("unfollowed cd: cwd %s, result %s", s.Cwd, res.Content)
+	}
+	run(t, Bash{}, s, bashArgs{Command: "false && cd sub", Description: "cd"})
+	if s.Cwd != dir {
+		t.Fatalf("a cd that never ran moved the tracker to %s", s.Cwd)
+	}
+	run(t, Bash{}, s, bashArgs{Command: "cd\tsub", Description: "cd"})
+	if s.Cwd != filepath.Join(dir, "sub") {
+		t.Fatalf("cd with a tab was not followed: %s", s.Cwd)
+	}
+}
+
+// Without a sandbox, bash is started with no BASH_ENV file to run first and
+// no CDPATH to send a cd elsewhere.
+func TestBashWithoutSandboxLeavesOutBashEnvAndCdpath(t *testing.T) {
+	s, dir := setup(t)
+	hook := filepath.Join(dir, "hook.sh")
+	if err := os.WriteFile(hook, []byte("echo HOOK-RAN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASH_ENV", hook)
+	t.Setenv("CDPATH", dir)
+	res := run(t, Bash{}, s, bashArgs{Command: `echo "[$BASH_ENV][$CDPATH]"`, Description: "env"})
+	if strings.Contains(res.Content, "HOOK-RAN") || !strings.Contains(res.Content, "[][]") {
+		t.Fatalf("bash kept BASH_ENV or CDPATH: %s", res.Content)
 	}
 }
 
