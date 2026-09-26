@@ -247,8 +247,16 @@ curl -N localhost:8080/v1/sessions/<id>/events
 # Full audit replay
 curl localhost:8080/v1/sessions/<id>/replay | jq
 
-# Approve a pending action
-curl -X POST localhost:8080/v1/sessions/<id>/approve -d '{"approved":true}'
+# Approve a pending action. request_id is the id of its action.requested
+# event. 204: the waiting turn took the answer. 200 {"recorded":true,
+# "applied":false}: recorded, but the turn stopped waiting first, so nothing
+# ran on it. 409: refused (nothing pending, another or an ended request
+# named, already answered). 421: send it to the node in Abhed-Session-Node.
+# 429 (with Retry-After): too many answers waiting; retry. 503: the request's
+# row was not written in time; retry. 400: scope is not empty and not the
+# scope the request offered
+curl -X POST localhost:8080/v1/sessions/<id>/approve \
+  -d '{"approved":true,"request_id":"<event id>"}'
 
 # Interrupt
 curl -X POST localhost:8080/v1/sessions/<id>/interrupt

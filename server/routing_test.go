@@ -197,7 +197,7 @@ func TestApprovalStoreDetected(t *testing.T) {
 func TestApprovalIsRecordedDurably(t *testing.T) {
 	f := newFakeApprovals()
 	l := &liveSession{
-		ID: "s-1", approvals: make(chan approvalReply, 1),
+		ID:      "s-1",
 		allowed: map[string]bool{}, durable: f,
 	}
 	// Answer immediately through the durable path so Approve returns.
@@ -222,15 +222,15 @@ func TestApprovalIsRecordedDurably(t *testing.T) {
 }
 
 // A store that cannot record the request must not block the turn: the
-// in-memory channel still answers for a single node.
+// in-memory answer still reaches the turn on a single node.
 func TestApproveStillWorksWhenRecordingFails(t *testing.T) {
 	f := newFakeApprovals()
 	f.askErr = errors.New("database is down")
 	l := &liveSession{
-		ID: "s-2", approvals: make(chan approvalReply, 1),
+		ID:      "s-2",
 		allowed: map[string]bool{}, durable: f,
 	}
-	l.approvals <- approvalReply{Approved: true}
+	go answerWhenAsked(l, true, "")
 
 	ok, err := l.Approve(context.Background(), "bash", []byte(`{}`), policy.Result{})
 	if err != nil || !ok {
@@ -242,7 +242,7 @@ func TestApproveStillWorksWhenRecordingFails(t *testing.T) {
 func TestScopeIsRememberedFromTheDurablePath(t *testing.T) {
 	f := newFakeApprovals()
 	l := &liveSession{
-		ID: "s-3", approvals: make(chan approvalReply, 1),
+		ID:      "s-3",
 		allowed: map[string]bool{}, durable: f,
 	}
 	go func() {

@@ -5,6 +5,7 @@
 #   extract.py console.go workbench   what draws a file and a diff
 #   extract.py ide.html ide-md        the workbench's markdown renderer
 #   extract.py ide.html ide-render    the workbench's chat render()
+#   extract.py ide.html ide-chat      sending, live state and approvals
 #   extract.py ide.html ide-lines     the line-by-line terminal
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
@@ -30,6 +31,10 @@ sets = {
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
+    # From ide.html: sending, the run's live state and the approval prompt.
+    'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
+          'function claim(p){','function failed(b, msg){','async function unqueue(b){','async function sendNow(b){','async function send(){',
+          'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
     'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',

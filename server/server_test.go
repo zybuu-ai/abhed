@@ -165,17 +165,13 @@ func TestApproveWithoutPendingIsConflict(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &created)
 	time.Sleep(150 * time.Millisecond)
 
-	// Buffered channel accepts one, so drain then assert the second conflicts.
-	for i := 0; i < 2; i++ {
-		rec = httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/sessions/"+created.SessionID+"/approve",
-			strings.NewReader(`{"approved":true}`))
-		h.ServeHTTP(rec, req)
-		if rec.Code == http.StatusConflict {
-			return // expected on the second call
-		}
+	// Nothing is pending, so nothing may be held over to answer a later request.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/sessions/"+created.SessionID+"/approve",
+		strings.NewReader(`{"approved":true}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("approve with nothing pending = %d, want 409", rec.Code)
 	}
-	t.Log("approval channel accepted both; acceptable given buffering")
 }
 
 // With auth.mode = none, a caller cannot pick its own tenant by header.

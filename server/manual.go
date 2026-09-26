@@ -31,6 +31,7 @@ func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSes
 		return nil, nil, false
 	}
 	if s.draining.Load() {
+		w.Header().Set("Retry-After", "5")
 		WriteError(w, http.StatusServiceUnavailable, errDraining.Error())
 		return nil, nil, false
 	}

@@ -175,6 +175,23 @@ isolates tenants, and Postgres does not apply it to a superuser or a
 `BYPASSRLS` role, not even with `FORCE`. Abhed checks and refuses, because a
 control that is silently off is worse than one that is visibly missing.
 
+## Stopping the server
+
+```json
+"server": { "drain_seconds": 20 }
+```
+
+On SIGTERM the server stops taking turns (a message that would start a
+turn, steer a running one or send it now gets 503 with `Retry-After`),
+waits up to `drain_seconds` for running turns to finish, then ends those
+still running, recorded as `shutdown` (a turn stopped before the model's
+first reply is still recorded as `error`). It then waits up to five
+seconds for them to record their end, and up to ten more for open HTTP
+requests. The worst case is `drain_seconds` + 15 seconds, so give the
+process at least that much grace: with Kubernetes' default
+`terminationGracePeriodSeconds` of 30, keep `drain_seconds` at 15 or less.
+Without `drain_seconds`, running turns are ended at once.
+
 ## Accounts
 
 With `auth.mode` set to `local` and no database, accounts live in a file:

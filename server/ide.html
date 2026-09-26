@@ -477,17 +477,18 @@ const fmt = n => (n || 0).toLocaleString('en-US');
 
 async function api(path, opts){
   const r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts});
-  if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} const e = new Error(m); e.status = r.status; throw e; }
+  if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} const e = new Error(m); e.status = r.status; e.node = r.headers.get('Abhed-Session-Node'); throw e; }
   return r.status === 204 ? null : r.json();
 }
 
 /* ---------------------------------------------------------------- state */
-let current = null, live = false, es = null, lastSeq = 0;
+let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let caps = null, streaming = null, streamBody = null, todoNode = null, thinkBlock = null;
 const calls = new Map();            // call_id -> {node, res, tool, subject, args, out}
 const mineCalls = new Set();        // the person's own calls, kept out of the chat
 const queued = new Map();           // queue id -> bubble waiting for the loop to read it
 const sent = [];                    // bubbles shown on send, not yet matched to their user.message
+const asks = new Map();             // call_id -> {p, rid, shown}: approvals the run is waiting on
 const tabs = [];                    // {id, kind:'file'|'diff', path, label}
 let active = null;
 const known = new Set();            // file paths seen in the tree, for the palette
@@ -1120,13 +1121,17 @@ async function loadSessions(){
 function setLive(on){
   live = on; $('stop').hidden = !on;
   $('hint').textContent = on ? 'Enter queues it · Esc twice stops the run' : 'Enter sends · Shift+Enter for a new line';
-  if(!on) waiting(false);
+  if(!on) waiting(false); else offerAsks();
+}
+// A request can arrive before the page knows the run is live; it is asked once the page does.
+function offerAsks(){
+  for(const a of asks.values()) if(!a.shown){ a.shown = true; waiting(false); askApproval(a.p, a.rid); }
 }
 function resetSession(){
   if(es){ es.close(); es = null; }
   cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
-  current = null; live = false; lastSeq = 0; streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
-  queued.clear(); sent.length = 0; waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
+  current = null; live = false; lastSeq = endedSeq = 0; clearTimeout(recheckTimer); streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
+  queued.clear(); sent.length = 0; asks.clear(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
@@ -1370,8 +1375,9 @@ async function sendNow(b){
   sent.push(b); add(b); drawQueued(b); waiting('Stopping the current step');
   try{
     await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt || b.text, interrupt: true, client_id: b.cid})});
-    if(current !== id) return;
-    setLive(true); if(!b.delivered) waiting('Thinking'); if(!es) connect(id);
+    // Delivered first: the stream set the page live, and may since have seen this turn end.
+    if(current !== id || b.delivered) return;
+    setLive(true); waiting('Thinking'); if(!es) connect(id);
   }catch(e){ failed(b, e.message); waiting(false); }
 }
 
@@ -1381,7 +1387,13 @@ function render(ev){
   if(ev.type === 'agent.delta' ? pendThink : ev.type === 'agent.reasoning.delta' ? pendText : true) flushStream();
   logEvent(ev, p);
   switch(ev.type){
-  case 'user.message': { streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text)); if(live) waiting('Thinking'); break; }
+  case 'user.message': { streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
+    // A request never shown belongs to a turn that is over by the next message.
+    for(const [k, a] of asks) if(!a.shown) asks.delete(k);
+    // This page's own message means its run has started, whichever of the
+    // stream and the POST answers first. Any other may be history: ask.
+    if(b && !live) setLive(true); else if(!live) recheckSoon();
+    if(live) waiting('Thinking'); break; }
   case 'agent.reasoning.delta': thinkLive(at); pendThink += p.text || ''; flushSoon(); break;
   case 'agent.delta': if(thinkBlock && thinkBlock.live) endThinking(at); waiting(false); pendText += p.text || ''; flushSoon(); break;
   case 'agent.message': { waiting(false); const text = p.text || '', stick = nearBottom();
@@ -1406,7 +1418,7 @@ function render(ev){
     d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
     add(d); calls.set(p.call_id, c);
     if(p.tool === 'todo' && p.args && Array.isArray(p.args.items)) drawPlan(p.args.items);
-    if(p.requires_approval && live){ waiting(false); askApproval(p); }
+    if(p.requires_approval){ asks.set(p.call_id, {p, rid: ev.id, shown:false}); if(live) offerAsks(); }
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
     if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by you' : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
@@ -1430,19 +1442,24 @@ function render(ev){
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
-  case 'session.ended': { endThinking(at); streaming = streamBody = null; setLive(false); const bad = !['completed','user_interrupt'].includes(p.reason);
+  case 'session.ended': { endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; asks.clear(); setLive(false);
+    for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
     add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
-    loadSessions(); loadChanges(); loadHawkeye(); const id = current; setTimeout(() => recheck(id), 600); break; }
+    loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); break; }
   }
 }
 // A run can end just as a queued message arrives, and the server then starts
 // another for it after this stream closed; or Send now's fresh turn starts
 // after the interrupted one ended. Once the end has settled, ask the server.
+function recheckSoon(){ const id = current; clearTimeout(recheckTimer); recheckTimer = setTimeout(() => recheck(id), 600); }
 async function recheck(id){
-  let list, left;
+  let list, left; const from = lastSeq;
   try{ [list, left] = await Promise.all([api('/v1/sessions'), queued.size ? api('/v1/sessions/' + id + '/queue').catch(() => []) : []]); }catch{ return; }
-  if(current !== id) return;
+  // An end drawn while this was asked makes its answer stale; that end asks again.
+  if(current !== id || endedSeq > from) return;
   const s = list.find(x => x.id === id), running = !!s && (s.state === 'running' || s.state === 'waiting_approval');
+  // Not running, but the stream moved on meanwhile: a turn may have started since. Ask again.
+  if(!running && lastSeq > from){ recheckSoon(); return; }
   const still = new Set((left || []).map(q => q.id));
   // A bubble the server no longer holds was read by a run this page has not seen yet.
   const read = [...queued.values()].some(b => b.qid && !still.has(b.qid));
@@ -1468,20 +1485,34 @@ function drawPlan(items){
   items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', i.text)); todoNode.appendChild(r); });
   add(todoNode);
 }
-function askApproval(p){
+function askApproval(p, rid){
   const a = el('div', 'ask'); a.dataset.call = p.call_id;
   a.appendChild(el('b', '', 'Allow ' + p.tool + '?')); a.appendChild(el('p', '', (subjectOf(p.tool, p.args) || '') + (p.reason ? '  —  ' + p.reason : '')));
   const btns = el('div', 'btns');
   const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';
-    b.addEventListener('click', async () => { btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
-      try{ await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(scope ? {approved:ok, scope} : {approved:ok})}); }
-      catch(e){ a.appendChild(el('p', '', e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
+    b.addEventListener('click', async () => { const q = asks.get(p.call_id); if(!q || q.rid !== rid) return; btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
+      // The request id makes the server refuse an answer meant for a request that has since ended.
+      const body = {approved:ok, request_id:rid}; if(scope) body.scope = scope;
+      try{ const r = await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(body)});
+        if(r && r.applied === false) settleAsk(p.call_id, 'recorded, but the run had already moved on'); }
+      catch(e){ if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
+        // Only the server running the session can check the answer against its request.
+        if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
+        a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope, '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
-  a.appendChild(btns); add(a); btns.firstChild.focus({preventScroll:true});
+  a.appendChild(btns); add(a); focusSoon();
   // A pending question is never left half off screen, wherever the reader had scrolled to.
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
 }
+// Focus goes to the newest open prompt once the stream has caught up, so a
+// replayed history does not move it from prompt to prompt.
+function focusSoon(){
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => { const open = [...tx().querySelectorAll('.ask')].filter(a => a.querySelector('.btns'));
+    if(open.length) open[open.length - 1].querySelector('.btns').firstChild.focus({preventScroll:true}); }, 100);
+}
 function settleAsk(callID, how){
+  asks.delete(callID);
   for(const a of tx().querySelectorAll('.ask')){ if(a.dataset.call !== callID) continue;
     const b = a.querySelector('.btns'); if(b) b.remove(); if(!a.querySelector('.done')) a.appendChild(el('div', 'done', how)); }
 }
@@ -1928,6 +1959,7 @@ async function send(){
       const s = sessionList.find(x => x.id === id);
       if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = typed; }
       const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
+      // Delivered first: the stream has already made the page live for this run.
       if(current !== id || b.delivered) return;
       if(r && r.queue_id){
         b.qid = r.queue_id; queued.set(b.qid, b); if(!live) setLive(true);

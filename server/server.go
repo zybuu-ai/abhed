@@ -206,6 +206,8 @@ type Options struct {
 	// DrainTimeout is how long a shutdown waits for running turns to finish
 	// before cancelling them. Zero keeps the old behaviour of ending them at
 	// once, which is what a single-node deployment with no balancer wants.
+	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
+	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
 }
 
@@ -258,8 +260,14 @@ type liveSession struct {
 	// cancelCause ends the run with a stated reason, so shutdown is not
 	// recorded as a user interrupt.
 	cancelCause context.CancelCauseFunc
-	approvals   chan approvalReply
-	pending     *pendingApproval
+	// pending is the approval request the turn is waiting on (approval.go).
+	pending *pendingApproval
+	// ended holds the last endedKept requests that stopped waiting, oldest
+	// dropped first, so a late answer to one is refused at once.
+	ended      map[string]bool
+	endedOrder []string
+	// parked counts answers waiting for their request, bounded by maxParked.
+	parked int
 	// durable, when set, records the approval so an answer arriving at
 	// another node still reaches this turn. Nil keeps the in-memory
 	// behaviour, which is right for a single server.
@@ -281,19 +289,6 @@ type liveSession struct {
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
 	mu   sync.Mutex
-}
-
-type pendingApproval struct {
-	EventID string          `json:"event_id"`
-	Tool    string          `json:"tool"`
-	Args    json.RawMessage `json:"args"`
-	Reason  string          `json:"reason"`
-	Scope   string          `json:"scope"`
-}
-
-type approvalReply struct {
-	Approved bool
-	Scope    string
 }
 
 func New(opts Options) *Server {
@@ -831,6 +826,10 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		adapter = a
 	}
 
+	// Refused before the row is written, so a refused start leaves nothing.
+	if s.draining.Load() {
+		return "", errDraining
+	}
 	sessionID := newSessionID()
 	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
 		return "", err
@@ -851,10 +850,14 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	live.Turns = 1
 	live.ran = make(chan struct{})
 
+	s.mu.Lock()
+	// Re-checked under the lock the shutdown takes to cancel running turns,
+	// so a session is either cancelled by it or never started.
 	if s.draining.Load() {
+		s.mu.Unlock()
+		s.forgetUnstarted(sessionID)
 		return "", errDraining
 	}
-	s.mu.Lock()
 	s.running[sessionID] = live
 	s.mu.Unlock()
 	s.claimNode(ctx, sessionID)
@@ -949,12 +952,22 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		return "", fmt.Errorf("record session start: %w", err)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.draining.Load() {
+		s.mu.Unlock()
+		s.forgetUnstarted(sessionID)
 		return "", errDraining
 	}
 	s.running[sessionID] = live
+	s.mu.Unlock()
 	return sessionID, nil
+}
+
+// forgetUnstarted removes a session refused after its row was written, so no
+// session is left listed that never ran and never ends.
+func (s *Server) forgetUnstarted(sessionID string) {
+	if del, ok := s.store.(agent.SessionDeleter); ok {
+		_ = del.DeleteSession(sessionID)
+	}
 }
 
 // newPolicy builds the engine from the operator's rules. One constructor, so
@@ -1004,11 +1017,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant,
 		Created: time.Now(), Prompt: spec.Prompt, State: "running",
 		// Replaced when a turn starts; a session opened idle has nothing to cancel.
-		Cancel:    func() {},
-		approvals: make(chan approvalReply, 1),
-		allowed:   map[string]bool{},
-		durable:   s.approvalStore(),
-		undo:      undo,
+		Cancel:  func() {},
+		allowed: map[string]bool{},
+		durable: s.approvalStore(),
+		undo:    undo,
 	}
 
 	cfg := agent.DefaultConfig()
@@ -1534,6 +1546,15 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	live.mu.Lock()
+	// While draining, nothing is started, steered or interrupted: a steering
+	// message could be dropped, and Send now would stop the turn the drain
+	// is letting finish. Checked before anything touches the turn.
+	if s.draining.Load() {
+		live.mu.Unlock()
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
+		return
+	}
 	busy := live.State == "running" || live.State == "waiting_approval"
 	if busy && !req.Interrupt {
 		// A message to a working agent steers it rather than being refused.
@@ -1577,14 +1598,24 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Checked under the session's lock: a shutdown cancels what it finds
+	// under the same lock, so no turn can start unseen once draining began.
+	if s.draining.Load() {
+		live.mu.Unlock()
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
+		return
+	}
 	live.State = "running"
 	live.Turns++
 	if live.Prompt == "" {
 		live.Prompt = req.Prompt // a workbench session is named by its first message
 	}
 	live.ran = make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancelCause := context.WithCancelCause(context.Background())
+	cancel := func() { cancelCause(nil) }
 	live.cancel = cancel
+	live.cancelCause = cancelCause
 	live.mu.Unlock()
 
 	go func() {
@@ -1683,17 +1714,26 @@ func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 type approveRequest struct {
 	Approved bool   `json:"approved"`
 	Scope    string `json:"scope,omitempty"`
+	// RequestID is the id of the action.requested event being answered.
+	// Optional for older clients, which answer whichever request is pending;
+	// clients should send it.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	var req approveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
 		// decision still arrives. This is the case sticky routing exists to
 		// avoid and the one durability exists to survive when it does not.
-		if s.answerElsewhere(w, r, id) {
+		if s.answerElsewhere(w, r, id, req) {
 			return
 		}
 		if node := s.elsewhere(r.Context(), id); node != "" {
@@ -1705,26 +1745,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	var req approveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	// Record the decision where the waiting node can see it, whichever node
-	// that is. Harmless when it is this one: the channel below answers first
-	// and the second write finds the row already answered.
-	if d := s.approvalStore(); d != nil {
-		if pending, found, err := d.PendingApproval(r.Context(), id); err == nil && found {
-			_, _ = d.AnswerApproval(r.Context(), pending.ID, req.Approved, UserOf(r.Context()))
-		}
-	}
-
-	select {
-	case live.approvals <- approvalReply(req):
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		WriteError(w, http.StatusConflict, "no approval is pending for this session")
-	}
+	s.answerHere(w, r, live, req)
 }
 
 // LocalAuth returns the local-account provider, or nil when this deployment
@@ -2185,19 +2206,16 @@ func (s *Server) releaseNode(sessionID string) {
 // answerElsewhere records a decision for a session this node is not running,
 // and reports whether it did. The node that is waiting polls for the result,
 // so the answer is delivered without the request ever reaching it.
-func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, sessionID string, req approveRequest) bool {
 	d := s.approvalStore()
-	if d == nil {
+	// The store's rows do not carry the request id, so an answer naming one
+	// is left to the node running the session, which can check it.
+	if d == nil || req.RequestID != "" {
 		return false
 	}
 	pending, found, err := d.PendingApproval(r.Context(), sessionID)
 	if err != nil || !found {
 		return false
-	}
-	var req approveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
-		return true
 	}
 	answered, err := d.AnswerApproval(r.Context(), pending.ID, req.Approved, UserOf(r.Context()))
 	if err != nil {
@@ -2260,95 +2278,6 @@ func (s *Server) elsewhere(ctx context.Context, sessionID string) string {
 		return ""
 	}
 	return node
-}
-
-// Approve implements agent.Approver for a server session: it publishes the
-// pending request and blocks until a reviewer answers or the session is
-// cancelled. This is what enables headless runs with a human gate.
-func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
-	// Already allowed for this session: a reviewer chose "always allow" for
-	// this scope earlier, so proceed without asking again.
-	if res.Scope != "" {
-		l.mu.Lock()
-		remembered := l.allowed[res.Scope]
-		l.mu.Unlock()
-		if remembered {
-			return true, nil
-		}
-	}
-
-	l.mu.Lock()
-	l.State = "waiting_approval"
-	l.pending = &pendingApproval{Tool: tool, Args: args, Reason: res.Reason, Scope: res.Scope}
-	l.mu.Unlock()
-
-	defer func() {
-		l.mu.Lock()
-		l.State = "running"
-		l.pending = nil
-		l.mu.Unlock()
-	}()
-
-	// Record it durably where the store can. The answer may arrive at
-	// another node, and a channel in this process is not reachable from
-	// there. A failure to record is not a reason to refuse the turn: the
-	// in-memory path below still works for an answer that lands here.
-	var durableID string
-	if l.durable != nil {
-		id, err := l.durable.AskApproval(ctx, store.Approval{
-			SessionID: l.ID, Tool: tool, Args: args,
-			Reason: res.Reason, Scope: res.Scope,
-		})
-		if err == nil {
-			durableID = id
-		}
-	}
-
-	// Poll only when there is something to poll for.
-	var poll <-chan time.Time
-	if durableID != "" {
-		t := time.NewTicker(approvalPoll)
-		defer t.Stop()
-		poll = t.C
-	}
-
-	// Started once, outside the loop: time.After inside it would restart the
-	// deadline on every poll tick and never fire.
-	deadline := time.NewTimer(30 * time.Minute)
-	defer deadline.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-
-		case <-poll:
-			approved, answered, err := l.durable.ApprovalResult(ctx, durableID)
-			if err != nil || !answered {
-				continue
-			}
-			if approved && res.Scope != "" {
-				l.mu.Lock()
-				l.allowed[res.Scope] = true
-				l.mu.Unlock()
-			}
-			return approved, nil
-
-		case reply := <-l.approvals:
-			// "Always allow" carries the scope back; remember it so the next call
-			// matching the same rule is not re-prompted.
-			if reply.Approved && reply.Scope != "" {
-				l.mu.Lock()
-				l.allowed[reply.Scope] = true
-				l.mu.Unlock()
-			}
-			return reply.Approved, nil
-
-		case <-deadline.C:
-			// Fail closed: an unanswered approval must not become an approval.
-			return false, nil
-		}
-	}
 }
 
 // storeTenant reconciles the request's tenant with the store's configured one.
@@ -2415,7 +2344,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		MaxHeaderBytes: 1 << 20,
 		// No write timeout: SSE streams are long-lived by design.
 	}
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		<-ctx.Done()
 		s.drain()
 
@@ -2426,7 +2357,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 	}()
 	s.log.Info("abhed server listening", "addr", s.opts.Addr, "workspace", s.opts.Workspace)
-	return srv.ListenAndServe()
+	err := srv.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		// Serve returns as soon as Shutdown begins. Returning then would let
+		// the process exit before cancelled turns record how they ended.
+		<-stopped
+	}
+	return err
 }
 
 // drain stops this node taking new turns and gives the running ones until
@@ -2501,12 +2438,35 @@ func (s *Server) runningCount() int {
 	return n
 }
 
+// turnEndWait bounds how long a shutdown waits for cancelled turns to record
+// their end, so a slow store cannot hold the process open.
+const turnEndWait = 5 * time.Second
+
+// cancelRunning ends every running turn as a shutdown and waits, up to
+// turnEndWait, for each to record session.ended.
 func (s *Server) cancelRunning() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var ran []chan struct{}
 	for _, live := range s.running {
-		if live.cancelCause != nil {
-			live.cancelCause(agent.ErrShutdown)
+		live.mu.Lock()
+		if live.ran != nil {
+			ran = append(ran, live.ran)
+		}
+		stop := live.cancelCause
+		live.mu.Unlock()
+		if stop != nil {
+			stop(agent.ErrShutdown)
+		}
+	}
+	s.mu.Unlock()
+	deadline := time.NewTimer(turnEndWait)
+	defer deadline.Stop()
+	for _, ch := range ran {
+		select {
+		case <-ch:
+		case <-deadline.C:
+			s.log.Warn("turns did not record their end before shutdown")
+			return
 		}
 	}
 }

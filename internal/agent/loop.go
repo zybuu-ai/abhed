@@ -35,6 +35,18 @@ type Approver interface {
 	Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error)
 }
 
+type requestIDKey struct{}
+
+// RequestIDOf reports the id of the action.requested event an Approver is
+// asked about. Unlike a model's call id it is unique, so an answer that names
+// it cannot be taken for the answer to a later request.
+func RequestIDOf(ctx context.Context) string { id, _ := ctx.Value(requestIDKey{}).(string); return id }
+
+// WithRequestID names the action.requested event an Approver is asked about.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
 // AutoApprove is for headless runs and tests where policy alone decides.
 type AutoApprove struct{ Yes bool }
 
@@ -763,14 +775,15 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
 	}
 
-	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
 		Tool:             call.Name,
 		Args:             call.Args,
 		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
 		Scope:            decision.Scope,
-	}); err != nil {
+	})
+	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 	}
 	if doomed != nil {
@@ -789,10 +802,10 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}, ""
 
 	case policy.Ask:
-		approved, err := l.Approver.Approve(ctx, call.Name, call.Args, decision)
+		approved, err := l.Approver.Approve(WithRequestID(ctx, asked.ID), call.Name, call.Args, decision)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return false, tools.Result{Content: "Interrupted.", IsError: true}, TermUserInterrupt
+				return false, tools.Result{Content: "Interrupted.", IsError: true}, terminalForCancel(ctx)
 			}
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
