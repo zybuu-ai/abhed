@@ -1188,7 +1188,7 @@ function render(ev){
       (turnEl || newTurn()).appendChild(wrap);
       if(p.call_id) calls.set(p.call_id, wrap);
       stats.tools[p.tool] = (stats.tools[p.tool] || 0) + 1;
-      if(p.requires_approval) approval(p);
+      if(p.requires_approval) approval(p, ev.id);
       break;
     }
 
@@ -1471,7 +1471,7 @@ function setPeek(wrap, content){
 }
 
 /* ------------------------------------------------------------------ approvals */
-function approval(p){
+function approval(p, rid){
   const card = node('approve');
   const h = document.createElement('h4');
   h.textContent = 'Approval required — ' + p.tool;
@@ -1500,9 +1500,11 @@ function approval(p){
   const decide = (ok, scope) => async () => {
     buttons.forEach(b => { b.disabled = true; });
     try{
-      const body = scope ? {approved: ok, scope} : {approved: ok};
-      await api('/v1/sessions/' + current + '/approve',
+      // The request id makes the server refuse an answer meant for a request that has since ended.
+      const body = scope ? {approved: ok, scope, request_id: rid} : {approved: ok, request_id: rid};
+      const r = await api('/v1/sessions/' + current + '/approve',
         {method:'POST', body: JSON.stringify(body)});
+      if(r && r.applied === false){ resolveApproval(p.call_id, 'recorded, but the run had already moved on'); return; }
       if(scope) resolveApproval(p.call_id, 'always allowed', 'ok', scope);
       else resolveApproval(p.call_id, ok ? 'approved' : 'rejected', ok ? 'ok' : 'no');
     }catch(e){
@@ -1510,12 +1512,18 @@ function approval(p){
       // elsewhere, or this is a replay of a finished session. Say so and
       // retire the card; re-enabling the buttons would invite a click that
       // can never succeed.
-      const stale = /no approval is pending|session not found/i.test(e.message);
+      const stale = /no approval is pending|no longer pending|already answered|session not found/i.test(e.message);
       if(stale){
         resolveApproval(p.call_id, 'no longer awaiting a decision');
         return;
       }
-      card.appendChild(node('note', e.message));
+      // Only the server running the session can check the answer against its request.
+      if(/running on another node/i.test(e.message)){
+        resolveApproval(p.call_id, 'not answered here · answer it on the server running this session');
+        return;
+      }
+      // Too many answers waiting is busy, not refused: the request may still wait.
+      card.appendChild(node('note', /too many answers/i.test(e.message) ? 'Busy, try again' : e.message));
       buttons.forEach(b => { b.disabled = false; });
     }
   };

@@ -24,6 +24,9 @@ class El {
   setAttribute(k,v){ this.attrs[k]=v; }
   get classList(){ const self=this; return {
     add:c=>{ if(!self.className.split(' ').includes(c)) self.className=(self.className+' '+c).trim(); },
+    remove:(...cs)=>{ self.className=self.className.split(' ').filter(x=>x && !cs.includes(x)).join(' '); },
+    replace:(a,b)=>{ const cls=self.className.split(' '); if(!cls.includes(a)) return false;
+      self.className=cls.map(x=>x===a?b:x).join(' '); return true; },
     toggle:(c,on)=>{ const has=self.className.split(' ').includes(c);
       if(on===undefined?!has:on){ if(!has) self.className=(self.className+' '+c).trim(); }
       else self.className=self.className.split(' ').filter(x=>x!==c).join(' '); },

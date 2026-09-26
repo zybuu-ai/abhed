@@ -101,6 +101,45 @@ const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); 
 	}
 }
 
+// A run that asks for approval is asked on the page whichever of the stream
+// and the POST answers first, and after the page opens on a waiting session.
+func TestIDEAsksForApprovalOnTheFirstTurn(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+globalThis.__focused = []; El.prototype.focus = function(){ __focused.push(this); };
+El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
+let streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '', sessionList = [{id:'s1', prompt:'x'}];
+const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map();
+const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
+const tx = () => __root, qbox = new El('div'), add = n => __root.appendChild(n);
+let cid = 0; const bubble = (cls, who, text) => { const m = new El('div'); m.className = 'msg ' + cls; m.textContent = text || ''; return m; };
+const userBubble = (text, state) => { const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = 'c' + (++cid); return b; };
+const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = () => {};
+const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
+const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {};
+const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
+const requestAnimationFrame = f => f();
+// api answers the session list from __sessions, after the next of __delays;
+// a route given to __defer answers when the test resolves it.
+let __sessions = [], __delays = []; const __pending = {};
+globalThis.__defer = route => { let resolve, reject; const p = new Promise((r, j) => { resolve = r; reject = j; }); __pending[route] = p; return {resolve, reject}; };
+globalThis.__posted = [];
+const api = async (url, opts) => {
+  const route = ((opts && opts.method) || 'GET') + ' ' + url;
+  if(opts && opts.body) __posted.push({route, body: JSON.parse(opts.body)});
+  if(__pending[route]){ const p = __pending[route]; delete __pending[route]; return p; }
+  if(url === '/v1/sessions'){ const snap = __sessions, d = __delays.shift() || 0; if(d) await new Promise(r => setTimeout(r, d)); return snap; }
+  return [];
+};
+`
+	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_chat_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's approval prompt failed:\n%s", out)
+	}
+}
+
 func TestIDEIsServedUnderTheConsolesPolicy(t *testing.T) {
 	rec := httptest.NewRecorder()
 	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/ide", nil))
