@@ -97,12 +97,17 @@ says so, since the server would refuse the fresh turn. The page asks
 `/v1/health` first. Behind a balancer that check can reach a node other than
 the one running the session; the message is then taken out of the queue, the
 send gets `503`, and the page says the message is no longer queued and puts
-its text back in the message box if the box is empty.
+its text back in the message box if the box is empty. A message still queued
+when the shutdown ends the run is recorded as `message.dropped`; its bubble
+then reads *Not delivered*, with the reason, and its text goes back in the
+message box if the box is empty.
 
 If the connection drops, the page reconnects and asks only for what it has
 not drawn yet, rather than replaying the session. The status bar shows
 *reconnecting…* while it finds out whether the server is there, and
-*offline* until it answers again.
+*offline* until it answers again. A page with nothing running asks the
+server every few seconds while it is visible, so it shows *offline* soon
+after the server stops, not only once you act.
 
 | Key | In the composer |
 |---|---|
@@ -321,7 +326,8 @@ next (variables, `export` and aliases are lost; the folder moves only as
 follows). Only a line that is just
 `cd <folder>`, with one folder and nothing else, moves the terminal: the
 folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
-`'web app'`, `$'web app'`), and a bare `cd` or `cd ~` goes to the workspace
+`'web app'`, `$'web app'`, and `price\ \$5` for a `$` in the name, as Tab
+writes it), and the prompt shows the new folder at once. A bare `cd` or `cd ~` goes to the workspace
 root. A line that is just `cd` and a folder that is missing, outside the
 workspace, or cannot be read with confidence (a variable, a glob, `cd -`)
 leaves the terminal where it was and says so. So does any other line with

@@ -121,6 +121,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
 .dot.running{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}
+.dot.done.error,.dot.done.max_turns,.dot.done.max_budget,.dot.done.retry_exhausted,.dot.done.policy_denied,.dot.done.stalled,.dot.done.deadline{background:var(--del)}
 .card{margin:6px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
 .card .t{display:flex;gap:8px;align-items:baseline}
 .card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
@@ -844,13 +845,18 @@ const openDiff = path => openTab(newTab('diff', path));
 // is opened again when its parent is redrawn, so a refresh keeps the tree's shape.
 const dirs = new Map(), expanded = new Set();
 let treeSel = null;
+// A redraw that would remove an open name input waits until it ends: removing
+// the input blurs it, and its blur handler would then race the removal.
+const heldLoads = new Map();
+function runHeld(){ const held = [...heldLoads.values()]; heldLoads.clear(); held.forEach(f => f()); }
 const parentOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
 const joinPath = (dir, name) => dir ? dir + '/' + name : name;
 async function loadTree(path, into, depth){
   if(!current){ clear(into); into.appendChild(el('div', 'empty', 'Start or open a session to browse its workspace.')); return; }
   dirs.set(path, {into, depth});
   let res; try{ res = await api('/v1/sessions/' + current + '/tree?path=' + encodeURIComponent(path)); }
-  catch(e){ clear(into); into.appendChild(el('div', 'empty', e.message)); return; }
+  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', e.message)); return; }
+  if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; }
   clear(into);
   for(const e of res.entries){
     const row = el('button', 'row'); row.type = 'button'; row.style.paddingLeft = (8 + depth * 14) + 'px'; row.dataset.path = e.path;
@@ -902,7 +908,8 @@ function nameInput(anchor, before, depth, initial, done, onEnd){
   row.appendChild(el('span', 'tw codicon')); row.appendChild(input);
   if(before) anchor.insertBefore(row, before); else anchor.appendChild(row);
   let over = false;
-  const end = ok => { if(over) return; over = true; const v = input.value.trim(); row.remove(); if(onEnd) onEnd(); if(ok && v && v !== initial) done(v); };
+  const end = ok => { if(over) return; over = true; const v = input.value.trim(); if(row.parentNode) row.remove(); if(onEnd) onEnd();
+    if(ok && v && v !== initial) done(v); runHeld(); };
   input.addEventListener('keydown', ev => { ev.stopPropagation(); if(ev.key === 'Enter'){ ev.preventDefault(); end(true); } else if(ev.key === 'Escape'){ ev.preventDefault(); end(false); } });
   input.addEventListener('blur', () => end(true));
   input.focus(); const dot = initial.lastIndexOf('.'); input.setSelectionRange(0, dot > 0 ? dot : initial.length);
@@ -1125,7 +1132,7 @@ async function loadSessions(){
   if(!sessionList.length){ box.appendChild(el('div', 'empty', 'No sessions yet. Ask the agent for something on the right.')); return; }
   for(const s of sessionList){
     const row = el('button', 'row'); row.type = 'button'; row.setAttribute('aria-current', String(s.id === current));
-    row.appendChild(el('span', 'dot ' + s.state)); row.appendChild(el('span', 'name', sessionLabel(s)));
+    row.appendChild(el('span', 'dot ' + s.state + (s.reason ? ' ' + s.reason : ''))); row.appendChild(el('span', 'name', sessionLabel(s)));
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
   }
 }
@@ -1223,6 +1230,12 @@ async function connProbe(){
   // A 503 is an account store that cannot answer, not a sign-in that ended.
   if(signedIn && !signInGone) try{ const w = await fetch('/v1/whoami', {credentials:'same-origin', cache:'no-store'}); if(w.ok && !(await w.json()).authenticated) signInEnded(); }catch{}
 }
+// An idle page has no open stream to notice the server leave, so a visible
+// one that believes it is connected asks now and then.
+function connIdle(){
+  if(!document.hidden && !connTimer && !signInGone && connState === true && !(es && es.readyState === 1)) connLost(false);
+}
+setInterval(connIdle, 5000);
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
@@ -1392,9 +1405,9 @@ function claim(p){
   b.classList.remove('queued', 'pending'); drawQueued(b);
   return b;
 }
-function failed(b, msg){
+function failed(b, msg, head){
   forget(b); b.classList.remove('queued', 'pending'); b.classList.add('failed');
-  b.qnote = 'Not sent — ' + msg; drawQueued(b); if(b.parentNode === qbox) add(b);
+  b.qnote = (head || 'Not sent') + ' — ' + msg; drawQueued(b); if(b.parentNode === qbox) add(b);
   if(!$('q').value) $('q').value = b.text;
 }
 async function unqueue(b){
@@ -1496,9 +1509,16 @@ function render(ev){
     if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
+  case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  // A queued message the run ended without reading is not coming: say so, and
+  // put its text back in the box.
+  case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
+    if(b && !b.delivered){ const kept = !$('q').value || $('q').value === b.text;
+      failed(b, (p.reason || 'the run ended first') + (kept ? '; its text is back in the message box' : ''), 'Not delivered'); }
+    break; }
   case 'session.ended': { endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; asks.clear(); setLive(false);
     for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
     add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
@@ -1897,7 +1917,8 @@ async function runLine(t, cmd, answer){
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   // A cd that was not followed says so, rather than leaving the next line to run elsewhere.
   if(r.note) t.term.write('\x1b[33m' + r.note.replace(/\p{Cc}/gu, '?') + '\x1b[0m');
-  if(!r.id || isPlainCd(cmd)){ nextLine(t); return; }
+  // The server says when a line was a cd it followed without a terminal.
+  if(!r.id || r.cd){ nextLine(t); return; }
   attach(t, r.id);
 }
 // Only a typed y, then Enter, runs a command that always confirms; anything else cancels it.
@@ -1918,7 +1939,6 @@ function confirmData(t, d){
     t.line += ch; t.term.write(ch);
   }
 }
-const isPlainCd = c => /^cd([ \t]|$)/.test(c.trim()) && !/[&|;`$(]/.test(c.replaceAll("$'", "'"));
 
 // The agent's commands, with their output, in a tab of their own.
 function logTerminal(cmd, p, who){

@@ -112,7 +112,9 @@ type ptyStartResponse struct {
 	Confirm string `json:"confirm,omitempty"`
 	// Note says why a cd line left the directory where it was.
 	Note string `json:"note,omitempty"`
-	Cwd  string `json:"cwd"`
+	// Cd is set when the line was a plain cd, answered here with no terminal.
+	Cd  bool   `json:"cd,omitempty"`
+	Cwd string `json:"cwd"`
 	// Interactive is set when ID is a shell. Lines, when a shell was asked
 	// for, says why the terminal judges each line instead.
 	Interactive bool   `json:"interactive,omitempty"`
@@ -195,7 +197,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 			res.Content += "\n" + note
 		}
 		_ = live.Loop.ManualObserve(id, "bash", res, 0)
-		WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Cwd: sess.Rel(sess.Cwd), Note: note})
+		WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Cwd: sess.Rel(sess.Cwd), Note: note, Cd: true})
 		return
 	}
 
@@ -345,10 +347,11 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 }
 
 // isPlainCd reports a command that only changes directory. A $ is let
-// through only as $'...', a quote the cd tracking reads.
+// through only quoted or escaped, as in $'...' or \$, which the cd tracking reads.
 func isPlainCd(command string) bool {
 	c := strings.TrimSpace(command)
-	return c == "cd" || tools.IsCdLine(c) && !strings.ContainsAny(strings.ReplaceAll(c, "$'", "'"), "&|;`$(")
+	return c == "cd" || tools.IsCdWord(c) ||
+		tools.IsCdLine(c) && !strings.ContainsAny(strings.ReplaceAll(c, "$'", "'"), "&|;`$(")
 }
 
 // pump copies terminal output to every reader and to the record.

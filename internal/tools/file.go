@@ -178,7 +178,7 @@ func (Write) Name() string  { return "write" }
 func (Write) Mutates() bool { return true }
 
 func (Write) Description() string {
-	return "Write content to a file, creating it or overwriting it entirely. For modifying part of an existing file, use `edit` instead — it is safer and cheaper."
+	return "Write content to a file, creating it (and any missing folders) or overwriting it entirely. For modifying part of an existing file, use `edit` instead — it is safer and cheaper."
 }
 
 func (Write) Schema() json.RawMessage {
@@ -219,12 +219,6 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		}
 	}
 
-	if dir := filepath.Dir(path); dir != "" {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			return errf("Parent directory does not exist: %s. Create it with bash `mkdir -p` first.", dir)
-		}
-	}
-
 	mode := os.FileMode(0o644)
 	var before []byte
 	if existed {
@@ -242,8 +236,16 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("%s", note)
 	}
 
+	// A new file's missing folders are made here, under the same root and
+	// state guards as the write, so a new folder needs no shell approval.
+	if !existed {
+		if err := s.mkdirParents(path); err != nil {
+			return errf("Cannot create the folder for %s: %v", a.Path, err)
+		}
+	}
 	s.recordChange(path)
 	if err := s.atomicWrite(path, []byte(a.Content), mode); err != nil {
+		s.pruneMade(path)
 		return errf("Write failed for %s: %v", a.Path, err)
 	}
 	s.MarkRead(path, a.Content)
@@ -257,6 +259,45 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		lines++
 	}
 	return ok("%s %s (%d bytes, %d lines).%s", verb, s.Rel(path), len(a.Content), lines, suffix(note))
+}
+
+// mkdirParents creates the folders path needs, inside the root holding it;
+// see Confined.MkdirAll.
+func (s *Session) mkdirParents(path string) error {
+	c, at, err := s.confine(path)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	made, err := c.MakeFolders(filepath.Dir(at), 0o755)
+	s.mu.Lock()
+	if s.made == nil {
+		s.made = map[string]bool{}
+	}
+	for _, d := range made {
+		s.made[d] = true
+	}
+	s.mu.Unlock()
+	if err != nil {
+		s.pruneMade(path)
+	}
+	return err
+}
+
+// pruneMade removes the folders the write tool made for path, innermost
+// first, while they are empty: after a failed write, or /undo of a creation.
+func (s *Session) pruneMade(path string) {
+	for dir := filepath.Dir(RealPath(path)); ; dir = filepath.Dir(dir) {
+		s.mu.Lock()
+		mine := s.made[dir]
+		s.mu.Unlock()
+		if !mine || s.remove(dir) != nil {
+			return
+		}
+		s.mu.Lock()
+		delete(s.made, dir)
+		s.mu.Unlock()
+	}
 }
 
 // atomicWrite writes via a temp file in the same directory then renames, so a
@@ -296,6 +337,15 @@ func (s *Session) RestoreFile(path string, data []byte) error {
 // RemoveFile removes a file inside the root that holds it, for /undo of a
 // creation; a link swapped in cannot send the removal elsewhere.
 func (s *Session) RemoveFile(path string) error {
+	if err := s.remove(path); err != nil {
+		return err
+	}
+	s.pruneMade(path)
+	return nil
+}
+
+// remove removes one file, or an empty folder, inside the root that holds it.
+func (s *Session) remove(path string) error {
 	c, at, err := s.confine(path)
 	if err != nil {
 		return err

@@ -26,4 +26,9 @@ render(ev(9, 'observation', 'tool', {call_id:'a1', tool:'bash', content:'a.txt',
 check('the agent\'s call is in the chat', __added.length === 1 && text().includes('ls') && text().includes('12ms'));
 check('only the agent\'s command goes to its terminal', __agentTerm.length === 1 && __agentTerm[0] === 'ls');
 
+// A fork marker draws a divider naming the step the conversation went on from.
+__added.length = 0;
+render(ev(20, 'conversation.forked', 'user', {through_seq:7}));
+check('a fork marker is drawn', text().includes('forked at step 7'));
+
 if(!ok) process.exit(1);

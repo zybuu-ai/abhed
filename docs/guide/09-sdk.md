@@ -35,7 +35,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `New` | build from options, a config directory, or both |
 | `Run`, `Continue` | send a prompt; `Continue` keeps the conversation |
 | `Steer` | redirect a run in progress, from another goroutine |
-| `Fork` | rebuild the conversation up to a sequence number |
+| `Fork` | rebuild the conversation up to a sequence number (0 for all of it), and record a `conversation.forked` event so later rebuilds leave out what came after; a step an earlier fork abandoned, or past the end, is refused |
 | `Events` | everything recorded; the stream is the session |
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |

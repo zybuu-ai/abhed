@@ -101,6 +101,42 @@ const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); 
 	}
 }
 
+// New file in a just-opened folder keeps its name input when the folder's
+// listing arrives after it; the removal used to race the input's blur.
+func TestIDENewFileSurvivesTheFolderLoading(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+globalThis.__errors = []; globalThis.__puts = [];
+process.on('unhandledRejection', e => __errors.push(String(e)));
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.insertBefore = function(n, ref){ const i = this.childNodes.indexOf(ref); n.parentNode = this; if(i < 0) this.childNodes.push(n); else this.childNodes.splice(i, 0, n); return n; };
+El.prototype.focus = function(){ globalThis.__focused = this; };
+El.prototype.setSelectionRange = () => {};
+// Removing a subtree that holds the focused input blurs it first, as a browser
+// does; a blur handler that removed the node makes the removal fail.
+const blurInside = n => { const f = globalThis.__focused; let x = f; while(x && x !== n) x = x.parentNode;
+  if(x){ globalThis.__focused = null; if(f.on && f.on.blur) f.on.blur(); } };
+El.prototype.removeChild = function(c){ blurInside(c); const i = this.childNodes.indexOf(c);
+  if(i < 0) throw new Error("Failed to execute 'removeChild': the node is no longer a child (blur handler)"); this.childNodes.splice(i, 1); c.parentNode = null; return c; };
+El.prototype.remove = function(){ if(this.parentNode) this.parentNode.removeChild(this); };
+let current = 's1', treeSel = null;
+const known = new Set(), isMac = false;
+const $ = () => __root, setView = () => {}, selectRow = () => {}, treeMenu = () => {}, renameEntry = () => {}, deleteEntry = () => {};
+const openFile = () => {}, changesSoon = () => {}, treeError = e => __errors.push(e.message);
+const listings = {'': [{name:'src', path:'src', dir:true}], 'src': [{name:'main.go', path:'src/main.go'}]};
+const api = async (url, opts) => {
+  if(opts && opts.method === 'PUT'){ __puts.push(JSON.parse(opts.body).path); return {}; }
+  const path = decodeURIComponent(url.split('path=')[1] || '');
+  await new Promise(r => setTimeout(r, path ? 30 : 1)); // the folder's own listing is slow
+  return {entries: listings[path] || []};
+};
+`
+	if out, err := runConsoleCases(t, "ide-tree", harness, "ide_tree_cases.mjs"); err != nil {
+		t.Fatalf("the explorer lost its name input:\n%s", out)
+	}
+}
+
 // A run that asks for approval is asked on the page whichever of the stream
 // and the POST answers first, and after the page opens on a waiting session.
 func TestIDEAsksForApprovalOnTheFirstTurn(t *testing.T) {
@@ -170,6 +206,9 @@ EventSource.CLOSED = 2;
 `
 	if out, err := runConsoleCases(t, "ide-conn", harness, "ide_conn_cases.mjs"); err != nil {
 		t.Fatalf("the connection indicator failed:\n%s", out)
+	}
+	if !strings.Contains(ideHTML, "\nsetInterval(connIdle, ") {
+		t.Error("nothing asks after the server while the page is idle")
 	}
 }
 

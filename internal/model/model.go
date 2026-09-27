@@ -180,6 +180,14 @@ type Chunk struct {
 	StopReason string
 }
 
+// stoppedDone ends a stream that stopped part way with the usage it reported
+// so far, when it reported any, so an interrupted call is still counted.
+func stoppedDone(out chan<- Chunk, u Usage) {
+	if u.InputTokens > 0 || u.OutputTokens > 0 {
+		out <- Chunk{Type: ChunkDone, Usage: &u}
+	}
+}
+
 type Usage struct {
 	InputTokens       int
 	OutputTokens      int

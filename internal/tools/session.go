@@ -49,6 +49,7 @@ type Session struct {
 	mu     sync.Mutex
 	reads  map[string]string // abs path -> content hash at time of read
 	frozen *StateSet         // set by FreezeState
+	made   map[string]bool   // folders the write tool made, for undo to remove
 }
 
 // snapshot captures a file's current content before it is modified. Called by

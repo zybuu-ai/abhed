@@ -19,6 +19,15 @@ func TestUnknownOutputFormatIsRefused(t *testing.T) {
 	}
 }
 
+// An unknown -mode is a bad invocation like any other: exit 2, with the value
+// and the valid ones named.
+func TestUnknownModeIsRefused(t *testing.T) {
+	out, code := stderrOf(t, []string{"-C", t.TempDir(), "-p", "hi", "-mode", "yolo"})
+	if code != 2 || !strings.Contains(out, `"yolo"`) || !strings.Contains(out, "accept-edits") {
+		t.Errorf("exit %d, stderr:\n%s", code, out)
+	}
+}
+
 // A word that is not a command is an error, not a session opened as if it
 // had run; "version" is a command.
 func TestUnknownCommandIsRefused(t *testing.T) {

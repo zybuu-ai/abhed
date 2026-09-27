@@ -1,0 +1,298 @@
+package app
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+)
+
+// TestConversationHelper is the interactive CLI the conversation tests drive
+// over a pipe, in the workspace they name.
+func TestConversationHelper(t *testing.T) {
+	ws := os.Getenv("ABHED_CONV_WS")
+	if ws == "" {
+		t.Skip("run by the conversation tests")
+	}
+	os.Exit(Main([]string{"-C", ws}))
+}
+
+// syncBuffer is output written by one goroutine and read by the test.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// cliSession is an interactive abhed on a pipe, talking to a model that
+// answers every request with text and keeps each request body.
+type cliSession struct {
+	t      *testing.T
+	ws     string
+	stdin  io.WriteCloser
+	out    *syncBuffer
+	cmd    *exec.Cmd
+	mu     sync.Mutex
+	bodies []string
+	tasks  int
+}
+
+func startCLI(t *testing.T) *cliSession {
+	t.Helper()
+	c := &cliSession{t: t, out: &syncBuffer{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		c.mu.Lock()
+		c.bodies = append(c.bodies, string(body))
+		n := len(c.bodies)
+		c.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"noted %d\"}}]}\n\n", n)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	ws := t.TempDir()
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	c.ws = ws
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.cmd = exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
+	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+t.TempDir(), "USERPROFILE="+t.TempDir())
+	stdin, err := c.cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.stdin = stdin
+	c.cmd.Stdout, c.cmd.Stderr = c.out, c.out
+	if err := c.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = c.stdin.Close()
+		done := make(chan struct{})
+		go func() { _ = c.cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = c.cmd.Process.Kill() // the helper this test started
+			<-done
+		}
+	})
+	return c
+}
+
+// task sends a prompt, waits for its turn to finish, and returns the
+// conversation the model was sent.
+func (c *cliSession) task(prompt string) string {
+	c.t.Helper()
+	c.tasks++
+	fmt.Fprintln(c.stdin, prompt)
+	c.waitFor(func(out string) bool { return strings.Count(out, " in / ") >= c.tasks }, "the task to finish")
+	c.mu.Lock()
+	body := c.bodies[len(c.bodies)-1]
+	c.mu.Unlock()
+	return conversationOf(c.t, body)
+}
+
+// conversationOf is a request's messages after the system prompt, as JSON.
+func conversationOf(t *testing.T, body string) string {
+	t.Helper()
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil || len(req.Messages) == 0 {
+		t.Fatalf("not a chat request: %v", err)
+	}
+	out, _ := json.Marshal(req.Messages[1:])
+	return string(out)
+}
+
+// command sends a slash command and waits for text it prints.
+func (c *cliSession) command(line, want string) {
+	c.t.Helper()
+	before := strings.Count(c.out.String(), want)
+	fmt.Fprintln(c.stdin, line)
+	c.waitFor(func(out string) bool { return strings.Count(out, want) > before }, want)
+}
+
+func (c *cliSession) waitFor(ok func(string) bool, what string) {
+	c.t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); !ok(c.out.String()); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			c.t.Fatalf("waited for %s:\n%s", what, c.out.String())
+		}
+	}
+}
+
+// export writes the conversation's record and returns it.
+func (c *cliSession) export() []agent.Event {
+	c.t.Helper()
+	path := filepath.Join(c.t.TempDir(), "record.json")
+	c.command("/export "+path, "wrote ")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	var events []agent.Event
+	if err := json.Unmarshal(raw, &events); err != nil {
+		c.t.Fatal(err)
+	}
+	return events
+}
+
+// checkRecord fails unless events are one session with a contiguous sequence
+// and a session.ended for each of its tasks.
+func checkRecord(t *testing.T, events []agent.Event, tasks int) string {
+	t.Helper()
+	ended := 0
+	for i, ev := range events {
+		if ev.SessionID != events[0].SessionID {
+			t.Fatalf("event %d is in session %s, not %s", ev.Seq, ev.SessionID, events[0].SessionID)
+		}
+		if ev.Seq != int64(i+1) {
+			t.Fatalf("event %d has seq %d", i+1, ev.Seq)
+		}
+		if ev.Type == agent.EvSessionEnded {
+			ended++
+		}
+	}
+	if ended != tasks {
+		t.Fatalf("%d session.ended for %d tasks", ended, tasks)
+	}
+	return events[0].SessionID
+}
+
+// endOf is the seq of the nth session.ended in events.
+func endOf(t *testing.T, events []agent.Event, n int) int64 {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Type == agent.EvSessionEnded {
+			if n--; n == 0 {
+				return ev.Seq
+			}
+		}
+	}
+	t.Fatal("no such task end in the record")
+	return 0
+}
+
+// A later task sees what was said in an earlier one, and the record is one
+// session with a terminal event per task.
+func TestCLIConversationCarriesAcrossTasks(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	if body := c.task("What is the codeword?"); !strings.Contains(body, "ZEBRA-41") || !strings.Contains(body, "noted 1") {
+		t.Fatalf("the second task's request has no earlier turn:\n%s", body)
+	}
+	checkRecord(t, c.export(), 2)
+}
+
+// /fork N rebuilds the conversation to step N, and the next task continues
+// from there, without what came after it.
+func TestCLIForkCarriesIntoNextTask(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	c.task("Also remember OSPREY-58.")
+	events := c.export()
+	checkRecord(t, events, 2)
+	c.command(fmt.Sprintf("/fork %d", endOf(t, events, 1)), "forked at step")
+	body := c.task("What is the codeword?")
+	if !strings.Contains(body, "ZEBRA-41") {
+		t.Fatalf("the forked conversation did not reach the model:\n%s", body)
+	}
+	if strings.Contains(body, "OSPREY-58") {
+		t.Fatalf("the turn after the fork point is still in the conversation:\n%s", body)
+	}
+	checkRecord(t, c.export(), 3)
+}
+
+// /resume makes a recorded session the conversation again: the next task
+// sees it, and its events extend that session's sequence.
+func TestCLIResumeContinuesRecordedConversation(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	first := checkRecord(t, c.export(), 1)
+	c.command("/clear", "context cleared")
+	if body := c.task("Hello."); strings.Contains(body, "ZEBRA-41") {
+		t.Fatalf("/clear kept the conversation:\n%s", body)
+	}
+	c.command("/resume "+first, "resumed")
+	if body := c.task("What is the codeword?"); !strings.Contains(body, "ZEBRA-41") {
+		t.Fatalf("the resumed conversation did not reach the model:\n%s", body)
+	}
+	if id := checkRecord(t, c.export(), 2); id != first {
+		t.Fatalf("the resumed task was recorded in %s, not %s", id, first)
+	}
+}
+
+// lastEnd is the seq of the last session.ended in events.
+func lastEnd(events []agent.Event) int64 {
+	var seq int64
+	for _, ev := range events {
+		if ev.Type == agent.EvSessionEnded {
+			seq = ev.Seq
+		}
+	}
+	return seq
+}
+
+// A second /fork, at a step after the first, keeps the first fork's choice:
+// the branch it abandoned does not come back.
+func TestCLIForkTwiceKeepsTheBranchAbandoned(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	c.task("Also remember OSPREY-58.")
+	c.command(fmt.Sprintf("/fork %d", endOf(t, c.export(), 1)), "forked at step")
+	c.task("Also remember KESTREL-7.")
+	c.command(fmt.Sprintf("/fork %d", lastEnd(c.export())), "forked at step")
+	body := c.task("What are the codewords?")
+	if !strings.Contains(body, "ZEBRA-41") || !strings.Contains(body, "KESTREL-7") || strings.Contains(body, "OSPREY-58") {
+		t.Fatalf("the second fork did not rebuild the kept branch alone:\n%s", body)
+	}
+}
+
+// /resume after a fork rebuilds the conversation as it stood, without the
+// branch the fork abandoned.
+func TestCLIResumeAfterForkKeepsTheBranchAbandoned(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	c.task("Also remember OSPREY-58.")
+	events := c.export()
+	c.command(fmt.Sprintf("/fork %d", endOf(t, events, 1)), "forked at step")
+	c.task("Say ok.")
+	c.command("/clear", "context cleared")
+	c.command("/resume "+events[0].SessionID, "resumed")
+	body := c.task("What are the codewords?")
+	if !strings.Contains(body, "ZEBRA-41") || strings.Contains(body, "OSPREY-58") {
+		t.Fatalf("the resumed conversation holds the abandoned branch:\n%s", body)
+	}
+}

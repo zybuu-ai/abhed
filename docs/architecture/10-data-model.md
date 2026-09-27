@@ -39,11 +39,13 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `action.requested` | tool, args | agent |
 | `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
+| `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |
 | `subagent.spawned` / `.returned` | prompt, summary, tokens | orchestrator |
 | `compaction.started` / `.completed` | before/after tokens, summary | context mgr |
 | `plan.updated` / `todo.updated` | items | agent |
 | `session.ended` | terminal reason, totals | system |
+| `conversation.forked` | `through_seq`; the conversation goes on from that step, and the steps between it and the marker are abandoned: kept in the record for audit, left out of every rebuild (`/fork`, `/tree`, `/resume`, a continued session) | user |
 
 **Who settled a call** is in `by` on every `action.approved` and `action.denied`:
 

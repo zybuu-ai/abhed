@@ -8,6 +8,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- The interactive CLI keeps one conversation, and one session record, across
+  the tasks you type, as `/model`, `/fork` and the docs already said: a later
+  task sees what was said before it. The turn limit now counts the whole
+  conversation, and the CLI says so when a task hits it; `/clear` starts a
+  new conversation and a new session, and `/cost`, `/diff` and `/undo` start
+  over with it.
+  `/resume <id>` now continues the session's conversation, where it used to
+  only replay it, and `/export`, `/tree` and `/hawkeye` cover every task in
+  the session, not only the last. `/fork`, in the CLI and the SDK's
+  `Agent.Fork`, records a `conversation.forked` event, so a later fork or
+  resume does not bring back the branch it abandoned. For an SDK embedder
+  this means `Agent.Fork` writes that event into their store, so `Events()`
+  includes it, and it refuses a step an earlier fork abandoned or one past
+  the end; `Fork(0)` still keeps the whole conversation.
+- An unknown `-mode` exits 2, like any other bad invocation; it exited 1.
 - On the process tier a command or workbench shell can start at most
   `sandbox.max_procs` (512 by default) more processes than your user already
   runs; a build that needs more, such as a very wide `make -j`, fails to
@@ -197,6 +212,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Two additions to the record. `conversation.forked`, with `through_seq`,
+  marks a fork: the steps between that step and the marker are kept for
+  audit and left out of every rebuild. An `observation` with `not_run` set
+  answers an approved call its turn ended before running; HawkEYE does not
+  count it as run.
+- `GET /v1/sessions` gives a `done` session a `reason`: how its last run
+  ended, as recorded (`completed`, `user_interrupt`, `shutdown`, `deadline`,
+  `stalled` and so on). `state` is unchanged.
 - `config.Config.SetKeys`, the settings any configuration file set, as
   dotted paths, and `Config.Sets` to ask about one, whatever value the file
   gave it.
@@ -249,6 +272,54 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A turn with several tool calls, stopped at one of them, left the calls
+  after it with no result, so the conversation's next request was refused
+  by the provider. A conversation rebuilt from the record (a continued
+  session, `/resume`, `/fork`) had the same gap for any refused call, and
+  a fork placed after a turn with a refused call dropped that turn and all
+  that followed it. Every call now gets an answer, live and when rebuilt:
+  a refused call says so with its reason, one the turn ended before says it
+  did not run, and one with no recorded result says it may have run. A
+  rebuild also keeps each model turn apart and its results in call order.
+- A model call stopped part way recorded 0 tokens in and out, however long
+  it had streamed. It now records the usage the provider had reported by
+  then, such as the prompt tokens Anthropic sends when a reply starts. Most
+  OpenAI-compatible servers report usage only when a reply ends, so a call
+  stopped there still records none.
+- New file or New folder with a collapsed folder selected could lose its
+  name input, with a page error, when the folder's listing arrived after
+  the input was shown. A redraw of the tree now waits while a name is being
+  typed.
+- The workbench ignored `message.dropped`: after a shutdown dropped a queued
+  message, its bubble still said "still queued for the next step" and
+  offered Send now and Cancel. It now reads "Not delivered", with the
+  reason, and the text goes back in the message box.
+- The console's shutdown, deadline and stalled pills could never appear:
+  the session list said only running, done, idle or waiting for approval,
+  so an interrupted session read "done" and a drained one stayed "running".
+  The pill now shows how each session's last run ended, from the list's new
+  `reason`, and the open session's pill follows its record at once.
+- A workbench page with nothing running kept showing "● connected" after
+  the server stopped, until the person acted. A visible idle page now asks
+  the server every few seconds and shows offline soon after it goes.
+- In the workbench's line-by-line terminal, a `cd` into a folder with a `$`
+  in its name, written as Tab escapes it (`cd price\ \$5\ plan/`), ran as a
+  command: the next line ran in the folder while the prompt still showed the
+  old one. It is now followed at once, and the prompt moves with it.
+- The `write` tool refused a new file whose folder did not exist yet, so in
+  `accept-edits` and `auto` mode a new file in a new folder needed a shell
+  approval for `mkdir`, and a headless run could not make it at all. It now
+  creates the missing folders inside the workspace, one at a time under the
+  same guards as the write: none may be Abhed's state or lead out of the
+  workspace. A failed write takes the folders back, and `/undo` of the file
+  removes them while they are empty.
+- `abhed hawkeye` refused the event stream `abhed -p -output-format json`
+  writes, one event per line, as "not an exported events file". It reads
+  that as well as an `/export` array.
+- A stop signal (SIGTERM or a hang-up) in the first second or two of
+  `abhed -p`, while it was still starting up, ended it by the signal's
+  default action, exiting 143 or 129 with no output. It now ends the run as
+  an interrupt and exits 130.
 - The process tier never applied `sandbox.max_procs` or
   `sandbox.max_memory_mb`, while the security checklist marked resource
   exhaustion done on the strength of a test that ran a busy loop, not a fork

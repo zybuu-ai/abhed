@@ -109,8 +109,9 @@ can get wrong.
 ```
 
 **Semantics**
-- Creates parent directories only if the operator enables it; otherwise error (surprise
-  directory creation is a common agent failure).
+- Creates a new file's missing parent directories, inside the workspace only: each is
+  made in its parent opened under the workspace root, and none may be, or lead into,
+  Abhed's state or out of the workspace.
 - **Overwriting an existing file requires a prior `read`** of it in this session. Without
   it: error, don't ask. This prevents the model from destroying content it never saw.
 - Writes atomically: temp file in the same directory, then rename. A partial write on
@@ -122,7 +123,7 @@ can get wrong.
 | Condition | Message |
 |---|---|
 | Overwrite without read | `Refusing to overwrite {path} — it exists but has not been read this session. Call read({path}) first to see what you would replace.` |
-| Parent missing | `Parent directory does not exist: {dir}. Create it with bash mkdir -p first.` |
+| Parent refused | `Cannot create the folder for {path}: {reason}` |
 | Read-only FS | `Filesystem is read-only at {path}.` |
 | Disk full | `Write failed: no space left on device.` |
 

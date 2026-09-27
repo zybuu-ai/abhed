@@ -311,6 +311,12 @@ func (r *Renderer) Event(ev agent.Event) {
 			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(m["reason"]))
 		}
 
+	case agent.EvForked:
+		var f agent.Forked
+		if json.Unmarshal(ev.Payload, &f) == nil && !r.quiet {
+			fmt.Fprintf(r.w, "\n%s\n", r.s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq)))
+		}
+
 	case agent.EvSessionEnded:
 		r.StopThinking()
 		var e agent.SessionEnded

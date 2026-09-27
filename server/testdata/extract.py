@@ -28,20 +28,25 @@ sets = {
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){'],
+    'state': ['function shownState(s){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
     # From ide.html: sending, the run's live state and the approval prompt.
     'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
-          'function claim(p){','function failed(b, msg){','async function unqueue(b){','async function sendNow(b){','async function send(){',
+          'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){'],
-    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function signInEnded(){',
+    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(){',
           'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
+    # From ide.html: the explorer's tree and its name input.
+    'ide-tree': ['const el = (tag, cls, text) => {','const clear = ','const parentOf = ','const joinPath = ','const dirs = ','const heldLoads = ',
+          'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
+          'async function newEntry(folder){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
     'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',
-          'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','function confirmData(t, d){','const isPlainCd = '],
+          'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','function confirmData(t, d){'],
 }
 seen=set(); out=[]
 for fn in sets[which]:

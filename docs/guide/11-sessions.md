@@ -41,7 +41,29 @@ is not a boundary.
 ```
 /tree            the session's steps
 /fork 12         rebuild the conversation up to step 12 and continue from there
+/resume <id>     replay a recorded session and continue its conversation
 ```
+
+In the interactive CLI, every task you type continues one conversation, and
+the session's record holds all of them: one sequence, with a `session.ended`
+after each task. The turn limit counts the whole conversation. `/clear`
+starts a new conversation and a new session, and `/resume` switches to
+another; either way `/cost`, `/diff` and `/undo` start over. After `/fork` or `/resume`, the
+next task continues from the rebuilt conversation, and its events extend
+that session's record. A fork is recorded as a `conversation.forked` event:
+the steps it abandoned stay in the record for audit, but no later `/fork`,
+`/tree` or `/resume` brings them back. `/resume` continues only a session that is not
+running elsewhere, and on Postgres only one recorded as yours, in your
+tenant; another user's session is not replayed either. On Postgres each
+task's end releases the session, so the CLI claims it again before the next
+task, `/fork` or `/compact` writes to it. If another process has continued it
+meanwhile, the conversation is rebuilt from the record first; if another
+process is running it now, the task is refused. `/fork` and `/compact`
+record the session's last end again after writing, with the same reason and
+totals, so the session is left as they found it. Leaving a resumed session
+unused, by `/clear`, another `/resume` or quitting, leaves it as it was.
+During a store outage, a failed task can leave the session claimed until the
+store answers again.
 
 A wrong turn three steps back should cost three steps, not the session.
 Everything before it was still right, and re-establishing it means paying for

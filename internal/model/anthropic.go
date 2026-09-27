@@ -500,11 +500,13 @@ func (c *Anthropic) stream(ctx context.Context, resp *http.Response, out chan<- 
 		}
 
 		if ctx.Err() != nil {
+			stoppedDone(out, usage)
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
 		out <- Chunk{Type: ChunkError, Err: fmt.Errorf("stream read failed: %w", err)}
+		stoppedDone(out, usage)
 		return
 	}
 	// The stream ended without message_stop: report what was counted rather

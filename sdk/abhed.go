@@ -365,12 +365,8 @@ func (a *Agent) Usage() Usage { return a.loop.Usage() }
 // Fork rebuilds the conversation up to a sequence number and continues from
 // there, discarding what came after.
 func (a *Agent) Fork(throughSeq int64) error {
-	msgs, err := agent.Fork(a.Events(), throughSeq)
-	if err != nil {
-		return err
-	}
-	a.loop.Restore(msgs)
-	return nil
+	_, err := a.loop.ForkTo(a.Events(), throughSeq)
+	return err
 }
 
 // ExportHTML renders the session as a self-contained page.

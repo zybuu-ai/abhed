@@ -245,41 +245,55 @@ func (c *Confined) Remove(path string) error {
 	return d.Remove(filepath.Base(rel))
 }
 
+// afterMkdir lets a test swap a folder between its making and the next step.
+var afterMkdir = func(string) {}
+
 // MkdirAll creates a folder and its parents under the root one step at a time,
 // each step judged by name and, once opened, by identity before anything is made in it.
 func (c *Confined) MkdirAll(path string, perm os.FileMode) error {
+	_, err := c.MakeFolders(path, perm)
+	return err
+}
+
+// MakeFolders is MkdirAll that also returns the folders it made, outermost
+// first, as paths under the root's resolved spelling.
+func (c *Confined) MakeFolders(path string, perm os.FileMode) ([]string, error) {
 	rel, err := c.rel(path)
 	if err != nil || rel == "." {
-		return err
+		return nil, err
 	}
 	parent, err := c.root.OpenRoot(".")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = parent.Close() }()
+	var made []string
 	parts := strings.Split(rel, string(filepath.Separator))
 	for i, part := range parts {
 		sofar := filepath.Join(parts[:i+1]...)
 		if c.state.Has(filepath.Join(c.dirs[0], sofar)) {
-			return ErrState
+			return made, ErrState
 		}
-		if err := parent.Mkdir(part, perm); err != nil && !errors.Is(err, fs.ErrExist) {
-			return outside(err)
+		if err := parent.Mkdir(part, perm); err == nil {
+			made = append(made, filepath.Join(c.dirs[0], sofar))
+		} else if !errors.Is(err, fs.ErrExist) {
+			return made, outside(err)
 		}
+		afterMkdir(sofar)
 		next, err := c.root.OpenRoot(sofar)
 		if err != nil {
-			return outside(err)
+			return made, outside(err)
 		}
 		_ = parent.Close()
 		parent = next
 		if info, err := parent.Stat("."); err != nil || c.state.HasFile(info) {
 			if err != nil {
-				return err
+				return made, err
 			}
-			return ErrState
+			return made, ErrState
 		}
 	}
-	return nil
+	return made, nil
 }
 
 // ReadInWorkspace reads a file of the workspace as the file tools read it:

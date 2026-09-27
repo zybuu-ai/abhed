@@ -256,9 +256,11 @@ type liveSession struct {
 	Cancel  context.CancelFunc
 	Created time.Time
 	Prompt  string
-	State   string // running | waiting_approval | done
-	Turns   int    // exchanges in this conversation
-	cancel  context.CancelFunc
+	State   string // running | waiting_approval | idle | done
+	// Reason is how the last run ended, which the session list shows for done.
+	Reason agent.TerminalReason
+	Turns  int // exchanges in this conversation
+	cancel context.CancelFunc
 	// ran is closed when the current run's goroutine ends, so a caller that
 	// interrupted it can wait for the loop to be free.
 	ran chan struct{}
@@ -1207,6 +1209,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	// Idle until the caller's prompt starts it: postMessage treats a running
 	// session as one to steer, and there is nothing running yet to steer.
 	live.State = "done"
+	live.Reason = agent.TerminalReason(rec.TerminalReason)
 
 	s.mu.Lock()
 	// Re-checked under the lock: a drain that began while the record was
@@ -1223,6 +1226,15 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	s.mu.Unlock()
 	s.log.Info("session resumed from record", "session", id, "user", user, "events", len(events))
 	return live, nil
+}
+
+// listedReason is how a finished session's last run ended, such as completed,
+// shutdown or deadline, for the list; "" while it is live.
+func listedReason(state string, reason agent.TerminalReason) string {
+	if state == "done" {
+		return string(reason)
+	}
+	return ""
 }
 
 // messaged reports whether anyone has sent the session a message. One opened
@@ -1245,11 +1257,13 @@ var (
 )
 
 type sessionSummary struct {
-	ID      string    `json:"id"`
-	User    string    `json:"user"`
-	Tenant  string    `json:"tenant"`
-	Prompt  string    `json:"prompt"`
-	State   string    `json:"state"`
+	ID     string `json:"id"`
+	User   string `json:"user"`
+	Tenant string `json:"tenant"`
+	Prompt string `json:"prompt"`
+	State  string `json:"state"`
+	// Reason is how a done session's last run ended, when the record says.
+	Reason  string    `json:"reason,omitempty"`
 	Created time.Time `json:"created"`
 	// Mode is the permission mode the session was started in.
 	Mode string `json:"mode,omitempty"`
@@ -1275,14 +1289,14 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				if !ownsSession(rec.Tenant, rec.User, tenant, user) {
 					continue
 				}
-				state, prompt := "done", rec.Prompt
+				state, reason, prompt := "done", rec.TerminalReason, rec.Prompt
 				if rec.EndedAt == nil {
-					state = "running"
+					state, reason = "running", ""
 				}
 				s.mu.RLock()
 				if live, found := s.running[rec.ID]; found {
 					live.mu.Lock()
-					state = live.State
+					state, reason = live.State, listedReason(live.State, live.Reason)
 					if prompt == "" {
 						prompt = live.Prompt
 					}
@@ -1291,7 +1305,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				s.mu.RUnlock()
 				out = append(out, sessionSummary{
 					ID: rec.ID, User: rec.User, Tenant: rec.Tenant,
-					Prompt: prompt, State: state, Created: rec.StartedAt, Mode: rec.Mode,
+					Prompt: prompt, State: state, Reason: reason, Created: rec.StartedAt, Mode: rec.Mode,
 				})
 			}
 			WriteJSON(w, http.StatusOK, out)
@@ -1316,7 +1330,8 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		l.mu.Lock()
 		out = append(out, sessionSummary{
 			ID: l.ID, User: l.User, Tenant: l.Tenant,
-			Prompt: l.Prompt, State: l.State, Created: l.Created, Mode: string(l.Loop.Policy.Mode),
+			Prompt: l.Prompt, State: l.State, Reason: listedReason(l.State, l.Reason),
+			Created: l.Created, Mode: string(l.Loop.Policy.Mode),
 		})
 		l.mu.Unlock()
 	}
@@ -1736,6 +1751,10 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 		return true
 	}
 	l.State = "done"
+	l.Reason = reason
+	if err != nil && reason == "" {
+		l.Reason = agent.TermError
+	}
 	if l.ran != nil {
 		close(l.ran)
 		l.ran = nil

@@ -13,15 +13,15 @@ abhed -p "add a test for Valid" -output-format json > events.jsonl
 Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
 `5` retries exhausted · `130` interrupted. A CI job can branch on those.
 `abhed -p` and the interactive CLI report `130` for any stop signal (Ctrl-C,
-SIGTERM or a hang-up); `rpc`, `acp`, `eval` and `resolve` report 128 plus the
+SIGTERM or a hang-up), from the moment they start; `rpc`, `acp`, `eval` and `resolve` report 128 plus the
 signal's number (130, 143, 129); `serve` exits `0` once it has drained.
 `serve` ignores further signals while it drains; `-p`, `eval` and `resolve`
 end at once on a second signal.
 
-A bad invocation, such as an unknown `-output-format` (`text` or `json`) or a
-word that is not a command, exits `2` before anything runs. Its stderr line
-tells the cases apart from a turn limit and from each other: `unknown
--output-format` or `unknown command`.
+A bad invocation, such as an unknown `-output-format` (`text` or `json`), an
+unknown `-mode` or a word that is not a command, exits `2` before anything
+runs. Its stderr line tells the cases apart from a turn limit and from each
+other: `unknown -output-format`, `unknown -mode` or `unknown command`.
 
 There is no one to approve, so anything needing approval is refused. Name what
 may run with `-allow`, and keep the list narrow.
@@ -190,7 +190,13 @@ curl -s $B/v1/health
 SID=$(curl -s -X POST $B/v1/sessions -d '{"prompt":"...","mode":"plan"}' | jq -r .session_id)
 curl -sN $B/v1/sessions/$SID/events     # live
 curl -s  $B/v1/sessions/$SID/replay     # the full audit trail
+curl -s  $B/v1/sessions                 # your sessions, each with its state
 ```
+
+A session's `state` in the list is `running`, `waiting_approval`, `idle` or
+`done`. A `done` session also has a `reason`, how its last run ended as
+recorded: `completed`, `user_interrupt`, `shutdown`, `deadline`, `stalled`,
+`error`, `max_turns` and the rest.
 
 Sending a message to a session that is already working **steers** it rather than
 being refused.

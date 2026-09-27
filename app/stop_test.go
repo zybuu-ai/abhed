@@ -36,6 +36,8 @@ func TestStopHelper(t *testing.T) {
 		os.Exit(evalCmd(ws, filepath.Join(ws, "corpus"), filepath.Join(ws, "report.json")))
 	case "acp":
 		os.Exit(acpCmd(ws, "test"))
+	case "p":
+		os.Exit(Main([]string{"-C", ws, "-p", "go"}))
 	}
 	t.Skip("run by the stop tests")
 }
@@ -315,5 +317,43 @@ func requireHostTier(t *testing.T, ws string) {
 	}
 	if out, err := sb.Command(t.Context(), ws, "true").CombinedOutput(); err != nil {
 		t.Skipf("the %s tier cannot run a command here: %v: %s", sb.Tier(), err, out)
+	}
+}
+
+// A stop signal while -p is starting up, held in an MCP connect, ends it as an
+// interrupt, 130, not by the signal's default action.
+func TestPromptStoppedDuringStartupExits130(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			url, _ := stubModel(t, "")
+			entered := make(chan struct{})
+			var once sync.Once
+			mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				once.Do(func() { close(entered) })
+				time.Sleep(time.Second)
+				http.Error(w, "not now", http.StatusServiceUnavailable)
+			}))
+			t.Cleanup(mcpSrv.Close)
+			ws, helper, _, out := stopWorkspace(t, url, "p")
+			cfg := `{"mcp":{"servers":[{"name":"slow","url":"` + mcpSrv.URL + `","enabled":true}]},` +
+				`"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":8192}}}}`
+			if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := helper.Start(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(20 * time.Second):
+				_ = helper.Process.Kill()
+				_ = helper.Wait()
+				t.Fatalf("start-up never reached the MCP server:\n%s", out)
+			}
+			_ = helper.Process.Signal(sig)
+			if code := exitOf(t, helper); code != 130 {
+				t.Fatalf("exited %d, want 130:\n%s", code, out)
+			}
+		})
 	}
 }

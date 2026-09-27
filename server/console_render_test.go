@@ -62,6 +62,17 @@ globalThis.$ = id => els[id] || null;
 	}
 }
 
+// The console lists a finished session by how it ended, and the open one by
+// its record's end before the list has caught up.
+func TestConsoleListNamesHowASessionEnded(t *testing.T) {
+	harness := `let current = null, live = false;
+const stats = {reason:null};
+`
+	if out, err := runConsoleCases(t, "state", harness, "list_state_cases.mjs"); err != nil {
+		t.Fatalf("the console's session states failed:\n%s", out)
+	}
+}
+
 // The static half of the same rule, which runs where node does not: nothing
 // in the workbench's script may assign markup.
 func TestConsoleWorkbenchNeverAssignsMarkup(t *testing.T) {
@@ -87,13 +98,18 @@ func TestConsoleWorkbenchNeverAssignsMarkup(t *testing.T) {
 // cases file against them in node, over the minimal DOM in testdata.
 func runConsoleCases(t *testing.T, set, harness, casesFile string) (string, error) {
 	t.Helper()
+	// CI sets ABHED_REQUIRE_PAGE_TESTS, so a missing tool fails there rather than skipping.
+	skip := t.Skip
+	if os.Getenv("ABHED_REQUIRE_PAGE_TESTS") != "" {
+		skip = t.Fatal
+	}
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not installed; skipping console render test")
+		skip("node not installed; skipping console render test")
 	}
 	py, err := exec.LookPath("python3")
 	if err != nil {
-		t.Skip("python3 not installed; skipping console render test")
+		skip("python3 not installed; skipping console render test")
 	}
 
 	dir := t.TempDir()

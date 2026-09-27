@@ -99,6 +99,8 @@ ending the session; at the prompt it clears the line. Ctrl-D exits.
 | `/compact` | compact the context now |
 | `/tree` | the session's steps |
 | `/fork <step>` | rebuild the conversation up to a step and continue from there |
+| `/clear` | start a new conversation and session; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
+| `/resume <id>` | replay a recorded session and continue its conversation |
 | `/export [path]` | write the transcript, HTML by default |
 | `/model [name]` | show or switch the model, keeping the conversation |
 
@@ -114,7 +116,7 @@ Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied �
 `5` retries exhausted · `130` interrupted.
 
 `-output-format` is `text` or `json`, one event per line; any other value is
-refused. A word after the flags must be a command (`abhed -h` lists them,
+refused, as is an unknown `-mode`. A word after the flags must be a command (`abhed -h` lists them,
 `abhed version` prints the version): anything else exits 2 rather than
 opening a session, so pass a prompt with `-p`.
 

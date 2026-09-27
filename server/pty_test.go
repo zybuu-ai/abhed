@@ -127,6 +127,28 @@ func TestTerminalHoldsTheRulesAndItsOwnDirectory(t *testing.T) {
 	}
 }
 
+// A cd into a folder with a $ in its name, written as Tab escapes it, is
+// followed at once: the reply names the folder, so the next prompt does too.
+func TestTerminalFollowsAnEscapedDollarCd(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.write("docs/price $5 plan/tiers.md", "x")
+	start := wb.startPTY(`cd docs/price\ \$5\ plan/`)
+	if !start.Cd || start.Cwd != "docs/price $5 plan" {
+		t.Fatalf("the escaped cd was not followed at once: %+v", start)
+	}
+	// A quoted ; is part of the folder's name: followed, never run as a command.
+	wb.write("a;id/f.txt", "x")
+	wb.startPTY("cd")
+	if quoted := wb.startPTY(`cd "a;id"`); !quoted.Cd || quoted.Cwd != "a;id" {
+		t.Fatalf("a quoted ; was not taken as a folder name: %+v", quoted)
+	}
+	for _, line := range []string{`cd $HOME`, `cd "a$b"`, `cd docs; ls`, `cd $(pwd)`} {
+		if isPlainCd(line) {
+			t.Errorf("%s is taken for a plain cd", line)
+		}
+	}
+}
+
 func TestTerminalCommandCanBeKilled(t *testing.T) {
 	wb := manualBench(t, nil)
 	start := wb.startPTY("sleep 30")

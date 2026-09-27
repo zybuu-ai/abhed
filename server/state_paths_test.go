@@ -204,6 +204,31 @@ func TestSwappedLinkNeverLeavesTheWorkspace(t *testing.T) {
 	}
 }
 
+// An upload refused because its folder links into Abhed's state makes no
+// folder there either: the folders are made one at a time, each judged.
+func TestRefusedUploadMakesNoFolderInState(t *testing.T) {
+	h, id, ws := downloadServer(t)
+	before, _ := os.ReadDir(filepath.Join(ws, ".abhed"))
+	if err := os.Symlink(".abhed", filepath.Join(ws, uploadDirName)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	fw, _ := mw.CreateFormFile("file", "planted.txt")
+	_, _ = fw.Write([]byte("planted"))
+	_ = mw.Close()
+	req := httptest.NewRequest("POST", "/v1/sessions/"+id+"/upload", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 403 {
+		t.Fatalf("upload through a link to state = %d %s", rec.Code, rec.Body)
+	}
+	if after, _ := os.ReadDir(filepath.Join(ws, ".abhed")); len(after) != len(before) {
+		t.Fatalf("the refused upload left %d new entries in state", len(after)-len(before))
+	}
+}
+
 // A refused upload leaves the state exactly as it was: no folder is made
 // through the link before the refusal, whichever way the link is planted.
 func TestRefusedUploadLeavesTheStateUntouched(t *testing.T) {

@@ -21,6 +21,10 @@ machine from an exported file, long after the session ran.
 abhed hawkeye session.json               # later, on any machine
 abhed hawkeye -o report.html session.json
 
+# On a headless run's event stream
+abhed -p "fix the tests" -output-format json > events.jsonl
+abhed hawkeye events.jsonl
+
 # By id, against a durable store
 abhed hawkeye s-k4dq7x2m
 
@@ -47,6 +51,12 @@ refuse a record that is not whole.
 | Turns | per-turn tokens, time to first token, total latency |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
+
+A turn stopped while the model was still replying counts the tokens its
+provider had reported by then: Anthropic reports the prompt when the reply
+starts, and some OpenAI-compatible servers report usage on every chunk. Most
+OpenAI-compatible servers report it only at the end of a reply, so a turn
+stopped part way there is recorded with no tokens; nothing is estimated.
 
 The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`,
 `allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that

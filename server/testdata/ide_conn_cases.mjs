@@ -56,6 +56,16 @@ document.hidden = false; __docOn.visibilitychange(); await tick(10);
 check('and probes when it is shown', __fetches === 2 && shown() === '● offline');
 __up = true; await tick(200);
 
+// An idle page, with no stream open, notices the server leave on its own.
+es = null; setConn(true); __up = false; connIdle(); await tick();
+check('an idle page says offline once the server has gone', shown() === '● offline');
+__up = true; await tick(200);
+check('and connected once it is back', shown() === '● connected');
+// A page with a stream open leaves it to the stream.
+es = {readyState:1}; __fetches = 0; __up = false; connIdle(); await tick();
+check('an open stream is not probed on the timer', __fetches === 0 && shown() === '● connected');
+es = null; __up = true;
+
 // A 401 means the sign-in ended: say so, with the way back, and stop the run's indicator.
 live = true; __status = 401; __liveOff = 0; __added.length = 0;
 try{ await api('/v1/sessions'); }catch{}
@@ -82,5 +92,9 @@ __up = false; try{ await api('/v1/sessions'); }catch{} await tick();
 __up = true; await tick(200);
 check('a server back from a restart with the sign-in gone says so', shown() === '● signed out' &&
   __added.some(n => n.textContent.startsWith('Your sign-in ended.')));
+
+// Once signed out, the idle check does not keep asking.
+__fetches = 0; es = null; connState = true; connIdle(); await tick();
+check('a signed-out page is not probed on the timer', signInGone && __fetches === 0);
 
 if(!ok) process.exit(1);
