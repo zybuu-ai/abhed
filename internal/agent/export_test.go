@@ -88,3 +88,14 @@ func TestExportClipsHugeToolOutput(t *testing.T) {
 }
 
 var _ = json.Marshal
+
+// A fork shows as a divider naming the step the conversation went on from.
+func TestExportMarksAFork(t *testing.T) {
+	page := ExportHTML("s1", []Event{
+		ev(1, EvUserMessage, Message{Text: "one"}),
+		ev(2, EvForked, Forked{ThroughSeq: 1}),
+	})
+	if !strings.Contains(page, "forked at step 1") {
+		t.Fatal("the export shows no fork")
+	}
+}

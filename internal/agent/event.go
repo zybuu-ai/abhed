@@ -46,6 +46,9 @@ const (
 	// consulted on, and the decision before and after it.
 	EvMonitorVerdict EventType = "monitor.verdict"
 	EvSessionEnded   EventType = "session.ended"
+	// EvForked marks a fork: the conversation goes on from an earlier step,
+	// and the steps between it and the marker are abandoned; see Live.
+	EvForked EventType = "conversation.forked"
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
 	EvModelCall EventType = "model.call"
@@ -181,6 +184,8 @@ type Observation struct {
 	DurationMS int64  `json:"duration_ms"`
 	// Sandbox is the tier a command ran under ("none" on the host), when known.
 	Sandbox string `json:"sandbox,omitempty"`
+	// NotRun marks the answer to a call the turn ended before running.
+	NotRun bool `json:"not_run,omitempty"`
 }
 
 type Message struct {
@@ -401,6 +406,7 @@ type Recorder struct {
 	parentID  string
 	mu        sync.Mutex
 	seq       int64
+	appended  int64 // the last seq the store took from this recorder, or advanced past
 	// Redact, when set, rewrites a payload before it is written. Set by the
 	// caller from the secrets store; nil records payloads as they are.
 	Redact Redactor
@@ -444,7 +450,18 @@ func (r *Recorder) Advance(seq int64) {
 	if seq > r.seq {
 		r.seq = seq
 	}
+	if seq > r.appended {
+		r.appended = seq
+	}
 	r.mu.Unlock()
+}
+
+// LastAppended is the last seq the store took from this recorder, or the one
+// it was advanced past: a failed write moves the sequence on, not this.
+func (r *Recorder) LastAppended() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.appended
 }
 
 func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (Event, error) {
@@ -475,7 +492,15 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	}
 	r.mu.Unlock()
 
-	return ev, r.store.Append(ev)
+	if err := r.store.Append(ev); err != nil {
+		return ev, err
+	}
+	r.mu.Lock()
+	if ev.Seq > r.appended {
+		r.appended = ev.Seq
+	}
+	r.mu.Unlock()
+	return ev, nil
 }
 
 // MonitorVerdict is what the monitor said about one call. After is never

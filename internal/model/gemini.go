@@ -358,11 +358,13 @@ func (g *Gemini) stream(ctx context.Context, resp *http.Response, out chan<- Chu
 			}
 		}
 		if ctx.Err() != nil {
+			stoppedDone(out, usage)
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
 		out <- Chunk{Type: ChunkError, Err: fmt.Errorf("stream read failed: %w", err)}
+		stoppedDone(out, usage)
 		return
 	}
 	out <- Chunk{Type: ChunkDone, Usage: &usage, StopReason: stop}

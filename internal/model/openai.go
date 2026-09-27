@@ -354,6 +354,7 @@ func (c *OpenAICompatible) stream(ctx context.Context, body io.ReadCloser,
 		select {
 		case <-ctx.Done():
 			out <- Chunk{Type: ChunkError, Err: ctx.Err()}
+			stoppedDone(out, usage)
 			return
 		default:
 		}
@@ -440,6 +441,7 @@ func (c *OpenAICompatible) stream(ctx context.Context, body io.ReadCloser,
 
 	if err := scanner.Err(); err != nil {
 		out <- Chunk{Type: ChunkError, Err: fmt.Errorf("read stream: %w", err)}
+		stoppedDone(out, usage)
 		return
 	}
 

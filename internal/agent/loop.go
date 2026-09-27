@@ -559,6 +559,8 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	if turns > l.turns {
 		l.turns = turns
 	}
+	// Usage.Turns reads the same counter, so a caller's per-exchange difference holds.
+	l.usage.Turns = l.turns
 }
 
 // turn runs one round trip: model output plus any tool executions.
@@ -1213,12 +1215,12 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	for i, call := range calls {
 		decision, res, terminal := l.authorize(ctx, call)
 		if terminal != "" {
-			results[i] = callOutcome{result: res, terminal: terminal}
-			l.appendResults(calls, results, i+1)
+			results[i] = callOutcome{result: res, terminal: terminal, set: true}
+			l.appendEnded(calls, results, terminal, i+1)
 			return terminal
 		}
 		if !decision {
-			results[i] = callOutcome{result: res}
+			results[i] = callOutcome{result: res, set: true}
 			continue
 		}
 		approved[i] = true
@@ -1242,16 +1244,16 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 		go func(i int, call model.ToolCall) {
 			defer wg.Done()
 			res, terminal := l.invoke(ctx, call)
-			results[i] = callOutcome{result: res, terminal: terminal}
+			results[i] = callOutcome{result: res, terminal: terminal, set: true}
 		}(i, call)
 	}
 	wg.Wait()
 
 	for _, i := range mutating {
 		res, terminal := l.invoke(ctx, calls[i])
-		results[i] = callOutcome{result: res, terminal: terminal}
+		results[i] = callOutcome{result: res, terminal: terminal, set: true}
 		if terminal != "" {
-			l.appendResults(calls, results, i+1)
+			l.appendEnded(calls, results, terminal, len(calls))
 			return terminal
 		}
 	}
@@ -1289,6 +1291,23 @@ func (l *Loop) worstRepeatedFailure() (string, int, bool) {
 type callOutcome struct {
 	result   tools.Result
 	terminal TerminalReason
+	set      bool // false for a call the turn ended before
+}
+
+// appendEnded answers every call of a turn that ended early, a call that never
+// ran included; the first requested were recorded, so their answer is too.
+func (l *Loop) appendEnded(calls []model.ToolCall, results []callOutcome, reason TerminalReason, requested int) {
+	for i := range results {
+		if !results[i].set {
+			results[i].result = tools.Result{IsError: true,
+				Content: "Not run: the turn ended (" + string(reason) + ") before this call ran."}
+			if i < requested {
+				l.record(EvObservation, ActorSystem, Observation{CallID: calls[i].ID, Tool: calls[i].Name,
+					Content: results[i].result.Content, IsError: true, NotRun: true})
+			}
+		}
+	}
+	l.appendResults(calls, results, len(calls))
 }
 
 // appendResults adds the first n results to history, in call order.

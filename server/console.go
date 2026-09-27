@@ -856,6 +856,13 @@ function note(text){
   t.scrollTop = t.scrollHeight;
 }
 
+// The pill names how a done session ended, and the open session's end from
+// its record before the list catches up.
+function shownState(s){
+  if(s.id === current && !live && stats.reason && (s.state === 'running' || s.state === 'waiting_approval')) return stats.reason;
+  return s.state === 'done' && s.reason ? s.reason : s.state;
+}
+
 async function refresh(){
   try{
     const list = await api('/v1/sessions');
@@ -867,7 +874,8 @@ async function refresh(){
     // Rebuild only when something changed. The poll runs every few seconds,
     // and rebuilding the rail on every tick tore down whatever the person
     // was doing in it — a hover, a focused row, an open delete confirmation.
-    const sig = q + '|' + current + '|' + list.map(s => s.id + ':' + s.state + ':' + (s.prompt || '')).join('\n');
+    list.forEach(s => { s.shown = shownState(s); });
+    const sig = q + '|' + current + '|' + list.map(s => s.id + ':' + s.shown + ':' + (s.prompt || '')).join('\n');
     if(el.dataset.sig === sig) return;
     if(el.querySelector('.item.confirm')) return;   // never yank a question mid-answer
     el.dataset.sig = sig;
@@ -917,8 +925,9 @@ function sessionRow(s){
   const m = document.createElement('div');
   m.className = 'm';
   const pill = document.createElement('span');
-  pill.className = 'pill ' + s.state;
-  pill.textContent = s.state.replace(/_/g,' ');
+  const shown = s.shown || s.state;
+  pill.className = 'pill ' + shown;
+  pill.textContent = shown.replace(/_/g,' ');
   const when = document.createElement('span');
   when.textContent = ago(s.created);
   m.append(pill, when);
@@ -1265,6 +1274,12 @@ function render(ev){
       const wrap = calls.get(p.call_id) || turnEl || newTurn();
       wrap.classList.add('err');
       wrap.appendChild(node('out err', 'denied — ' + (p.reason || 'no reason given')));
+      break;
+    }
+
+    case 'conversation.forked': {
+      tx.appendChild(node('note', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
+      turnEl = null;
       break;
     }
 

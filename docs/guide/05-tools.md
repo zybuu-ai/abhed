@@ -13,6 +13,11 @@
 | `ssh`, `ssh_connect` | remote execution, off by default |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
 
+`write` creates a new file's missing folders, inside the workspace and never
+in Abhed's state, so a new file in a new folder needs no shell approval in
+`accept-edits` or `auto` mode. A write that fails takes back the folders it made,
+and `/undo` of the new file removes them while they are empty.
+
 `bash` takes an optional `secrets` list: names from the operator's store,
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see

@@ -468,6 +468,16 @@ func IsCdLine(line string) bool {
 	return len(line) > 2 && line[:2] == "cd" && (line[2] == ' ' || line[2] == '\t')
 }
 
+// IsCdWord reports a cd line whose argument is one word read exactly, its
+// quotes and escapes undone, such as the `cd a\ \$5/` Tab completion writes.
+func IsCdWord(line string) bool {
+	if !IsCdLine(line) {
+		return false
+	}
+	w, ok := shellWord(strings.Trim(line[2:], " \t"))
+	return ok && w != ""
+}
+
 // shellWord reads s as one bash word and undoes its quoting: backslashes,
 // '...', "..." and $'...'. It reports false for anything it would have to
 // guess at: an expansion, a glob, an unfinished quote or several words.

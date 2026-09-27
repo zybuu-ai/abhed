@@ -212,26 +212,34 @@ check('no half character is completed', t.line === 'cat ' && !/[\ud800-\udfff]/.
   check('the line shown is the line held', t.line === 'rm ./-rf ' && out.join('').endsWith('\x1b[36mctx $\x1b[0m ' + t.line));
   check('history works again after it', lineKeys(t, key('ArrowUp').e) === false && t.line === 'echo hi');
 }
-check('only a space or a tab ends the cd word', isPlainCd('cd\tx') && isPlainCd('cd x') && !isPlainCd('cd' + String.fromCharCode(0xa0) + 'x'));
-
 // A cd with an ANSI-C quote is a plain cd too: the server follows it without a shell.
 ({out, t} = term());
-__sent.length = 0; __attached = null; __replies.push({id:'u10', cwd:'a b'});
+__sent.length = 0; __attached = null; __replies.push({id:'u10', cwd:'a b', cd:true});
 linesData(t, "cd $'a b'\r"); await tick();
 check("cd $'...' is followed without a terminal", __sent[0].command === "cd $'a b'" && __attached === null && t.cwd === 'a b');
 
 // A completed folder with a space is cd'd into, and the prompt then shows it.
 __tree.packages = [{name:'web app', dir:true}];
 ({out, t} = term());
-__sent.length = 0; __replies.push({id:'u8', cwd:'packages/web app'});
+__sent.length = 0; __replies.push({id:'u8', cwd:'packages/web app', cd:true});
 linesData(t, 'cd packages/we'); lineKeys(t, key('Tab').e); await tick();
 check('the folder completes quoted', t.line === 'cd packages/web\\ app/');
 linesData(t, '\r'); await tick();
 check('the quoted cd is sent as shown and the prompt moves there', __sent[0].command === 'cd packages/web\\ app/' && t.cwd === 'packages/web app' &&
   out.join('').endsWith('\x1b[36mpackages/web app $\x1b[0m '));
+// A folder with a $ in its name, as Tab escapes it, is followed without a
+// terminal, and the next prompt shows the folder.
+__tree.docs = [{name:'price $5 plan', dir:true}];
+({out, t} = term());
+__sent.length = 0; __attached = null; __replies.push({id:'u11', cwd:'docs/price $5 plan', cd:true});
+linesData(t, 'cd docs/pri'); lineKeys(t, key('Tab').e); await tick();
+check('the $ folder completes escaped', t.line === 'cd docs/price\\ \\$5\\ plan/');
+linesData(t, '\r'); await tick();
+check('the escaped $ cd moves the prompt at once', __attached === null && t.cwd === 'docs/price $5 plan' &&
+  out.join('').endsWith('\x1b[36mdocs/price $5 plan $\x1b[0m '));
 // A cd the server did not follow says so, and the prompt stays where it was.
 ({out, t} = term());
-__replies.push({id:'u9', cwd:'.', note:'cd: no such directory: gone\x1b[8m; still in .'});
+__replies.push({id:'u9', cwd:'.', cd:true, note:'cd: no such directory: gone\x1b[8m; still in .'});
 linesData(t, 'cd gone\r'); await tick();
 check('a cd that was not followed says why', out.join('').includes('\x1b[33mcd: no such directory: gone?[8m; still in .\x1b[0m') && t.cwd === '.');
 

@@ -113,6 +113,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			if c == nil {
 				continue
 			}
+			if o.NotRun {
+				continue // an answer to a call that never ran, not its result
+			}
 			c.Ran, c.IsError, c.ExitCode = true, o.IsError, o.ExitCode
 			// Only where a sandbox was in force: on the host the same words are the system's.
 			c.SandboxDenied = c.Tool == "bash" && o.Sandbox != "" && o.Sandbox != "none" && sandboxRefused(o.Content)

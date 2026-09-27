@@ -414,6 +414,7 @@ func (w *WatsonX) stream(body io.ReadCloser, out chan<- Chunk, offered []ToolDef
 
 	if err := scanner.Err(); err != nil {
 		out <- Chunk{Type: ChunkError, Err: fmt.Errorf("read stream: %w", err)}
+		stoppedDone(out, usage)
 		return
 	}
 

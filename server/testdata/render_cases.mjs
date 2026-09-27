@@ -28,4 +28,10 @@ ok = run('no reasoning at all',                  [user,...deltas(),msg])        
 ok = run('reasoning before any delta',           [user,reason,...deltas(),msg]) && ok;
 ok = run('message with no deltas',               [user,msg])                    && ok;
 ok = run('two reasoning events in one turn',     [user,reason,...deltas(),reason,msg]) && ok;
+// A fork marker draws a divider naming the step the conversation went on from.
+tx.childNodes.length = 0;
+render({seq:120, type:'conversation.forked', payload:{through_seq:7}});
+const forked = tx.textContent.includes('forked at step 7');
+console.log((forked ? 'PASS' : 'FAIL') + '  a fork marker is drawn');
+ok = forked && ok;
 process.exit(ok?0:1);

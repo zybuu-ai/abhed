@@ -208,4 +208,15 @@ check('a 503 after the withdrawal says it is no longer queued',
 check('and its text is back in the message box',
   $('q').value === 'just too late' && late.qnote.includes('back in the message box'));
 
+// A drain that ends the run with a message still queued drops it; the bubble
+// says it was not delivered, offers nothing, and its text is back in the box.
+fresh('s17', true); $('q').value = '';
+const dropped = userBubble('after the drain', 'queued'); dropped.qid = 'q11'; queued.set('q11', dropped); qbox.appendChild(dropped);
+render(ev(8, 'message.dropped', {queue_id:'q11', client_id:dropped.cid, text:'after the drain', reason:'server shut down before it was delivered'}));
+check('a dropped message is shown as not delivered',
+  dropped.classList.contains('failed') && !dropped.classList.contains('queued') && dropped.qnote.startsWith('Not delivered — server shut down'));
+// drawQueued offers Send now and Cancel only on a bubble still queued.
+check('and no longer offers Send now or Cancel', !queued.has('q11') && !dropped.classList.contains('queued'));
+check('and its text is back in the message box', $('q').value === 'after the drain' && dropped.qnote.includes('back in the message box'));
+
 if(!ok) process.exit(1);

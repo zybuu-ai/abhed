@@ -96,6 +96,12 @@ func ExportHTML(sessionID string, events []Event) string {
 					commas(c.BeforeTokens), commas(c.AfterTokens))
 			}
 
+		case EvForked:
+			var f Forked
+			if json.Unmarshal(ev.Payload, &f) == nil {
+				fmt.Fprintf(&b, `<div class="note">forked at step %d · the steps after it, above, were abandoned</div>`, f.ThroughSeq)
+			}
+
 		case EvSessionEnded:
 			_ = json.Unmarshal(ev.Payload, &stats) // a malformed summary leaves the totals at zero, which the export shows as such
 		}
