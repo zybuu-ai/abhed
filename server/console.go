@@ -863,6 +863,19 @@ function shownState(s){
   return s.state === 'done' && s.reason ? s.reason : s.state;
 }
 
+// paintOpenPill shows the open session's end in the rail as soon as it renders;
+// after a drain no list request succeeds to do it.
+function paintOpenPill(){
+  const list = $('list'); if(!list) return;
+  for(const row of list.querySelectorAll('.item')){
+    if(row.dataset.id !== current) continue;
+    const pill = row.querySelector('.pill'); if(!pill) return;
+    const shown = shownState({id: current, state: pill.dataset.state});
+    pill.className = 'pill ' + shown;
+    pill.textContent = shown.replace(/_/g,' ');
+  }
+}
+
 async function refresh(){
   try{
     const list = await api('/v1/sessions');
@@ -927,6 +940,7 @@ function sessionRow(s){
   const pill = document.createElement('span');
   const shown = s.shown || s.state;
   pill.className = 'pill ' + shown;
+  pill.dataset.state = s.state;
   pill.textContent = shown.replace(/_/g,' ');
   const when = document.createElement('span');
   when.textContent = ago(s.created);
@@ -1300,6 +1314,7 @@ function render(ev){
       approvals.forEach((_, id) => resolveApproval(id, 'not answered'));
       $('stop').hidden = true;
       stats.reason = p.reason;
+      paintOpenPill();
       stats.turns = p.turns || stats.turns;
       stats.tin = p.tokens_in || stats.tin;
       stats.tout = p.tokens_out || stats.tout;
@@ -2069,8 +2084,15 @@ function postSignOut(e){
   const u = new URL(e.currentTarget.href, location.href);
   if(u.origin !== location.origin || u.pathname !== '/logout') return;
   e.preventDefault();
-  const f = document.createElement('form'); f.method = 'post'; f.action = '/logout';
-  document.body.appendChild(f); f.submit();
+  signOut();
+}
+// A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
+async function signOut(){
+  try{
+    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
+    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
+  }catch{}
+  location.href = '/logout';
 }
 async function whoami(){
   let me = null;

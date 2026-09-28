@@ -39,8 +39,9 @@ nav form{margin:0}button.link{margin:0;width:auto;padding:0;background:none;colo
 <label for="nw2">New password, again</label><input id="nw2" type="password" autocomplete="new-password" minlength="10" required>
 <button id="go" type="submit">Change password</button><div id="msg" role="status"></div>
 </form>
-<nav><a href="/ide">Back to the workbench</a><form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form></nav>
+<nav><a href="/ide">Back to the workbench</a><form id="so" method="post" action="/logout"><button class="link" type="submit">Sign out</button></form></nav>
 </main><script>
+` + signOutScript + `
 const $ = (id) => document.getElementById(id);
 try{ if(new URLSearchParams(location.search).get('must_change')) $('must').hidden = false; }catch{}
 fetch('/v1/whoami').then(r => r.json()).then(me => {
@@ -70,7 +71,7 @@ $('f').addEventListener('submit', async (e) => {
 func (s *Server) serveSignOut(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	_, _ = w.Write([]byte(signOutHTML))
 }
 
@@ -87,6 +88,20 @@ a{color:var(--acc)}nav{margin-top:22px}
 /*{{BRAND_CSS}}*/
 </style></head><body><main>
 <div style="margin-bottom:22px">{{BRAND_LOCKUP}}</div><h1>Sign out</h1><p>End your session on this browser.</p>
-<form method="post" action="/logout"><button type="submit" autofocus>Sign out</button></form>
+<form id="so" method="post" action="/logout"><button type="submit" autofocus>Sign out</button></form>
 <nav><a href="/ide">Back to the workbench</a></nav>
-</main></body></html>`)
+</main><script>
+` + signOutScript + `</script></body></html>`)
+
+// signOutScript is the sign-out both pages above run. The form stays as the
+// fallback without script; the server accepts it by Sec-Fetch-Site.
+const signOutScript = `// A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
+async function signOut(){
+  try{
+    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
+    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
+  }catch{}
+  location.href = '/logout';
+}
+document.getElementById('so').addEventListener('submit', e => { e.preventDefault(); signOut(); });
+`

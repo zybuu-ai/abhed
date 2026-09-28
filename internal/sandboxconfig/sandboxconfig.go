@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/nlink"
@@ -110,6 +111,11 @@ func checkLinks(cfg config.Config, workspace string, stateRoots []string) error 
 	roots := append(append([]string{workspace}, cfg.AdditionalDirs...), stateRoots...)
 	linked := tools.NewStateSet(roots...).Linked()
 	linked = append(linked, StatePaths(cfg, workspace)...)
+	// An enclosing repository's config is state too: a run started in a
+	// subfolder could rewrite it through a second name inside its workspace.
+	for _, r := range roots {
+		linked = append(linked, ancestorState(r)...)
+	}
 	for _, p := range linked {
 		n, err := nlink.Linked(p)
 		if err != nil {
@@ -120,6 +126,41 @@ func checkLinks(cfg config.Config, workspace string, stateRoots []string) error 
 		}
 	}
 	return nil
+}
+
+// ancestorState lists the known state files in the .abhed of every folder above
+// dir, as spelled and with links followed, that this user could rewrite. A
+// world-writable sticky folder such as /tmp is skipped: another user's file
+// there is not ours to fix, and not ours to rewrite either.
+func ancestorState(dir string) []string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range []string{abs, tools.RealPath(abs)} {
+		for d := filepath.Dir(p); ; d = filepath.Dir(d) {
+			if !sharedFolder(d) && !sharedFolder(filepath.Join(d, tools.StateDir)) {
+				for _, name := range tools.KnownStateFiles() {
+					f := filepath.Join(d, tools.StateDir, name)
+					if info, err := os.Lstat(f); err == nil && info.Mode().IsRegular() && !slices.Contains(out, f) && writable(f, info) {
+						out = append(out, f)
+					}
+				}
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// sharedFolder reports a world-writable folder with the sticky bit, where
+// anyone may leave files.
+func sharedFolder(d string) bool {
+	info, err := os.Stat(d)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSticky != 0 && info.Mode().Perm()&0o002 != 0
 }
 
 // inside reports whether a resolved path lies in one of the resolved dirs.

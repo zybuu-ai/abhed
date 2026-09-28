@@ -167,7 +167,12 @@ asserted. Current state:
 - [x] **Own configuration** — `.abhed/` unreadable and unwritable from a command
       (`TestProcessSandboxShieldsHarnessState`). The rule is by path, so a start with a
       state file that has a second name (a hard link) is refused
-      (`TestStateFileWithASecondNameIsRefused`, `TestConfigWithASecondNameIsRefused`)
+      (`TestStateFileWithASecondNameIsRefused`, `TestConfigWithASecondNameIsRefused`), and so
+      is one whose enclosing repository's state has one
+      (`TestEnclosingRepositoryStateWithASecondNameIsRefused`,
+      `TestEnclosingStateThroughALinkedWorkspaceIsRefused`), while another user's
+      shared folder above it cannot block the start
+      (`TestAncestorStateCountsOnlyWhatARunLoads`)
 - [x] **Runaway commands** — a command is stopped at its timeout with everything it
       started, a `setsid` child included (`TestRunawayCommandEndsAtItsDeadline`,
       `TestBashTimeoutEndsADetachedChild`)

@@ -524,6 +524,9 @@ func (l *LocalAuth) SignInHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// CookieSecure reports whether this provider's cookies are marked Secure.
+func (l *LocalAuth) CookieSecure() bool { return l.Secure }
+
 // SignOut clears the session.
 func (l *LocalAuth) SignOut(w http.ResponseWriter, r *http.Request) {
 	l.EndRequestSession(w, r)

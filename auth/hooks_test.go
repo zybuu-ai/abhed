@@ -222,6 +222,29 @@ func TestLocalSessionIsEndedWhenRefused(t *testing.T) {
 	}
 }
 
+// The refusal's cookie is Secure exactly when the session cookie is, as behind
+// a TLS-terminating proxy, where the request itself arrives as plain HTTP.
+func TestRefusalCookieFollowsTheSessionCookie(t *testing.T) {
+	for _, secure := range []bool{true, false} {
+		l := twoUsers(t)
+		l.Secure = secure
+		mw := Middleware{Providers: []Provider{l}, Check: refuse("bob")}
+		req := httptest.NewRequest("GET", "/v1/sessions", nil)
+		req.AddCookie(signedIn(t, l, "bob"))
+		rec := httptest.NewRecorder()
+		mw.Wrap(echoSubject()).ServeHTTP(rec, req)
+		var got *http.Cookie
+		for _, c := range rec.Result().Cookies() {
+			if c.Name == refusedCookie {
+				got = c
+			}
+		}
+		if got == nil || got.Secure != secure {
+			t.Fatalf("with a Secure=%v session cookie the refusal cookie = %+v", secure, got)
+		}
+	}
+}
+
 // Without a Check nothing changes.
 func TestNoCheckAdmitsAsBefore(t *testing.T) {
 	l := twoUsers(t)

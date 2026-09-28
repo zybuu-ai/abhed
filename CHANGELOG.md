@@ -8,6 +8,31 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- Abhed refuses to start when a `.abhed` state file in any folder above the
+  workspace, such as the repository root's `.abhed/config.json` for a run
+  started in a subfolder, has a second name (a hard link). Above the
+  workspace only `.abhed/users.json`, `config.json` and `secrets.json` that
+  you own or can write count, and world-writable sticky folders such as
+  `/tmp` are skipped, so another user's file there cannot block your start.
+  Remove the extra name, or give the file a single name with
+  `cp -p f f.new && mv f.new f`.
+- A policy hook or extension screening the Explorer's `delete` and `rename`
+  actions is now asked about every entry inside a folder (up to the walk's
+  5,000 entries), not only the folder. After duplicates are dropped each
+  entry is put up to 8 times for a folder rename (named and with links
+  followed, with and without a trailing `/`, at the old and the new path)
+  and up to 4 for a folder delete, so a large rename can mean about 40,000
+  policy decisions; a hook that makes a network call per decision makes it
+  slow.
+- `POST /logout` with `Accept: application/json` answers
+  `200 {"next": "<where to go>"}` instead of the redirect, which is how the
+  pages now sign out. A form post without that header still redirects.
+- A `403` from `auth.Middleware.Check` (for example a member dropped from
+  `auth.require_group`) carries `"refused": true` beside `error` and
+  `reason`, and sets a short-lived `abhed_refused` cookie that holds the
+  reason for the sign-in page. The body is no longer all strings: a client
+  that decodes it into a string-only map (`map[string]string` in Go) must
+  decode `refused` as a boolean or ignore it.
 - The interactive CLI keeps one conversation, and one session record, across
   the tasks you type, as `/model`, `/fork` and the docs already said: a later
   task sees what was said before it. The turn limit now counts the whole
@@ -272,6 +297,25 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- No sign-out control worked in Chrome: the workbench's Sign out and Switch,
+  the console's, the account page's and the `GET /logout` page's button all
+  posted a form, which Chrome sends as `Origin: null` under the server's
+  `Referrer-Policy: no-referrer`, and the origin check refused it. They now
+  sign out with a same-origin `fetch` and go where the answer says, which
+  keeps an identity provider's own sign-out. The origin check also accepts
+  `Origin: null` when the browser says `Sec-Fetch-Site: same-origin`, so the
+  confirm page's form works without script.
+- The console's session pill kept saying RUNNING through a drain: it changed
+  only on the next list request, and none succeeded once the server had
+  gone. It now changes when the session's end renders.
+- A member dropped from `auth.require_group` saw only "forbidden" in the
+  workbench, which still said connected, and a reload landed on sign-in with
+  no reason. The workbench now shows the reason and its signed-out state,
+  and a reload within ten minutes shows the reason on the sign-in page.
+- `abhed user passwd <name> -password X` ignored `-password` and printed a
+  generated password; `user passwd -password X <name>` answered "no such
+  user". Both forms now set the given password, which must still be changed
+  at the next sign-in.
 - A turn with several tool calls, stopped at one of them, left the calls
   after it with no result, so the conversation's next request was refused
   by the provider. A conversation rebuilt from the record (a continued
@@ -490,6 +534,28 @@ All notable changes to Abhed are recorded here. The format follows
   and when the page opens on a session that is waiting for approval.
 
 ### Security
+
+- The origin check on state-changing requests now accepts `Origin: null`
+  when, and only when, the browser sends `Sec-Fetch-Site: same-origin`, on
+  every route. Chrome sends this server's own form posts that way under its
+  `Referrer-Policy: no-referrer`; page script cannot set the header, and an
+  opaque or other-site initiator is marked `cross-site`. A null origin with
+  the header missing, or `same-site`, `cross-site` or `none`, is still
+  refused.
+
+- A folder delete or rename from the Explorer escaped a `delete(...)` or
+  `rename(...)` rule on what it held: the rule was put to the folder's own
+  path only, so deleting `keep`, or any folder above it, got past
+  `delete(**/keep/**)`, and renaming `locked` got past
+  `rename(**/locked/**)`. The rule is now put to every entry the walk
+  visits, and for a rename to each entry's new path too.
+
+- A hard link inside the workspace to a state file of an enclosing folder,
+  such as the repository root's `.abhed/config.json` when the session starts
+  in `services/ledger`, let a command rewrite that config for the next run
+  at the root: the start-time link check covered only the state the run
+  itself loads. It now covers the `.abhed` state of every folder above the
+  workspace, at every entry point that builds the sandbox.
 
 - A hard link in the workspace to a state file let a sandboxed command rewrite
   `.abhed/config.json` (and so drop a deny rule for the next start): the file

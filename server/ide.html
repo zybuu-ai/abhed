@@ -480,17 +480,21 @@ async function api(path, opts){
   let r; try{ r = await fetch(path, {headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts}); }
   catch(e){ connLost(false); throw e; }
   if(r.status === 401) signInEnded();
-  if(!r.ok){ let m = r.statusText; try{ m = (await r.json()).error || m; }catch{} const e = new Error(m); e.status = r.status; e.node = r.headers.get('Abhed-Session-Node'); throw e; }
+  if(!r.ok){ let m = r.statusText, b = {}; try{ b = await r.json() || {}; m = b.error || m; }catch{}
+    // A refused identity (dropped from require_group) has had its sign-in ended; say why.
+    if(r.status === 403 && b.refused){ signInEnded(b.reason); m = b.reason || m; }
+    const e = new Error(m); e.status = r.status; e.node = r.headers.get('Abhed-Session-Node'); throw e; }
   return r.status === 204 ? null : r.json();
 }
 // A 401 means the sign-in ended: a restart, a sign-out elsewhere, or an administrator.
+// A refusal carries its reason, which the sign-in page is given too.
 let signedIn = false, signInGone = false;
-function signInEnded(){
+function signInEnded(why){
   if(signInGone) return; signInGone = true;
   if(es){ es.close(); es = null; }
   setLive(false); setConn(false);
-  const n = el('div', 'sys bad', 'Your sign-in ended. '), a = el('a', '', 'Sign in again');
-  a.href = '/?return=/ide'; n.appendChild(a); add(n);
+  const n = el('div', 'sys bad', why ? 'Your sign-in ended: ' + why + '. ' : 'Your sign-in ended. '), a = el('a', '', 'Sign in again');
+  a.href = why ? '/?refused=' + encodeURIComponent(why) + '&return=/ide' : '/?return=/ide'; n.appendChild(a); add(n);
 }
 
 /* ---------------------------------------------------------------- state */
@@ -1228,7 +1232,7 @@ async function connProbe(){
   connTimer = 0; setConn(true);
   // The server is back, but a restart ends every sign-in.
   // A 503 is an account store that cannot answer, not a sign-in that ended.
-  if(signedIn && !signInGone) try{ const w = await fetch('/v1/whoami', {credentials:'same-origin', cache:'no-store'}); if(w.ok && !(await w.json()).authenticated) signInEnded(); }catch{}
+  if(signedIn && !signInGone) try{ const w = await fetch('/v1/whoami', {credentials:'same-origin', cache:'no-store'}); if(w.ok){ const me = await w.json(); if(!me.authenticated) signInEnded(me.reason); } }catch{}
 }
 // An idle page has no open stream to notice the server leave, so a visible
 // one that believes it is connected asks now and then.
@@ -2166,8 +2170,15 @@ function postSignOut(e){
   const u = new URL(e.currentTarget.href, location.href);
   if(u.origin !== location.origin || u.pathname !== '/logout') return;
   e.preventDefault();
-  const f = document.createElement('form'); f.method = 'post'; f.action = '/logout';
-  document.body.appendChild(f); f.submit();
+  signOut();
+}
+// A same-origin fetch carries the real Origin; Chrome sends a form post here as Origin: null.
+async function signOut(){
+  try{
+    const r = await fetch('/logout', {method:'POST', headers:{'Accept':'application/json'}});
+    if(r.ok){ let b = {}; try{ b = await r.json(); }catch{} location.href = b.next || '/'; return; }
+  }catch{}
+  location.href = '/logout';
 }
 $('signout').addEventListener('click', postSignOut);
 $('switchuser').addEventListener('click', postSignOut);

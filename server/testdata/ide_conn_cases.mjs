@@ -97,4 +97,18 @@ check('a server back from a restart with the sign-in gone says so', shown() === 
 __fetches = 0; es = null; connState = true; connIdle(); await tick();
 check('a signed-out page is not probed on the timer', signInGone && __fetches === 0);
 
+// A member dropped from require_group gets a 403 with the reason: signed out, told why.
+signInGone = false; signedIn = true; es = null; __up = true; __added.length = 0; __status = 403;
+__body = {error:'forbidden', reason:'your account is not in the eng group', refused:true};
+let refusedErr = null; try{ await api('/v1/sessions'); }catch(e){ refusedErr = e; }
+const refusedNote = __added.find(n => n.textContent.startsWith('Your sign-in ended: your account is not in the eng group'));
+check('a refused member is signed out with the reason', !!refusedNote && shown() === '● signed out');
+check('and the request names the reason, not "forbidden"', !!refusedErr && refusedErr.message === 'your account is not in the eng group');
+check('and the way back carries the reason', !!refusedNote && refusedNote.childNodes.some(c => c.href === '/?refused=your%20account%20is%20not%20in%20the%20eng%20group&return=/ide'));
+// Any other 403 is a refused action, not a sign-in that ended.
+signInGone = false; __added.length = 0; __body = {error:'denied by rule'};
+try{ await api('/v1/sessions'); }catch{}
+check('a rule\'s 403 does not sign out', !signInGone && __added.length === 0);
+__status = 200; __body = null;
+
 if(!ok) process.exit(1);

@@ -34,6 +34,7 @@ globalThis.hideThinking = ()=>{};
 globalThis.showThinking = ()=>{};
 globalThis.refresh = ()=>{};
 globalThis.openDrawer = ()=>{};
+globalThis.paintOpenPill = ()=>{};
 function newTurn(){ turnEl = node('turn'); tx.appendChild(turnEl); return turnEl; }
 function approval(){}
 function resolveApproval(){}
@@ -65,11 +66,28 @@ globalThis.$ = id => els[id] || null;
 // The console lists a finished session by how it ended, and the open one by
 // its record's end before the list has caught up.
 func TestConsoleListNamesHowASessionEnded(t *testing.T) {
-	harness := `let current = null, live = false;
+	harness := `import { El } from './dom.mjs';
+let current = null, live = false;
 const stats = {reason:null};
+const els = { list: new El('div') };
+globalThis.$ = id => els[id] || null;
 `
 	if out, err := runConsoleCases(t, "state", harness, "list_state_cases.mjs"); err != nil {
 		t.Fatalf("the console's session states failed:\n%s", out)
+	}
+}
+
+// The rail's pill is repainted when the open session's end renders, not only
+// on the next list poll, which a drain never lets succeed.
+func TestConsoleEndRepaintsTheOpenPill(t *testing.T) {
+	i := strings.Index(consoleHTML, "case 'session.ended': {")
+	if i < 0 {
+		t.Fatal("the console no longer renders session.ended")
+	}
+	end := i + strings.Index(consoleHTML[i:], "break;")
+	body := consoleHTML[i:end]
+	if r, p := strings.Index(body, "stats.reason = p.reason;"), strings.Index(body, "paintOpenPill();"); r < 0 || p < r {
+		t.Fatal("session.ended does not repaint the open session's pill after recording its end")
 	}
 }
 

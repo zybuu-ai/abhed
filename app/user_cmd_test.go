@@ -13,7 +13,7 @@ import (
 
 // userWorkspace is a workspace with local accounts and a scratch home, so no
 // test reads or writes the real ~/.abhed.
-func userWorkspace(t *testing.T, authJSON string) string {
+func userWorkspace(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -23,7 +23,7 @@ func userWorkspace(t *testing.T, authJSON string) string {
 	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := `{"auth":` + authJSON + `}`
+	cfg := `{"auth":{"mode":"local"}}`
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func runUser(t *testing.T, ws string, args ...string) (int, string) {
 // A password set with `user add` is one the person must change at first
 // sign-in, as it is when an administrator sets one from the page.
 func TestUserAddSetsMustChange(t *testing.T) {
-	ws := userWorkspace(t, `{"mode":"local"}`)
+	ws := userWorkspace(t)
 	if code, out := runUser(t, ws, "add", "dave", "-password", "correct-horse-1"); code != 0 {
 		t.Fatalf("user add = %d: %s", code, out)
 	}
@@ -68,7 +68,7 @@ func TestUserAddSetsMustChange(t *testing.T) {
 
 // Removing an account that does not exist fails and says so.
 func TestUserRemoveUnknownFails(t *testing.T) {
-	ws := userWorkspace(t, `{"mode":"local"}`)
+	ws := userWorkspace(t)
 	code, out := runUser(t, ws, "remove", "nosuch")
 	if code != 1 || !strings.Contains(out, "no such user") || strings.Contains(out, "removed") {
 		t.Fatalf("user remove nosuch = %d %q, want 1 and no such user", code, out)
@@ -84,7 +84,7 @@ func TestUserRemoveUnknownFails(t *testing.T) {
 // The commands that write accounts refuse a users file serve would refuse,
 // with serve's message, and write nothing.
 func TestUserCommandsRefuseAStateFileServeRefuses(t *testing.T) {
-	ws := userWorkspace(t, `{"mode":"local"}`)
+	ws := userWorkspace(t)
 	file := filepath.Join(ws, "users.json")
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"),
 		[]byte(`{"auth":{"mode":"local","users_file":"`+filepath.ToSlash(file)+`"}}`), 0o600); err != nil {
@@ -102,5 +102,39 @@ func TestUserCommandsRefuseAStateFileServeRefuses(t *testing.T) {
 	}
 	if _, err := os.Stat(file); !os.IsNotExist(err) {
 		t.Fatalf("a refused users file was written: %v", err)
+	}
+}
+
+// `user passwd` sets the password it is given, with the flag before or after
+// the username, and still makes the person change it at first sign-in.
+func TestUserPasswdHonoursPassword(t *testing.T) {
+	ws := userWorkspace(t)
+	if code, out := runUser(t, ws, "add", "dave", "-password", "correct-horse-1"); code != 0 {
+		t.Fatalf("user add = %d: %s", code, out)
+	}
+	st, err := auth.NewFileUserStore(filepath.Join(ws, ".abhed", "users.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	la := auth.NewLocalAuth(st, 0, false)
+	for want, args := range map[string][]string{
+		"battery-staple-2": {"passwd", "dave", "-password", "battery-staple-2"},
+		"battery-staple-3": {"passwd", "-password", "battery-staple-3", "dave"},
+		"battery-staple-4": {"passwd", "dave", "-password=battery-staple-4"},
+	} {
+		code, out := runUser(t, ws, args...)
+		if code != 0 || strings.Contains(out, "new password for") {
+			t.Fatalf("user %v = %d %q, want the given password set", args, code, out)
+		}
+		u, err := la.Authenticate(context.Background(), "dave", want)
+		if err != nil || !u.MustChange {
+			t.Fatalf("user %v did not set %q as a temporary password: %v", args, want, err)
+		}
+	}
+	if code, out := runUser(t, ws, "passwd", "dave", "-password", "short"); code != 1 {
+		t.Fatalf("a weak password = %d %q, want refused", code, out)
+	}
+	if code, out := runUser(t, ws, "passwd", "dave"); code != 0 || !strings.Contains(out, "new password for dave") {
+		t.Fatalf("user passwd with no password = %d %q, want a generated one", code, out)
 	}
 }

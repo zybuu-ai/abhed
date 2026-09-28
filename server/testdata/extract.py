@@ -28,7 +28,7 @@ sets = {
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){'],
-    'state': ['function shownState(s){'],
+    'state': ['function shownState(s){','function paintOpenPill(){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
@@ -37,7 +37,7 @@ sets = {
     'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){'],
-    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(){',
+    'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
           'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
     # From ide.html: the explorer's tree and its name input.
     'ide-tree': ['const el = (tag, cls, text) => {','const clear = ','const parentOf = ','const joinPath = ','const dirs = ','const heldLoads = ',
