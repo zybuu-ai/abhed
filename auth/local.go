@@ -36,6 +36,9 @@ var (
 	ErrUserExists     = errors.New("that username is already taken")
 	ErrWeakPassword   = errors.New("password must be at least 10 characters")
 	ErrNoSuchUser     = errors.New("no such user")
+	// ErrSamePassword stops a temporary password being re-entered to clear
+	// the must-change flag.
+	ErrSamePassword = errors.New("choose a new password; it cannot be the same as the current one")
 )
 
 // User is a local account.
@@ -226,7 +229,15 @@ func (l *LocalAuth) Authenticate(ctx context.Context, username, password string)
 }
 
 // ChangePassword updates a user's password after verifying the current one.
+// It ends no session itself: sessions issued under the old password end when
+// they next read the account, and ChangePasswordHandler ends local ones at once.
 func (l *LocalAuth) ChangePassword(ctx context.Context, username, current, next string) error {
+	return l.changePassword(ctx, username, current, next, "")
+}
+
+// changePassword is ChangePassword that re-stamps the session keep with the
+// new hash before it is stored, so the change does not end that session.
+func (l *LocalAuth) changePassword(ctx context.Context, username, current, next, keep string) error {
 	u, err := l.Authenticate(ctx, username, current)
 	if err != nil {
 		return err
@@ -234,17 +245,46 @@ func (l *LocalAuth) ChangePassword(ctx context.Context, username, current, next 
 	if len(next) < 10 {
 		return ErrWeakPassword
 	}
+	if next == current {
+		return ErrSamePassword
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
+	l.restamp(keep, passwordStamp(string(hash)), false)
 	u.Hash = string(hash)
 	u.MustChange = false
 	if err := l.Store.Put(ctx, u); err != nil {
+		l.restamp(keep, "", true)
 		return err
 	}
+	l.restamp(keep, "", false)
 	l.markMustChange(u.Username, false)
 	return nil
+}
+
+// restamp moves a session through its own change: a stamp starts it, then empty
+// commits it or, with undo, rolls it back. Each step voids reads in flight.
+func (l *LocalAuth) restamp(sid, stamp string, undo bool) {
+	if sid == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s, ok := l.sessions[sid]
+	if ok {
+		s.epoch.Add(1)
+	}
+	switch {
+	case !ok:
+	case stamp != "":
+		s.pwPrev, s.pwStamp = s.pwStamp, stamp
+	case undo:
+		s.pwStamp, s.pwPrev = s.pwPrev, ""
+	default:
+		s.pwPrev = ""
+	}
 }
 
 // markMustChange sets the password-change flag on every live session of a user.
@@ -273,6 +313,7 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	}
 	s.mustChange.Store(u.MustChange)
 	s.lastSeen.Store(now.UnixNano())
+	s.pwStamp = passwordStamp(u.Hash)
 	l.mu.Lock()
 	l.sessions[sid] = s
 	l.mu.Unlock()
@@ -383,6 +424,18 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	defer l.mu.Unlock()
 	if _, live := l.sessions[sid]; !live {
 		return nil, errSessionGone
+	}
+	// An empty stamp (no hash, not a local account today) skips this check.
+	// A read that overlapped a change or forget may be stale: judge the next one.
+	stamp := passwordStamp(u.Hash)
+	if s.epoch.Load() == epoch && s.pwStamp != "" && stamp != s.pwStamp && stamp != s.pwPrev {
+		// An administrator's reset confines the session to /account instead;
+		// a change the user made signs out whoever held the old password.
+		if !u.MustChange {
+			delete(l.sessions, sid)
+			return nil, errSessionGone
+		}
+		s.pwStamp = stamp
 	}
 	s.Identity = id
 	s.mustChange.Store(u.MustChange)
@@ -540,8 +593,9 @@ type changePasswordRequest struct {
 
 // ChangePasswordHandler lets a signed-in user rotate their own password.
 func (l *LocalAuth) ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	sid, _, _ := l.lookup(r)
 	id, ok := l.FromCookie(r)
-	if !ok {
+	if !ok || sid == "" {
 		writeAuthJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 		return
 	}
@@ -550,10 +604,12 @@ func (l *LocalAuth) ChangePasswordHandler(w http.ResponseWriter, r *http.Request
 		writeAuthJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	if err := l.ChangePassword(r.Context(), id.Subject, req.Current, req.Next); err != nil {
+	if err := l.changePassword(r.Context(), id.Subject, req.Current, req.Next, sid); err != nil {
 		writeAuthJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// Other nodes end theirs on the stamp check; this node ends its own now.
+	l.endSessions(id.Subject, sid)
 	writeAuthJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -659,6 +715,12 @@ func (l *LocalAuth) SetGroups(ctx context.Context, username, group string, membe
 // revoked them and they had three sessions open" is a materially different
 // fact from "they were not signed in".
 func (l *LocalAuth) RevokeUser(username string) int {
+	return l.endSessions(username, "")
+}
+
+// endSessions drops every live session of username except the one keyed by
+// keep, and returns how many it ended.
+func (l *LocalAuth) endSessions(username, keep string) int {
 	if username == "" {
 		return 0
 	}
@@ -666,7 +728,7 @@ func (l *LocalAuth) RevokeUser(username string) int {
 	defer l.mu.Unlock()
 	n := 0
 	for sid, s := range l.sessions {
-		if s.Identity != nil && s.Identity.Subject == username {
+		if sid != keep && s.Identity != nil && strings.EqualFold(s.Identity.Subject, username) {
 			delete(l.sessions, sid)
 			n++
 		}
