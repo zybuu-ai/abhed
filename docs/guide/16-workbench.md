@@ -208,6 +208,14 @@ inside a folder, is also put to `delete(...)` rules: `delete(**/keep/**)`
 refuses renaming `keep`, a folder above it, or moving a file out of it. A
 `delete(...)` ask rule is recorded as the rename's reason and, like any ask in
 the Explorer, taken as answered, so it does not prompt.
+`delete(...)` and `rename(...)` rules bind the Explorer's actions,
+`write(...)` rules the Explorer, saves and the agent's `write` tool, and
+`edit(...)` rules the agent's `edit` tool: a rule binds only the tool it
+names, so keeping a folder from the agent takes both `write(...)` and
+`edit(...)`. None of them binds a command: `rm -rf vault` in the terminal, or from
+the agent's `bash`, is judged by `bash(...)` rules, so keep a folder with a
+`bash(...)` rule as well where that matters. A destructive command such as
+`rm -r` always asks, `Run it? [y/N]` in the line terminal.
 Policy hooks and extensions are shown the action (`mkdir`, `rename` or
 `delete`, with a `path` and, for a rename, a `to`), not a `bash` call; a rename
 reaches them for each name, and as a `delete` for the old name, and a folder's

@@ -63,7 +63,11 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 	var req folderRequest
 	s.explorerOp(w, r, &req, func(x *explorerCall) (explorerPlan, bool) {
 		rel, abs, ok := x.named(req.Path)
-		if !ok || !x.absent(abs) || !x.check(rel, true, "") {
+		if !ok || !x.absent(abs) {
+			return explorerPlan{}, false
+		}
+		x.tried("mkdir", map[string]string{"path": abs})
+		if !x.check(rel, true, "") {
 			return explorerPlan{}, false
 		}
 		return explorerPlan{
@@ -88,7 +92,11 @@ func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 			return explorerPlan{}, false
 		}
 		to, toAbs, ok := x.named(req.To)
-		if !ok || !x.absent(toAbs) || !x.check(from, info.IsDir(), "") || !x.check(to, info.IsDir(), "") {
+		if !ok || !x.absent(toAbs) {
+			return explorerPlan{}, false
+		}
+		x.tried("rename", map[string]string{"path": fromAbs, "to": toAbs})
+		if !x.check(from, info.IsDir(), "") || !x.check(to, info.IsDir(), "") {
 			return explorerPlan{}, false
 		}
 		// A rule on the action is put to the new name as well as the old, and to each entry inside.
@@ -121,7 +129,11 @@ func (s *Server) deletePath(w http.ResponseWriter, r *http.Request) {
 			return explorerPlan{}, false
 		}
 		info, ok := x.present(abs)
-		if !ok || !x.check(rel, info.IsDir(), "") {
+		if !ok {
+			return explorerPlan{}, false
+		}
+		x.tried("delete", map[string]string{"path": abs})
+		if !x.check(rel, info.IsDir(), "") {
 			return explorerPlan{}, false
 		}
 		cmd := "rm -- "
@@ -150,6 +162,15 @@ type explorerCall struct {
 	w   http.ResponseWriter
 	v   *workspaceView
 	pol *policy.Engine
+	// What the person asked for, and the write rule's denial that refused it, for the record.
+	action string
+	args   map[string]string
+	denial *policy.Result
+}
+
+// tried names the action the request asks for, so a refusal by a rule can be recorded.
+func (x *explorerCall) tried(action string, args map[string]string) {
+	x.action, x.args = action, args
 }
 
 func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, plan func(*explorerCall) (explorerPlan, bool)) {
@@ -175,8 +196,16 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 
 	live.manualMu.Lock()
 	defer live.manualMu.Unlock()
-	p, ok := plan(&explorerCall{w: w, v: v, pol: live.Loop.Policy})
+	x := &explorerCall{w: w, v: v, pol: live.Loop.Policy}
+	p, ok := plan(x)
 	if !ok {
+		// A write rule's refusal is recorded as the person's denied action; the reply is already sent.
+		if x.denial != nil && x.action != "" {
+			args, _ := json.Marshal(x.args)
+			if err := live.Loop.ManualRefused(x.action, "u"+newSessionID(), args, *x.denial); err != nil {
+				s.log.Warn("could not record a refused explorer change", "session", r.PathValue("id"), "error", err)
+			}
+		}
 		return
 	}
 	// Detached from the request: a client that goes away must not stop an rm -r half way.
@@ -203,7 +232,7 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 	res, err := live.Loop.ManualAs(ctx, sess, p.action, "u"+newSessionID(), args, "bash", runArgs, also...)
 	switch {
 	case err != nil:
-		WriteError(w, http.StatusInternalServerError, "the change could not be recorded, so it was not made")
+		writeUnrecorded(w, err, "the change could not be recorded, so it was not made")
 	case res.IsError:
 		WriteError(w, http.StatusForbidden, res.Content)
 	case res.ExitCode != nil && *res.ExitCode != 0:
@@ -297,6 +326,7 @@ func (x *explorerCall) judge(rel string, dir bool) (int, string) {
 		for _, subject := range subjects {
 			args, _ := json.Marshal(map[string]string{"path": subject})
 			if d := x.pol.Evaluate("write", true, args); d.Decision == policy.Deny {
+				x.denial = &d
 				return http.StatusForbidden, "Denied: " + d.Reason
 			}
 		}

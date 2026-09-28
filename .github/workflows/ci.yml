@@ -209,6 +209,37 @@ jobs:
             grep -q -- "--- PASS: $t" limit.log || { echo "$t did not run and pass:"; cat limit.log; exit 1; }
           done
 
+  # Case-folding path tests skip on Linux; macOS folds case, so a skip here
+  # means the check stopped running, and it fails the build.
+  macos:
+    name: macOS case-folding paths
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Path rules hold on a disk that folds case
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -v ./internal/tools/... ./internal/policy/... ./internal/agent/... > case.log 2>&1 || { cat case.log; exit 1; }
+          go test -race -count=1 -v ./server/... -run 'Explorer|DiskPath|Case' >> case.log 2>&1 || { cat case.log; exit 1; }
+          go test -race -count=1 -v ./internal/forge/... -run 'WithoutCase' >> case.log 2>&1 || { cat case.log; exit 1; }
+          if grep -E "this disk keeps|needs a disk that folds|hard links unavailable|link count is not read|does not open|names are case-sensitive here|this disk is case-sensitive" case.log; then
+            echo "a case-folding test skipped on a disk that should fold case"; exit 1
+          fi
+          for t in TestDiskPathSpellsWhatTheDiskHolds TestDiskPathFollowsARenameToAnotherCase \
+                   TestDiskPathSeesARenameBehindAnOldTime TestDiskPathPrefersTheNameOverAHardLink \
+                   TestDiskPathFoldsAsTheDiskDoes TestIdentityScanPassesOverAHardLinkedFile TestPushComparesPathsWithoutCase \
+                   TestPathRulesHoldForEveryCaseTheDiskOpens TestRelativeRulesHoldUnderARootNamedInAnotherCase \
+                   TestAgentFileToolsMeetRulesInAnyCase TestManualRefusedRecordsOnlyADenial \
+                   TestExplorerRulesHoldForEveryCaseTheDiskOpens TestExplorerWriteRuleRefusalsAreRecorded; do
+            grep -q -- "--- PASS: $t " case.log || { echo "$t did not run and pass:"; grep -- "$t" case.log || true; exit 1; }
+          done
+          echo "$(grep -c -- "--- PASS" case.log) tests passed; every case-folding test ran"
+
   container:
     name: Container image
     runs-on: ubuntu-latest
