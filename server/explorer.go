@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -51,6 +52,7 @@ type explorerPlan struct {
 	action               string            // what the policy judges and the record names
 	args                 map[string]string // the action's paths
 	also                 []string          // further paths the action is judged by, such as a folder's contents
+	removes              []string          // paths the action takes away, put to delete rules too
 	command, description string
 	result               string      // the workspace path reported back
 	done                 func() bool // whether the change is on disk afterwards
@@ -91,8 +93,11 @@ func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 		}
 		// A rule on the action is put to the new name as well as the old, and to each entry inside.
 		also := append(x.subjects(from, info.IsDir()), x.subjects(to, info.IsDir())...)
+		// The old path is removed, so it and everything inside it also meet delete rules.
+		removes := x.subjects(from, info.IsDir())
 		// Everything inside moves too: each entry is judged where it is and where it lands.
 		if info.IsDir() && !x.contents(from, func(sub string, dir bool) bool {
+			removes = append(removes, x.subjects(filepath.Join(from, sub), dir)...)
 			also = append(also, x.subjects(filepath.Join(from, sub), dir)...)
 			also = append(also, x.subjects(filepath.Join(to, sub), dir)...)
 			return x.check(filepath.Join(from, sub), dir, sub) && x.check(filepath.Join(to, sub), dir, sub)
@@ -100,7 +105,7 @@ func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 			return explorerPlan{}, false
 		}
 		return explorerPlan{
-			action: "rename", args: map[string]string{"path": fromAbs, "to": toAbs}, also: also,
+			action: "rename", args: map[string]string{"path": fromAbs, "to": toAbs}, also: also, removes: removes,
 			command: "mv -n -- " + shellQuote(fromAbs) + " " + shellQuote(toAbs), description: "renamed in the explorer", result: to,
 			done: func() bool { return moved(info, fromAbs, toAbs) },
 		}, true
@@ -180,17 +185,21 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 	p.args["runs"] = p.command
 	args, _ := json.Marshal(p.args)
 	runArgs, _ := json.Marshal(map[string]string{"command": p.command, "description": p.description})
-	also := make([]json.RawMessage, 0, len(p.also))
-	// Each spelling is judged once: on a path with no links both spellings match.
-	seen := make(map[string]bool, len(p.also))
-	for _, subject := range p.also {
-		if seen[subject] {
-			continue
+	also := make([]agent.Subject, 0, len(p.also)+len(p.removes))
+	// Each spelling is judged once per action: on a path with no links both spellings match.
+	seen := make(map[[2]string]bool, len(p.also)+len(p.removes))
+	add := func(action string, paths []string) {
+		for _, path := range paths {
+			if seen[[2]string{action, path}] {
+				continue
+			}
+			seen[[2]string{action, path}] = true
+			a, _ := json.Marshal(map[string]string{"path": path})
+			also = append(also, agent.Subject{Action: action, Args: a})
 		}
-		seen[subject] = true
-		a, _ := json.Marshal(map[string]string{"path": subject})
-		also = append(also, a)
 	}
+	add("", p.also)
+	add("delete", p.removes)
 	res, err := live.Loop.ManualAs(ctx, sess, p.action, "u"+newSessionID(), args, "bash", runArgs, also...)
 	switch {
 	case err != nil:

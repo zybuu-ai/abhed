@@ -32,11 +32,18 @@ func (l *Loop) Manual(ctx context.Context, sess *tools.Session, call string, id 
 	return result, l.ManualObserve(id, call, result, time.Since(start))
 }
 
+// Subject is a further argument a person's action is judged by. Action names the
+// rule it is put to, such as delete for what a rename removes; empty means the action's own.
+type Subject struct {
+	Action string
+	Args   json.RawMessage
+}
+
 // ManualAs judges and records a person's action with no tool of its own, such as an
 // explorer delete, as action; the tool named run then carries it out, not judged as itself.
-// also are further arguments the action is judged by, such as a rename's new name;
-// a refusal on any is recorded as the action's.
-func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id string, args json.RawMessage, run string, runArgs json.RawMessage, also ...json.RawMessage) (tools.Result, error) {
+// also are further subjects the action is judged by, such as a rename's new name;
+// a deny on any is recorded as the action's, and failing that a rule's ask.
+func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id string, args json.RawMessage, run string, runArgs json.RawMessage, also ...Subject) (tools.Result, error) {
 	tool, found := l.Tools.Get(run)
 	if !found {
 		return tools.Result{}, fmt.Errorf("unknown tool %q", run)
@@ -46,7 +53,11 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 		if decision.Decision == policy.Deny {
 			break
 		}
-		if d := l.Policy.Evaluate(action, true, a); d.Decision == policy.Deny {
+		name := a.Action
+		if name == "" {
+			name = action
+		}
+		if d := l.Policy.Evaluate(name, true, a.Args); weight(d) > weight(decision) {
 			decision = d
 		}
 	}
@@ -170,6 +181,20 @@ func (l *Loop) ManualScreen(id, line string) (*tools.Result, error) {
 func (l *Loop) ManualTerminalInput(in TerminalInput) error {
 	_, err := l.Recorder.Record(EvTerminalInput, ActorUser, Trusted, in)
 	return err
+}
+
+// weight ranks a decision for ManualAs: a deny, then an ask a rule or hook
+// made, then an ask the mode made, then an allow.
+func weight(d policy.Result) int {
+	switch {
+	case d.Decision == policy.Deny:
+		return 3
+	case d.Decision == policy.Ask && d.Step != "mode" && d.Step != "default":
+		return 2
+	case d.Decision == policy.Ask:
+		return 1
+	}
+	return 0
 }
 
 func orEmpty(r *tools.Result) tools.Result {

@@ -203,10 +203,15 @@ deny rules and plan mode. A `rename(...)` rule is matched against the old name
 and the new one, and for a folder, a `delete(...)` or `rename(...)` rule is
 matched against every entry inside it (at its new path too, for a rename), so
 `delete(**/keep/**)` also refuses deleting `keep` or any folder above it.
+A rename removes what was at the old name, so the old name, and every entry
+inside a folder, is also put to `delete(...)` rules: `delete(**/keep/**)`
+refuses renaming `keep`, a folder above it, or moving a file out of it. A
+`delete(...)` ask rule is recorded as the rename's reason and, like any ask in
+the Explorer, taken as answered, so it does not prompt.
 Policy hooks and extensions are shown the action (`mkdir`, `rename` or
 `delete`, with a `path` and, for a rename, a `to`), not a `bash` call; a rename
-reaches them for each name, and a folder's delete or rename for each
-entry inside it. Before it runs, every path
+reaches them for each name, and as a `delete` for the old name, and a folder's
+delete or rename for each entry inside it. Before it runs, every path
 it touches must be one the workbench would open, which rules out `.abhed/`,
 `.git/` and anything a read rule withholds, and one a save to which would not
 be refused by a write rule. Each path is judged as named and with its folder's
