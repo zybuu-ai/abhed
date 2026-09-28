@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/auth"
 )
@@ -93,4 +97,64 @@ func TestUserRoundTrip(t *testing.T) {
 		t.Error("MustChange lost in the round trip: an admin-set password " +
 			"would silently become permanent")
 	}
+}
+
+// Sign out everywhere on one server ends the user's sessions on a second
+// server over the same database within the recheck, and no one else's.
+func TestRevokeReachesOtherServersOverPostgres(t *testing.T) {
+	a, b := runtimeStore(t, "default"), runtimeStore(t, "default")
+	ctx := context.Background()
+	lou, other := testID(t, "lou-"), testID(t, "by-")
+	la, lb := auth.NewLocalAuth(a, time.Hour, false), auth.NewLocalAuth(b, time.Hour, false)
+	for _, name := range []string{lou, other} {
+		if err := la.CreateUser(ctx, auth.User{Username: name}, "correct-horse-1"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = a.Delete(context.Background(), name) })
+	}
+	signIn := func(l *auth.LocalAuth, user string) *http.Request {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		l.SignInHandler(rec, httptest.NewRequest("POST", "/v1/signin",
+			strings.NewReader(`{"username":"`+user+`","password":"correct-horse-1"}`)))
+		req := httptest.NewRequest("GET", "/", nil)
+		for _, c := range rec.Result().Cookies() {
+			req.AddCookie(c)
+		}
+		if _, ok := l.FromCookie(req); !ok {
+			t.Fatalf("sign-in as %s is not live: %d", user, rec.Code)
+		}
+		return req
+	}
+	onB, otherOnB := signIn(lb, lou), signIn(lb, other)
+	stale, err := b.Get(ctx, lou)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := la.RevokeUserContext(ctx, lou); err != nil {
+		t.Fatal(err)
+	}
+	// A write from a read taken before the revocation cannot lower its count.
+	if err := b.Put(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Get(ctx, lou); got.Revocations != stale.Revocations+1 {
+		t.Fatalf("revocations = %d, want %d", got.Revocations, stale.Revocations+1)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, ok := lb.FromCookie(onB); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session on B survived sign-out everywhere on A")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, ok := lb.FromCookie(otherOnB); !ok {
+		t.Fatal("signing one user out everywhere ended another's session")
+	}
+	signIn(lb, lou)
+	signIn(la, lou)
 }

@@ -6,6 +6,58 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- The `users` table gains `revocations`, a count of sign-outs everywhere.
+  With two database roles, run `abhed migrate` as the owner before starting
+  the new server: it refuses to start on the older schema and says so.
+  Existing accounts start at 0. A `users.json` file gains the same field the
+  first time an account in it is signed out everywhere. A 1.2.0 server or
+  `abhed user` command that rewrites the file drops the count, and sessions
+  it should end on other servers then stay live: servers and CLIs of
+  different versions must not share one users file.
+- A custom `auth.UserStore` must store `User.Revocations` and never lower it
+  in `Put`. A sign-out everywhere through a store that does not keep it now
+  returns an error instead of succeeding.
+
+### Added
+
+- In `auth`: `(*LocalAuth).RevokeUserContext`, which is `RevokeUser` that
+  also returns an error when the sign-out could not be recorded for other
+  servers; `User.Revocations`, which the account stores keep (never lowered
+  by a write) and which is not sent in API responses; and
+  `RevokingUserStore`, a store that raises the count in one step, which the
+  memory, file and Postgres stores implement; `LocalAuth.Log`, where
+  `RevokeUser` logs what it cannot return.
+
+### Changed
+
+- `agent.Loop` gains `ManualRefused`, which records a person's action that a
+  policy denial refused before it reached `ManualAs`.
+- The guide says that `delete(...)` and `rename(...)` rules bind the
+  Explorer, not `rm` or `mv` in the terminal or the agent's `bash`, which
+  `bash(...)` rules judge, and the security posture no longer calls the
+  server single-node: several servers can share one Postgres, with no
+  automatic failover.
+- `(*LocalAuth).RevokeUser` now writes to the account store, with a
+  10-second limit of its own, and logs a failure to `LocalAuth.Log` (new;
+  `slog.Default()` when unset) instead of returning it. A caller on a
+  request path should use `RevokeUserContext` with the request's context.
+- `POST /v1/admin/users/admin` removing rights answers `200` with
+  `sessions_ended`, `"signed_out_everywhere": false` and a `warning` when
+  the sign-out could not be recorded for other servers, instead of `204`;
+  the audit detail then carries `revocation_error`. Success is still `204`.
+
+### Fixed
+
+- An Explorer change to a session another server is running answered `500`
+  "the change could not be recorded" instead of `409` "the session is being
+  continued elsewhere", as a save does. Nothing was changed either way.
+- An Explorer change refused by a `write(...)` rule was not recorded, while
+  one refused by a `delete(...)` rule was. The attempt (`mkdir`, `rename` or
+  `delete`, with its paths) and the policy's denial are now in the record.
+  The reply is unchanged.
+
 ### Security
 
 - On a disk that ignores case (macOS and Windows by default), another
@@ -18,26 +70,22 @@ All notable changes to Abhed are recorded here. The format follows
   disk holds, in case and Unicode form, and a part not made yet as given,
   under its folder's real name. Allow rules still compare case as written.
   `tools.DiskPath` gives that spelling.
-
-### Fixed
-
-- An Explorer change to a session another server is running answered `500`
-  "the change could not be recorded" instead of `409` "the session is being
-  continued elsewhere", as a save does. Nothing was changed either way.
-- An Explorer change refused by a `write(...)` rule was not recorded, while
-  one refused by a `delete(...)` rule was. The attempt (`mkdir`, `rename` or
-  `delete`, with its paths) and the policy's denial are now in the record.
-  The reply is unchanged.
-
-### Changed
-
-- `agent.Loop` gains `ManualRefused`, which records a person's action that a
-  policy denial refused before it reached `ManualAs`.
-- The guide says that `delete(...)` and `rename(...)` rules bind the
-  Explorer, not `rm` or `mv` in the terminal or the agent's `bash`, which
-  `bash(...)` rules judge, and the security posture no longer calls the
-  server single-node: several servers can share one Postgres, with no
-  automatic failover.
+- An administrator's "Sign out everywhere", and every other path that calls
+  `auth.LocalAuth.RevokeUser` (removing administrator rights, a password
+  reset from the admin page, an account refused by the access gate), ended
+  the person's sessions only on the server that handled the request. With
+  several servers sharing one Postgres account store, their sessions on the
+  others stayed live. The sign-out is now recorded with the account (a
+  failure to record it is logged, and reported by `RevokeUserContext` and
+  the admin-rights endpoint), and every server ends that person's older
+  sessions on its next read of the account: on Postgres within
+  `accountRecheck`, about 2 seconds, and with a users file as soon as the
+  file changes. A sign-in after the sign-out is not affected. As before, a
+  terminal or event stream already open is checked only when it opens.
+- An administrator's password reset made while a read of the same account
+  was in flight could have that read clear the new must-change flag on this
+  server's live sessions until their next read. The reset now voids reads
+  in flight, and a read that overlapped a change no longer sets the flag.
 
 ## [1.2.0] - 2026-09-28
 
