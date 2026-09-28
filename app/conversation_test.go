@@ -69,6 +69,14 @@ func startCLI(t *testing.T) *cliSession {
 // startCLIWith is startCLI with a model that streams reply to the nth request.
 func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cliSession {
 	t.Helper()
+	return startCLIConfig(t, reply, func(url string) string {
+		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":8192}}}}`
+	})
+}
+
+// startCLIConfig is startCLIWith under the configuration config makes from the model's URL.
+func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string) *cliSession {
+	t.Helper()
 	c := &cliSession{t: t, out: &syncBuffer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -86,7 +94,7 @@ func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cl
 		ws = r
 	}
 	c.ws = ws
-	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	cfg := config(srv.URL)
 	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
 		t.Fatal(err)
 	}

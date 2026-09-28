@@ -40,7 +40,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
-| `SetModel` | swap providers mid-conversation |
+| `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses is an error and is not made |
 | `Providers` | the provider types this build supports |
 
 `OnEvent` gets every event, in the order the store records them, from a

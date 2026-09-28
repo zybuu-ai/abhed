@@ -63,8 +63,11 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		case agent.EvModelCall:
 			var m agent.ModelCall
 			_ = json.Unmarshal(e.Payload, &m)
+			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
+				r.Models = append(r.Models, m.Model)
+			}
 			r.Turns = append(r.Turns, Turn{
-				N: len(r.Turns) + 1, Seq: e.Seq, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
+				N: len(r.Turns) + 1, Seq: e.Seq, Model: m.Model, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
 				TokensCached: m.TokensCached, CacheReported: m.CacheReported,
 				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
 				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff,

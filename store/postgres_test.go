@@ -276,6 +276,26 @@ func TestSessionTotalsRecordedOnEnd(t *testing.T) {
 	}
 }
 
+// The row names the model a session runs on now, so a list read after a
+// switch does not name the one it started on.
+func TestModelSwitchUpdatesTheRow(t *testing.T) {
+	p := openStore(t, "acme")
+	id := fmt.Sprintf("s-switch-%d", time.Now().UnixNano())
+	newSession(t, p, id, "acme")
+	if err := p.Append(ev(id, 1, agent.EvModelSwitched, agent.Trusted, agent.ModelSwitched{
+		Provider: "b", Model: "model-b", From: "test-model",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := p.GetSession(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Model != "model-b" {
+		t.Fatalf("the row names %q after a switch to model-b", rec.Model)
+	}
+}
+
 func TestListSessionsScopedToTenant(t *testing.T) {
 	acme := openStore(t, "acme")
 	id := fmt.Sprintf("s-list-%d", time.Now().UnixNano())

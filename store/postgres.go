@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -302,6 +303,16 @@ func (p *Postgres) Append(ev agent.Event) error {
 	// still shows whatever it accumulated.
 	if ev.Type == agent.EvSessionEnded {
 		p.finalizeSession(ctx, ev)
+	}
+	// The row names the model the session runs on now, as the list shows it.
+	if ev.Type == agent.EvModelSwitched {
+		var sw agent.ModelSwitched
+		if jsonUnmarshal(ev.Payload, &sw) == nil && sw.Model != "" {
+			if _, err := p.pool.Exec(ctx, `UPDATE sessions SET model = $2 WHERE id = $1`, ev.SessionID, sw.Model); err != nil {
+				// The event holds; only the list's label is stale.
+				slog.Warn("session row not updated after a model switch", "session", ev.SessionID, "error", err)
+			}
+		}
 	}
 	return nil
 }

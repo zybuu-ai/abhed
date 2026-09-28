@@ -124,7 +124,30 @@ requests whose errors point nowhere near the cause.
 
 `/model <name>` swaps the provider and keeps the conversation. The next turn
 re-prefills, because the new provider has never seen this prefix — a real cost,
-and still cheaper than rebuilding the session by hand.
+and still cheaper than rebuilding the session by hand. `/model` alone names the
+model in use and the configured providers.
+
+The new model answers from the next turn on: the system prompt names it, the
+subagents that turn spawns run on it, and a conversation started after `/clear`
+starts on it. `/resume` continues a recorded session on the model the CLI is
+using now; when that session last ran on another, it says so, and the first
+task records the move. The CLI follows your selection because one person at
+one terminal chose it; a server session can be continued by anyone who owns
+it, on any node, so it keeps the model its record names.
+
+In `abhed serve`, the picker in the console and in the workbench shows only
+when more than one provider is configured. With no chat open it chooses the
+model the next one starts on; with one open it switches that session
+(`POST /v1/sessions/{id}/model` with `{"provider": "<name>"}`). A session keeps
+its model when it is continued from its record, after a restart or on another
+node; if that provider is no longer configured it continues on the default,
+and its next turn records the move. A switch is refused while a turn is
+running, for a provider that is not configured, and when the switch cannot be
+recorded; the picker says why and goes back to the model still in use.
+
+A switch is recorded as a `model.switched` event (`provider`, `model`,
+`from`), each `model.call` names the model it went to, and the session list
+and HawkEYE name the model in use.
 
 ## Choosing one
 

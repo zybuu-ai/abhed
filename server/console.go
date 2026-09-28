@@ -807,6 +807,7 @@ async function health(){
  * Only shown when there is a real choice. A select with one option tells the
  * user they can pick something when they cannot. */
 let providers = [];
+let sessionsSeen = [];
 async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ return; }
   if(!Array.isArray(providers) || providers.length < 2) return;
@@ -822,26 +823,48 @@ async function loadProviders(){
   }
   $('mdl').hidden = true;
   sel.hidden = false;
+  sel.dataset.prev = sel.value;
+  if(current) showSessionModel(current);
 
   sel.onchange = async () => {
-    // With no session yet the choice simply applies to the next one, so there
-    // is nothing to send — createSession carries the provider.
-    if(!current){ return; }
+    // With no session yet the choice applies to the next one: createSession carries it.
+    if(!current){ sel.dataset.prev = sel.value; return; }
     sel.disabled = true;
     try{
-      await api('/v1/sessions/' + current + '/model', {
+      const r = await api('/v1/sessions/' + current + '/model', {
         method:'POST', body: JSON.stringify({provider: sel.value}),
       });
-      note('Model switched to ' + sel.value + ' for this chat.');
+      sel.dataset.prev = sel.value;
+      note(switchedText(r));
     }catch(e){
-      // The server refuses a swap mid-turn, which is the common case here.
-      note(String(e.message || e));
-      const cur = providers.find(p => p.default);
-      if(cur) sel.value = cur.name;
+      // Refused (mid-turn, or not recorded): say why, and show the model still in use.
+      note('Model not switched: ' + String(e.message || e));
+      sel.value = sel.dataset.prev;
     }finally{
       sel.disabled = false;
     }
   };
+}
+
+// One wording for a switch, so the reply and its recorded event show as one line.
+function switchedText(p){ return 'model switched to ' + p.model + (p.from ? ' (was ' + p.from + ')' : ''); }
+
+// The picker's choice for a new chat, or nothing when it is the default.
+function chosenProvider(){
+  const sel = $('mdlpick');
+  if(sel.hidden) return undefined;
+  const d = providers.find(p => p.default);
+  return d && d.name === sel.value ? undefined : sel.value;
+}
+
+// The picker follows the open chat, so it shows the model that chat runs on.
+function showSessionModel(id){
+  const sel = $('mdlpick');
+  const s = (sessionsSeen || []).find(x => x.id === id);
+  if(!s) return;
+  if(sel.hidden){ if(s.model) $('mdl').textContent = s.model; return; }
+  const p = providers.find(x => x.name === s.provider) || providers.find(x => x.model === s.model);
+  if(p){ sel.value = p.name; sel.dataset.prev = p.name; }
 }
 
 // A one-line status message in the transcript, for things that are neither an
@@ -880,6 +903,7 @@ async function refresh(){
   try{
     const list = await api('/v1/sessions');
     list.sort((a,b) => new Date(b.created) - new Date(a.created));
+    sessionsSeen = list;
     $('count').textContent = list.length;
 
     const el = $('list');
@@ -1055,7 +1079,8 @@ function openSession(id, state){
   // The panel shows one session's workspace and changes, so it follows the
   // session rather than going on showing the last one's.
   if(wb.open) openWorkbench(wb.tab);
-  refresh();
+  showSessionModel(id);
+  refresh().then(() => { if(current === id) showSessionModel(id); });
   connect(id);
 }
 
@@ -1294,6 +1319,14 @@ function render(ev){
     case 'conversation.forked': {
       tx.appendChild(node('note', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
       turnEl = null;
+      break;
+    }
+
+    case 'model.switched': {
+      const last = tx.lastElementChild;
+      if(!(last && last.textContent === switchedText(p))) tx.appendChild(node('note', switchedText(p)));
+      turnEl = null;
+      if(!$('mdlpick').hidden && providers.some(x => x.name === p.provider)){ $('mdlpick').value = p.provider; $('mdlpick').dataset.prev = p.provider; }
       break;
     }
 
@@ -1643,7 +1676,7 @@ async function send(){
       // immediately ended, and the real answer never rendered.
       const paths = await flushUploads(null);
       const r = await api('/v1/sessions',
-        {method:'POST', body: JSON.stringify({prompt: withFiles(prompt, paths), mode: $('mode').value})});
+        {method:'POST', body: JSON.stringify({prompt: withFiles(prompt, paths), mode: $('mode').value, provider: chosenProvider()})});
       $('q').value = ''; autogrow();
       openSession(r.session_id, 'running');
       showThinking('waiting for the model');

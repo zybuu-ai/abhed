@@ -213,9 +213,13 @@ const MaxSummaryChars = 8000
 
 func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (string, error) {
 	parent, _ := ctx.Value(parentKey{}).(*parentLink)
-	depth := f.Depth
+	depth, adapter := f.Depth, f.Adapter
 	if parent != nil {
 		depth += parent.depth
+		// A subagent runs on the model its parent runs on now, not the one at startup.
+		if parent.adapter != nil {
+			adapter = parent.adapter
+		}
 	}
 	if f.Budget != nil {
 		if !f.Budget.AllowNested && depth > 0 {
@@ -286,8 +290,8 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	sysPrompt := BuildSystemPrompt(BuildOptions{
 		Profile:       profile,
 		Workspace:     workspace,
-		Model:         f.Adapter.Profile().Name,
-		ContextWindow: f.Adapter.Profile().ContextWindow,
+		Model:         adapter.Profile().Name,
+		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
 	})
 
@@ -306,7 +310,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		cfg.MaxTurns = 30 // subagents are for bounded subtasks
 	}
 
-	sub := NewLoop(f.Adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
+	sub := NewLoop(adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
 	sub.depth = depth + 1
 	// Deliberately no Compactor: a subagent that needs compaction was given too
 	// large a task, and silently compacting hides that from the operator.
@@ -371,6 +375,7 @@ type parentLink struct {
 	asks     chan struct{} // one ask at a time across the whole tree under one loop
 	depth    int           // 0 for a top-level loop, 1 for its subagents, and so on
 	fail     func(error)   // a write the parent's record refused ends the parent's run
+	adapter  model.Adapter // the parent's model now, which a switch may have changed
 }
 
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
@@ -382,6 +387,7 @@ func (l *Loop) asParent(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
+		adapter: l.Adapter,
 	})
 }
 

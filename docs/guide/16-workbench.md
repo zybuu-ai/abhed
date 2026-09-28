@@ -17,6 +17,11 @@ on, laid out the way an editor is.
   status: connection · sandbox tier · mode · model · context meter · findings
 ```
 
+The composer's model picker, shown when more than one provider is configured,
+chooses the model a new session starts on and switches the open one between
+turns; the status bar names the model the last call went to
+([switching models](03-providers.md#switching-mid-session)).
+
 | Where | What it shows |
 |---|---|
 | **Explorer** | the session's workspace; click a file to open it in the editor. New file, new folder, rename (F2) and delete are on its toolbar and right-click menu |

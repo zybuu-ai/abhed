@@ -44,7 +44,7 @@ refuse a record that is not whole.
 
 | Section | What it tells you |
 |---|---|
-| Summary | outcome, wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
+| Summary | outcome, the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of is marked `!` |

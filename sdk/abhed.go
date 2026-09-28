@@ -249,7 +249,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if system == "" {
 		system = agent.BuildSystemPrompt(agent.BuildOptions{
 			Profile: "main", Workspace: opts.Workspace,
-			Model: provider.Model, ContextWindow: provider.ContextWindow,
+			// Named as the adapter names itself, so SetModel can rewrite the line.
+			Model: adapter.Profile().Name, ContextWindow: adapter.Profile().ContextWindow,
 		})
 	}
 	if opts.AppendSystem != "" {
@@ -375,7 +376,8 @@ func (a *Agent) Fork(throughSeq int64) error {
 // ExportHTML renders the session as a self-contained page.
 func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) }
 
-// SetModel swaps the provider mid-conversation, keeping the history.
+// SetModel swaps the provider mid-conversation, keeping the history. A switch
+// the record refuses is not made.
 func (a *Agent) SetModel(p Provider) error {
 	cfg := config.ProviderConfig{
 		Type: p.Type, BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
@@ -385,8 +387,8 @@ func (a *Agent) SetModel(p Provider) error {
 	if err != nil {
 		return err
 	}
-	a.loop.SetAdapter(next)
-	return nil
+	// Recorded, so the record names the model that answers from here on.
+	return a.loop.SwitchModel("", next)
 }
 
 // Flush waits until OnEvent has returned for every event recorded before the

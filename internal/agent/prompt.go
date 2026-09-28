@@ -172,11 +172,7 @@ func BuildSystemPrompt(opts BuildOptions) string {
 	}
 	fmt.Fprintf(&b, "Date: %s\n", time.Now().Format("2006-01-02"))
 	if opts.Model != "" {
-		fmt.Fprintf(&b, "Model: %s", opts.Model)
-		if opts.ContextWindow > 0 {
-			fmt.Fprintf(&b, " · Context window: %d tokens", opts.ContextWindow)
-		}
-		b.WriteString("\n")
+		b.WriteString(modelLine(opts.Model, opts.ContextWindow))
 	}
 
 	// Skills sit before project memory and after the environment: stable
@@ -266,4 +262,13 @@ func gitState(dir string) (branch string, dirty int, isRepo bool) {
 		}
 	}
 	return branch, dirty, true
+}
+
+// modelLine is the prompt's line naming the model, which a switch rewrites.
+func modelLine(name string, window int) string {
+	line := "Model: " + name
+	if window > 0 {
+		line += fmt.Sprintf(" · Context window: %d tokens", window)
+	}
+	return line + "\n"
 }

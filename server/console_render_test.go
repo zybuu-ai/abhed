@@ -187,3 +187,51 @@ func TestConsoleKeepsTheModelPickerReachable(t *testing.T) {
 		t.Errorf("the workbench hides Switch: %s", m)
 	}
 }
+
+// pickerHarness is the page state the model pickers run against: a select
+// that holds its chosen option, two providers, and an api that records posts.
+const pickerHarness = `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+class Sel extends El {
+  appendChild(o){ if(o.selected || this._v === undefined) this._v = o.value; return super.appendChild(o); }
+  get value(){ return this._v; } set value(v){ this._v = v; }
+}
+const els = { mdlpick: new Sel('select'), tx: __root };
+els.mdlpick.hidden = true;
+const $ = id => els[id] || (els[id] = new El('div'));
+let current = null, providers = [], sessionsSeen = [], sessionList = [], caps = null;
+const add = n => __root.appendChild(n);
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); return c; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+globalThis.__posted = []; let __fail = null;
+const api = async (url, opts) => {
+  if(url === '/v1/providers') return [{name:'a', model:'model-a', default:true}, {name:'b', model:'model-b', default:false}];
+  __posted.push({url, body: opts && opts.body ? JSON.parse(opts.body) : null});
+  if(__fail) throw new Error(__fail);
+  return {provider:'b', model:'model-b', from:'model-a'};
+};
+`
+
+// The console's picker sends a new chat's choice, follows the open chat, and
+// on a refused switch says why and shows the model still in use.
+func TestConsoleModelPicker(t *testing.T) {
+	if out, err := runConsoleCases(t, "model", pickerHarness, "model_cases.mjs"); err != nil {
+		t.Fatalf("the console's model picker failed:\n%s", out)
+	}
+	// Static: a new chat carries the picker's choice.
+	if !strings.Contains(consoleHTML, "mode: $('mode').value, provider: chosenProvider()})") {
+		t.Error("the console starts a chat without the model the picker shows")
+	}
+}
+
+// The workbench has the same picker, for a new session and an open one.
+func TestIDEModelPicker(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-model", pickerHarness, "ide_model_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's model picker failed:\n%s", out)
+	}
+	for _, want := range []string{"JSON.stringify({workbench:true, mode, provider})", "client_id: b.cid, provider})"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("the workbench starts a session without the model the picker shows: no %s", want)
+		}
+	}
+}

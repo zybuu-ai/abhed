@@ -8,6 +8,7 @@
 #   extract.py ide.html ide-chat      sending, live state and approvals
 #   extract.py ide.html ide-conn      the connection indicator
 #   extract.py ide.html ide-lines     the line-by-line terminal
+#   extract.py console.go model       the model picker (ide-model: the workbench's)
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
 which = sys.argv[2] if len(sys.argv) > 2 else 'render'
@@ -44,6 +45,10 @@ sets = {
           'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
           'async function newEntry(folder){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
+    # The model picker, from console.go and from ide.html.
+    'model': ['function note(text){','function switchedText(p){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
+    'ide-model': ['const el = (tag, cls, text) => {','const clear = ','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
+          'function showSessionModel(s){','async function switchModel(){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
     'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',
           'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','function confirmData(t, d){'],

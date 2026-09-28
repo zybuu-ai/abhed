@@ -300,6 +300,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
 #crow{display:flex;align-items:center;gap:8px;margin-top:7px}
 #crow select{font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line-strong);border-radius:5px;padding:3px 6px}
+#crow #mdlpick{max-width:170px;text-overflow:ellipsis}
 #crow .hint{flex:1;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #send{height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600}
 #send:disabled{opacity:.5;cursor:default}
@@ -445,6 +446,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
           <option value="default">default</option><option value="plan">plan</option>
           <option value="accept-edits">accept-edits</option><option value="auto">auto</option>
         </select>
+        <select id="mdlpick" aria-label="Model" title="The model this session runs on" hidden></select>
         <span class="hint" id="hint">Enter sends · Shift+Enter for a new line</span>
         <button id="send" type="submit">Send</button>
       </div>
@@ -1105,7 +1107,7 @@ async function loadHawkeye(){
   if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
   let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
-  [['Outcome', r.outcome],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
+  [['Outcome', r.outcome],['Model', (r.models || []).join(' → ') || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
    ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'],['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
    .forEach(([k, v]) => { const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', String(v))); dl.appendChild(d); });
@@ -1163,14 +1165,59 @@ function resetSession(){
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
   $('mode').disabled = false; $('mode').title = 'Permission mode for the next session';
+  const p = providers.find(x => x.name === $('mdlpick').value);
+  $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
 const sessionLabel = s => s.prompt || 'Workbench session';
+
+/* ---------------------------------------------------------------- model picker */
+// Shown only when more than one provider is configured. It names the model the
+// open session runs on; with no session open, the model the next one starts on.
+let providers = [];
+async function loadProviders(){
+  try{ providers = await api('/v1/providers'); }catch{ providers = []; }
+  if(!Array.isArray(providers)) providers = [];
+  const sel = $('mdlpick');
+  if(providers.length < 2) return;
+  clear(sel);
+  for(const p of providers){ const o = el('option', '', p.model || p.name); o.value = p.name; o.selected = p.default; sel.appendChild(o); }
+  sel.dataset.prev = sel.value; sel.hidden = false;
+  if(current) showSessionModel(sessionList.find(x => x.id === current));
+}
+const modelOf = name => { const p = providers.find(x => x.name === name) || providers.find(x => x.default); return p ? p.model : caps ? caps.model.name : ''; };
+// The picker's choice for a new session, or nothing when it is the default.
+function chosenProvider(){
+  const sel = $('mdlpick'), d = providers.find(p => p.default);
+  return sel.hidden || (d && d.name === sel.value) ? undefined : sel.value;
+}
+function showSessionModel(s){
+  if(!s) return;
+  if(s.model) $('s-model').textContent = s.model;
+  const sel = $('mdlpick'); if(sel.hidden) return;
+  const p = providers.find(x => x.name === s.provider) || providers.find(x => x.model === s.model);
+  if(p){ sel.value = p.name; sel.dataset.prev = p.name; }
+}
+async function switchModel(){
+  const sel = $('mdlpick');
+  if(!current){ sel.dataset.prev = sel.value; $('s-model').textContent = modelOf(sel.value); return; }
+  sel.disabled = true;
+  try{
+    const r = await api('/v1/sessions/' + current + '/model', {method:'POST', body: JSON.stringify({provider: sel.value})});
+    sel.dataset.prev = sel.value; $('s-model').textContent = r.model;
+    const s = sessionList.find(x => x.id === current); if(s){ s.provider = r.provider; s.model = r.model; }
+  }catch(e){
+    // Refused (mid-turn, or not recorded): say why, and show the model still in use.
+    add(el('div', 'sys bad', 'Model not switched: ' + e.message)); sel.value = sel.dataset.prev;
+  }finally{ sel.disabled = false; }
+}
+$('mdlpick').addEventListener('change', switchModel);
 // opts.auto marks the session the page opened by itself; opts.note is shown on its terminal.
 function openSession(id, state, opts){
   resetSession(); current = id; setLive(state === 'running' || state === 'waiting_approval');
   const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? sessionLabel(s) : id;
   // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
   if(s && s.mode) $('mode').value = s.mode;
+  showSessionModel(s);
   $('mode').disabled = true; $('mode').title = 'Fixed when the session started. Start a new session to choose another mode.';
   $('s-mode').textContent = 'mode ' + $('mode').value;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
@@ -1182,8 +1229,9 @@ function openSession(id, state, opts){
 async function createWorkbench(note){
   try{
     const mode = $('mode').value;
-    const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode})});
-    sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode});
+    const provider = chosenProvider();
+    const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode, provider})});
+    sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode, provider, model: modelOf(provider)});
     openSession(r.session_id, 'idle', {note});
   }catch(e){ noTerminal('Could not open a workbench session: ' + e.message); }
 }
@@ -1509,7 +1557,9 @@ function render(ev){
     if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
-  case 'model.call': stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
+  case 'model.switched': add(el('div', 'sys', 'model switched to ' + p.model + (p.from ? ' (was ' + p.from + ')' : '')));
+    $('s-model').textContent = p.model; if(providers.some(x => x.name === p.provider)){ $('mdlpick').value = p.provider; $('mdlpick').dataset.prev = p.provider; } break;
+  case 'model.call': if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
     if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
@@ -2052,8 +2102,9 @@ async function send(){
       }
       drawQueued(b);
     }else{
-      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid})});
-      sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value}); openSession(r.session_id, 'running');
+      const provider = chosenProvider();
+      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid, provider})});
+      sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value, provider, model: modelOf(provider)}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
   }catch(e){ if(current === id){ failed(b, e.message); if(!busy) waiting(false); } }
@@ -2192,7 +2243,8 @@ $('switchuser').addEventListener('click', postSignOut);
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
   if(sb.tier === 'none') sbox.className = 'off';
-  $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode; $('s-mode').textContent = 'mode ' + caps.permissions.mode;
+  $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode;
+  await loadProviders(); $('s-mode').textContent = 'mode ' + caps.permissions.mode;
   try{
     const me = await api('/v1/whoami');
     if(me.authenticated){

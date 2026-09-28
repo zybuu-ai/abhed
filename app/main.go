@@ -364,11 +364,12 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		}
 	}
 
+	// Named as the adapter names itself, so a switch can rewrite the line exactly.
 	systemPrompt := agent.BuildSystemPrompt(agent.BuildOptions{
 		Profile:       "main",
 		Workspace:     workspace,
-		Model:         provider.Model,
-		ContextWindow: provider.ContextWindow,
+		Model:         adapter.Profile().Name,
+		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   agent.DiscoverMemoryFiles(workspace),
 		Skills:        skillListing,
 	})
@@ -580,10 +581,12 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
 		rec.Redact = openVault().Redactor()
-		// The adapter comes from session state, so a /model switch holds.
-		loop := agent.NewLoop(sessionState.adapter, registry, pol, approver, sess, rec, cfg)
+		// Built on the startup adapter, whose name the prompt carries, then moved
+		// to the one selected now, so a /model switch holds and the prompt follows it.
+		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
+		loop.SetAdapter(sessionState.adapter)
 		loop.Budget = turnBudget
-		loop.Compactor = agent.NewCompactor(sessionState.adapter, cfg.CompactAt)
 		attachExtensionSummarizer(loop.Compactor, extHost, id)
 		todos.Set(loop)
 		sessionState.loop, sessionState.sessionID = loop, id
@@ -627,9 +630,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
 			continue
 		}
+		if err := recordMove(sessionState); err != nil {
+			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
+			continue
+		}
 		if sessionState.loop == nil {
 			id := newConversationID()
-			if err := recordSession(ctx, store, id, appCfg); err != nil {
+			// The session state's config: /model changes which provider it names.
+			if err := recordSession(ctx, store, id, sessionState.appCfg); err != nil {
 				fmt.Printf("  %s not started: %v\n", s.Red("✕"), err)
 				continue
 			}
@@ -850,6 +858,9 @@ type cliState struct {
 	// and claimSeq the last seq of the record it was rebuilt from.
 	claim    string
 	claimSeq int64
+	// moved is the switch a resumed session makes by continuing on another
+	// model, recorded when its first task has claimed it.
+	moved *agent.ModelSwitched
 	// sess is the tool session, whose undo log a new conversation replaces.
 	sess *tools.Session
 	// transcript accumulates the session for /export.
@@ -861,7 +872,7 @@ type cliState struct {
 // fresh forgets the last conversation's cost, transcript, undo log and allowed
 // scopes, for a new or resumed one; the workspace is left as it is.
 func (c *cliState) fresh() {
-	c.total, c.transcript, c.claim = agent.Usage{}, nil, ""
+	c.total, c.transcript, c.claim, c.moved = agent.Usage{}, nil, "", nil
 	if c.scopes != nil {
 		c.scopes.Reset()
 	}
@@ -1020,6 +1031,16 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			return false
 		}
 		fmt.Printf("  %s\n", s.Dim("resumed — the next thing you type continues this conversation"))
+		// It continues on the model selected here, which may not be the one it last ran on.
+		last, model := agent.ProviderOf(events), agent.LastModel(events)
+		if p, ok := st.appCfg.Model.Providers[last]; ok && p.Model != "" {
+			model = p.Model // the provider the record names, over a call it may predate
+		}
+		if last != st.appCfg.Model.Default && (last != "" || model != "" && model != st.adapter.Profile().Name) {
+			fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("it last ran on %s and continues on %s; /model %s goes back",
+				orDefault(model, last), st.adapter.Profile().Name, orDefault(last, "<provider>"))))
+			st.moved = &agent.ModelSwitched{Provider: st.appCfg.Model.Default, Model: st.adapter.Profile().Name, From: model}
+		}
 
 	case "/undo":
 		restored, err := st.undo.Undo()
@@ -1084,7 +1105,7 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 
 	case "/model":
 		if len(fields) < 2 {
-			fmt.Printf("  current: %s\n", st.provider.Model)
+			fmt.Printf("  current: %s (%s)\n", st.adapter.Profile().Name, st.appCfg.Model.Default)
 			names := make([]string, 0, len(st.appCfg.Model.Providers))
 			for name := range st.appCfg.Model.Providers {
 				names = append(names, name)
@@ -1106,18 +1127,30 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			fmt.Printf("  %s %v\n", s.Red("✕"), resolveErr)
 			return false
 		}
-		next, buildErr := p.Adapter()
+		next, buildErr := newAdapter(p)
 		if buildErr != nil {
 			fmt.Printf("  %s %v\n", s.Red("✕"), buildErr)
 			return false
 		}
+		if st.loop != nil {
+			// Recorded before it takes effect, so the record names the model that answers.
+			release, claimErr := claimForWrite(ctx, st)
+			if claimErr != nil {
+				fmt.Printf("  %s model not switched: %v\n", s.Red("✕"), claimErr)
+				return false
+			}
+			switchErr := st.loop.SwitchModel(fields[1], next)
+			release()
+			if switchErr != nil {
+				fmt.Printf("  %s model not switched: the switch could not be recorded: %v\n", s.Red("✕"), switchErr)
+				return false
+			}
+		}
 		st.appCfg.Model.Default = fields[1]
 		st.provider = p
 		st.adapter = next
-		if st.loop != nil {
-			st.loop.SetAdapter(next)
-		}
-		fmt.Printf("  %s\n", s.Dim("switched to "+p.Model+" — the conversation is kept"))
+		st.moved = nil // the switch just recorded says where the session is
+		fmt.Printf("  %s\n", s.Dim("switched to "+next.Profile().Name+" — the conversation is kept"))
 		fmt.Printf("  %s\n", s.Dim("(the next turn re-prefills: the new provider has not seen this prefix)"))
 
 	case "/tree":
@@ -2136,6 +2169,20 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 	return nil
 }
 
+// recordMove records that a resumed session continues on another model, once
+// its first task has claimed it, so the record and a later resume agree.
+func recordMove(st *cliState) error {
+	if st.moved == nil || st.loop == nil {
+		return nil
+	}
+	// Kept until written: a refused write refuses the task, and so the next one too.
+	if _, err := st.loop.Recorder.Record(agent.EvModelSwitched, agent.ActorUser, agent.Trusted, *st.moved); err != nil {
+		return err
+	}
+	st.moved = nil
+	return nil
+}
+
 // storedSession reads session id's row, where the store keeps rows.
 func storedSession(ctx context.Context, st *cliState, id string) (store.SessionRecord, bool, error) {
 	getter, ok := st.store.(interface {
@@ -2637,10 +2684,19 @@ func buildRAG(cfg config.Config) []tools.Tool {
 // sampling parameter is a configuration error, and discovering it now beats
 // discovering it on the first model call of a long session.
 func buildAdapter(p config.ProviderConfig) model.Adapter {
-	a, err := p.Adapter()
+	a, err := newAdapter(p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "model: %v\n", err)
 		os.Exit(1)
+	}
+	return a
+}
+
+// newAdapter builds a provider's adapter, reporting its retries on stderr.
+func newAdapter(p config.ProviderConfig) (model.Adapter, error) {
+	a, err := p.Adapter()
+	if err != nil {
+		return nil, err
 	}
 	// A retry is silence from the user's point of view, and silence in an
 	// interactive session is indistinguishable from a hang. Say what happened.
@@ -2650,7 +2706,7 @@ func buildAdapter(p config.ProviderConfig) model.Adapter {
 			fmt.Fprintf(os.Stderr, "  %s\n", msg)
 		})
 	}
-	return a
+	return a, nil
 }
 
 // doctor verifies the endpoint actually works before the user debugs it

@@ -77,6 +77,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
 <section>
   <dl class="facts">
     <div><dt>Outcome</dt><dd class="{{if eq .Outcome "completed"}}out-completed{{else}}out-bad{{end}}">{{.Outcome}}</dd><small>{{clock .Started}}</small></div>
+    {{if .Models}}<div><dt>Model</dt><dd>{{latest .Models}}</dd><small>{{if gt (len .Models) 1}}switched: {{join .Models " → "}}{{else}}every call{{end}}</small></div>{{end}}
     <div><dt>Duration</dt><dd>{{ms .Totals.DurationMS}}</dd><small>model {{ms .Totals.ModelMS}} · tools {{ms .Totals.ToolMS}}</small></div>
     <div><dt>Turns</dt><dd>{{.Totals.Turns}}</dd><small>{{.Totals.ToolCalls}} tool calls · {{.Totals.Events}} events</small></div>
     <div><dt>Tokens in</dt><dd>{{n .Totals.TokensIn}}</dd><small>{{pct .Totals.CacheHitRate}} cached · {{n .Totals.TokensOut}} out</small></div>
