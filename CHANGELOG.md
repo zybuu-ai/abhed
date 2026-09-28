@@ -43,6 +43,24 @@ All notable changes to Abhed are recorded here. The format follows
   earlier in the session covers a subagent's calls too. With
   `limits.nested_subagents` off, the default, a subagent's own `task` or
   `tasks` call is refused.
+- A relative path rule now matches. If you wrote one such as `write(docs/**)`
+  and relied on it not firing, it will now refuse or ask; check your rules.
+- On macOS and Windows, program names in `bash(...)` rules are compared
+  without case, so `bash(Make test)` also allows `make test`.
+- More git commands confirm in every mode: a subcommand git does not have,
+  such as a repository alias or an extension like `git lfs`, any
+  `git update-ref`, `git read-tree -u` and `git checkout-index -f`. In
+  `bypass`, `auto` and under an allow rule these now ask, and no allow rule
+  or scope can approve them; headless `-p` refuses them.
+- An allow path rule matches only where a call lands, so `write(notes/**)`
+  no longer allows a path in `notes/` that is a link elsewhere, and a
+  relative allow rule applies to the workspace only, not added directories.
+- For the same reason, an absolute allow rule written with a spelling that
+  resolves elsewhere now asks: `/var/…` or `/tmp/…` on macOS (which resolve
+  to `/private/…`), or a project reached through a link. This only
+  tightens; write the rule with the resolved path.
+- In `plan` mode, a destructive or ask-rule command is refused as plan mode
+  instead of being put to you.
 - The interactive CLI keeps one conversation, and one session record, across
   the tasks you type, as `/model`, `/fork` and the docs already said: a later
   task sees what was said before it. The turn limit now counts the whole
@@ -335,6 +353,10 @@ All notable changes to Abhed are recorded here. The format follows
   generated password; `user passwd -password X <name>` answered "no such
   user". Both forms now set the given password, which must still be changed
   at the next sign-in.
+- Plan mode put a destructive command or an ask-rule command to the person,
+  and ran it if accepted, because those steps came before the mode. Plan
+  mode now refuses a mutating call first, as plan mode; read-only calls are
+  allowed as before.
 - A turn with several tool calls, stopped at one of them, left the calls
   after it with no result, so the conversation's next request was refused
   by the provider. A conversation rebuilt from the record (a continued
@@ -583,6 +605,31 @@ All notable changes to Abhed are recorded here. The format follows
   `limits.nested_subagents: false` was not enforced either: a subagent could
   spawn its own. It now cannot, and when nesting is on, a nested subagent's
   events reach the top-level record.
+- A path rule written relative to the workspace, such as
+  `write(docs/**/frozen/**)` or `delete(apps/**/vault/**)`, never matched:
+  it was compared only with the absolute path the agent and the Explorer
+  send, so the write, delete or rename went ahead. Deny and ask path rules
+  now also match the path relative to the workspace and to each added
+  directory, with or without a leading `./`, and the path with its links
+  resolved. Allow path rules match only the resolved target, absolute or
+  relative to the workspace. Absolute and `**/` rules match as before.
+- On macOS and Windows a capitalised program name got past deny, ask and
+  destructive checks: `WHOAMI` past `bash(whoami*)`, `GIT tag` past an ask
+  rule, and `GIT reset --hard`, `Git checkout -- .` and `RM -rf` ran with no
+  confirmation in modes that approve commands. Program names are now compared
+  without case there, in rules, the destructive check, wrappers and scopes;
+  a rule still matches as written too, so folding only adds a match.
+- The destructive git check missed a git alias and a git named by a
+  substitution: `git -c alias.wipe='reset --hard' wipe`,
+  `git --config-env=alias.x=X x` and `$(which git) reset --hard` discarded
+  work with no confirmation under `bypass`, `auto` or an allow rule. A git
+  subcommand git does not have (an alias or extension), a `-c` or
+  `--config-env` that sets an alias or include, and a git named by a
+  substitution that spells git are now destructive, as are
+  `git read-tree -u`, `git checkout-index -f` and `git update-ref`.
+- `find … -exec`, `-execdir`, `-ok` and `-okdir` ran a command a deny rule
+  names, such as `find . -exec whoami \;` past `bash(whoami*)`. The command
+  after them is now matched like one after `xargs`.
 - A hard link in the workspace to a state file let a sandboxed command rewrite
   `.abhed/config.json` (and so drop a deny rule for the next start): the file
   tools refused the link, but the command sandbox guards `.abhed` by path,

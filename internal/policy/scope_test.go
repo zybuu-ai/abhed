@@ -1,6 +1,10 @@
 package policy
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
+)
 
 // A one-click scope is offered only for a listed tool and subcommand, spelled
 // exactly; everything else, however it is spelled, is offered none.
@@ -34,7 +38,6 @@ func TestScopeIsOfferedOnlyForListedTools(t *testing.T) {
 		"coproc python3 x.py":     "",
 		"/usr/bin/python3 x.py":   "",
 		"/usr/bin/git status":     "",
-		"Git status":              "",
 		"git2 status":             "",
 		"mytool -ec ls":           "",
 		"go -C . run x.go":        "",
@@ -145,7 +148,15 @@ func TestNoScopeApprovesADestructiveCommand(t *testing.T) {
 		"git branch -f main HEAD~3", "git branch $'-D' topic",
 		// An operand named git, and --output on stash list.
 		"git branch topic git -D", "git tag v1 git -d", "git stash list -p --output=README.md",
+		// Aliases, a program name from a substitution, plumbing, and capitalised names.
+		"git -c alias.wipe='reset --hard' wipe", "git -c alias.nuke='reset --hard' nuke",
+		"git --config-env=alias.x=X x", "git wipe", "$(which git) reset --hard", "`which git` checkout -- .",
+		"git read-tree -u --reset HEAD", "git checkout-index -f -a", "git update-ref -d refs/heads/x",
+		"GIT reset --hard", "Git checkout -- .", "Git restore .", "Git stash drop", "GIT clean -fdx",
 	}
+	defer tools.FoldCommandNamesForTest(tools.FoldsCommandNames())()
+	tools.FoldCommandNamesForTest(true)
+	scopes = append(scopes, "bash(Git *)", "bash(GIT *)", "bash(git *)")
 	for _, mode := range []Mode{ModeDefault, ModeAcceptEdits, ModeAuto, ModeBypass} {
 		e := New(mode)
 		if err := e.AddAllow(scopes...); err != nil {
@@ -183,5 +194,19 @@ func TestAskRuleOffersNoScope(t *testing.T) {
 	}
 	if got := (Result{Decision: Ask, Step: "default", Scope: "bash(ls *)"}).Offer(); got != "bash(ls *)" {
 		t.Errorf("a default ask offers %q", got)
+	}
+}
+
+// Where case is ignored, a capitalised program is offered the scope its
+// lowered name would be; elsewhere it is another program and is offered none.
+func TestScopeFoldsCommandNames(t *testing.T) {
+	defer tools.FoldCommandNamesForTest(tools.FoldsCommandNames())()
+	for fold, want := range map[bool]string{true: "bash(git status *)", false: ""} {
+		tools.FoldCommandNamesForTest(fold)
+		for _, command := range []string{"Git status", "GIT status -s"} {
+			if got := New(ModeDefault).Evaluate("bash", true, args(map[string]string{"command": command})).Offer(); got != want {
+				t.Errorf("fold=%v %q: scope %q, want %q", fold, command, got, want)
+			}
+		}
 	}
 }

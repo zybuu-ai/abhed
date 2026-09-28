@@ -13,7 +13,7 @@ tool call, in a fixed order, with one rule that nothing can override.
 | Mode | Behaviour |
 |---|---|
 | `default` | ask before every mutation |
-| `plan` | **read-only** — nothing is written, safe for exploring an unfamiliar repository |
+| `plan` | **read-only** — nothing is written, safe for exploring an unfamiliar repository. A command or edit is refused as plan mode before any destructive or ask step, so it is never put to you |
 | `accept-edits` | auto-approve file edits, still ask for shell |
 | `auto` | approve by rule; anything unmatched still asks |
 | `bypass` | approve everything an org policy has not forbidden. Dangerous, and refusable by managed settings |
@@ -36,6 +36,33 @@ A rule is a tool name, optionally followed by a pattern:
 
 `*` matches anything, newlines included; the pattern is matched against the
 command or path.
+
+A deny or ask path pattern matches the path as the tool was given it, the
+absolute path, the path with its links resolved, and the path relative to the
+workspace and to each added directory, with or without a leading `./`. So
+`write(docs/**/frozen/**)`, `write(./docs/**/frozen/**)`,
+`write(**/frozen/**)` and `write(/abs/path/to/ws/docs/**)` all refuse a write
+to `docs/guide/frozen/a.md`, however the agent or the Explorer spells it.
+Relative patterns never match a path outside every workspace root.
+
+An allow path pattern matches only where the call lands: the path with `..`
+and links resolved, absolute or relative to the workspace. `write(notes/**)`
+does not allow a write through a link in `notes/` to somewhere else, nor
+`notes/` in an added directory, nor `notes/../src/x`. Write an absolute
+pattern for an added directory.
+
+Path patterns compare case as written, on every system: on a disk that
+ignores case, `write(docs/frozen/**)` does not match `DOCS/Frozen/f.md`. Add
+`**/` forms or both spellings where that matters.
+
+On macOS and Windows, where the disk ignores case, a command's program name is
+compared without case: `bash(whoami*)` denies `WHOAMI` and `Whoami`,
+`bash(git tag*)` asks for `GIT tag`, `RM -rf` and `Git checkout -- .` are
+destructive, and `Git status` is offered the scope `bash(git status *)`. Only
+the program name is folded, and in a rule only its literal start, before any
+`*`, `?` or space; arguments are compared as written, so folding only ever
+adds a match to a deny or ask rule. On Linux, `GIT` is a different program and
+is compared as written.
 
 For `bash`, an allow rule with a pattern approves only a single simple command.
 A command with `;`, `&`, `|`, a newline, `$(`, `${`, a backtick, `<`, `>`, `(`
@@ -61,7 +88,7 @@ rule you write. The list:
 The scope is the program and its subcommand, as in `bash(git commit *)`, or the
 program alone, as in `bash(ls *)`; for `git stash`, the one read-only word
 after it too, as in `bash(git stash list *)`. The program must be spelled
-exactly so: `/usr/bin/git`, `Git`, a wrapper or a `VAR=value` assignment in
+exactly so (on macOS and Windows, without regard to case): `/usr/bin/git`, a wrapper or a `VAR=value` assignment in
 front gets no scope. Nor does a command with `--eval` or `--exec` among its
 arguments, or any single-dash word containing `c` or `e`, such as `-ec`,
 `wc -c` or `head -c`; nor one with a quote, backslash, `$`, glob, brace or
@@ -103,7 +130,8 @@ writes into `script.py`.
 Deny and ask rules match the whole command or any command inside it: split on
 those operators, taken out of substitutions and subshells, and past leading
 `VAR=value` assignments, redirections and wrappers such as `sudo`, `env`,
-`nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`. The split does not
+`nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`, and the command
+after `find`'s `-exec`, `-execdir`, `-ok` or `-okdir`. The split does not
 parse the shell's quoting, so it can only add a denial or a prompt; the
 sandbox, not the pattern, is the boundary. A command too long or complex to
 split in full (over 64 KiB, over 1,024 parts, or a wrapper with too many
@@ -133,7 +161,10 @@ Every call goes through the same steps, and the order is the design:
 
 1. **Hooks** — extensions, first, so they can veto
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
-3. **Destructive commands** — force push, hard reset, disk writes, fork bombs
+3. **Plan mode** — in `plan`, a mutating call is refused here, before the
+   destructive and ask steps, so a destructive command or an ask rule is not
+   put to a person who might accept it. Read-only calls go on as before
+4. **Destructive commands** — force push, hard reset, disk writes, fork bombs
    and similar always confirm, in every mode, because there is no undo. For git
    these are the forms that discard work which Abhed recognises: `git restore`
    of the working tree (anything but `--staged` alone), `git checkout` with a
@@ -142,8 +173,21 @@ Every call goes through the same steps, and the order is the design:
    `git branch -d`, `-D`, `-f`, `-M` or `-C`, `git tag -d` or `-f`,
    `git worktree remove -f`, `git clean` other than a dry run,
    `git reset --hard`, `git push` with `-f`, `--force`, `--delete`, `--mirror`
-   or a `+` or `:` refspec, and `--output` on any git command, such as
-   `git diff`, `log`, `show`, `stash show` or `stash list`. Long options are
+   or a `+` or `:` refspec, `git read-tree -u`, `git checkout-index -f`,
+   any `git update-ref`, and `--output` on any git command, such as
+   `git diff`, `log`, `show`, `stash show` or `stash list`. Where the check
+   cannot tell what will run, it takes the command as destructive: a git
+   subcommand git does not have, which is an alias or an extension (`git wipe`,
+   whether the alias is in the repository's config or set with
+   `-c alias.wipe=…`), any `-c` or `--config-env` that sets an alias or an
+   include, and a git whose name comes from a substitution that names git
+   where it is the program (`$(which git) reset --hard`,
+   `` `which git` checkout -- . ``), read with the words that follow it. The
+   program is found past shell keywords (`then`, `!`, `{`, `while`), `eval`,
+   and runners such as `sudo -u bob`. A false match only asks, but no allow
+   rule, scope or mode approves it: an extension such as `git lfs` or
+   `git flow`, or your own alias such as `git st`, asks every time, and is
+   refused in headless `-p`. Run it by its full subcommand, or outside Abhed. Long options are
    recognised shortened, as git accepts them (`--del`, `--har`), and a later
    `--no-dry-run` or `--no-staged` takes back the flag that made a command
    safe. They are found wherever git takes options, among the operands too, in
@@ -151,19 +195,21 @@ Every call goes through the same steps, and the order is the design:
    wrapper; a single command with more than 16 words named `git` is taken as
    destructive. The list is best effort, like the rest of this step, and the
    sandbox is the boundary. It misses, among others: `git checkout FILE` with a
-   single word, which git reads as a branch first and otherwise as a path; a
-   git alias (`git -c alias.x=…`, or one in the repository's config);
+   single word, which git reads as a branch first and otherwise as a path;
+   an alias run through a git whose name comes from a substitution; a git
+   named by a variable (`$G reset --hard`) or by a substitution that does not
+   spell git (`$(echo … | base64 -d)`);
    `git commit --amend`, which the reflog can undo; and a command spelled so
    the shell builds the words, such as `git${IFS}…`
    - no scope is offered for a destructive command, and none remembered
      satisfies it
    - a command too long or complex to split into its parts asks while a patterned
      `bash` deny or ask rule exists, so no mode or allow rule can approve it unchecked
-4. **Ask rules** — force a prompt even where a later allow would match. They
+5. **Ask rules** — force a prompt even where a later allow would match. They
    offer no "always allow", and no scope chosen earlier in the session
    satisfies them: an ask rule asks every time
-5. **Mode**
-6. **Allow rules**, then a default: read-only proceeds, mutations ask
+6. **Mode**
+7. **Allow rules**, then a default: read-only proceeds, mutations ask
 
 Two consequences worth stating plainly. **A deny rule cannot be overridden** by
 a mode, an allow rule, an extension, or an operator's own bypass. And **an

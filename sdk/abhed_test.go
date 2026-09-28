@@ -228,3 +228,52 @@ func TestConfigFoldersStateIsHiddenFromAWorktreeSession(t *testing.T) {
 		t.Fatalf("the worktree session read the configuration folder's state:\n%s", got)
 	}
 }
+
+// A relative deny rule holds against an absolute path in the workspace, which
+// needs the session's roots on the policy.
+func TestRelativeDenyStopsAnAbsolutePath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(ws, "ops", "runbooks", "x.md")
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame := `{"choices":[{"delta":{"content":"done"}}]}`
+		if calls.Add(1) == 1 {
+			args, _ := json.Marshal(map[string]string{"path": target, "content": "x\n"})
+			call, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+				"tool_calls": []any{map[string]any{"index": 0, "id": "c1", "type": "function",
+					"function": map[string]any{"name": "write", "arguments": string(args)}}}}}}})
+			frame = string(call)
+		}
+		fmt.Fprintf(w, "data: %s\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", frame)
+	}))
+	defer srv.Close()
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, ConfigDir: ws, Mode: "bypass",
+		Deny: []string{"write(ops/runbooks/**)"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, err := a.Run(context.Background(), "write the runbook"); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() < 2 {
+		t.Fatal("the model's write call was never answered")
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatal("write(ops/runbooks/**) did not stop an absolute write through the SDK")
+	}
+}

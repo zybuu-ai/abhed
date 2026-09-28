@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -419,5 +420,73 @@ func TestExplorerContentsJudgedAsRmSeesThem(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
 			t.Errorf("%s was removed against a rule", kept)
 		}
+	}
+}
+
+// Rules written relative to the workspace, or with a leading ./, bind the
+// Explorer as the absolute paths it acts on.
+func TestExplorerMeetsWorkspaceRelativeRules(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "delete(apps/**/vault/**)",
+			"rename(./infra/**/pinned/**)", "write(docs/**/frozen/**)", "read(secrets/*)")
+	})
+	wb.write("apps/mobile [beta]/vault/secret.txt", "s\n")
+	wb.write("infra/terraform/modules/pinned/p.tf", "p\n")
+	wb.write("docs/user guide/frozen/f.md", "f\n")
+	wb.write("secrets/key", "k\n")
+	wb.write("free.txt", "y\n")
+
+	for name, c := range map[string]struct {
+		endpoint string
+		body     any
+	}{
+		"delete under a delete rule":  {"delete", folderRequest{Path: "apps/mobile [beta]/vault/secret.txt"}},
+		"rename under a rename rule":  {"rename", renameRequest{From: "infra/terraform/modules/pinned/p.tf", To: "p.tf"}},
+		"delete under a write rule":   {"delete", folderRequest{Path: "docs/user guide/frozen/f.md"}},
+		"folder holding a write rule": {"delete", folderRequest{Path: "docs/user guide"}},
+		"rename into a write rule":    {"rename", renameRequest{From: "free.txt", To: "docs/user guide/frozen/free.txt"}},
+		"rename out of a read rule":   {"rename", renameRequest{From: "secrets/key", To: "key.txt"}},
+	} {
+		if rec := wb.send("acme", "POST", c.endpoint, c.body); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d %s, want 403", name, rec.Code, rec.Body)
+		}
+	}
+	for _, kept := range []string{"apps/mobile [beta]/vault/secret.txt", "infra/terraform/modules/pinned/p.tf",
+		"docs/user guide/frozen/f.md", "secrets/key", "free.txt"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was changed against a rule", kept)
+		}
+	}
+	if rec, _ := wb.file("secrets/key"); rec.Code == http.StatusOK {
+		t.Error("a file under a relative read rule was served")
+	}
+}
+
+// With an added directory, a relative rule binds the live session in that
+// directory as well as the Explorer in the workspace.
+func TestRelativeRulesBindAnAddedDirectory(t *testing.T) {
+	extra := t.TempDir()
+	wb := manualBench(t, func(c *config.Config) {
+		c.AdditionalDirs = append(c.AdditionalDirs, extra)
+		c.Permissions.Deny = append(c.Permissions.Deny, "write(notes/**)", "delete(notes/**)")
+	})
+	wb.write("notes/a.md", "a\n")
+	if rec := wb.send("acme", "POST", "delete", folderRequest{Path: "notes/a.md"}); rec.Code != http.StatusForbidden {
+		t.Errorf("explorer delete under a relative rule: %d %s", rec.Code, rec.Body)
+	}
+	wb.s.mu.Lock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.Unlock()
+	if live == nil {
+		t.Fatal("no live session")
+	}
+	target := filepath.Join(extra, "notes/x.md")
+	args, _ := json.Marshal(map[string]string{"path": target, "content": "x"})
+	res, err := live.Loop.Manual(context.Background(), live.Loop.Session, "write", "rel-1", args)
+	if err != nil || !res.IsError {
+		t.Errorf("a write in the added directory under a relative rule ran: %+v %v", res, err)
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Error("the file was written")
 	}
 }

@@ -1050,6 +1050,9 @@ func (s *Server) forgetUnstarted(sessionID string) {
 func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 	pol := policy.New(mode)
 	pol.Managed = s.opts.Config.Managed
+	// Path rules relative to the workspace; buildLive gives a session its own roots.
+	workspace := s.opts.Workspace
+	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
@@ -1085,6 +1088,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	}
 
 	pol := s.newPolicy(policy.Mode(mode))
+	pol.Roots = sess.PolicyRoots
 	undo := agent.NewUndoLog(sess.RestoreFile, sess.RemoveFile)
 	sess.Checkpoint = undo.Record
 

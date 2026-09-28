@@ -251,6 +251,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
 	pol.Managed = cfg.Managed
+	pol.Roots = sess.PolicyRoots
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
@@ -1562,6 +1563,7 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		}
 
 		pol := policy.New(policy.ModeAuto)
+		pol.Roots = sess.PolicyRoots
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the
 		// same way a real session is. The build-tool defaults stay for corpora

@@ -184,8 +184,10 @@ var destructivePatterns = []struct {
 // IsDestructive reports whether a command needs confirmation regardless of
 // permission mode. Exported so the policy engine can consult it.
 func IsDestructive(command string) (string, bool) {
+	// Where case is ignored, the program names are lowered too; that only adds a match.
+	folded := foldProgramNames(command)
 	for _, d := range destructivePatterns {
-		if d.re.MatchString(command) {
+		if d.re.MatchString(command) || (folded != command && d.re.MatchString(folded)) {
 			return d.what, true
 		}
 	}

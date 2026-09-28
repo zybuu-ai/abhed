@@ -157,6 +157,19 @@ func (s *Session) allowedRoots() []string {
 	return append(out, s.Roots...)
 }
 
+// PolicyRoots returns every root as given and as resolved, the folders a
+// path rule written relative to the workspace is read against.
+func (s *Session) PolicyRoots() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []string{s.Root}
+	if s.rawRoot != "" && s.rawRoot != s.Root {
+		out = append(out, s.rawRoot)
+	}
+	out = append(out, s.Roots...)
+	return append(out, s.rawRoots...)
+}
+
 // within reports whether an absolute, cleaned path sits inside any root.
 func within(path string, roots []string) bool {
 	for _, root := range roots {
