@@ -112,6 +112,12 @@ accounts are created by an administrator, which is true and actionable.
   session reaches nothing else: only `/account`, `POST /v1/password`,
   `/v1/whoami`, sign-out and static files. A browser is sent to `/account`
   with a note; an API call gets `403 {"error":"password change required"}`.
+- A new password equal to the current one is refused, so re-entering an
+  administrator's temporary password does not clear `must_change_password`.
+- A password change made at `/account` signs out the user's other sessions and
+  keeps the one that made it: at once on that server, and on any other server
+  sharing the account store when the session next reads its account. An
+  administrator's reset confines the user's sessions to `/account` instead.
 
 ### Administrators
 

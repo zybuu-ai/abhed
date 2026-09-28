@@ -291,6 +291,8 @@ All notable changes to Abhed are recorded here. The format follows
   always allow with it. HawkEYE and the workbench's chat line name the
   approver. In the SDK: `Answer.Approver`, `Answer.Granted` and
   `Decision.Offer()`.
+- In `auth`: `ErrSamePassword`, which `(*LocalAuth).ChangePassword` returns
+  when the new password equals the current one.
 - In `auth`: `VersionedUserStore`, an account store that can say whether
   any account changed, implemented by `MemoryUserStore.Version` and
   `FileUserStore.Version`; `(*LocalAuth).CheckNewUser`, which reports why an
@@ -319,6 +321,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- `(*auth.LocalAuth).RevokeUser` matches the username without regard to case,
+  as sign-in already does, so revoking `Alice` also ends `alice`'s sessions.
 - `server.ApprovalStore` changed for the approval fixes below: `AnswerApproval`
   takes the answer's scope, `ApprovalResult` returns it, and `EndApproval` is
   new. `store.Postgres` implements the new methods, and `store.Approval` gains
@@ -630,6 +634,12 @@ All notable changes to Abhed are recorded here. The format follows
 - `find … -exec`, `-execdir`, `-ok` and `-okdir` ran a command a deny rule
   names, such as `find . -exec whoami \;` past `bash(whoami*)`. The command
   after them is now matched like one after `xargs`.
+- A user told to change a temporary password could clear that demand by
+  entering the same password as the new one; `/v1/password` now refuses a
+  new password equal to the current one. A self-service password change
+  also signs out the user's other sessions, keeping the one that made it:
+  at once on the server that made the change, and on any other server
+  sharing the account store when that session next reads its account.
 - A hard link in the workspace to a state file let a sandboxed command rewrite
   `.abhed/config.json` (and so drop a deny rule for the next start): the file
   tools refused the link, but the command sandbox guards `.abhed` by path,

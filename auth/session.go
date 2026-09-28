@@ -22,6 +22,21 @@ type browserSession struct {
 	// checked is the last time a local session read its account.
 	checked atomic.Pointer[accountCheck]
 	epoch   atomic.Uint64 // bumped by forget, so a read in flight is not trusted
+	// pwStamp fingerprints the password hash the session was issued under, so
+	// a password changed on any node ends it; guarded by LocalAuth.mu.
+	pwStamp string
+	// pwPrev is also accepted while this session's own change is being stored.
+	pwPrev string
+}
+
+// passwordStamp is a short fingerprint of a password hash, so a session need
+// not hold the hash itself. An empty hash gives an empty stamp.
+func passwordStamp(hash string) string {
+	if hash == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(hash))
+	return hex.EncodeToString(sum[:8])
 }
 
 // SessionInfo describes one browser session for an administrator. ID is a
