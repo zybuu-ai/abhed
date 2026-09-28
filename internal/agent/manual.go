@@ -73,6 +73,16 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 	return result, l.ManualObserve(id, action, result, time.Since(start))
 }
 
+// ManualRefused records a person's action that a policy denial refused before
+// ManualAs was reached, such as an explorer change to a path a write rule keeps.
+func (l *Loop) ManualRefused(action, id string, args json.RawMessage, denial policy.Result) error {
+	if denial.Decision != policy.Deny {
+		return fmt.Errorf("%s was not denied", action)
+	}
+	_, err := l.manualDecide(action, id, args, denial, Unanswered)
+	return err
+}
+
 // ManualAuthorize records the person's call and puts it to the policy. A
 // refusal comes back as the result the record holds, with no tool to run.
 func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Tool, *tools.Result, error) {

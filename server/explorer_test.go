@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // A folder made, a file renamed and a folder deleted from the Explorer each
@@ -583,5 +587,173 @@ func TestExplorerRenameReachesHooksAsDelete(t *testing.T) {
 	}
 	if rec := wb.send("acme", "POST", "rename", renameRequest{From: "free.txt", To: "free2.txt"}); rec.Code != http.StatusOK {
 		t.Errorf("a rename the hook does not name: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// On a disk that folds case, core/VAULT opens core/vault: every spelling of a
+// folder a rule keeps is refused, for each Explorer action.
+func TestExplorerRulesHoldForEveryCaseTheDiskOpens(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "delete(**/vault/**)", "write(**/frozen/**)")
+	})
+	wb.write("svc/core/vault/keys/master.txt", "keep\n")
+	wb.write("ops/frozen/deep/f.txt", "keep\n")
+	wb.write("free.txt", "f\n")
+	if _, err := os.Stat(filepath.Join(wb.workspace, "FREE.TXT")); err != nil {
+		t.Skip("this disk keeps case, so another spelling is another path")
+	}
+	for name, c := range map[string]struct {
+		endpoint string
+		body     any
+	}{
+		"delete VAULT":           {"delete", folderRequest{Path: "svc/core/VAULT"}},
+		"delete through CORE":    {"delete", folderRequest{Path: "svc/CORE/Vault/keys"}},
+		"rename Vault":           {"rename", renameRequest{From: "svc/core/Vault", To: "svc/core/open"}},
+		"move a file out":        {"rename", renameRequest{From: "svc/core/VAULT/keys/master.txt", To: "master.txt"}},
+		"rename FROZEN":          {"rename", renameRequest{From: "ops/FROZEN", To: "ops/thawed"}},
+		"new folder under FROZE": {"folder", folderRequest{Path: "ops/FROZEN/newdir"}},
+		"delete in Frozen":       {"delete", folderRequest{Path: "ops/Frozen/deep"}},
+		"move a file into it":    {"rename", renameRequest{From: "free.txt", To: "ops/fRoZeN/free.txt"}},
+	} {
+		if rec := wb.send("acme", "POST", c.endpoint, c.body); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d %s, want 403", name, rec.Code, rec.Body)
+		}
+	}
+	for _, kept := range []string{"svc/core/vault/keys/master.txt", "ops/frozen/deep/f.txt", "free.txt"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was changed against a rule", kept)
+		}
+	}
+	for _, made := range []string{"svc/core/open", "master.txt", "ops/thawed", "ops/frozen/newdir"} {
+		if _, err := os.Lstat(filepath.Join(wb.workspace, made)); err == nil {
+			t.Errorf("%s was made against a rule", made)
+		}
+	}
+}
+
+// A change a write rule refuses is in the record, as the person's denied
+// action with the rule that denied it, as a delete rule's refusal is.
+func TestExplorerWriteRuleRefusalsAreRecorded(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "write(**/frozen/**)")
+	})
+	wb.write("ops/frozen/deep/f.txt", "keep\n")
+	wb.write("free.txt", "f\n")
+	for _, c := range []struct {
+		endpoint, action string
+		body             any
+	}{
+		{"folder", "mkdir", folderRequest{Path: "ops/frozen/newdir"}},
+		{"rename", "rename", renameRequest{From: "ops/frozen", To: "ops/thawed"}},
+		{"rename", "rename", renameRequest{From: "free.txt", To: "ops/frozen/free.txt"}},
+		{"delete", "delete", folderRequest{Path: "ops/frozen/deep"}},
+	} {
+		before := len(wb.events())
+		if rec := wb.send("acme", "POST", c.endpoint, c.body); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s: %d %s, want 403", c.action, rec.Code, rec.Body)
+		}
+		evs := wb.events()[before:]
+		var id string
+		denied := false
+		for _, e := range evs {
+			var p struct {
+				CallID string `json:"call_id"`
+				Tool   string `json:"tool"`
+				Reason string `json:"reason"`
+				By     string `json:"by"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			switch {
+			case e.Type == agent.EvActionRequested && e.Actor == agent.ActorUser && p.Tool == c.action:
+				id = p.CallID
+			case e.Type == agent.EvActionDenied && id != "" && p.CallID == id:
+				denied = p.By == agent.ByPolicy && strings.Contains(p.Reason, "write(**/frozen/**)")
+			}
+		}
+		if id == "" || !denied {
+			t.Errorf("the refused %s %+v is not recorded as a policy denial: %d new events", c.action, c.body, len(evs))
+		}
+	}
+}
+
+// With two servers on one store, an Explorer change on the server that does
+// not hold the session answers 409, as a save does, and changes nothing.
+func TestExplorerOnTheServerNotHoldingTheSessionIsRefused(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	node := func() (*Server, http.Handler) {
+		s := New(Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{},
+			Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}), Store: st})
+		return s, s.Handler()
+	}
+	a, ha := node()
+	_, hb := node()
+	do := func(h http.Handler, endpoint string, body any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		r := httptest.NewRequest("POST", endpoint, strings.NewReader(string(raw)))
+		r.Header.Set("X-Abhed-User", "alice")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	var created createResponse
+	if w := do(ha, "/v1/sessions", map[string]string{"prompt": "work"}); json.Unmarshal(w.Body.Bytes(), &created) != nil {
+		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	id := created.SessionID
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		st.mu.Lock()
+		ended := st.ended[id]
+		st.mu.Unlock()
+		if ended {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first turn did not end")
+		}
+	}
+	a.mu.Lock()
+	delete(a.running, id) // as a restart would leave it
+	a.mu.Unlock()
+	for _, f := range []string{"keep.txt", "old/inner.txt"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := "/v1/sessions/" + id + "/"
+	// B opens the session to view it; then A's first change claims it.
+	if w := do(hb, base+"accept", map[string]string{"path": "none.txt", "content": ""}); w.Code == http.StatusConflict {
+		t.Fatalf("B could not open the finished session: %s", w.Body)
+	}
+	if w := do(ha, base+"folder", folderRequest{Path: "held"}); w.Code != http.StatusOK {
+		t.Fatalf("A's change: %d %s", w.Code, w.Body)
+	}
+	for name, c := range map[string]struct {
+		endpoint string
+		body     any
+	}{
+		"mkdir":  {"folder", folderRequest{Path: "fromb"}},
+		"rename": {"rename", renameRequest{From: "keep.txt", To: "moved.txt"}},
+		"delete": {"delete", folderRequest{Path: "old"}},
+	} {
+		w := do(hb, base+c.endpoint, c.body)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "continued elsewhere") {
+			t.Errorf("%s on B while A holds the session: %d %s, want 409", name, w.Code, w.Body)
+		}
+	}
+	for _, kept := range []string{"keep.txt", "old/inner.txt", "held"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Errorf("%s is gone", kept)
+		}
+	}
+	for _, made := range []string{"fromb", "moved.txt"} {
+		if _, err := os.Lstat(filepath.Join(dir, made)); err == nil {
+			t.Errorf("%s was made by the server not holding the session", made)
+		}
 	}
 }

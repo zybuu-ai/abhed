@@ -445,8 +445,11 @@ Stated plainly rather than buried:
   (`internal/redteam`) proves the implemented controls resist the attacks its
   author thought of; it is not independent verification.
   `docs/ops/red-team-scope.md` says what to commission.
-- **Single node.** The server is one process against one database. There is
-  no horizontal scaling and no failover in the software.
+- **No automatic failover.** Several servers can share one Postgres
+  database, and a finished session can be continued on any of them (see
+  `docs/guide/11-sessions.md`). Nothing moves work off a server that stops:
+  its running turns end with it and are recorded as interrupted, and the
+  session can be continued from there.
 - **A small team.** Zybuu is a small company. There is no security team, no
   on-call rotation, and no bus-factor mitigation beyond what is written down
   in this repository. See `SECURITY.md` for the

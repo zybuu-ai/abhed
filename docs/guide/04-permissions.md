@@ -51,9 +51,21 @@ does not allow a write through a link in `notes/` to somewhere else, nor
 `notes/` in an added directory, nor `notes/../src/x`. Write an absolute
 pattern for an added directory.
 
-Path patterns compare case as written, on every system: on a disk that
-ignores case, `write(docs/frozen/**)` does not match `DOCS/Frozen/f.md`. Add
-`**/` forms or both spellings where that matters.
+A deny or ask path pattern is also matched against the path as the disk
+spells it. On a disk that ignores case (macOS and Windows by default),
+`DOCS/Frozen/f.md` opens `docs/frozen/f.md`, so `write(docs/frozen/**)`
+refuses it, in any mix of cases, from the agent's tools and the Explorer
+alike. Each folder and file that exists is looked up under the name the disk
+holds; a name that does not exist yet, such as a new file or folder, keeps
+its spelling, under its folder's real name. Allow patterns still compare case
+as written, so another spelling never gains an allow. On a disk that keeps
+case, `DOCS/` and `docs/` are different folders and are compared as written.
+A pattern itself is still compared byte for byte, so spell it as the disk
+holds the name: `**/vault/**` does not match a folder the disk holds as
+`Vault`, whatever spelling a tool is given, and the same goes for a name's
+Unicode form (NFC or NFD). A folder that cannot be listed, such as a drop
+folder with no read permission, cannot say how it spells what is inside it,
+so a name under it keeps the spelling given.
 
 On macOS and Windows, where the disk ignores case, a command's program name is
 compared without case: `bash(whoami*)` denies `WHOAMI` and `Whoami`,

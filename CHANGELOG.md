@@ -6,6 +6,39 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- On a disk that ignores case (macOS and Windows by default), another
+  spelling of a folder got past path rules: deleting `core/VAULT` or renaming
+  `core/Vault` from the Explorer got past `delete(**/vault/**)`, making
+  `ops/FROZEN/new` got past `write(**/frozen/**)`, and the agent's `write`
+  got to `core/VAULT/x` past `write(**/vault/**)` and its `edit` past
+  `edit(**/vault/**)`. Deny and ask path rules are now also matched against
+  the path as the disk spells it: each part that exists under the name the
+  disk holds, in case and Unicode form, and a part not made yet as given,
+  under its folder's real name. Allow rules still compare case as written.
+  `tools.DiskPath` gives that spelling.
+
+### Fixed
+
+- An Explorer change to a session another server is running answered `500`
+  "the change could not be recorded" instead of `409` "the session is being
+  continued elsewhere", as a save does. Nothing was changed either way.
+- An Explorer change refused by a `write(...)` rule was not recorded, while
+  one refused by a `delete(...)` rule was. The attempt (`mkdir`, `rename` or
+  `delete`, with its paths) and the policy's denial are now in the record.
+  The reply is unchanged.
+
+### Changed
+
+- `agent.Loop` gains `ManualRefused`, which records a person's action that a
+  policy denial refused before it reached `ManualAs`.
+- The guide says that `delete(...)` and `rename(...)` rules bind the
+  Explorer, not `rm` or `mv` in the terminal or the agent's `bash`, which
+  `bash(...)` rules judge, and the security posture no longer calls the
+  server single-node: several servers can share one Postgres, with no
+  automatic failover.
+
 ## [1.2.0] - 2026-09-28
 
 ### Upgrading

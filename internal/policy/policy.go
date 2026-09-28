@@ -319,8 +319,13 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 	if e.Roots != nil {
 		for _, r := range e.Roots() {
 			roots = append(roots, r)
-			if real := tools.RealPath(r); real != r {
+			real := tools.RealPath(r)
+			if real != r {
 				roots = append(roots, real)
+			}
+			// A root named in another case than the disk holds would miss the disk's spelling below.
+			if disk := tools.DiskPath(real); disk != real {
+				roots = append(roots, disk)
 			}
 		}
 	}
@@ -345,7 +350,13 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 			add(to, "./"+rel)
 		}
 	}
-	for _, a := range []string{abs, real} {
+	// Deny and ask rules also see the case the disk holds: on a disk that folds case,
+	// core/VAULT is core/vault. Allow rules keep the spelling given, so this only tightens.
+	diskAbs, diskReal := tools.DiskPath(abs), tools.DiskPath(real)
+	if real == abs {
+		diskReal = diskAbs
+	}
+	for _, a := range []string{abs, real, diskAbs, diskReal} {
 		add(&all, filepath.ToSlash(a)+dir)
 		for _, root := range roots {
 			relTo(&all, root, a)
