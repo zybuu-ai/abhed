@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-28
+
 ### Upgrading
 
 - Abhed refuses to start when a `.abhed` state file in any folder above the
@@ -295,6 +297,14 @@ All notable changes to Abhed are recorded here. The format follows
   reports a subagent's refused calls (`subagent-denied`) and its allowed
   destructive commands (`subagent-destructive`), and names each subagent's
   session.
+- In the SDK: `EvSubagentAction` and the `SubagentAction` payload, for the
+  new `subagent.action` event. In HawkEYE's report: `subagent_actions`
+  (`hawkeye.Report.SubagentActions`, of `hawkeye.SubagentAction`), the
+  subagents' refused and asked-about calls, and `session` on each entry of
+  `subagents` (`hawkeye.Subagent.Session`), the subagent's own record.
+- In `store`: `ErrSessionExists`, returned when a session is created with an
+  id already recorded, and `ErrStepTaken`, returned when a different event is
+  appended at a step another writer already recorded (see Upgrading).
 - The SDK exports `EvForked`, the `Forked` payload and `Live`, which drops
   the steps a fork abandoned, so a reader outside the module can follow a
   forked record.
@@ -463,9 +473,8 @@ All notable changes to Abhed are recorded here. The format follows
   default action, exiting 143 or 129 with no output. It now ends the run as
   an interrupt and exits 130.
 - The process tier never applied `sandbox.max_procs` or
-  `sandbox.max_memory_mb`, while the security checklist marked resource
-  exhaustion done on the strength of a test that ran a busy loop, not a fork
-  bomb. A command or workbench shell on the process tier now starts with a
+  `sandbox.max_memory_mb`, and the test meant to cover it ran a busy loop,
+  not a fork bomb. A command or workbench shell on the process tier now starts with a
   process limit of what the user runs plus `max_procs`, so it can start at
   most that many more; memory is still bounded only on the container and vm
   tiers, which the docs now say; `abhed doctor` warns when `max_memory_mb`
@@ -577,7 +586,7 @@ All notable changes to Abhed are recorded here. The format follows
   command, the agent's included, now starts vim with that file turned off,
   after reading the person's own vimrc (a vim without scripting, such as
   vim.tiny, reads none). Neovim's history file is turned off the same way,
-  untested. On Linux the sandbox shows no home directory, so vim there runs
+  though not yet tested. On Linux the sandbox shows no home directory, so vim there runs
   with its defaults.
 - Tab in the line-by-line terminal moved focus out of it, to the agent's
   composer, so the next keys went there. Esc, Left and Right no longer put
@@ -766,8 +775,8 @@ All notable changes to Abhed are recorded here. The format follows
   outside the sandbox. The settings known to do so are now switched off in
   git's command-line scope, submodules are not entered, a change holding a
   repository of its own is not committed, and git's own environment
-  variables are dropped. The list is best effort; running this git inside
-  the sandbox is follow-up work.
+  variables are dropped. The list is best effort; this git does not yet
+  run inside the sandbox.
 - `abhed resolve` pushed with the forge token to whatever the named remote
   pointed at, which the run could change, sending the token to another host.
   It now pushes to an https address built from the issue, from a temporary
@@ -885,8 +894,8 @@ All notable changes to Abhed are recorded here. The format follows
   - On a node that is not running the session, an answer naming a request is
     not recorded, since the stored row cannot be checked against it; the
     reply is the usual 421 with `Abhed-Session-Node`, so it can be sent to
-    the node that is, or 404 when routing is off. Storing the request id on
-    the approval row, so any node can check it, is a follow-up.
+    the node that is, or 404 when routing is off. A later release will store
+    the request id on the approval row, so any node can check it.
   - An answer without `request_id` still answers the pending request, as
     before, on any node; on another node its 204 means it was recorded on
     the store for the running node to read. Clients should send

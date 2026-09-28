@@ -96,9 +96,12 @@ simply stops fitting once a long session fills it.
   "max_turns": 100,
   "max_budget_tokens": 2000000,
   "max_subagents": 8,
-  "nested_subagents": 2
+  "nested_subagents": false
 }
 ```
+
+`nested_subagents` is a boolean, off by default: while it is off, a subagent
+cannot start one of its own, and its `task` or `tasks` call is refused.
 
 `max_budget_tokens` caps the whole session: the primary agent and every
 subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
