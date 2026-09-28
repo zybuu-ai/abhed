@@ -207,12 +207,16 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO sessions (id, tenant_id, user_id, workspace, model,
 		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)
-		ON CONFLICT (id) DO NOTHING`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)`,
 		s.ID, s.Tenant, s.User, s.Workspace, s.Model,
 		s.PromptHash, s.HarnessVersion, s.Mode, s.ParentID, s.StartedAt,
 		truncatePrompt(s.Prompt))
 	if err != nil {
+		// An id already taken is another session's record; writing into it would merge the two.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("create session %s: the id is already recorded: %w", s.ID, ErrSessionExists)
+		}
 		return fmt.Errorf("create session %s: %w", s.ID, err)
 	}
 	return nil
@@ -258,14 +262,13 @@ func (p *Postgres) CreateSubSession(ctx context.Context, id, description string)
 
 // Append persists one event. It satisfies agent.Store.
 //
-// A duplicate (session_id, seq) is treated as success rather than an error:
-// replaying an append after a crash must be safe, and the unique constraint is
-// what makes that idempotent.
+// Replaying the same event is success, so an append retried after a crash is
+// safe; a different event at a taken (session_id, seq) is refused, not dropped.
 func (p *Postgres) Append(ev agent.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := p.pool.Exec(ctx, `
+	tag, err := p.pool.Exec(ctx, `
 		INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
 		                    payload, actor, trust, created_at)
 		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
@@ -279,6 +282,18 @@ func (p *Postgres) Append(ev agent.Event) error {
 			return fmt.Errorf("append event for unknown session %s: call CreateSession first", ev.SessionID)
 		}
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
+	}
+	if tag.RowsAffected() == 0 {
+		// A replay of this event is success; another event at its seq is another writer's.
+		var held string
+		if err := p.pool.QueryRow(ctx, `SELECT id FROM events WHERE session_id = $1 AND seq = $2`,
+			ev.SessionID, ev.Seq).Scan(&held); err != nil {
+			return fmt.Errorf("append event %s/%d: check the step already held: %w", ev.SessionID, ev.Seq, err)
+		}
+		if held != ev.ID {
+			return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, ErrStepTaken)
+		}
+		return nil
 	}
 
 	p.publish(ev)
@@ -419,6 +434,12 @@ func (p *Postgres) GetSession(ctx context.Context, id string) (SessionRecord, er
 }
 
 var ErrNotFound = errors.New("not found")
+
+// ErrStepTaken is an append of a different event at a step already recorded.
+var ErrStepTaken = agent.ErrStepTaken
+
+// ErrSessionExists is a CreateSession for an id another session already holds.
+var ErrSessionExists = errors.New("session already exists")
 
 // ClaimResume marks a finished session as running again, atomically, so
 // that only one process continues it. It reports false when the session is

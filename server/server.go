@@ -295,7 +295,16 @@ type liveSession struct {
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
 	ptys map[string]*ptyRun
-	mu   sync.Mutex
+	// unclaimed is a finished session opened from its record to view: its
+	// first write claims it. held is a claim taken for workbench work alone,
+	// released by release after a quiet spell with the end it was opened with.
+	unclaimed atomic.Bool
+	claimMu   sync.Mutex
+	holdMu    sync.Mutex // guards held and release; a write takes it under claimMu
+	held      bool
+	release   *time.Timer
+	priorEnd  json.RawMessage
+	mu        sync.Mutex
 }
 
 func New(opts Options) *Server {
@@ -1143,7 +1152,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 // the one this deployment runs now, and every new event lands in the same
 // sequence as the old ones. This is what lets a session outlive the process
 // that started it — and, behind a load balancer, the node.
-func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, tenant string) (*liveSession, error) {
+//
+// With claim false the session is opened without claiming it, so its stored
+// end stands until claimOpened runs for a message.
+func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, tenant string, claim bool) (*liveSession, error) {
 	if s.draining.Load() {
 		return nil, errDraining
 	}
@@ -1177,7 +1189,11 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 
 	// Exactly one continuer. A durable store arbitrates; without one there
 	// is only this process, and the live map is the arbiter.
-	if claimer, ok := s.sessions.(SessionResumer); ok {
+	claimer, durable := s.sessions.(SessionResumer)
+	if durable && !claim && rec.EndedAt == nil {
+		return nil, errBusySession // running elsewhere: not opened here, even to view
+	}
+	if durable && claim {
 		claimed, err := claimer.ClaimResume(ctx, id)
 		if err != nil {
 			return nil, err
@@ -1209,17 +1225,29 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		return nil, err
 	}
 	loop.SetHistory(msgs, rec.Turns)
+	if end, ok := agent.LastEnd(events); ok {
+		loop.CarryUsage(end)
+	}
 	live.Turns = rec.Turns
 	// Idle until the caller's prompt starts it: postMessage treats a running
 	// session as one to steer, and there is nothing running yet to steer.
 	live.State = "done"
 	live.Reason = agent.TerminalReason(rec.TerminalReason)
+	live.priorEnd = priorEnd(events, rec)
+	if durable {
+		// Claimed or not: a claim given back unused leaves the session to be claimed again.
+		live.unclaimed.Store(!claim)
+		recorder.Gate = func() error { return s.claimForWrite(id, live) }
+	}
 
 	s.mu.Lock()
 	// Re-checked under the lock: a drain that began while the record was
 	// being read must not leave a turn running on a node that is exiting.
 	if s.draining.Load() {
 		s.mu.Unlock()
+		if durable && claim {
+			s.endAsBefore(id, live) // the claim is given back, ended as it was
+		}
 		return nil, errDraining
 	}
 	if _, already := s.running[id]; already {
@@ -1230,6 +1258,170 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	s.mu.Unlock()
 	s.log.Info("session resumed from record", "session", id, "user", user, "events", len(events))
 	return live, nil
+}
+
+// manualHold is how long a claim taken for workbench work alone is kept
+// after its last write, before the session is released as it was found.
+var manualHold = 2 * time.Minute
+
+// priorEnd is the end a session was opened with, recorded again on release.
+func priorEnd(events []agent.Event, rec store.SessionRecord) json.RawMessage {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == agent.EvSessionEnded {
+			return events[i].Payload
+		}
+	}
+	reason := agent.TerminalReason(rec.TerminalReason)
+	if reason == "" {
+		reason = agent.TermCompleted
+	}
+	end, _ := json.Marshal(agent.SessionEnded{Reason: reason, Turns: rec.Turns})
+	return end
+}
+
+// claimForWrite is an unclaimed session's recorder gate: the first write
+// claims the session and holds it for workbench work until it goes quiet.
+func (s *Server) claimForWrite(id string, live *liveSession) error {
+	if !live.unclaimed.Load() {
+		live.holdMu.Lock()
+		if live.held {
+			live.release.Reset(manualHold)
+		}
+		live.holdMu.Unlock()
+		return nil
+	}
+	if s.draining.Load() {
+		return errDraining
+	}
+	newly, err := s.claimOpened(context.Background(), id, live)
+	if err != nil || !newly {
+		return err
+	}
+	live.mu.Lock()
+	turn := live.State == "running" || live.State == "waiting_approval"
+	live.mu.Unlock()
+	if turn {
+		return nil // the turn records its own end; a hold would end it again
+	}
+	live.holdMu.Lock()
+	defer live.holdMu.Unlock()
+	live.held = true
+	if live.release == nil {
+		live.release = time.AfterFunc(manualHold, func() { s.releaseHeld(id, live, false) })
+	} else {
+		live.release.Reset(manualHold)
+	}
+	return nil
+}
+
+// claimOpened claims a session opened unclaimed, and takes up anything another
+// process recorded since it was opened. It reports whether it claimed now.
+func (s *Server) claimOpened(ctx context.Context, id string, live *liveSession) (bool, error) {
+	live.claimMu.Lock()
+	defer live.claimMu.Unlock()
+	return s.claimLocked(ctx, id, live)
+}
+
+// claimLocked is claimOpened for a caller that holds claimMu.
+func (s *Server) claimLocked(ctx context.Context, id string, live *liveSession) (bool, error) {
+	if !live.unclaimed.Load() {
+		return false, nil
+	}
+	claimed, err := s.sessions.(SessionResumer).ClaimResume(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !claimed {
+		return false, errBusySession
+	}
+	events, err := s.store.Events(id)
+	if err == nil && len(events) > 0 && events[len(events)-1].Seq != live.Loop.Recorder.LastAppended() {
+		err = s.catchUp(live, events)
+	}
+	if err != nil {
+		s.giveBack(id, live)
+		return false, err
+	}
+	live.unclaimed.Store(false)
+	return true, nil
+}
+
+// catchUp rebuilds an opened session from its record as another process left it.
+func (s *Server) catchUp(live *liveSession, events []agent.Event) error {
+	msgs, err := agent.Fork(events, 0)
+	if err != nil && messaged(events) {
+		return fmt.Errorf("rebuild conversation: %w", err)
+	}
+	end, _ := agent.LastEnd(events)
+	live.Loop.Recorder.Advance(events[len(events)-1].Seq)
+	live.Loop.SetHistory(msgs, end.Turns)
+	live.Loop.CarryUsage(end)
+	live.priorEnd = priorEnd(events, store.SessionRecord{})
+	live.mu.Lock()
+	live.Turns = max(live.Turns, end.Turns)
+	live.mu.Unlock()
+	return nil
+}
+
+// giveBack releases a claim taken in claimOpened that could not be used. The
+// caller holds claimMu and the session is still marked unclaimed.
+func (s *Server) giveBack(id string, live *liveSession) {
+	live.unclaimed.Store(false) // the end below is this claim's own write
+	s.endAsBefore(id, live)
+	live.unclaimed.Store(true)
+}
+
+// endAsBefore records the session's prior end again, so the row is released
+// with the reason and totals it was opened with.
+func (s *Server) endAsBefore(id string, live *liveSession) {
+	if _, err := live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, live.priorEnd); err != nil {
+		s.log.Warn("could not release a claimed session", "session", id, "error", err)
+	}
+}
+
+// releaseHeld gives back a claim held for workbench work once no terminal is
+// open and no turn has started; now releases it whatever is open, for a drain.
+func (s *Server) releaseHeld(id string, live *liveSession, now bool) {
+	live.claimMu.Lock()
+	defer live.claimMu.Unlock()
+	live.holdMu.Lock()
+	held := live.held
+	live.holdMu.Unlock()
+	if !held {
+		return
+	}
+	live.mu.Lock()
+	busy := live.State == "running" || live.State == "waiting_approval"
+	for _, run := range live.ptys {
+		select {
+		case <-run.done:
+		default:
+			busy = true
+		}
+	}
+	live.mu.Unlock()
+	live.holdMu.Lock()
+	if busy && !now {
+		live.release.Reset(manualHold)
+		live.holdMu.Unlock()
+		return
+	}
+	live.release.Stop()
+	live.held = false
+	live.holdMu.Unlock()
+	s.endAsBefore(id, live)
+	live.unclaimed.Store(true)
+}
+
+// takeOver ends a workbench hold when a message claims the session for a
+// turn, which records its own end.
+func (live *liveSession) takeOver() {
+	live.holdMu.Lock()
+	defer live.holdMu.Unlock()
+	if live.held {
+		live.held = false
+		live.release.Stop()
+	}
 }
 
 // listedReason is how a finished session's last run ended, such as completed,
@@ -1626,6 +1818,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
 
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	resumedHere := false
 	if !ok {
 		// Not running here is not the end of it. A finished session is
 		// continued from its record — by this process after a restart, or by
@@ -1634,7 +1827,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
-		resumed, err := s.resumeSession(r.Context(), id, req.Prompt, UserOf(r.Context()), TenantOf(r.Context()))
+		resumed, err := s.resumeSession(r.Context(), id, req.Prompt, UserOf(r.Context()), TenantOf(r.Context()), true)
 		switch {
 		case errors.Is(err, errNoSession):
 			WriteError(w, http.StatusNotFound, "session not found")
@@ -1654,7 +1847,36 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		live = resumed
+		resumedHere = true
 	}
+	// Held from the claim until the turn is running, so a workbench hold
+	// cannot be released between them and end the session a second time.
+	live.claimMu.Lock()
+	claimedHere, started := resumedHere, false
+	defer func() {
+		// A claim this request took and did not use is given back as it was found.
+		if claimedHere && !started {
+			s.giveBack(id, live)
+		}
+		live.claimMu.Unlock()
+	}()
+	// Checked before claiming: a claim taken during a drain would never end.
+	if s.draining.Load() {
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
+		return
+	}
+	newly, err := s.claimLocked(r.Context(), id, live)
+	switch {
+	case errors.Is(err, errBusySession):
+		WriteError(w, http.StatusConflict, "session is being continued elsewhere")
+		return
+	case err != nil:
+		s.log.Error("claim failed", "session", id, "error", err)
+		WriteError(w, http.StatusInternalServerError, "could not continue the session")
+		return
+	}
+	claimedHere = claimedHere || newly
 
 	live.mu.Lock()
 	// While draining, nothing is started, steered or interrupted: a steering
@@ -1717,6 +1939,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 		return
 	}
+	live.takeOver()
 	live.State = "running"
 	live.Turns++
 	if live.Prompt == "" {
@@ -1728,6 +1951,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	live.cancel = cancel
 	live.cancelCause = cancelCause
 	live.mu.Unlock()
+	started = true
 
 	go func() {
 		defer cancel()
@@ -2594,8 +2818,11 @@ func (s *Server) closeIdle() {
 	s.mu.Lock()
 	var idle []*liveSession
 	for _, live := range s.running {
+		live.holdMu.Lock()
+		held := live.held
+		live.holdMu.Unlock()
 		live.mu.Lock()
-		if live.State == "idle" {
+		if live.State == "idle" || held && live.State == "done" {
 			idle = append(idle, live)
 		}
 		live.mu.Unlock()
@@ -2619,6 +2846,16 @@ wait:
 		}
 	}
 	for _, live := range idle {
+		if live.unclaimed.Load() {
+			continue // its row still holds the end it was opened with
+		}
+		live.holdMu.Lock()
+		held := live.held
+		live.holdMu.Unlock()
+		if held {
+			s.releaseHeld(live.ID, live, true) // workbench work alone: ended as it was opened
+			continue
+		}
 		_, _ = live.Loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted,
 			agent.SessionEnded{Reason: agent.TermShutdown})
 	}

@@ -76,6 +76,27 @@ All notable changes to Abhed are recorded here. The format follows
   includes it, and it refuses a step an earlier fork abandoned or one past
   the end; `Fork(0)` still keeps the whole conversation.
 - An unknown `-mode` exits 2, like any other bad invocation; it exited 1.
+- The `write` tool now makes a new file's missing folders itself, so in
+  `accept-edits` and `auto` a new file in a new folder no longer asks for a
+  shell `mkdir`. A policy that relied on `write` being unable to create
+  folders should add a `write(...)` deny or ask rule for those paths.
+- Upgrade every node that shares one Postgres database together. An older
+  node does not know `conversation.forked`, `observation.not_run` or the
+  claim rules below, so it can rebuild a branch a fork abandoned, count calls
+  that never ran, or reopen a session only being viewed.
+- The interactive CLI names each new session `s-` and 24 random hex digits,
+  where it used `s-<unix seconds>-<task>`; a script that parsed the old form
+  should treat the id as opaque. On Postgres, creating a session whose id is
+  already recorded is now an error (`store.ErrSessionExists`), and so is
+  writing a different event at a step another writer already recorded; a
+  replay of the same event still succeeds. That second error is
+  `store.ErrStepTaken`, and the memory store (and so the SDK) now refuses
+  such an append the same way. `abhed -p` also uses a random session id and
+  exits 1 when it cannot record its session.
+- A resumed session's `session.ended` totals (`tokens_in`, `tokens_out`,
+  `tokens_cached`, `compactions`) now go on from its record, as `turns`
+  already did, in the CLI and when the server continues a session; they
+  restarted from zero.
 - On the process tier a command or workbench shell can start at most
   `sandbox.max_procs` (512 by default) more processes than your user already
   runs; a build that needs more, such as a very wide `make -j`, fails to
@@ -274,6 +295,9 @@ All notable changes to Abhed are recorded here. The format follows
   reports a subagent's refused calls (`subagent-denied`) and its allowed
   destructive commands (`subagent-destructive`), and names each subagent's
   session.
+- The SDK exports `EvForked`, the `Forked` payload and `Live`, which drops
+  the steps a fork abandoned, so a reader outside the module can follow a
+  forked record.
 - Two additions to the record. `conversation.forked`, with `through_seq`,
   marks a fork: the steps between that step and the marker are kept for
   audit and left out of every rebuild. An `observation` with `not_run` set
@@ -361,6 +385,35 @@ All notable changes to Abhed are recorded here. The format follows
   and ran it if accepted, because those steps came before the mode. Plan
   mode now refuses a mutating call first, as plan mode; read-only calls are
   allowed as before.
+- Two interactive CLIs whose first task started in the same second shared a
+  session id, and on Postgres one's record was merged into the other's or
+  dropped without an error. Each session now gets a random id, and a
+  clashing id or step is refused rather than ignored.
+- An "always allow" scope outlived its session: after `/clear` or
+  `/resume`, a scope chosen in the previous session still approved calls in
+  the next, with the grant missing from that session's record. It now ends
+  with the session, as documented.
+- Opening a finished session in the workbench on Postgres, only to view it,
+  claimed it: its row lost its end and reason, other nodes listed it as
+  running, and a `/resume` elsewhere was refused. A viewed session now keeps
+  its recorded end. The first write, a message or workbench work, claims it
+  and first catches up on what another process recorded; while another
+  process runs it that write is refused (`409`). A claim for workbench work
+  alone is given back after two quiet minutes, or at shutdown, with the end
+  it was opened with, and a message refused during a shutdown claims
+  nothing. Terminal actions the record refuses are now reported instead of
+  dropped.
+- A second Ctrl-C that exited while the turn was still stopping recorded
+  the session's end as `error`; it is now `user_interrupt`, and no second
+  end is written when the turn recorded its own.
+- A `task` call made with the `tasks` tool's arguments answered only that
+  a prompt is required, and a model could retry it until the turn limit.
+  The error now points to the `tasks` tool.
+- The SDK's `Agent.Fork` documentation said only that it discards what came
+  after; it now says that 0 keeps the whole conversation, that a
+  `conversation.forked` event is recorded, and that an abandoned or
+  past-the-end step is refused. The `/resume` and `/clear` descriptions in
+  the architecture and permissions docs now match the sessions guide.
 - A turn with several tool calls, stopped at one of them, left the calls
   after it with no result, so the conversation's next request was refused
   by the provider. A conversation rebuilt from the record (a continued

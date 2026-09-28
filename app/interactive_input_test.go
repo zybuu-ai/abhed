@@ -47,19 +47,19 @@ func TestInterruptTurn(t *testing.T) {
 	cancels := 0
 	cancel := func() { cancels++ }
 	finished := make(chan turnOutcome, 1)
-	if code := interruptTurn(1, cancel, finished, time.Second); code != 0 || cancels != 1 {
+	if code, _ := interruptTurn(1, cancel, finished, time.Second); code != 0 || cancels != 1 {
 		t.Fatalf("first Ctrl-C: code %d, cancels %d; want 0, 1", code, cancels)
 	}
 	start := time.Now()
-	if code := interruptTurn(2, cancel, finished, 50*time.Millisecond); code != 130 {
-		t.Fatalf("second Ctrl-C, turn stuck: code %d, want 130", code)
+	if code, stopped := interruptTurn(2, cancel, finished, 50*time.Millisecond); code != 130 || stopped {
+		t.Fatalf("second Ctrl-C, turn stuck: code %d, stopped %v; want 130, false", code, stopped)
 	}
 	if waited := time.Since(start); waited < 50*time.Millisecond {
 		t.Errorf("exited after %v without waiting for the turn", waited)
 	}
 	finished <- turnOutcome{}
 	start = time.Now()
-	if code := interruptTurn(2, cancel, finished, time.Minute); code != 130 || time.Since(start) > time.Second {
-		t.Errorf("second Ctrl-C, turn stopping: code %d after %v", code, time.Since(start))
+	if code, stopped := interruptTurn(2, cancel, finished, time.Minute); code != 130 || !stopped || time.Since(start) > time.Second {
+		t.Errorf("second Ctrl-C, turn stopping: code %d, stopped %v after %v", code, stopped, time.Since(start))
 	}
 }

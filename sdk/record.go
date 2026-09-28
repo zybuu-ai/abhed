@@ -42,6 +42,7 @@ const (
 	EvTerminalInput   = agent.EvTerminalInput
 	EvMessageDropped  = agent.EvMessageDropped
 	EvSubagentAction  = agent.EvSubagentAction
+	EvForked          = agent.EvForked
 
 	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
 
@@ -76,7 +77,12 @@ type (
 	TodoList        = agent.TodoList
 	Compaction      = agent.Compaction
 	DroppedMessage  = agent.DroppedMessage
+	Forked          = agent.Forked
 )
+
+// Live is the record as the conversation now stands: each conversation.forked
+// drops the steps its fork abandoned. A reader that replays a record uses it.
+func Live(events []Event) []Event { return agent.Live(events) }
 
 // Who settled a call, as action.approved and action.denied record it in "by".
 const (

@@ -395,3 +395,46 @@ func TestInteractiveSettlesEveryTask(t *testing.T) {
 		t.Fatal("interactive() no longer ends each task through settleTurn")
 	}
 }
+
+// An "always allow" lasts one session: /clear and /resume start another
+// without it.
+func TestAlwaysAllowEndsWithTheSession(t *testing.T) {
+	for _, cmd := range []string{"/clear", "/resume s-old"} {
+		st, _, r, sess := resumeRig(t, "me", "default")
+		ap := ui.NewApprover(io.Discard)
+		st.scopes = ap.Session
+		st.open("s-live")
+		ap.Session.Add("bash(mkdir *)")
+		handleCommand(context.Background(), cmd, r, policy.New(policy.ModeDefault), sess, st)
+		if ap.Session.Has("bash(mkdir *)") {
+			t.Errorf("%s: a scope from the last session still approves", cmd)
+		}
+	}
+}
+
+// A second Ctrl-C ends a turn still stopping as user_interrupt, and adds no
+// end to a turn that already recorded its own.
+func TestDoubleCtrlCEndsAsInterrupted(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		st, rs, _, _ := resumeRig(t, "me", "default")
+		loop := st.open("s-new")
+		if _, err := loop.Recorder.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "go"}); err != nil {
+			t.Fatal(err)
+		}
+		if stopped {
+			_, _ = loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermUserInterrupt})
+		}
+		endOnExit(st, stopped)
+		events, _ := rs.Events("s-new")
+		ends := 0
+		for _, ev := range events {
+			if ev.Type == agent.EvSessionEnded {
+				ends++
+			}
+		}
+		end, _ := agent.LastEnd(events)
+		if ends != 1 || end.Reason != agent.TermUserInterrupt {
+			t.Errorf("stopped %v: %d ends, last %q; want one, user_interrupt", stopped, ends, end.Reason)
+		}
+	}
+}

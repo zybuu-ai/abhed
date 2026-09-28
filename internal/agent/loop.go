@@ -568,6 +568,26 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.usage.Turns = l.turns
 }
 
+// CarryUsage starts the token and compaction totals from a recorded end, so a
+// continued session's totals go on from it as its turn count does.
+func (l *Loop) CarryUsage(end SessionEnded) {
+	l.usage.InputTokens = max(l.usage.InputTokens, end.TokensIn)
+	l.usage.OutputTokens = max(l.usage.OutputTokens, end.TokensOut)
+	l.usage.CachedTokens = max(l.usage.CachedTokens, end.TokensCached)
+	l.usage.Compactions = max(l.usage.Compactions, end.Compactions)
+}
+
+// LastEnd is the last session.ended in events, and whether there is one.
+func LastEnd(events []Event) (SessionEnded, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		var end SessionEnded
+		if events[i].Type == EvSessionEnded && json.Unmarshal(events[i].Payload, &end) == nil {
+			return end, true
+		}
+	}
+	return SessionEnded{}, false
+}
+
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	req := model.Request{

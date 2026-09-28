@@ -124,6 +124,18 @@ type ptyStartResponse struct {
 	Workspace string           `json:"workspace,omitempty"`
 }
 
+// unrecorded reports a terminal action the record refused: in the log, and to
+// the caller when there is one still waiting.
+func (s *Server) unrecorded(w http.ResponseWriter, live *liveSession, err error) {
+	if err == nil {
+		return
+	}
+	s.log.Warn("a workbench action could not be recorded", "session", live.ID, "error", err)
+	if w != nil {
+		WriteError(w, http.StatusConflict, "the action could not be recorded, so it was not done; the session may be continuing elsewhere")
+	}
+}
+
 // startPTY starts an interactive shell, or judges one command line and, if
 // allowed, runs it on a terminal.
 func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +188,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "the command could not be recorded")
+		writeUnrecorded(w, err, "the command could not be recorded")
 		return
 	}
 	if confirm != "" {
@@ -184,7 +196,10 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refused != nil {
-		_ = live.Loop.ManualObserve(id, "bash", *refused, 0)
+		if err := live.Loop.ManualObserve(id, "bash", *refused, 0); err != nil {
+			s.unrecorded(w, live, err)
+			return
+		}
 		WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Denied: refused.Content, Cwd: sess.Rel(sess.Cwd)})
 		return
 	}
@@ -196,7 +211,10 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		if note != "" {
 			res.Content += "\n" + note
 		}
-		_ = live.Loop.ManualObserve(id, "bash", res, 0)
+		if err := live.Loop.ManualObserve(id, "bash", res, 0); err != nil {
+			s.unrecorded(w, live, err)
+			return
+		}
 		WriteJSON(w, http.StatusOK, ptyStartResponse{ID: id, Cwd: sess.Rel(sess.Cwd), Note: note, Cd: true})
 		return
 	}
@@ -261,7 +279,7 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 	if err != nil {
 		cancel()
 		res := tools.Result{Content: "Failed to run command: " + err.Error(), IsError: true}
-		_ = live.Loop.ManualObserve(id, "bash", res, 0)
+		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, 0))
 		return nil, errors.New(res.Content)
 	}
 	run := &ptyRun{id: id, command: command, cmd: cmd, tty: tty, cancel: cancel, started: time.Now(), idle: ptyIdle,
@@ -317,10 +335,13 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	id := "u" + newSessionID()
 	args, _ := json.Marshal(map[string]any{"command": "bash -i", "description": "interactive terminal in the session sandbox", "interactive": true})
 	if _, refused, err := live.Loop.ManualAuthorize("bash", id, args); err != nil {
-		WriteError(w, http.StatusInternalServerError, "the terminal could not be recorded, so it was not opened")
+		writeUnrecorded(w, err, "the terminal could not be recorded, so it was not opened")
 		return
 	} else if refused != nil {
-		_ = live.Loop.ManualObserve(id, "bash", *refused, 0)
+		if err := live.Loop.ManualObserve(id, "bash", *refused, 0); err != nil {
+			s.unrecorded(w, live, err)
+			return
+		}
 		resp.ID, resp.Denied = id, refused.Content
 		WriteJSON(w, http.StatusOK, resp)
 		return
@@ -330,7 +351,7 @@ func (s *Server) startShell(w http.ResponseWriter, live *liveSession, sess *tool
 	cmd := b.Shell(ctx, sess.Root)
 	cmd.Env = withTerm(cmd.Env)
 	shell := &shellInfo{
-		capture: newLineCapture(id, func(in agent.TerminalInput) { _ = live.Loop.ManualTerminalInput(in) }),
+		capture: newLineCapture(id, func(in agent.TerminalInput) { s.unrecorded(nil, live, live.Loop.ManualTerminalInput(in)) }),
 		local:   resp.Isolation != nil && (resp.Isolation.Tier == "process" || resp.Isolation.Tier == "none"),
 		idle:    shellIdle,
 	}
@@ -499,7 +520,7 @@ loop:
 			res.Tier = in.Tier // the same tier the agent's bash observations carry
 		}
 	}
-	_ = live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started))
+	s.unrecorded(nil, live, live.Loop.ManualObserve(run.id, "bash", res, time.Since(run.started)))
 	close(run.done)
 
 	// A short command can end before its reader connects. The run stays

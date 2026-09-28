@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -449,8 +450,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
 	appCfg config.Config, prompt string, holder *agent.LoopHolder) int {
 
-	sessionID := fmt.Sprintf("s-%d", time.Now().UnixNano())
-	recordSession(ctx, store, sessionID, appCfg)
+	sessionID := newConversationID()
+	if err := recordSession(ctx, store, sessionID, appCfg); err != nil {
+		return 1 // a run with no session row would write into another's record
+	}
 	rec := agent.NewRecorder(store, sessionID, "")
 	rec.Redact = openVault().Redactor()
 
@@ -568,6 +571,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		store: store, appCfg: appCfg, sess: sess,
 		workspace: sess.Root, adapter: adapter, provider: provider,
 	}
+	if ap, ok := approver.(*ui.Approver); ok {
+		sessionState.scopes = ap.Session
+	}
 	sessionState.fresh()
 	// One conversation per session: every task continues the same loop and
 	// record until /clear, and /fork and /resume change what it continues from.
@@ -622,8 +628,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			continue
 		}
 		if sessionState.loop == nil {
-			id := fmt.Sprintf("s-%d-%d", time.Now().Unix(), turn)
-			recordSession(ctx, store, id, appCfg)
+			id := newConversationID()
+			if err := recordSession(ctx, store, id, appCfg); err != nil {
+				fmt.Printf("  %s not started: %v\n", s.Red("✕"), err)
+				continue
+			}
 			sessionState.open(id)
 		}
 		loop, sessionID := sessionState.loop, sessionState.sessionID
@@ -677,8 +686,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					r.StopThinking()
 					fmt.Printf("  %s\n", s.Dim("interrupted again — exiting"))
 				}
-				if code := interruptTurn(interrupts, cancelTask, finished, exitGrace); code != 0 {
-					endIfOpen(sessionState) // a turn still stopping when we exit leaves no end of its own
+				if code, stopped := interruptTurn(interrupts, cancelTask, finished, exitGrace); code != 0 {
+					endOnExit(sessionState, stopped)
 					return code
 				}
 				wasOn := r.PauseThinking()
@@ -779,17 +788,27 @@ type turnOutcome struct {
 const exitGrace = 1500 * time.Millisecond
 
 // interruptTurn handles the nth Ctrl-C of a turn: it cancels the turn, and on
-// a second one waits up to grace for it to stop and returns 130 to exit.
-func interruptTurn(n int, cancel func(), finished <-chan turnOutcome, grace time.Duration) int {
+// a second one waits up to grace for it to stop and returns 130 to exit, with
+// whether the turn stopped in that time.
+func interruptTurn(n int, cancel func(), finished <-chan turnOutcome, grace time.Duration) (int, bool) {
 	cancel()
 	if n < 2 {
-		return 0
+		return 0, false
 	}
 	select {
 	case <-finished:
+		return 130, true
 	case <-time.After(grace):
+		return 130, false
 	}
-	return 130
+}
+
+// endOnExit ends the session as a second Ctrl-C exits: a turn that stopped in
+// time recorded its own end, and one still stopping is ended as interrupted.
+func endOnExit(st *cliState, stopped bool) {
+	if !stopped {
+		endIfOpen(st, agent.TermUserInterrupt)
+	}
 }
 
 // lineSource is the part of the line reader the input goroutine uses.
@@ -835,12 +854,17 @@ type cliState struct {
 	sess *tools.Session
 	// transcript accumulates the session for /export.
 	transcript []agent.Event
+	// scopes are the "always allow" answers, which end with the session.
+	scopes *ui.AllowList
 }
 
-// fresh forgets the last conversation's cost, transcript and undo log, for a
-// new or resumed one; the workspace is left as it is.
+// fresh forgets the last conversation's cost, transcript, undo log and allowed
+// scopes, for a new or resumed one; the workspace is left as it is.
 func (c *cliState) fresh() {
 	c.total, c.transcript, c.claim = agent.Usage{}, nil, ""
+	if c.scopes != nil {
+		c.scopes.Reset()
+	}
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.sess.Checkpoint = c.undo.Record
@@ -2022,14 +2046,24 @@ func authLabel(cfg config.Config, mw *auth.Middleware) string {
 	}
 }
 
+// newConversationID is a session id no other process picks: a clock in
+// seconds gave two CLIs started together the same one.
+func newConversationID() string {
+	b := make([]byte, 12)
+	if _, err := crand.Read(b); err != nil {
+		panic("abhed: system random source unavailable: " + err.Error())
+	}
+	return "s-" + hex.EncodeToString(b)
+}
+
 // recordSession creates the durable session row that events reference.
 // A no-op on the memory store, which has no session table.
-func recordSession(ctx context.Context, st server.EventStore, id string, cfg config.Config) {
+func recordSession(ctx context.Context, st server.EventStore, id string, cfg config.Config) error {
 	rec, ok := st.(interface {
 		CreateSession(context.Context, store.SessionRecord) error
 	})
 	if !ok {
-		return
+		return nil
 	}
 	user := cliUser()
 	provider, _ := cfg.Provider()
@@ -2041,7 +2075,9 @@ func recordSession(ctx context.Context, st server.EventStore, id string, cfg con
 		StartedAt: time.Now().UTC(),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: could not persist session: %v\n", err)
+		return err
 	}
+	return nil
 }
 
 // cliTenant is the tenant the CLI records a session in.
@@ -2092,16 +2128,11 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 	if err != nil && messaged(events) {
 		return err
 	}
-	turns := 0
-	for _, ev := range events {
-		var end agent.SessionEnded
-		if ev.Type == agent.EvSessionEnded && json.Unmarshal(ev.Payload, &end) == nil {
-			turns = end.Turns
-		}
-	}
+	end, _ := agent.LastEnd(events)
 	loop := st.open(id)
 	loop.Recorder.Advance(events[len(events)-1].Seq)
-	loop.SetHistory(msgs, turns)
+	loop.SetHistory(msgs, end.Turns)
+	loop.CarryUsage(end)
 	return nil
 }
 
@@ -2193,7 +2224,7 @@ func endAsBefore(st *cliState) {
 // the conversation is claimed again before its next write.
 func settleTurn(st *cliState, runErr error) {
 	if runErr != nil {
-		endIfOpen(st)
+		endIfOpen(st, agent.TermError)
 	}
 	holdUntilNextWrite(st)
 }
@@ -2218,9 +2249,9 @@ func releaseClaim(es server.EventStore, id string, events []agent.Event) {
 	_, _ = rec.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermError})
 }
 
-// endIfOpen records a session.ended for a turn that failed without one, so
-// a claimed session is released rather than left running.
-func endIfOpen(st *cliState) {
+// endIfOpen records a session.ended for reason when a turn stopped without
+// one, so a claimed session is released rather than left running.
+func endIfOpen(st *cliState, reason agent.TerminalReason) {
 	if st.loop == nil {
 		return
 	}
@@ -2233,7 +2264,7 @@ func endIfOpen(st *cliState) {
 	if last := events[len(events)-1]; last.Type == agent.EvSessionEnded || last.Seq != st.loop.Recorder.LastAppended() {
 		return
 	}
-	_, _ = st.loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermError})
+	_, _ = st.loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: reason})
 }
 
 // messaged reports whether the record holds a message from anyone.

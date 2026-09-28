@@ -445,3 +445,22 @@ func TestUnknownByIsIgnored(t *testing.T) {
 		t.Fatalf("outcome %v", p)
 	}
 }
+
+// The memory store refuses a different event at a taken step, as Postgres
+// does, and takes a replay of the same event as success.
+func TestMemStoreRefusesAClashingStep(t *testing.T) {
+	st := NewMemStore()
+	first := Event{ID: "a", SessionID: "s", Seq: 1, Type: EvUserMessage}
+	if err := st.Append(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Append(first); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if err := st.Append(Event{ID: "b", SessionID: "s", Seq: 1, Type: EvUserMessage}); !errors.Is(err, ErrStepTaken) {
+		t.Fatalf("clash: %v, want ErrStepTaken", err)
+	}
+	if events, _ := st.Events("s"); len(events) != 1 {
+		t.Fatalf("%d events held, want 1", len(events))
+	}
+}
