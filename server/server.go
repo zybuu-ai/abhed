@@ -1884,6 +1884,45 @@ func (s *Server) redirectHome(w http.ResponseWriter, r *http.Request) {
 // holding a session the first provider still gets the request: an identity
 // provider may hold its own session that needs ending too.
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
+	// The pages sign out by fetch and then go where the provider's redirect points.
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		c := &redirectCapture{ResponseWriter: w}
+		s.endSignIn(c, r)
+		if c.code == 0 {
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"next": c.loc})
+		return
+	}
+	s.endSignIn(w, r)
+}
+
+// redirectCapture holds back a provider's sign-out redirect so a fetch can be
+// told where to go instead of following it.
+type redirectCapture struct {
+	http.ResponseWriter
+	loc  string
+	code int
+}
+
+func (c *redirectCapture) WriteHeader(code int) {
+	if code >= 300 && code < 400 && c.code == 0 {
+		c.code, c.loc = code, c.Header().Get("Location")
+		c.Header().Del("Location")
+		c.Header().Del("Content-Type")
+		return
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *redirectCapture) Write(b []byte) (int, error) {
+	if c.code != 0 {
+		return len(b), nil
+	}
+	return c.ResponseWriter.Write(b)
+}
+
+func (s *Server) endSignIn(w http.ResponseWriter, r *http.Request) {
 	// The local session the cookie names ends even when its account cannot be read.
 	if l := s.LocalAuth(); l != nil && l.HasSession(r) {
 		l.SignOut(w, r)

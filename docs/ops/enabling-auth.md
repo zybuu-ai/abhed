@@ -58,7 +58,7 @@ Then open the server in a browser and sign in with it.
 |---|---|
 | `abhed user add <name>` | Create an account. `-password` sets one; omitted, one is generated. `-admin` puts it in the admin group |
 | `abhed user list` | Show accounts, emails, tenants and groups |
-| `abhed user passwd <name>` | Reset a forgotten password to a new generated one |
+| `abhed user passwd <name>` | Reset a forgotten password. `-password` (before or after the name) sets it; omitted, one is generated. Either way it must be changed at the next sign-in |
 | `abhed user remove <name>` | Delete an account and sign it out; an unknown name fails with "no such user" |
 
 ### Where accounts live
@@ -108,7 +108,7 @@ accounts are created by an administrator, which is true and actionable.
   response. The on-disk store uses its own type to persist it, rather than
   relaxing that tag.
 - A password set by an administrator (`user add`, with or without
-  `-password`, and `user passwd`) is flagged `must_change_password`, and until the user sets their own at `/account` the
+  `-password`, and `user passwd`, with or without `-password`) is flagged `must_change_password`, and until the user sets their own at `/account` the
   session reaches nothing else: only `/account`, `POST /v1/password`,
   `/v1/whoami`, sign-out and static files. A browser is sent to `/account`
   with a note; an API call gets `403 {"error":"password change required"}`.
@@ -181,7 +181,14 @@ redirects there:
 `POST /logout` ends the session, and is refused from another origin like
 every other state-changing request. `GET /logout` only shows a page with a
 Sign out button, so a link or an image on another site cannot sign anyone
-out. The console, the workbench and the account page sign out with a POST.
+out. The console, the workbench, the account page and the `GET /logout` page
+sign out with a same-origin `fetch` POST and then go where the answer says:
+`/`, or an identity provider's own sign-out. A request that asks for JSON
+(`Accept: application/json`) gets `200 {"next": "<where to go>"}` in place
+of the redirect. The server sends `Referrer-Policy: no-referrer`, under which
+Chrome posts a plain form as `Origin: null`; that is accepted only when the
+browser also says `Sec-Fetch-Site: same-origin`, so the confirm page's form
+still works without script.
 
 ## Requiring a group
 
@@ -193,7 +200,10 @@ Only members of the group may use the server. The check runs once someone is
 signed in, so the sign-in page, sign-in itself, sign-out, `/v1/whoami` and
 `/v1/health` answer everyone. A signed-in person outside the group is signed
 out and told why: a browser lands on the front page with the reason, and an
-API client gets `403` with it. Add the group to an account with
+API client gets `403` with it, marked `"refused": true`. The workbench shows
+the reason and its signed-out state on that `403`, and for ten minutes a
+reload still lands on sign-in with the reason (an HttpOnly `abhed_refused`
+cookie holds it, Secure whenever the session cookie is). Add the group to an account with
 `abhed user add <name> -groups abhed-users`.
 
 ## Allowed origins
@@ -206,6 +216,11 @@ answers `403 cross-origin request rejected`:
 ```json
 { "server": { "allowed_origins": ["https://abhed.internal"] } }
 ```
+
+On every route, `Origin: null` is accepted only when the browser also sends
+`Sec-Fetch-Site: same-origin`, which is how Chrome posts this server's own
+forms under its `no-referrer` policy; a missing, `same-site`, `cross-site` or
+`none` value is refused.
 
 ## When authentication is off
 
@@ -242,7 +257,7 @@ above without them.
 | Hook | Called | Effect of an error |
 |---|---|---|
 | `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued | `403` with the error text; no session |
-| `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…}`; whoami answers `authenticated: false` with the reason |
+| `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…,"refused":true}`; whoami answers `authenticated: false` with the reason |
 | `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way |
 
 Notes for an edition setting them:

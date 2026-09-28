@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -122,6 +123,52 @@ func TestRequireGroupGatesAfterSignIn(t *testing.T) {
 	}
 }
 
+// A member dropped from the group is told why on the page, and a reload of the
+// workbench, now signed out, still lands on sign-in with the reason.
+func TestRefusedMemberKeepsTheReasonAcrossAReload(t *testing.T) {
+	g := newGateRig(t, "abhed-users")
+	bob := g.signIn(t, "bob")
+	rec := g.do(bob, "GET", "/v1/sessions", "")
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusForbidden || body["refused"] != true || !strings.Contains(fmt.Sprint(body["reason"]), "abhed-users") {
+		t.Fatalf("a refused member = %d %s, want 403 marked refused with the reason", rec.Code, rec.Body)
+	}
+	var why *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "abhed_refused" && c.MaxAge > 0 {
+			why = c
+		}
+	}
+	if why == nil || !why.HttpOnly {
+		t.Fatal("the refusal was not remembered for the next page")
+	}
+	// The reload carries only the reason; the session cookie was cleared.
+	req := httptest.NewRequest("GET", "/ide", nil)
+	req.Header.Set("Accept", "text/html")
+	req.AddCookie(why)
+	nav := httptest.NewRecorder()
+	g.h.ServeHTTP(nav, req)
+	loc, _ := url.Parse(nav.Header().Get("Location"))
+	if nav.Code != http.StatusFound || loc == nil || !strings.Contains(loc.Query().Get("refused"), "abhed-users") || loc.Query().Get("return") != "/ide" {
+		t.Fatalf("a reload after the refusal = %d %q, want sign-in with the reason", nav.Code, nav.Header().Get("Location"))
+	}
+	// A later sign-in that passes forgets it.
+	alice := g.signIn(t, "alice")
+	req = httptest.NewRequest("GET", "/v1/sessions", nil)
+	req.AddCookie(alice)
+	req.AddCookie(why)
+	ok := httptest.NewRecorder()
+	g.h.ServeHTTP(ok, req)
+	cleared := false
+	for _, c := range ok.Result().Cookies() {
+		cleared = cleared || (c.Name == "abhed_refused" && c.MaxAge < 0)
+	}
+	if ok.Code != http.StatusOK || !cleared {
+		t.Fatalf("a member's request = %d, cleared the refusal = %v", ok.Code, cleared)
+	}
+}
+
 // An identity established before this server, with no group, is still gated.
 func TestRequireGroupGatesAnIdentityFromOutside(t *testing.T) {
 	g := newGateRig(t, "abhed-users")
@@ -140,7 +187,7 @@ func TestSignOutNeedsAPostFromThisOrigin(t *testing.T) {
 	g := newGateRig(t, "")
 	alice := g.signIn(t, "alice")
 	page := g.do(alice, "GET", "/logout", "", "Accept", "text/html")
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `<form method="post" action="/logout">`) {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `<form id="so" method="post" action="/logout">`) {
 		t.Fatalf("GET /logout = %d, want a page that asks", page.Code)
 	}
 	if rec := g.do(alice, "GET", "/v1/sessions", ""); rec.Code != http.StatusOK {
@@ -152,6 +199,18 @@ func TestSignOutNeedsAPostFromThisOrigin(t *testing.T) {
 	if rec := g.do(alice, "GET", "/v1/sessions", ""); rec.Code != http.StatusOK {
 		t.Fatalf("after a cross-origin sign-out the session = %d, want it still signed in", rec.Code)
 	}
+	// Origin: null passes only with Sec-Fetch-Site: same-origin, on every route.
+	for _, path := range []string{"/logout", "/v1/sessions"} {
+		for _, site := range []string{"", "cross-site", "same-site", "none"} {
+			h := []string{"Origin", "null"}
+			if site != "" {
+				h = append(h, "Sec-Fetch-Site", site)
+			}
+			if rec := g.do(alice, "POST", path, `{"prompt":"hi"}`, h...); rec.Code != http.StatusForbidden {
+				t.Fatalf("POST %s with Origin: null and Sec-Fetch-Site %q = %d, want 403", path, site, rec.Code)
+			}
+		}
+	}
 	if rec := g.do(alice, "POST", "/logout", "", "Origin", "http://example.com"); rec.Code != http.StatusFound {
 		t.Fatalf("sign-out = %d, want 302", rec.Code)
 	}
@@ -160,16 +219,33 @@ func TestSignOutNeedsAPostFromThisOrigin(t *testing.T) {
 	}
 }
 
-// The workbench, the console and the account page sign out with a POST.
-func TestPagesSignOutWithAPost(t *testing.T) {
-	for name, page := range map[string]string{"ide": ideHTML, "console": consoleHTML} {
-		if !strings.Contains(page, "f.method = 'post'; f.action = '/logout';") ||
-			!strings.Contains(page, "addEventListener('click', postSignOut)") {
-			t.Errorf("the %s signs out without a POST", name)
-		}
+// Chrome posts this origin's own sign-out form as Origin: null under
+// no-referrer; Sec-Fetch-Site says where it came from.
+func TestSignOutFormPostedAsNullOriginWorks(t *testing.T) {
+	g := newGateRig(t, "")
+	alice := g.signIn(t, "alice")
+	if rec := g.do(alice, "POST", "/v1/sessions", `{"prompt":"hi"}`, "Origin", "null", "Sec-Fetch-Site", "same-origin"); rec.Code == http.StatusForbidden {
+		t.Fatalf("a same-origin null-origin write = %d, want it past the origin check", rec.Code)
 	}
-	if !strings.Contains(accountHTML, `<form method="post" action="/logout">`) || strings.Contains(accountHTML, `href="/logout"`) {
-		t.Error("the account page signs out with a link")
+	if rec := g.do(alice, "POST", "/logout", "", "Origin", "null", "Sec-Fetch-Site", "same-origin"); rec.Code != http.StatusFound {
+		t.Fatalf("the confirm page's form post = %d, want 302", rec.Code)
+	}
+	if rec := g.do(alice, "GET", "/v1/sessions", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("after the form sign-out the session = %d, want 401", rec.Code)
+	}
+}
+
+// The pages sign out by fetch: the answer names where to go, and the session ends.
+func TestSignOutByFetchSaysWhereToGo(t *testing.T) {
+	g := newGateRig(t, "")
+	alice := g.signIn(t, "alice")
+	rec := g.do(alice, "POST", "/logout", "", "Origin", "http://example.com", "Accept", "application/json")
+	var out map[string]string
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || out["next"] != "/" || rec.Header().Get("Location") != "" {
+		t.Fatalf("a fetch sign-out = %d %q, want 200 with next /", rec.Code, rec.Body.String())
+	}
+	if rec := g.do(alice, "GET", "/v1/sessions", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("after a fetch sign-out the session = %d, want 401", rec.Code)
 	}
 }
 

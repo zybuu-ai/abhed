@@ -13,4 +13,14 @@ check('the open session ended by a drain shows shutdown before the list catches 
 check('another session keeps its listed state', shownState({id:'s2', state:'running'}) === 'running');
 live = true;
 check('a live open session keeps its listed state', shownState({id:'s1', state:'running'}) === 'running');
+
+// A drain ends the open session while the list can no longer be fetched: the
+// rail's pill changes when session.ended renders.
+const row = (id, state) => { const r = new El('div'); r.className = 'item'; r.dataset.id = id;
+  const p = new El('span'); p.className = 'pill ' + state; p.dataset.state = state; p.textContent = state; r.appendChild(p); $('list').appendChild(r); return p; };
+const open = row('s1', 'running'), other = row('s2', 'running');
+current = 's1'; live = false; stats.reason = 'shutdown';
+paintOpenPill();
+check('the open session\'s pill shows the drain as it ends', open.className === 'pill shutdown' && open.textContent === 'shutdown');
+check('another session\'s pill is left alone', other.className === 'pill running' && other.textContent === 'running');
 if(!ok) process.exit(1);

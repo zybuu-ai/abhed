@@ -145,6 +145,114 @@ func TestStateFileWithASecondNameIsRefused(t *testing.T) {
 	}
 }
 
+// A run started in a subfolder is refused when the enclosing repository's
+// state has a second name: a command could rewrite it through that name.
+func TestEnclosingRepositoryStateWithASecondNameIsRefused(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	repo := t.TempDir()
+	ws := filepath.Join(repo, "services", "ledger")
+	cfgFile := filepath.Join(repo, ".abhed", "config.json")
+	for _, d := range []string{ws, filepath.Dir(cfgFile)} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(cfgFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	if err := CheckStatePaths(cfg, ws); err != nil {
+		t.Fatalf("an enclosing repository's state with one name was refused: %v", err)
+	}
+	if err := os.Link(cfgFile, filepath.Join(ws, "cfg-link.json")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	err := CheckStatePaths(cfg, ws)
+	if err == nil || !strings.Contains(err.Error(), "2 names") || !strings.Contains(err.Error(), cfgFile) {
+		t.Fatalf("a second name for the enclosing repository's config was not refused: %v", err)
+	}
+	if _, err := Build(cfg, ws); err == nil {
+		t.Fatal("the sandbox was built over an enclosing repository's config with a second name")
+	}
+}
+
+// A workspace reached through a link is judged by where it really is: the
+// repository around the real folder holds the config a run there loads.
+func TestEnclosingStateThroughALinkedWorkspaceIsRefused(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	repo, other := t.TempDir(), t.TempDir()
+	real := filepath.Join(repo, "services", "ledger")
+	cfgFile := filepath.Join(repo, ".abhed", "config.json")
+	for _, d := range []string{real, filepath.Dir(cfgFile)} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(cfgFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := filepath.Join(other, "ledger")
+	if err := os.Symlink(real, ws); err != nil {
+		t.Skipf("symbolic links unavailable: %v", err)
+	}
+	if err := os.Link(cfgFile, filepath.Join(real, "cfg-link.json")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := CheckStatePaths(config.Default(), ws); err == nil || !strings.Contains(err.Error(), "2 names") {
+		t.Fatalf("a second name for the real repository's config was not refused: %v", err)
+	}
+}
+
+// Only the files a run loads count above the workspace, and nothing in a
+// folder anyone may write, such as /tmp: another user could otherwise stop
+// every workspace under it from starting.
+func TestAncestorStateCountsOnlyWhatARunLoads(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	top := t.TempDir()
+	shared := filepath.Join(top, "shared")
+	repo := filepath.Join(shared, "repo")
+	ws := filepath.Join(repo, "svc")
+	for _, d := range []string{filepath.Join(shared, ".abhed"), filepath.Join(repo, ".abhed"), ws} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Not a file a run loads: a second name for it is not the run's concern.
+	notes := filepath.Join(repo, ".abhed", "notes.txt")
+	if err := os.WriteFile(notes, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(notes, filepath.Join(ws, "notes-link")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := CheckStatePaths(config.Default(), ws); err != nil {
+		t.Fatalf("a linked file an enclosing .abhed holds but no run loads was refused: %v", err)
+	}
+	// A config in a world-writable sticky folder above the workspace.
+	planted := filepath.Join(shared, ".abhed", "config.json")
+	if err := os.WriteFile(planted, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(planted, filepath.Join(shared, ".abhed", "config.json.2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(shared); err != nil || info.Mode()&os.ModeSticky == 0 || info.Mode().Perm()&0o002 == 0 {
+		t.Skip("a world-writable sticky folder cannot be made here")
+	}
+	if err := CheckStatePaths(config.Default(), ws); err != nil {
+		t.Fatalf("a linked config in a shared sticky folder above the workspace blocked the start: %v", err)
+	}
+}
+
 // A run whose workspace is a worktree inside the repository cannot read the
 // repository's .abhed: it is state for the run as the worktree's own is.
 func TestStateOfTheRepositoryAroundAWorktreeIsHidden(t *testing.T) {

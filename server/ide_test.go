@@ -193,12 +193,12 @@ const render = () => {}, loadHawkeye = () => {}, ptyURL = () => '/pty', drawTerm
 const bytesOf = s => s, treeSoon = () => {}, endRun = () => {}, startTerm = () => {}, ended = () => {};
 // The server is up while __up is true; a stream fails until it is.
 globalThis.__up = true; globalThis.__streams = [];
-globalThis.__fetches = 0; globalThis.__status = 200; globalThis.__me = {}; globalThis.__meStatus = 200;
+globalThis.__fetches = 0; globalThis.__status = 200; globalThis.__me = {}; globalThis.__meStatus = 200; globalThis.__body = null;
 globalThis.fetch = async url => {
   __fetches++; if(!__up) throw new TypeError('Failed to fetch');
   if(url === '/v1/health') return {ok:true, status:200, json: async () => ({})};
   if(url === '/v1/whoami') return {ok:__meStatus < 400, status:__meStatus, json: async () => __me};
-  return {ok:__status < 400, status:__status, headers:{get:() => null}, json: async () => ({})};
+  return {ok:__status < 400, status:__status, headers:{get:() => null}, json: async () => (globalThis.__body || {})};
 };
 class EventSource { constructor(url){ this.url = url; this.readyState = 0; __streams.push(this); }
   close(){ this.readyState = 2; } addEventListener(){} }

@@ -103,7 +103,9 @@ file elsewhere in the workspace is a path the sandbox does not guard. The
 agent cannot make one on macOS, and one that already exists stops Abhed: every
 entry point that builds the sandbox refuses to start, and `abhed doctor`
 fails, when a state file (the users, config and secrets files and the other
-files the state check knows) has more than one name, and `config.Load` refuses
+files the state check knows, in the workspace and the home directory, and the
+users, config and secrets files the user could rewrite in every folder above
+the workspace, other than a world-writable sticky one) has more than one name, and `config.Load` refuses
 a configuration file with more than one name (`internal/nlink`,
 `internal/sandboxconfig`). Link counts are not read on Windows.
 

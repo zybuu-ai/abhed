@@ -78,9 +78,11 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 			if id, ok := p.Identify(r); ok {
 				if err := m.check(r.Context(), id); err != nil {
 					endSession(w, r, p)
+					noteRefusal(w, r, p, err)
 					m.refuse(w, r, err)
 					return
 				}
+				forgetRefusal(w, r, p)
 				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
 				return
 			}
@@ -161,6 +163,7 @@ func (m Middleware) Identify(w http.ResponseWriter, r *http.Request) (id *Identi
 		if id, ok := p.Identify(r); ok {
 			if err := m.check(r.Context(), id); err != nil {
 				endSession(w, r, p)
+				noteRefusal(w, r, p, err)
 				return nil, p.Name(), err
 			}
 			return id, p.Name(), nil
@@ -192,7 +195,34 @@ func (m Middleware) refuse(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden", "reason": err.Error()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden", "reason": err.Error(), "refused": true})
+}
+
+// refusedCookie remembers for a while why a session was ended, so the sign-in
+// page a reload lands on can still say it.
+const refusedCookie = "abhed_refused"
+
+func noteRefusal(w http.ResponseWriter, r *http.Request, p Provider, err error) {
+	// #nosec G124 -- Secure follows the provider's session cookie; HttpOnly and SameSite are set.
+	http.SetCookie(w, &http.Cookie{Name: refusedCookie, Value: url.QueryEscape(clip(err.Error(), 200)),
+		Path: "/", MaxAge: 600, HttpOnly: true, Secure: cookieSecure(r, p), SameSite: http.SameSiteLaxMode})
+}
+
+func forgetRefusal(w http.ResponseWriter, r *http.Request, p Provider) {
+	if _, err := r.Cookie(refusedCookie); err == nil {
+		// #nosec G124 -- Secure follows the provider's session cookie; HttpOnly and SameSite are set.
+		http.SetCookie(w, &http.Cookie{Name: refusedCookie, Path: "/", MaxAge: -1, HttpOnly: true,
+			Secure: cookieSecure(r, p), SameSite: http.SameSiteLaxMode})
+	}
+}
+
+// cookieSecure follows the provider's own session cookie where it says, so a
+// TLS-terminating proxy in front still gets a Secure cookie.
+func cookieSecure(r *http.Request, p Provider) bool {
+	if c, ok := p.(interface{ CookieSecure() bool }); ok {
+		return c.CookieSecure()
+	}
+	return r.TLS != nil
 }
 
 // clip shortens s to at most n runes.
@@ -243,8 +273,13 @@ func (m Middleware) challenge(w http.ResponseWriter, r *http.Request, reason str
 			break
 		}
 	}
-	http.Redirect(w, r, target+"?return="+url.QueryEscape(r.URL.RequestURI()),
-		http.StatusFound)
+	q := "?return=" + url.QueryEscape(r.URL.RequestURI())
+	if c, err := r.Cookie(refusedCookie); err == nil {
+		if why, err := url.QueryUnescape(c.Value); err == nil && why != "" {
+			q = "?refused=" + url.QueryEscape(clip(why, 200)) + "&return=" + url.QueryEscape(r.URL.RequestURI())
+		}
+	}
+	http.Redirect(w, r, target+q, http.StatusFound)
 }
 
 // wantsHTML distinguishes a browser navigation from an API call, so only the

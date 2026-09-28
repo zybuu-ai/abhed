@@ -330,3 +330,94 @@ func TestExplorerDeleteStillMeetsPathRules(t *testing.T) {
 		}
 	}
 }
+
+// A rule naming the action holds for what is inside a folder: deleting or
+// renaming the folder, or any folder above it, is refused, and a rename is also
+// judged by where each entry lands.
+func TestExplorerActionRulesReachAFoldersContents(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "delete(**/keep/**)", "rename(**/locked/**)", "rename(**/pinned.txt)")
+	})
+	wb.write("keep/inner/k.txt", "k\n")
+	wb.write("outer/keep/o.txt", "o\n")
+	wb.write("a/b/keep/deep.txt", "d\n")
+	wb.write("locked/l.txt", "l\n")
+	wb.write("infra/mods/locked/m.tf", "m\n")
+	wb.write("drafts/notes/pinned.txt", "p\n")
+	wb.write("free/f.txt", "f\n")
+	wb.write("archive/a.txt", "a\n")
+
+	for name, c := range map[string]struct {
+		endpoint string
+		body     any
+	}{
+		"delete the named folder":        {"delete", folderRequest{Path: "keep"}},
+		"delete a folder holding it":     {"delete", folderRequest{Path: "outer"}},
+		"delete a distant ancestor":      {"delete", folderRequest{Path: "a"}},
+		"rename the named folder":        {"rename", renameRequest{From: "locked", To: "unlocked"}},
+		"rename an ancestor":             {"rename", renameRequest{From: "infra", To: "infra2"}},
+		"rename a folder holding a file": {"rename", renameRequest{From: "drafts", To: "old"}},
+		"contents land on a denied name": {"rename", renameRequest{From: "free", To: "archive/locked"}},
+	} {
+		if rec := wb.send("acme", "POST", c.endpoint, c.body); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	for _, kept := range []string{"keep/inner/k.txt", "outer/keep/o.txt", "a/b/keep/deep.txt", "locked/l.txt",
+		"infra/mods/locked/m.tf", "drafts/notes/pinned.txt", "free/f.txt"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was moved or removed against a rule", kept)
+		}
+	}
+	// A folder with nothing the rules name still goes.
+	wb.write("scratch/s.txt", "s\n")
+	if rec := wb.send("acme", "POST", "delete", folderRequest{Path: "scratch"}); rec.Code != http.StatusOK {
+		t.Fatalf("an unrestricted folder: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A folder rename puts the rule to each entry where it is and where it lands,
+// separately: a rule on either location alone refuses the move.
+func TestExplorerRenameJudgesContentsAtBothEnds(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "rename(**/src/locked/**)", "rename(**/archive/**/*.tf)")
+	})
+	wb.write("src/locked/x.txt", "x\n")
+	wb.write("mods/m.tf", "m\n")
+	wb.write("archive/a.txt", "a\n")
+	if rec := wb.send("acme", "POST", "rename", renameRequest{From: "src", To: "dst"}); rec.Code != http.StatusForbidden {
+		t.Errorf("a rule on where the contents are: %d %s", rec.Code, rec.Body)
+	}
+	if rec := wb.send("acme", "POST", "rename", renameRequest{From: "mods", To: "archive/mods"}); rec.Code != http.StatusForbidden {
+		t.Errorf("a rule on where the contents land: %d %s", rec.Code, rec.Body)
+	}
+	for _, kept := range []string{"src/locked/x.txt", "mods/m.tf"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was moved against a rule", kept)
+		}
+	}
+}
+
+// A folder's contents are judged with their folder's links followed, and a
+// folder inside is judged by its trailing-separator form, as rm sees them.
+func TestExplorerContentsJudgedAsRmSeesThem(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "delete(**/realdir/secret/*.txt)", "delete(**/vault/)")
+	})
+	wb.write("realdir/secret/s.txt", "s\n")
+	if err := os.Symlink("realdir", filepath.Join(wb.workspace, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	wb.write("box/vault/v.txt", "v\n")
+	if rec := wb.send("acme", "POST", "delete", folderRequest{Path: "alias/secret"}); rec.Code != http.StatusForbidden {
+		t.Errorf("a rule on the linked folder's real path: %d %s", rec.Code, rec.Body)
+	}
+	if rec := wb.send("acme", "POST", "delete", folderRequest{Path: "box"}); rec.Code != http.StatusForbidden {
+		t.Errorf("a rule on a folder inside by its trailing /: %d %s", rec.Code, rec.Body)
+	}
+	for _, kept := range []string{"realdir/secret/s.txt", "box/vault/v.txt"} {
+		if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+			t.Errorf("%s was removed against a rule", kept)
+		}
+	}
+}

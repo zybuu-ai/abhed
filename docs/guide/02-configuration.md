@@ -238,7 +238,8 @@ person's sessions.
 It is checked once someone has signed in: the sign-in page, sign-in,
 sign-out, `/v1/whoami` and `/v1/health` stay reachable. A signed-in person
 outside the group is signed out and told why, on the front page in a browser
-and as `403` with the reason to an API client.
+(the workbench says so where it is, and a reload keeps the reason) and as
+`403` with the reason to an API client.
 
 ### Keys for the paid editions
 

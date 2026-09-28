@@ -193,7 +193,11 @@ state file elsewhere in the workspace is an ordinary path to it, which a
 command could rewrite. The agent cannot make one on macOS, but one that
 already exists would carry writes through. So Abhed refuses to start — the
 CLI, the server, `abhed rpc`, `abhed acp` and `abhed resolve` — and
-`abhed doctor` fails, when a state file has more than one name, and a
+`abhed doctor` fails, when a state file has more than one name (the state
+of every folder above the workspace counts too, so a run started in a
+repository's subfolder checks the repository's `.abhed`; there only the
+users, config and secrets files you could rewrite count, and a
+world-writable sticky folder such as `/tmp` is skipped), and a
 configuration file with more than one name is not loaded at all. The message
 names the file and how to fix it: find the other name with
 `find / -xdev -samefile <file>` and remove it, or give the file a single name

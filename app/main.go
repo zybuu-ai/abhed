@@ -1796,21 +1796,33 @@ func userCmd(workspace string, args []string) int {
 		}
 
 	case "passwd":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: abhed user passwd <username>")
+		fs := flag.NewFlagSet("user passwd", flag.ContinueOnError)
+		pass := fs.String("password", "", "new password (generated if omitted)")
+		// As for add: the flag may come before or after the username.
+		rest, username := splitPositional(args[1:])
+		if err := fs.Parse(rest); err != nil || username == "" || fs.NArg() > 0 {
+			fmt.Fprintln(os.Stderr, "usage: abhed user passwd <username> [-password ...]")
 			return 2
 		}
-		u, err := us.Get(ctx, args[1])
+		u, err := us.Get(ctx, username)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
-		password := generatePassword()
+		password := *pass
+		if password == "" {
+			password = generatePassword()
+		}
 		if err := la.CreateUserOrReset(ctx, u, password); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
-		fmt.Printf("new password for %s: %s\n", u.Username, password)
+		if *pass == "" {
+			fmt.Printf("new password for %s: %s\n", u.Username, password)
+		} else {
+			fmt.Printf("password set for %s\n", u.Username)
+		}
+		fmt.Println("  must set a new password at first sign-in")
 
 	case "remove", "rm":
 		if len(args) < 2 {

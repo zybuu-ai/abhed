@@ -50,7 +50,7 @@ type explorerResponse struct {
 type explorerPlan struct {
 	action               string            // what the policy judges and the record names
 	args                 map[string]string // the action's paths
-	also                 map[string]string // further paths the action is judged by, if any
+	also                 []string          // further paths the action is judged by, such as a folder's contents
 	command, description string
 	result               string      // the workspace path reported back
 	done                 func() bool // whether the change is on disk afterwards
@@ -89,16 +89,18 @@ func (s *Server) renamePath(w http.ResponseWriter, r *http.Request) {
 		if !ok || !x.absent(toAbs) || !x.check(from, info.IsDir(), "") || !x.check(to, info.IsDir(), "") {
 			return explorerPlan{}, false
 		}
+		// A rule on the action is put to the new name as well as the old, and to each entry inside.
+		also := append(x.subjects(from, info.IsDir()), x.subjects(to, info.IsDir())...)
 		// Everything inside moves too: each entry is judged where it is and where it lands.
 		if info.IsDir() && !x.contents(from, func(sub string, dir bool) bool {
+			also = append(also, x.subjects(filepath.Join(from, sub), dir)...)
+			also = append(also, x.subjects(filepath.Join(to, sub), dir)...)
 			return x.check(filepath.Join(from, sub), dir, sub) && x.check(filepath.Join(to, sub), dir, sub)
 		}) {
 			return explorerPlan{}, false
 		}
-		// A rule on the action is put to the new name as well as the old.
 		return explorerPlan{
-			action: "rename", args: map[string]string{"path": fromAbs, "to": toAbs},
-			also:    map[string]string{"path": toAbs, "to": toAbs},
+			action: "rename", args: map[string]string{"path": fromAbs, "to": toAbs}, also: also,
 			command: "mv -n -- " + shellQuote(fromAbs) + " " + shellQuote(toAbs), description: "renamed in the explorer", result: to,
 			done: func() bool { return moved(info, fromAbs, toAbs) },
 		}, true
@@ -118,14 +120,19 @@ func (s *Server) deletePath(w http.ResponseWriter, r *http.Request) {
 			return explorerPlan{}, false
 		}
 		cmd := "rm -- "
+		// A rule on the action is put to everything the delete removes, not only its top.
+		also := x.subjects(rel, info.IsDir())
 		if info.IsDir() {
 			cmd = "rm -r -- "
-			if !x.contents(rel, func(sub string, dir bool) bool { return x.check(filepath.Join(rel, sub), dir, sub) }) {
+			if !x.contents(rel, func(sub string, dir bool) bool {
+				also = append(also, x.subjects(filepath.Join(rel, sub), dir)...)
+				return x.check(filepath.Join(rel, sub), dir, sub)
+			}) {
 				return explorerPlan{}, false
 			}
 		}
 		return explorerPlan{
-			action: "delete", args: map[string]string{"path": abs},
+			action: "delete", args: map[string]string{"path": abs}, also: also,
 			command: cmd + shellQuote(abs), description: "deleted in the explorer", result: rel,
 			done: func() bool { _, err := os.Lstat(abs); return err != nil },
 		}, true
@@ -173,9 +180,15 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 	p.args["runs"] = p.command
 	args, _ := json.Marshal(p.args)
 	runArgs, _ := json.Marshal(map[string]string{"command": p.command, "description": p.description})
-	var also []json.RawMessage
-	if p.also != nil {
-		a, _ := json.Marshal(p.also)
+	also := make([]json.RawMessage, 0, len(p.also))
+	// Each spelling is judged once: on a path with no links both spellings match.
+	seen := make(map[string]bool, len(p.also))
+	for _, subject := range p.also {
+		if seen[subject] {
+			continue
+		}
+		seen[subject] = true
+		a, _ := json.Marshal(map[string]string{"path": subject})
 		also = append(also, a)
 	}
 	res, err := live.Loop.ManualAs(ctx, sess, p.action, "u"+newSessionID(), args, "bash", runArgs, also...)
@@ -239,6 +252,23 @@ func (x *explorerCall) check(rel string, dir bool, inside string) bool {
 	}
 	WriteError(x.w, code, why)
 	return false
+}
+
+// subjects spells rel as a rule on the action may name it: as named and with its
+// folder's links followed, and a folder also by what is inside it.
+func (x *explorerCall) subjects(rel string, dir bool) []string {
+	abs := filepath.Join(x.v.sess.Root, rel)
+	var out []string
+	for _, spelling := range []string{abs, filepath.Join(realPath(filepath.Dir(abs)), filepath.Base(abs))} {
+		if len(out) > 0 && spelling == out[0] {
+			continue
+		}
+		out = append(out, spelling)
+		if dir {
+			out = append(out, spelling+string(filepath.Separator))
+		}
+	}
+	return out
 }
 
 func (x *explorerCall) judge(rel string, dir bool) (int, string) {

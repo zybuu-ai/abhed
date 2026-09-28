@@ -138,6 +138,12 @@ func sameOrigin(allowed []string) func(http.Handler) http.Handler {
 				return
 			}
 			origin := r.Header.Get("Origin")
+			// Under no-referrer Chrome sends a same-origin form post as Origin: null. Page script
+			// cannot set Sec-Fetch-Site, and an opaque or other-site initiator gets cross-site.
+			if origin == "null" && r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if origin == "" || originAllowed(origin, r, allowed) {
 				next.ServeHTTP(w, r)
 				return

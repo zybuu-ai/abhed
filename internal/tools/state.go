@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,6 +21,9 @@ const maxStateEntries = 4096
 
 // knownStateFiles are the files a state directory is known to hold.
 var knownStateFiles = []string{"users.json", "config.json", "secrets.json"}
+
+// KnownStateFiles returns the names of the files a state directory is known to hold.
+func KnownStateFiles() []string { return slices.Clone(knownStateFiles) }
 
 // ErrState is the refusal for a path that turned out, once opened, to be
 // Abhed's own state.

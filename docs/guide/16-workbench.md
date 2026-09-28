@@ -200,9 +200,13 @@ as `bash(rm -*)`, do not apply to them, so a console that denies `rm` flags to
 the agent and the terminal still lets you delete a file from the Explorer; a
 rule naming the action with a path, such as `delete(**/keep/**)`, does, as do
 deny rules and plan mode. A `rename(...)` rule is matched against the old name
-and the new one. Policy hooks and extensions are shown the action (`mkdir`,
-`rename` or `delete`, with a `path` and, for a rename, a `to`), not a `bash`
-call; a rename reaches them twice, once for each name. Before it runs, every path
+and the new one, and for a folder, a `delete(...)` or `rename(...)` rule is
+matched against every entry inside it (at its new path too, for a rename), so
+`delete(**/keep/**)` also refuses deleting `keep` or any folder above it.
+Policy hooks and extensions are shown the action (`mkdir`, `rename` or
+`delete`, with a `path` and, for a rename, a `to`), not a `bash` call; a rename
+reaches them for each name, and a folder's delete or rename for each
+entry inside it. Before it runs, every path
 it touches must be one the workbench would open, which rules out `.abhed/`,
 `.git/` and anything a read rule withholds, and one a save to which would not
 be refused by a write rule. Each path is judged as named and with its folder's
