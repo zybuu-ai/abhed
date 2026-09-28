@@ -23,6 +23,13 @@ var page = template.Must(template.New("report").Funcs(template.FuncMap{
 	"clock": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
 	"chart": chart,
 	"steps": steps,
+	"join":  strings.Join,
+	"latest": func(s []string) string {
+		if len(s) == 0 {
+			return ""
+		}
+		return s[len(s)-1]
+	},
 	"exit": func(p *int) string {
 		if p == nil {
 			return ""
@@ -47,6 +54,9 @@ func Text(r Report) string {
 	fmt.Fprintf(&b, "HawkEYE · %s\n", r.SessionID)
 	fmt.Fprintf(&b, "  %s\n\n", clip(r.Prompt, 100))
 	fmt.Fprintf(&b, "  outcome   %s\n", r.Outcome)
+	if len(r.Models) > 0 {
+		fmt.Fprintf(&b, "  models    %s\n", strings.Join(r.Models, " → "))
+	}
 	fmt.Fprintf(&b, "  duration  %s  (model %s · tools %s)\n", dur(t.DurationMS), dur(t.ModelMS), dur(t.ToolMS))
 	fmt.Fprintf(&b, "  turns     %d   tool calls %d   events %d\n", t.Turns, t.ToolCalls, t.Events)
 	fmt.Fprintf(&b, "  tokens    %s in · %s out · %.0f%% cached\n", commas(t.TokensIn), commas(t.TokensOut), t.CacheHitRate*100)

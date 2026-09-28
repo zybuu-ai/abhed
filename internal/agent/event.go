@@ -53,6 +53,9 @@ const (
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
 	EvModelCall EventType = "model.call"
+	// EvModelSwitched marks the session moving to another configured model;
+	// see ModelSwitched.
+	EvModelSwitched EventType = "model.switched"
 	// EvContextOffloaded marks old tool results leaving the window for the
 	// record, where recall can reach them.
 	EvContextOffloaded EventType = "context.offloaded"
@@ -227,10 +230,12 @@ type Reasoning struct {
 
 // ModelCall is the accounting for one round trip to the model.
 type ModelCall struct {
-	Turn         int `json:"turn"`
-	TokensIn     int `json:"tokens_in"`
-	TokensOut    int `json:"tokens_out"`
-	TokensCached int `json:"tokens_cached"`
+	Turn int `json:"turn"`
+	// Model is the model this call went to, which a switch can change mid-session.
+	Model        string `json:"model,omitempty"`
+	TokensIn     int    `json:"tokens_in"`
+	TokensOut    int    `json:"tokens_out"`
+	TokensCached int    `json:"tokens_cached"`
 	// CacheReported is false when the provider sent no cached-token figure,
 	// so a zero above means unknown rather than a cold cache.
 	CacheReported bool `json:"cache_reported,omitempty"`
@@ -246,6 +251,45 @@ type ModelCall struct {
 	// still writing when the limit ended it, so what it said is not an answer.
 	CutOff bool   `json:"cut_off,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+// ModelSwitched is a session moving to another configured provider. Provider
+// is the configured name, which is what a resume looks up to keep the choice.
+type ModelSwitched struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	From     string `json:"from,omitempty"`
+}
+
+// ProviderOf is the configured provider the record last put the session on:
+// the latest model.switched, or else session.started; "" when it names none.
+func ProviderOf(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if t := events[i].Type; t == EvModelSwitched || t == EvSessionStarted {
+			var p struct {
+				Provider string `json:"provider"`
+			}
+			_ = json.Unmarshal(events[i].Payload, &p)
+			return p.Provider
+		}
+	}
+	return ""
+}
+
+// LastModel is the model the record last names: a call's, a switch's, or the start's.
+func LastModel(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case EvModelCall, EvModelSwitched, EvSessionStarted:
+			var p struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(events[i].Payload, &p) == nil && p.Model != "" {
+				return p.Model
+			}
+		}
+	}
+	return ""
 }
 
 type SessionEnded struct {

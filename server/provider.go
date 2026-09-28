@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 
@@ -76,20 +77,34 @@ func (e providerError) Error() string { return string(e) }
 
 const errUnknownProvider providerError = "no such provider is configured"
 
-// setSessionModel swaps the model on a running session.
+// setSessionModel swaps the model on a session, recording the switch so the
+// record and a later resume both name the model that answers.
 func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
-	if !ok {
+	if !validSessionID(id) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
-
 	var req struct {
 		Provider string `json:"provider"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if s.draining.Load() {
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, errDraining.Error())
+		return
+	}
+	// A session finished before a restart is reopened, as a message would
+	// continue it, rather than refused as unknown.
+	live, status, msg := s.liveOrReopened(r, id)
+	if live == nil {
+		if status == http.StatusServiceUnavailable {
+			w.Header().Set("Retry-After", "5")
+		}
+		WriteError(w, status, msg)
 		return
 	}
 
@@ -101,31 +116,54 @@ func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refused while a turn is in flight. Loop.Adapter is a plain field and the
-	// loop goroutine may be reading it, so swapping under a running turn is a
-	// data race with a model call on the other end of it. Between turns is the
-	// only safe moment, and it is also the only moment a user would want it.
+	// Held as a message holds it until its turn runs, so no turn can start
+	// between the check below and the swap: the loop goroutine reads the adapter.
+	live.claimMu.Lock()
+	defer live.claimMu.Unlock()
+	// Again under claimMu: a claim taken once a drain began would be held past it.
+	if s.draining.Load() {
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, errDraining.Error())
+		return
+	}
+	newly, err := s.claimLocked(r.Context(), id, live)
+	switch {
+	case errors.Is(err, errBusySession):
+		WriteError(w, http.StatusConflict, "session is being continued elsewhere")
+		return
+	case err != nil:
+		s.log.Error("claim failed", "session", id, "error", err)
+		WriteError(w, http.StatusInternalServerError, "could not switch the session's model")
+		return
+	}
+	if newly {
+		s.holdClaim(id, live) // no turn follows, so the claim is kept as a workbench write keeps it
+	}
 	live.mu.Lock()
 	busy := live.State == "running" || live.State == "waiting_approval"
+	from := live.model
+	live.mu.Unlock()
 	if busy {
-		live.mu.Unlock()
 		WriteError(w, http.StatusConflict,
 			"the session is mid-turn; interrupt it or wait for the turn to finish")
 		return
 	}
-	loop := live.Loop
-	live.mu.Unlock()
-
-	if loop == nil {
-		WriteError(w, http.StatusConflict, "this session has no live loop")
+	// Recorded before it takes effect: a model the record cannot name must not answer.
+	if err := live.Loop.SwitchModel(req.Provider, adapter); err != nil {
+		s.log.Error("model switch not recorded", "session", id, "error", err)
+		WriteError(w, http.StatusInternalServerError, "the model was not changed: the switch could not be recorded")
 		return
 	}
-	loop.SetAdapter(adapter)
+	live.fallback = nil // the switch just recorded says where the session is
+	live.mu.Lock()
+	live.provider, live.model = req.Provider, adapter.Profile().Name
+	live.mu.Unlock()
 
 	s.log.Info("session model changed", "session", id,
 		"provider", req.Provider, "user", UserOf(r.Context()))
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"provider": req.Provider,
 		"model":    adapter.Profile().Name,
+		"from":     from,
 	})
 }

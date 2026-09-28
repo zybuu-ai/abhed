@@ -19,9 +19,25 @@ All notable changes to Abhed are recorded here. The format follows
 - A custom `auth.UserStore` must store `User.Revocations` and never lower it
   in `Put`. A sign-out everywhere through a store that does not keep it now
   returns an error instead of succeeding.
+- The SDK's `SetModel` records the switch as a `model.switched` event and
+  now returns an error when the record refuses it; the model is then left as
+  it was.
 
 ### Added
 
+All of it is additive; records written before it resume as they did.
+
+- The record: a `model.switched` event (`provider`, `model`, `from`) and a
+  `model` field on `model.call`.
+- `GET /v1/sessions` gives each session's `model` and, while it is live on
+  the server answering, its `provider`.
+- `POST /v1/sessions/{id}/model` answers with `from` beside `provider` and
+  `model`, and reopens a session this server does not hold instead of
+  answering `404`.
+- HawkEYE: `Report.Models` and `Turn.Model` (`models` and `turns[].model` in
+  JSON), shown in the text, HTML and workbench views.
+- The SDK: `EvModelCall`, `EvModelSwitched`, `ModelCall` and `ModelSwitched`.
+- A model picker in the workbench.
 - In `auth`: `(*LocalAuth).RevokeUserContext`, which is `RevokeUser` that
   also returns an error when the sign-out could not be recorded for other
   servers; `User.Revocations`, which the account stores keep (never lowered
@@ -57,6 +73,22 @@ All notable changes to Abhed are recorded here. The format follows
   one refused by a `delete(...)` rule was. The attempt (`mkdir`, `rename` or
   `delete`, with its paths) and the policy's denial are now in the record.
   The reply is unchanged.
+- Switching the model now takes effect everywhere. The console started a new
+  chat on the default whatever the picker showed; a session continued from
+  its record (after a restart, on another node, or opened again in the
+  workbench) went back to the default model; subagents kept the model the
+  CLI started with after `/model`; the system prompt went on naming the old
+  model; and in the console a failed switch reset the picker to the default
+  instead of the model in use. A session no longer held in memory can be
+  switched rather than answering `404`. The workbench has the picker too.
+- The record names the model that answered: each `model.call` carries
+  `model`, a switch is recorded as `model.switched`, the Postgres session row
+  and the session list follow the switch, the CLI records a session started
+  after `/model` under the model chosen, and HawkEYE lists the models used.
+  A switch that cannot be recorded is refused and says so. A session whose
+  recorded provider is no longer configured, or whose model no single
+  configured provider now serves, continues on the default, and its next
+  turn records the move.
 
 ### Security
 

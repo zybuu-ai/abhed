@@ -546,10 +546,34 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 // making the user rebuild the session by hand, which pays the same cost and
 // loses the history too.
 func (l *Loop) SetAdapter(a model.Adapter) {
+	if l.Adapter != nil {
+		// The prompt names the model; left as it was, it tells the new one it is the old.
+		was, now := l.Adapter.Profile(), a.Profile()
+		l.Config.SystemPrompt = strings.Replace(l.Config.SystemPrompt,
+			modelLine(was.Name, was.ContextWindow), modelLine(now.Name, now.ContextWindow), 1)
+	}
 	l.Adapter = a
 	if l.Compactor != nil {
 		l.Compactor.Adapter = a
 	}
+}
+
+// SwitchModel moves the session to provider's adapter and records the move,
+// so the record names the model that answers and a resume keeps it.
+// A switch the record refused is not made.
+func (l *Loop) SwitchModel(provider string, a model.Adapter) error {
+	if l.Recorder != nil {
+		from := ""
+		if l.Adapter != nil {
+			from = l.Adapter.Profile().Name
+		}
+		if _, err := l.Recorder.Record(EvModelSwitched, ActorUser, Trusted,
+			ModelSwitched{Provider: provider, Model: a.Profile().Name, From: from}); err != nil {
+			return err
+		}
+	}
+	l.SetAdapter(a)
+	return nil
 }
 
 // Messages exposes the current history for inspection and testing.
@@ -605,11 +629,11 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
 		// model failure, just as for a stream cut part way.
 		if ctx.Err() != nil {
-			l.record(EvModelCall, ActorSystem, ModelCall{Turn: l.turns, LatencyMS: time.Since(callStart).Milliseconds()})
+			l.record(EvModelCall, ActorSystem, ModelCall{Turn: l.turns, Model: l.Adapter.Profile().Name, LatencyMS: time.Since(callStart).Milliseconds()})
 			return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 		}
 		l.record(EvModelCall, ActorSystem, ModelCall{
-			Turn: l.turns, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
+			Turn: l.turns, Model: l.Adapter.Profile().Name, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
 		})
 		return TermError, true, fmt.Errorf("model call failed: %w", err)
 	}
@@ -709,7 +733,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	pending.Reset()
 
 	mc := ModelCall{
-		Turn: l.turns, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
+		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
 		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported,
 		ContextWindow: l.Adapter.Profile().ContextWindow,
 		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),

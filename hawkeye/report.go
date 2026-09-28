@@ -17,6 +17,9 @@ type Report struct {
 	Prompt    string    `json:"prompt"`
 	// Outcome is the terminal reason, or "running" when the record has no end.
 	Outcome string `json:"outcome"`
+	// Models are the models the calls went to in order, one entry per run of
+	// calls, so a switch and a switch back both show.
+	Models []string `json:"models,omitempty"`
 
 	Totals      Totals       `json:"totals"`
 	Turns       []Turn       `json:"turns"`
@@ -58,11 +61,13 @@ type Totals struct {
 
 // Turn is one round trip to the model.
 type Turn struct {
-	N            int   `json:"n"`
-	Seq          int64 `json:"seq"`
-	TokensIn     int   `json:"tokens_in"`
-	TokensOut    int   `json:"tokens_out"`
-	TokensCached int   `json:"tokens_cached"`
+	N   int   `json:"n"`
+	Seq int64 `json:"seq"`
+	// Model is the model this turn's call went to; empty in older records.
+	Model        string `json:"model,omitempty"`
+	TokensIn     int    `json:"tokens_in"`
+	TokensOut    int    `json:"tokens_out"`
+	TokensCached int    `json:"tokens_cached"`
 	// CacheReported is false when the provider gave no cached-token figure.
 	CacheReported bool   `json:"cache_reported,omitempty"`
 	Window        int    `json:"context_window"`

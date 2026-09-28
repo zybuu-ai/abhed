@@ -304,7 +304,13 @@ type liveSession struct {
 	held      bool
 	release   *time.Timer
 	priorEnd  json.RawMessage
-	mu        sync.Mutex
+	// provider and model are what the session runs on now; a switch changes them under mu.
+	provider string
+	model    string
+	// fallback is a resumed session's move to the default because its recorded
+	// provider no longer resolves, written by its next turn; guarded by claimMu.
+	fallback *agent.ModelSwitched
+	mu       sync.Mutex
 }
 
 func New(opts Options) *Server {
@@ -1028,6 +1034,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	// The first event, so the session has a record to be resumed from.
 	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{
 		"origin": "workbench", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+		"provider": live.provider,
 	}); err != nil {
 		// An empty session left listed would be one nobody can open.
 		if del, ok := s.store.(agent.SessionDeleter); ok {
@@ -1109,6 +1116,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		allowed: map[string]bool{},
 		durable: s.approvalStore(),
 		undo:    undo,
+		// A spec with no provider runs on the configured default.
+		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
+		model:    adapter.Profile().Name,
 	}
 
 	cfg := agent.DefaultConfig()
@@ -1220,9 +1230,16 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if spec.Prompt == "" {
 		spec.Prompt = prompt
 	}
-	live, loop, err := s.buildLive(id, spec, mode, s.opts.Adapter, registry, skillReg, recorder)
+	adapter, provider, lost := s.recordedProvider(id, events, rec.Model)
+	spec.Provider = provider
+	live, loop, err := s.buildLive(id, spec, mode, adapter, registry, skillReg, recorder)
 	if err != nil {
 		return nil, err
+	}
+	if lost {
+		// Recorded by the next turn, once claimed: opening a session to view it writes nothing.
+		live.fallback = &agent.ModelSwitched{Provider: s.opts.Config.Model.Default,
+			Model: adapter.Profile().Name, From: orDefaultStr(agent.LastModel(events), rec.Model)}
 	}
 	loop.SetHistory(msgs, rec.Turns)
 	if end, ok := agent.LastEnd(events); ok {
@@ -1258,6 +1275,43 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	s.mu.Unlock()
 	s.log.Info("session resumed from record", "session", id, "user", user, "events", len(events))
 	return live, nil
+}
+
+// recordedProvider is the adapter a continued session runs on: the provider
+// its record last named, so a switch survives a restart or another node.
+// Anything that no longer resolves falls back to the default, and says so:
+// lost reports it, for the record.
+func (s *Server) recordedProvider(id string, events []agent.Event, rowModel string) (a model.Adapter, provider string, lost bool) {
+	name := agent.ProviderOf(events)
+	if name == "" && rowModel != "" && rowModel != s.opts.Adapter.Profile().Name {
+		// Started on a chosen provider before any switch: the row names its model,
+		// which is taken only when one provider serves it.
+		var found []string
+		for n, p := range s.opts.Config.Model.Providers {
+			// Relies on every adapter naming its profile after the configured model.
+			if p.Model == rowModel {
+				found = append(found, n)
+			}
+		}
+		if len(found) != 1 {
+			// None serves it any more, or several do and the row cannot say which:
+			// the default answers, and the record says so.
+			s.log.Warn("the session's model does not name one configured provider; continuing on the default",
+				"session", id, "model", rowModel, "providers", len(found))
+			return s.opts.Adapter, "", true
+		}
+		name = found[0]
+	}
+	if name == "" || name == s.opts.Config.Model.Default {
+		return s.opts.Adapter, "", false
+	}
+	a, err := s.resolveProvider(name)
+	if err != nil {
+		s.log.Warn("the session's model is not available here; continuing on the default",
+			"session", id, "provider", name, "error", err)
+		return s.opts.Adapter, "", true
+	}
+	return a, name, false
 }
 
 // manualHold is how long a claim taken for workbench work alone is kept
@@ -1297,11 +1351,18 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 	if err != nil || !newly {
 		return err
 	}
+	s.holdClaim(id, live)
+	return nil
+}
+
+// holdClaim keeps a claim taken for workbench work until it goes quiet, then
+// releases the session with the end it was opened with.
+func (s *Server) holdClaim(id string, live *liveSession) {
 	live.mu.Lock()
 	turn := live.State == "running" || live.State == "waiting_approval"
 	live.mu.Unlock()
 	if turn {
-		return nil // the turn records its own end; a hold would end it again
+		return // the turn records its own end; a hold would end it again
 	}
 	live.holdMu.Lock()
 	defer live.holdMu.Unlock()
@@ -1311,7 +1372,6 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 	} else {
 		live.release.Reset(manualHold)
 	}
-	return nil
 }
 
 // claimOpened claims a session opened unclaimed, and takes up anything another
@@ -1463,6 +1523,10 @@ type sessionSummary struct {
 	Created time.Time `json:"created"`
 	// Mode is the permission mode the session was started in.
 	Mode string `json:"mode,omitempty"`
+	// Model is what the session runs on now; Provider its configured name,
+	// known while the session is live here.
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
@@ -1486,6 +1550,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				state, reason, prompt := "done", rec.TerminalReason, rec.Prompt
+				modelName, provider := rec.Model, ""
 				if rec.EndedAt == nil {
 					state, reason = "running", ""
 				}
@@ -1496,12 +1561,14 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 					if prompt == "" {
 						prompt = live.Prompt
 					}
+					modelName, provider = live.model, live.provider
 					live.mu.Unlock()
 				}
 				s.mu.RUnlock()
 				out = append(out, sessionSummary{
 					ID: rec.ID, User: rec.User, Tenant: rec.Tenant,
 					Prompt: prompt, State: state, Reason: reason, Created: rec.StartedAt, Mode: rec.Mode,
+					Model: modelName, Provider: provider,
 				})
 			}
 			WriteJSON(w, http.StatusOK, out)
@@ -1528,6 +1595,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 			ID: l.ID, User: l.User, Tenant: l.Tenant,
 			Prompt: l.Prompt, State: l.State, Reason: listedReason(l.State, l.Reason),
 			Created: l.Created, Mode: string(l.Loop.Policy.Mode),
+			Model: l.model, Provider: l.provider,
 		})
 		l.mu.Unlock()
 	}
@@ -1877,6 +1945,15 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claimedHere = claimedHere || newly
+	if live.fallback != nil {
+		// The record says why the next call names another model.
+		if _, err := live.Loop.Recorder.Record(agent.EvModelSwitched, agent.ActorSystem, agent.Trusted, *live.fallback); err != nil {
+			s.log.Error("model fallback not recorded", "session", id, "error", err)
+			WriteError(w, http.StatusInternalServerError, "could not continue the session: its change of model could not be recorded")
+			return
+		}
+		live.fallback = nil
+	}
 
 	live.mu.Lock()
 	// While draining, nothing is started, steered or interrupted: a steering

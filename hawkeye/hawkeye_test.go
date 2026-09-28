@@ -429,3 +429,30 @@ func TestSubagentReturnsMatchBySession(t *testing.T) {
 		t.Fatalf("the return was matched to the wrong subagent: %+v", rep.Subagents)
 	}
 }
+
+// The report names the model each call went to, and a switch and a switch
+// back both show, in the text and the HTML.
+func TestReportNamesTheModelsUsed(t *testing.T) {
+	r := &rec{}
+	r.user("go")
+	for _, m := range []string{"model-a", "model-a", "model-b", "model-a"} {
+		r.add(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{Turn: 1, Model: m, TokensIn: 10})
+	}
+	rep := Analyze("s-test", r.end(agent.TermCompleted).evs)
+	if got := strings.Join(rep.Models, ","); got != "model-a,model-b,model-a" {
+		t.Fatalf("models %q", got)
+	}
+	if rep.Turns[2].Model != "model-b" {
+		t.Fatalf("turn 3 names %q", rep.Turns[2].Model)
+	}
+	if txt := Text(rep); !strings.Contains(txt, "models    model-a → model-b → model-a") {
+		t.Fatalf("the text report does not name the models:\n%s", txt)
+	}
+	html, err := HTML(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, "switched: model-a → model-b → model-a") {
+		t.Fatal("the HTML report does not name the models")
+	}
+}

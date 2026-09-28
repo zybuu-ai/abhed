@@ -43,6 +43,8 @@ const (
 	EvMessageDropped  = agent.EvMessageDropped
 	EvSubagentAction  = agent.EvSubagentAction
 	EvForked          = agent.EvForked
+	EvModelCall       = agent.EvModelCall
+	EvModelSwitched   = agent.EvModelSwitched
 
 	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
 
@@ -78,6 +80,8 @@ type (
 	Compaction      = agent.Compaction
 	DroppedMessage  = agent.DroppedMessage
 	Forked          = agent.Forked
+	ModelCall       = agent.ModelCall
+	ModelSwitched   = agent.ModelSwitched
 )
 
 // Live is the record as the conversation now stands: each conversation.forked

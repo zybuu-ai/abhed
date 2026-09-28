@@ -34,41 +34,13 @@ func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSes
 		WriteError(w, http.StatusServiceUnavailable, errDraining.Error())
 		return nil, nil, false
 	}
-	live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
-	if !found {
-		// A session from before a restart is continued from its record, as a
-		// message would continue it, so there is a sandbox to work in.
-		if !s.mayAccess(r, id) {
-			WriteError(w, http.StatusNotFound, "session not found")
-			return nil, nil, false
-		}
-		// Opened unclaimed: viewing a finished session must not mark it running.
-		resumed, err := s.resumeSession(r.Context(), id, "", UserOf(r.Context()), TenantOf(r.Context()), false)
-		if errors.Is(err, errBusySession) {
-			// Another request may have reopened it a moment ago.
-			if l, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
-				resumed, err = l, nil
-			}
-		}
-		switch {
-		case errors.Is(err, errNoSession):
-			WriteError(w, http.StatusNotFound, "session not found")
-			return nil, nil, false
-		case errors.Is(err, errDraining):
+	live, status, msg := s.liveOrReopened(r, id)
+	if live == nil {
+		if status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, errDraining.Error())
-			return nil, nil, false
-		case err != nil:
-			s.log.Warn("could not reopen session", "session", id, "error", err)
-			WriteError(w, http.StatusConflict, "this session could not be reopened on this server; start a new one")
-			return nil, nil, false
 		}
-		live = resumed
-		live.mu.Lock()
-		if live.Turns == 0 && live.State == "done" {
-			live.State = "idle" // a workbench session nobody has messaged yet
-		}
-		live.mu.Unlock()
+		WriteError(w, status, msg)
+		return nil, nil, false
 	}
 	live.mu.Lock()
 	defer live.mu.Unlock()
@@ -211,4 +183,38 @@ func writeUnrecorded(w http.ResponseWriter, err error, msg string) {
 		return
 	}
 	WriteError(w, http.StatusInternalServerError, msg)
+}
+
+// liveOrReopened is the session running here, or one from before a restart
+// opened unclaimed from its record; on failure, the status and message to answer with.
+func (s *Server) liveOrReopened(r *http.Request, id string) (*liveSession, int, string) {
+	if live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); found {
+		return live, 0, ""
+	}
+	if !s.mayAccess(r, id) {
+		return nil, http.StatusNotFound, "session not found"
+	}
+	// Opened unclaimed: viewing a finished session must not mark it running.
+	resumed, err := s.resumeSession(r.Context(), id, "", UserOf(r.Context()), TenantOf(r.Context()), false)
+	if errors.Is(err, errBusySession) {
+		// Another request may have reopened it a moment ago.
+		if l, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+			resumed, err = l, nil
+		}
+	}
+	switch {
+	case errors.Is(err, errNoSession):
+		return nil, http.StatusNotFound, "session not found"
+	case errors.Is(err, errDraining):
+		return nil, http.StatusServiceUnavailable, errDraining.Error()
+	case err != nil:
+		s.log.Warn("could not reopen session", "session", id, "error", err)
+		return nil, http.StatusConflict, "this session could not be reopened on this server; start a new one"
+	}
+	resumed.mu.Lock()
+	if resumed.Turns == 0 && resumed.State == "done" {
+		resumed.State = "idle" // a workbench session nobody has messaged yet
+	}
+	resumed.mu.Unlock()
+	return resumed, 0, ""
 }
