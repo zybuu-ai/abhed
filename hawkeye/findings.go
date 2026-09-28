@@ -131,6 +131,21 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		}
 	}
 
+	for _, a := range r.SubagentActions {
+		who := a.By
+		if a.Approver != "" {
+			who += " " + a.Approver
+		}
+		switch {
+		case a.Decision == "denied":
+			add(Info, "subagent-denied", "Denied in a subagent: "+a.Tool,
+				fmt.Sprintf("%s — %s (step %q, by %s). Subagent session %s.", clip(a.Subject, 160), a.Reason, a.Step, who, a.Session), a.Seq)
+		case a.Step == "destructive":
+			add(Warn, "subagent-destructive", "A subagent was allowed a destructive command",
+				fmt.Sprintf("%s — %s (by %s). Subagent session %s.", clip(a.Subject, 160), a.Reason, who, a.Session), a.Seq)
+		}
+	}
+
 	truncated := 0
 	for _, c := range r.Calls {
 		if c.Truncated && !c.byPerson() {

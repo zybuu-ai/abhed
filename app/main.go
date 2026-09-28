@@ -378,10 +378,10 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	loopCfg.CompactAt = cfg.Context.CompactAt
 	loopCfg.OffloadAt = cfg.Context.OffloadFraction()
 
+	// No Approver: a subagent answers to the approver of the loop that spawned it.
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Tools: registry, Policy: pol,
-		Approver: agent.AutoApprove{Yes: true}, // subagent tools are policed by pol
-		Session:  sess, Budget: budget, Config: loopCfg, Workspace: workspace,
+		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
 		Redact: openVault().Redactor(),
 	}
 	registry.Add(agent.Task{Spawn: factory.Spawn, Profiles: agent.Profiles})

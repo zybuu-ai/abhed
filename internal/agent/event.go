@@ -65,6 +65,9 @@ const (
 	// EvMessageDropped is a message accepted into the queue that was never
 	// delivered, because the server stopped first. See DroppedMessage.
 	EvMessageDropped EventType = "message.dropped"
+	// EvSubagentAction copies a subagent's refused or asked-about call into the
+	// parent's record; see SubagentAction.
+	EvSubagentAction EventType = "subagent.action"
 )
 
 type Actor string
@@ -410,6 +413,9 @@ type Recorder struct {
 	// Redact, when set, rewrites a payload before it is written. Set by the
 	// caller from the secrets store; nil records payloads as they are.
 	Redact Redactor
+	// tap sees each event the store took; a subagent's recorder uses it to
+	// copy outcomes into the parent's record.
+	tap func(Event)
 }
 
 // Redactor rewrites a JSON payload before it is recorded. Span is the byte
@@ -500,6 +506,9 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 		r.appended = ev.Seq
 	}
 	r.mu.Unlock()
+	if r.tap != nil {
+		r.tap(ev)
+	}
 	return ev, nil
 }
 

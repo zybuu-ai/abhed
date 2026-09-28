@@ -41,6 +41,7 @@ const (
 	EvSessionEnded    = agent.EvSessionEnded
 	EvTerminalInput   = agent.EvTerminalInput
 	EvMessageDropped  = agent.EvMessageDropped
+	EvSubagentAction  = agent.EvSubagentAction
 
 	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
 
@@ -65,6 +66,7 @@ const (
 // Event payloads, one per kind that carries structure.
 type (
 	ActionRequested = agent.ActionRequested
+	SubagentAction  = agent.SubagentAction
 	Observation     = agent.Observation
 	Message         = agent.Message
 	Delta           = agent.Delta

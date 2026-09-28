@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -167,5 +168,19 @@ func TestApproveInterruptedRefuses(t *testing.T) {
 	got, err := a.Approve(ctx, "write", json.RawMessage(`{}`), policy.Result{})
 	if got || !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v err %v, want a refusal with context.Canceled", got, err)
+	}
+}
+
+// A subagent's ask names the subagent, so a person knows where it comes from.
+func TestApproveNamesTheSubagent(t *testing.T) {
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("n\n")
+	ctx := agent.WithSubagent(context.Background(), "audit pkg/auth")
+	if _, err := a.Approve(ctx, "bash", json.RawMessage(`{"command":"rm -rf x"}`), policy.Result{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "asked by subagent: audit pkg/auth") {
+		t.Fatalf("the prompt does not name the subagent: %q", out.String())
 	}
 }
