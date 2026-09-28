@@ -6,22 +6,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-28
+
 ### Upgrading
 
-- The `users` table gains `revocations`, a count of sign-outs everywhere.
-  With two database roles, run `abhed migrate` as the owner before starting
-  the new server: it refuses to start on the older schema and says so.
-  Existing accounts start at 0. A `users.json` file gains the same field the
-  first time an account in it is signed out everywhere. A 1.2.0 server or
-  `abhed user` command that rewrites the file drops the count, and sessions
-  it should end on other servers then stay live: servers and CLIs of
-  different versions must not share one users file.
+- Migrate first. Every deployment with two database roles, including one
+  that signs in only through OIDC, must run `abhed migrate` as the owner
+  before starting 1.2.1. The new column is `users.revocations`, a count of
+  sign-outs everywhere, and the server refuses to start without it and says
+  so. With a single role the server migrates itself. The migration is safe
+  while 1.2.0 servers still run. Existing accounts start at 0.
+- Cross-server sign-out needs every server on 1.2.1. A 1.2.0 server ignores
+  the count during a rolling upgrade, so its sessions stay live.
+- Mixed versions must not share one users file. A `users.json` file gains
+  the count the first time an account in it is signed out everywhere; a
+  1.2.0 server or `abhed user` command that rewrites the file drops it, and
+  sessions it should end on other servers then stay live.
 - A custom `auth.UserStore` must store `User.Revocations` and never lower it
   in `Put`. A sign-out everywhere through a store that does not keep it now
   returns an error instead of succeeding.
-- The SDK's `SetModel` records the switch as a `model.switched` event and
-  now returns an error when the record refuses it; the model is then left as
-  it was.
+- `(*LocalAuth).RevokeUser` now writes to the account store, with a
+  10-second limit of its own. `POST /v1/admin/users/admin` removing rights
+  can answer `200` with a `warning` instead of `204` (see Changed).
+- SDK: `SetModel` records the switch as a `model.switched` event and can now
+  return an error when the record refuses it; the model is then left as it
+  was. The new SDK exports are `EvModelCall`, `EvModelSwitched`, `ModelCall`
+  and `ModelSwitched`.
 
 ### Added
 
@@ -41,10 +51,11 @@ All of it is additive; records written before it resume as they did.
 - In `auth`: `(*LocalAuth).RevokeUserContext`, which is `RevokeUser` that
   also returns an error when the sign-out could not be recorded for other
   servers; `User.Revocations`, which the account stores keep (never lowered
-  by a write) and which is not sent in API responses; and
-  `RevokingUserStore`, a store that raises the count in one step, which the
-  memory, file and Postgres stores implement; `LocalAuth.Log`, where
-  `RevokeUser` logs what it cannot return.
+  by a write) and which is not sent in API responses; `RevokingUserStore`, a
+  store that raises the count in one step, which the memory, file and
+  Postgres stores implement; `store.Postgres.AddRevocation`, the Postgres
+  store's one-step raise; and `LocalAuth.Log`, where `RevokeUser` logs what
+  it cannot return.
 
 ### Changed
 
@@ -101,19 +112,25 @@ All of it is additive; records written before it resume as they did.
   the path as the disk spells it: each part that exists under the name the
   disk holds, in case and Unicode form, and a part not made yet as given,
   under its folder's real name. Allow rules still compare case as written.
-  `tools.DiskPath` gives that spelling.
-- An administrator's "Sign out everywhere", and every other path that calls
-  `auth.LocalAuth.RevokeUser` (removing administrator rights, a password
-  reset from the admin page, an account refused by the access gate), ended
-  the person's sessions only on the server that handled the request. With
-  several servers sharing one Postgres account store, their sessions on the
-  others stayed live. The sign-out is now recorded with the account (a
-  failure to record it is logged, and reported by `RevokeUserContext` and
-  the admin-rights endpoint), and every server ends that person's older
-  sessions on its next read of the account: on Postgres within
-  `accountRecheck`, about 2 seconds, and with a users file as soon as the
-  file changes. A sign-in after the sign-out is not affected. As before, a
-  terminal or event stream already open is checked only when it opens.
+  `tools.DiskPath` gives that spelling. The fix is verified on macOS, where
+  a CI job runs the case tests and fails if any skips; it builds for
+  Windows, but no CI job runs it there yet.
+- A sign-out everywhere ended the person's sessions only on the server that
+  handled the request. With several servers sharing one Postgres account
+  store, their sessions on the others stayed live. In Community, removing
+  administrator rights through `POST /v1/admin/users/admin` signs the person
+  out everywhere; it covers local accounts, in a users file or Postgres, and
+  `abhed user` commands in the CLI keep the count when they rewrite an
+  account. The Team edition adds the admin page's "Sign out everywhere", a
+  password reset from the admin page, and an account refused by the access
+  gate, each through `auth.LocalAuth.RevokeUser`. The sign-out is now
+  recorded with the account (a failure to record it is logged, and reported
+  by `RevokeUserContext` and the admin-rights endpoint), and every server
+  ends that person's older sessions on its next read of the account: on
+  Postgres within `accountRecheck`, about 2 seconds, and with a users file
+  as soon as the file changes. A sign-in after the sign-out is not affected.
+  As before, a terminal or event stream already open is checked only when
+  it opens.
 - An administrator's password reset made while a read of the same account
   was in flight could have that read clear the new must-change flag on this
   server's live sessions until their next read. The reset now voids reads
