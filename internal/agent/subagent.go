@@ -121,6 +121,14 @@ func (Task) Schema() json.RawMessage {
 }`)
 }
 
+// hasTasks reports whether raw carries a tasks field, the tasks tool's argument.
+func hasTasks(raw json.RawMessage) bool {
+	var probe struct {
+		Tasks json.RawMessage `json:"tasks"`
+	}
+	return json.Unmarshal(raw, &probe) == nil && len(probe.Tasks) > 0 && string(probe.Tasks) != "null"
+}
+
 type taskArgs struct {
 	Prompt      string `json:"prompt"`
 	Description string `json:"description"`
@@ -134,6 +142,10 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		return tools.Result{Content: fmt.Sprintf("Invalid arguments for task: %v", err), IsError: true}
 	}
 	if strings.TrimSpace(a.Prompt) == "" {
+		// A list of tasks sent here is a call meant for the tasks tool; say so, or the model retries the same call.
+		if hasTasks(raw) {
+			return tools.Result{Content: "task takes one prompt; to run several subagents at once, call the tasks tool with this tasks list.", IsError: true}
+		}
 		return tools.Result{Content: "prompt is required and must be self-contained.", IsError: true}
 	}
 	if strings.TrimSpace(a.Description) == "" {

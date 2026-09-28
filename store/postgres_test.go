@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -372,5 +373,33 @@ func TestScanStreamsWindowInOrder(t *testing.T) {
 			return nil
 		}); err != nil || n != 0 {
 		t.Errorf("window closing before the session was written: n=%d err=%v", n, err)
+	}
+}
+
+// A second CreateSession for a taken id is an error, not a silent merge, and a
+// different event at a taken step is refused while a replay of the same one
+// still succeeds.
+func TestSessionIDConflictIsAnError(t *testing.T) {
+	p := openStore(t, "acme")
+	id := fmt.Sprintf("s-conflict-%d", time.Now().UnixNano())
+	newSession(t, p, id, "acme")
+	err := p.CreateSession(context.Background(), SessionRecord{
+		ID: id, Tenant: "acme", User: "other", Workspace: "/other",
+		Model: "test-model", Mode: "default", StartedAt: time.Now().UTC(),
+	})
+	if !errors.Is(err, ErrSessionExists) {
+		t.Fatalf("second CreateSession: %v, want ErrSessionExists", err)
+	}
+	first := ev(id, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "from A"})
+	if err := p.Append(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Append(first); err != nil {
+		t.Fatalf("replaying the same event: %v", err)
+	}
+	other := first
+	other.ID = first.ID + "-b"
+	if err := p.Append(other); !errors.Is(err, ErrStepTaken) {
+		t.Fatal("another writer's event at a taken step was accepted")
 	}
 }

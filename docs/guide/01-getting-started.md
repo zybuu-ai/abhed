@@ -77,11 +77,13 @@ When it needs approval it stops and shows the change:
 ```
 
 Press `a` or `y` to accept, `r` or `n` to reject, `A` to allow that scope for
-the rest of the session. A key answers only on its own, on an empty line, with
-300 ms of quiet before and after it (600 ms after `A`); Enter alone never
-accepts. Anything else, "Actually no" included, is typing: it is kept as a
-steering message and sent with Enter. Ctrl-C refuses the request and stops the turn; a second Ctrl-C, if
-the turn has not stopped, ends the session.
+the rest of the session; `/clear` and `/resume` start another session without
+it. A key answers only on its own, on an empty line, with 300 ms of quiet
+before and after it (600 ms after `A`); Enter alone never accepts. Anything
+else, "Actually no" included, is typing: it is kept as a steering message and
+sent with Enter. Ctrl-C refuses the request and stops the turn; a second
+Ctrl-C, if the turn has not stopped, ends the session, recorded as
+`user_interrupt`.
 
 ## The prompt
 

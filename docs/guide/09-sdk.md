@@ -36,7 +36,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Run`, `Continue` | send a prompt; `Continue` keeps the conversation |
 | `Steer` | redirect a run in progress, from another goroutine |
 | `Fork` | rebuild the conversation up to a sequence number (0 for all of it), and record a `conversation.forked` event so later rebuilds leave out what came after; a step an earlier fork abandoned, or past the end, is refused |
-| `Events` | everything recorded; the stream is the session |
+| `Events` | everything recorded; the stream is the session. `abhed.Live(events)` drops the steps a fork abandoned (`EvForked`, payload `abhed.Forked`) |
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |

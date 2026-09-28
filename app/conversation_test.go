@@ -60,6 +60,15 @@ type cliSession struct {
 
 func startCLI(t *testing.T) *cliSession {
 	t.Helper()
+	return startCLIWith(t, func(w io.Writer, n int, _ string) {
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"noted %d\"}}]}\n\n", n)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+	})
+}
+
+// startCLIWith is startCLI with a model that streams reply to the nth request.
+func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cliSession {
+	t.Helper()
 	c := &cliSession{t: t, out: &syncBuffer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -68,8 +77,7 @@ func startCLI(t *testing.T) *cliSession {
 		n := len(c.bodies)
 		c.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"noted %d\"}}]}\n\n", n)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+		reply(w, n, string(body))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -295,4 +303,73 @@ func TestCLIResumeAfterForkKeepsTheBranchAbandoned(t *testing.T) {
 	if !strings.Contains(body, "ZEBRA-41") || strings.Contains(body, "OSPREY-58") {
 		t.Fatalf("the resumed conversation holds the abandoned branch:\n%s", body)
 	}
+}
+
+// A resumed session's token totals go on from its record, as its turns do.
+func TestCLIResumeCarriesTokenTotals(t *testing.T) {
+	c := startCLI(t)
+	c.task("Remember the codeword ZEBRA-41.")
+	first := checkRecord(t, c.export(), 1)
+	c.command("/clear", "context cleared")
+	c.command("/resume "+first, "resumed")
+	c.task("What is the codeword?")
+	end, ok := agent.LastEnd(c.export())
+	if !ok {
+		t.Fatal("no session.ended in the record")
+	}
+	// Each model call reports 10 in and 2 out.
+	if end.Turns != 2 || end.TokensIn != 20 || end.TokensOut != 4 {
+		t.Fatalf("resumed end has turns %d, tokens %d in / %d out; want 2, 20 / 4", end.Turns, end.TokensIn, end.TokensOut)
+	}
+}
+
+// Two CLIs whose first task starts in the same second record two sessions:
+// a shared id merged their records, or dropped one, on Postgres.
+func TestCLIsStartedTogetherGetTheirOwnSessions(t *testing.T) {
+	a, b := startCLI(t), startCLI(t)
+	// Start both early in a second, so a clock-derived id would match.
+	for time.Now().Nanosecond() > 100_000_000 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, c := range []*cliSession{a, b} {
+		c.tasks++
+		fmt.Fprintln(c.stdin, "Say ok.")
+	}
+	for _, c := range []*cliSession{a, b} {
+		c.waitFor(func(out string) bool { return strings.Count(out, " in / ") >= 1 }, "the task to finish")
+	}
+	if ida, idb := checkRecord(t, a.export(), 1), checkRecord(t, b.export(), 1); ida == idb {
+		t.Fatalf("both CLIs recorded session %s", ida)
+	}
+}
+
+// An "always allow" chosen in one session is asked again after /clear, in the
+// real interactive CLI with its own approver.
+func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
+	c := startCLIWith(t, func(w io.Writer, _ int, body string) {
+		// A task's first request asks for a command; the one after its result ends the turn.
+		if !strings.Contains(body, `"role":"tool"`) || strings.LastIndex(body, `"role":"user"`) > strings.LastIndex(body, `"role":"tool"`) {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"mkdir -p out/one\\\"}\"}}]}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"made\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+	})
+	asked := func() int { return strings.Count(c.out.String(), "[A]lways allow") }
+	finished := func() int { return strings.Count(c.out.String(), " in / ") }
+
+	fmt.Fprintln(c.stdin, "Make the folder.")
+	c.waitFor(func(string) bool { return asked() == 1 }, "the approval")
+	fmt.Fprintln(c.stdin, "A")
+	c.waitFor(func(string) bool { return finished() == 1 }, "the first task to finish")
+
+	c.command("/clear", "context cleared")
+	fmt.Fprintln(c.stdin, "Make the folder again.")
+	c.waitFor(func(string) bool { return asked() == 2 || finished() == 2 }, "the second task")
+	if asked() != 2 {
+		t.Fatalf("a scope from the cleared session approved the call:\n%s", c.out.String())
+	}
+	fmt.Fprintln(c.stdin, "r")
+	c.waitFor(func(string) bool { return finished() == 2 }, "the second task to finish")
 }

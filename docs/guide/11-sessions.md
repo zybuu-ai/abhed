@@ -48,7 +48,10 @@ In the interactive CLI, every task you type continues one conversation, and
 the session's record holds all of them: one sequence, with a `session.ended`
 after each task. The turn limit counts the whole conversation. `/clear`
 starts a new conversation and a new session, and `/resume` switches to
-another; either way `/cost`, `/diff` and `/undo` start over. After `/fork` or `/resume`, the
+another; either way `/cost`, `/diff`, `/undo` and any "always allow" scope
+start over. A resumed session's recorded totals (turns, tokens and
+compactions) go on from where its record left them. Each new session gets a
+random id, so two CLIs started in the same second never share one. After `/fork` or `/resume`, the
 next task continues from the rebuilt conversation, and its events extend
 that session's record. A fork is recorded as a `conversation.forked` event:
 the steps it abandoned stay in the record for audit, but no later `/fork`,
@@ -117,7 +120,15 @@ different replica behind a load balancer.
 
 On the Postgres store the continuation is claimed atomically, so two replicas
 asked to continue the same session at once cannot both do it; the second
-answers `409`. Only the session's owner can continue it.
+answers `409`. Only the session's owner can continue it. Opening a finished
+session in the workbench to read it does not claim it: it stays ended, with
+its reason. The first thing written to it, a message or workbench work such
+as a save or a terminal, claims it, after catching up on anything another
+process recorded meanwhile; while another process is running it, that write
+is refused. A claim taken for workbench work alone is given back two minutes
+after its last write, once no terminal is open, by recording the end it was
+opened with again, so that work appears in the record after an end. A
+session running elsewhere is not opened at all.
 
 What this is not: a running turn on a node that dies is not migrated. It
 ends, is recorded as interrupted, and the session can be continued from

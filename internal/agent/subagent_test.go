@@ -621,3 +621,16 @@ func TestQueuedAskGivesUpOnCancel(t *testing.T) {
 		t.Fatal("a queued ask did not give up when its run was interrupted")
 	}
 }
+
+// A tasks list sent to task names the tasks tool, so the model can correct the call.
+func TestTaskNamesTheTasksToolForATasksList(t *testing.T) {
+	raw := json.RawMessage(`{"tasks":[{"prompt":"read the README","description":"read readme"}]}`)
+	res := Task{}.Run(context.Background(), nil, raw)
+	if !res.IsError || !strings.Contains(res.Content, "tasks tool") {
+		t.Fatalf("got %q, want an error naming the tasks tool", res.Content)
+	}
+	res = Task{}.Run(context.Background(), nil, json.RawMessage(`{"description":"x"}`))
+	if !res.IsError || strings.Contains(res.Content, "tasks tool") {
+		t.Fatalf("a call with no prompt and no tasks got %q", res.Content)
+	}
+}

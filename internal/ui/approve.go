@@ -111,6 +111,9 @@ func (a *AllowList) Add(scope string) { a.scopes[scope] = true }
 
 func (a *AllowList) Has(scope string) bool { return a.scopes[scope] }
 
+// Reset forgets every scope, for a new session: a scope lasts one session.
+func (a *AllowList) Reset() { clear(a.scopes) }
+
 func NewApprover(out io.Writer) *Approver {
 	return &Approver{In: os.Stdin, Out: out, Style: NewStyle(out), Session: NewAllowList()}
 }

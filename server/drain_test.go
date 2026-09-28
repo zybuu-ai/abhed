@@ -103,7 +103,7 @@ func TestDrainingRefusesAResume(t *testing.T) {
 	s := drainServer(time.Second)
 	s.draining.Store(true)
 
-	_, err := s.resumeSession(context.Background(), "s-4", "prompt", "user", "tenant")
+	_, err := s.resumeSession(context.Background(), "s-4", "prompt", "user", "tenant", true)
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("resume during drain = %v, want errDraining", err)
 	}

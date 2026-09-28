@@ -302,7 +302,8 @@ same command. A denial that says only "no" makes a model retry forever.
 
 `/undo` reverts the last turn's file changes. `/diff` shows what changed this
 session. With Postgres storage, `/resume` replays a past session exactly, which
-is how you find out what an agent did rather than what it said it did.
+is how you find out what an agent did rather than what it said it did, and the
+next task continues that session; see [Sessions](11-sessions.md).
 
 ## The monitor
 

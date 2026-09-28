@@ -277,3 +277,21 @@ func TestRelativeDenyStopsAnAbsolutePath(t *testing.T) {
 		t.Fatal("write(ops/runbooks/**) did not stop an absolute write through the SDK")
 	}
 }
+
+// A reader outside the module can name a fork and drop the steps it abandoned.
+func TestForkVocabularyIsExported(t *testing.T) {
+	fork, _ := json.Marshal(abhed.Forked{ThroughSeq: 1})
+	events := []abhed.Event{
+		{Seq: 1, Type: abhed.EvUserMessage},
+		{Seq: 2, Type: abhed.EvAgentMessage},
+		{Seq: 3, Type: abhed.EvForked, Payload: fork},
+		{Seq: 4, Type: abhed.EvUserMessage},
+	}
+	var seqs []int64
+	for _, ev := range abhed.Live(events) {
+		seqs = append(seqs, ev.Seq)
+	}
+	if fmt.Sprint(seqs) != "[1 4]" {
+		t.Fatalf("live steps %v, want [1 4]", seqs)
+	}
+}

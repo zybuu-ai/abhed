@@ -363,8 +363,10 @@ func (a *Agent) Events() []Event {
 // Usage reports what the conversation has cost.
 func (a *Agent) Usage() Usage { return a.loop.Usage() }
 
-// Fork rebuilds the conversation up to a sequence number and continues from
-// there, discarding what came after.
+// Fork continues the conversation from step throughSeq, 0 meaning the whole
+// conversation as it stands. It records a conversation.forked event, so the
+// steps after throughSeq stay in the record but leave the conversation (see
+// Live), and it refuses a step past the end or one an earlier fork abandoned.
 func (a *Agent) Fork(throughSeq int64) error {
 	_, err := a.loop.ForkTo(a.Events(), throughSeq)
 	return err

@@ -8,6 +8,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -342,9 +343,25 @@ func (m *MemStore) DeleteSession(sessionID string) error {
 	return nil
 }
 
+// ErrStepTaken is an append of a different event at a step the session's
+// record already holds: another writer extended it first.
+var ErrStepTaken = errors.New("that step is already recorded by another writer")
+
+// Append refuses a different event at a step already held, as Postgres does;
+// a replay of the same event is success.
 func (m *MemStore) Append(ev Event) error {
 	m.mu.Lock()
-	m.events[ev.SessionID] = append(m.events[ev.SessionID], ev)
+	held := m.events[ev.SessionID]
+	for i := len(held) - 1; ev.Seq > 0 && i >= 0 && held[i].Seq >= ev.Seq; i-- {
+		if held[i].Seq == ev.Seq {
+			m.mu.Unlock()
+			if held[i].ID == ev.ID {
+				return nil
+			}
+			return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, ErrStepTaken)
+		}
+	}
+	m.events[ev.SessionID] = append(held, ev)
 	subs := append([]chan Event(nil), m.subs[ev.SessionID]...)
 	m.mu.Unlock()
 
@@ -416,6 +433,9 @@ type Recorder struct {
 	// tap sees each event the store took; a subagent's recorder uses it to
 	// copy outcomes into the parent's record.
 	tap func(Event)
+	// Gate, when set, runs before each write, which it refuses by returning an
+	// error; a server uses it to claim a session before anything extends it.
+	Gate func() error
 }
 
 // Redactor rewrites a JSON payload before it is recorded. Span is the byte
@@ -483,6 +503,11 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 		}
 	}
 
+	if r.Gate != nil {
+		if err := r.Gate(); err != nil {
+			return Event{}, err
+		}
+	}
 	r.mu.Lock()
 	r.seq++
 	ev := Event{

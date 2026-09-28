@@ -42,7 +42,8 @@ func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSes
 			WriteError(w, http.StatusNotFound, "session not found")
 			return nil, nil, false
 		}
-		resumed, err := s.resumeSession(r.Context(), id, "", UserOf(r.Context()), TenantOf(r.Context()))
+		// Opened unclaimed: viewing a finished session must not mark it running.
+		resumed, err := s.resumeSession(r.Context(), id, "", UserOf(r.Context()), TenantOf(r.Context()), false)
 		if errors.Is(err, errBusySession) {
 			// Another request may have reopened it a moment ago.
 			if l, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
@@ -147,7 +148,7 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 	args, _ := json.Marshal(map[string]string{"path": abs, "content": req.Content})
 	res, err := live.Loop.Manual(r.Context(), sess, "write", "u"+newSessionID(), args)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "the save could not be recorded, so it was not made")
+		writeUnrecorded(w, err, "the save could not be recorded, so it was not made")
 		return
 	}
 	if res.IsError {
@@ -193,11 +194,21 @@ func (s *Server) execCommand(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	res, err := live.Loop.Manual(r.Context(), sess, "bash", "u"+newSessionID(), args)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "the command could not be recorded")
+		writeUnrecorded(w, err, "the command could not be recorded")
 		return
 	}
 	WriteJSON(w, http.StatusOK, execResponse{
 		Output: res.Content, ExitCode: res.ExitCode, IsError: res.IsError, Truncated: res.Truncated,
 		Cwd: sess.Rel(sess.Cwd), DurationMS: time.Since(start).Milliseconds(),
 	})
+}
+
+// writeUnrecorded answers a workbench write the record refused: 409 when
+// another process is running the session, 500 otherwise.
+func writeUnrecorded(w http.ResponseWriter, err error, msg string) {
+	if errors.Is(err, errBusySession) {
+		WriteError(w, http.StatusConflict, "the session is being continued elsewhere; "+msg)
+		return
+	}
+	WriteError(w, http.StatusInternalServerError, msg)
 }
