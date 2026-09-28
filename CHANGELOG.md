@@ -20,12 +20,13 @@ All notable changes to Abhed are recorded here. The format follows
   `cp -p f f.new && mv f.new f`.
 - A policy hook or extension screening the Explorer's `delete` and `rename`
   actions is now asked about every entry inside a folder (up to the walk's
-  5,000 entries), not only the folder. After duplicates are dropped each
-  entry is put up to 8 times for a folder rename (named and with links
-  followed, with and without a trailing `/`, at the old and the new path)
-  and up to 4 for a folder delete, so a large rename can mean about 40,000
-  policy decisions; a hook that makes a network call per decision makes it
-  slow.
+  5,000 entries), not only the folder. A rename's old paths are also put to
+  it as `delete` actions, since a rename removes them. After duplicates are
+  dropped each entry is put up to 12 times for a folder rename (named and
+  with links followed, with and without a trailing `/`, as a `rename` at the
+  old and the new path and as a `delete` at the old) and up to 4 for a folder
+  delete, so a large rename can mean about 60,000 policy decisions; a hook
+  that makes a network call per decision makes it slow.
 - `POST /logout` with `Accept: application/json` answers
   `200 {"next": "<where to go>"}` instead of the redirect, which is how the
   pages now sign out. A form post without that header still redirects.
@@ -106,8 +107,9 @@ All notable changes to Abhed are recorded here. The format follows
 - The Explorer's New folder, rename and delete are recorded as `mkdir`,
   `rename` and `delete` actions instead of `bash` calls, and `bash(...)`
   rules no longer apply to them. To stop a delete from the Explorer, write a
-  rule for the action, such as `delete(**/keep/**)`, or a `write(...)` rule
-  on the path. A policy hook or extension that screened these as `bash`
+  rule for the action, such as `delete(**/keep/**)`, which also stops a
+  rename of `keep` or a move out of it, or a `write(...)` rule on the path.
+  A policy hook or extension that screened these as `bash`
   calls now sees `mkdir`, `rename` or `delete`, with the path in `path`
   (and a rename's new name in `to`).
 - Isolated subagents (`tasks` with `"isolation": "worktree"`) and
@@ -649,12 +651,21 @@ All notable changes to Abhed are recorded here. The format follows
   opaque or other-site initiator is marked `cross-site`. A null origin with
   the header missing, or `same-site`, `cross-site` or `none`, is still
   refused.
-- A folder delete or rename from the Explorer escaped a `delete(...)` or
-  `rename(...)` rule on what it held: the rule was put to the folder's own
-  path only, so deleting `keep`, or any folder above it, got past
-  `delete(**/keep/**)`, and renaming `locked` got past
-  `rename(**/locked/**)`. The rule is now put to every entry the walk
-  visits, and for a rename to each entry's new path too.
+- A folder delete from the Explorer escaped a `delete(...)` rule, and a
+  folder rename a `rename(...)` rule, on what it held: the rule was put to
+  the folder's own path only, so deleting `keep`, or any folder above it,
+  got past `delete(**/keep/**)`, and renaming `locked` got past
+  `rename(**/locked/**)`. The action's rule is now put to every entry the
+  walk visits, and for a rename to each entry's new path too.
+- An Explorer rename was not held to `delete(...)` rules at all, so renaming
+  `vault`, or a folder above it, got past `delete(**/vault/**)`, and a file
+  could be moved out of `vault/` and then deleted from its new place. A
+  rename removes what was at its old path, so the old path and every entry
+  inside a folder are now also put to `delete(...)` rules, and a deny
+  refuses the rename. A `delete(...)` ask rule is recorded as the rename's
+  reason and, like any ask in the Explorer, taken as answered, so it does
+  not prompt. An ask from any path an Explorer action is judged by, not only
+  its own, is now recorded as the action's reason.
 - A hard link inside the workspace to a state file of an enclosing folder,
   such as the repository root's `.abhed/config.json` when the session starts
   in `services/ledger`, let a command rewrite that config for the next run

@@ -139,3 +139,23 @@ func TestManualRequestRecordsTheOfferedScope(t *testing.T) {
 		}
 	}
 }
+
+// weight ranks what ManualAs keeps: a deny, then an ask a rule or hook made,
+// then an ask the mode or default made, then an allow.
+func TestWeightRanksManualDecisions(t *testing.T) {
+	for _, c := range []struct {
+		d    policy.Result
+		want int
+	}{
+		{policy.Result{Decision: policy.Deny, Step: "deny"}, 3},
+		{policy.Result{Decision: policy.Ask, Step: "ask"}, 2},
+		{policy.Result{Decision: policy.Ask, Step: "hook"}, 2},
+		{policy.Result{Decision: policy.Ask, Step: "mode"}, 1},
+		{policy.Result{Decision: policy.Ask, Step: "default"}, 1},
+		{policy.Result{Decision: policy.Allow, Step: "allow"}, 0},
+	} {
+		if got := weight(c.d); got != c.want {
+			t.Errorf("%s at %s: %d, want %d", c.d.Decision, c.d.Step, got, c.want)
+		}
+	}
+}

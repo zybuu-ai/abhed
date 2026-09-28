@@ -12,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // A folder made, a file renamed and a folder deleted from the Explorer each
@@ -488,5 +489,99 @@ func TestRelativeRulesBindAnAddedDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(target); err == nil {
 		t.Error("the file was written")
+	}
+}
+
+// A rename removes the entry from its old path, so a delete rule on the old
+// path, or on anything inside it, refuses or asks for the rename as well.
+func TestExplorerRenameMeetsDeleteRules(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		deny     string
+		ask      string
+		from, to string
+		want     int
+		reason   string
+	}{
+		{name: "rename vault", deny: "delete(**/vault/**)", from: "vault", to: "open", want: http.StatusForbidden},
+		{name: "rename a parent holding vault", deny: "delete(**/vault/**)", from: "outer", to: "outer2", want: http.StatusForbidden},
+		{name: "move a file out of vault", deny: "delete(**/vault/**)", from: "vault/v.txt", to: "v.txt", want: http.StatusForbidden},
+		{name: "no rule", from: "vault", to: "open", want: http.StatusOK},
+		{name: "a delete ask is recorded as the rename's reason", ask: "delete(**/vault/**)", from: "vault/v.txt", to: "v.txt",
+			want: http.StatusOK, reason: "matched ask rule delete(**/vault/**)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			wb := manualBench(t, func(cfg *config.Config) {
+				if c.deny != "" {
+					cfg.Permissions.Deny = append(cfg.Permissions.Deny, c.deny)
+				}
+				if c.ask != "" {
+					cfg.Permissions.Ask = append(cfg.Permissions.Ask, c.ask)
+				}
+			})
+			wb.write("vault/v.txt", "v\n")
+			wb.write("outer/vault/o.txt", "o\n")
+			rec := wb.send("acme", "POST", "rename", renameRequest{From: c.from, To: c.to})
+			if rec.Code != c.want {
+				t.Fatalf("%d %s, want %d", rec.Code, rec.Body, c.want)
+			}
+			if c.want != http.StatusOK {
+				for _, kept := range []string{"vault/v.txt", "outer/vault/o.txt"} {
+					if _, err := os.Stat(filepath.Join(wb.workspace, kept)); err != nil {
+						t.Errorf("%s was moved against a rule", kept)
+					}
+				}
+				if !strings.Contains(rec.Body.String(), c.deny) {
+					t.Errorf("the refusal does not name the rule: %s", rec.Body)
+				}
+			}
+			if c.reason == "" {
+				return
+			}
+			found := false
+			for _, e := range wb.events() {
+				var p struct {
+					Tool   string `json:"tool"`
+					Reason string `json:"reason"`
+				}
+				_ = json.Unmarshal(e.Payload, &p)
+				found = found || (e.Type == agent.EvActionRequested && p.Tool == "rename" && p.Reason == c.reason)
+			}
+			if !found {
+				t.Errorf("the rename is not recorded as asked by %q", c.reason)
+			}
+		})
+	}
+}
+
+// A policy hook sees a rename's old path as a delete, so a hook that refuses
+// deleting a path refuses moving it away.
+func TestExplorerRenameReachesHooksAsDelete(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.write("vault/v.txt", "v\n")
+	wb.write("free.txt", "f\n")
+	wb.s.mu.Lock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.Unlock()
+	if live == nil {
+		t.Fatal("no live session")
+	}
+	vault := string(filepath.Separator) + "vault" + string(filepath.Separator)
+	live.Loop.Policy.Hooks = append(live.Loop.Policy.Hooks, func(tool string, args json.RawMessage) *policy.Result {
+		var a struct{ Path string }
+		_ = json.Unmarshal(args, &a)
+		if tool == "delete" && strings.Contains(a.Path, vault) {
+			return &policy.Result{Decision: policy.Deny, Reason: "hook keeps the vault"}
+		}
+		return nil
+	})
+	if rec := wb.send("acme", "POST", "rename", renameRequest{From: "vault/v.txt", To: "v.txt"}); rec.Code != http.StatusForbidden {
+		t.Errorf("a rename out of what the hook keeps: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(wb.workspace, "vault/v.txt")); err != nil {
+		t.Error("the file was moved against the hook")
+	}
+	if rec := wb.send("acme", "POST", "rename", renameRequest{From: "free.txt", To: "free2.txt"}); rec.Code != http.StatusOK {
+		t.Errorf("a rename the hook does not name: %d %s", rec.Code, rec.Body)
 	}
 }

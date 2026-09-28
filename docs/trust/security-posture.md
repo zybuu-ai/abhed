@@ -51,7 +51,8 @@ person's terminal is sandboxed" below). The workbench Explorer's New folder,
 rename and delete are judged as actions of their own (`mkdir`, `rename`,
 `delete`), not as command text, so `bash(...)` rules do not apply to them;
 `write(...)` rules on their paths and rules naming the action do (a
-`rename(...)` rule is matched against both names). Hooks and extensions see
+`rename(...)` rule is matched against both names, and a `delete(...)` rule
+against the old one, since a rename removes it). Hooks and extensions see
 those action names, not `bash`. Rules are
 scoped per-command, not per-tool: allowing `bash(npm test)` never allows
 `bash(rm -rf /)`. A deployment's deny list should block reads of SSH keys,
