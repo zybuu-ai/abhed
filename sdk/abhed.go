@@ -192,6 +192,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
 	pol.Managed = cfg.Managed
+	pol.Roots = sess.PolicyRoots
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}

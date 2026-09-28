@@ -280,3 +280,28 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 		t.Errorf("past the bound: %s", res.Decision)
 	}
 }
+
+// Each find is scanned for its runners once, so a line of them stays linear.
+func TestFindRunnersAreLinear(t *testing.T) {
+	fastest := func(line string) time.Duration {
+		best := time.Duration(1 << 62)
+		for range 3 {
+			start := time.Now()
+			commandSegments(line)
+			if took := time.Since(start); took < best {
+				best = took
+			}
+		}
+		return best
+	}
+	for _, shape := range []func(n int) string{
+		func(n int) string { return strings.Repeat("find -exec ", n) },
+		func(n int) string { return "find " + strings.Repeat("-exec x ", n) },
+	} {
+		// Both sizes stay under the 64 KiB bound, past which the split stops early.
+		small, large := fastest(shape(1400)), fastest(shape(5600))
+		if large > 10*small+50*time.Millisecond {
+			t.Fatalf("4x the input took %s against %s: not linear", large, small)
+		}
+	}
+}

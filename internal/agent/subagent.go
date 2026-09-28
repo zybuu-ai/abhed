@@ -294,7 +294,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		cfg.MaxTurns = 30 // subagents are for bounded subtasks
 	}
 
-	sub := NewLoop(f.Adapter, registry, f.Policy, approver, session, rec, cfg)
+	sub := NewLoop(f.Adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
 	sub.depth = depth + 1
 	// Deliberately no Compactor: a subagent that needs compaction was given too
 	// large a task, and silently compacting hides that from the operator.
@@ -487,4 +487,21 @@ func lastAssistantMessage(msgs []model.Message) string {
 		}
 	}
 	return ""
+}
+
+// childPolicy is the parent's policy with the child's roots added, so a path
+// rule relative to the workspace also matches inside the child's worktree.
+func childPolicy(pol *policy.Engine, session *tools.Session) *policy.Engine {
+	if pol == nil || session == nil {
+		return pol
+	}
+	child, parent := *pol, pol.Roots
+	child.Roots = func() []string {
+		roots := session.PolicyRoots()
+		if parent != nil {
+			roots = append(roots, parent()...)
+		}
+		return roots
+	}
+	return &child
 }

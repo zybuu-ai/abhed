@@ -12,6 +12,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -65,6 +66,9 @@ type Rule struct {
 	tool    string
 	pattern *regexp.Regexp // nil means "any argument"
 	glob    string
+	// folded is pattern with the literal start of its program name lowered, for
+	// systems that ignore case; nil when that changes nothing.
+	folded *regexp.Regexp
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -99,6 +103,11 @@ func ParseRule(s string) (Rule, error) {
 			return Rule{}, fmt.Errorf("rule %q: %w", s, err)
 		}
 		r.pattern, r.glob = re, glob
+		if lowered := lowerLiteralPrefix(glob); lowered != glob {
+			if r.folded, err = globToRegexp(lowered); err != nil {
+				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
+			}
+		}
 	}
 	return r, nil
 }
@@ -131,7 +140,40 @@ func (r Rule) Matches(tool string, subject string) bool {
 	if r.pattern == nil {
 		return true
 	}
-	return r.pattern.MatchString(subject)
+	if r.pattern.MatchString(subject) {
+		return true
+	}
+	// Folding only adds a match: the program name is lowered on both sides.
+	if tool == "bash" && tools.FoldsCommandNames() {
+		folded := r.pattern
+		if r.folded != nil {
+			folded = r.folded
+		}
+		if lowered := foldName(subject); lowered != subject || r.folded != nil {
+			return folded.MatchString(lowered)
+		}
+	}
+	return false
+}
+
+// lowerLiteralPrefix lowers a glob's start up to its first wildcard or space,
+// the part that can only be a program name.
+func lowerLiteralPrefix(glob string) string {
+	end := strings.IndexAny(glob, "*? \t")
+	if end < 0 {
+		end = len(glob)
+	}
+	return strings.ToLower(glob[:end]) + glob[end:]
+}
+
+// foldName lowers a command's first word, its program name, where case is ignored.
+func foldName(command string) string {
+	start := len(command) - len(strings.TrimLeft(command, " \t"))
+	end := strings.IndexAny(command[start:], " \t\n")
+	if end < 0 {
+		end = len(command) - start
+	}
+	return command[:start] + tools.CommandName(command[start:start+end]) + command[start+end:]
 }
 
 // rulesSeeParts reports whether a deny or ask rule with a pattern applies to tool.
@@ -181,6 +223,10 @@ type Engine struct {
 	// Managed marks the engine as org-controlled: bypass mode is refused and
 	// local config cannot escalate past it (docs P7, §10 precedence).
 	Managed bool
+
+	// Roots returns the workspace and added directories, so a path rule
+	// written relative to one matches. Nil matches paths only as given.
+	Roots func() []string
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
@@ -232,29 +278,111 @@ func (e *Engine) Screens(tool string) bool {
 // consequential field and ssh already asks unconditionally. Scoping ssh by host
 // needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
 func Subject(tool string, args json.RawMessage) string {
+	_, s := subjectOf(args)
+	return s
+}
+
+// subjectOf is Subject with the argument it came from.
+func subjectOf(args json.RawMessage) (key, subject string) {
 	var m map[string]any
 	if err := json.Unmarshal(args, &m); err != nil {
-		return ""
+		return "", ""
 	}
 	for _, key := range []string{"command", "path", "pattern", "action", "resource", "host", "namespace", "name"} {
 		if v, found := m[key]; found {
 			if s, isStr := v.(string); isStr {
-				return s
+				return key, s
 			}
 		}
 	}
-	return ""
+	return "", ""
+}
+
+// pathSubjects are the spellings a path rule is matched against. Deny and ask
+// rules see every one: the path as given, absolute, with its links resolved,
+// and relative to each root, with and without a leading ./. Allow rules see
+// only the target: the resolved path, absolute and relative to the workspace.
+func (e *Engine) pathSubjects(p string) (all, allow []string) {
+	add := func(to *[]string, s string) {
+		for _, have := range *to {
+			if have == s {
+				return
+			}
+		}
+		*to = append(*to, s)
+	}
+	all = []string{p}
+	if p == "" {
+		return all, all
+	}
+	var roots []string
+	if e.Roots != nil {
+		for _, r := range e.Roots() {
+			roots = append(roots, r)
+			if real := tools.RealPath(r); real != r {
+				roots = append(roots, real)
+			}
+		}
+	}
+	// A folder given with a trailing separator names what is inside it, as write(**/locked/**) does.
+	dir := ""
+	if strings.HasSuffix(p, "/") || strings.HasSuffix(p, string(filepath.Separator)) {
+		dir = "/"
+	}
+	abs := filepath.Clean(p)
+	if !filepath.IsAbs(abs) {
+		add(&all, filepath.ToSlash(abs)+dir)
+		if len(roots) == 0 {
+			return all, []string{filepath.ToSlash(abs) + dir}
+		}
+		abs = filepath.Join(roots[0], abs)
+	}
+	real := tools.RealPath(abs)
+	relTo := func(to *[]string, root, a string) {
+		if rel, err := filepath.Rel(root, a); err == nil && filepath.IsLocal(rel) {
+			rel = filepath.ToSlash(rel) + dir
+			add(to, rel)
+			add(to, "./"+rel)
+		}
+	}
+	for _, a := range []string{abs, real} {
+		add(&all, filepath.ToSlash(a)+dir)
+		for _, root := range roots {
+			relTo(&all, root, a)
+		}
+	}
+	allow = []string{filepath.ToSlash(real) + dir}
+	if len(roots) > 0 {
+		relTo(&allow, tools.RealPath(roots[0]), real)
+	}
+	return all, allow
+}
+
+// pathRules reports whether any deny, ask or allow rule for tool has a pattern.
+func (e *Engine) pathRules(tool string) bool {
+	for _, rules := range [][]Rule{e.Deny, e.Ask, e.Allow} {
+		for _, r := range rules {
+			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Evaluate applies the ordered decision flow.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	subject := Subject(tool, args)
+	key, subject := subjectOf(args)
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
 	// approves only a simple command, and never a multi-line subject.
 	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
-	if tool == "bash" {
+	allowSubjects := []string{subject}
+	switch {
+	case tool == "bash":
 		subjects, complete = commandSegments(subject)
 		narrowAllows = !hasShellControl(subject)
+	case key == "path" && e.pathRules(tool):
+		subjects, allowSubjects = e.pathSubjects(subject)
 	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
@@ -272,6 +400,12 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		if r.matchesAny(tool, subjects) {
 			return Result{Decision: Deny, Reason: fmt.Sprintf("denied by rule %s", r), Scope: "", Step: "deny"}
 		}
+	}
+
+	// 2a. Plan mode changes nothing, so a mutating call is refused before
+	// anything could put it to a person who might accept it.
+	if e.Mode == ModePlan && mutates {
+		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 	}
 
 	// 2b. Destructive commands always confirm, in every mode. There is no
@@ -326,7 +460,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 
 	// 5. Allow rules.
 	for _, r := range e.Allow {
-		if (narrowAllows || r.matchesEverything()) && r.Matches(tool, subject) {
+		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
 			return Result{Decision: Allow, Reason: fmt.Sprintf("matched allow rule %s", r), Scope: "", Step: "allow"}
 		}
 	}
@@ -370,6 +504,7 @@ func suggestScope(tool, subject string) string {
 		if len(fields) == 0 {
 			return tool
 		}
+		fields[0] = tools.CommandName(fields[0])
 		prefix := bashScope(fields)
 		if prefix == "" {
 			return ""

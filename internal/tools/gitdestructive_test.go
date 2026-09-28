@@ -157,10 +157,87 @@ func TestGitDiscardsAreDestructive(t *testing.T) {
 		"git status":                     false,
 		"grep git README.md":             false,
 		"git -C restore status":          false,
+
+		// Aliases set on the command line or in config, which may run anything.
+		"git -c alias.wipe='reset --hard' wipe":    true,
+		"git -c alias.nuke='reset --hard' nuke":    true,
+		"git -c alias.co=checkout co -- .":         true,
+		"git -c alias.boom='!rm -rf keepdir' boom": true,
+		"git --config-env=alias.x=X x":             true,
+		"git --config-env alias.x=X x":             true,
+		"git -c include.path=/tmp/cfg x":           true,
+		"git wipe":                                 true,
+		"env git wipe":                             true,
+		"git -c color.ui=always log":               false,
+		"git lfs-typo status":                      true,
+		"echo git wipe":                            false,
+
+		// A program name supplied by a substitution or a variable.
+		"$(which git) reset --hard":                      true,
+		"$(which git) checkout -- .":                     true,
+		"`which git` checkout -- .":                      true,
+		"`git` reset --hard":                             true,
+		"$(which git) wipe":                              true,
+		"$(which git) status":                            false,
+		"echo $(date) reset --hard":                      false,
+		"$(pwd)/run.sh --reset":                          false,
+		"make -C $(git rev-parse --show-toplevel) clean": false,
+		"$MAKE clean -f Makefile":                        false,
+		"echo $(which git) reset --hard":                 false,
+
+		// The program found past shell keywords, eval and a runner option's value.
+		"if true; then git wipe; fi":        true,
+		"! git wipe":                        true,
+		"{ git wipe; }":                     true,
+		"while git wipe; do :; done":        true,
+		"eval git wipe":                     true,
+		"sudo -u bob git wipe":              true,
+		"git -c include.path=/tmp/c status": true,
+		"C:/Git/bin/git.exe checkout -- .":  true,
+		"git subtree split -P x":            false,
+		"git init-db":                       false,
+		"git merge-recursive a -- b c":      false,
+
+		// Plumbing that overwrites the working tree or moves a ref.
+		"git read-tree -u --reset HEAD":         true,
+		"git read-tree -u -m HEAD":              true,
+		"git checkout-index -f -a":              true,
+		"git checkout-index --force x":          true,
+		"git update-ref -d refs/heads/x":        true,
+		"git update-ref refs/heads/main HEAD~3": true,
+		"git read-tree HEAD":                    false,
+		"git checkout-index -a":                 false,
 	} {
 		what, got := IsDestructive(cmd)
 		if got != want {
 			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
+
+// Where the filesystem ignores case, a capitalised program name is the
+// program; elsewhere it is another program.
+func TestDestructiveFoldsCommandNames(t *testing.T) {
+	defer FoldCommandNamesForTest(FoldsCommandNames())()
+	for _, fold := range []bool{true, false} {
+		FoldCommandNamesForTest(fold)
+		for _, cmd := range []string{
+			"GIT reset --hard", "Git checkout -- .", "Git restore .", "GIT clean -fdx",
+			"Git stash drop", "GIT push --force", "RM -rf services/notify", "/usr/bin/GIT stash clear",
+			"Git -c alias.nuke='reset --hard' nuke", "GIT read-tree -u --reset HEAD",
+		} {
+			if what, got := IsDestructive(cmd); got != fold {
+				t.Errorf("fold=%v: IsDestructive(%q) = %v (%s)", fold, cmd, got, what)
+			}
+		}
+		// Only program names fold: an argument in capitals is compared as written.
+		for _, cmd := range []string{"git commit -m 'Halt on DD'", "date +%Y-%m-DD", "git log --grep=Reboot", "echo SHRED"} {
+			if what, got := IsDestructive(cmd); got {
+				t.Errorf("fold=%v: IsDestructive(%q) = true (%s)", fold, cmd, what)
+			}
+		}
+		if what, _ := IsDestructive("Git branch -d x"); what == "force branch delete" {
+			t.Errorf("fold=%v: git branch -d labelled %q", fold, what)
 		}
 	}
 }
@@ -182,8 +259,10 @@ func TestGitDestructiveIsLinear(t *testing.T) {
 		return best
 	}
 	for _, shape := range []func(n int) string{
-		func(n int) string { return strings.Repeat("git x ", n) + "git stash drop" },
-		func(n int) string { return strings.Repeat("git x; ", n) + "git stash drop" },
+		func(n int) string { return strings.Repeat("git status ", n) + "git stash drop" },
+		func(n int) string { return strings.Repeat("git status; ", n) + "git stash drop" },
+		func(n int) string { return strings.Repeat("-a ", n) + strings.Repeat("$A ", n) + "git stash drop" },
+		func(n int) string { return "sudo " + strings.Repeat("-a b ", n) + "git stash drop" },
 		func(n int) string { return "git log " + strings.Repeat("x ", n) + "--output=x" },
 	} {
 		small, large := fastest(shape(10000)), fastest(shape(40000))
