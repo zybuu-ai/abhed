@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,5 +256,45 @@ func TestPathSubjectsStayInsideRoots(t *testing.T) {
 	}
 	if res := e.Evaluate("write", true, args(map[string]string{"path": filepath.Join(filepath.Dir(ws), "sibling")})); res.Decision == Deny {
 		t.Error("a relative rule matched a path outside every root")
+	}
+}
+
+// A path rule pasted in NFD, as Finder copies a name, holds for the NFC name
+// the disk and the model use, and the other way round. Allow rules match only
+// as written: on a disk that keeps Unicode form the two spellings are two folders.
+func TestPathRulesMatchInEitherUnicodeForm(t *testing.T) {
+	nfd, nfc := "docs/cafe\u0301", "docs/caf\u00e9"
+	for _, c := range []struct {
+		deny, ask, allow, path string
+		want                   Decision
+	}{
+		{deny: "write(" + nfd + "/**)", path: nfc + "/new.txt", want: Deny},
+		{deny: "write(" + nfc + "/**)", path: nfd + "/new.txt", want: Deny},
+		{deny: "write(**/" + nfd + "/**)", path: "/ws/" + nfc + "/new.txt", want: Deny},
+		{ask: "write(" + nfd + "/**)", path: nfc + "/new.txt", want: Ask},
+		{allow: "write(" + nfd + "/**)", path: nfd + "/new.txt", want: Allow},
+		{allow: "write(" + nfc + "/**)", path: nfd + "/new.txt", want: Ask}, // the default asks
+		{deny: "write(" + nfd + "/**)", path: "docs/cafe/new.txt", want: Allow},
+	} {
+		// Accept-edits approves an unmatched write, so only a rule makes it deny or ask.
+		mode := ModeAcceptEdits
+		if c.allow != "" {
+			mode = ModeDefault
+		}
+		e := New(mode)
+		for _, add := range []struct {
+			fn   func(...string) error
+			rule string
+		}{{e.AddDeny, c.deny}, {e.AddAsk, c.ask}, {e.AddAllow, c.allow}} {
+			if add.rule != "" {
+				if err := add.fn(add.rule); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		args, _ := json.Marshal(map[string]string{"path": c.path})
+		if got := e.Evaluate("write", true, args); got.Decision != c.want {
+			t.Errorf("deny %q ask %q allow %q on %q: %s (%s), want %s", c.deny, c.ask, c.allow, c.path, got.Decision, got.Reason, c.want)
+		}
 	}
 }

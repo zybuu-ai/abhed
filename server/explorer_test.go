@@ -677,10 +677,12 @@ func TestExplorerWriteRuleRefusalsAreRecorded(t *testing.T) {
 }
 
 // With two servers on one store, an Explorer change on the server that does
-// not hold the session answers 409, as a save does, and changes nothing.
+// not hold the session answers 409, as a save does, and changes nothing; so
+// does one a write rule refuses, which that server cannot record.
 func TestExplorerOnTheServerNotHoldingTheSessionIsRefused(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
+	cfg.Permissions.Deny = append(cfg.Permissions.Deny, "write(**/frozen/**)")
 	dir := t.TempDir()
 	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
 	node := func() (*Server, http.Handler) {
@@ -737,9 +739,11 @@ func TestExplorerOnTheServerNotHoldingTheSessionIsRefused(t *testing.T) {
 		endpoint string
 		body     any
 	}{
-		"mkdir":  {"folder", folderRequest{Path: "fromb"}},
-		"rename": {"rename", renameRequest{From: "keep.txt", To: "moved.txt"}},
-		"delete": {"delete", folderRequest{Path: "old"}},
+		"mkdir":                    {"folder", folderRequest{Path: "fromb"}},
+		"rename":                   {"rename", renameRequest{From: "keep.txt", To: "moved.txt"}},
+		"delete":                   {"delete", folderRequest{Path: "old"}},
+		"mkdir under a write rule": {"folder", folderRequest{Path: "frozen/x"}},
+		"rename into a write rule": {"rename", renameRequest{From: "keep.txt", To: "frozen/keep.txt"}},
 	} {
 		w := do(hb, base+c.endpoint, c.body)
 		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "continued elsewhere") {
@@ -751,7 +755,7 @@ func TestExplorerOnTheServerNotHoldingTheSessionIsRefused(t *testing.T) {
 			t.Errorf("%s is gone", kept)
 		}
 	}
-	for _, made := range []string{"fromb", "moved.txt"} {
+	for _, made := range []string{"fromb", "moved.txt", "frozen"} {
 		if _, err := os.Lstat(filepath.Join(dir, made)); err == nil {
 			t.Errorf("%s was made by the server not holding the session", made)
 		}

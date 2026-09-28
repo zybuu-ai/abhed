@@ -29,4 +29,21 @@ sel.value = 'a'; await switchModel();
 check('a refused switch says why', lastLine().startsWith('Model not switched: the session is mid-turn'));
 check('a refused switch shows the model still in use', sel.value === 'b');
 
+// Two providers serving one model are told apart by name, in the picker and the note.
+__fail = null;
+globalThis.__providers = [{name:'a', model:'m', default:true}, {name:'b', model:'m', default:false}, {name:'c', model:'other', default:false}];
+await loadProviders();
+const labels = sel.childNodes.filter(o => o.value).map(o => o.textContent);
+check('options for a shared model name the provider', labels.join('|') === 'a · m|b · m|other');
+recProvider = null;
+showSwitch({provider:'a', model:'m', from:'other'});
+check('a switch from an unnamed provider names the model it left', lastLine() === 'model switched to a · m (was other)');
+showSwitch({provider:'b', model:'m', from:'m'});
+check('a switch names both providers', lastLine() === 'model switched to b · m (was a · m)');
+check('the picker follows the switch', sel.value === 'b');
+// Two switches between providers of one model read as two different lines.
+const lines = __root.childNodes.length;
+showSwitch({provider:'a', model:'m', from:'m'});
+check('switching back is its own line, naming both providers', __root.childNodes.length === lines + 1 && lastLine() === 'model switched to a · m (was b · m)');
+
 if(!ok) process.exit(1);

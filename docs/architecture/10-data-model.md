@@ -32,7 +32,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 | Type | Payload | Emitted by |
 |---|---|---|
-| `session.started` | workspace, model, mode, origin; recorded today for a workbench session, which is opened without a prompt | system |
+| `session.started` | workspace, model, mode, origin (`chat` or `workbench`), provider; the first event of every session the server starts, so a resume keeps its provider | system |
 | `terminal.input` | call id of the shell, the line as typed, `edited`, or `withheld` with a reason | user |
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |

@@ -37,6 +37,10 @@ func (s *Server) providers() []providerInfo {
 	cfg := s.opts.Config
 	out := make([]providerInfo, 0, len(cfg.Model.Providers))
 	for name, p := range cfg.Model.Providers {
+		// A built-in the configuration never named is not offered.
+		if !cfg.Offered(name) {
+			continue
+		}
 		out = append(out, providerInfo{
 			Name: name, Model: p.Model, Type: p.Type,
 			ContextWindow: p.ContextWindow,
@@ -60,6 +64,10 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 // APIKeyEnv from the server's environment, which is what keeps the credential
 // server-side.
 func (s *Server) resolveProvider(name string) (model.Adapter, error) {
+	// Only a listed provider runs a session; a built-in nobody configured is not one.
+	if !s.opts.Config.Offered(name) {
+		return nil, errUnknownProvider
+	}
 	p, err := s.opts.Config.ProviderNamed(name)
 	if err != nil {
 		return nil, errUnknownProvider

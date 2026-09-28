@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -69,6 +71,9 @@ type Rule struct {
 	// folded is pattern with the literal start of its program name lowered, for
 	// systems that ignore case; nil when that changes nothing.
 	folded *regexp.Regexp
+	// nfc is pattern in Unicode NFC, which deny and ask path rules also match
+	// against NFC subjects; nil for a pattern with no non-ASCII character.
+	nfc *regexp.Regexp
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -103,6 +108,11 @@ func ParseRule(s string) (Rule, error) {
 			return Rule{}, fmt.Errorf("rule %q: %w", s, err)
 		}
 		r.pattern, r.glob = re, glob
+		if hasNonASCII(glob) {
+			if r.nfc, err = globToRegexp(norm.NFC.String(glob)); err != nil {
+				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
+			}
+		}
 		if lowered := lowerLiteralPrefix(glob); lowered != glob {
 			if r.folded, err = globToRegexp(lowered); err != nil {
 				return Rule{}, fmt.Errorf("rule %q: %w", s, err)
@@ -202,6 +212,39 @@ func NeverAllows(rule string) bool {
 func (r Rule) matchesAny(tool string, subjects []string) bool {
 	for _, s := range subjects {
 		if r.Matches(tool, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesPathAny is matchesAny for a deny or ask rule on a path, also in NFC on
+// both sides: a rule pasted in NFD holds for the NFC name. It only adds matches.
+func (r Rule) matchesPathAny(tool string, subjects []string) bool {
+	if r.matchesAny(tool, subjects) {
+		return true
+	}
+	if r.tool != tool && r.tool != "*" {
+		return false
+	}
+	for _, s := range subjects {
+		if !hasNonASCII(s) && r.nfc == nil {
+			continue
+		}
+		re := r.pattern
+		if r.nfc != nil {
+			re = r.nfc
+		}
+		if re.MatchString(norm.NFC.String(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
 			return true
 		}
 	}
@@ -406,9 +449,15 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		}
 	}
 
+	// Deny and ask rules on a path also match in NFC; allow rules match only as written.
+	matches := Rule.matchesAny
+	if key == "path" && tool != "bash" {
+		matches = Rule.matchesPathAny
+	}
+
 	// 2. Deny rules — absolute, survive every mode including bypass.
 	for _, r := range e.Deny {
-		if r.matchesAny(tool, subjects) {
+		if matches(r, tool, subjects) {
 			return Result{Decision: Deny, Reason: fmt.Sprintf("denied by rule %s", r), Scope: "", Step: "deny"}
 		}
 	}
@@ -436,7 +485,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// 3. Ask rules — force a prompt even if a later allow would match, so they
 	// offer no scope: a remembered one would stop them asking.
 	for _, r := range e.Ask {
-		if r.matchesAny(tool, subjects) {
+		if matches(r, tool, subjects) {
 			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: "", Step: "ask"}
 		}
 	}

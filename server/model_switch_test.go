@@ -269,8 +269,10 @@ func TestModelSwitchRefusalsSayWhy(t *testing.T) {
 		t.Fatalf("a switch mid-turn: %d %s", w.Code, w.Body.String())
 	}
 	events := turnsEnded(t, st, busy, 1)
-	if agent.ProviderOf(events) != "" {
-		t.Fatal("a refused switch was recorded")
+	for _, ev := range events {
+		if ev.Type == agent.EvModelSwitched {
+			t.Fatalf("a refused switch was recorded: %s", ev.Payload)
+		}
 	}
 }
 
@@ -371,12 +373,114 @@ func TestResumeOfAnUnswitchedSessionOnARemovedProviderRecordsTheFallback(t *test
 	}
 }
 
-// A session started on a model two providers now serve cannot say which it
-// ran on, so it continues on the default and records the move.
+// asLegacy rewrites a session's record as one from before a chat's
+// session.started named its provider: the row's model is all a resume has.
+func asLegacy(t *testing.T, st *durableMem, id string) {
+	t.Helper()
+	events, _ := st.Events(id)
+	_ = st.DeleteSession(id)
+	var seq int64
+	for _, ev := range events {
+		if ev.Type == agent.EvSessionStarted {
+			continue
+		}
+		seq++
+		ev.Seq = seq
+		if err := st.MemStore.Append(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A chat started on provider b, which serves the same model as the default a,
+// is continued on b after a restart: the record names b, not just the model.
+func TestResumedChatKeepsAProviderServingTheDefaultsModel(t *testing.T) {
+	s, st, a, b := switchServer(t)
+	pb := s.opts.Config.Model.Providers["b"]
+	pb.Model = "model-a"
+	s.opts.Config.Model.Providers["b"] = pb
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one","provider":"b"}`))
+	events := turnsEnded(t, st, id, 1)
+	if a.calls.Load() != 0 || b.calls.Load() != 1 {
+		t.Fatalf("the first turn: model-a answered %d calls and b %d", a.calls.Load(), b.calls.Load())
+	}
+	if agent.ProviderOf(events) != "b" {
+		t.Fatalf("session.started names %q, want b", agent.ProviderOf(events))
+	}
+	forget(s, id)
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"two"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("message: %d %s", w.Code, w.Body.String())
+	}
+	events = turnsEnded(t, st, id, 2)
+	if a.calls.Load() != 0 || b.calls.Load() != 2 {
+		t.Fatalf("after a restart a's endpoint answered %d calls and b's %d; want 0 and 2", a.calls.Load(), b.calls.Load())
+	}
+	for _, ev := range events {
+		if ev.Type == agent.EvModelSwitched {
+			t.Fatalf("a resume on the recorded provider recorded a move: %s", ev.Payload)
+		}
+	}
+}
+
+// An old record on the default's model, which another provider also serves,
+// cannot say which provider it ran on: it continues on the default and says so.
+func TestLegacyResumeOnTheDefaultsSharedModelRecordsTheFallback(t *testing.T) {
+	s, st, a, _ := switchServer(t)
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one"}`))
+	turnsEnded(t, st, id, 1)
+	asLegacy(t, st, id)
+	pb := s.opts.Config.Model.Providers["b"]
+	pb.Model = "model-a"
+	s.opts.Config.Model.Providers["b"] = pb
+	forget(s, id)
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"two"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("message: %d %s", w.Code, w.Body.String())
+	}
+	events := turnsEnded(t, st, id, 2)
+	if a.calls.Load() != 2 {
+		t.Fatalf("model-a answered %d calls; want 2", a.calls.Load())
+	}
+	recorded := false
+	for _, ev := range events {
+		if ev.Type == agent.EvUserMessage && recorded {
+			return
+		}
+		if ev.Type == agent.EvModelSwitched && strings.Contains(string(ev.Payload), `"provider":"a"`) {
+			recorded = true
+		}
+	}
+	t.Fatal("the ambiguous resume on the default is not recorded before the turn it explains")
+}
+
+// An old record on the default's model that no other provider serves keeps
+// today's behaviour: the default, with nothing recorded.
+func TestLegacyResumeOnTheDefaultsModelStaysQuiet(t *testing.T) {
+	s, st, a, _ := switchServer(t)
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one"}`))
+	turnsEnded(t, st, id, 1)
+	asLegacy(t, st, id)
+	forget(s, id)
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"two"}`); w.Code != http.StatusAccepted {
+		t.Fatalf("message: %d %s", w.Code, w.Body.String())
+	}
+	events := turnsEnded(t, st, id, 2)
+	if a.calls.Load() != 2 {
+		t.Fatalf("model-a answered %d calls; want 2", a.calls.Load())
+	}
+	for _, ev := range events {
+		if ev.Type == agent.EvModelSwitched {
+			t.Fatalf("an unambiguous resume recorded a move: %s", ev.Payload)
+		}
+	}
+}
+
+// An old record on a model two providers now serve cannot say which it ran
+// on, so it continues on the default and records the move.
 func TestResumeOnAModelSeveralProvidersServeRecordsTheFallback(t *testing.T) {
 	s, st, a, _ := switchServer(t)
 	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one","provider":"b"}`))
 	turnsEnded(t, st, id, 1)
+	asLegacy(t, st, id)
 	s.opts.Config.Model.Providers["c"] = s.opts.Config.Model.Providers["b"] // a second provider for model-b
 	forget(s, id)
 	if w := call(t, s, "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"two"}`); w.Code != http.StatusAccepted {
@@ -397,4 +501,33 @@ func TestResumeOnAModelSeveralProvidersServeRecordsTheFallback(t *testing.T) {
 		}
 	}
 	t.Fatal("the fallback from model-b to model-a is not recorded before the turn it explains")
+}
+
+// A built-in provider the configuration never named is not offered, so no
+// session can be started on it, opened on it or switched to it; as the
+// default it is offered like any other.
+func TestUnofferedProviderCannotRunASession(t *testing.T) {
+	s, st, _, b := switchServer(t)
+	local := config.Default().Model.Providers["local"]
+	local.BaseURL = b.url + "/v1" // never the real Ollama
+	s.opts.Config.Model.Providers["local"] = local
+	s.opts.Config.SetKeys = []string{"model.default", "model.providers.a", "model.providers.b"}
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one"}`))
+	turnsEnded(t, st, id, 1)
+	for _, c := range [][2]string{
+		{"/v1/sessions", `{"prompt":"two","provider":"local"}`},
+		{"/v1/sessions", `{"workbench":true,"provider":"local"}`},
+		{"/v1/sessions/" + id + "/model", `{"provider":"local"}`},
+	} {
+		if w := call(t, s, "POST", c[0], c[1]); w.Code != http.StatusBadRequest {
+			t.Errorf("POST %s %s: %d %s, want 400", c[0], c[1], w.Code, w.Body.String())
+		}
+	}
+	s.opts.Config.Model.Default = "local"
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/model", `{"provider":"local"}`); w.Code != http.StatusOK {
+		t.Fatalf("a switch to the default local: %d %s", w.Code, w.Body.String())
+	}
+	if w := call(t, s, "POST", "/v1/sessions", `{"workbench":true,"provider":"local"}`); w.Code >= 300 {
+		t.Fatalf("a session on the default local: %d %s", w.Code, w.Body.String())
+	}
 }
