@@ -277,3 +277,37 @@ func TestSetsNamesWhatAFileSet(t *testing.T) {
 		t.Fatalf("set keys: %v", cfg.SetKeys)
 	}
 }
+
+// The built-in local provider is offered for choosing only when it is the
+// default or a file names it; a file's own providers are always offered.
+func TestOfferedListsOnlyConfiguredProviders(t *testing.T) {
+	for _, c := range []struct {
+		file      string
+		wantLocal bool
+	}{
+		{`{"model":{"default":"wx","providers":{"wx":{"type":"openai-compatible","base_url":"http://127.0.0.1:1/v1","model":"m"}}}}`, false},
+		{`{"model":{"default":"wx","providers":{"wx":{"type":"openai-compatible","base_url":"http://127.0.0.1:1/v1","model":"m"},"local":{"model":"gemma4:26b"}}}}`, true},
+		{`{"model":{"providers":{"wx":{"type":"openai-compatible","base_url":"http://127.0.0.1:1/v1","model":"m"}}}}`, true},
+	} {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		ws := t.TempDir()
+		_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+		if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(c.file), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := cfg.Model.Providers["local"]; !ok {
+			t.Fatal("the built-in provider is gone, so -model local would stop working")
+		}
+		if got := cfg.Offered("local"); got != c.wantLocal {
+			t.Errorf("%s: local offered %v, want %v", c.file, got, c.wantLocal)
+		}
+		if !cfg.Offered("wx") {
+			t.Errorf("%s: the configured provider is not offered", c.file)
+		}
+	}
+}

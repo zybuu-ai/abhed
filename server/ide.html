@@ -298,11 +298,13 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .sys.bad{color:var(--bad)}
 #composer{flex:none;border-top:1px solid var(--line);padding:9px 10px;position:relative}
 #q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
-#crow{display:flex;align-items:center;gap:8px;margin-top:7px}
-#crow select{font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line-strong);border-radius:5px;padding:3px 6px}
+#crow{display:flex;align-items:center;gap:8px;margin-top:7px;min-width:0}
+/* The selects and the hint give up width before Send does, so Send stays on screen on a phone. */
+#crow select{font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line-strong);border-radius:5px;padding:3px 6px;min-width:0;flex:0 1 auto}
+#crow #mode{min-width:86px}
 #crow #mdlpick{max-width:170px;text-overflow:ellipsis}
-#crow .hint{flex:1;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#send{height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600}
+#crow .hint{flex:1 1 0;min-width:0;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#send{flex:none;height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600}
 #send:disabled{opacity:.5;cursor:default}
 #slash{position:absolute;left:10px;right:10px;bottom:100%;margin-bottom:4px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 #slash button{display:flex;gap:10px;width:100%;padding:6px 10px;text-align:left}
@@ -1154,7 +1156,7 @@ function offerAsks(){
 function resetSession(){
   if(es){ es.close(); es = null; }
   cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
-  current = null; live = false; lastSeq = endedSeq = 0; clearTimeout(recheckTimer); streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
+  current = null; live = false; lastSeq = endedSeq = 0; recProvider = null; clearTimeout(recheckTimer); streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
   queued.clear(); sent.length = 0; asks.clear(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
@@ -1174,13 +1176,30 @@ const sessionLabel = s => s.prompt || 'Workbench session';
 // Shown only when more than one provider is configured. It names the model the
 // open session runs on; with no session open, the model the next one starts on.
 let providers = [];
+// The provider the open session's record last named, so a switch note can say what it left.
+let recProvider = null;
+// A model two providers serve is named with its provider, so the two can be told apart.
+function modelLabel(name, model){
+  const p = providers.find(x => x.name === name);
+  const shared = p && p.model === model && providers.filter(x => x.model === model).length > 1;
+  return shared ? name + ' · ' + model : (model || name || '');
+}
+function switchedText(p, was){ return 'model switched to ' + modelLabel(p.provider, p.model) + (p.from ? ' (was ' + modelLabel(was, p.from) + ')' : ''); }
+// One line per switch, as the console shows it, naming the provider it left when the record does.
+function showSwitch(p){
+  const text = switchedText(p, recProvider), last = $('tx').lastElementChild;
+  recProvider = p.provider || null;
+  if(!(last && last.textContent === text)) add(el('div', 'sys', text));
+  $('s-model').textContent = p.model;
+  if(providers.some(x => x.name === p.provider)){ $('mdlpick').value = p.provider; $('mdlpick').dataset.prev = p.provider; }
+}
 async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ providers = []; }
   if(!Array.isArray(providers)) providers = [];
   const sel = $('mdlpick');
   if(providers.length < 2) return;
   clear(sel);
-  for(const p of providers){ const o = el('option', '', p.model || p.name); o.value = p.name; o.selected = p.default; sel.appendChild(o); }
+  for(const p of providers){ const o = el('option', '', modelLabel(p.name, p.model)); o.value = p.name; o.selected = p.default; sel.appendChild(o); }
   sel.dataset.prev = sel.value; sel.hidden = false;
   if(current) showSessionModel(sessionList.find(x => x.id === current));
 }
@@ -1557,8 +1576,8 @@ function render(ev){
     if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
-  case 'model.switched': add(el('div', 'sys', 'model switched to ' + p.model + (p.from ? ' (was ' + p.from + ')' : '')));
-    $('s-model').textContent = p.model; if(providers.some(x => x.name === p.provider)){ $('mdlpick').value = p.provider; $('mdlpick').dataset.prev = p.provider; } break;
+  case 'session.started': recProvider = p.provider || null; break;
+  case 'model.switched': showSwitch(p); break;
   case 'model.call': if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
     if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;

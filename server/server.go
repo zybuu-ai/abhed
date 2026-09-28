@@ -931,6 +931,14 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	if err != nil {
 		return "", err
 	}
+	// Names the provider, so a resume cannot mistake it for another serving the same model.
+	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{
+		"origin": "chat", "workspace": s.opts.Workspace, "model": adapter.Profile().Name, "mode": mode,
+		"provider": live.provider,
+	}); err != nil {
+		s.forgetUnstarted(sessionID)
+		return "", fmt.Errorf("record session start: %w", err)
+	}
 
 	runCtx, cancelCause := context.WithCancelCause(context.Background())
 	cancel := func() { cancelCause(nil) }
@@ -1283,15 +1291,17 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 // lost reports it, for the record.
 func (s *Server) recordedProvider(id string, events []agent.Event, rowModel string) (a model.Adapter, provider string, lost bool) {
 	name := agent.ProviderOf(events)
-	if name == "" && rowModel != "" && rowModel != s.opts.Adapter.Profile().Name {
-		// Started on a chosen provider before any switch: the row names its model,
-		// which is taken only when one provider serves it.
+	if name == "" && rowModel != "" {
+		// A record from before session.started named its provider: only the row's model is known.
 		var found []string
 		for n, p := range s.opts.Config.Model.Providers {
 			// Relies on every adapter naming its profile after the configured model.
 			if p.Model == rowModel {
 				found = append(found, n)
 			}
+		}
+		if rowModel == s.opts.Adapter.Profile().Name && len(found) <= 1 {
+			return s.opts.Adapter, "", false // the default's model, which no other provider serves
 		}
 		if len(found) != 1 {
 			// None serves it any more, or several do and the row cannot say which:

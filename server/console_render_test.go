@@ -188,6 +188,19 @@ func TestConsoleKeepsTheModelPickerReachable(t *testing.T) {
 	}
 }
 
+// On a phone the workbench's composer row must keep Send on screen: the
+// selects and the hint shrink, Send never does.
+func TestIDEComposerRowKeepsSendOnScreen(t *testing.T) {
+	for _, want := range []string{
+		"#crow select{font:12px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line-strong);border-radius:5px;padding:3px 6px;min-width:0;flex:0 1 auto}",
+		"#crow .hint{flex:1 1 0;min-width:0;", "#send{flex:none;",
+	} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("the composer row lost %s, which keeps Send on screen at 360 px", want)
+		}
+	}
+}
+
 // pickerHarness is the page state the model pickers run against: a select
 // that holds its chosen option, two providers, and an api that records posts.
 const pickerHarness = `import { El } from './dom.mjs';
@@ -199,16 +212,17 @@ class Sel extends El {
 const els = { mdlpick: new Sel('select'), tx: __root };
 els.mdlpick.hidden = true;
 const $ = id => els[id] || (els[id] = new El('div'));
-let current = null, providers = [], sessionsSeen = [], sessionList = [], caps = null;
+let current = null, providers = [], sessionsSeen = [], sessionList = [], caps = null, recProvider = null;
+Object.defineProperty(El.prototype, 'lastElementChild', {get(){ return this.childNodes[this.childNodes.length - 1] || null; }});
 const add = n => __root.appendChild(n);
 El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); return c; };
 Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
 globalThis.__posted = []; let __fail = null;
 const api = async (url, opts) => {
-  if(url === '/v1/providers') return [{name:'a', model:'model-a', default:true}, {name:'b', model:'model-b', default:false}];
+  if(url === '/v1/providers') return globalThis.__providers || [{name:'a', model:'model-a', default:true}, {name:'b', model:'model-b', default:false}];
   __posted.push({url, body: opts && opts.body ? JSON.parse(opts.body) : null});
   if(__fail) throw new Error(__fail);
-  return {provider:'b', model:'model-b', from:'model-a'};
+  return globalThis.__reply || {provider:'b', model:'model-b', from:'model-a'};
 };
 `
 

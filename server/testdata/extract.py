@@ -46,8 +46,8 @@ sets = {
           'async function newEntry(folder){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
     # The model picker, from console.go and from ide.html.
-    'model': ['function note(text){','function switchedText(p){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
-    'ide-model': ['const el = (tag, cls, text) => {','const clear = ','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
+    'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
+    'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
           'function showSessionModel(s){','async function switchModel(){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
     'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',

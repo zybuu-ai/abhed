@@ -807,6 +807,8 @@ async function health(){
  * Only shown when there is a real choice. A select with one option tells the
  * user they can pick something when they cannot. */
 let providers = [];
+// The provider the open chat's record last named, so a switch note can say what it left.
+let recProvider = null;
 let sessionsSeen = [];
 async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ return; }
@@ -817,7 +819,7 @@ async function loadProviders(){
   for(const p of providers){
     const o = document.createElement('option');
     o.value = p.name;
-    o.textContent = p.model || p.name;
+    o.textContent = modelLabel(p.name, p.model);
     o.selected = p.default;
     sel.appendChild(o);
   }
@@ -830,12 +832,14 @@ async function loadProviders(){
     // With no session yet the choice applies to the next one: createSession carries it.
     if(!current){ sel.dataset.prev = sel.value; return; }
     sel.disabled = true;
+    const was = recProvider;
     try{
       const r = await api('/v1/sessions/' + current + '/model', {
         method:'POST', body: JSON.stringify({provider: sel.value}),
       });
       sel.dataset.prev = sel.value;
-      note(switchedText(r));
+      const text = switchedText(r, was);
+      if(lastNoteText() !== text) note(text);
     }catch(e){
       // Refused (mid-turn, or not recorded): say why, and show the model still in use.
       note('Model not switched: ' + String(e.message || e));
@@ -846,8 +850,18 @@ async function loadProviders(){
   };
 }
 
-// One wording for a switch, so the reply and its recorded event show as one line.
-function switchedText(p){ return 'model switched to ' + p.model + (p.from ? ' (was ' + p.from + ')' : ''); }
+// One wording for a switch, so the reply and its recorded event show as one line;
+// was is the provider switched from, when the record names it.
+function switchedText(p, was){ return 'model switched to ' + modelLabel(p.provider, p.model) + (p.from ? ' (was ' + modelLabel(was, p.from) + ')' : ''); }
+
+// A model two providers serve is named with its provider, so the two can be told apart.
+function modelLabel(name, model){
+  const p = providers.find(x => x.name === name);
+  const shared = p && p.model === model && providers.filter(x => x.model === model).length > 1;
+  return shared ? name + ' · ' + model : (model || name || '');
+}
+
+function lastNoteText(){ const last = $('tx') && $('tx').lastElementChild; return last ? last.textContent : ''; }
 
 // The picker's choice for a new chat, or nothing when it is the default.
 function chosenProvider(){
@@ -1066,7 +1080,7 @@ function openSession(id, state){
   // dismiss it — otherwise the user taps a chat and still sees the list.
   setRail(false);
   if(es){ es.close(); es = null; }
-  current = id; lastSeq = 0; live = (state !== 'done'); turnEl = null;
+  current = id; lastSeq = 0; live = (state !== 'done'); turnEl = null; recProvider = null;
   streamEl = null; streamBody = null;
   calls.clear();
   approvals.clear();
@@ -1322,9 +1336,13 @@ function render(ev){
       break;
     }
 
+    case 'session.started': recProvider = p.provider || null; break;
+
     case 'model.switched': {
+      const text = switchedText(p, recProvider);
+      recProvider = p.provider || null;
       const last = tx.lastElementChild;
-      if(!(last && last.textContent === switchedText(p))) tx.appendChild(node('note', switchedText(p)));
+      if(!(last && last.textContent === text)) tx.appendChild(node('note', text));
       turnEl = null;
       if(!$('mdlpick').hidden && providers.some(x => x.name === p.provider)){ $('mdlpick').value = p.provider; $('mdlpick').dataset.prev = p.provider; }
       break;
@@ -1806,7 +1824,7 @@ window.addEventListener('resize', () => {
 function newChat(){
   setRail(false);
   if(es){ es.close(); es = null; }
-  current = null; live = false; lastSeq = 0; turnEl = null;
+  current = null; live = false; lastSeq = 0; turnEl = null; recProvider = null;
   calls.clear();
   approvals.clear();
   pending = []; renderFiles();

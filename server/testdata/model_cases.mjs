@@ -28,4 +28,20 @@ sel.value = 'a'; await sel.onchange();
 check('a refused switch says why', lastNote().startsWith('Model not switched: the session is mid-turn'));
 check('a refused switch shows the model still in use', sel.value === 'b');
 
+// Two providers serving one model are told apart by name, in the picker and the note.
+__fail = null; __posted.length = 0;
+globalThis.__providers = [{name:'a', model:'m', default:true}, {name:'b', model:'m', default:false}, {name:'c', model:'other', default:false}];
+await loadProviders();
+const labels = sel.childNodes.filter(o => o.value).map(o => o.textContent);
+check('options for a shared model name the provider', labels.join('|') === 'a · m|b · m|other');
+recProvider = 'a'; globalThis.__reply = {provider:'b', model:'m', from:'m'};
+sel.value = 'b'; await sel.onchange();
+check('the switch note names both providers', lastNote() === 'model switched to b · m (was a · m)');
+// The recorded event can be drawn before the reply returns; the reply then adds nothing.
+sel.value = 'a'; globalThis.__reply = {provider:'a', model:'m', from:'m'}; recProvider = 'b';
+note(switchedText(__reply, 'b'));
+const notes = $('tx').childNodes.length;
+await sel.onchange();
+check('a switch its event already drew is not a second line', $('tx').childNodes.length === notes);
+
 if(!ok) process.exit(1);

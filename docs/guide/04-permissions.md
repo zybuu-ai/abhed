@@ -60,12 +60,23 @@ holds; a name that does not exist yet, such as a new file or folder, keeps
 its spelling, under its folder's real name. Allow patterns still compare case
 as written, so another spelling never gains an allow. On a disk that keeps
 case, `DOCS/` and `docs/` are different folders and are compared as written.
-A pattern itself is still compared byte for byte, so spell it as the disk
-holds the name: `**/vault/**` does not match a folder the disk holds as
-`Vault`, whatever spelling a tool is given, and the same goes for a name's
-Unicode form (NFC or NFD). A folder that cannot be listed, such as a drop
-folder with no read permission, cannot say how it spells what is inside it,
-so a name under it keeps the spelling given.
+A pattern's case is never folded. **On macOS and Windows, write a path rule
+in the case the disk holds the name:** `write(**/VAULT/**)` does not protect a
+folder the disk holds as `vault`, whatever spelling a tool is given. Check the
+disk's spelling with `ls` (or `dir` on Windows) before you write the rule.
+
+A pattern's Unicode form does not matter for deny and ask rules. A name with
+an accent can be spelled in two forms, NFC (`é` as one character) and NFD
+(`e` then a combining accent); Finder copies names in NFD. Deny and ask path
+patterns are also compared with both the pattern and the path in NFC, so
+`write(**/café/**)` refuses a write to `café/` in either form. This only adds
+matches. Allow patterns are compared as written: on a disk that keeps Unicode
+form, such as most Linux disks, the two spellings are two different folders,
+and an allow rule must not reach the one it does not name.
+
+A folder that cannot be listed, such as a drop folder with no read
+permission, cannot say how it spells what is inside it, so a name under it
+keeps the spelling given.
 
 On macOS and Windows, where the disk ignores case, a command's program name is
 compared without case: `bash(whoami*)` denies `WHOAMI` and `Whoami`,

@@ -109,6 +109,16 @@ func (c Config) ManagedSets(path string) bool {
 	return false
 }
 
+// Offered reports whether a provider is one to offer for choosing: the default,
+// one not built in, or a built-in one a configuration file names.
+func (c Config) Offered(name string) bool {
+	if name == c.Model.Default || c.Sets("model.providers."+name) {
+		return true
+	}
+	_, builtIn := Default().Model.Providers[name]
+	return !builtIn
+}
+
 // Sets reports whether a configuration file made the setting at path, a
 // dotted path such as "sandbox.max_memory_mb", whatever value it gave.
 func (c Config) Sets(path string) bool {

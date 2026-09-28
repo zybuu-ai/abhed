@@ -718,3 +718,25 @@ func TestCanonicalHostRedirect(t *testing.T) {
 		t.Fatalf("no canonical host: got %d, want the handler", rec.Code)
 	}
 }
+
+// The picker lists what the configuration names: the built-in local provider,
+// merged in from the defaults, is left out unless it is the default.
+func TestProviderListLeavesOutAnUnconfiguredBuiltIn(t *testing.T) {
+	s := proxyServer(t)
+	s.opts.Config.Model.Default = "a"
+	s.opts.Config.Model.Providers = config.Default().Model.Providers
+	s.opts.Config.Model.Providers["a"] = config.ProviderConfig{Type: "ollama", Model: "m1"}
+	s.opts.Config.Model.Providers["b"] = config.ProviderConfig{Type: "ollama", Model: "m2"}
+	s.opts.Config.SetKeys = []string{"model.default", "model.providers.a", "model.providers.b"}
+	var names []string
+	for _, p := range s.providers() {
+		names = append(names, p.Name)
+	}
+	if strings.Join(names, ",") != "a,b" {
+		t.Fatalf("the picker lists %v, want [a b]", names)
+	}
+	s.opts.Config.Model.Default = "local"
+	if len(s.providers()) != 3 {
+		t.Fatal("the built-in provider is not listed when it is the default")
+	}
+}

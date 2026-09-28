@@ -166,6 +166,8 @@ type explorerCall struct {
 	action string
 	args   map[string]string
 	denial *policy.Result
+	// refused is the denial's reply, held until the refusal is recorded.
+	refused func()
 }
 
 // tried names the action the request asks for, so a refusal by a rule can be recorded.
@@ -199,12 +201,18 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 	x := &explorerCall{w: w, v: v, pol: live.Loop.Policy}
 	p, ok := plan(x)
 	if !ok {
-		// A write rule's refusal is recorded as the person's denied action; the reply is already sent.
+		// A write rule's refusal is recorded as the person's denied action, then answered.
 		if x.denial != nil && x.action != "" {
 			args, _ := json.Marshal(x.args)
 			if err := live.Loop.ManualRefused(x.action, "u"+newSessionID(), args, *x.denial); err != nil {
+				// Answered as a change the record refused: 409 when busy elsewhere, 500 otherwise.
 				s.log.Warn("could not record a refused explorer change", "session", r.PathValue("id"), "error", err)
+				writeUnrecorded(w, err, "the change could not be recorded, so it was not made")
+				return
 			}
+		}
+		if x.refused != nil {
+			x.refused()
 		}
 		return
 	}
@@ -287,6 +295,10 @@ func (x *explorerCall) check(rel string, dir bool, inside string) bool {
 			why = "the workbench does not show or change it"
 		}
 		code, why = http.StatusForbidden, "this folder holds "+filepath.ToSlash(inside)+": "+why
+	}
+	if x.denial != nil {
+		x.refused = func() { WriteError(x.w, code, why) }
+		return false
 	}
 	WriteError(x.w, code, why)
 	return false

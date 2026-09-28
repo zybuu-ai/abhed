@@ -35,10 +35,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-All of it is additive; records written before it resume as they did.
+All of it is additive. Records written before it resume on the model they
+did; one that cannot say which of several providers it ran on now records
+that it continues on the default (see Fixed).
 
-- The record: a `model.switched` event (`provider`, `model`, `from`) and a
-  `model` field on `model.call`.
+- The record: a `model.switched` event (`provider`, `model`, `from`), a
+  `model` field on `model.call`, and a `session.started` event (`origin`
+  `chat`, `provider`, `model`, `mode`, `workspace`) at the start of every
+  session the server starts, as workbench sessions already had.
 - `GET /v1/sessions` gives each session's `model` and, while it is live on
   the server answering, its `provider`.
 - `POST /v1/sessions/{id}/model` answers with `from` beside `provider` and
@@ -47,7 +51,9 @@ All of it is additive; records written before it resume as they did.
 - HawkEYE: `Report.Models` and `Turn.Model` (`models` and `turns[].model` in
   JSON), shown in the text, HTML and workbench views.
 - The SDK: `EvModelCall`, `EvModelSwitched`, `ModelCall` and `ModelSwitched`.
-- A model picker in the workbench.
+- A model picker in the workbench. In it and in the console's, a model two
+  configured providers serve is labelled `name · model`, and a switch note
+  names the providers when the record does.
 - In `auth`: `(*LocalAuth).RevokeUserContext`, which is `RevokeUser` that
   also returns an error when the sign-out could not be recorded for other
   servers; `User.Revocations`, which the account stores keep (never lowered
@@ -59,6 +65,13 @@ All of it is additive; records written before it resume as they did.
 
 ### Changed
 
+- The model pickers and `GET /v1/providers` list only configured providers.
+  The built-in `local` provider (Ollama) is listed only when it is the
+  default or a configuration file names it; `-model local` still works.
+  The listed providers are the only ones a session can be started on or
+  switched to: the API answers `400` for any other, and a record naming one
+  continues on the default and records the move. `config.Config.Offered`
+  reports which providers are listed.
 - `agent.Loop` gains `ManualRefused`, which records a person's action that a
   policy denial refused before it reached `ManualAs`.
 - The guide says that `delete(...)` and `rename(...)` rules bind the
@@ -82,8 +95,11 @@ All of it is additive; records written before it resume as they did.
   continued elsewhere", as a save does. Nothing was changed either way.
 - An Explorer change refused by a `write(...)` rule was not recorded, while
   one refused by a `delete(...)` rule was. The attempt (`mkdir`, `rename` or
-  `delete`, with its paths) and the policy's denial are now in the record.
-  The reply is unchanged.
+  `delete`, with its paths) and the policy's denial are now in the record,
+  and the reply is still `403`. On a server that is not running the
+  session, which cannot record the refusal, it answers `409` "the session is
+  being continued elsewhere", as a `delete(...)` refusal does, and any other
+  failure to record the refusal answers `500`.
 - Switching the model now takes effect everywhere. The console started a new
   chat on the default whatever the picker showed; a session continued from
   its record (after a restart, on another node, or opened again in the
@@ -96,10 +112,16 @@ All of it is additive; records written before it resume as they did.
   `model`, a switch is recorded as `model.switched`, the Postgres session row
   and the session list follow the switch, the CLI records a session started
   after `/model` under the model chosen, and HawkEYE lists the models used.
-  A switch that cannot be recorded is refused and says so. A session whose
-  recorded provider is no longer configured, or whose model no single
-  configured provider now serves, continues on the default, and its next
-  turn records the move.
+  A switch that cannot be recorded is refused and says so.
+- A chat started on a provider that serves the same model as the default
+  (for example two gateways for `gpt-4o`) continued on the default after a
+  restart, and nothing recorded the move. The record of every session the
+  server starts now names its provider, and a continued session keeps it. A session
+  whose recorded provider is no longer configured continues on the default,
+  and its next turn records the move. So does a record from before this
+  release, which names only a model, when no single configured provider
+  serves that model, including the default's model when another provider
+  serves it too.
 
 ### Security
 
@@ -115,6 +137,15 @@ All of it is additive; records written before it resume as they did.
   `tools.DiskPath` gives that spelling. The fix is verified on macOS, where
   a CI job runs the case tests and fails if any skips; it builds for
   Windows, but no CI job runs it there yet.
+- A deny or ask path rule whose name was written in another Unicode form
+  than the disk holds protected nothing: `write(**/café/**)` pasted in NFD,
+  as Finder copies a name, let a write into an NFC `café/` through. Deny and
+  ask path patterns are now also compared with the pattern and the path both
+  in NFC, which only adds matches. Allow patterns are compared as written,
+  since on a disk that keeps Unicode form the two spellings are two
+  folders. A pattern's case is still not folded: on macOS and Windows, write
+  a path rule in the case the disk holds the name (see the permissions
+  guide).
 - A sign-out everywhere ended the person's sessions only on the server that
   handled the request. With several servers sharing one Postgres account
   store, their sessions on the others stayed live. In Community, removing
