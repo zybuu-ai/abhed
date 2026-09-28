@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS users_tenant_idx ON users (tenant);
 CREATE INDEX IF NOT EXISTS users_email_idx  ON users (email) WHERE email <> '';
+
+-- A sign-out everywhere, counted so every server ends older sessions.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS revocations BIGINT NOT NULL DEFAULT 0;
 `
 
 // MigrateUsers creates the accounts table. Separate from the main schema so a
@@ -63,10 +66,10 @@ func (p *Postgres) Get(ctx context.Context, username string) (*auth.User, error)
 	var u auth.User
 	var groups string
 	err := p.pool.QueryRow(ctx, `
-		SELECT username, email, name, tenant, groups, hash, must_change, created_at
+		SELECT username, email, name, tenant, groups, hash, must_change, created_at, revocations
 		FROM users WHERE username = $1`, strings.ToLower(username)).
 		Scan(&u.Username, &u.Email, &u.Name, &u.Tenant, &groups,
-			&u.Hash, &u.MustChange, &u.CreatedAt)
+			&u.Hash, &u.MustChange, &u.CreatedAt, &u.Revocations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, auth.ErrNoSuchUser
 	}
@@ -86,16 +89,33 @@ func (p *Postgres) Put(ctx context.Context, u *auth.User) error {
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now().UTC()
 	}
+	// The count only rises, so a write from an older read cannot undo a revocation.
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO users (username, email, name, tenant, groups, hash, must_change, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		INSERT INTO users (username, email, name, tenant, groups, hash, must_change, created_at, revocations)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (username) DO UPDATE SET
 		  email = EXCLUDED.email, name = EXCLUDED.name, tenant = EXCLUDED.tenant,
 		  groups = EXCLUDED.groups, hash = EXCLUDED.hash,
-		  must_change = EXCLUDED.must_change`,
+		  must_change = EXCLUDED.must_change,
+		  revocations = GREATEST(users.revocations, EXCLUDED.revocations)`,
 		strings.ToLower(u.Username), u.Email, u.Name, u.Tenant,
-		strings.Join(u.Groups, ","), u.Hash, u.MustChange, u.CreatedAt)
+		strings.Join(u.Groups, ","), u.Hash, u.MustChange, u.CreatedAt, u.Revocations)
 	return err
+}
+
+// AddRevocation raises the account's revocation count and returns it.
+func (p *Postgres) AddRevocation(ctx context.Context, username string) (int64, error) {
+	if err := p.MigrateUsers(ctx); err != nil {
+		return 0, err
+	}
+	var n int64
+	err := p.pool.QueryRow(ctx, `
+		UPDATE users SET revocations = revocations + 1 WHERE username = $1
+		RETURNING revocations`, strings.ToLower(username)).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, auth.ErrNoSuchUser
+	}
+	return n, err
 }
 
 func (p *Postgres) List(ctx context.Context) ([]*auth.User, error) {

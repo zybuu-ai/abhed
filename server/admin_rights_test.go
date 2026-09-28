@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -25,9 +27,16 @@ type adminRig struct {
 
 func newAdminRig(t *testing.T) *adminRig {
 	t.Helper()
+	return newAdminRigWith(t, auth.NewMemoryUserStore(), nil)
+}
+
+// newAdminRigWith is newAdminRig over store, telling audit what AdminAudit is told.
+func newAdminRigWith(t *testing.T, store auth.UserStore,
+	audit func(ctx context.Context, action, target string, detail map[string]any)) *adminRig {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "local"
-	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	local := auth.NewLocalAuth(store, time.Hour, false)
 	for _, u := range []auth.User{
 		{Username: "alice", Email: "alice@example.com", Groups: []string{DefaultAdminGroup}},
 		{Username: "bob", Email: "bob@example.com"},
@@ -37,7 +46,7 @@ func newAdminRig(t *testing.T) *adminRig {
 		}
 	}
 	h := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
-		Registry: tools.NewRegistry(tools.Read{}),
+		Registry: tools.NewRegistry(tools.Read{}), AdminAudit: audit,
 		Auth: &auth.Middleware{Providers: []auth.Provider{local},
 			PublicPaths: append(PublicPaths(), local.PublicPaths()...)}}).Handler()
 	return &adminRig{h: h, local: local}
@@ -248,5 +257,55 @@ func TestConcurrentDemotionsLeaveAnAdministrator(t *testing.T) {
 		if g.isAdmin(t, "alice") == g.isAdmin(t, "bob") {
 			t.Fatal("not exactly one administrator left")
 		}
+	}
+}
+
+// unrevokableStore cannot record a sign-out everywhere.
+type unrevokableStore struct{ *auth.MemoryUserStore }
+
+func (unrevokableStore) AddRevocation(context.Context, string) (int64, error) {
+	return 0, errors.New("database is down")
+}
+
+// A demotion whose sign-out could not be recorded for other servers says so,
+// in the response and the audit, while this server's sessions still end.
+func TestDemotionReportsAnUnrecordedSignOut(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	g := newAdminRigWith(t, unrevokableStore{auth.NewMemoryUserStore()},
+		func(_ context.Context, action, _ string, detail map[string]any) {
+			if action == "user.admin_revoked" {
+				mu.Lock()
+				got = detail
+				mu.Unlock()
+			}
+		})
+	alice := g.signIn(t, "alice")
+	if rec := g.setAdmin(alice, "bob", true); rec.Code != http.StatusNoContent {
+		t.Fatalf("promote bob = %d", rec.Code)
+	}
+	bob := g.signIn(t, "bob")
+	rec := g.setAdmin(alice, "bob", false)
+	var body struct {
+		SessionsEnded       int    `json:"sessions_ended"`
+		SignedOutEverywhere *bool  `json:"signed_out_everywhere"`
+		Warning             string `json:"warning"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("demote bob = %d %s, want 200 with a warning", rec.Code, rec.Body)
+	}
+	if body.SignedOutEverywhere == nil || *body.SignedOutEverywhere || body.Warning == "" || body.SessionsEnded != 1 {
+		t.Fatalf("response = %+v; want 1 ended here, not everywhere, and a warning", body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if e, _ := got["revocation_error"].(string); !strings.Contains(e, "database is down") {
+		t.Fatalf("audit detail = %v; want the revocation error", got)
+	}
+	if g.isAdmin(t, "bob") {
+		t.Fatal("bob kept administrator rights")
+	}
+	if r := g.do(bob, "GET", "/v1/admin/users", ""); r.Code != http.StatusUnauthorized {
+		t.Fatalf("bob's session here = %d, want 401", r.Code)
 	}
 }

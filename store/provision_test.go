@@ -241,3 +241,55 @@ func TestProvisionAppliesExtensions(t *testing.T) {
 		t.Fatal("the runtime role could delete from a table it was granted only select and insert on")
 	}
 }
+
+// A runtime role on a users table without revocations is refused at start,
+// and the owner's migrate adds the column to the rows already there.
+func TestOpenRefusesUsersWithoutRevocations(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provision := func() {
+		t.Helper()
+		if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provision()
+	t.Cleanup(provision)
+	conn, err := pgx.Connect(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	name := testID(t, "old-")
+	if _, err := conn.Exec(ctx, `ALTER TABLE users DROP COLUMN revocations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO users (username, hash) VALUES ($1, 'x')`, name); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `DELETE FROM users WHERE username = $1`, name) }()
+
+	if p, err := Open(ctx, DefaultConfig(runtimeDSN)); err == nil {
+		p.Close()
+		t.Fatal("the runtime role opened a users table without revocations")
+	} else if !strings.Contains(err.Error(), "users.revocations") || !strings.Contains(err.Error(), "abhed migrate") {
+		t.Fatalf("refusal = %v; want it to name users.revocations and abhed migrate", err)
+	}
+	provision()
+	p, err := Open(ctx, DefaultConfig(runtimeDSN))
+	if err != nil {
+		t.Fatalf("open after migrate: %v", err)
+	}
+	defer p.Close()
+	u, err := p.Get(ctx, name)
+	if err != nil || u.Revocations != 0 {
+		t.Fatalf("existing account after migrate = %+v, %v; want revocations 0", u, err)
+	}
+}

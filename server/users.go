@@ -118,7 +118,21 @@ func (s *Server) setUserAdmin(w http.ResponseWriter, r *http.Request) {
 		// Ended here, not left to the page: an API caller or a failed second
 		// request would otherwise leave the rights on a live session.
 		action = "user.admin_revoked"
-		detail["sessions_ended"] = local.RevokeUser(name)
+		n, err := local.RevokeUserContext(r.Context(), name)
+		detail["sessions_ended"] = n
+		if err != nil {
+			// The rights are gone on every server already; only their sessions stay.
+			s.log.Error("sign-out everywhere not recorded", "user", name, "err", err)
+			detail["revocation_error"] = err.Error()
+			s.adminAudit(r, action, name, detail)
+			WriteJSON(w, http.StatusOK, map[string]any{
+				"sessions_ended":        n,
+				"signed_out_everywhere": false,
+				"warning": "administrator rights were removed, but the sign-out could not be " +
+					"recorded for other servers: sessions there stay signed in, without the rights",
+			})
+			return
+		}
 	}
 	s.adminAudit(r, action, name, detail)
 	w.WriteHeader(http.StatusNoContent)

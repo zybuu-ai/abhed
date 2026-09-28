@@ -124,7 +124,11 @@ accounts are created by an administrator, which is true and actionable.
 `POST /v1/admin/users/admin` grants or removes the admin group. It refuses an
 administrator removing their own rights, and refuses removing the last
 administrator whoever asks, since nothing on the deployment could grant it
-back. Every change under `/v1/admin/*` is written to the server log as
+back. Removing rights answers `204`. If the sign-out could not be recorded
+for other servers, it answers `200` with `sessions_ended`,
+`"signed_out_everywhere": false` and a `warning`: the rights are gone on
+every server, but the person's sessions on the others stay signed in without
+them. Every change under `/v1/admin/*` is written to the server log as
 `admin action`, with the action, the target and who made it. An MCP server's
 URL is recorded as scheme, host and path only, and its command as the program
 alone, since either can carry a credential.
@@ -138,9 +142,18 @@ A live session re-reads its account before a request once the account may
 have changed: at once for the users file, within a couple of seconds for
 Postgres. An account removed with `abhed user remove`, even while the server
 runs, is signed out there; a group change, a reset or a must-change flag
-applies on every node without a new sign-in. Removing administrator rights
-also ends the person's sessions on the node that removed them. A terminal or
-event stream already open is checked when it opens, not while it runs.
+applies on every node without a new sign-in. Removing administrator rights,
+and any sign-out everywhere an edition offers, ends the person's sessions on
+every server sharing the account store: at once on the server that did it,
+and on the others when the session next reads its account (within about 2
+seconds on Postgres, on the next request after the users file changes). A
+terminal or event stream already open is checked when it opens, not while it
+runs.
+
+A users file must not be shared by servers or `abhed user` commands of
+different versions: one older than the release that added the revocation
+count drops it when it rewrites the file, and sessions it should have ended
+on other servers stay live.
 
 While the account store cannot be read, a request with a local session gets
 `503 {"error":"could not check your sign-in; try again shortly"}` rather
@@ -264,7 +277,7 @@ above without them.
 |---|---|---|
 | `auth.LocalAuth.Admit(ctx, *User) error` | at sign-in, after the password checks out, before a session is issued | `403` with the error text; no session |
 | `auth.Middleware.Check(ctx, *Identity) error` | on every request a provider session, a bearer token or a trusted proxy identifies, and in `/v1/whoami` and `/v1/overview` | the session is ended; a browser navigation goes to `/?refused=<reason>`, an API call gets `403 {"error":"forbidden","reason":…,"refused":true}`; whoami answers `authenticated: false` with the reason |
-| `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way |
+| `server.Options.AdminAudit(ctx, action, target, detail)` | after each `/v1/admin/*` change: `user.admin_granted`, `user.admin_revoked`, `skills.reloaded`, `mcp.added`, `index.rebuild_started` | none; it is told, and the server log line is written either way. `user.admin_revoked` carries `sessions_ended` (on this server) and, when the sign-out could not be recorded for other servers, `revocation_error` |
 
 Notes for an edition setting them:
 

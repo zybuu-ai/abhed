@@ -27,6 +27,8 @@ type browserSession struct {
 	pwStamp string
 	// pwPrev is also accepted while this session's own change is being stored.
 	pwPrev string
+	// revocations is the account's User.Revocations when the session was issued.
+	revocations int64
 }
 
 // passwordStamp is a short fingerprint of a password hash, so a session need

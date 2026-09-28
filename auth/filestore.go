@@ -48,7 +48,8 @@ func (f *FileUserStore) Path() string { return f.path }
 // construction, and only this file can write a hash to disk.
 type storedUser struct {
 	User
-	Hash string `json:"hash"`
+	Hash        string `json:"hash"`
+	Revocations int64  `json:"revocations,omitempty"`
 }
 
 func (f *FileUserStore) load() (map[string]*User, error) {
@@ -67,6 +68,7 @@ func (f *FileUserStore) load() (map[string]*User, error) {
 	for _, s := range stored {
 		u := s.User
 		u.Hash = s.Hash
+		u.Revocations = s.Revocations
 		out[strings.ToLower(u.Username)] = &u
 	}
 	return out, nil
@@ -77,7 +79,7 @@ func (f *FileUserStore) load() (map[string]*User, error) {
 func (f *FileUserStore) save(users map[string]*User) error {
 	list := make([]storedUser, 0, len(users))
 	for _, u := range users {
-		list = append(list, storedUser{User: *u, Hash: u.Hash})
+		list = append(list, storedUser{User: *u, Hash: u.Hash, Revocations: u.Revocations})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Username < list[j].Username })
 
@@ -117,7 +119,11 @@ func (f *FileUserStore) Put(_ context.Context, u *User) error {
 		return err
 	}
 	copy := *u
-	users[strings.ToLower(u.Username)] = &copy
+	key := strings.ToLower(u.Username)
+	if old, ok := users[key]; ok {
+		copy.Revocations = max(copy.Revocations, old.Revocations)
+	}
+	users[key] = &copy
 	return f.save(users)
 }
 
@@ -148,6 +154,22 @@ func (f *FileUserStore) Delete(_ context.Context, username string) error {
 	}
 	delete(users, key)
 	return f.save(users)
+}
+
+// AddRevocation raises the account's revocation count and returns it.
+func (f *FileUserStore) AddRevocation(_ context.Context, username string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	users, err := f.load()
+	if err != nil {
+		return 0, err
+	}
+	u, found := users[strings.ToLower(username)]
+	if !found {
+		return 0, ErrNoSuchUser
+	}
+	u.Revocations++
+	return u.Revocations, f.save(users)
 }
 
 // Version changes whenever the file does, whichever process wrote it: its

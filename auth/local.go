@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -53,14 +54,24 @@ type User struct {
 	// MustChange forces a password change at next sign-in, used for the
 	// bootstrap admin so a generated password cannot become permanent.
 	MustChange bool `json:"must_change_password,omitempty"`
+	// Revocations counts "sign out everywhere"; a session issued under a lower
+	// count has ended. Stores keep the highest value they have seen.
+	Revocations int64 `json:"-"`
 }
 
-// UserStore persists local accounts.
+// UserStore persists local accounts. Put must store User.Revocations and never
+// lower it: a sign-out everywhere lives in that count.
 type UserStore interface {
 	Get(ctx context.Context, username string) (*User, error)
 	Put(ctx context.Context, u *User) error
 	List(ctx context.Context) ([]*User, error)
 	Delete(ctx context.Context, username string) error
+}
+
+// RevokingUserStore is a store that can raise User.Revocations in one step, so
+// a sign-out everywhere never writes back the rest of a stale account.
+type RevokingUserStore interface {
+	AddRevocation(ctx context.Context, username string) (int64, error)
 }
 
 // VersionedUserStore is a UserStore that can say cheaply whether any account
@@ -97,7 +108,11 @@ func (m *MemoryUserStore) Put(_ context.Context, u *User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	copy := *u
-	m.users[strings.ToLower(u.Username)] = &copy
+	key := strings.ToLower(u.Username)
+	if old, ok := m.users[key]; ok {
+		copy.Revocations = max(copy.Revocations, old.Revocations)
+	}
+	m.users[key] = &copy
 	m.gen.Add(1)
 	return nil
 }
@@ -125,6 +140,19 @@ func (m *MemoryUserStore) Delete(_ context.Context, username string) error {
 	return nil
 }
 
+// AddRevocation raises the account's revocation count and returns it.
+func (m *MemoryUserStore) AddRevocation(_ context.Context, username string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, found := m.users[strings.ToLower(username)]
+	if !found {
+		return 0, ErrNoSuchUser
+	}
+	u.Revocations++
+	m.gen.Add(1)
+	return u.Revocations, nil
+}
+
 // Version changes with every write.
 func (m *MemoryUserStore) Version() (string, error) {
 	return strconv.FormatUint(m.gen.Load(), 10), nil
@@ -140,6 +168,8 @@ type LocalAuth struct {
 	// session is issued; its error is shown to the person with a 403. Local
 	// accounts only: other providers meet Middleware.Check on their first request.
 	Admit func(ctx context.Context, u *User) error
+	// Log receives what RevokeUser cannot return; nil means slog.Default().
+	Log *slog.Logger
 
 	mu       sync.RWMutex
 	sessions map[string]*browserSession
@@ -314,6 +344,7 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	s.mustChange.Store(u.MustChange)
 	s.lastSeen.Store(now.UnixNano())
 	s.pwStamp = passwordStamp(u.Hash)
+	s.revocations = u.Revocations
 	l.mu.Lock()
 	l.sessions[sid] = s
 	l.mu.Unlock()
@@ -425,6 +456,11 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	if _, live := l.sessions[sid]; !live {
 		return nil, errSessionGone
 	}
+	// A higher count is a sign-out everywhere made after this session began.
+	if u.Revocations > s.revocations {
+		delete(l.sessions, sid)
+		return nil, errSessionGone
+	}
 	// An empty stamp (no hash, not a local account today) skips this check.
 	// A read that overlapped a change or forget may be stale: judge the next one.
 	stamp := passwordStamp(u.Hash)
@@ -438,9 +474,9 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 		s.pwStamp = stamp
 	}
 	s.Identity = id
-	s.mustChange.Store(u.MustChange)
 	// Not trusted if forget ran during the read: that read may predate the change.
 	if s.epoch.Load() == epoch {
+		s.mustChange.Store(u.MustChange)
 		s.checked.Store(&accountCheck{version: version, at: now})
 	}
 	return id, nil
@@ -656,6 +692,8 @@ func (l *LocalAuth) CreateUserOrReset(ctx context.Context, u *User, password str
 	if err := l.Store.Put(ctx, u); err != nil {
 		return err
 	}
+	// Void reads in flight before setting the flag, so none can clear it.
+	l.forget(u.Username)
 	l.markMustChange(u.Username, true)
 	return nil
 }
@@ -711,11 +749,68 @@ func (l *LocalAuth) SetGroups(ctx context.Context, username, group string, membe
 // happens to expire. Disabling the account stops the next SIGN-IN; this stops
 // the current one, and both are needed.
 //
-// Returns how many sessions were ended, which the audit entry records — "we
-// revoked them and they had three sessions open" is a materially different
-// fact from "they were not signed in".
+// Returns how many sessions were ended here, which the audit entry records —
+// "we revoked them and they had three sessions open" is a materially different
+// fact from "they were not signed in". Sessions on other servers sharing the
+// account store end on their next account read; RevokeUserContext reports
+// whether that could be recorded.
 func (l *LocalAuth) RevokeUser(username string) int {
-	return l.endSessions(username, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	n, err := l.RevokeUserContext(ctx, username)
+	if err != nil {
+		log := l.Log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Error("sign-out everywhere not recorded; other servers keep this user's sessions",
+			"user", username, "sessions_ended_here", n, "err", err)
+	}
+	return n
+}
+
+// RevokeUserContext is RevokeUser that also returns the error, if the
+// revocation could not be stored for other servers to see; this server's
+// sessions have ended either way.
+func (l *LocalAuth) RevokeUserContext(ctx context.Context, username string) (int, error) {
+	n := l.endSessions(username, "")
+	if username == "" || l.Store == nil {
+		return n, nil
+	}
+	if err := l.addRevocation(ctx, username); err != nil && !errors.Is(err, ErrNoSuchUser) {
+		return n, fmt.Errorf("record sign-out everywhere: %w", err)
+	}
+	// With no account, no session anywhere can read one. A session signed in
+	// here meanwhile holds the old count and ends on its first request.
+	return n, nil
+}
+
+// addRevocation raises the account's count, in one step where the store can.
+func (l *LocalAuth) addRevocation(ctx context.Context, username string) error {
+	if r, ok := l.Store.(RevokingUserStore); ok {
+		_, err := r.AddRevocation(ctx, username)
+		return err
+	}
+	u, err := l.Store.Get(ctx, username)
+	if err == nil && u == nil {
+		err = ErrNoSuchUser
+	}
+	if err != nil {
+		return err
+	}
+	u.Revocations++
+	if err := l.Store.Put(ctx, u); err != nil {
+		return err
+	}
+	// Read back: a store that drops the count would otherwise fail open.
+	got, err := l.Store.Get(ctx, username)
+	if err != nil {
+		return err
+	}
+	if got == nil || got.Revocations < u.Revocations {
+		return errors.New("the account store did not keep the revocation count")
+	}
+	return nil
 }
 
 // endSessions drops every live session of username except the one keyed by
