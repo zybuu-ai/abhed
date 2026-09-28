@@ -384,3 +384,48 @@ func TestNoEndIsNotRaisedForALiveSession(t *testing.T) {
 		t.Errorf("no-end with a shell still open offline: %+v", f)
 	}
 }
+
+// A subagent's refused and destructive calls are in the parent's report, with
+// the session that holds the rest of the subagent's record.
+func TestSubagentActionsAreReported(t *testing.T) {
+	r := &rec{}
+	r.user("tidy up").model(1000, 0, 8192)
+	r.call("t1", "task", `{"prompt":"clean","description":"clean"}`, "mode", "done", false)
+	r.add(agent.EvSubagentSpawned, agent.ActorAgent, agent.Trusted, map[string]any{"description": "clean", "session": "child-1"})
+	r.add(agent.EvSubagentAction, agent.ActorSystem, agent.Trusted, agent.SubagentAction{
+		Session: "child-1", CallID: "c1", Tool: "bash", Subject: "rm -rf keep", Decision: "denied",
+		Step: "destructive", Reason: "no approver: recursive delete", By: agent.ByHeadless,
+	})
+	r.add(agent.EvSubagentAction, agent.ActorUser, agent.Trusted, agent.SubagentAction{
+		Session: "child-1", CallID: "c2", Tool: "bash", Subject: "git reset --hard", Decision: "allowed",
+		Step: "destructive", Reason: "discards work", By: agent.ByReviewer,
+	})
+	r.add(agent.EvSubagentReturn, agent.ActorAgent, agent.Trusted, map[string]any{"description": "clean", "session": "child-1", "reason": "completed"})
+	rep := Analyze("s-test", r.end(agent.TermCompleted).evs)
+
+	d := has(rep, "subagent-denied")
+	if d == nil || !strings.Contains(d.Detail, "rm -rf keep") || !strings.Contains(d.Detail, "child-1") {
+		t.Fatalf("a subagent's refusal is not reported: %+v", rep.Findings)
+	}
+	w := has(rep, "subagent-destructive")
+	if w == nil || w.Severity != Warn || !strings.Contains(w.Detail, "git reset --hard") {
+		t.Fatalf("a subagent's destructive command is not reported: %+v", rep.Findings)
+	}
+	if len(rep.Subagents) != 1 || rep.Subagents[0].Session != "child-1" || !rep.Subagents[0].Returned {
+		t.Fatalf("the subagent is not linked: %+v", rep.Subagents)
+	}
+}
+
+// Two subagents with one description are told apart by their sessions.
+func TestSubagentReturnsMatchBySession(t *testing.T) {
+	r := &rec{}
+	r.user("check").model(1000, 0, 8192)
+	for _, id := range []string{"child-a", "child-b"} {
+		r.add(agent.EvSubagentSpawned, agent.ActorAgent, agent.Trusted, map[string]any{"description": "check", "session": id})
+	}
+	r.add(agent.EvSubagentReturn, agent.ActorAgent, agent.Trusted, map[string]any{"description": "check", "session": "child-b", "reason": "max_turns"})
+	rep := Analyze("s-test", r.end(agent.TermCompleted).evs)
+	if len(rep.Subagents) != 2 || rep.Subagents[0].Returned || !rep.Subagents[1].Returned || rep.Subagents[1].Reason != "max_turns" {
+		t.Fatalf("the return was matched to the wrong subagent: %+v", rep.Subagents)
+	}
+}

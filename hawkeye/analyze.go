@@ -140,15 +140,25 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				Description string `json:"description"`
 				AgentType   string `json:"agent_type"`
 				Depth       int    `json:"depth"`
+				Session     string `json:"session"`
 			}
 			_ = json.Unmarshal(e.Payload, &p)
 			r.Subagents = append(r.Subagents, Subagent{
-				Seq: e.Seq, Description: p.Description, Type: p.AgentType, Depth: p.Depth,
+				Seq: e.Seq, Description: p.Description, Type: p.AgentType, Depth: p.Depth, Session: p.Session,
+			})
+
+		case agent.EvSubagentAction:
+			var a agent.SubagentAction
+			_ = json.Unmarshal(e.Payload, &a)
+			r.SubagentActions = append(r.SubagentActions, SubagentAction{
+				Seq: e.Seq, Session: a.Session, Tool: a.Tool, Subject: a.Subject, Decision: a.Decision,
+				Step: a.Step, Reason: a.Reason, By: a.By, Approver: a.Approver,
 			})
 
 		case agent.EvSubagentReturn:
 			var p struct {
 				Description string `json:"description"`
+				Session     string `json:"session"`
 				Reason      string `json:"reason"`
 				Turns       int    `json:"turns"`
 				TokensIn    int    `json:"tokens_in"`
@@ -156,7 +166,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			_ = json.Unmarshal(e.Payload, &p)
 			for i := range r.Subagents {
 				s := &r.Subagents[i]
-				if !s.Returned && s.Description == p.Description {
+				// Older records name no session, so the description matches them.
+				same := s.Session == p.Session && (p.Session != "" || s.Description == p.Description)
+				if !s.Returned && same {
 					s.Returned, s.Reason, s.Turns, s.TokensIn = true, p.Reason, p.Turns, p.TokensIn
 					break
 				}

@@ -33,6 +33,16 @@ All notable changes to Abhed are recorded here. The format follows
   reason for the sign-in page. The body is no longer all strings: a client
   that decodes it into a string-only map (`map[string]string` in Go) must
   decode `refused` as a boolean or ignore it.
+- A subagent (`task`, `tasks`) now asks whoever its parent asks. In the
+  interactive CLI its destructive commands, ask-rule matches and default-mode
+  asks come to your prompt, naming the subagent, one at a time when several
+  subagents run; in
+  `-p` they are refused as `headless`, as the parent's own would be. A
+  scripted `-p` run that relied on a subagent running such a command must
+  allow it with a rule, or run it in the parent. An "Always allow" chosen
+  earlier in the session covers a subagent's calls too. With
+  `limits.nested_subagents` off, the default, a subagent's own `task` or
+  `tasks` call is refused.
 - The interactive CLI keeps one conversation, and one session record, across
   the tasks you type, as `/model`, `/fork` and the docs already said: a later
   task sees what was said before it. The turn limit now counts the whole
@@ -237,6 +247,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `subagent.action` in the parent's record: a subagent's call that was
+  refused or put to an approver, with the subagent's `session`, the tool,
+  its subject, and `decision`, `step`, `reason` and `by`.
+  `subagent.spawned` and `subagent.returned` are now written to the parent's
+  record as well as the subagent's, with the subagent's `session`, and the
+  subagent's events carry the parent's session as `parent_id`. HawkEYE
+  reports a subagent's refused calls (`subagent-denied`) and its allowed
+  destructive commands (`subagent-destructive`), and names each subagent's
+  session.
 - Two additions to the record. `conversation.forked`, with `through_seq`,
   marks a fork: the steps between that step and the marker are kept for
   audit and left out of every rebuild. An `observation` with `not_run` set
@@ -542,21 +561,28 @@ All notable changes to Abhed are recorded here. The format follows
   opaque or other-site initiator is marked `cross-site`. A null origin with
   the header missing, or `same-site`, `cross-site` or `none`, is still
   refused.
-
 - A folder delete or rename from the Explorer escaped a `delete(...)` or
   `rename(...)` rule on what it held: the rule was put to the folder's own
   path only, so deleting `keep`, or any folder above it, got past
   `delete(**/keep/**)`, and renaming `locked` got past
   `rename(**/locked/**)`. The rule is now put to every entry the walk
   visits, and for a rename to each entry's new path too.
-
 - A hard link inside the workspace to a state file of an enclosing folder,
   such as the repository root's `.abhed/config.json` when the session starts
   in `services/ledger`, let a command rewrite that config for the next run
   at the root: the start-time link check covered only the state the run
   itself loads. It now covers the `.abhed` state of every folder above the
   workspace, at every entry point that builds the sandbox.
-
+- Subagents approved every ask on their own: the CLI built them with an
+  approver that said yes, so a subagent's `rm -rf`, `git commit` under an
+  ask rule, or any default-mode command ran with nobody asked, in every mode
+  plan included, and in `-p` too. The parent's record held only the `task`
+  call and the summary, and HawkEYE reported nothing. A subagent now answers
+  to its parent's approver (the prompt, or the headless refuser), and its
+  refused and asked-about calls are in the parent's record and report.
+  `limits.nested_subagents: false` was not enforced either: a subagent could
+  spawn its own. It now cannot, and when nesting is on, a nested subagent's
+  events reach the top-level record.
 - A hard link in the workspace to a state file let a sandboxed command rewrite
   `.abhed/config.json` (and so drop a deny rule for the next start): the file
   tools refused the link, but the command sandbox guards `.abhed` by path,

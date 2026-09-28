@@ -28,6 +28,10 @@ type Report struct {
 	Files       []FileTouch  `json:"files,omitempty"`
 	Findings    []Finding    `json:"findings"`
 	Integrity   Integrity    `json:"integrity"`
+
+	// SubagentActions are the subagents' refused or asked-about calls, as the
+	// parent's record holds them.
+	SubagentActions []SubagentAction `json:"subagent_actions,omitempty"`
 }
 
 type Totals struct {
@@ -134,6 +138,23 @@ type Subagent struct {
 	Turns       int    `json:"turns"`
 	TokensIn    int    `json:"tokens_in"`
 	Returned    bool   `json:"returned"`
+
+	// Session is the subagent's own record, which holds all of its calls.
+	Session string `json:"session,omitempty"`
+}
+
+// SubagentAction is one subagent.action event: a subagent's call that was
+// refused or put to an approver.
+type SubagentAction struct {
+	Seq      int64  `json:"seq"`
+	Session  string `json:"session"`
+	Tool     string `json:"tool"`
+	Subject  string `json:"subject,omitempty"`
+	Decision string `json:"decision"` // allowed | denied
+	Step     string `json:"step,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	By       string `json:"by,omitempty"`
+	Approver string `json:"approver,omitempty"`
 }
 
 type FileTouch struct {

@@ -76,6 +76,37 @@ worktree's own path, is refused rather than followed.
   fine for read-only work, and the default, because most parallel work is
   investigation.
 
+## Approvals and the record
+
+A subagent is policed as its parent is. The same policy decides each call,
+and anything it routes to a person goes to the parent's approver:
+
+- in the interactive CLI, your prompt, which names the subagent asking. Asks
+  from subagents running together come one at a time, and one whose turn is
+  interrupted while it waits is not asked;
+- in `-p`, nobody can be asked, so they are refused as `headless`, as the
+  parent's own asks would be.
+
+Subagents are offered in the CLI only; the server, `abhed rpc`, `abhed acp`
+and the SDK do not have `task` or `tasks`.
+
+A subagent runs inside its parent's session, so an "Always allow" chosen
+earlier in the session covers its calls, and one chosen at a subagent's
+prompt lasts for the rest of the session, as it would for the parent.
+
+Each subagent keeps its own record, whose events carry the parent's session
+as `parent_id`. The parent's record holds `subagent.spawned` and
+`subagent.returned` naming that `session`, and a `subagent.action` for every
+call of the subagent's that was refused or put to an approver. Calls the
+policy allowed on its own are in the subagent's record only. HawkEYE's
+report on the parent lists each subagent's session, a `subagent-denied`
+finding for each refused call and a `subagent-destructive` warning for each
+destructive command that was allowed.
+
+A subagent cannot start one of its own unless `limits.nested_subagents` is
+on. When it is, the nested subagent's `subagent.*` events are passed up, so
+the top-level record holds every subagent at every depth.
+
 ## What it is not
 
 It is not a multi-agent framework with roles and message passing. Abhed's

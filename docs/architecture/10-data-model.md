@@ -41,7 +41,8 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |
-| `subagent.spawned` / `.returned` | prompt, summary, tokens | orchestrator |
+| `subagent.spawned` / `.returned` | description, agent type, `session` (the subagent's own record), turns, tokens; written to the parent's record and the subagent's; a nested subagent's are passed up to the top-level record | orchestrator |
+| `subagent.action` | a subagent's call that was refused or put to an approver, in the parent's record: `session`, `call_id`, `tool`, `subject`, `decision` (`allowed` or `denied`), `step`, `reason`, `by`, and `scope`, `approver`, `granted_scope` as on `action.approved`. Calls the policy allowed on its own are only in the subagent's record | the answer's actor |
 | `compaction.started` / `.completed` | before/after tokens, summary | context mgr |
 | `plan.updated` / `todo.updated` | items | agent |
 | `session.ended` | terminal reason, totals | system |
@@ -55,7 +56,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `reviewer` | a person was asked and answered | user |
 | `user` | the person made the call at the workbench | user |
 | `session-scope` | an "always allow" chosen earlier in the session let it through; `scope` names it | system |
-| `headless` | nobody could be asked (`-p`, `rpc`, an SDK run without an approver, a subagent, `abhed eval`), so the run's fixed answer applied; a refusal's reason starts `no approver:` | system |
+| `headless` | nobody could be asked (`-p`, `rpc`, an SDK run without an approver, `abhed eval`, or a subagent of one of these), so the run's fixed answer applied; a refusal's reason starts `no approver:` | system |
 | `system` | the harness: an unknown tool (step `unknown`); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
 
 When a person answered, two more fields say what they did:

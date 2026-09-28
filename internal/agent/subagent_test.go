@@ -3,10 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -215,5 +219,405 @@ func TestWorktreeSubagentKeepsTheSyntaxMode(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(p); string(got) != "{" {
 		t.Fatalf("the child refused a write its parent allows: %q", got)
+	}
+}
+
+// askingApprover stands in for the person at the prompt and says no.
+type askingApprover struct {
+	mu    sync.Mutex
+	asked []string
+}
+
+func (a *askingApprover) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asked = append(a.asked, tool+" "+policy.Subject(tool, args))
+	NoteAnswer(ctx, Answer{By: ByReviewer})
+	return false, nil
+}
+
+// parentWithTask builds a parent loop whose task tool spawns through a factory
+// that, as the CLI's once did, would approve every ask on its own.
+func parentWithTask(t *testing.T, turns []scriptedTurn, appr Approver) (*Loop, *MemStore, string) {
+	t.Helper()
+	store := NewMemStore()
+	l, dir, _ := taskTree(t, &scriptedAdapter{turns: turns}, appr, store, store, false)
+	return l, store, dir
+}
+
+// taskTree is parentWithTask with its parts chosen: the adapter, the stores the
+// parent and the subagents write to, and whether subagents may nest.
+func taskTree(t *testing.T, adapter model.Adapter, appr Approver, parentStore, childStore Store, nested bool) (*Loop, string, *SubagentFactory) {
+	t.Helper()
+	dir := tempDir(t)
+	sess, err := tools.NewSession(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := policy.New(policy.ModeDefault)
+	if err := pol.AddAsk("bash(touch *)"); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry(tools.Read{}, tools.Bash{})
+	f := &SubagentFactory{
+		Adapter: adapter, Tools: reg, Policy: pol, Approver: AutoApprove{Yes: true},
+		Session: sess, Store: childStore, Budget: NewBudget(1_000_000, 10, nested),
+		Config: DefaultConfig(), Workspace: dir,
+	}
+	reg.Add(Task{Spawn: f.Spawn, Profiles: Profiles})
+	reg.Add(Tasks{Spawn: f.Spawn, Profiles: Profiles, Workspace: dir})
+	return NewLoop(adapter, reg, pol, appr, sess, NewRecorder(parentStore, "parent", ""), DefaultConfig()), dir, f
+}
+
+func subagentTurns() []scriptedTurn {
+	return []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "clean up", "description": "clean up"})}},
+		{calls: []model.ToolCall{call("bash", map[string]string{"command": "rm -rf keep"})}},
+		{calls: []model.ToolCall{{ID: "c2", Name: "bash", Args: json.RawMessage(`{"command":"touch made.txt"}`)}}},
+		{text: "could not"},
+		{text: "done"},
+	}
+}
+
+// In -p nobody can be asked, so a subagent's destructive command and its
+// ask-rule command are refused as headless, and the parent's record says so.
+func TestSubagentHeadlessRefusesItsAsks(t *testing.T) {
+	l, store, dir := parentWithTask(t, subagentTurns(), AutoApprove{Yes: false})
+	if err := os.Mkdir(filepath.Join(dir, "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep")); err != nil {
+		t.Fatalf("a subagent's rm -rf ran with nobody asked: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "made.txt")); err == nil {
+		t.Fatal("a subagent's ask-rule command ran with nobody asked")
+	}
+
+	evs, _ := store.Events("parent")
+	var child string
+	steps := map[string]string{}
+	for _, e := range evs {
+		switch e.Type {
+		case EvSubagentSpawned:
+			var p map[string]any
+			_ = json.Unmarshal(e.Payload, &p)
+			child, _ = p["session"].(string)
+		case EvSubagentAction:
+			var a SubagentAction
+			_ = json.Unmarshal(e.Payload, &a)
+			if a.Decision != "denied" || a.By != ByHeadless || a.Session == "" {
+				t.Fatalf("subagent action not refused as headless: %+v", a)
+			}
+			steps[a.Subject] = a.Step
+		}
+	}
+	if child == "" {
+		t.Fatalf("the parent's record does not name the subagent's session: %s", types(evs))
+	}
+	if steps["rm -rf keep"] != "destructive" || steps["touch made.txt"] != "ask" {
+		t.Fatalf("the parent's record misses the subagent's refusals: %v", steps)
+	}
+	childEvs, _ := store.Events(child)
+	if len(childEvs) == 0 || childEvs[0].ParentID != "parent" {
+		t.Fatalf("the subagent's record is not linked to its parent: %+v", childEvs)
+	}
+}
+
+// Interactively, a subagent's asks go to the person at the parent's prompt.
+func TestSubagentAsksTheParentsApprover(t *testing.T) {
+	appr := &askingApprover{}
+	l, store, dir := parentWithTask(t, subagentTurns(), appr)
+	if err := os.Mkdir(filepath.Join(dir, "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(appr.asked, "; "); got != "bash rm -rf keep; bash touch made.txt" {
+		t.Fatalf("the parent's approver was not asked for the subagent's calls: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep")); err != nil {
+		t.Fatalf("a refused rm -rf ran: %v", err)
+	}
+	evs, _ := store.Events("parent")
+	n := 0
+	for _, e := range evs {
+		if e.Type == EvSubagentAction {
+			var a SubagentAction
+			_ = json.Unmarshal(e.Payload, &a)
+			if a.By != ByReviewer || e.Actor != ActorUser {
+				t.Fatalf("the person's refusal is not in the parent's record: %+v", a)
+			}
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("want 2 subagent actions in the parent's record, got %d: %s", n, types(evs))
+	}
+}
+
+func taskCall(id, prompt string) model.ToolCall {
+	return model.ToolCall{ID: id, Name: "task", Args: json.RawMessage(`{"prompt":"` + prompt + `","description":"` + prompt + `"}`)}
+}
+
+func bashCall(id, command string) model.ToolCall {
+	return model.ToolCall{ID: id, Name: "bash", Args: json.RawMessage(`{"command":"` + command + `"}`)}
+}
+
+func payloads[T any](evs []Event, typ EventType) []T {
+	var out []T
+	for _, e := range evs {
+		if e.Type == typ {
+			var v T
+			_ = json.Unmarshal(e.Payload, &v)
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+type spawnPayload struct {
+	Description string `json:"description"`
+	Session     string `json:"session"`
+	Depth       int    `json:"depth"`
+	Reason      string `json:"reason"`
+}
+
+// With nesting off, a subagent cannot spawn one of its own.
+func TestNestedSubagentRefusedWhenNestingIsOff(t *testing.T) {
+	appr := &askingApprover{}
+	store := NewMemStore()
+	l, _, f := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{taskCall("t1", "outer")}},
+		{calls: []model.ToolCall{taskCall("t2", "inner")}},
+		{text: "could not delegate"},
+		{text: "done"},
+	}}, appr, store, store, false)
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.Budget.spawned.Load(); n != 1 {
+		t.Fatalf("a subagent spawned another with nesting off: %d spawned", n)
+	}
+	evs, _ := store.Events("parent")
+	if n := len(payloads[spawnPayload](evs, EvSubagentSpawned)); n != 1 {
+		t.Fatalf("want one subagent in the root record, got %d", n)
+	}
+}
+
+// With nesting on, a grandchild's ask reaches the person without the shared
+// queue being taken twice, and its events reach the root record.
+func TestNestedSubagentAsksAndReachesTheRootRecord(t *testing.T) {
+	appr := &askingApprover{}
+	store := NewMemStore()
+	l, _, _ := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{taskCall("t1", "outer")}},
+		{calls: []model.ToolCall{taskCall("t2", "inner")}},
+		{calls: []model.ToolCall{bashCall("b1", "rm -rf keep")}},
+	}}, appr, store, store, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := l.Run(ctx, "go"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(appr.asked, "; "); got != "bash rm -rf keep" {
+		t.Fatalf("the grandchild's ask did not reach the person: %q", got)
+	}
+	evs, _ := store.Events("parent")
+	spawned := payloads[spawnPayload](evs, EvSubagentSpawned)
+	returned := payloads[spawnPayload](evs, EvSubagentReturn)
+	if len(spawned) != 2 || len(returned) != 2 {
+		t.Fatalf("the root record misses the nested subagent: %s", types(evs))
+	}
+	var inner string
+	for _, s := range spawned {
+		if s.Depth == 1 {
+			inner = s.Session
+		}
+	}
+	acts := payloads[SubagentAction](evs, EvSubagentAction)
+	if inner == "" || len(acts) != 1 || acts[0].Session != inner || acts[0].Decision != "denied" {
+		t.Fatalf("the grandchild's refusal is not in the root record under its session %q: %+v", inner, acts)
+	}
+}
+
+// routeAdapter answers by what the request is: the root fans out, a subagent
+// runs one command, and anything after a tool result says done.
+type routeAdapter struct {
+	fanout string
+}
+
+func (routeAdapter) Name() string                           { return "route" }
+func (routeAdapter) Profile() model.Profile                 { return model.Profile{ContextWindow: 100000} }
+func (routeAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
+
+func (r routeAdapter) Complete(_ context.Context, req model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 4)
+	last := req.Messages[len(req.Messages)-1]
+	var tc *model.ToolCall
+	switch {
+	case last.Role == model.RoleTool:
+	case last.Content == "go":
+		tc = &model.ToolCall{ID: "ts", Name: "tasks", Args: json.RawMessage(r.fanout)}
+	case last.Content == "nest":
+		c := taskCall("t", "deep")
+		tc = &c
+	default:
+		c := bashCall("b", "touch "+last.Content+".txt")
+		tc = &c
+	}
+	if tc == nil {
+		ch <- model.Chunk{Type: model.ChunkText, Text: "done"}
+	} else {
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: tc}
+	}
+	ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 10}}
+	close(ch)
+	return ch, nil
+}
+
+// countingApprover measures how many asks are inside it at once.
+type countingApprover struct {
+	in, peak, asked atomic.Int32
+}
+
+func (c *countingApprover) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+	n := c.in.Add(1)
+	for {
+		p := c.peak.Load()
+		if n <= p || c.peak.CompareAndSwap(p, n) {
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	c.in.Add(-1)
+	c.asked.Add(1)
+	return false, nil
+}
+
+// Subagents running together, one of them a level deeper, ask one at a time.
+func TestParallelSubagentsAskOneAtATime(t *testing.T) {
+	appr := &countingApprover{}
+	store := NewMemStore()
+	adapter := routeAdapter{fanout: `{"tasks":[{"prompt":"a","description":"a"},{"prompt":"b","description":"b"},{"prompt":"nest","description":"nest"}]}`}
+	l, _, _ := taskTree(t, adapter, appr, store, store, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := l.Run(ctx, "go"); err != nil {
+		t.Fatal(err)
+	}
+	if appr.asked.Load() != 3 || appr.peak.Load() != 1 {
+		t.Fatalf("want 3 asks one at a time, got %d asks and %d at once", appr.asked.Load(), appr.peak.Load())
+	}
+}
+
+// grantingApprover allows and remembers the scope offered.
+type grantingApprover struct{ granted string }
+
+func (g *grantingApprover) Approve(ctx context.Context, _ string, _ json.RawMessage, res policy.Result) (bool, error) {
+	g.granted = res.Offer()
+	NoteAnswer(ctx, Answer{By: ByReviewer, Granted: g.granted})
+	return true, nil
+}
+
+// An ask the person allowed is copied with the scope they chose; a call the
+// policy allowed on its own is not; the return names the session.
+func TestSubagentRecordCopiesAllowedAsksOnly(t *testing.T) {
+	appr := &grantingApprover{}
+	l, store, dir := parentWithTask(t, []scriptedTurn{
+		{calls: []model.ToolCall{taskCall("t1", "work")}},
+		{calls: []model.ToolCall{call("read", map[string]string{"file_path": "notes.txt"})}},
+		{calls: []model.ToolCall{bashCall("b1", "mkdir out")}},
+		{text: "made it"},
+		{text: "done"},
+	}, appr)
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	acts := payloads[SubagentAction](evs, EvSubagentAction)
+	if len(acts) != 1 || acts[0].Tool != "bash" || acts[0].Decision != "allowed" ||
+		acts[0].By != ByReviewer || appr.granted == "" || acts[0].GrantedScope != appr.granted {
+		t.Fatalf("want only the allowed ask, with its granted scope %q: %+v", appr.granted, acts)
+	}
+	spawned := payloads[spawnPayload](evs, EvSubagentSpawned)
+	returned := payloads[spawnPayload](evs, EvSubagentReturn)
+	if len(spawned) != 1 || len(returned) != 1 || returned[0].Session == "" || returned[0].Session != spawned[0].Session {
+		t.Fatalf("the parent's return does not name the subagent's session: %+v %+v", spawned, returned)
+	}
+}
+
+// failingStore refuses every write but the parent's.
+type failingStore struct{ *MemStore }
+
+func (s failingStore) Append(ev Event) error {
+	if ev.SessionID != "parent" {
+		return errors.New("store unavailable")
+	}
+	return s.MemStore.Append(ev)
+}
+
+// A subagent that fails still has its return, with its session, in the parent's record.
+func TestFailedSubagentReturnIsRecorded(t *testing.T) {
+	store := NewMemStore()
+	l, _, _ := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{taskCall("t1", "work")}},
+		{calls: []model.ToolCall{call("read", map[string]string{"file_path": "x"})}},
+	}}, AutoApprove{Yes: false}, store, failingStore{store}, false)
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	spawned := payloads[spawnPayload](evs, EvSubagentSpawned)
+	returned := payloads[spawnPayload](evs, EvSubagentReturn)
+	if len(spawned) != 1 || len(returned) != 1 || returned[0].Reason != string(TermError) || returned[0].Session != spawned[0].Session {
+		t.Fatalf("the failed subagent's return is not in the parent's record: %+v %+v", spawned, returned)
+	}
+}
+
+// With no loop to answer to and no approver, a subagent's asks are refused.
+func TestSubagentWithoutApproverRefuses(t *testing.T) {
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{bashCall("b1", "rm -rf keep")}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Approver = nil
+	f.Tools = tools.NewRegistry(tools.Bash{})
+	if err := os.Mkdir(filepath.Join(f.Workspace, "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(f.Workspace, "keep")); err != nil {
+		t.Fatalf("a subagent with no approver ran rm -rf: %v", err)
+	}
+}
+
+// An ask still waiting its turn when the run is interrupted is not asked.
+func TestQueuedAskGivesUpOnCancel(t *testing.T) {
+	inner := &countingApprover{}
+	o := oneAtATime{Approver: inner, asks: make(chan struct{}, 1)}
+	o.asks <- struct{}{} // another subagent is being asked
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := o.Approve(ctx, "bash", nil, policy.Result{})
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || inner.asked.Load() != 0 {
+			t.Fatalf("a cancelled ask went ahead: err %v, asked %d", err, inner.asked.Load())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a queued ask did not give up when its run was interrupted")
 	}
 }

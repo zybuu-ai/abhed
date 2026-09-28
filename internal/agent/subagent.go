@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -167,8 +168,8 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	return tools.Result{Content: summary}
 }
 
-// SubagentFactory builds and runs subagents. It owns the wiring a subagent
-// needs so the Task tool stays a thin adapter.
+// SubagentFactory builds and runs subagents. A subagent answers to the approver
+// of the loop that spawned it; Approver serves a spawn with no loop, nil refuses.
 type SubagentFactory struct {
 	Adapter   model.Adapter
 	Tools     *tools.Registry
@@ -199,8 +200,13 @@ type sessionCreator interface {
 const MaxSummaryChars = 8000
 
 func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (string, error) {
+	parent, _ := ctx.Value(parentKey{}).(*parentLink)
+	depth := f.Depth
+	if parent != nil {
+		depth += parent.depth
+	}
 	if f.Budget != nil {
-		if !f.Budget.AllowNested && f.Depth > 0 {
+		if !f.Budget.AllowNested && depth > 0 {
 			return "", fmt.Errorf(
 				"nested subagents are disabled. Do this work directly rather than delegating again")
 		}
@@ -218,8 +224,29 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 			return "", fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
-	rec := NewRecorder(f.Store, sessionID, "")
+	// The child asks whoever the parent asks: the person at the prompt, or the
+	// headless refuser. Nothing it does is approved on its behalf.
+	approver, parentID := f.Approver, ""
+	if parent != nil {
+		inner := parent.approver
+		if o, nested := inner.(oneAtATime); nested {
+			inner = o.Approver // one queue for the whole tree, never taken twice
+		}
+		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description}
+		if parent.rec == nil {
+			parent = nil
+		} else {
+			parentID = parent.rec.sessionID
+		}
+	}
+	if approver == nil {
+		approver = AutoApprove{Yes: false}
+	}
+	rec := NewRecorder(f.Store, sessionID, parentID)
 	rec.Redact = f.Redact
+	if parent != nil {
+		rec.tap = mirrorInto(parent, sessionID)
+	}
 
 	profile := req.AgentType
 	if _, found := Profiles[profile]; !found {
@@ -267,24 +294,32 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		cfg.MaxTurns = 30 // subagents are for bounded subtasks
 	}
 
-	sub := NewLoop(f.Adapter, registry, f.Policy, f.Approver, session, rec, cfg)
+	sub := NewLoop(f.Adapter, registry, f.Policy, approver, session, rec, cfg)
+	sub.depth = depth + 1
 	// Deliberately no Compactor: a subagent that needs compaction was given too
 	// large a task, and silently compacting hides that from the operator.
 
 	// The parent records the spawn and the return in its own log, which is
 	// what the audit relies on; the child's copy is for its own replay.
-	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{
+	spawned := map[string]any{
 		"description": req.Description,
 		"agent_type":  req.AgentType,
-		"depth":       f.Depth,
+		"depth":       depth,
 		"workspace":   workspace,
-	})
+		"session":     sessionID,
+	}
+	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
+	parent.record(EvSubagentSpawned, ActorAgent, spawned)
 
 	reason, err := sub.Run(ctx, req.Prompt)
 	usage := sub.Usage()
 	f.Budget.Spend(usage.InputTokens + usage.OutputTokens)
 
 	if err != nil {
+		parent.record(EvSubagentReturn, ActorAgent, map[string]any{
+			"description": req.Description, "session": sessionID, "reason": string(TermError),
+			"turns": usage.Turns, "tokens_in": usage.InputTokens, "tokens_out": usage.OutputTokens,
+		})
 		return "", fmt.Errorf("subagent failed: %w", err)
 	}
 
@@ -296,19 +331,153 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		summary = summary[:MaxSummaryChars] + "\n\n[summary truncated]"
 	}
 
-	_, _ = rec.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{
+	returned := map[string]any{
 		"description":   req.Description,
+		"session":       sessionID,
 		"reason":        string(reason),
 		"turns":         usage.Turns,
 		"tokens_in":     usage.InputTokens,
 		"tokens_out":    usage.OutputTokens,
 		"summary_chars": len(summary),
-	})
+	}
+	_, _ = rec.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
+	parent.record(EvSubagentReturn, ActorAgent, returned)
 
 	if reason != TermCompleted {
 		return summary + fmt.Sprintf("\n\n[subagent ended early: %s]", reason), nil
 	}
 	return summary, nil
+}
+
+// parentKey carries the loop running a tool, so a subagent that tool spawns
+// answers to the same approver and is linked into the same record.
+type parentKey struct{}
+
+type parentLink struct {
+	approver Approver
+	rec      *Recorder
+	asks     chan struct{} // one ask at a time across the whole tree under one loop
+	depth    int           // 0 for a top-level loop, 1 for its subagents, and so on
+	fail     func(error)   // a write the parent's record refused ends the parent's run
+}
+
+// asParent marks ctx as coming from this loop, for the subagents a tool spawns.
+func (l *Loop) asParent(ctx context.Context) context.Context {
+	l.asksOnce.Do(func() { l.asks = make(chan struct{}, 1) })
+	asks := l.asks
+	if p, ok := ctx.Value(parentKey{}).(*parentLink); ok {
+		asks = p.asks
+	}
+	return context.WithValue(ctx, parentKey{}, &parentLink{
+		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
+	})
+}
+
+// record writes to the parent's record; a nil link has none.
+func (p *parentLink) record(t EventType, actor Actor, payload any) {
+	if p == nil {
+		return
+	}
+	if _, err := p.rec.Record(t, actor, Trusted, payload); err != nil && p.fail != nil {
+		p.fail(err)
+	}
+}
+
+// oneAtATime serializes asks: sibling subagents run together, but a person
+// answers one prompt at a time. A cancelled wait gives up without asking.
+type oneAtATime struct {
+	Approver
+	asks chan struct{}
+	who  string
+}
+
+func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
+	select {
+	case o.asks <- struct{}{}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	defer func() { <-o.asks }()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return o.Approver.Approve(WithSubagent(ctx, o.who), tool, args, res)
+}
+
+type subagentKey struct{}
+
+// WithSubagent names the subagent an ask comes from, for the prompt to show.
+func WithSubagent(ctx context.Context, description string) context.Context {
+	return context.WithValue(ctx, subagentKey{}, description)
+}
+
+// SubagentOf is the subagent an ask comes from, or "" for the loop's own.
+func SubagentOf(ctx context.Context) string {
+	s, _ := ctx.Value(subagentKey{}).(string)
+	return s
+}
+
+// SubagentAction is a subagent's call that was refused or put to an approver,
+// copied into the parent's record; the rest stay in the record Session names.
+type SubagentAction struct {
+	Session      string `json:"session"`
+	CallID       string `json:"call_id"`
+	Tool         string `json:"tool"`
+	Subject      string `json:"subject,omitempty"`
+	Decision     string `json:"decision"` // allowed | denied
+	Step         string `json:"step,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	By           string `json:"by,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	Approver     string `json:"approver,omitempty"`
+	GrantedScope string `json:"granted_scope,omitempty"`
+}
+
+// mirrorInto copies the child's settled calls that matter to an audit into
+// the parent's record as they happen.
+func mirrorInto(parent *parentLink, child string) func(Event) {
+	var mu sync.Mutex
+	asked := map[string]ActionRequested{}
+	return func(ev Event) {
+		switch ev.Type {
+		case EvSubagentSpawned, EvSubagentReturn, EvSubagentAction:
+			// A nested subagent's events are passed up, so the root record has them;
+			// the child's own spawn and return are written to the parent directly.
+			var own struct {
+				Session string `json:"session"`
+			}
+			if ev.Type != EvSubagentAction && json.Unmarshal(ev.Payload, &own) == nil && own.Session == child {
+				return
+			}
+			parent.record(ev.Type, ev.Actor, ev.Payload)
+		case EvActionRequested:
+			var a ActionRequested
+			if json.Unmarshal(ev.Payload, &a) == nil {
+				mu.Lock()
+				asked[a.CallID] = a
+				mu.Unlock()
+			}
+		case EvActionApproved, EvActionDenied:
+			var d map[string]string
+			_ = json.Unmarshal(ev.Payload, &d)
+			mu.Lock()
+			a, ok := asked[d["call_id"]]
+			delete(asked, d["call_id"])
+			mu.Unlock()
+			decision := "denied"
+			if ev.Type == EvActionApproved {
+				decision = "allowed"
+			}
+			if !ok || (decision == "allowed" && d["by"] == ByPolicy) {
+				return
+			}
+			parent.record(EvSubagentAction, ev.Actor, SubagentAction{
+				Session: child, CallID: a.CallID, Tool: a.Tool, Subject: policy.Subject(a.Tool, a.Args),
+				Decision: decision, Step: d["step"], Reason: d["reason"], By: d["by"],
+				Scope: d["scope"], Approver: d["approver"], GrantedScope: d["granted_scope"],
+			})
+		}
+	}
 }
 
 func lastAssistantMessage(msgs []model.Message) string {

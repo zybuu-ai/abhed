@@ -199,6 +199,11 @@ type Loop struct {
 	recordErr error
 	recordMu  sync.Mutex
 
+	// asks puts the asks of this loop's subagents to its approver one at a time.
+	asks     chan struct{}
+	asksOnce sync.Once
+	depth    int // how deep this loop is among subagents; 0 for a top-level loop
+
 	// dropEffort is set once a turn has spent its whole output budget on
 	// reasoning without acting; later calls ask for low effort, where the
 	// provider offers the choice, so the next turn reaches a tool call.
@@ -981,7 +986,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 
 	start := time.Now()
-	result := tool.Run(ctx, l.Session, call.Args)
+	result := tool.Run(l.asParent(ctx), l.Session, call.Args)
 	// A secret's value is stripped from the result before the model and the
 	// record see it, so the model never holds a value it could echo elsewhere.
 	if red := l.Recorder.redactor(); red != nil {
@@ -1340,12 +1345,17 @@ func (l *Loop) RecordPipelineStage(skill, stage, detail string, data map[string]
 // keeps the first failure; see recordErr.
 func (l *Loop) record(t EventType, actor Actor, payload any) {
 	if _, err := l.Recorder.Record(t, actor, Trusted, payload); err != nil {
-		l.recordMu.Lock()
-		if l.recordErr == nil {
-			l.recordErr = err
-		}
-		l.recordMu.Unlock()
+		l.noteRecordErr(err)
 	}
+}
+
+// noteRecordErr keeps the first failed write, which ends the run at the next turn.
+func (l *Loop) noteRecordErr(err error) {
+	l.recordMu.Lock()
+	if l.recordErr == nil {
+		l.recordErr = err
+	}
+	l.recordMu.Unlock()
 }
 
 // recordFailure reports the first event that could not be written, if any.
