@@ -984,7 +984,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// reason every approver shows and in the record.
 	var target string
 	if tg, ok := tool.(tools.Targeter); ok {
-		if target = tg.Target(call.Args); target != "" {
+		if target = tg.Target(l.Session, call.Args); target != "" {
 			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
 		}
 	}

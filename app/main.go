@@ -2884,6 +2884,9 @@ func (a *App) doctor(workspace string) int {
 		} else {
 			fmt.Printf("            context %s\n            namespace %s · server %s\n",
 				c.Name, c.Namespace, c.Server)
+			if c.Insecure() {
+				fmt.Printf("            ⚠ the kubeconfig skips TLS verification for this cluster\n")
+			}
 		}
 		for _, lc := range loginClusters(cfg) {
 			warn := ""

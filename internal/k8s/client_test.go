@@ -212,9 +212,13 @@ func stored(vals map[string]string) func(string) (string, error) {
 
 // tlsCluster starts a fake cluster over TLS with its own self-signed
 // certificate, and returns the CA file that verifies it.
-func tlsCluster(t *testing.T, h http.Handler) (*httptest.Server, string) {
+func tlsCluster(t *testing.T, h http.Handler, configure ...func(*http.Server)) (*httptest.Server, string) {
 	t.Helper()
-	srv := httptest.NewTLSServer(h)
+	srv := httptest.NewUnstartedServer(h)
+	for _, f := range configure {
+		f(srv.Config)
+	}
+	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	ca := filepath.Join(t.TempDir(), "ca.pem")
 	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})

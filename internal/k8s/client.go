@@ -45,6 +45,9 @@ type Cluster struct {
 	insecure bool
 }
 
+// Insecure reports whether the client skips TLS verification.
+func (c *Cluster) Insecure() bool { return c.insecure }
+
 // Config selects a cluster.
 type Config struct {
 	// Kubeconfig path. Empty uses $KUBECONFIG, then ~/.kube/config.
@@ -256,7 +259,7 @@ func Open(cfg Config) (*Cluster, error) {
 	}
 	c.client = &http.Client{
 		Timeout:   timeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: newTransport(tlsCfg),
 	}
 	return c, nil
 }
@@ -326,9 +329,16 @@ func OpenLogin(lc LoginCluster, defaultCA, token, namespace string) (*Cluster, e
 		Namespace: namespace, bearer: token, insecure: lc.InsecureSkipTLSVerify,
 		client: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg},
+			Transport: newTransport(tlsCfg),
 		},
 	}, nil
+}
+
+// newTransport keeps idle connections for a while only: a session's clients
+// outlive its last call until the session goes, and should not hold sockets.
+func newTransport(tlsCfg *tls.Config) *http.Transport {
+	return &http.Transport{TLSClientConfig: tlsCfg, IdleConnTimeout: 90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second}
 }
 
 func contextNames(kc *kubeconfig) []string {

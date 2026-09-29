@@ -37,7 +37,7 @@ type Prechecker interface {
 // credential goes to, when the arguments alone do not show it. The person
 // approving the call and the record both get it.
 type Targeter interface {
-	Target(args json.RawMessage) string
+	Target(sess *Session, args json.RawMessage) string
 }
 
 // precheckPath is the shared check for tools whose target is a "path" argument.

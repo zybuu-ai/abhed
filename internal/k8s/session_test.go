@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -216,13 +218,144 @@ func TestLoginTargetNamesClusterAndServer(t *testing.T) {
 	login := LoginTool{M: NewManager(Config{Clusters: []LoginCluster{
 		{Name: "prod", Server: "https://api.prod.example:6443"},
 		{Name: "lab", Server: "https://lab.example:6443", InsecureSkipTLSVerify: true}}})}
-	got := login.Target(json.RawMessage(`{"cluster":"prod","token_secret":"OCP_TOKEN"}`))
+	got := login.Target(nil, json.RawMessage(`{"cluster":"prod","token_secret":"OCP_TOKEN"}`))
 	for _, want := range []string{"OCP_TOKEN", "prod", "https://api.prod.example:6443", "system roots"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("target %q does not name %s", got, want)
 		}
 	}
-	if got := login.Target(json.RawMessage(`{"cluster":"lab","token_secret":"T"}`)); !strings.Contains(got, "NOT VERIFIED") {
+	if got := login.Target(nil, json.RawMessage(`{"cluster":"lab","token_secret":"T"}`)); !strings.Contains(got, "NOT VERIFIED") {
 		t.Errorf("an insecure cluster's target does not warn: %q", got)
+	}
+}
+
+// A kubeconfig context at the same server as a declared cluster may skip TLS
+// verification and carries the operator's own credential. A login token is
+// never put on that client: the prompt said the token goes over verified TLS.
+func TestLoginTokenNeverRidesAKubeconfigClient(t *testing.T) {
+	srv, ca, seen := authLog(t, "tok-login-7a3")
+	kubeconfig := writeKubeconfig(t, srv.URL) // context "ctx", insecure-skip-tls-verify, token tok-123
+	mgr := NewManager(Config{Kubeconfig: kubeconfig,
+		Clusters: []LoginCluster{{Name: "prod", Server: srv.URL, CAFile: ca}}})
+	sess := newSession(t)
+	args, _ := json.Marshal(map[string]string{"cluster": "prod", "token_secret": "T"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok-login-7a3"})}).Run(context.Background(), sess, args); res.IsError {
+		t.Fatalf("login failed: %s", res.Content)
+	}
+
+	before := len(seen())
+	get, _ := json.Marshal(map[string]string{"resource": "nodes", "context": "ctx"})
+	_ = GetTool{M: mgr}.Run(context.Background(), sess, get)
+	for _, auth := range seen()[before:] {
+		if strings.Contains(auth, "tok-login-7a3") {
+			t.Fatal("the login token went out on the kubeconfig's unverified client")
+		}
+	}
+	c, err := mgr.cluster(sess, "", "ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.bearer == "tok-login-7a3" {
+		t.Fatal("the kubeconfig client carries the login token")
+	}
+
+	// Named as the declared cluster, the login is used, verified.
+	byName, _ := json.Marshal(map[string]string{"resource": "nodes", "cluster": "prod"})
+	if res := (GetTool{M: mgr}).Run(context.Background(), sess, byName); res.IsError {
+		t.Fatalf("the login is not usable by its cluster's name: %s", res.Content)
+	}
+}
+
+// Two logins in one session are each reachable by name; with neither named,
+// the call is refused rather than guessed.
+func TestTwoLoginsAreChosenByName(t *testing.T) {
+	a, caA, seenA := authLog(t, "tok-a")
+	b, caB, seenB := authLog(t, "tok-b")
+	mgr := NewManager(Config{Kubeconfig: t.TempDir() + "/missing", Clusters: []LoginCluster{
+		{Name: "a", Server: a.URL, CAFile: caA}, {Name: "b", Server: b.URL, CAFile: caB}}})
+	sess := newSession(t)
+	login := LoginTool{M: mgr, Secret: stored(map[string]string{"TA": "tok-a", "TB": "tok-b"})}
+	for _, l := range []map[string]string{{"cluster": "a", "token_secret": "TA"}, {"cluster": "b", "token_secret": "TB"}} {
+		raw, _ := json.Marshal(l)
+		if res := login.Run(context.Background(), sess, raw); res.IsError {
+			t.Fatalf("login %v failed: %s", l, res.Content)
+		}
+	}
+	for _, name := range []string{"a", "b"} {
+		raw, _ := json.Marshal(map[string]string{"resource": "nodes", "cluster": name})
+		if res := (GetTool{M: mgr}).Run(context.Background(), sess, raw); res.IsError {
+			t.Fatalf("cluster %s: %s", name, res.Content)
+		}
+	}
+	if la, lb := seenA(), seenB(); la[len(la)-1] != "Bearer tok-a" || lb[len(lb)-1] != "Bearer tok-b" {
+		t.Fatalf("a login went to the other cluster: %v %v", la, lb)
+	}
+	raw, _ := json.Marshal(map[string]string{"resource": "nodes"})
+	if res := (GetTool{M: mgr}).Run(context.Background(), sess, raw); !res.IsError || !strings.Contains(res.Content, "more than one cluster") {
+		t.Fatalf("an unnamed call with two logins was not refused: %s", res.Content)
+	}
+	// A cluster the session has not logged in to is refused.
+	other := newSession(t)
+	byName, _ := json.Marshal(map[string]string{"resource": "nodes", "cluster": "a"})
+	if res := (GetTool{M: mgr}).Run(context.Background(), other, byName); !res.IsError {
+		t.Fatalf("another session used cluster a without logging in: %s", res.Content)
+	}
+}
+
+// When the session goes, its logins go with it: the credential is forgotten
+// and its connections are closed, not left open until the process ends.
+func TestClosingTheSessionReleasesItsLogins(t *testing.T) {
+	var open atomic.Int32
+	srv, ca := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/version") {
+			fmt.Fprint(w, `{"major":"1","minor":"29"}`)
+			return
+		}
+		fmt.Fprint(w, `{"kind":"NodeList","items":[]}`)
+	}), func(hs *http.Server) {
+		hs.ConnState = func(_ net.Conn, st http.ConnState) {
+			switch st {
+			case http.StateNew:
+				open.Add(1)
+			case http.StateClosed, http.StateHijacked:
+				open.Add(-1)
+			}
+		}
+	})
+	mgr := NewManager(Config{Clusters: []LoginCluster{{Name: "c", Server: srv.URL, CAFile: ca}}})
+	sess := newSession(t)
+	args, _ := json.Marshal(map[string]string{"cluster": "c", "token_secret": "T"})
+	login := LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}
+	if res := login.Run(context.Background(), sess, args); res.IsError {
+		t.Fatalf("login failed: %s", res.Content)
+	}
+	get, _ := json.Marshal(map[string]string{"resource": "nodes", "cluster": "c"})
+	if res := (GetTool{M: mgr}).Run(context.Background(), sess, get); res.IsError {
+		t.Fatal(res.Content)
+	}
+	// Logging in again replaces the client and closes the old one's connections.
+	if res := login.Run(context.Background(), sess, args); res.IsError {
+		t.Fatal(res.Content)
+	}
+	waitFor(t, func() bool { return open.Load() == 0 }, "a replaced login's connections stayed open")
+
+	if res := (GetTool{M: mgr}).Run(context.Background(), sess, get); res.IsError {
+		t.Fatal(res.Content)
+	}
+	sess.CloseScoped()
+	waitFor(t, func() bool { return open.Load() == 0 }, "the session's connections stayed open after it ended")
+	if res := (GetTool{M: mgr}).Run(context.Background(), sess, get); !res.IsError {
+		t.Fatalf("the login outlived its session: %s", res.Content)
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool, why string) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); !ok(); {
+		if time.Now().After(deadline) {
+			t.Fatal(why)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

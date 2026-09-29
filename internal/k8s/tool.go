@@ -43,18 +43,37 @@ func NewManager(cfg Config) *Manager {
 	return &Manager{cfg: cfg, clusters: map[string]*Cluster{}}
 }
 
-// logins is what k8s_login added to one session: credentials keyed by server
-// URL, and the clients built with them. Memory only.
+// logins is what k8s_login added to one session: credentials keyed by the
+// declared cluster's name, and the clients built with them. Memory only.
 type logins struct {
 	mu       sync.Mutex
 	creds    map[string]sessionCred
 	clusters map[string]*Cluster
+	closed   bool
 }
 
 type sessionCred struct {
 	token     string
 	cluster   LoginCluster
 	namespace string
+}
+
+// Close forgets the session's credentials and drops its connections, when the
+// session goes.
+func (l *logins) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	closeClients(l.clusters)
+	l.clusters, l.creds, l.closed = map[string]*Cluster{}, map[string]sessionCred{}, true
+	return nil
+}
+
+func closeClients(cs map[string]*Cluster) {
+	for _, c := range cs {
+		if c.client != nil {
+			c.client.CloseIdleConnections()
+		}
+	}
 }
 
 // loginsKey keys a session's logins by manager, so two managers never meet.
@@ -71,8 +90,7 @@ func (m *Manager) logins(sess *tools.Session, create bool) *logins {
 	return l
 }
 
-// login records a credential for this session only, replacing whatever the
-// kubeconfig held for that server.
+// login records a credential for this session only.
 func (m *Manager) login(sess *tools.Session, cred sessionCred) error {
 	l := m.logins(sess, true)
 	if l == nil {
@@ -80,26 +98,49 @@ func (m *Manager) login(sess *tools.Session, cred sessionCred) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.creds[cred.cluster.Server] = cred
-	// Drop cached clients so the next call picks the new credential up rather
-	// than reusing a connection built with the expired one.
-	l.clusters = map[string]*Cluster{}
+	if l.closed {
+		return fmt.Errorf("the session has ended; nothing was stored")
+	}
+	l.creds[cred.cluster.Name] = cred
+	// Drop the clients built with the old credential, connections included,
+	// so the next call uses the new one.
+	if c, ok := l.clusters[cred.cluster.Name]; ok {
+		closeClients(map[string]*Cluster{"": c})
+		delete(l.clusters, cred.cluster.Name)
+	}
 	return nil
 }
 
-func (m *Manager) cluster(sess *tools.Session, ctxName string) (*Cluster, error) {
+// cluster picks the client for a call. A declared cluster the session logged
+// in to is reached only with its own login and TLS settings; a kubeconfig
+// context only with the operator's credential. A login token is never put on
+// a kubeconfig client, whose TLS and exec credential are not what was approved.
+func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cluster, error) {
+	if clusterName != "" && ctxName != "" {
+		return nil, fmt.Errorf("name a cluster you logged in to or a kubeconfig context, not both")
+	}
+	l := m.logins(sess, false)
+	if clusterName != "" {
+		if l == nil {
+			return nil, fmt.Errorf("this session has not logged in to cluster %q; call k8s_login first", clusterName)
+		}
+		return l.cluster(m.cfg, clusterName)
+	}
+	if ctxName == "" && l != nil {
+		// With no context named, a single login is the default, as it was
+		// the reason for logging in; several need one named.
+		if name, n := l.only(); n == 1 {
+			return l.cluster(m.cfg, name)
+		} else if n > 1 {
+			return nil, fmt.Errorf("this session is logged in to more than one cluster; name one "+
+				"as cluster (%s), or a kubeconfig context", strings.Join(l.names(), ", "))
+		}
+	}
+
 	cfg := m.cfg
 	if ctxName != "" {
 		cfg.Context = ctxName
 	}
-	if l := m.logins(sess, false); l != nil {
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		if len(l.creds) > 0 {
-			return l.cluster(cfg, ctxName)
-		}
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if c, ok := m.clusters[ctxName]; ok {
@@ -113,33 +154,42 @@ func (m *Manager) cluster(sess *tools.Session, ctxName string) (*Cluster, error)
 	return c, nil
 }
 
-// cluster opens a client for a session with logins; l.mu is held.
-func (l *logins) cluster(cfg Config, ctxName string) (*Cluster, error) {
-	if c, ok := l.clusters[ctxName]; ok {
+func (l *logins) only() (string, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for name := range l.creds {
+		return name, len(l.creds)
+	}
+	return "", 0
+}
+
+func (l *logins) names() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, 0, len(l.creds))
+	for name := range l.creds {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// cluster opens, or reuses, the client for one of the session's logins.
+func (l *logins) cluster(cfg Config, name string) (*Cluster, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cred, ok := l.creds[name]
+	if !ok {
+		return nil, fmt.Errorf("this session has not logged in to cluster %q; call k8s_login first", name)
+	}
+	if c, ok := l.clusters[name]; ok {
 		return c, nil
 	}
-	// A runtime login bypasses the kubeconfig entirely: there may not be a
-	// context for that cluster at all.
-	if len(l.creds) == 1 && ctxName == "" {
-		for _, cred := range l.creds {
-			c, err := OpenLogin(cred.cluster, cfg.CAFile, cred.token, orDefaultNS(cred.namespace, cfg.Namespace))
-			if err != nil {
-				return nil, err
-			}
-			l.clusters[ctxName] = c
-			return c, nil
-		}
-	}
-	// Opened afresh, never taken from the manager's cache: its token is
-	// replaced below, and the cached client belongs to every session.
-	c, err := Open(cfg)
+	c, err := OpenLogin(cred.cluster, cfg.CAFile, cred.token, orDefaultNS(cred.namespace, cfg.Namespace))
 	if err != nil {
 		return nil, err
 	}
-	if cred, ok := l.creds[c.Server]; ok {
-		c.bearer = cred.token
-	}
-	l.clusters[ctxName] = c
+	l.clusters[name] = c
 	return c, nil
 }
 
@@ -163,6 +213,7 @@ func (GetTool) Schema() json.RawMessage {
     "resource":{"type":"string","description":"Resource type, plural: pods, deployments, services, nodes, namespaces, events, configmaps. Use 'logs' to fetch pod logs."},
     "name":{"type":"string","description":"A single resource name. Omit to list all of that type."},
     "namespace":{"type":"string","description":"Namespace. Omit for the context's default; use '*' for all namespaces."},
+    "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login. Omit to use the only login, or the kubeconfig."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster. Omit for the current context."},
     "selector":{"type":"string","description":"Label selector, e.g. app=web."},
     "container":{"type":"string","description":"For logs: which container in the pod."},
@@ -173,6 +224,7 @@ func (GetTool) Schema() json.RawMessage {
 }
 
 type getArgs struct {
+	Cluster   string `json:"cluster"`
 	Resource  string `json:"resource"`
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -190,7 +242,7 @@ func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessa
 	if strings.TrimSpace(a.Resource) == "" {
 		return errf("resource is required (pods, deployments, nodes, logs, …)")
 	}
-	c, err := t.M.cluster(sess, a.Context)
+	c, err := t.M.cluster(sess, a.Cluster, a.Context)
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -268,6 +320,7 @@ func (ApplyTool) Schema() json.RawMessage {
     "resource":{"type":"string","description":"For delete/scale/restart: resource type, plural."},
     "name":{"type":"string","description":"For delete/scale/restart: the resource name."},
     "namespace":{"type":"string","description":"Namespace. Omit for the context's default."},
+    "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster."},
     "replicas":{"type":"integer","description":"For scale: the desired replica count."}
   },
@@ -276,6 +329,7 @@ func (ApplyTool) Schema() json.RawMessage {
 }
 
 type applyArgs struct {
+	Cluster   string `json:"cluster"`
 	Action    string `json:"action"`
 	Manifest  string `json:"manifest"`
 	Resource  string `json:"resource"`
@@ -290,7 +344,7 @@ func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for k8s_apply: %v", err)
 	}
-	c, err := t.M.cluster(sess, a.Context)
+	c, err := t.M.cluster(sess, a.Cluster, a.Context)
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -784,7 +838,7 @@ func (t LoginTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
 }
 
 // Target tells the person approving, and the record, where the token goes.
-func (t LoginTool) Target(raw json.RawMessage) string {
+func (t LoginTool) Target(_ *tools.Session, raw json.RawMessage) string {
 	var a loginArgs
 	if json.Unmarshal(raw, &a) != nil {
 		return ""
@@ -832,6 +886,8 @@ func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	if err != nil {
 		return errf("%v", err)
 	}
+	// Only the check uses this client; the session opens its own.
+	defer c.client.CloseIdleConnections()
 	// Verify before reporting success. Storing a credential that does not work
 	// would turn one clear failure into a confusing one on the next call.
 	if _, err := c.Do(ctx, "GET", "/version", nil); err != nil {
@@ -844,8 +900,8 @@ func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	return tools.Result{Content: fmt.Sprintf(
 		"Authenticated to cluster %s at %s (namespace %s, %s) with secret %s. The login "+
 			"holds for this session only and is not written to your kubeconfig. "+
-			"k8s_get will now use it.", lc.Name, lc.Server, c.Namespace,
-		lc.Verification(t.M.cfg.CAFile), a.TokenSecret)}
+			"Name it as cluster %q in k8s_get and k8s_apply.", lc.Name, lc.Server, c.Namespace,
+		lc.Verification(t.M.cfg.CAFile), a.TokenSecret, lc.Name)}
 }
 
 func orDefaultNS(a, b string) string {
