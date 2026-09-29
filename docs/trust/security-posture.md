@@ -38,7 +38,7 @@ direction, and this document and the code as what runs today.
 documented at the top of `internal/policy/policy.go`:
 
 ```
-Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
+Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 ```
 
 **Deny rules are absolute for tool calls.** A matching deny rule blocks the

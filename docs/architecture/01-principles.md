@@ -115,7 +115,7 @@ logging and incident reconstruction.
 Six-step ordered flow, directly transplantable to an enterprise approval system:
 
 ```
-Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
+Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 ```
 
 Deny is absolute: a deny rule blocks the tool call **even in the most permissive mode**,

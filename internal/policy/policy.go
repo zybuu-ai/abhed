@@ -2,7 +2,7 @@
 //
 // Evaluation is ordered (docs P7):
 //
-//	Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
+//	Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 //
 // Deny is absolute: a matching deny rule blocks the tool even in the most
 // permissive mode. Rules are scoped per-command, not per-tool, so allowing
