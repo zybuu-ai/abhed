@@ -815,6 +815,9 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 	}
 	mgr := parent.loop.Background
 	id := newID()
+	if req.Resume != "" {
+		id = req.Resume // a resumed child keeps its id, which is its task id
+	}
 	req.sessionID = id
 	joined := mgr.Mode() == WakeOff
 	extra := map[string]any{"background": true, "task_id": id}
@@ -842,20 +845,29 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		Model: c.adapter.Profile().Name, Started: mgr.policy.now(), joined: joined,
 		cancel: cancel, done: make(chan struct{})}
 	mgr.mu.Lock()
+	if _, again := mgr.tasks[id]; !again {
+		mgr.order = append(mgr.order, id)
+	}
 	mgr.tasks[id] = t
-	mgr.order = append(mgr.order, id)
 	mgr.mu.Unlock()
+	settle := req.settle
+	if c.settle != nil {
+		settle = c.settle
+	}
 
 	go func() {
 		defer close(t.done)
 		defer stopDeadline()
+		if c.release != nil {
+			defer c.release()
+		}
 		summary, reason, err := c.execute(cctx)
 		if err != nil {
 			summary = err.Error()
 		}
-		if req.settle != nil {
+		if settle != nil {
 			sctx, done := context.WithTimeout(context.WithoutCancel(cctx), TurnEndWait)
-			summary = strings.TrimSpace(summary) + "\n\n" + req.settle(sctx)
+			summary = strings.TrimSpace(summary) + "\n\n" + settle(sctx)
 			done()
 		}
 		usage := c.sub.Usage()

@@ -1261,7 +1261,20 @@ func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) ag
 		return s.store
 	}
 	tenant, user, workspace := storeTenant(s.opts.Config, spec.Tenant), spec.User, s.opts.Workspace
-	return subSessions{EventStore: s.store, create: func(ctx context.Context, id, parentID, description string) error {
+	return subSessions{EventStore: s.store, owns: func(ctx context.Context, childID, parentID string) (bool, error) {
+		// A resume is only for the session that started the child, as its owner.
+		getter, ok := s.sessions.(interface {
+			GetSession(ctx context.Context, id string) (store.SessionRecord, error)
+		})
+		if !ok {
+			return true, nil // no rows to say more than the record's parent link
+		}
+		rec, err := getter.GetSession(ctx, childID)
+		if err != nil {
+			return false, nil //nolint:nilerr // not found and not readable answer alike: no such task
+		}
+		return rec.ParentID == parentID && ownsSession(rec.Tenant, rec.User, tenant, user), nil
+	}, create: func(ctx context.Context, id, parentID, description string) error {
 		if parentID == "" {
 			parentID = sessionID
 		}
@@ -1277,6 +1290,13 @@ func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) ag
 type subSessions struct {
 	EventStore
 	create func(ctx context.Context, id, parentID, description string) error
+	owns   func(ctx context.Context, childID, parentID string) (bool, error)
+}
+
+var _ agent.SubSessionChecker = subSessions{}
+
+func (c subSessions) SubSessionOf(ctx context.Context, childID, parentID string) (bool, error) {
+	return c.owns(ctx, childID, parentID)
 }
 
 var _ agent.SessionCreator = subSessions{}

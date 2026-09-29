@@ -209,7 +209,7 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 				AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model}
 			wt := trees[i]
 			if wt != nil {
-				req.Workspace = wt.Dir
+				req.Workspace, req.worktree = wt.Dir, wt
 			}
 			summary, err := t.Spawn(ctx, req)
 			outcomes[i] = taskOutcome{index: i, desc: tk.Description, summary: summary, err: err, worktree: wt}
@@ -248,7 +248,7 @@ func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree) too
 		req := SubagentRequest{Prompt: tk.Prompt, Description: tk.Description,
 			AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model}
 		if wt := trees[i]; wt != nil {
-			req.Workspace, req.settle = wt.Dir, settleLater(t.Workspace, wt)
+			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
 		}
 		fmt.Fprintf(&b, "## Task %d — %s\n", i+1, tk.Description)
 		id, err := t.Background(ctx, req)

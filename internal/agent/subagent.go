@@ -120,8 +120,15 @@ type SubagentRequest struct {
 	// collide. The child's file and shell boundary is that directory.
 	Workspace string
 
+	// Resume names a finished child of this session to continue with Prompt,
+	// instead of starting a new one.
+	Resume string
+
 	// sessionID, when set, is the child's session id, chosen by the caller.
 	sessionID string
+	// worktree is the checkout the child works in, recorded so a resume
+	// can find it again.
+	worktree *worktree
 	// settle, when set, runs once a background child has ended and returns
 	// what its notice says about the worktree it worked in.
 	settle func(context.Context) string
@@ -160,6 +167,8 @@ func (t Task) Schema() json.RawMessage {
 			"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
 			"agent_type":  agentTypeSchema(t.Agents),
 			"max_turns":   map[string]any{"type": "integer", "description": "Turn cap for the subagent."},
+			"resume": map[string]any{"type": "string", "description": "The task_id of a finished subagent of yours, to continue it with this prompt " +
+				"as a follow-up; it keeps what it learned. Omit agent_type and model, or give the ones it ran with."},
 		}, t.Models, t.Background != nil),
 		"required": []string{"prompt", "description"},
 	})
@@ -208,6 +217,7 @@ type taskArgs struct {
 	MaxTurns    int    `json:"max_turns"`
 	Model       string `json:"model"`
 	Background  bool   `json:"background"`
+	Resume      string `json:"resume"`
 }
 
 // unknownType refuses an agent type the session does not offer, naming those it does.
@@ -230,8 +240,29 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		}
 		return tools.Result{Content: "prompt is required and must be self-contained.", IsError: true}
 	}
-	if strings.TrimSpace(a.Description) == "" {
+	// A resume keeps the task's own description unless given another.
+	if strings.TrimSpace(a.Description) == "" && a.Resume == "" {
 		return tools.Result{Content: "description is required (3-5 words, shown to the user).", IsError: true}
+	}
+	if a.Resume != "" {
+		// The resumed task's own role and worktree apply; the spawn checks them.
+		req := SubagentRequest{Prompt: a.Prompt, Description: a.Description, AgentType: a.AgentType,
+			MaxTurns: a.MaxTurns, Model: a.Model, Resume: a.Resume}
+		if a.Background {
+			if t.Background == nil {
+				return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
+			}
+			id, err := t.Background(ctx, req)
+			if err != nil {
+				return tools.Result{Content: err.Error(), IsError: true}
+			}
+			return tools.Result{Content: startedText(id, a.Description)}
+		}
+		summary, err := t.Spawn(ctx, req)
+		if err != nil {
+			return tools.Result{Content: err.Error(), IsError: true}
+		}
+		return tools.Result{Content: summary}
 	}
 	agentType := a.AgentType
 	if agentType == "" {
@@ -257,7 +288,7 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 			if wt == nil {
 				return res
 			}
-			req.Workspace, req.settle = wt.Dir, settleLater(t.Workspace, wt)
+			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
 		}
 		id, err := t.Background(ctx, req)
 		if err != nil {
@@ -305,7 +336,7 @@ func runInWorktree(ctx context.Context, spawn func(context.Context, SubagentRequ
 	if wt == nil {
 		return res
 	}
-	req.Workspace = wt.Dir
+	req.Workspace, req.worktree = wt.Dir, wt
 	summary, err := spawn(ctx, req)
 	rel, _ := filepath.Rel(ws, wt.Dir)
 	settled := settleWorktree(ctx, ws, rel, wt)
@@ -365,7 +396,17 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	if err != nil {
 		return "", err
 	}
+	if c.release != nil {
+		defer c.release()
+	}
 	summary, _, err := c.execute(ctx)
+	if c.settle != nil {
+		settled := c.settle(context.WithoutCancel(ctx))
+		if err != nil {
+			return "", fmt.Errorf("%w\n\n%s", err, settled)
+		}
+		summary = strings.TrimSpace(summary) + "\n\n" + settled
+	}
 	return summary, err
 }
 
@@ -380,11 +421,18 @@ type child struct {
 	// extra goes on both its spawned and returned events, such as a
 	// background task's id.
 	extra map[string]any
+	// settle, for a resumed worktree child, settles its worktree again once
+	// it has ended; release lets the task be resumed again.
+	settle  func(context.Context) string
+	release func()
 }
 
 // prepare settles everything a spawn needs and records it. reserve runs just
 // before the spawn is counted, and may refuse it.
 func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extra map[string]any, reserve func() error) (*child, error) {
+	if req.Resume != "" {
+		return f.prepareResume(ctx, req, extra, reserve)
+	}
 	parent, _ := ctx.Value(parentKey{}).(*parentLink)
 	depth, adapter := f.Depth, f.Adapter
 	if parent != nil {
@@ -430,19 +478,8 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 		}
 		adapter, provider = a, name
 	}
-	if f.Budget != nil && !f.Budget.AllowNested && depth > 0 {
-		return nil, fmt.Errorf(
-			"nested subagents are disabled. Do this work directly rather than delegating again")
-	}
-	if reserve != nil {
-		if err := reserve(); err != nil {
-			return nil, err
-		}
-	}
-	if f.Budget != nil {
-		if err := f.Budget.TryReserveSubagent(); err != nil {
-			return nil, fmt.Errorf("cannot spawn subagent: %w. Complete the task with the context you have", err)
-		}
+	if err := f.reserve(depth, reserve); err != nil {
+		return nil, err
 	}
 
 	sessionID := req.sessionID
@@ -461,6 +498,45 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 			return nil, fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
+	c, spawned, err := f.build(parent, def, registry, adapter, provider, sessionID, depth, req, req.Workspace,
+		childTurns(f.Config.MaxTurns, def.MaxTurns, req.MaxTurns))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range extra {
+		spawned[k] = v
+	}
+	_, _ = c.sub.Recorder.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
+	c.parent.record(EvSubagentSpawned, ActorAgent, spawned)
+	c.extra = extra
+	return c, nil
+}
+
+// reserve counts one spawn, after the nesting rule and the caller's own
+// reservation (a background slot).
+func (f *SubagentFactory) reserve(depth int, reserve func() error) error {
+	if f.Budget != nil && !f.Budget.AllowNested && depth > 0 {
+		return fmt.Errorf(
+			"nested subagents are disabled. Do this work directly rather than delegating again")
+	}
+	if reserve != nil {
+		if err := reserve(); err != nil {
+			return err
+		}
+	}
+	if f.Budget != nil {
+		if err := f.Budget.TryReserveSubagent(); err != nil {
+			return fmt.Errorf("cannot spawn subagent: %w. Complete the task with the context you have", err)
+		}
+	}
+	return nil
+}
+
+// build makes the child's loop, with its approver, record and prompt, and
+// returns it with the spawned payload to record. workspace, when set, roots
+// the child in a worktree.
+func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *tools.Registry, adapter model.Adapter,
+	provider, sessionID string, depth int, req SubagentRequest, workspace string, turns int) (*child, map[string]any, error) {
 	// The child asks whoever the parent asks: the person at the prompt, or the
 	// headless refuser. Nothing it does is approved on its behalf.
 	approver, parentID := f.Approver, ""
@@ -503,15 +579,17 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	// for isolated parallel work, its own worktree with its own scoping
 	// boundary, so two children cannot write over each other and neither can
 	// reach the parent's tree.
-	workspace, session := f.Workspace, f.Session
-	if req.Workspace != "" {
-		if session, err = tools.NewSession(req.Workspace); err != nil {
-			return nil, fmt.Errorf("subagent workspace: %w", err)
+	session := f.Session
+	if workspace != "" && workspace != f.Workspace {
+		var err error
+		if session, err = tools.NewSession(workspace); err != nil {
+			return nil, nil, fmt.Errorf("subagent workspace: %w", err)
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
 		}
-		workspace = req.Workspace
+	} else {
+		workspace = f.Workspace
 	}
 
 	// Fresh context: the subagent gets its own system prompt and memory file,
@@ -527,7 +605,7 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 
 	cfg := f.Config
 	cfg.SystemPrompt = sysPrompt
-	cfg.MaxTurns = childTurns(f.Config.MaxTurns, def.MaxTurns, req.MaxTurns)
+	cfg.MaxTurns = turns
 
 	sub := NewLoop(adapter, registry, narrowMode(childPolicy(f.Policy, session), def.PermissionMode), approver, session, rec, cfg)
 	// recall is added by NewLoop to every loop; a role that disallows it
@@ -564,13 +642,11 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	if provider != "" {
 		spawned["provider"] = provider
 	}
-	for k, v := range extra {
-		spawned[k] = v
+	if req.worktree != nil {
+		spawned["branch"], spawned["start"] = req.worktree.Branch, req.worktree.Start
 	}
-	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
-	parent.record(EvSubagentSpawned, ActorAgent, spawned)
 	return &child{sub: sub, parent: parent, req: req, sessionID: sessionID,
-		adapter: adapter, provider: provider, extra: extra}, nil
+		adapter: adapter, provider: provider}, spawned, nil
 }
 
 // execute runs a prepared child to its end, records its return in both

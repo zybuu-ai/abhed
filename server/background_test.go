@@ -532,3 +532,25 @@ func TestBudgetCarriedOnResume(t *testing.T) {
 		t.Fatalf("carried %d, want %d", got, want)
 	}
 }
+
+// A resume is only for the owner's own child of the session that started it:
+// the store wrapper checks the child's row.
+func TestSubSessionOfChecksOwnerAndParent(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServer(t, st)
+	st.rows["c1"] = store.SessionRecord{ID: "c1", Tenant: "acme", User: "alice", ParentID: "p1"}
+	alice := b.s.subagentStore("p1", StartSpec{Tenant: "acme", User: "alice"}, "default").(agent.SubSessionChecker)
+	bob := b.s.subagentStore("p1", StartSpec{Tenant: "acme", User: "bob"}, "default").(agent.SubSessionChecker)
+	if ok, _ := alice.SubSessionOf(context.Background(), "c1", "p1"); !ok {
+		t.Fatal("the owner's own child was refused")
+	}
+	for name, c := range map[string]func() (bool, error){
+		"another user":   func() (bool, error) { return bob.SubSessionOf(context.Background(), "c1", "p1") },
+		"another parent": func() (bool, error) { return alice.SubSessionOf(context.Background(), "c1", "p2") },
+		"no such row":    func() (bool, error) { return alice.SubSessionOf(context.Background(), "zz", "p1") },
+	} {
+		if ok, _ := c(); ok {
+			t.Fatalf("%s: allowed", name)
+		}
+	}
+}
