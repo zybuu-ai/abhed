@@ -36,7 +36,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `terminal.input` | call id of the shell, the line as typed, `edited`, or `withheld` with a reason | user |
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
-| `action.requested` | tool, args | agent |
+| `action.requested` | tool, args (always a JSON object, the canonical arguments every step and the tool read; `{}` on a call refused at step `args`); `raw_args`, the refused arguments as text; `dropped_args`, keys a built-in tool did not declare and dropped | agent |
 | `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
@@ -57,7 +57,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `user` | the person made the call at the workbench | user |
 | `session-scope` | an "always allow" chosen earlier in the session let it through; `scope` names it | system |
 | `headless` | nobody could be asked (`-p`, `rpc`, an SDK run without an approver, `abhed eval`, or a subagent of one of these), so the run's fixed answer applied; a refusal's reason starts `no approver:` | system |
-| `system` | the harness: an unknown tool (step `unknown`); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
+| `system` | the harness: an unknown tool (step `unknown`); arguments that were not one object, or named a key twice or in another case (step `args`); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
 
 When a person answered, two more fields say what they did:
 

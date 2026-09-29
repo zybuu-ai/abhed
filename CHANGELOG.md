@@ -50,6 +50,13 @@ All notable changes to Abhed are recorded here. The format follows
     callers outside the loop, such as the workbench, and reads a lone key in
     another case as the tool would.
 
+### Added
+
+- The record's `action.requested` carries `raw_args` (refused arguments as
+  text) and `dropped_args` (keys a built-in tool dropped); the SDK's
+  `ActionRequested` gains `RawArgs` and `Dropped`. Refusals of malformed
+  arguments are recorded at the new policy step `args`.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading
