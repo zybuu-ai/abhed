@@ -1330,6 +1330,29 @@ function render(ev){
       break;
     }
 
+    case 'subagent.spawned': tx.appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
+    case 'subagent.returned': tx.appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+
+    // A subagent's call waiting on you, answered as the agent's own are, by
+    // its request id. Its own calls are in its record, not drawn here.
+    case 'subagent.ask': {
+      hideThinking();
+      const id = 'subagent-' + p.request_id;
+      const wrap = node('call');
+      const hdr = node('hdr');
+      hdr.append(node('tool', p.tool), node('arg', 'subagent ' + (p.subagent || '') + ' · ' + summarize(p.tool, p.args)));
+      wrap.appendChild(hdr);
+      (turnEl || newTurn()).appendChild(wrap);
+      calls.set(id, wrap);
+      approval(Object.assign({}, p, {call_id: id}), p.request_id);
+      break;
+    }
+    case 'subagent.action': {
+      if(p.request_id) resolveApproval('subagent-' + p.request_id,
+        p.decision === 'allowed' ? 'approved' : 'rejected', p.decision === 'allowed' ? 'ok' : 'no');
+      break;
+    }
+
     case 'conversation.forked': {
       tx.appendChild(node('note', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
       turnEl = null;

@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // script is the session's model, shared by a loop and its subagents: each
@@ -175,7 +176,7 @@ func runWith(t *testing.T, pipelineJSON string, pol *policy.Engine, appr agent.A
 	adapter := &script{turns: turns}
 	sm := &pipeModel{}
 	registry := tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})
-	registry.Add(skills.Tool{R: reg, RunPipeline: pipelineRunner(sm), Input: func() string { return input }})
+	registry.Add(skills.Tool{R: reg, RunPipeline: toolset.PipelineRunner(sm), Input: func() string { return input }})
 
 	store := agent.NewMemStore()
 	if o.budget != nil {
@@ -348,7 +349,7 @@ func TestPipelineStepInRecordAndHawkEYE(t *testing.T) {
 }
 
 func TestPipelineWithNoLoopIsRefused(t *testing.T) {
-	run := pipelineRunner(&pipeModel{})
+	run := toolset.PipelineRunner(&pipeModel{})
 	s := &skills.Skill{Name: "gather", Pipeline: json.RawMessage(onePipeline("read", `{"path":"x"}`))}
 	if _, err := run(context.Background(), s, "q"); !errors.Is(err, agent.ErrNoLoop) {
 		t.Fatalf("a pipeline ran with no loop to check its steps: %v", err)

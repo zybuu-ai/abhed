@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -238,6 +239,12 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	if s.store != nil {
 		c.Tools = append(c.Tools, capTool{Name: "recall", Source: "builtin",
 			Description: "Read this session's own record, to get back text that has left the context window."})
+	}
+	// task and tasks are bound to one session's record, policy and budget in
+	// the same way, and every session has them.
+	for _, t := range []tools.Tool{agent.Task{Profiles: agent.Profiles}, agent.Tasks{}} {
+		c.Tools = append(c.Tools, capTool{Name: t.Name(), Description: firstSentence(t.Description()),
+			Mutates: t.Mutates(), Source: "builtin"})
 	}
 	if sk != nil {
 		for _, one := range sk.All() {

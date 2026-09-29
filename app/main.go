@@ -37,21 +37,17 @@ import (
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/eval"
 	"github.com/zybuu-ai/abhed/internal/extension"
-	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
-	"github.com/zybuu-ai/abhed/internal/rag"
-	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/secrets"
-	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
-	"github.com/zybuu-ai/abhed/internal/websearch"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
 	"golang.org/x/term"
@@ -290,9 +286,6 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	if err != nil {
 		fail(err)
 	}
-	if err := grantDirs(sess, cfg, ""); err != nil {
-		fail(err)
-	}
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		fail(err)
 	}
@@ -318,125 +311,34 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 	}
 
-	// Extensions can veto a tool call, never permit one. The hook they install
-	// runs first in the policy chain so it can refuse, and is structurally
-	// incapable of returning Allow.
-	extHost := extension.NewHost(func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "abhed: "+format+"\n", args...)
-	})
-	defer extHost.Close()
-	for _, err := range extHost.Load(context.Background(), cfg.ExtensionSpecs()) {
-		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
-	}
-	if extHost.Len() > 0 {
-		pol.Hooks = append(pol.Hooks, extHost.PolicyHook(context.Background(), "session"))
-	}
-
-	// The todo tool reports through whichever loop is currently running. The
-	// holder exists because the registry is built before the loop, and a
-	// package-level variable would quietly share state between sessions.
-	todos := &agent.LoopHolder{}
+	// The tool set every surface builds the same way; the CLI takes all of it.
 	vault := openVault()
-	registry := tools.NewRegistry(
-		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier())}},
-		tools.Todo{OnUpdate: func(items []tools.TodoItem, note string) {
-			todos.RecordTodos(toAgentTodos(items), note)
-		}},
-	)
+	set := toolset.Build(context.Background(), cfg, toolset.Options{
+		Workspace: workspace,
+		Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+			Isolation: tools.Isolation{Tier: string(sb.Tier())}},
+		Parts: toolset.All,
+		Warn:  warnf,
+	})
+	defer set.Close()
+	// A skill's own directory is reachable: its instructions reference files beside them.
+	if err := grantDirs(sess, cfg, set.SkillDirs()); err != nil {
+		fail(err)
+	}
+	toolset.Police(set.Extensions, pol, "session")
+
+	loopCfg := toolset.LoopConfig(cfg, toolset.SystemPrompt(workspace, adapter, set.SkillListing))
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
-	// invisibly. Each spawn re-prefills its own prefix (docs P3).
-	budget := agent.NewBudget(
-		int64(cfg.Limits.MaxBudgetTokens),
-		cfg.Limits.MaxSubagents,
-		cfg.Limits.NestedSubagents,
-	)
-
-	// MCP servers extend the tool surface. Every remote tool is namespaced and
-	// routes through the policy engine, since Abhed cannot know what it does.
-	gateway := mcp.NewGateway()
-	defer gateway.Close()
-	if mcpErrs := gateway.Connect(context.Background(), mcpConfigs(cfg)); len(mcpErrs) > 0 {
-		for _, e := range mcpErrs {
-			fmt.Fprintf(os.Stderr, "abhed: %v\n", e)
-		}
-	}
-	for _, t := range gateway.Tools() {
-		registry.Add(t)
-	}
-	// A tool an extension provides is a tool like any other: it appears in the
-	// model's list, goes through the policy engine, and its call and result are
-	// recorded. Providing one adds a capability, never a way around the rules.
-	if extTools, toolErrs := extHost.Tools(context.Background()); true {
-		for _, err := range toolErrs {
-			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
-		}
-		for _, t := range extTools {
-			registry.Add(t)
-		}
-	}
-
-	for _, t := range buildRAG(cfg) {
-		registry.Add(t)
-	}
-	for _, t := range buildInfra(cfg) {
-		registry.Add(t)
-	}
-	skillReg, skillListing := buildSkills(cfg)
-	if skillReg.Len() > 0 {
-		// The server builds an adapter and a session per request, so a
-		// pipeline runner cannot be bound once here as it is in the CLI. It is
-		// attached where the session is built, in the server package.
-		// A skill that declares a pipeline is executed rather than described:
-		// the harness runs the stages, so the gathering cannot be skipped.
-		registry.Add(skills.Tool{
-			R:           skillReg,
-			RunPipeline: pipelineRunner(adapter),
-			Input:       lastPrompt,
-		})
-	}
-	if t, err := buildWebSearch(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: web search disabled: %v\n", err)
-	} else if t != nil {
-		registry.Add(t)
-	}
-
-	// Retrieval is tier 2: an accelerator over grep, not a replacement.
-	if cfg.Retrieval.Enabled {
-		if ix, err := openIndex(context.Background(), cfg, workspace); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: index unavailable, falling back to grep: %v\n", err)
-		} else {
-			registry.Add(&index.SearchTool{Index: ix})
-		}
-	}
-
-	// Named as the adapter names itself, so a switch can rewrite the line exactly.
-	systemPrompt := agent.BuildSystemPrompt(agent.BuildOptions{
-		Profile:       "main",
-		Workspace:     workspace,
-		Model:         adapter.Profile().Name,
-		ContextWindow: adapter.Profile().ContextWindow,
-		MemoryFiles:   agent.DiscoverMemoryFiles(workspace),
-		Skills:        skillListing,
-	})
-
-	loopCfg := agent.DefaultConfig()
-	loopCfg.SystemPrompt = systemPrompt
-	loopCfg.MaxTurns = cfg.Limits.MaxTurns
-	loopCfg.MaxTokens = cfg.Limits.MaxTokens
-	loopCfg.CompactAt = cfg.Context.CompactAt
-	loopCfg.OffloadAt = cfg.Context.OffloadFraction()
-
-	// No Approver: a subagent answers to the approver of the loop that spawned it.
+	// invisibly. No Approver: a subagent answers to the approver of the loop
+	// that spawned it, the person at the prompt or the headless refuser.
+	budget := toolset.Budget(cfg)
 	factory := &agent.SubagentFactory{
-		Adapter: adapter, Tools: registry, Policy: pol,
+		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
-		Redact: openVault().Redactor(),
+		Redact: vault.Redactor(),
 	}
-	registry.Add(agent.Task{Spawn: factory.Spawn, Profiles: agent.Profiles})
-	registry.Add(agent.Tasks{Spawn: factory.Spawn, Profiles: agent.Profiles,
-		Workspace: workspace, MaxParallel: cfg.Limits.MaxParallelSubagents})
+	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 
 	headless := prompt != ""
 	jsonOut := format == "json"
@@ -479,24 +381,15 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	}
 
 	if headless {
-		return runOnce(ctx, store, renderer, jsonOut, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, todos)
+		return runOnce(ctx, store, renderer, jsonOut, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
 	}
-	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, todos, extHost)
-}
-
-// sessionBudget is the one allowance the parent loop and its subagents share.
-func sessionBudget(cfg config.Config) *agent.Budget {
-	return agent.NewBudget(
-		int64(cfg.Limits.MaxBudgetTokens),
-		cfg.Limits.MaxSubagents,
-		cfg.Limits.NestedSubagents,
-	)
+	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions)
 }
 
 func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonOut bool,
 	adapter model.Adapter, registry *tools.Registry, pol *policy.Engine,
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
-	appCfg config.Config, prompt string, holder *agent.LoopHolder) int {
+	appCfg config.Config, prompt string, budget *agent.Budget, extHost *extension.Host) int {
 
 	sessionID := newConversationID()
 	if err := recordSession(ctx, store, sessionID, appCfg); err != nil {
@@ -520,10 +413,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	}()
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
-	loop.Budget = sessionBudget(appCfg)
-	holder.Set(loop)
-	setPrompt(prompt)
+	// The factory's budget, so the subagents' spend and the loop's are one.
+	loop.Budget = budget
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
+	toolset.Summarize(loop.Compactor, extHost, sessionID)
 	reason, err := loop.Run(ctx, prompt)
 
 	store.Unsubscribe(sessionID, events)
@@ -547,7 +440,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	adapter model.Adapter, registry *tools.Registry, pol *policy.Engine,
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
 	appCfg config.Config, provider config.ProviderConfig, workspace string,
-	todos *agent.LoopHolder, extHost *extension.Host) int {
+	budget *agent.Budget, extHost *extension.Host) int {
 
 	s := r.Style()
 	sandboxLabel := "none"
@@ -616,8 +509,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	go readInput(editor, lines, interruptCh, readErr)
 	turn := 0
 	// Outside the conversation: /clear starts a new loop, and a budget built
-	// with it would reset the allowance.
-	turnBudget := sessionBudget(appCfg)
+	// with it would reset the allowance. It is the subagents' budget too.
+	turnBudget := budget
 	// Session-level state the slash commands operate on.
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
@@ -638,8 +531,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.SetAdapter(sessionState.adapter)
 		loop.Budget = turnBudget
-		attachExtensionSummarizer(loop.Compactor, extHost, id)
-		todos.Set(loop)
+		toolset.Summarize(loop.Compactor, extHost, id)
 		sessionState.loop, sessionState.sessionID = loop, id
 		return loop
 	}
@@ -710,7 +602,6 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		taskCtx, cancelTask := context.WithCancel(ctx)
 		before := loop.Usage()
 		sessionState.undo.BeginTurn()
-		setPrompt(line)
 
 		// Run on a goroutine so the reader stays live: anything typed now is a
 		// steering message, applied at the next turn boundary rather than
@@ -1385,17 +1276,12 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if sw, ok := sb.(interface{ SweepShells() }); ok {
 		go sw.SweepShells()
 	}
-	registry := tools.NewRegistry(
-		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, bash,
-	)
-
-	gateway := mcp.NewGateway()
-	defer gateway.Close()
-	gateway.Connect(context.Background(), mcpConfigs(cfg))
-	for _, t := range gateway.Tools() {
-		registry.Add(t)
-	}
+	// The CLI's tool set. The server shares its registry across sessions and
+	// binds each session's own subagents, todo list and skill tool to it.
+	set := toolset.Build(context.Background(), cfg, toolset.Options{
+		Workspace: workspace, Bash: bash, Parts: toolset.All, Warn: warnf,
+	})
+	defer set.Close()
 
 	// Identity first: a provider that cannot reach its issuer is a startup
 	// finding, and the rest of the banner describes a server that will not
@@ -1461,35 +1347,6 @@ func (a *App) serveCmd(workspace, addr string) int {
 			closeFn()
 		}
 	}
-	for _, t := range buildRAG(cfg) {
-		registry.Add(t)
-	}
-	for _, t := range buildInfra(cfg) {
-		registry.Add(t)
-	}
-	skillReg, skillListing := buildSkills(cfg)
-	if skillReg.Len() > 0 {
-		// The server builds an adapter and a session per request, so a
-		// pipeline runner cannot be bound once here as it is in the CLI.
-		// Skills that declare one fall back to their instructions on this
-		// path until the server attaches a runner where it builds a session.
-		registry.Add(skills.Tool{R: skillReg})
-	}
-	if t, err := buildWebSearch(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: web search disabled: %v\n", err)
-	} else if t != nil {
-		registry.Add(t)
-	}
-	// Kept rather than discarded: the settings surface can trigger a reindex,
-	// which needs the same Index the search tool is reading.
-	var searchIndex *index.Index
-	if cfg.Retrieval.Enabled {
-		if ix, err := openIndex(context.Background(), cfg, workspace); err == nil {
-			registry.Add(&index.SearchTool{Index: ix})
-			searchIndex = ix
-		}
-	}
-
 	eventStore, closeStore, err := openStore(context.Background(), cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -1521,20 +1378,23 @@ func (a *App) serveCmd(workspace, addr string) int {
 		EventTap:     fanIn(taps),
 		Config:       cfg,
 		Adapter:      buildAdapter(provider),
-		Registry:     registry,
+		Registry:     set.Registry,
 		Redact:       openVault().Live(),
-		SkillListing: skillListing,
-		SkillDirs:    skillDirs(cfg),
+		SkillListing: set.SkillListing,
+		SkillDirs:    set.SkillDirs(),
+		Extensions:   set.Extensions,
 		Store:        eventStore,
 		Auth:         authMW,
 		// The live objects behind the settings surface. Passing the registries
 		// rather than only their rendered output is what lets a change reach
 		// the next session without a restart.
-		SkillRegistry: skillReg,
-		SkillRoots:    skillRoots(cfg),
-		Gateway:       gateway,
-		Index:         searchIndex,
-		IndexOptions:  indexOptions(cfg),
+		// Kept rather than discarded: the settings surface can trigger a
+		// reindex, which needs the same Index the search tool is reading.
+		SkillRegistry: set.Skills,
+		SkillRoots:    toolset.SkillRoots(cfg),
+		Gateway:       set.Gateway,
+		Index:         set.Index,
+		IndexOptions:  toolset.IndexOptions(cfg),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 	}
 	for _, h := range a.serverOpts {
@@ -1646,7 +1506,6 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 	fmt.Printf("running %d tasks against %s\n\n", len(tasks), provider.Model)
 
 	adapter := buildAdapter(provider)
-	evalSkills, evalSkillListing := buildSkills(cfg)
 	workRoot, err := os.MkdirTemp("", "abhed-eval-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -1667,19 +1526,20 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 			return nil, eval.Result{}, err
 		}
 		vault := openVault()
-		registry := tools.NewRegistry(
-			tools.Read{}, tools.Write{}, tools.Edit{},
-			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier())}},
-		)
-		// Skills and web search are part of the agent under test, not extras.
-		// Without them a corpus that exercises a retrieval skill measures an
-		// agent that never had one — it would score zero and say nothing about
-		// the harness.
-		if evalSkills.Len() > 0 {
-			registry.Add(skills.Tool{R: evalSkills})
-		}
-		if t, err := buildWebSearch(cfg); err == nil && t != nil {
-			registry.Add(t)
+		// Skills, web search, the todo list and subagents are part of the
+		// agent under test, not extras: a corpus exercising one would
+		// otherwise measure an agent that never had it. MCP servers, corpora,
+		// clusters, hosts, the index and extensions are left out, so a score
+		// depends on the harness and the task and not on what those reach.
+		set := toolset.Build(ctx, cfg, toolset.Options{
+			Workspace: ws,
+			Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+				Isolation: tools.Isolation{Tier: string(sb.Tier())}},
+			Parts: toolset.Skills | toolset.WebSearch,
+		})
+		defer set.Close()
+		if err := grantDirs(sess, config.Config{}, set.SkillDirs()); err != nil {
+			return nil, eval.Result{}, err
 		}
 
 		pol := policy.New(policy.ModeAuto)
@@ -1694,21 +1554,23 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		store := agent.NewMemStore()
 		sessionID := "eval-" + task.ID
 		rec := agent.NewRecorder(store, sessionID, "")
-		rec.Redact = openVault().Redactor()
+		rec.Redact = vault.Redactor()
 
 		loopCfg := agent.DefaultConfig()
-		loopCfg.SystemPrompt = agent.BuildSystemPrompt(agent.BuildOptions{
-			Profile: "main", Workspace: ws,
-			Model: provider.Model, ContextWindow: provider.ContextWindow,
-			Skills: evalSkillListing,
-		})
+		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing)
 		if task.MaxTurns > 0 {
 			loopCfg.MaxTurns = task.MaxTurns
 		} else {
 			loopCfg.MaxTurns = 30
 		}
 
+		budget := toolset.Budget(cfg)
+		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
+			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor()}
+		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
+
 		loop := agent.NewLoop(adapter, registry, pol, agent.AutoApprove{Yes: true}, sess, rec, loopCfg)
+		loop.Budget = budget
 		loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 
 		runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -2444,33 +2306,6 @@ func storageLabel(cfg config.Config) string {
 	return "memory (sessions do not survive restart)"
 }
 
-// indexOptions mirrors what openIndex uses, so a reindex triggered from the
-// settings surface rebuilds on the same terms as the startup build rather than
-// quietly dropping the vector tier.
-func indexOptions(cfg config.Config) index.BuildOptions {
-	opts := index.DefaultBuildOptions()
-	opts.Embed = cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != ""
-	return opts
-}
-
-// openIndex builds the retrieval index for this workspace.
-func openIndex(ctx context.Context, cfg config.Config, workspace string) (*index.Index, error) {
-	ix := index.New(workspace)
-	opts := index.DefaultBuildOptions()
-
-	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {
-		provider, _ := cfg.Provider()
-		ix = ix.WithEmbedder(index.NewOpenAIEmbedder(
-			cfg.Retrieval.EmbedBaseURL, provider.APIKey,
-			cfg.Retrieval.EmbedModel, cfg.Retrieval.EmbedDims))
-		opts.Embed = true
-	}
-	if err := ix.Build(ctx, opts); err != nil {
-		return nil, err
-	}
-	return ix, nil
-}
-
 // buildIndexCmd implements `abhed index`, so a large repo can be indexed once
 // rather than on every session start.
 func buildIndexCmd(workspace string, trust config.TrustChoice) int {
@@ -2482,7 +2317,7 @@ func buildIndexCmd(workspace string, trust config.TrustChoice) int {
 	fmt.Printf("indexing %s...\n", workspace)
 	start := time.Now()
 
-	ix, err := openIndex(context.Background(), cfg, workspace)
+	ix, err := toolset.OpenIndex(context.Background(), cfg, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -2494,18 +2329,6 @@ func buildIndexCmd(workspace string, trust config.TrustChoice) int {
 		fmt.Printf("  (symbol + BM25 tiers only; set retrieval.embed to add the vector tier)\n")
 	}
 	return 0
-}
-
-func mcpConfigs(cfg config.Config) []mcp.ServerConfig {
-	out := make([]mcp.ServerConfig, 0, len(cfg.MCP.Servers))
-	for _, s := range cfg.MCP.Servers {
-		out = append(out, mcp.ServerConfig{
-			Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env,
-			URL: s.URL, Headers: s.Headers, HeadersEnv: s.HeadersEnv,
-			Enabled: s.Enabled, AllowTools: s.AllowTools, Digest: s.Digest,
-		})
-	}
-	return out
 }
 
 // userStore returns durable account storage when Postgres is configured, and
@@ -2546,28 +2369,6 @@ func storeConfig(cfg config.Config) store.Config {
 	return sc
 }
 
-// buildWebSearch constructs the web search tool when enabled. Returns nil, nil
-// when the operator has left it off, which is the default.
-func buildWebSearch(cfg config.Config) (tools.Tool, error) {
-	if !cfg.WebSearch.Enabled {
-		return nil, nil
-	}
-	key := cfg.WebSearch.APIKey
-	if key == "" && cfg.WebSearch.APIKeyEnv != "" {
-		key = os.Getenv(cfg.WebSearch.APIKeyEnv)
-	}
-	p, err := websearch.New(websearch.Config{
-		Provider:   cfg.WebSearch.Provider,
-		APIKey:     key,
-		BaseURL:    cfg.WebSearch.BaseURL,
-		MaxResults: cfg.WebSearch.MaxResults,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &websearch.Tool{Provider: p, Limit: cfg.WebSearch.MaxResults}, nil
-}
-
 func webSearchLabel(cfg config.Config) string {
 	if !cfg.WebSearch.Enabled {
 		return "disabled"
@@ -2589,157 +2390,20 @@ func buildSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, error) 
 // grantDirs widens the session's reachable set from config and the --add-dir
 // flag. Both are operator input: nothing the model says reaches this, which is
 // the whole point of the boundary.
-func grantDirs(sess *tools.Session, cfg config.Config, flagDirs string) error {
-	dirs := append([]string{}, cfg.AdditionalDirs...)
-	dirs = append(dirs, splitRules(flagDirs)...)
-	// Skill directories are reachable by construction: a skill's instructions
-	// routinely say "run the script in scripts/run.sh", and denying the read
-	// of a file the operator installed deliberately sends the agent into a
-	// loop it cannot escape. These are operator-configured paths, not
-	// workspace content, so this widens nothing the operator did not choose.
-	dirs = append(dirs, skillDirs(cfg)...)
+//
+// Skill directories are reachable by construction: a skill's instructions
+// routinely say "run the script in scripts/run.sh", and denying the read of a
+// file the operator installed deliberately sends the agent into a loop it
+// cannot escape. These are operator-configured paths, not workspace content,
+// so this widens nothing the operator did not choose.
+func grantDirs(sess *tools.Session, cfg config.Config, skillDirs []string) error {
+	dirs := append(append([]string{}, cfg.AdditionalDirs...), skillDirs...)
 	for _, d := range dirs {
 		if err := sess.AddRoot(d); err != nil {
 			return fmt.Errorf("--add-dir: %w", err)
 		}
 	}
 	return nil
-}
-
-// buildSkills loads the configured skill directories and returns the registry
-// plus its prompt listing. Errors are reported and survivable: one malformed
-// SKILL.md should not stop the agent starting.
-// skillDirs returns each loaded skill's own directory, for filesystem access.
-func skillDirs(cfg config.Config) []string {
-	if cfg.Skills.Disabled {
-		return nil
-	}
-	reg, _ := buildSkills(cfg)
-	var out []string
-	for _, s := range reg.All() {
-		if s.Dir != "" {
-			out = append(out, s.Dir)
-		}
-	}
-	return out
-}
-
-// skillRoots is where skills are looked FOR, as distinct from skillDirs, which
-// returns each loaded skill's own directory so its assets can be read.
-//
-// The two were easy to confuse and the confusion was silent: reloading from
-// skillDirs scans inside individual skills and finds nothing, so a reload
-// reported zero skills loaded while eleven were live.
-func skillRoots(cfg config.Config) []string {
-	if cfg.Skills.Disabled {
-		return nil
-	}
-	if dirs := cfg.Skills.Dirs; len(dirs) > 0 {
-		return dirs
-	}
-	return []string{"~/.abhed/skills"}
-}
-
-func buildSkills(cfg config.Config) (*skills.Registry, string) {
-	if cfg.Skills.Disabled {
-		return skills.NewRegistry(), ""
-	}
-	dirs := skillRoots(cfg)
-	reg, errs := skills.Load(dirs)
-	for _, err := range errs {
-		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
-	}
-	return reg, reg.Listing()
-}
-
-// buildInfra constructs the cluster and remote-host tools. Both are off by
-// default and both report why they are unavailable rather than silently
-// registering nothing.
-func buildInfra(cfg config.Config) []tools.Tool {
-	var out []tools.Tool
-
-	if cfg.K8s.Enabled {
-		mgr := k8s.NewManager(k8s.Config{
-			Kubeconfig: cfg.K8s.Kubeconfig,
-			Context:    cfg.K8s.Context,
-			Namespace:  cfg.K8s.Namespace,
-			// From the environment only: a token in a config file sits in a
-			// directory the agent itself can read.
-			Token: os.Getenv("ABHED_K8S_TOKEN"),
-		})
-		out = append(out, k8s.GetTool{M: mgr}, k8s.LoginTool{M: mgr})
-		if cfg.K8s.AllowWrites {
-			out = append(out, k8s.ApplyTool{M: mgr})
-		}
-	}
-
-	// No len(Hosts) > 0 condition: ssh_connect is how a host gets declared in
-	// the first place, so requiring one in config to reach the tool that adds
-	// them was the bug — a user with a VM and a key had no way in.
-	if cfg.SSH.Enabled {
-		hosts := make([]remote.HostConfig, 0, len(cfg.SSH.Hosts))
-		for _, h := range cfg.SSH.Hosts {
-			hosts = append(hosts, remote.HostConfig{
-				Name: h.Name, Addr: h.Addr, User: h.User,
-				IdentityFile: h.IdentityFile, PasswordEnv: h.PasswordEnv,
-				KnownHostsFile:           h.KnownHostsFile,
-				InsecureSkipHostKeyCheck: h.InsecureSkipHostKeyCheck,
-			})
-			if h.InsecureSkipHostKeyCheck {
-				fmt.Fprintf(os.Stderr, "abhed: ssh host %q skips host key "+
-					"verification — it cannot detect a machine-in-the-middle\n", h.Name)
-			}
-		}
-		reg, errs := remote.NewRegistry(hosts)
-		for _, err := range errs {
-			fmt.Fprintf(os.Stderr, "abhed: ssh: %v\n", err)
-		}
-		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg})
-	}
-	return out
-}
-
-// buildRAG constructs a tool per enabled corpus. A corpus that cannot be
-// configured is reported and skipped rather than failing startup: one broken
-// endpoint should not take the whole agent down.
-func buildRAG(cfg config.Config) []tools.Tool {
-	var out []tools.Tool
-	for _, c := range cfg.RAG.Corpora {
-		if !c.Enabled {
-			continue
-		}
-		headers := map[string]string{}
-		for k, v := range c.Headers {
-			headers[k] = v
-		}
-		for k, envVar := range c.HeadersEnv {
-			if v := os.Getenv(envVar); v != "" {
-				headers[k] = v
-			} else {
-				fmt.Fprintf(os.Stderr,
-					"abhed: rag corpus %q needs %s in the environment; skipping\n",
-					c.Name, envVar)
-				headers = nil
-				break
-			}
-		}
-		if headers == nil {
-			continue
-		}
-		r, err := rag.New(rag.Config{
-			Name: c.Name, Description: c.Description, URL: c.URL, Method: c.Method,
-			Headers: headers, QueryField: c.QueryField, QueryParam: c.QueryParam,
-			TopKField: c.TopKField, TopK: c.TopK, Body: c.Body,
-			ResultsPath: c.ResultsPath, TextField: c.TextField,
-			SourceField: c.SourceField, TitleField: c.TitleField, ScoreField: c.ScoreField,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: rag corpus %q: %v\n", c.Name, err)
-			continue
-		}
-		out = append(out, &rag.Tool{R: r})
-	}
-	return out
 }
 
 // buildAdapter constructs the configured provider.
@@ -2840,7 +2504,7 @@ func (a *App) doctor(workspace string) int {
 	} else if names := vaultNames(openVault()); len(names) > 0 {
 		fmt.Printf("secrets     %d stored in %s\n", len(names), openVault().Path())
 	}
-	if reg, _ := buildSkills(cfg); reg.Len() > 0 {
+	if reg, _ := toolset.LoadSkills(cfg, warnf); reg.Len() > 0 {
 		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
 			strings.Join(reg.Names(), ", "))
 	}
@@ -2886,7 +2550,7 @@ func (a *App) doctor(workspace string) int {
 		}
 	}
 	if cfg.Retrieval.Enabled {
-		if ix, err := openIndex(context.Background(), cfg, workspace); err == nil {
+		if ix, err := toolset.OpenIndex(context.Background(), cfg, workspace); err == nil {
 			d, t, v, _ := ix.Stats()
 			fmt.Printf("index       %d chunks · %d terms · %d vectors\n", d, t, v)
 		} else {
@@ -2895,7 +2559,7 @@ func (a *App) doctor(workspace string) int {
 	}
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
-		gw.Connect(context.Background(), mcpConfigs(cfg))
+		gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
 		status := gw.Status()
 		gw.Close()
 		if len(status) > 0 {
@@ -3119,18 +2783,6 @@ func providersCmd() int {
 	return 0
 }
 
-// toAgentTodos converts the tool's items to the event payload's.
-//
-// The two types are deliberately separate: internal/tools must not import the
-// agent package, or every tool would drag the event schema behind it.
-func toAgentTodos(items []tools.TodoItem) []agent.Todo {
-	out := make([]agent.Todo, 0, len(items))
-	for _, i := range items {
-		out = append(out, agent.Todo{ID: i.ID, Text: i.Text, Status: i.Status})
-	}
-	return out
-}
-
 // forkPoints lists the steps a session can be forked at, so the user has
 // something to name rather than guessing a sequence number.
 func forkPoints(r *ui.Renderer, events []agent.Event) {
@@ -3169,25 +2821,6 @@ func firstLine(s string, n int) string {
 		return s[:n] + "…"
 	}
 	return s
-}
-
-// attachExtensionSummarizer lets an extension supply or refuse a compaction
-// summary. Compaction is the one place the harness discards information on
-// purpose, and the default summarizer cannot know what this deployment must
-// keep.
-func attachExtensionSummarizer(c *agent.Compactor, h *extension.Host, sessionID string) {
-	if c == nil || h == nil || h.Len() == 0 {
-		return
-	}
-	c.Summarizer = func(msgs []model.Message) (string, bool) {
-		out := make([]extension.Message, 0, len(msgs))
-		for _, m := range msgs {
-			out = append(out, extension.Message{
-				Role: string(m.Role), Content: m.Content,
-			})
-		}
-		return h.OnBeforeCompact(context.Background(), sessionID, out)
-	}
 }
 
 // parseEvents reads a record as /export writes it, one JSON array, or as
@@ -3431,4 +3064,9 @@ func secretCmd(args []string) int {
 		return 0
 	}
 	return usage()
+}
+
+// warnf reports something that failed and was left out, on stderr.
+func warnf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "abhed: "+format+"\n", args...)
 }

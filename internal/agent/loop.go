@@ -1315,23 +1315,6 @@ func (l *Loop) resultLimitChars() int {
 	return window / 4 * 36 / 10
 }
 
-// LoopHolder lets a tool built before the loop report into it once it exists.
-//
-// The registry is constructed first — tools have to be known before a loop can
-// be given them — so a tool that needs to record an event has nothing to record
-// into yet. A holder makes that ordering explicit and scoped, where a package
-// variable would silently share one loop across every session in the process.
-type LoopHolder struct{ loop *Loop }
-
-func (h *LoopHolder) Set(l *Loop) { h.loop = l }
-
-// RecordTodos forwards to the current loop, and does nothing before one is set.
-func (h *LoopHolder) RecordTodos(items []Todo, note string) {
-	if h != nil && h.loop != nil {
-		h.loop.RecordTodos(items, note)
-	}
-}
-
 // runCalls executes a turn's tool calls and appends their results.
 //
 // Independent calls run concurrently. A model that asks to read four files
