@@ -376,6 +376,9 @@ All notable changes to Abhed are recorded here. The format follows
   `ListSessions` leaves out rows with a parent
   and returns `ParentID`; deleting a session marks its subagents' rows
   deleted too.
+- SDK: `Agent.Fork` returns `ErrForkDuringRun` while `Run`, `Continue`,
+  `RunJSON` or `RunStructured` is in progress. A fork ends the session's
+  logins and rewrites the conversation, so it must come after the run returns.
 
 ### Fixed
 

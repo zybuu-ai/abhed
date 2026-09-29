@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -177,6 +178,8 @@ type Agent struct {
 	fwd      *forwarder
 	redact   *secrets.Redactor
 	trust    config.WorkspaceTrust
+	// running counts the runs in progress; Fork refuses while one is.
+	running atomic.Int32
 }
 
 // New builds an agent.
@@ -360,6 +363,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 // Run sends a prompt and returns the agent's final message.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
+	a.running.Add(1)
+	defer a.running.Add(-1)
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err
@@ -401,6 +406,8 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 // RunStructured is RunJSON without the decode: the validated JSON, with stored
 // secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
+	a.running.Add(1)
+	defer a.running.Add(-1)
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
 	if err != nil {
 		var nr agent.ErrNoResult
@@ -453,10 +460,20 @@ func (a *Agent) Usage() Usage { return a.loop.Usage() }
 // conversation as it stands. It records a conversation.forked event, so the
 // steps after throughSeq stay in the record but leave the conversation (see
 // Live), and it refuses a step past the end or one an earlier fork abandoned.
+// It returns ErrForkDuringRun while Run, Continue, RunJSON or RunStructured is
+// in progress: a fork rewrites the conversation and ends its logins, which
+// must not happen under a turn.
 func (a *Agent) Fork(throughSeq int64) error {
+	if a.running.Load() > 0 {
+		return ErrForkDuringRun
+	}
 	_, err := a.loop.ForkTo(a.Events(), throughSeq)
 	return err
 }
+
+// ErrForkDuringRun is Fork's refusal while a run is in progress. Fork once
+// the run has returned.
+var ErrForkDuringRun = errors.New("abhed: cannot fork while a run is in progress; fork after it returns")
 
 // ExportHTML renders the session as a self-contained page.
 func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) }
