@@ -364,7 +364,7 @@ can be held to an operator's host list (`web_fetch.allowed_hosts`). A URL is
 a channel out: whatever the model puts in it reaches the site. Without a
 host list every call asks, in plan mode too, unless an operator's allow rule
 names it (`Engine.AskReadOnly` in `internal/policy/policy.go`); bypass mode
-and `abhed eval` do not ask, and a run with no one to ask refuses it.
+(unless a managed policy disables it) and `abhed eval` do not ask, and a run with no one to ask refuses it.
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic

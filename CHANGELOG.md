@@ -229,8 +229,8 @@ All notable changes to Abhed are recorded here. The format follows
   accept-edits, auto and plan modes unless an allow rule such as
   `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
   to any site; "always allow" is offered for any URL on the site. Bypass
-  runs it, a run with no one to ask refuses it, and `abhed eval`, which
-  approves every ask, fetches. With `allowed_hosts` set, calls to those
+  (unless a managed policy disables it) runs it, a run with no one to ask
+  refuses it, and `abhed eval`, which approves every ask, fetches. With `allowed_hosts` set, calls to those
   hosts do not ask on the scheme's default port; a URL naming another port
   asks.
 - `url` is now a policy subject for MCP and extension tools. A tool whose
@@ -334,11 +334,12 @@ All notable changes to Abhed are recorded here. The format follows
   `dropped_args`. An MCP or extension tool whose schema sets
   `additionalProperties: false` now has undeclared keys refused.
 - `action.requested` gains `raw_args` and `dropped_args`.
-- Skill pipelines (CLI only): a tool step that policy would ask about is
-  refused in `abhed -p` and anywhere else with no approver, so a CI job whose
-  pipeline runs such steps needs allow rules for them. A pipeline that calls
-  the `skill` tool, runs with no calling loop, or would start beneath another
-  pipeline's step is refused, and the skill falls back to its instructions.
+- Skill pipelines (up to 1.2.1 only the CLI ran them): a tool step that
+  policy would ask about is refused in `abhed -p` and anywhere else with no
+  approver, so a CI job whose pipeline runs such steps needs allow rules for
+  them. A pipeline that calls the `skill` tool, runs with no calling loop,
+  or would start beneath another pipeline's step is refused, and the skill
+  falls back to its instructions.
   A step's timeout now starts after its approval.
 - `k8s_login` no longer accepts a token, and `ssh_connect` no longer accepts
   `password_env`. Store the credential once on the machine Abhed runs on,

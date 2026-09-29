@@ -107,8 +107,8 @@ operator's kubeconfig. Log in again in a new session, after a server
 restart, and in the terminal after `/clear`, `/resume` or a fork: each
 starts a conversation with no logins and no connected hosts, and the last
 one's are closed. An embedded agent is one conversation: its logins and
-hosts are closed by the SDK's `Close`, by a new `start` on `abhed rpc`, and
-when an `abhed acp` connection ends. A resumed or forked
+hosts are closed by the SDK's `Close` and `Fork`, by a new `start` on `abhed
+rpc`, and when an `abhed acp` connection ends. A resumed or forked
 conversation's `k8s_get` and `k8s_apply` that name no `cluster` fall back
 to the operator's kubeconfig until it logs in again, even where its
 history shows a login. The secret itself is the operator's:
