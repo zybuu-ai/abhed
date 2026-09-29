@@ -123,6 +123,18 @@ func TestDefinitionRoleToolsAndRecord(t *testing.T) {
 	}
 }
 
+// disallowed_tools can remove recall, which every loop is otherwise given.
+func TestDefinitionDisallowsRecall(t *testing.T) {
+	f, ad := defFactory(t, []scriptedTurn{{text: "ok"}}, &Definition{Name: "quiet", Description: "d", Instruction: "i",
+		Tools: []string{"read"}, DisallowedTools: []string{"Recall"}})
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", AgentType: "quiet"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := toolNames(ad.gotRequests[0]); !reflect.DeepEqual(got, []string{"read"}) {
+		t.Fatalf("the child's tools: %v", got)
+	}
+}
+
 // A built-in role keeps its fixed tools; general keeps the parent's.
 func TestBuiltinRolesUnchanged(t *testing.T) {
 	f, ad := defFactory(t, []scriptedTurn{{text: "a"}, {text: "b"}}, &Definition{Name: "x", Description: "d", Instruction: "i"})

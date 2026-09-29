@@ -34,4 +34,8 @@ func TestSubsetStrict(t *testing.T) {
 	if got := r.Without([]string{"Bash", "mcp__gh__*", "nothing"}).Names(); !reflect.DeepEqual(got, []string{"read", "web_search", "mcp__jira__x"}) {
 		t.Fatalf("without: %v", got)
 	}
+	// A subtraction removes every tool an ambiguous name could mean.
+	if got := amb.Without([]string{"WebSearch"}).Names(); len(got) != 0 {
+		t.Fatalf("an ambiguous disallowed name removed nothing: %v", got)
+	}
 }

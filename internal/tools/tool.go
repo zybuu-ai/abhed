@@ -218,12 +218,16 @@ func (r *Registry) SubsetStrict(names []string) (*Registry, []string) {
 	return sub, missing
 }
 
-// Without returns a copy of the registry without the tools names match, as
-// SubsetStrict matches them. A name matching nothing removes nothing.
+// Without returns a copy of the registry without the tools names match. A
+// subtraction takes every tool a name could mean: where SubsetStrict refuses
+// an ambiguous name, removing both is the narrower reading.
 func (r *Registry) Without(names []string) *Registry {
 	drop := map[string]bool{}
 	for _, n := range names {
 		for _, f := range r.match(n) {
+			drop[f] = true
+		}
+		for _, f := range r.folded(n) {
 			drop[f] = true
 		}
 	}
@@ -256,6 +260,15 @@ func (r *Registry) match(name string) []string {
 			return []string{n}
 		}
 	}
+	out := r.folded(name)
+	if len(out) != 1 {
+		return nil // none, or ambiguous: never guess between two tools
+	}
+	return out
+}
+
+// folded is every tool whose name matches ignoring case, underscores and dashes.
+func (r *Registry) folded(name string) []string {
 	fold := func(s string) string {
 		return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(s))
 	}
@@ -264,9 +277,6 @@ func (r *Registry) match(name string) []string {
 		if fold(n) == fold(name) {
 			out = append(out, n)
 		}
-	}
-	if len(out) != 1 {
-		return nil // none, or ambiguous: never guess between two tools
 	}
 	return out
 }

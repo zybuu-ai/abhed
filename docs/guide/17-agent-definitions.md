@@ -38,6 +38,10 @@ named and nothing else, and runs in plan mode.
 | `isolation` | | `worktree`: the role always works in its own git worktree |
 | `permission_mode` | `permissionMode` | `plan` or `default`, applied only where it narrows the session's mode |
 
+`recall`, which reads the subagent's own record, is always given unless
+`disallowed_tools` names it. A name in `disallowed_tools` that could mean two
+tools removes both.
+
 Tool names are matched without regard to case, so `Read` is `read`, and
 without regard to underscores and dashes where that is unambiguous, so
 `WebSearch` is `web_search`. `mcp__<server>__*` names every tool of one MCP

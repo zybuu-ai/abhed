@@ -459,6 +459,11 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	cfg.MaxTurns = childTurns(f.Config.MaxTurns, def.MaxTurns, req.MaxTurns)
 
 	sub := NewLoop(adapter, registry, narrowMode(childPolicy(f.Policy, session), def.PermissionMode), approver, session, rec, cfg)
+	// recall is added by NewLoop to every loop; a role that disallows it
+	// does without, as with any other tool.
+	if def.strict && len(def.DisallowedTools) > 0 {
+		sub.Tools = sub.Tools.Without(def.DisallowedTools)
+	}
 	sub.depth = depth + 1
 	sub.Provider = provider
 	// The child spends from the parent's allowance turn by turn, so it stops
