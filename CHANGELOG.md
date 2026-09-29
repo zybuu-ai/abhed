@@ -234,10 +234,20 @@ All notable changes to Abhed are recorded here. The format follows
   now starts it.
 - `abhed serve` now starts the configured extensions; their veto applies to
   every console and workbench session, and their tools are offered there.
-- Embedders: the built-in prompt now carries the workspace's `ABHED.md`
-  memory files, as the CLI's does, and `limits.max_budget_tokens`,
-  `limits.max_tokens`, `context.compact_at` and `context.offload_at` now
-  apply. Set `Options.SystemPrompt` to keep a prompt of your own.
+- Embedders: `limits.max_budget_tokens`, `limits.max_tokens`,
+  `context.compact_at` and `context.offload_at` now apply. With
+  `Options.ConfiguredTools` the built-in prompt carries the workspace's
+  `ABHED.md` memory files, as the CLI's does; without it, as before, it
+  carries none. `abhed rpc` and `abhed acp` set it.
+- `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
+  asks in default mode, is refused in plan mode, and is refused where nobody
+  can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
+  names `tasks`. A script that relied on `-p` making worktrees needs
+  `-allow tasks` or the rule in its configuration.
+- `Postgres.CreateSubSession` takes the parent session's id, and a
+  subagent's row records it. `ListSessions` leaves out rows with a parent
+  and returns `ParentID`; deleting a session marks its subagents' rows
+  deleted too.
 
 ### Fixed
 
@@ -270,6 +280,9 @@ All notable changes to Abhed are recorded here. The format follows
   subagent's own record.
 - A skill reloaded in the server's settings reached the next session's
   prompt but not its `skill` tool, which kept the skills loaded at start.
+- A CLI subagent's session row in Postgres did not name its parent, so it
+  was listed as a session of user `agent`, and deleting the conversation
+  left it behind.
 
 ### Added
 
@@ -314,7 +327,11 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed acp`: a subagent's ask is a permission request on a `tool_call`
   named `subagent-<request id>`, sent first, and its answer settles that call.
 - `server.Options.Extensions` puts running extensions' veto and compaction
-  summary on every session. The capabilities list names `task` and `tasks`.
+  summary on every session. The capabilities list names `task` and `tasks`,
+  and gives each configured extension's `status` (`running`, `stopped` or
+  `not started`); the serve banner names one that is not running.
+- The console and workbench say on a subagent's approval card that *Always
+  allow* covers the whole session, the agent and every subagent.
 
 ### Changed
 

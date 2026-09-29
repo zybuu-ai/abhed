@@ -87,6 +87,11 @@ worktree's own path, is refused rather than followed.
 
 ## Requirements and limits
 
+- `tasks` with `"isolation": "worktree"` is a mutating call, because it
+  makes branches and checkouts before any subagent runs: it asks in default
+  mode, plan mode refuses it, and with nobody to ask it is refused unless an
+  allow rule (`tasks`) permits it. Without isolation it asks nothing; each
+  subagent's own calls are judged as they come.
 - Isolation needs the workspace to be a git repository, and `git` on the
   path. Asking for it elsewhere is refused with that reason, before spawning.
 - A worktree the subagent left exactly as it was made — no change, no commit,
@@ -130,7 +135,9 @@ the call, the reason and the `request_id` an answer names), and a
 an approver, with the same `request_id`. On a server with durable storage a
 subagent's session row belongs to the person whose session started it and
 names that session as its parent; it is not listed among their sessions, and
-nobody else can open it. Calls the
+nobody else can open it. Deleting the session deletes its subagents the same
+way: in Postgres the rows are marked deleted and kept for the audit, as the
+session's own are. Calls the
 policy allowed on its own are in the subagent's record only. HawkEYE's
 report on the parent lists each subagent's session, a `subagent-denied`
 finding for each refused call and a `subagent-destructive` warning for each

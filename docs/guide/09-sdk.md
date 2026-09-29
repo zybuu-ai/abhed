@@ -62,7 +62,9 @@ rag corpora, and the Kubernetes and SSH tools. It is off by default so an
 embedder decides what else its agent can reach; `abhed rpc` and `abhed acp`
 turn it on. What an untrusted `ConfigDir` file names (MCP servers,
 extensions, skill directories, corpora, clusters, hosts) is ignored either
-way. `Close` ends the MCP connections and extension processes.
+way. The built-in prompt then carries the `ABHED.md` memory files too; without
+`ConfiguredTools` it has none. `Close` ends the MCP connections and extension
+processes.
 
 A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
@@ -172,9 +174,11 @@ Not bound by the managed file:
 
 - `Provider` and `SetModel`, which name any endpoint, as a user's own config
   file may.
-- `SystemPrompt`, which replaces the built-in prompt entirely, and with it
-  the memory files (`ABHED.md`, the organisation's `/etc/abhed/ABHED.md`
-  included) the built-in prompt carries as the CLI's does.
+- The memory files (`ABHED.md`, the organisation's `/etc/abhed/ABHED.md`
+  included). The built-in prompt carries them, as the CLI's does, only with
+  `Options.ConfiguredTools`: an embedder running on repositories it does not
+  own takes their instructions only by opting in. `SystemPrompt` replaces
+  the built-in prompt entirely, and with it the memory files.
 
 `limits.max_budget_tokens` and `limits.max_tokens` apply as they do from the
 command line.
