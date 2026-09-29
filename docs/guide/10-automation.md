@@ -168,6 +168,15 @@ reasoning, every tool call with its outcome, the plan and the context usage
 stream to the editor as `session/update` notifications, and the session is
 recorded like any other.
 
+The workspace's `.abhed/config.json` applies whole only once the person has
+trusted it; `session/new` reports the decision in
+`_meta.abhed.workspaceTrust`, with the settings it ignored, so the editor can
+ask and then run `abhed trust grant`. The editor may send
+`_meta.abhed.trust: "untrusted"` to take only what tightens; it cannot grant
+trust over the wire. Start `abhed -trust-workspace acp` to trust every
+session's file for the life of the process. See [Workspace
+trust](../architecture/workspace-trust.md).
+
 Not yet supported: `session/load` (resuming an editor session from the
 record) and editor-side modes. A conformance test drives the adapter with a
 scripted client, so no editor is needed in CI.

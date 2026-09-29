@@ -6,6 +6,64 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- Workspace configuration files are untrusted after the upgrade, including
+  ones you wrote yourself. Until you trust a workspace's
+  `.abhed/config.json`, only its tightening settings apply, and a warning
+  names every setting that was ignored. The first interactive `abhed` in each
+  such workspace asks once, lists what the file would change, and offers to
+  trust it, not trust it, or show it. Elsewhere:
+  - Run `abhed trust` in the workspace to see the file and what it would
+    change, then `abhed trust grant` to trust it.
+  - A deployment or CI job that keeps its settings (storage, auth, providers,
+    MCP servers, extensions) in the workspace file must either run `abhed
+    trust grant` once as the user it runs as, or start with
+    `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`. Otherwise `abhed serve`
+    starts with those settings ignored and says so on stderr. Settings kept
+    in `~/.abhed/config.json` or the managed `/etc/abhed/config.json` are
+    unaffected.
+  - Editors on ACP: `session/new` now reports the decision in
+    `_meta.abhed.workspaceTrust`.
+- SDK: a `ConfigDir` file is untrusted in the same way. Set
+  `Options.WorkspaceTrust` to `config.TrustGranted` when the embedding
+  program owns that file. `Agent.WorkspaceTrust()` reports the decision.
+- `abhed init` trusts the file it writes. After an edit, trust it again.
+
+### Security
+
+- A repository could ship a `.abhed/config.json` that Abhed applied whole in
+  every mode: the CLI, `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
+  could set bypass or auto mode, add allow rules, point a provider's
+  `base_url` at another server so the code went there, start `extensions`
+  and `mcp` processes, turn `sandbox.allow_network` on or lower
+  `sandbox.min_tier`. A workspace's configuration is now untrusted until the
+  person trusts its exact contents.
+  - Trust is keyed by the workspace's canonical path and the SHA-256 of the
+    file, and stored in `~/.abhed/trust.json`, which the agent's tools and
+    every sandbox tier already keep the agent out of.
+  - An untrusted file contributes only what tightens: deny and ask rules, a
+    narrower mode, a stronger sandbox tier, network off, lower limits, a
+    stricter syntax check, and turning features off. Every other setting is
+    ignored and named on stderr and in `abhed doctor`.
+  - The managed configuration still wins over everything, and the user's own
+    `~/.abhed/config.json` is trusted as before.
+  - Commands the agent runs on the host no longer inherit
+    `ABHED_TRUST_WORKSPACE`.
+  - The design and the classification of every setting are in
+    `docs/architecture/workspace-trust.md`.
+
+### Added
+
+- `abhed trust` shows, grants, revokes and lists trust decisions, and
+  `-trust-workspace` trusts the workspace file for one run.
+- ACP `session/new` reports `_meta.abhed.workspaceTrust` and accepts
+  `_meta.abhed.trust: "untrusted"`. The rpc `ready` event carries
+  `workspace_trust`. The SDK adds `Options.WorkspaceTrust` and
+  `Agent.WorkspaceTrust()`, and the config package adds `LoadWith`,
+  `InspectWorkspace`, `GrantTrust`, `DeclineTrust`, `RevokeTrust` and
+  `InitWorkspace`.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading
