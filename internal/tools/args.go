@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 // SubjectKeys are the arguments policy reads a call's subject from, most
@@ -216,4 +218,69 @@ func schemaProps(schema json.RawMessage) (map[string]bool, bool) {
 		props[k] = true
 	}
 	return props, strings.TrimSpace(string(s.AdditionalProperties)) == "false"
+}
+
+// SecretArgs marks a tool that takes the name of a stored secret in each of
+// the named string arguments. Each name is put to its own secret(NAME) rule.
+type SecretArgs interface {
+	SecretArgs() []string
+}
+
+// WithheldSecretArg replaces a value given where a secret's name belongs.
+const WithheldSecretArg = "[withheld: not a secret name]"
+
+// SecretNames returns the secret names a call to t asks for.
+func SecretNames(t Tool, args json.RawMessage) []string {
+	sa, ok := t.(SecretArgs)
+	if !ok {
+		return nil
+	}
+	m, err := DecodeArgs(args)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, k := range sa.SecretArgs() {
+		if v, ok := m[k].(string); ok && v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// WithholdSecretValues replaces anything but a secret's name in t's secret
+// arguments. A model that puts a credential where its name belongs would
+// otherwise have it judged, shown for approval and recorded, and the record is
+// append-only. Arguments with nothing to withhold come back unchanged.
+func WithholdSecretValues(t Tool, canon json.RawMessage) json.RawMessage {
+	sa, ok := t.(SecretArgs)
+	if !ok {
+		return canon
+	}
+	m, err := DecodeArgs(canon)
+	if err != nil {
+		return canon
+	}
+	changed := false
+	for _, k := range sa.SecretArgs() {
+		v, found := m[k]
+		if !found {
+			continue
+		}
+		if s, isStr := v.(string); isStr && (s == "" || secrets.ValidName(s)) {
+			continue
+		}
+		m[k] = WithheldSecretArg
+		changed = true
+	}
+	if !changed {
+		return canon
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }

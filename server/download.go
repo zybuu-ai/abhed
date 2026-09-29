@@ -275,6 +275,10 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		}
 		live.Cancel()
 		live.closeTerminals()
+		// Hosts and logins the session made go with it.
+		if live.Loop != nil {
+			live.Loop.Session.CloseScoped()
+		}
 		s.mu.Lock()
 		delete(s.running, id)
 		s.mu.Unlock()

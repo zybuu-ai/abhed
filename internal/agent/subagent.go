@@ -286,6 +286,8 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
+			// Still the parent's conversation: a login it made carries over.
+			session.InheritScoped(f.Session)
 		}
 		workspace = req.Workspace
 	}
