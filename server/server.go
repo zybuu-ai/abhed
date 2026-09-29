@@ -199,6 +199,10 @@ type Options struct {
 	// SkillDirs, which holds each loaded skill's own directory so its assets
 	// can be read. A reload has to scan the roots.
 	SkillRoots []string
+	// Agents are the subagent types sessions offer: the built-in roles and
+	// the loaded definitions. Nil offers the built-in roles only, until an
+	// admin reload reads the definitions.
+	Agents *agent.Definitions
 	// SkillRegistry is the loaded skill set. Held alongside SkillListing so a
 	// settings change can re-render the listing rather than being stuck with
 	// the string computed at startup.
@@ -368,6 +372,7 @@ func New(opts Options) *Server {
 		state: &mutable{
 			registry: opts.Registry,
 			skills:   opts.SkillRegistry,
+			agents:   opts.Agents,
 			gateway:  opts.Gateway,
 			cfg:      opts.Config,
 		},
@@ -418,6 +423,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/admin/users/admin", s.Admin(s.setUserAdmin))
 	mux.Handle("GET /v1/admin/settings", s.Admin(s.getSettings))
 	mux.Handle("POST /v1/admin/skills/reload", s.Admin(s.reloadSkills))
+	mux.Handle("POST /v1/admin/agents/reload", s.Admin(s.reloadAgents))
 	mux.Handle("POST /v1/admin/mcp", s.Admin(s.addMCP))
 	mux.Handle("POST /v1/admin/reindex", s.Admin(s.reindex))
 	mux.HandleFunc("GET /v1/sessions/{id}/files", s.listDownloads)

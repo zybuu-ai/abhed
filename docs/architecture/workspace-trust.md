@@ -132,6 +132,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `extensions` | ignored: each one is a process |
 | `mcp` | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |
+| `agents.disabled` | **applied** only when true |
+| `agents.dirs` | ignored: a definition is instructions and a model choice |
 | `additional_dirs` | ignored: it widens the directories the agent may reach |
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |

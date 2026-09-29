@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
@@ -78,6 +82,51 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 		warn("%v", err)
 	}
 	return reg, reg.Listing()
+}
+
+// AgentRoots are the operator's definition directories: agents.dirs, or
+// ~/.abhed/agents. None when definitions are disabled.
+func AgentRoots(cfg config.Config) []string {
+	if cfg.Agents.Disabled {
+		return nil
+	}
+	if dirs := cfg.Agents.Dirs; len(dirs) > 0 {
+		return dirs
+	}
+	return []string{"~/.abhed/agents"}
+}
+
+// OfferedModels are the provider names a subagent may be given: configured,
+// and offered to sessions.
+func OfferedModels(cfg config.Config) []string {
+	var out []string
+	for name := range cfg.Model.Providers {
+		if cfg.Offered(name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// LoadAgents loads the subagent definitions with the built-in roles: the
+// managed ones, the workspace's when ws says they are trusted, and the
+// operator's. One that does not load is reported, not fatal.
+func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, warn func(string, ...any)) *agent.Definitions {
+	o := agentdefs.Options{
+		ManagedDir: managed.AgentsDir,
+		Dirs:       AgentRoots(cfg),
+		Disabled:   cfg.Agents.Disabled,
+		Models:     OfferedModels(cfg),
+	}
+	if ws.AgentsTrusted {
+		o.Workspace = ws.AgentFiles()
+	}
+	defs, errs := agentdefs.Load(o)
+	for _, err := range errs {
+		warn("%v", err)
+	}
+	return agent.WithDefinitions(defs...)
 }
 
 // InfraTools constructs the cluster and remote-host tools. Both are off by

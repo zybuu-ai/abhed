@@ -111,7 +111,7 @@ func readWorkspaceAgents(workspace string, st *WorkspaceTrust) {
 			break
 		}
 		path := filepath.Join(dir, name)
-		data, err := readAgentFile(path)
+		data, err := ReadAgentFile(path)
 		if err != nil {
 			st.AgentsProblems = append(st.AgentsProblems, fmt.Sprintf("%s: %v", Printable(path), err))
 			continue
@@ -131,9 +131,9 @@ func readWorkspaceAgents(workspace string, st *WorkspaceTrust) {
 	st.agentFiles = files
 }
 
-// readAgentFile reads a definition that is a regular file with one name, and
+// ReadAgentFile reads a definition that is a regular file with one name, and
 // is still the file that was checked once it is open.
-func readAgentFile(path string) ([]byte, error) {
+func ReadAgentFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -209,4 +209,25 @@ func orDecision(d, fallback string) string {
 func isHome(workspace string) bool {
 	home, err := os.UserHomeDir()
 	return err == nil && canonical(home) == canonical(workspace)
+}
+
+// RefreshAgents re-reads the workspace's definitions for a reload. Content
+// the load already trusted stays trusted on the same terms; anything else is
+// trusted only by a stored decision for exactly that content, or TrustEnv.
+func RefreshAgents(loaded WorkspaceTrust) WorkspaceTrust {
+	st := WorkspaceTrust{Workspace: loaded.Workspace}
+	readWorkspaceAgents(loaded.Workspace, &st)
+	switch {
+	case len(st.Agents) == 0:
+		st.AgentsReason = "none"
+	case st.AgentsSHA256 == loaded.AgentsSHA256:
+		st.AgentsTrusted, st.AgentsReason = loaded.AgentsTrusted, loaded.AgentsReason
+	case isHome(loaded.Workspace):
+		st.AgentsTrusted, st.AgentsReason = true, "home"
+	case loaded.AgentsReason == "refused":
+		st.AgentsReason = "refused"
+	default:
+		st.AgentsTrusted, st.AgentsReason = decideAgents(st, LoadOptions{})
+	}
+	return st
 }

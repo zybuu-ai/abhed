@@ -213,3 +213,42 @@ func TestAgentsOnlyRecordLeavesALaterFileNew(t *testing.T) {
 		t.Fatalf("a file added after a definitions-only grant: %+v", st)
 	}
 }
+
+// An untrusted workspace file cannot add agent directories, and may turn
+// definitions off.
+func TestUntrustedAgentsKeys(t *testing.T) {
+	_, ws := trustHome(t, "", `{"agents":{"dirs":["/tmp/theirs"]}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Agents.Dirs) != 0 || !ignored(cfg.Workspace, "agents.dirs") {
+		t.Fatalf("an untrusted file added agent directories: %+v", cfg.Agents)
+	}
+	writeConfig(t, ws, `{"agents":{"disabled":true}}`)
+	if cfg, _ = LoadWith(ws, LoadOptions{Quiet: true}); !cfg.Agents.Disabled {
+		t.Fatal("an untrusted file could not turn definitions off")
+	}
+}
+
+// A reload keeps trusted content trusted, and trusts changed content only by
+// a stored decision for it.
+func TestRefreshAgents(t *testing.T) {
+	_, ws := trustHome(t, "", "")
+	writeAgent(t, ws, "reviewer.md", reviewerDef)
+	cfg, _ := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+	if st := RefreshAgents(cfg.Workspace); !st.AgentsTrusted || st.AgentsReason != "flag" || len(st.AgentFiles()) != 1 {
+		t.Fatalf("unchanged content after a reload: %+v", st)
+	}
+	writeAgent(t, ws, "reviewer.md", reviewerDef+" Changed.")
+	st := RefreshAgents(cfg.Workspace)
+	if st.AgentsTrusted || st.AgentsReason != "new" {
+		t.Fatalf("content the flag never saw is trusted after a reload: %+v", st)
+	}
+	if err := GrantReviewed(ws, st.Reviewed()); err != nil {
+		t.Fatal(err)
+	}
+	if st = RefreshAgents(cfg.Workspace); !st.AgentsTrusted || st.AgentsReason != "stored" {
+		t.Fatalf("a stored grant for the new content: %+v", st)
+	}
+}

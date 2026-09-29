@@ -557,6 +557,8 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.hosts":          {nil, "names machines and keys the agent reaches"},
 	"skills.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":        {nil, "a skill is instructions to the agent"},
+	"agents.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
+	"agents.dirs":        {nil, "a definition is instructions and a model choice"},
 	"telemetry":          {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
 
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},

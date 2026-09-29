@@ -1399,6 +1399,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		// reindex, which needs the same Index the search tool is reading.
 		SkillRegistry: set.Skills,
 		SkillRoots:    toolset.SkillRoots(cfg),
+		Agents:        set.Agents,
 		Gateway:       set.Gateway,
 		Index:         set.Index,
 		IndexOptions:  toolset.IndexOptions(cfg),

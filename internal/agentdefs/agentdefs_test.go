@@ -1,0 +1,198 @@
+package agentdefs
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+)
+
+func writeDef(t *testing.T, dir, file, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, file)
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func def(name, extra string) string {
+	return fmt.Sprintf("---\nname: %s\ndescription: %s role\n%s---\nDo the %s work.\n", name, name, extra, name)
+}
+
+func errText(errs []error) string {
+	var b strings.Builder
+	for _, e := range errs {
+		b.WriteString(e.Error())
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// Files in the common agent-file format load unchanged: a comma tool string
+// with capitalised names, camelCase keys, model inherit, a cosmetic key.
+func TestCommonFormatLoads(t *testing.T) {
+	dir := t.TempDir()
+	writeDef(t, dir, "code-reviewer.md", "---\nname: code-reviewer\ndescription: Reviews a change for bugs\n"+
+		"tools: Read, Grep, Glob\ndisallowedTools: [Bash]\nmodel: inherit\nmaxTurns: 12\npermissionMode: plan\ncolor: blue\n---\nReview carefully.\n")
+	writeDef(t, dir, "lister.md", "---\ndescription: >\n  Lists files\n  when asked\ntools:\n  - glob\n  - \"mcp__docs__*\"\n---\nList.\n")
+	defs, errs := Load(Options{Dirs: []string{dir}})
+	if len(defs) != 2 {
+		t.Fatalf("want 2 definitions, got %d: %s", len(defs), errText(errs))
+	}
+	r := defs[0]
+	if r.Name != "code-reviewer" || !reflect.DeepEqual(r.Tools, []string{"Read", "Grep", "Glob"}) ||
+		!reflect.DeepEqual(r.DisallowedTools, []string{"Bash"}) || r.Model != "" || r.MaxTurns != 12 ||
+		r.PermissionMode != "plan" || r.Instruction != "Review carefully." || r.Source != agent.SourceOperator || r.SHA256 == "" {
+		t.Fatalf("code-reviewer: %+v", r)
+	}
+	if !strings.Contains(errText(errs), `"color" is ignored`) {
+		t.Fatalf("the cosmetic key was not reported: %s", errText(errs))
+	}
+	l := defs[1]
+	if l.Name != "lister" || l.Description != "Lists files when asked" || !reflect.DeepEqual(l.Tools, []string{"glob", "mcp__docs__*"}) {
+		t.Fatalf("lister: %+v", l)
+	}
+}
+
+// A file cannot take a built-in role's name; the built-in stays.
+func TestReservedNameRefused(t *testing.T) {
+	for _, name := range agent.ReservedNames {
+		_, _, err := Parse(name+".md", []byte(def(name, "tools: bash\n")), agent.SourceWorkspace, nil)
+		if err == nil || !strings.Contains(err.Error(), "built-in agent type") {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	ws := t.TempDir()
+	p := writeDef(t, ws, "explore.md", "---\ndescription: explore with a shell\ntools: bash\n---\nRun anything.\n")
+	defs, errs := Load(Options{Workspace: []config.AgentFile{{Path: p, Data: []byte("---\ndescription: explore with a shell\ntools: bash\n---\nRun anything.\n")}}})
+	if len(defs) != 0 || !strings.Contains(errText(errs), "cannot be redefined") {
+		t.Fatalf("a workspace explore.md loaded: %+v %s", defs, errText(errs))
+	}
+	all := agent.WithDefinitions(defs...)
+	if d, _ := all.Get("explore"); d.Source != agent.SourceBuiltin || reflect.DeepEqual(d.Tools, []string{"bash"}) {
+		t.Fatalf("the built-in explore was replaced: %+v", d)
+	}
+}
+
+// Keys that would concern authority, and a mode wider than default, refuse
+// the definition rather than load a looser agent than its author meant.
+func TestWideningKeyRefusesDefinition(t *testing.T) {
+	for _, extra := range []string{
+		"permissionMode: bypassPermissions\n",
+		"permission_mode: acceptEdits\n",
+		"hooks:\n  PreToolUse: x\n",
+		"mcpServers:\n  - gh\n",
+		"allowed-tools: bash\n",
+		"allowedTools: [bash]\n",
+		"permissions:\n  allow: [bash]\n",
+		"sandbox: none\n",
+	} {
+		_, _, err := Parse("x.md", []byte(def("x", extra)), agent.SourceOperator, nil)
+		if err == nil {
+			t.Fatalf("%q loaded", extra)
+		}
+	}
+}
+
+// Everything a definition must hold, and the shapes it must have.
+func TestDefinitionValidation(t *testing.T) {
+	long := strings.Repeat("a", MaxDescription+1)
+	for name, body := range map[string]string{
+		"no description": "---\nname: x\n---\nbody\n",
+		"long":           "---\nname: x\ndescription: " + long + "\n---\nbody\n",
+		"empty body":     "---\nname: x\ndescription: d\n---\n\n",
+		"big body":       "---\nname: x\ndescription: d\n---\n" + strings.Repeat("b", MaxBody+1),
+		"bad name":       "---\nname: Bad_Name\ndescription: d\n---\nbody\n",
+		"turns":          "---\nname: x\ndescription: d\nmax_turns: 101\n---\nbody\n",
+		"turns word":     "---\nname: x\ndescription: d\nmax_turns: many\n---\nbody\n",
+		"isolation":      "---\nname: x\ndescription: d\nisolation: container\n---\nbody\n",
+		"wildcard":       "---\nname: x\ndescription: d\ntools: \"*\"\n---\nbody\n",
+		"glob tool":      "---\nname: x\ndescription: d\ntools: read*\n---\nbody\n",
+		"twice":          "---\nname: x\ndescription: d\ntools: read\ntools: bash\n---\nbody\n",
+		"map tools":      "---\nname: x\ndescription: d\ntools:\n  read: yes\n---\nbody\n",
+		"no header":      "just a body\n",
+	} {
+		if _, _, err := Parse("x.md", []byte(body), agent.SourceOperator, nil); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
+	}
+	d, _, err := Parse("/defs/from-file.md", []byte("---\ndescription: d\n---\nbody\n"), agent.SourceOperator, nil)
+	if err != nil || d.Name != "from-file" {
+		t.Fatalf("the name defaults to the file's: %+v %v", d, err)
+	}
+}
+
+// A model is a configured provider name, never an endpoint; an unknown one
+// refuses the definition and names what is configured.
+func TestDefinitionModelIsAConfiguredName(t *testing.T) {
+	models := []string{"fast", "local"}
+	if d, _, err := Parse("x.md", []byte(def("x", "model: fast\n")), agent.SourceOperator, models); err != nil || d.Model != "fast" {
+		t.Fatalf("a configured model: %+v %v", d, err)
+	}
+	_, _, err := Parse("x.md", []byte(def("x", "model: sonnet\n")), agent.SourceOperator, models)
+	if err == nil || !strings.Contains(err.Error(), "available: fast, local") {
+		t.Fatalf("an alias that is not configured: %v", err)
+	}
+	for _, v := range []string{"http://evil.example/v1", "openai/gpt", "a b"} {
+		if _, _, err := Parse("x.md", []byte(def("x", "model: "+v+"\n")), agent.SourceOperator, append(models, v)); err == nil {
+			t.Fatalf("model %q loaded", v)
+		}
+	}
+}
+
+// Managed definitions win over the workspace's and the operator's, and a
+// shadowed file is named; the later operator directory wins over an earlier.
+func TestManagedAgentWins(t *testing.T) {
+	managed, ws, op1, op2 := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	writeDef(t, managed, "shared.md", def("shared", "tools: read\n"))
+	wsPath := writeDef(t, ws, "shared.md", def("shared", "tools: bash\n"))
+	writeDef(t, op1, "shared.md", def("shared", "tools: write\n"))
+	writeDef(t, op1, "later.md", def("later", "tools: read\n"))
+	writeDef(t, op2, "later.md", def("later", "tools: grep\n"))
+	wsData, _ := os.ReadFile(wsPath)
+	defs, errs := Load(Options{ManagedDir: managed, Dirs: []string{op1, op2},
+		Workspace: []config.AgentFile{{Path: wsPath, Data: wsData}}})
+	got := map[string]*agent.Definition{}
+	for _, d := range defs {
+		got[d.Name] = d
+	}
+	if s := got["shared"]; s == nil || s.Source != agent.SourceManaged || s.Tools[0] != "read" {
+		t.Fatalf("managed did not win: %+v", s)
+	}
+	if l := got["later"]; l == nil || l.Tools[0] != "grep" {
+		t.Fatalf("the later operator directory did not win: %+v", l)
+	}
+	msg := errText(errs)
+	if strings.Count(msg, "is shadowed by") != 3 || !strings.Contains(msg, wsPath) {
+		t.Fatalf("shadowed files not named: %s", msg)
+	}
+
+	// Disabled keeps the managed definitions only.
+	defs, _ = Load(Options{ManagedDir: managed, Dirs: []string{op1, op2}, Disabled: true,
+		Workspace: []config.AgentFile{{Path: wsPath, Data: wsData}}})
+	if len(defs) != 1 || defs[0].Source != agent.SourceManaged {
+		t.Fatalf("disabled loaded more than managed: %+v", defs)
+	}
+}
+
+// An operator's definition that is a link is refused, as a workspace's is.
+func TestOperatorLinkRefused(t *testing.T) {
+	dir, other := t.TempDir(), t.TempDir()
+	target := writeDef(t, other, "x.md", def("x", ""))
+	if err := os.Symlink(target, filepath.Join(dir, "x.md")); err != nil {
+		t.Fatal(err)
+	}
+	defs, errs := Load(Options{Dirs: []string{dir}})
+	if len(defs) != 0 || !strings.Contains(errText(errs), "not a regular file") {
+		t.Fatalf("a linked definition loaded: %+v %s", defs, errText(errs))
+	}
+}

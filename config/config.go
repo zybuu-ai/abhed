@@ -31,6 +31,7 @@ type Config struct {
 	Context     ContextConfig     `json:"context"`
 	RAG         RAGConfig         `json:"rag,omitempty"`
 	Skills      SkillsConfig      `json:"skills,omitempty"`
+	Agents      AgentsConfig      `json:"agents,omitempty"`
 	K8s         K8sConfig         `json:"k8s,omitempty"`
 	SSH         SSHConfig         `json:"ssh,omitempty"`
 	Limits      LimitsConfig      `json:"limits"`
@@ -353,6 +354,19 @@ type SkillsConfig struct {
 	// Defaults to ~/.abhed/skills when unset.
 	Dirs []string `json:"dirs,omitempty"`
 	// Disabled turns skills off entirely, including the default directory.
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// AgentsConfig points at directories of subagent definitions: markdown files
+// naming a role, its tools and model, with the role's instructions as the body.
+//
+// A workspace's own .abhed/agents loads only when the person trusted that
+// exact content; the organisation's /etc/abhed/agents always loads.
+type AgentsConfig struct {
+	// Dirs hold *.md definitions. Defaults to ~/.abhed/agents when unset. A
+	// later directory wins a name.
+	Dirs []string `json:"dirs,omitempty"`
+	// Disabled loads only the organisation's managed definitions.
 	Disabled bool `json:"disabled,omitempty"`
 }
 

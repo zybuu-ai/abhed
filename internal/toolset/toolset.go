@@ -43,9 +43,12 @@ const (
 	RAG
 	// Infra offers the Kubernetes and SSH tools when enabled.
 	Infra
+	// Agents loads subagent definitions beside the built-in roles: managed,
+	// the workspace's when trusted, and the operator's directories.
+	Agents
 
 	// All is what the CLI runs with.
-	All = MCP | Vetoes | ExtensionTools | Skills | WebSearch | Retrieval | RAG | Infra
+	All = MCP | Vetoes | ExtensionTools | Skills | WebSearch | Retrieval | RAG | Infra | Agents
 )
 
 // Options are what a surface decides; everything else comes from the configuration.
@@ -75,6 +78,9 @@ type Set struct {
 	Gateway      *mcp.Gateway
 	Extensions   *extension.Host
 	Index        *index.Index
+	// Agents are the subagent types a session built from this set offers:
+	// the built-in roles, plus the loaded definitions with the Agents part.
+	Agents *agent.Definitions
 }
 
 // Build assembles the tools for a workspace from cfg. Something configured
@@ -94,6 +100,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.TodoTool{},
 		),
 		Skills: skills.NewRegistry(),
+		Agents: agent.BuiltinDefinitions(),
 	}
 	if o.Parts&(Vetoes|ExtensionTools) != 0 {
 		s.Extensions = extension.NewHost(o.Warn)
@@ -139,6 +146,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		if s.Skills.Len() > 0 {
 			s.Registry.Add(SkillTool(s.Skills))
 		}
+	}
+	if o.Parts&Agents != 0 {
+		s.Agents = LoadAgents(cfg, cfg.Workspace, warn)
 	}
 	if o.Parts&WebSearch != 0 {
 		if t, err := WebSearchTool(cfg); err != nil {
