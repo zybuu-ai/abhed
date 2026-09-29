@@ -387,13 +387,24 @@ func NewMemStore() *MemStore {
 	}
 }
 
-// DeleteSession forgets a session's events. Subscribers are left alone: a live
-// stream that is cut mid-run should end because the run ended, not because the
-// rows vanished underneath it.
+// DeleteSession forgets a session's events, and its subagents', whose records
+// name it as their parent and hold its work. Subscribers are left alone: a
+// live stream that is cut mid-run should end because the run ended, not
+// because the rows vanished underneath it.
 func (m *MemStore) DeleteSession(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.events, sessionID)
+	gone := []string{sessionID}
+	for len(gone) > 0 {
+		id := gone[0]
+		gone = gone[1:]
+		delete(m.events, id)
+		for child, evs := range m.events {
+			if len(evs) > 0 && evs[0].ParentID == id {
+				gone = append(gone, child)
+			}
+		}
+	}
 	return nil
 }
 

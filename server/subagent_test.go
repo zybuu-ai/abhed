@@ -53,7 +53,7 @@ func scriptedModel(t *testing.T, parent, child [2]string) model.Adapter {
 		switch {
 		case last.Role == "user" && last.Content == childPrompt && child[0] != "":
 			call(child[0], child[1])
-		case last.Role == "user" && last.Content != childPrompt:
+		case last.Role == "user" && last.Content != childPrompt && parent[0] != "":
 			call(parent[0], parent[1])
 		default:
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
@@ -74,7 +74,9 @@ func delegatingServer(t *testing.T, child [2]string, st EventStore, adjust ...fu
 	return scriptedServer(t, delegate, child, st, nil, adjust...)
 }
 
-func scriptedServer(t *testing.T, parent, child [2]string, st EventStore, sk *skills.Registry, adjust ...func(*config.Config)) (*Server, string) {
+// scriptedServer serves sessions making one call each; opt, when set, adjusts
+// the server's options before it is built.
+func scriptedServer(t *testing.T, parent, child [2]string, st EventStore, opt func(*Options), adjust ...func(*config.Config)) (*Server, string) {
 	t.Helper()
 	ws, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -85,8 +87,12 @@ func scriptedServer(t *testing.T, parent, child [2]string, st EventStore, sk *sk
 	for _, f := range adjust {
 		f(&cfg)
 	}
-	return New(Options{Workspace: ws, Config: cfg, Adapter: scriptedModel(t, parent, child),
-		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}, tools.Bash{}), Store: st, SkillRegistry: sk}), ws
+	o := Options{Workspace: ws, Config: cfg, Adapter: scriptedModel(t, parent, child),
+		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}, tools.Bash{}), Store: st}
+	if opt != nil {
+		opt(&o)
+	}
+	return New(o), ws
 }
 
 // eventsUntil waits for an event of type want in the session's record.
@@ -222,7 +228,7 @@ func TestSubagentsOfTwoUsersAreKeptApart(t *testing.T) {
 		st.mu.Lock()
 		row, ok := st.rows[child]
 		st.mu.Unlock()
-		if !ok || row.User != user || row.ParentID != parents[user] || row.Model != subagentModel {
+		if !ok || row.User != user || row.ParentID != parents[user] || row.Model != "subagent" {
 			t.Fatalf("%s's subagent row: %+v (found %v)", user, row, ok)
 		}
 	}
@@ -271,7 +277,7 @@ func TestServerSkillRunsItsPipeline(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatal(errs)
 	}
-	s, _ := scriptedServer(t, [2]string{"skill", `{"name":"gather"}`}, [2]string{}, nil, reg)
+	s, _ := scriptedServer(t, [2]string{"skill", `{"name":"gather"}`}, [2]string{}, nil, func(o *Options) { o.SkillRegistry = reg })
 	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"gather it"}`))
 	evs := eventsUntil(t, s, id, agent.EvSessionEnded)
 	stage := payloadOf[map[string]any](t, evs, agent.EvPlanUpdated)
@@ -287,5 +293,41 @@ func TestServerSkillRunsItsPipeline(t *testing.T) {
 	}
 	if !viaStep {
 		t.Fatalf("the pipeline's step was not put through the session's loop: %v", typesOf(evs))
+	}
+}
+
+// Deleting a session deletes its subagents' records, which hold its work, by
+// the same path: marked in a durable store, forgotten in memory.
+func TestDeletingASessionDeletesItsSubagents(t *testing.T) {
+	s, _ := delegatingServer(t, [2]string{}, nil)
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"delegate it"}`))
+	evs := eventsUntil(t, s, id, agent.EvSessionEnded)
+	child := payloadOf[map[string]any](t, evs, agent.EvSubagentSpawned)["session"].(string)
+	if kids, _ := s.store.Events(child); len(kids) == 0 {
+		t.Fatal("precondition: the subagent has a record")
+	}
+	if w := call(t, s, "DELETE", "/v1/sessions/"+id, ""); w.Code != http.StatusNoContent {
+		t.Fatalf("delete %d %s", w.Code, w.Body)
+	}
+	if kids, _ := s.store.Events(child); len(kids) != 0 {
+		t.Fatalf("the deleted session's subagent record outlived it: %d events", len(kids))
+	}
+}
+
+// Subagents are left out of a list by the parent they name, not by a model
+// name: a session on a model called "subagent" is listed like any other.
+func TestListKeepsASessionOnAModelNamedSubagent(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	s, _ := delegatingServer(t, [2]string{}, st)
+	for id, parent := range map[string]string{"s-top": "", "s-kid": "s-top"} {
+		if err := st.CreateSession(context.Background(), store.SessionRecord{ID: id, Tenant: "default",
+			User: "anonymous", Model: "subagent", ParentID: parent, StartedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var listed []sessionSummary
+	_ = json.Unmarshal(call(t, s, "GET", "/v1/sessions", "").Body.Bytes(), &listed)
+	if len(listed) != 1 || listed[0].ID != "s-top" {
+		t.Fatalf("listed %+v, want the top-level session only", listed)
 	}
 }

@@ -1205,22 +1205,22 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 	return toolset.Subagents(registry, f, s.opts.Config.Limits.MaxParallelSubagents)
 }
 
-// subagentModel marks a subagent's session row, which the session list leaves
-// out: it is reached through its parent's record.
-const subagentModel = "subagent"
-
 // subagentStore is where a session's subagents record. With session rows it
-// writes each child's row as the parent owner's, in the parent's tenant, so a
-// child is served only to whoever may see its parent.
-func (s *Server) subagentStore(parentID string, spec StartSpec, mode string) agent.Store {
+// writes each child's row as the session owner's, in the session's tenant and
+// naming the session that spawned it, so a child is served only to whoever may
+// see its parent, is left out of lists, and is deleted with it.
+func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) agent.Store {
 	if s.sessions == nil {
 		return s.store
 	}
 	tenant, user, workspace := storeTenant(s.opts.Config, spec.Tenant), spec.User, s.opts.Workspace
-	return subSessions{EventStore: s.store, create: func(ctx context.Context, id, description string) error {
+	return subSessions{EventStore: s.store, create: func(ctx context.Context, id, parentID, description string) error {
+		if parentID == "" {
+			parentID = sessionID
+		}
 		return s.sessions.CreateSession(ctx, store.SessionRecord{
 			ID: id, Tenant: tenant, User: user, Workspace: workspace,
-			Model: subagentModel, Mode: mode, ParentID: parentID,
+			Model: "subagent", Mode: mode, ParentID: parentID,
 			Prompt: description, StartedAt: time.Now().UTC(),
 		})
 	}}
@@ -1229,11 +1229,13 @@ func (s *Server) subagentStore(parentID string, spec StartSpec, mode string) age
 // subSessions gives the subagent factory the parent's owner for each child row.
 type subSessions struct {
 	EventStore
-	create func(ctx context.Context, id, description string) error
+	create func(ctx context.Context, id, parentID, description string) error
 }
 
-func (c subSessions) CreateSubSession(ctx context.Context, id, description string) error {
-	return c.create(ctx, id, description)
+var _ agent.SessionCreator = subSessions{}
+
+func (c subSessions) CreateSubSession(ctx context.Context, id, parentID, description string) error {
+	return c.create(ctx, id, parentID, description)
 }
 
 // resumeSession continues a finished session from its record, on this node.
@@ -1631,7 +1633,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				// filter has to be here, or one person's list of prompts
 				// (which is a list of what they were working on, and often
 				// what they uploaded) is shown to everyone else in the tenant.
-				if !ownsSession(rec.Tenant, rec.User, tenant, user) || rec.Model == subagentModel {
+				if !ownsSession(rec.Tenant, rec.User, tenant, user) || rec.ParentID != "" {
 					continue
 				}
 				state, reason, prompt := "done", rec.TerminalReason, rec.Prompt
@@ -1701,6 +1703,11 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 	}
 	if s.sessions == nil {
 		return false
+	}
+	// Found by id where the store can: a list is bounded and leaves subagents out.
+	if g, ok := s.sessions.(sessionGetter); ok {
+		rec, err := g.GetSession(r.Context(), id)
+		return err == nil && ownsSession(rec.Tenant, rec.User, tenant, user)
 	}
 	records, err := s.sessions.ListSessions(r.Context(), 500)
 	if err != nil {

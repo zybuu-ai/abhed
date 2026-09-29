@@ -73,3 +73,25 @@ func TestSubagentSpendsTheSharedBudget(t *testing.T) {
 		t.Fatalf("the child ran past the budget: spent %d, %q", b.Spent(), summary)
 	}
 }
+
+// Forgetting a session in memory forgets its subagents' records with it, at
+// every depth, and leaves other sessions alone.
+func TestMemStoreDeleteTakesTheSubagents(t *testing.T) {
+	m := NewMemStore()
+	for _, e := range []Event{
+		{SessionID: "p", Seq: 1}, {SessionID: "c", ParentID: "p", Seq: 1},
+		{SessionID: "g", ParentID: "c", Seq: 1}, {SessionID: "other", Seq: 1},
+	} {
+		if err := m.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.DeleteSession("p"); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]int{"p": 0, "c": 0, "g": 0, "other": 1} {
+		if evs, _ := m.Events(id); len(evs) != want {
+			t.Fatalf("%s holds %d events, want %d", id, len(evs), want)
+		}
+	}
+}

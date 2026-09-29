@@ -41,6 +41,9 @@ func (d *durableMem) ListSessions(ctx context.Context, limit int) ([]store.Sessi
 	defer d.mu.Unlock()
 	out := make([]store.SessionRecord, 0, len(d.rows))
 	for id, r := range d.rows {
+		if r.ParentID != "" {
+			continue // as Postgres lists: subagents are reached through their parent
+		}
 		if d.ended[id] {
 			at := time.Now()
 			r.EndedAt = &at
@@ -48,6 +51,21 @@ func (d *durableMem) ListSessions(ctx context.Context, limit int) ([]store.Sessi
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// GetSession finds one row by id, subagents' included, as Postgres does.
+func (d *durableMem) GetSession(ctx context.Context, id string) (store.SessionRecord, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	r, ok := d.rows[id]
+	if !ok {
+		return r, store.ErrNotFound
+	}
+	if d.ended[id] {
+		at := time.Now()
+		r.EndedAt = &at
+	}
+	return r, nil
 }
 func (d *durableMem) Append(ev agent.Event) error {
 	if ev.Type == agent.EvSessionEnded {

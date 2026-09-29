@@ -199,11 +199,11 @@ type SubagentFactory struct {
 	Depth int
 }
 
-// sessionCreator is implemented by durable stores that need a session row
+// SessionCreator is implemented by durable stores that need a session row
 // before events can reference it. The memory store does not implement it, so
-// the local path is unaffected.
-type sessionCreator interface {
-	CreateSubSession(ctx context.Context, id, description string) error
+// the local path is unaffected. parentID is the session that spawned it.
+type SessionCreator interface {
+	CreateSubSession(ctx context.Context, id, parentID, description string) error
 }
 
 // MaxSummaryChars bounds what a subagent returns to its parent. The point of
@@ -235,8 +235,12 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	// A durable store requires the session row before any event references it.
 	// Without this a subagent's first event fails the foreign key and the whole
 	// delegation errors out — which only shows up once Postgres is configured.
-	if creator, ok := f.Store.(sessionCreator); ok {
-		if err := creator.CreateSubSession(ctx, sessionID, req.Description); err != nil {
+	if creator, ok := f.Store.(SessionCreator); ok {
+		parentSession := ""
+		if parent != nil && parent.rec != nil {
+			parentSession = parent.rec.sessionID
+		}
+		if err := creator.CreateSubSession(ctx, sessionID, parentSession, req.Description); err != nil {
 			return "", fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
