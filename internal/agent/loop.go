@@ -261,8 +261,14 @@ type Loop struct {
 	emptyTurns int
 
 	// todos is the agent's task list, recorded whenever it changes so a replay
-	// shows what the plan was believed to be at each point.
-	todos []Todo
+	// shows what the plan was believed to be at each point. Guarded because
+	// two todo calls in one turn run concurrently.
+	todos   []Todo
+	todosMu sync.Mutex
+
+	// prompt is the last message a person sent, which a skill's pipeline takes
+	// as its input; guarded by steerMu.
+	prompt string
 
 	// steer carries messages sent while the agent is working. Reading them at
 	// a turn boundary is what lets a user redirect a run instead of killing it.
@@ -353,17 +359,37 @@ func (l *Loop) deliverQueued() error {
 			return err
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
+		l.setPrompt(q.Text)
 	}
 	return nil
 }
 
+func (l *Loop) setPrompt(text string) {
+	l.steerMu.Lock()
+	l.prompt = text
+	l.steerMu.Unlock()
+}
+
+// Prompt is the last message a person sent this loop, or a subagent's task.
+func (l *Loop) Prompt() string {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return l.prompt
+}
+
 // Todos returns the current task list.
-func (l *Loop) Todos() []Todo { return l.todos }
+func (l *Loop) Todos() []Todo {
+	l.todosMu.Lock()
+	defer l.todosMu.Unlock()
+	return l.todos
+}
 
 // RecordTodos stores a new list and emits the event. It is exported so the
 // todo tool can report through the loop rather than carrying a recorder.
 func (l *Loop) RecordTodos(items []Todo, note string) {
+	l.todosMu.Lock()
 	l.todos = items
+	l.todosMu.Unlock()
 	// The list is loop state first and a record second: a store that cannot
 	// take this event will fail the next tool event, which does stop the run.
 	_, _ = l.Recorder.Record(EvTodoUpdated, ActorAgent, Trusted, TodoList{Items: items, Note: note})
@@ -455,6 +481,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
+	l.setPrompt(m.Text)
 	return l.run(ctx)
 }
 

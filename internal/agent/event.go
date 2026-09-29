@@ -72,6 +72,10 @@ const (
 	// EvSubagentAction copies a subagent's refused or asked-about call into the
 	// parent's record; see SubagentAction.
 	EvSubagentAction EventType = "subagent.action"
+	// EvSubagentAsk copies a subagent's call that is waiting on the approver
+	// into the parent's record, so the person asked sees it where they are
+	// watching; see SubagentAsk. Its answer follows as subagent.action.
+	EvSubagentAsk EventType = "subagent.ask"
 )
 
 type Actor string

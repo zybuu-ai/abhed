@@ -46,10 +46,11 @@ func (l *Loop) approverFor(ctx context.Context) Approver {
 // Steps runs one pipeline's tool steps on the loop whose skill call started it,
 // as that loop runs the model's calls: its policy, session, depth and record.
 type Steps struct {
-	loop *Loop
-	via  string
-	asks chan struct{}
-	auth sync.Mutex // this pipeline's steps are judged one at a time
+	loop    *Loop
+	via     string
+	asks    chan struct{}
+	adapter model.Adapter // the calling loop's model when the skill was called
+	auth    sync.Mutex    // this pipeline's steps are judged one at a time
 }
 
 // StepsFor returns the runner for a pipeline started by the tool call ctx
@@ -62,8 +63,20 @@ func StepsFor(ctx context.Context, via string) (*Steps, error) {
 	if p == nil || p.loop == nil {
 		return nil, ErrNoLoop
 	}
-	return &Steps{loop: p.loop, via: via, asks: p.asks}, nil
+	return &Steps{loop: p.loop, via: via, asks: p.asks, adapter: p.adapter}, nil
 }
+
+// Adapter is the model the calling loop runs on, which a switch may have changed.
+func (s *Steps) Adapter() model.Adapter {
+	if s.adapter != nil {
+		return s.adapter
+	}
+	return s.loop.Adapter
+}
+
+// Input is the request the calling loop is answering: a pipeline needs it, and
+// the model calls a skill by name without repeating the question.
+func (s *Steps) Input() string { return s.loop.Prompt() }
 
 // Run authorizes and runs one tool step. A refusal comes back as an error
 // result, recorded like the model's; an error means the step could not be judged.

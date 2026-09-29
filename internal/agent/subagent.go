@@ -266,7 +266,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		rec.Redact = parent.rec.redactor()
 	}
 	if parent != nil {
-		rec.tap = mirrorInto(parent, sessionID)
+		rec.tap = mirrorInto(parent, sessionID, req.Description)
 	}
 
 	profile := req.AgentType
@@ -317,6 +317,9 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	sub := NewLoop(adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
 	sub.depth = depth + 1
+	// The child spends from the parent's allowance turn by turn, so it stops
+	// when the session's budget runs out rather than after it.
+	sub.Budget = f.Budget
 	// Deliberately no Compactor: a subagent that needs compaction was given too
 	// large a task, and silently compacting hides that from the operator.
 
@@ -334,7 +337,6 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	reason, err := sub.Run(ctx, req.Prompt)
 	usage := sub.Usage()
-	f.Budget.Spend(usage.InputTokens + usage.OutputTokens)
 
 	if err != nil {
 		parent.record(EvSubagentReturn, ActorAgent, map[string]any{
@@ -462,16 +464,39 @@ type SubagentAction struct {
 	Scope        string `json:"scope,omitempty"`
 	Approver     string `json:"approver,omitempty"`
 	GrantedScope string `json:"granted_scope,omitempty"`
+	// RequestID is the child's action.requested event, which a subagent.ask
+	// for the same call names too.
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// SubagentAsk is a subagent's call put to the approver, copied into the
+// parent's record before the approver is asked. RequestID is the id an answer
+// names, as for the parent's own asks.
+type SubagentAsk struct {
+	Session   string          `json:"session"`
+	Subagent  string          `json:"subagent,omitempty"`
+	RequestID string          `json:"request_id"`
+	CallID    string          `json:"call_id"`
+	Tool      string          `json:"tool"`
+	Args      json.RawMessage `json:"args"`
+	Subject   string          `json:"subject,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Scope     string          `json:"scope,omitempty"`
+	Via       string          `json:"via,omitempty"`
 }
 
 // mirrorInto copies the child's settled calls that matter to an audit into
 // the parent's record as they happen.
-func mirrorInto(parent *parentLink, child string) func(Event) {
+func mirrorInto(parent *parentLink, child, description string) func(Event) {
 	var mu sync.Mutex
-	asked := map[string]ActionRequested{}
+	type request struct {
+		ActionRequested
+		id string
+	}
+	asked := map[string]request{}
 	return func(ev Event) {
 		switch ev.Type {
-		case EvSubagentSpawned, EvSubagentReturn, EvSubagentAction:
+		case EvSubagentSpawned, EvSubagentReturn, EvSubagentAction, EvSubagentAsk:
 			// A nested subagent's events are passed up, so the root record has them;
 			// the child's own spawn and return are written to the parent directly.
 			var own struct {
@@ -485,8 +510,17 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 			var a ActionRequested
 			if json.Unmarshal(ev.Payload, &a) == nil {
 				mu.Lock()
-				asked[a.CallID] = a
+				asked[a.CallID] = request{a, ev.ID}
 				mu.Unlock()
+				// Written before the approver is asked, so a console or editor
+				// watching the parent can show the request it is waiting on.
+				if a.RequiresApproval {
+					parent.record(EvSubagentAsk, ev.Actor, SubagentAsk{
+						Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
+						Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
+						Reason: a.Reason, Scope: a.Scope, Via: a.Via,
+					})
+				}
 			}
 		case EvActionApproved, EvActionDenied:
 			var d map[string]string
@@ -506,6 +540,7 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 				Session: child, CallID: a.CallID, Tool: a.Tool, Subject: policy.Subject(a.Tool, a.Args),
 				Decision: decision, Step: d["step"], Reason: d["reason"], By: d["by"],
 				Scope: d["scope"], Approver: d["approver"], GrantedScope: d["granted_scope"],
+				RequestID: a.id,
 			})
 		}
 	}
