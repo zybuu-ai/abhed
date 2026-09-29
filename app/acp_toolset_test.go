@@ -78,7 +78,7 @@ func TestACPSessionPlansAndDelegates(t *testing.T) {
 	cl.request(1, "initialize", map[string]any{"protocolVersion": 1})
 	created := cl.request(2, "session/new", map[string]any{"cwd": ws})
 	if created.Error != nil {
-		t.Skipf("no session here: %s", created.Error.Message)
+		t.Fatalf("session/new failed: %s", created.Error.Message)
 	}
 	var sess struct {
 		SessionID string `json:"sessionId"`

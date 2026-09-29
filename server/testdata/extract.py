@@ -29,6 +29,11 @@ sets = {
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){'],
+    # render() with the real approval card, for a subagent's ask.
+    'ask': ['function node(cls, text){','function md(text){','function lastStreamedBubble(){','function wordCount(s){',
+          'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
+          'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
+          'function shortPath(p){','function kv(k, v){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
     'state': ['function shownState(s){','function paintOpenPill(){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
@@ -59,7 +64,7 @@ for fn in sets[which]:
     name = re.match(r'(?:async function|function|const) (\w+)', fn).group(1)
     if name in seen: continue
     seen.add(name); out.append(grab(fn))
-if which == 'render':
+if which in ('render', 'ask'):
     i = src.index('function render(ev){'); j = src.index('function kv(k, v){', i)
     out.append(src[i:j])
 sys.stdout.write('\n'.join(out))

@@ -225,6 +225,7 @@ fresh('s18', true);
 render(write(1)); render(ev(2, 'action.approved', {call_id:'w1', step:'reviewer'}));
 render(ev(3, 'subagent.ask', {session:'child', subagent:'clean up', request_id:'cev7', call_id:'w1', tool:'bash', args:{command:'touch made.txt'}, reason:'ask rule'}));
 check('a subagent\'s ask is put to the person', open().length === 1 && open()[0].dataset.call === 'subagent-cev7');
+check('and says Always allow covers the whole session', open()[0].textContent.includes('whole session'));
 __posted.length = 0; open()[0].querySelector('.btns').firstChild.on.click(); await tick();
 check('its answer names the subagent\'s request', __posted.length === 1 && __posted[0].body.request_id === 'cev7' && __posted[0].body.approved === true);
 render(ev(4, 'subagent.action', {session:'child', call_id:'w1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev7'}));

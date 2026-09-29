@@ -137,9 +137,11 @@ type Options struct {
 	// configuration enables it: subagents (task and tasks, sharing this
 	// agent's policy, approver and budget), MCP servers, the tools extensions
 	// provide, skills and their pipelines, web search, retrieval, rag corpora,
-	// and the Kubernetes and SSH tools. Off, the agent has the built-in file,
-	// shell and todo tools only, so an embedder decides what else it reaches.
-	// A configuration file ConfigDir holds that is not trusted adds none of it.
+	// and the Kubernetes and SSH tools, and the built-in prompt carries the
+	// ABHED.md memory files. Off, the agent has the built-in file, shell and
+	// todo tools only and no memory files, so an embedder decides what else
+	// it reaches and reads. A configuration file ConfigDir holds that is not
+	// trusted adds none of it.
 	ConfiguredTools bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
@@ -301,8 +303,17 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec.Redact = red
 
 	system := opts.SystemPrompt
-	if system == "" {
+	switch {
+	case system != "":
+	case opts.ConfiguredTools:
 		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing)
+	default:
+		// No ABHED.md: an embedder running on repositories it does not own
+		// takes the workspace's instructions only by opting in.
+		system = agent.BuildSystemPrompt(agent.BuildOptions{
+			Profile: "main", Workspace: opts.Workspace,
+			Model: adapter.Profile().Name, ContextWindow: adapter.Profile().ContextWindow,
+		})
 	}
 	if opts.AppendSystem != "" {
 		system += "\n\n" + opts.AppendSystem

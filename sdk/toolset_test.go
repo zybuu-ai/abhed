@@ -7,7 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -91,6 +94,40 @@ func TestEmbeddedAgentPlansAndDelegates(t *testing.T) {
 		}
 		if has(evs, agent.EvSubagentSpawned) != full || has(evs, agent.EvSubagentReturn) != full {
 			t.Fatalf("configured=%v: subagent events %v", full, evs)
+		}
+	}
+}
+
+// The workspace's ABHED.md reaches an embedded agent's prompt only with
+// ConfiguredTools: an embedder running on repositories it does not own opts in.
+func TestEmbeddedAgentReadsMemoryFilesOnlyWhenConfigured(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const mark = "MEMORY-MARK-42"
+	for _, full := range []bool{false, true} {
+		ws := t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "ABHED.md"), []byte(mark+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var system atomic.Value
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			system.Store(string(body))
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		}))
+		a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, ConfiguredTools: full,
+			Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.Run(context.Background(), "hi"); err != nil {
+			t.Fatal(err)
+		}
+		a.Close()
+		srv.Close()
+		sent, _ := system.Load().(string)
+		if strings.Contains(sent, mark) != full {
+			t.Fatalf("configured=%v: ABHED.md in the prompt = %v", full, !full)
 		}
 	}
 }

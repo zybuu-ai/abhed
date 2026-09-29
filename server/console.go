@@ -1596,6 +1596,9 @@ function approval(p, rid){
   h.textContent = 'Approval required — ' + p.tool;
   card.appendChild(h);
   if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: p.reason}));
+  // A subagent's ask answers for the session: a scope allowed here covers the agent too.
+  if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
+    {className: 'scope-note', textContent: 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'}));
 
   const pre = document.createElement('pre');
   try{
@@ -1613,7 +1616,7 @@ function approval(p, rid){
   // scope narrow enough to be safe to remember.
   const always = p.scope
     ? Object.assign(document.createElement('button'),
-        {className:'no', textContent:'Always allow', title: p.scope})
+        {className:'no', textContent: p.subagent ? 'Always allow in this session' : 'Always allow', title: p.scope})
     : null;
   const buttons = always ? [yes, no, always] : [yes, no];
   const decide = (ok, scope) => async () => {

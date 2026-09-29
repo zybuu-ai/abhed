@@ -985,7 +985,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	}
 	c.Args, call.Args = canon, canon
 
-	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
+	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
 	if refused := l.secretsRefused(call); refused != "" {
@@ -1001,7 +1001,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision.Reason = "refused before approval: the call could not succeed"
 	}
 	if l.Monitor != nil && doomed == nil {
-		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
+		decision = l.reviewed(ctx, call, tools.MutatesCall(tool, call.Args), decision)
 	}
 
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
@@ -1365,7 +1365,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 			continue
 		}
 		tool, found := l.Tools.Get(call.Name)
-		if found && tool.Mutates() {
+		if found && tools.MutatesCall(tool, call.Args) {
 			mutating = append(mutating, i)
 			continue
 		}

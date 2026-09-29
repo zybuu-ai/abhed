@@ -100,7 +100,7 @@ func (s *Steps) Run(ctx context.Context, name string, args json.RawMessage, runF
 	// A mutating step runs apart from every other pipeline step on this loop;
 	// the turn's own read-only calls may still overlap it.
 	tool, _ := l.Tools.Get(name)
-	if tool != nil && tool.Mutates() {
+	if tool != nil && tools.MutatesCall(tool, call.Args) {
 		l.stepRun.Lock()
 		defer l.stepRun.Unlock()
 	} else {
