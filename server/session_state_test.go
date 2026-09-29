@@ -55,7 +55,7 @@ func TestSessionListNamesHowARunEnded(t *testing.T) {
 func TestSessionListNamesARecordedEnd(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	ended := time.Now()
 	for id, reason := range map[string]string{"s-drained": "shutdown", "s-late": "deadline", "s-stuck": "stalled", "s-old": ""} {
 		st.rows[id] = store.SessionRecord{ID: id, Tenant: "acme", User: "alice", StartedAt: ended, EndedAt: &ended, TerminalReason: reason}

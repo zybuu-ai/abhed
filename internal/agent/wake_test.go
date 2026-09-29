@@ -182,8 +182,8 @@ func TestWakeSkipped(t *testing.T) {
 			if _, err := r.l.Run(context.Background(), "go"); err != nil {
 				t.Fatal(err)
 			}
-			c.set(r, h)
 			waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
+			c.set(r, h)
 			calls := r.m.calls.Load()
 			r.m.release("one")
 			waitFor(t, "the notice", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 1 })

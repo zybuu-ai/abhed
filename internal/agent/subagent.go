@@ -54,6 +54,19 @@ func (b *Budget) Spent() int64 {
 	return b.tokens.Load()
 }
 
+// Carry starts the counters from what a session already spent before it was
+// continued here, so continuing a session elsewhere does not reset its
+// allowance. It only raises them.
+func (b *Budget) Carry(tokens int64, spawned int) {
+	if b == nil {
+		return
+	}
+	for cur := b.tokens.Load(); tokens > cur && !b.tokens.CompareAndSwap(cur, tokens); cur = b.tokens.Load() {
+	}
+	for cur := b.spawned.Load(); int32(spawned) > cur && !b.spawned.CompareAndSwap(cur, int32(spawned)); cur = b.spawned.Load() { //nolint:gosec // a spawn count
+	}
+}
+
 // TryReserveSubagent accounts for one spawn, or explains the refusal.
 func (b *Budget) TryReserveSubagent() error {
 	if b == nil {

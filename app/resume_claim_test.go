@@ -474,3 +474,34 @@ func mustEvents(t *testing.T, st agent.Store, id string) []agent.Event {
 	}
 	return evs
 }
+
+// /resume goes on from what the session spent, and queues what its
+// background children left undelivered.
+func TestCLIResumeCarriesBudgetAndNotices(t *testing.T) {
+	ms := agent.NewMemStore()
+	p := agent.NewRecorder(ms, "s-bg", "")
+	_, _ = p.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "go"})
+	_, _ = p.Record(agent.EvSubagentSpawned, agent.ActorAgent, agent.Trusted, map[string]any{"session": "c1", "task_id": "c1", "background": true})
+	_, _ = p.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted, TokensIn: 70, TokensOut: 5})
+	_, _ = p.Record(agent.EvSubagentReturn, agent.ActorAgent, agent.Trusted, map[string]any{"session": "c1", "task_id": "c1", "background": true,
+		"reason": "completed", "tokens_in": 20, "tokens_out": 5})
+	sess, err := tools.NewSession(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
+	st.fresh()
+	st.open = func(id string) *agent.Loop {
+		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
+		l.Budget = agent.NewBudget(0, 10, false)
+		st.loop, st.sessionID = l, id
+		return l
+	}
+	evs, _ := ms.Events("s-bg")
+	if err := rebuildFrom(st, "s-bg", evs); err != nil {
+		t.Fatal(err)
+	}
+	if st.loop.Budget.Spent() != 100 || st.loop.Background.Pending() != 1 {
+		t.Fatalf("spent %d, pending %d", st.loop.Budget.Spent(), st.loop.Background.Pending())
+	}
+}

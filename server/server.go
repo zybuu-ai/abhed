@@ -63,6 +63,15 @@ type SessionResumer interface {
 	ClaimResume(ctx context.Context, sessionID string) (bool, error)
 }
 
+// OrphanClaimer is implemented by stores that can take over a session a
+// crashed process left open: still open, and held by no live node. nodeID
+// is this node's, "" on a single server; openedBefore is when this process
+// started, for a single server, which may only take sessions left open
+// before it did. The claim is atomic, so two nodes cannot both take one.
+type OrphanClaimer interface {
+	ClaimOrphan(ctx context.Context, sessionID, nodeID string, stale time.Duration, openedBefore time.Time) (bool, error)
+}
+
 // SessionRouter is implemented by stores that can record which node holds a
 // session's turn in flight.
 //
@@ -245,6 +254,8 @@ type Server struct {
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
+	// started is when this process started serving, for orphan recovery.
+	started time.Time
 
 	// Throttles for the endpoints reachable before authentication succeeds.
 	signinLimiter  *limiter
@@ -373,6 +384,7 @@ func New(opts Options) *Server {
 		store:   tapped,
 		log:     opts.Logger,
 		running: make(map[string]*liveSession),
+		started: time.Now(),
 		// Ten sign-in attempts a minute is far beyond what a person typing a
 		// password needs, and far below what makes guessing viable.
 		signinLimiter:  newLimiter(10, time.Minute),
@@ -1321,6 +1333,15 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	// Exactly one continuer. A durable store arbitrates; without one there
 	// is only this process, and the live map is the arbiter.
 	claimer, durable := s.sessions.(SessionResumer)
+	// A session a crashed process left open is taken over and reconciled:
+	// its lost children and its run are given the ends they never recorded,
+	// which releases the row to be claimed as any finished session is.
+	if durable && claim && rec.EndedAt == nil && s.recoverOrphan(ctx, id, events) {
+		if events, err = s.store.Events(id); err != nil {
+			return nil, fmt.Errorf("read record: %w", err)
+		}
+		rec.EndedAt = &events[len(events)-1].CreatedAt
+	}
 	if durable && !claim && rec.EndedAt == nil {
 		return nil, errBusySession // running elsewhere: not opened here, even to view
 	}
@@ -1367,8 +1388,10 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		loop.CarryUsage(end)
 	}
 	// Results a background child left that the conversation never took,
-	// such as one that finished before a drain, arrive at the next boundary.
+	// such as one that finished before a drain, arrive at the next boundary;
+	// and the allowance goes on from what the session already spent.
 	loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
+	loop.Budget.Carry(agent.CarriedSpend(events))
 	live.Turns = rec.Turns
 	// Idle until the caller's prompt starts it: postMessage treats a running
 	// session as one to steer, and there is nothing running yet to steer.
@@ -1543,6 +1566,7 @@ func (s *Server) catchUp(live *liveSession, events []agent.Event) error {
 	live.Loop.SetHistory(msgs, end.Turns)
 	live.Loop.CarryUsage(end)
 	live.Loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
+	live.Loop.Budget.Carry(agent.CarriedSpend(events))
 	live.priorEnd = priorEnd(events, store.SessionRecord{})
 	live.mu.Lock()
 	live.Turns = max(live.Turns, end.Turns)
@@ -2264,6 +2288,25 @@ func (s *Server) onIdle(live *liveSession, ev agent.IdleEvent) {
 	}
 	live.mu.Unlock()
 	s.releaseNodeIfQuiet(live)
+}
+
+// recoverOrphan takes over a session left open by a process that went away,
+// when the store can say no live node holds it, and reconciles its record.
+func (s *Server) recoverOrphan(ctx context.Context, id string, events []agent.Event) bool {
+	oc, ok := s.sessions.(OrphanClaimer)
+	if !ok || !agent.Orphaned(events) {
+		return false
+	}
+	claimed, err := oc.ClaimOrphan(ctx, id, s.opts.NodeID, nodeStale, s.started)
+	if err != nil || !claimed {
+		return false
+	}
+	if err := agent.Reconcile(s.store, id, events); err != nil {
+		s.log.Error("could not reconcile an orphaned session", "session", id, "error", err)
+		return false
+	}
+	s.log.Warn("recovered a session a crashed process left open", "session", id)
+	return true
 }
 
 // canWake says whether this server may start a wake run for the session now.

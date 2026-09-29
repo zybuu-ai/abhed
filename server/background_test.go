@@ -176,7 +176,7 @@ func TestServerChildOutlivesRunAndStreamStaysOpen(t *testing.T) {
 	req, _ := http.NewRequest("GET", srv.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("X-Abhed-Tenant", "acme")
 	req.Header.Set("X-Abhed-User", "alice")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed below, after the reader goroutine is done with it
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestDeleteCancelsBackgroundBeforeRows(t *testing.T) {
 // A drain gives children the drain budget, then ends them as shutdown and
 // records the closing end, so another node may claim the session.
 func TestDrainEndsBackgroundAsShutdown(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	b := newBGServer(t, st, "one")
 	b.s.opts.DrainTimeout = 200 * time.Millisecond
 	id := b.start("bg:one", false)
@@ -433,7 +433,7 @@ func TestHeartbeatWhileOnlyChildrenRun(t *testing.T) {
 
 // The row stays open while children run: another node's claim fails.
 func TestRowStaysOpenWhileChildrenRun(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	b := newBGServer(t, st, "one")
 	id := b.start("bg:one", false)
 	<-b.ended
@@ -452,7 +452,7 @@ func policyAsk() policy.Result { return policy.Result{Decision: policy.Ask, Reas
 // A result recorded as returned but never delivered, as when a drain ends a
 // child, reaches the conversation when another server continues the session.
 func TestPendingNoticeRestoredOnServerResume(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	a := newBGServer(t, st, "one")
 	a.s.opts.DrainTimeout = 50 * time.Millisecond
 	id := a.start("bg:one", false)
@@ -469,5 +469,66 @@ func TestPendingNoticeRestoredOnServerResume(t *testing.T) {
 	n := payloadsOf(b.events(id), agent.EvSubagentNotice)[0]
 	if n["delivery"] != "boundary" || n["reason"] != string(agent.TermShutdown) {
 		t.Fatalf("notice: %v", n)
+	}
+}
+
+// A session a crashed process left open (children running, row never
+// ended) is taken over by the next message to it: its lost child is
+// reconciled, the result owed arrives, and the conversation goes on.
+func TestOrphanReconciledOnClaim(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one")
+	id := a.start("bg:one", false)
+	<-a.ended // a's process now "crashes": its children never end, its row stays open
+	if st.ended[id] {
+		t.Fatal("precondition: the row is open")
+	}
+	time.Sleep(10 * time.Millisecond)
+	b := newBGServer(t, st)
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"still there?"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("continue: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "the notice", func() bool { return countType(b.events(id), agent.EvSubagentNotice) == 1 })
+	var lost, recovered bool
+	for _, r := range payloadsOf(b.events(id), agent.EvSubagentReturn) {
+		lost = lost || r["reason"] == string(agent.TermLost)
+	}
+	for _, e := range payloadsOf(b.events(id), agent.EvSessionEnded) {
+		recovered = recovered || e["recovered"] == true
+	}
+	if !lost || !recovered {
+		t.Fatalf("lost %v, recovered %v", lost, recovered)
+	}
+	a.ad.release("one")
+}
+
+// A session whose record is still being written since this server started
+// is not an orphan: it is running elsewhere.
+func TestLiveSessionIsNotAnOrphan(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServer(t, st)
+	a := newBGServer(t, st, "one")
+	id := a.start("bg:one", false)
+	<-a.ended
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("a session active since this server started was taken over: %d", rec.Code)
+	}
+	a.ad.release("one")
+}
+
+// Continuing a session elsewhere does not reset its allowance.
+func TestBudgetCarriedOnResume(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st)
+	id := a.start("hello", false)
+	<-a.ended
+	want, _ := agent.CarriedSpend(a.events(id))
+	b := newBGServer(t, st)
+	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := live.Loop.Budget.Spent(); got != want || want == 0 {
+		t.Fatalf("carried %d, want %d", got, want)
 	}
 }

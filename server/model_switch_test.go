@@ -78,7 +78,7 @@ func switchServer(t *testing.T, adjust ...func(*config.Config)) (*Server, *durab
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: def,
 		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}), Store: st})
 	return s, st, a, b
