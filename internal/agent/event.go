@@ -80,6 +80,11 @@ const (
 	// conversation, recorded before it is applied; see Notice. Fork rebuilds
 	// it as a task_status call and its result.
 	EvSubagentNotice EventType = "subagent.notice"
+	// EvSessionWoken marks a run no person prompted, started for background
+	// results; see SessionWoken. It carries no message.
+	EvSessionWoken EventType = "session.woken"
+	// EvWakeSet records a change of the session's wake mode; see WakeSet.
+	EvWakeSet EventType = "session.wake_set"
 )
 
 type Actor string

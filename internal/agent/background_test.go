@@ -21,11 +21,13 @@ import (
 type bgModel struct {
 	mu     sync.Mutex
 	gates  map[string]chan struct{} // a child's prompt → its gate
-	starts int                       // background starts the parent asks for on "go"
+	starts int                      // background starts the parent asks for on "go"
 	calls  atomic.Int32
 	// parentAnswers counts the parent's plain answers.
 	parentAnswers atomic.Int32
 	saw           []string // task_status results the parent saw
+	// workOnNotice makes the parent answer a result with more work.
+	workOnNotice bool
 }
 
 func newBGModel(children ...string) *bgModel {
@@ -68,9 +70,18 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 	case last.Role == model.RoleTool && strings.HasPrefix(last.ToolCallID, "bgn_"):
 		m.mu.Lock()
 		m.saw = append(m.saw, last.Content)
+		more := m.workOnNotice
 		m.mu.Unlock()
-		ch <- model.Chunk{Type: model.ChunkText, Text: "noted"}
+		if more {
+			c := model.ToolCall{ID: "r" + newID(), Name: "read", Args: json.RawMessage(`{"path":"nothing.txt"}`)}
+			ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+		} else {
+			ch <- model.Chunk{Type: model.ChunkText, Text: "noted"}
+		}
 	default:
+		if last.Role == model.RoleUser && last.Content == "slow" {
+			time.Sleep(200 * time.Millisecond) // a turn long enough for a result to land in it
+		}
 		m.parentAnswers.Add(1)
 		ch <- model.Chunk{Type: model.ChunkText, Text: "parent done"}
 	}

@@ -233,6 +233,12 @@ type Loop struct {
 	// conversation, so a notice delivered while the session is idle lands in
 	// the record and the messages in the same order.
 	runMu sync.Mutex
+	// wakeCap ends a wake run at this many turns; wakeDelivery names how its
+	// first boundary delivers, auto or caller. Both are set only in RunWoken.
+	wakeCap      int
+	wakeDelivery string
+	// beforeUnlock, in tests, runs as a run lets go of the conversation.
+	beforeUnlock func()
 
 	messages []model.Message
 	usage    Usage
@@ -512,12 +518,31 @@ func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
 	return l.run(ctx)
 }
 
-// unlockRun ends a run's hold on the conversation.
+// unlockRun ends a run's hold on the conversation. A result that arrived
+// after the run last looked, or a closing end now due, is taken by an idle
+// delivery rather than left for a message that may never come.
 func (l *Loop) unlockRun() {
+	if l.beforeUnlock != nil {
+		l.beforeUnlock()
+	}
 	l.runMu.Unlock()
+	if b := l.Background; b != nil {
+		b.mu.Lock()
+		due := len(b.notices) > 0 || b.owed
+		b.mu.Unlock()
+		if due {
+			b.kick()
+		}
+	}
 }
 
 func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
+	// This run sees every result delivered while the session was idle.
+	if b := l.Background; b != nil {
+		b.mu.Lock()
+		b.unacted = 0
+		b.mu.Unlock()
+	}
 	for {
 		if ctx.Err() != nil {
 			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
@@ -528,6 +553,10 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		if l.turns >= l.Config.MaxTurns {
 			return l.finish(TermMaxTurns), nil
 		}
+		// A wake run is short: the session goes on, and so do its children.
+		if l.wakeCap > 0 && l.turns >= l.wakeCap {
+			return l.finish(TermWakeLimit), nil
+		}
 		// At the turn boundary, not mid-turn: cutting a turn short would leave
 		// a tool result the model never sees.
 		if l.Budget.Exhausted() {
@@ -535,7 +564,11 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		}
 		// Background results first, then steering, each in arrival order,
 		// and never between a turn's calls and their results.
-		if err := l.deliverNotices("boundary", ""); err != nil {
+		delivery, wake := "boundary", ""
+		if l.wakeDelivery != "" {
+			delivery, wake, l.wakeDelivery = "wake", l.wakeDelivery, ""
+		}
+		if err := l.deliverNotices(delivery, wake); err != nil {
 			return TermError, err
 		}
 		// Steering is applied before the turn is counted, so a redirection
@@ -1243,7 +1276,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	l.Background.onRunEnd(reason)
 	l.usage.Turns = l.turns
 	ctxTokens, window := l.contextSize()
-	l.record(EvSessionEnded, ActorSystem, SessionEnded{
+	end := SessionEnded{
 		Reason:        reason,
 		Turns:         l.turns,
 		TokensIn:      l.usage.InputTokens,
@@ -1253,7 +1286,9 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
 		Background:    l.Background.Live(),
-	})
+	}
+	l.record(EvSessionEnded, ActorSystem, end)
+	l.Background.noteEnd(end)
 	return reason
 }
 

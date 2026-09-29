@@ -137,6 +137,71 @@ type Background struct {
 	notices  []Notice
 	closed   bool
 	signal   chan struct{}
+	hooks    BackgroundHooks
+
+	// unacted counts notices delivered while idle that no run has seen.
+	unacted int
+	// wakes are when automatic wake runs started, for the hourly limit.
+	wakes []time.Time
+	// waking is set while a wake run is being started for pending notices.
+	waking bool
+	// armed is set while an idle delivery is scheduled.
+	armed bool
+	// lastReason is how the last run ended; lastEnd is what it recorded, and
+	// owed says a closing end is due once background work is over.
+	lastReason TerminalReason
+	lastEnd    SessionEnded
+	owed       bool
+}
+
+// BackgroundHooks are how a surface takes part in idle delivery.
+type BackgroundHooks struct {
+	// CanWake says whether this surface can host a wake run now, and why not.
+	CanWake func() (bool, string)
+	// Wake starts a wake run for the notices of taskIDs, on its own
+	// goroutine; it reports whether one was started.
+	Wake func(taskIDs []string) bool
+	// Idle is told of notices delivered while no run was live.
+	Idle func(IdleEvent)
+}
+
+// IdleEvent is what an idle delivery did.
+type IdleEvent struct {
+	Notices []Notice
+	// Settled is set when background work finished and the closing end was recorded.
+	Settled bool
+}
+
+// ErrNothingToWake refuses a wake with no result waiting to be acted on.
+var ErrNothingToWake = errors.New("nothing to wake for: no background result is waiting")
+
+// SetHooks connects a surface.
+func (b *Background) SetHooks(h BackgroundHooks) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.hooks = h
+	b.mu.Unlock()
+}
+
+// SetMode changes the wake mode for what comes next. Children already
+// running keep the mode they started under: joining them now would block a
+// run that is not live.
+func (b *Background) SetMode(m WakeMode) {
+	b.mu.Lock()
+	b.policy.Wake = m
+	b.mu.Unlock()
+}
+
+// Unacted is how many results were delivered while idle and not yet seen by a run.
+func (b *Background) Unacted() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.unacted
 }
 
 // bgTask is one background child.
@@ -399,11 +464,17 @@ func waitDone(ts []*bgTask) {
 
 // Close ends the session's background work: no child starts after it, every
 // running one is cancelled with reason, and it waits a bounded time for them.
+// A closing end owed by the last run is recorded; the results not yet
+// delivered stay in the record, where PendingNotices finds them.
 func (b *Background) Close(reason TerminalReason) {
 	if b == nil {
 		return
 	}
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
 	b.closed = true
 	var hit []*bgTask
 	for _, t := range b.tasks {
@@ -414,14 +485,260 @@ func (b *Background) Close(reason TerminalReason) {
 	b.mu.Unlock()
 	b.cancel(StopCause{reason})
 	waitDone(hit)
+	if b.loop == nil {
+		return
+	}
+	b.loop.runMu.Lock()
+	b.mu.Lock()
+	b.notices, b.waking = nil, false
+	b.mu.Unlock()
+	b.settleIfDue()
+	b.loop.runMu.Unlock()
 }
 
-// push takes a finished child's notice for the next delivery.
+// push takes a finished child's notice for the next delivery: at a run's
+// boundary if one is live, or while idle after the settle window.
 func (b *Background) push(n Notice) {
 	b.mu.Lock()
 	b.notices = append(b.notices, n)
 	b.mu.Unlock()
 	b.poke()
+	b.kick()
+}
+
+func (b *Background) settle() time.Duration {
+	if b.policy.Settle <= 0 {
+		return 2 * time.Second
+	}
+	return b.policy.Settle
+}
+
+// kick schedules an idle delivery, once, after the settle window, so results
+// arriving together are delivered together.
+func (b *Background) kick() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.armed || b.closed {
+		return
+	}
+	b.armed = true
+	time.AfterFunc(b.settle(), b.deliverIdle)
+}
+
+// deliverIdle delivers what is pending while no run is live. It waits for a
+// run that is live to end: that run takes what arrives at its boundaries,
+// and whatever arrived after its last look is delivered here.
+func (b *Background) deliverIdle() {
+	b.mu.Lock()
+	b.armed = false
+	closed := b.closed
+	b.mu.Unlock()
+	l := b.loop
+	if closed || l == nil {
+		return
+	}
+	l.runMu.Lock()
+	b.mu.Lock()
+	pending, waking := len(b.notices), b.waking
+	var ids []string
+	for _, n := range b.notices {
+		ids = append(ids, n.TaskID)
+	}
+	b.mu.Unlock()
+	if pending == 0 || waking {
+		settled := b.settleIfDue()
+		l.runMu.Unlock()
+		if settled {
+			b.idle(IdleEvent{Settled: true})
+		}
+		return
+	}
+	wake := "notify"
+	if b.Mode() == WakeAuto {
+		if ok, why := b.canWake(); !ok {
+			wake = "skipped:" + why
+		} else {
+			b.mu.Lock()
+			b.waking = true
+			start := b.hooks.Wake
+			b.mu.Unlock()
+			l.runMu.Unlock()
+			if start != nil && start(ids) {
+				return
+			}
+			// The surface could not start it after all: deliver as notify.
+			b.mu.Lock()
+			b.waking = false
+			b.mu.Unlock()
+			l.runMu.Lock()
+			wake = "skipped:host"
+		}
+	}
+	before := b.Pending()
+	delivered := b.peekNotices()
+	if err := l.deliverNotices("idle", wake); err != nil {
+		// The next run ends at once; the record still has each return.
+		l.noteRecordErr(err)
+		l.runMu.Unlock()
+		return
+	}
+	b.mu.Lock()
+	b.unacted += before
+	b.mu.Unlock()
+	settled := b.settleIfDue()
+	l.runMu.Unlock()
+	for i := range delivered {
+		delivered[i].Delivery, delivered[i].Wake = "idle", wake
+	}
+	b.idle(IdleEvent{Notices: delivered, Settled: settled})
+}
+
+func (b *Background) peekNotices() []Notice {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]Notice(nil), b.notices...)
+}
+
+func (b *Background) idle(ev IdleEvent) {
+	b.mu.Lock()
+	h := b.hooks.Idle
+	b.mu.Unlock()
+	if h != nil {
+		h(ev)
+	}
+}
+
+// canWake says whether a wake run may start now, and names why not. The
+// caller holds runMu, so no run is live.
+func (b *Background) canWake() (bool, string) {
+	l := b.loop
+	b.mu.Lock()
+	last, can := b.lastReason, b.hooks.CanWake
+	most := b.policy.MaxWakesPerHour
+	recent := b.recentWakesLocked()
+	b.mu.Unlock()
+	switch {
+	case last != TermCompleted && last != TermWakeLimit:
+		return false, "last_run_" + orNone(string(last))
+	case l.Budget.Exhausted():
+		return false, "budget"
+	case l.turns >= l.Config.MaxTurns:
+		return false, "max_turns"
+	case recent >= most:
+		return false, "wake_limit"
+	case can == nil:
+		return false, "host"
+	}
+	return can()
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+func (b *Background) recentWakesLocked() int {
+	cut := b.policy.now().Add(-time.Hour)
+	n := 0
+	for _, w := range b.wakes {
+		if w.After(cut) {
+			n++
+		}
+	}
+	return n
+}
+
+// noteEnd keeps how a run ended, for the wake rules and the closing end.
+// The caller holds runMu.
+func (b *Background) noteEnd(end SessionEnded) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.lastReason, b.lastEnd, b.owed = end.Reason, end, end.Background > 0
+	b.mu.Unlock()
+}
+
+// settleIfDue records the closing end once the last run's background work
+// is over: no child running, no notice waiting, no wake starting. The
+// caller holds runMu.
+func (b *Background) settleIfDue() bool {
+	b.mu.Lock()
+	due := b.owed && b.liveLocked() == 0 && len(b.notices) == 0 && !b.waking
+	end := b.lastEnd
+	if due {
+		b.owed = false
+	}
+	b.mu.Unlock()
+	if !due {
+		return false
+	}
+	end.Background, end.Settled = 0, true
+	b.loop.record(EvSessionEnded, ActorSystem, end)
+	return true
+}
+
+// Wake is what started a wake run.
+type Wake struct {
+	// By is policy, for the session's own wake mode, or caller, for an
+	// explicit wake by the surface.
+	By      string
+	TaskIDs []string
+}
+
+// WakeSet is the payload of session.wake_set.
+type WakeSet struct {
+	Wake    WakeMode `json:"wake"`
+	By      string   `json:"by"`
+	Ceiling WakeMode `json:"ceiling,omitempty"`
+}
+
+// SessionWoken is the payload of session.woken.
+type SessionWoken struct {
+	By            string   `json:"by"`
+	WakeMode      WakeMode `json:"wake_mode"`
+	TaskIDs       []string `json:"task_ids,omitempty"`
+	WakesLastHour int      `json:"wakes_last_hour"`
+}
+
+// RunWoken runs a turn no person prompted, for background results: it
+// records session.woken, delivers what is pending at its first boundary and
+// stops at the wake's turn cap as wake_limit. It has no authority a prompted
+// run lacks: the same policy, approver and scopes.
+func (l *Loop) RunWoken(ctx context.Context, w Wake) (TerminalReason, error) {
+	l.runMu.Lock()
+	defer l.unlockRun()
+	b := l.Background
+	if b == nil {
+		return "", ErrNothingToWake
+	}
+	b.mu.Lock()
+	b.waking = false
+	if len(b.notices) == 0 && b.unacted == 0 {
+		b.mu.Unlock()
+		return "", ErrNothingToWake
+	}
+	if w.By == "policy" {
+		b.wakes = append(b.wakes, b.policy.now())
+	}
+	woken := SessionWoken{By: w.By, WakeMode: b.policy.Wake, TaskIDs: w.TaskIDs, WakesLastHour: b.recentWakesLocked()}
+	most := b.policy.WakeMaxTurns
+	b.mu.Unlock()
+	if _, err := l.Recorder.Record(EvSessionWoken, ActorSystem, Trusted, woken); err != nil {
+		return TermError, err
+	}
+	if most <= 0 {
+		most = 8
+	}
+	l.wakeCap = min(l.Config.MaxTurns, l.turns+most)
+	l.wakeDelivery = "auto"
+	if w.By != "policy" {
+		l.wakeDelivery = "caller"
+	}
+	defer func() { l.wakeCap, l.wakeDelivery = 0, "" }()
+	return l.run(ctx)
 }
 
 // Pending is how many notices wait for delivery.
