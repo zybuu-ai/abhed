@@ -214,7 +214,7 @@ func TestManagedAgentWins(t *testing.T) {
 func TestRefusedManagedNameStaysReserved(t *testing.T) {
 	managed, ws, op := t.TempDir(), t.TempDir(), t.TempDir()
 	writeDef(t, managed, "sec.md", def("sec", "model: corp\n")) // corp is not offered here
-	writeDef(t, managed, "stem.md", "no header at all")           // claims its file name
+	writeDef(t, managed, "stem.md", "no header at all")         // claims its file name
 	wsPath := writeDef(t, ws, "sec.md", def("sec", ""))
 	wsData, _ := os.ReadFile(wsPath)
 	writeDef(t, op, "sec.md", def("sec", ""))
