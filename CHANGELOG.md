@@ -37,6 +37,11 @@ All notable changes to Abhed are recorded here. The format follows
   `Options.Redact` withholds every payload instead. A missing store still
   means no secrets.
 
+### Fixed
+
+- `abhed resolve` could close its session before it printed the agent's last
+  messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading

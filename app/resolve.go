@@ -35,6 +35,10 @@ var newResolveRunner = func(ctx context.Context, opts abhed.Options) (forge.Runn
 	return func(ctx context.Context, _ string, prompt string) error {
 		defer a.Close()
 		_, err := a.Run(ctx, prompt)
+		// The run's messages are printed before Close stops their delivery.
+		flushed, cancel := context.WithTimeout(context.Background(), flushWait)
+		_ = a.Flush(flushed)
+		cancel()
 		return err
 	}, nil
 }
