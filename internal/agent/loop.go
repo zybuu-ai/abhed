@@ -50,6 +50,17 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 
+type callIDKey struct{}
+
+// CallIDOf reports the model's id for the call an Approver is asked about, the
+// call_id its action.requested carries.
+func CallIDOf(ctx context.Context) string { id, _ := ctx.Value(callIDKey{}).(string); return id }
+
+// WithCallID names the call an Approver is asked about.
+func WithCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callIDKey{}, id)
+}
+
 // Who settled a call, as action.approved and action.denied record it in "by".
 const (
 	ByPolicy   = "policy"   // a policy rule or the mode decided, and no one was asked
@@ -952,7 +963,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 
 	case policy.Ask:
 		var actx context.Context
-		actx, answer = ExpectAnswer(WithRequestID(ctx, asked.ID))
+		actx, answer = ExpectAnswer(WithCallID(WithRequestID(ctx, asked.ID), call.ID))
 		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is

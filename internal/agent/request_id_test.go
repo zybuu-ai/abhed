@@ -10,10 +10,11 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
-type requestIDs struct{ seen []string }
+type requestIDs struct{ seen, calls []string }
 
 func (r *requestIDs) Approve(ctx context.Context, _ string, _ json.RawMessage, _ policy.Result) (bool, error) {
 	r.seen = append(r.seen, RequestIDOf(ctx))
+	r.calls = append(r.calls, CallIDOf(ctx))
 	return true, nil
 }
 
@@ -34,6 +35,10 @@ func TestApproverIsToldAUniqueRequestIDPerAsk(t *testing.T) {
 	}
 	if len(ids.seen) != 2 || ids.seen[0] == "" || ids.seen[0] == ids.seen[1] {
 		t.Fatalf("request ids = %q, want two distinct", ids.seen)
+	}
+	// The call id is told too, so an approver can name the call its events name.
+	if len(ids.calls) != 2 || ids.calls[0] != "call_0" || ids.calls[1] != "call_0" {
+		t.Fatalf("call ids = %q, want the model's call_0 twice", ids.calls)
 	}
 	evs, _ := store.Events("sess1")
 	var asked []string

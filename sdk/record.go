@@ -118,6 +118,14 @@ func NoteAnswer(ctx context.Context, a Answer) {
 	agent.NoteAnswer(ctx, agent.Answer{By: a.By, Scope: a.Scope, Reason: a.Reason, Approver: a.Approver, Granted: a.Granted})
 }
 
+// CallIDOf reports, inside Options.Approve, the id of the call being asked
+// about: the call_id of its action.requested event and of the tool call events.
+func CallIDOf(ctx context.Context) string { return agent.CallIDOf(ctx) }
+
+// RequestIDOf reports, inside Options.Approve, the id of the action.requested
+// event being asked about. Unlike a call id it is unique within a session.
+func RequestIDOf(ctx context.Context) string { return agent.RequestIDOf(ctx) }
+
 // Rule is one permission rule as written in configuration, and ParseRule
 // reads one, so a tool that validates a policy file applies the same parser
 // the harness does.
