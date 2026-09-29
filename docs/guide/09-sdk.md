@@ -97,6 +97,12 @@ One difference is deliberate: **an agent with no `Approve` function refuses
 anything needing approval** rather than assuming yes. A service with nobody to
 ask should be stricter than a terminal with somebody watching, not looser.
 
+Stored secrets are redacted as from the command line. A value in the
+operator's store (`~/.abhed/secrets.json`, or `ABHED_SECRETS_FILE`) becomes
+`[secret:NAME]` before it reaches the record, `OnEvent`, the model, the
+arguments passed to `Approve`, or the text `Run` and `RunJSON` return. The SDK
+has no option to turn this off. See [Secrets](04-permissions.md#secrets).
+
 Edits that would break a file's syntax are refused, as from the command line;
 see [Tools](05-tools.md#an-edit-that-would-break-the-file).
 

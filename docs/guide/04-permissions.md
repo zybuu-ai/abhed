@@ -405,3 +405,9 @@ that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes
 `[redacted: output withheld]`.
 
+Every way of running a session redacts with the same store: the terminal, the
+server and the console, `abhed acp`, `abhed rpc`, `abhed resolve`, `abhed eval`,
+subagents and the [SDK](09-sdk.md). There is no setting that turns it off. In
+1.2.1 and earlier the SDK, and so `acp`, `rpc` and `resolve`, did not redact;
+see the changelog.
+

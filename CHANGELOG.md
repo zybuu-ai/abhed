@@ -6,6 +6,30 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Sessions started through the SDK did not redact stored secrets. In 1.2.1
+  and earlier, `sdk.New` built its recorder with no redactor, so a value from
+  the secrets store (`abhed secret`) that appeared in a tool's output, or in
+  a call the model made, was kept as it was. This affected every session run
+  on the SDK: embedded agents, `abhed acp`, `abhed rpc` and `abhed resolve`.
+  The value could appear in:
+  - the event record (`Events`, `ExportHTML`, the `rpc` export);
+  - `OnEvent`, the `rpc` event lines and the `session/update` stream sent to
+    an ACP editor;
+  - ACP permission requests and the arguments passed to `Approve`;
+  - the answer from `Run`, `RunJSON` and `rpc`, and the agent's messages
+    that `resolve` prints;
+  - the tool output sent back to the model.
+
+  The terminal, the server and console, and `abhed eval` were not affected.
+  SDK sessions now redact with the same store as the CLI, and there is no
+  option to turn it off. A server built with no `Options.Redact`, or a
+  subagent factory with no `Redact`, now redacts too: the server uses the
+  secrets store, and the subagent redacts as its parent does. The `abhed`
+  binary always set both, so this only affects a program that embeds these
+  packages.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading
