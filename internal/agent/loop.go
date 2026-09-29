@@ -980,6 +980,15 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
 	}
 
+	// Where a credential goes is part of what is approved, so it is in the
+	// reason every approver shows and in the record.
+	var target string
+	if tg, ok := tool.(tools.Targeter); ok {
+		if target = tg.Target(call.Args); target != "" {
+			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
+		}
+	}
+
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
 		Tool:             call.Name,
@@ -989,6 +998,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		Scope:            decision.Offer(),
 		Via:              viaOf(ctx),
 		Dropped:          dropped,
+		Target:           target,
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError

@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -209,6 +210,20 @@ func stored(vals map[string]string) func(string) (string, error) {
 	}
 }
 
+// tlsCluster starts a fake cluster over TLS with its own self-signed
+// certificate, and returns the CA file that verifies it.
+func tlsCluster(t *testing.T, h http.Handler) (*httptest.Server, string) {
+	t.Helper()
+	srv := httptest.NewTLSServer(h)
+	t.Cleanup(srv.Close)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(ca, block, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return srv, ca
+}
+
 func newSession(t *testing.T) *tools.Session {
 	t.Helper()
 	s, err := tools.NewSession(t.TempDir())
@@ -223,7 +238,7 @@ func newSession(t *testing.T) *tools.Session {
 // the user had a working token in hand and no way to hand it over.
 func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 	var authSeen []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv, ca := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		authSeen = append(authSeen, auth)
 		if auth != "Bearer fresh-token" {
@@ -238,10 +253,10 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 		}
 		fmt.Fprint(w, `{"kind":"NodeList","items":[{"metadata":{"name":"n1"}}]}`)
 	}))
-	defer srv.Close()
 
 	// The kubeconfig holds a stale token, as in the real report.
-	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL),
+		Clusters: []LoginCluster{{Name: "prod", Server: srv.URL, CAFile: ca}}})
 	sess := newSession(t)
 
 	// Before login: the stale token fails with a message naming the fix.
@@ -256,7 +271,7 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 
 	// Login with a working token, named in the store.
 	login := LoginTool{M: mgr, Secret: stored(map[string]string{"OCP_TOKEN": "fresh-token"})}
-	loginArgs, _ := json.Marshal(map[string]string{"server": srv.URL, "token_secret": "OCP_TOKEN"})
+	loginArgs, _ := json.Marshal(map[string]string{"cluster": "prod", "token_secret": "OCP_TOKEN"})
 	lres := login.Run(context.Background(), sess, loginArgs)
 	if lres.IsError {
 		t.Fatalf("login failed: %s", lres.Content)
@@ -281,15 +296,14 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 // Storing a credential that does not work would turn one clear failure into a
 // confusing one on the next call.
 func TestLoginVerifiesBeforeStoring(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv, ca := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"kind":"Status","message":"Unauthorized"}`)
 	}))
-	defer srv.Close()
 
-	mgr := NewManager(Config{})
+	mgr := NewManager(Config{Clusters: []LoginCluster{{Name: "c", Server: srv.URL, CAFile: ca}}})
 	sess := newSession(t)
-	args, _ := json.Marshal(map[string]string{"server": srv.URL, "token_secret": "BAD"})
+	args, _ := json.Marshal(map[string]string{"cluster": "c", "token_secret": "BAD"})
 	res := LoginTool{M: mgr, Secret: stored(map[string]string{"BAD": "bad"})}.Run(context.Background(), sess, args)
 	if !res.IsError {
 		t.Fatal("a token that does not work was accepted")
@@ -308,14 +322,15 @@ func TestLoginRequiresApproval(t *testing.T) {
 }
 
 func TestLoginValidatesArguments(t *testing.T) {
-	mgr := NewManager(Config{})
+	mgr := NewManager(Config{Clusters: []LoginCluster{
+		{Name: "x", Server: "https://x.invalid"}, {Name: "plain", Server: "http://x.invalid"}}})
 	login := LoginTool{M: mgr, Secret: stored(map[string]string{"TOK": "y"})}
 	for _, a := range []map[string]string{
-		{"token_secret": "TOK"},                               // no server
-		{"server": "https://x"},                               // no secret
-		{"server": "ftp://x", "token_secret": "TOK"},          // wrong scheme
-		{"server": "https://x", "token_secret": "sha256~abc"}, // a token, not a name
-		{"server": "https://x", "token_secret": "MISSING"},    // not stored
+		{"token_secret": "TOK"},                        // no cluster
+		{"cluster": "x"},                               // no secret
+		{"cluster": "plain", "token_secret": "TOK"},    // not https
+		{"cluster": "x", "token_secret": "sha256~abc"}, // a token, not a name
+		{"cluster": "x", "token_secret": "MISSING"},    // not stored
 	} {
 		raw, _ := json.Marshal(a)
 		if res := login.Run(context.Background(), newSession(t), raw); !res.IsError {

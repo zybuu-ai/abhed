@@ -185,6 +185,9 @@ type ActionRequested struct {
 	RawArgs string `json:"raw_args,omitempty"`
 	// Dropped names keys a fixed tool does not take, left out of Args before policy.
 	Dropped []string `json:"dropped_args,omitempty"`
+	// Target is where the call sends what it carries, from the operator's
+	// config, such as the server a login's token goes to.
+	Target string `json:"target,omitempty"`
 }
 
 type Observation struct {

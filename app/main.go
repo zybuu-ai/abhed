@@ -380,7 +380,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	for _, t := range buildRAG(cfg) {
 		registry.Add(t)
 	}
-	for _, t := range buildInfra(cfg, vault) {
+	for _, t := range buildInfra(cfg, vault, os.Stderr) {
 		registry.Add(t)
 	}
 	skillReg, skillListing := buildSkills(cfg)
@@ -1422,6 +1422,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 		} else {
 			fmt.Printf("            context %s · namespace %s\n", c.Name, c.Namespace)
 		}
+		for _, lc := range loginClusters(cfg) {
+			label := lc.Name + " → " + lc.Server
+			if lc.InsecureSkipTLSVerify {
+				label += " ⚠ no TLS verification"
+			}
+			fmt.Printf("k8s login   %s\n", label)
+		}
 	}
 	// Note the absence of a len(Hosts) > 0 condition. A deployment that enables
 	// SSH with no hosts listed still gets the tools, because ssh_connect is how
@@ -1464,7 +1471,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	for _, t := range buildRAG(cfg) {
 		registry.Add(t)
 	}
-	for _, t := range buildInfra(cfg, vault) {
+	for _, t := range buildInfra(cfg, vault, os.Stderr) {
 		registry.Add(t)
 	}
 	skillReg, skillListing := buildSkills(cfg)
@@ -2656,7 +2663,7 @@ func buildSkills(cfg config.Config) (*skills.Registry, string) {
 // default and both report why they are unavailable rather than silently
 // registering nothing. A credential obtained at run time is read from vault by
 // name and held by the session that obtained it, never by these tools.
-func buildInfra(cfg config.Config, vault *secrets.Store) []tools.Tool {
+func buildInfra(cfg config.Config, vault *secrets.Store, warn io.Writer) []tools.Tool {
 	var out []tools.Tool
 
 	if cfg.K8s.Enabled {
@@ -2666,8 +2673,16 @@ func buildInfra(cfg config.Config, vault *secrets.Store) []tools.Tool {
 			Namespace:  cfg.K8s.Namespace,
 			// From the environment only: a token in a config file sits in a
 			// directory the agent itself can read.
-			Token: os.Getenv("ABHED_K8S_TOKEN"),
+			Token:    os.Getenv("ABHED_K8S_TOKEN"),
+			Clusters: loginClusters(cfg),
+			CAFile:   cfg.K8s.CAFile,
 		})
+		for _, c := range cfg.K8s.Clusters {
+			if c.InsecureSkipTLSVerify {
+				fmt.Fprintf(warn, "abhed: k8s cluster %q skips TLS verification — "+
+					"a token k8s_login sends to it can be read by anyone in the path\n", c.Name)
+			}
+		}
 		out = append(out, k8s.GetTool{M: mgr},
 			k8s.LoginTool{M: mgr, Secret: vault.Value, SecretNames: vaultNames(vault)})
 		if cfg.K8s.AllowWrites {
@@ -2697,6 +2712,16 @@ func buildInfra(cfg config.Config, vault *secrets.Store) []tools.Tool {
 			fmt.Fprintf(os.Stderr, "abhed: ssh: %v\n", err)
 		}
 		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg, Secret: vault.Value})
+	}
+	return out
+}
+
+// loginClusters are the clusters k8s_login may send a stored token to.
+func loginClusters(cfg config.Config) []k8s.LoginCluster {
+	out := make([]k8s.LoginCluster, 0, len(cfg.K8s.Clusters))
+	for _, c := range cfg.K8s.Clusters {
+		out = append(out, k8s.LoginCluster{Name: c.Name, Server: c.Server,
+			CAFile: c.CAFile, InsecureSkipTLSVerify: c.InsecureSkipTLSVerify})
 	}
 	return out
 }
@@ -2859,6 +2884,13 @@ func (a *App) doctor(workspace string) int {
 		} else {
 			fmt.Printf("            context %s\n            namespace %s · server %s\n",
 				c.Name, c.Namespace, c.Server)
+		}
+		for _, lc := range loginClusters(cfg) {
+			warn := ""
+			if lc.InsecureSkipTLSVerify {
+				warn = "  ⚠ TLS verification disabled"
+			}
+			fmt.Printf("k8s login   %s → %s%s\n", lc.Name, lc.Server, warn)
 		}
 	}
 	if cfg.SSH.Enabled && len(cfg.SSH.Hosts) > 0 {

@@ -369,6 +369,21 @@ type K8sConfig struct {
 	// AllowWrites exposes k8s_apply. Even then every call needs approval;
 	// this decides whether the capability exists at all.
 	AllowWrites bool `json:"allow_writes,omitempty"`
+	// Clusters are the only servers k8s_login may send a stored token to. The
+	// model names one; it never supplies a URL.
+	Clusters []K8sClusterConfig `json:"clusters,omitempty"`
+	// CAFile adds a CA bundle to the system roots for a cluster that names none.
+	CAFile string `json:"ca_file,omitempty"`
+}
+
+// K8sClusterConfig declares one cluster k8s_login may reach.
+type K8sClusterConfig struct {
+	Name   string `json:"name"`
+	Server string `json:"server"`
+	CAFile string `json:"ca_file,omitempty"`
+	// InsecureSkipTLSVerify sends the token without checking who answers.
+	// For lab clusters only; reported at startup and by doctor.
+	InsecureSkipTLSVerify bool `json:"insecure_skip_tls_verify,omitempty"`
 }
 
 // SSHConfig declares reachable machines. The agent can only name a host from

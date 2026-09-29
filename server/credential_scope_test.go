@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,7 +56,7 @@ func TestClusterLoginDoesNotCrossSessions(t *testing.T) {
 	const aliceToken = "tok-alice-7e21-cluster"
 	var mu sync.Mutex
 	var seen []string
-	cluster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cluster := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		seen = append(seen, r.URL.Path+" "+r.Header.Get("Authorization"))
 		mu.Unlock()
@@ -89,7 +90,12 @@ users:
 `, cluster.URL)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mgr := k8s.NewManager(k8s.Config{Kubeconfig: kubeconfig})
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cluster.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr := k8s.NewManager(k8s.Config{Kubeconfig: kubeconfig, CAFile: ca,
+		Clusters: []k8s.LoginCluster{{Name: "prod", Server: cluster.URL}}})
 	secret := func(name string) (string, error) {
 		if name == "ALICE_TOKEN" {
 			return aliceToken, nil
@@ -98,7 +104,7 @@ users:
 	}
 	reg := tools.NewRegistry(k8s.GetTool{M: mgr}, k8s.LoginTool{M: mgr, Secret: secret})
 
-	loginArgs, _ := json.Marshal(map[string]string{"server": cluster.URL, "token_secret": "ALICE_TOKEN"})
+	loginArgs, _ := json.Marshal(map[string]string{"cluster": "prod", "token_secret": "ALICE_TOKEN"})
 	adapter := promptAdapter{calls: map[string]model.ToolCall{
 		"log in": {ID: "l1", Name: "k8s_login", Args: loginArgs},
 		"nodes":  {ID: "g1", Name: "k8s_get", Args: json.RawMessage(`{"resource":"nodes"}`)},

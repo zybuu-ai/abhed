@@ -63,6 +63,11 @@ type Config struct {
 	// read.
 	Token   string
 	Timeout time.Duration
+
+	// Clusters are the only servers k8s_login may send a stored token to.
+	Clusters []LoginCluster
+	// CAFile adds a CA bundle for a login cluster that names none of its own.
+	CAFile string
 }
 
 // ---------------------------------------------------------------- kubeconfig
@@ -256,24 +261,38 @@ func Open(cfg Config) (*Cluster, error) {
 	return c, nil
 }
 
-// OpenDirect connects with an explicit server and token, ignoring any
-// kubeconfig.
-//
-// This is the path for a credential supplied at runtime — `oc login` in a chat
-// message. There may be no context for that cluster at all, and requiring one
-// would mean the user editing a file before the agent could act.
-//
-// TLS verification is skipped here, deliberately and narrowly: a cluster named
-// this way has no CA bundle in any kubeconfig to verify against, and the
-// alternative is refusing to connect at all. It is the same trust the user
-// already extended by running `oc login --insecure-skip-tls-verify` or by
-// having the CA in their system store.
-func OpenDirect(server, token, namespace string) (*Cluster, error) {
-	if server == "" {
-		return nil, fmt.Errorf("server URL is required")
+// LoginCluster is a cluster the operator lets k8s_login reach. The model
+// names one; it never supplies the server a stored token is sent to.
+type LoginCluster struct {
+	Name   string
+	Server string
+	// CAFile verifies the server; empty uses Config.CAFile, then the system roots.
+	CAFile string
+	// InsecureSkipTLSVerify turns verification off. Operator config only, and
+	// warned about, since the token then goes to whoever answers.
+	InsecureSkipTLSVerify bool
+}
+
+// Verification says how the server's certificate is checked, for the person
+// approving a login and the line reporting it.
+func (lc LoginCluster) Verification(defaultCA string) string {
+	switch {
+	case lc.InsecureSkipTLSVerify:
+		return "TLS NOT VERIFIED (insecure_skip_tls_verify)"
+	case lc.CAFile != "":
+		return "TLS verified against " + lc.CAFile
+	case defaultCA != "":
+		return "TLS verified against " + defaultCA
 	}
-	if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
-		return nil, fmt.Errorf("server must be an http(s) URL, got %q", server)
+	return "TLS verified against the system roots"
+}
+
+// OpenLogin connects to an operator-declared cluster with a token obtained at
+// run time. TLS is verified against the system roots plus the cluster's CA
+// bundle, or k8s.ca_file; only the cluster's own insecure flag turns it off.
+func OpenLogin(lc LoginCluster, defaultCA, token, namespace string) (*Cluster, error) {
+	if !strings.HasPrefix(lc.Server, "https://") {
+		return nil, fmt.Errorf("cluster %s: server must be an https:// URL, got %q", lc.Name, lc.Server)
 	}
 	if token == "" {
 		return nil, fmt.Errorf("token is required")
@@ -281,13 +300,33 @@ func OpenDirect(server, token, namespace string) (*Cluster, error) {
 	if namespace == "" {
 		namespace = "default"
 	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: lc.InsecureSkipTLSVerify} // #nosec G402 -- the operator's opt-out for one cluster, warned at startup
+	if !lc.InsecureSkipTLSVerify {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		ca := lc.CAFile
+		if ca == "" {
+			ca = defaultCA
+		}
+		if ca != "" {
+			pem, err := os.ReadFile(ca) // #nosec G304 -- the CA bundle the operator configured
+			if err != nil {
+				return nil, fmt.Errorf("cluster %s: read CA: %w", lc.Name, err)
+			}
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("cluster %s: CA bundle %s contains no usable certificate", lc.Name, ca)
+			}
+		}
+		tlsCfg.RootCAs = pool
+	}
 	return &Cluster{
-		Name: server, Server: strings.TrimSuffix(server, "/"),
-		Namespace: namespace, bearer: token, insecure: true,
+		Name: lc.Name, Server: strings.TrimSuffix(lc.Server, "/"),
+		Namespace: namespace, bearer: token, insecure: lc.InsecureSkipTLSVerify,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
 	}, nil
 }
