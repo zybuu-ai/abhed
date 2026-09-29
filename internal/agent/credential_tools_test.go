@@ -318,6 +318,7 @@ func TestNearMissCredentialToolArgsAreWithheld(t *testing.T) {
 		{calls: []model.ToolCall{raw("c9", "k8s_login_tool", `{"token":"LEAK-suffixed"}`)}},
 		{calls: []model.ToolCall{raw("c10", "tools/ssh_connect", `{"password":"LEAK-path"}`)}},
 		{calls: []model.ToolCall{raw("c16", "functions.K8s_Logn", `{"token":"LEAK-namespaced-typo"}`)}},
+		{calls: []model.ToolCall{raw("c17", "use_k8s_login_now", `{"token":"LEAK-contained"}`)}},
 		// Other tools' names, near but not credential tools, keep their arguments.
 		{calls: []model.ToolCall{raw("c11", "k8s_get", `{"note":"kept-k8s_get"}`)}},
 		{calls: []model.ToolCall{raw("c12", "k8s_logs", `{"note":"kept-k8s_logs"}`)}},
@@ -347,8 +348,8 @@ func TestNearMissCredentialToolArgsAreWithheld(t *testing.T) {
 			kept[k] = kept[k] || strings.Contains(string(e.Payload), "kept-"+k)
 		}
 	}
-	if withheld != 10 {
-		t.Errorf("%d calls marked withheld, want 10", withheld)
+	if withheld != 11 {
+		t.Errorf("%d calls marked withheld, want 11", withheld)
 	}
 	for k, ok := range kept {
 		if !ok {

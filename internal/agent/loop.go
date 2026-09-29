@@ -1135,9 +1135,9 @@ const WithheldLookalikeArgs = "[withheld: unknown credential tool]"
 var credentialTools = []string{"k8s_login", "ssh_connect"}
 
 // nearCredentialTool reports whether an unknown tool name is, ignoring case,
-// within one edit of a tool whose arguments name secrets, starts or ends with
-// its name, or is one of those once a namespace such as functions., mcp__x__
-// or a path is taken off.
+// within one edit of a tool whose arguments name secrets or contains its name,
+// either as written or once a namespace such as functions., mcp__x__ or a
+// path is taken off.
 func (l *Loop) nearCredentialTool(name string) bool {
 	names := append([]string(nil), credentialTools...)
 	if l.Tools != nil {
@@ -1153,7 +1153,7 @@ func (l *Loop) nearCredentialTool(name string) bool {
 	for _, got := range []string{folded, unqualified(folded)} {
 		for _, n := range names {
 			n = tools.FoldKey(n)
-			if strings.HasPrefix(got, n) || strings.HasSuffix(got, n) || withinOneEdit([]rune(got), []rune(n)) {
+			if strings.Contains(got, n) || withinOneEdit([]rune(got), []rune(n)) {
 				return true
 			}
 		}

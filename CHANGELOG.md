@@ -170,8 +170,8 @@ All notable changes to Abhed are recorded here. The format follows
     paste credentials into `abhed secret set`, not into the chat. The one
     exception is a call to an unknown tool whose name is, ignoring case,
     within one letter of `k8s_login`, `ssh_connect` or another tool that
-    takes secrets, begins or ends with one of those names, or is one of them
-    behind a namespace such as `functions.`, `default_api.` or `mcp__x__`:
+    takes secrets, contains one of those names, or is within one letter of
+    one behind a namespace such as `functions.`, `default_api.` or `mcp__x__`:
     its arguments are recorded as `[withheld: unknown credential tool]`.
   - `k8s_login` takes `cluster`, a name from the new `k8s.clusters`, instead
     of `server`. A URL or an undeclared name is refused before the secret is
