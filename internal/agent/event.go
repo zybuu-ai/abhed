@@ -179,6 +179,10 @@ type ActionRequested struct {
 	// the way the CLI's [A] option does — without it, default mode re-prompts
 	// for every mutating call with no way to stop.
 	Scope string `json:"scope,omitempty"`
+	// RawArgs holds arguments refused as malformed, as sent; Args is then {}.
+	RawArgs string `json:"raw_args,omitempty"`
+	// Dropped names keys a fixed tool does not take, left out of Args before policy.
+	Dropped []string `json:"dropped_args,omitempty"`
 }
 
 type Observation struct {

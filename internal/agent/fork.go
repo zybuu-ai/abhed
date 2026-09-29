@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
 
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Fork reconstructs a conversation from a session's events, up to and including
@@ -73,7 +75,7 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			if json.Unmarshal(ev.Payload, &a) != nil {
 				continue
 			}
-			call := model.ToolCall{ID: a.CallID, Name: a.Tool, Args: a.Args}
+			call := model.ToolCall{ID: a.CallID, Name: a.Tool, Args: objectOr(a.Args)}
 			pendingCalls[a.CallID] = call
 			// Attach to the assistant turn that produced it, creating one when
 			// the model called a tool without saying anything first.
@@ -231,4 +233,13 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 // forking a session.
 func (l *Loop) Restore(msgs []model.Message) {
 	l.messages = msgs
+}
+
+// objectOr returns args when they are one JSON object, and {} otherwise:
+// providers refuse a replayed call whose arguments are anything else.
+func objectOr(args json.RawMessage) json.RawMessage {
+	if _, err := tools.DecodeArgs(args); err != nil || len(bytes.TrimSpace(args)) == 0 || bytes.Equal(bytes.TrimSpace(args), []byte("null")) {
+		return json.RawMessage(`{}`)
+	}
+	return args
 }

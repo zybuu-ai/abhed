@@ -14,11 +14,13 @@ func FuzzPolicySubjectIsExecutedSubject(f *testing.F) {
 	for _, s := range []string{
 		`{"command":"echo safe","Command":"touch /tmp/pwned","description":"x"}`,
 		`{"command":"a","command":"b","description":"x"}`,
-		`{"command":"a","description":"x"}`,
+		`{"command":"a","\u0063ommand":"b","description":"x"}`,
+		`{"\u0063ommand":"a","description":"x"}`,
 		`{"COMMAND":"rm -rf /","description":"x"}`,
 		`{"path":"/ok","Path":"/etc/passwd","content":"x"}`,
 		`{"command":"ls","path":"/etc/passwd","content":"x"}`,
-		`{"path":"/a","content":"x","old_string":"a","new_string":"b"}`,
+		`{"pa\u0074h":"/a","content":"x","old_string":"a","new_string":"b"}`,
+		`{"\u212A":"a","path":"/a","content":"x"}`,
 		`{"path":"/a","offset":1,"PATH":"/b"}`,
 		`{"hoſt":"a"}`,
 		`{"command":"a"}{"command":"b"}`,
@@ -29,7 +31,7 @@ func FuzzPolicySubjectIsExecutedSubject(f *testing.F) {
 	reg := []tools.Tool{tools.Bash{}, tools.Write{}, tools.Edit{}, tools.Read{}}
 	f.Fuzz(func(t *testing.T, raw string) {
 		for _, tool := range reg {
-			canon, err := tools.CanonicalArgs(tool, json.RawMessage(raw))
+			canon, _, err := tools.CanonicalArgs(tool, json.RawMessage(raw))
 			if err != nil {
 				continue
 			}

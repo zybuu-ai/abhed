@@ -905,8 +905,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}, ""
 	}
 
-	canon, err := tools.CanonicalArgs(tool, call.Args)
+	canon, dropped, err := tools.CanonicalArgs(tool, call.Args)
 	if err != nil {
+		c.Args = json.RawMessage(`{}`)
 		return l.refuseArgs(call, err)
 	}
 	c.Args, call.Args = canon, canon
@@ -937,6 +938,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
 		Scope:            decision.Offer(),
+		Dropped:          dropped,
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -1032,11 +1034,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 }
 
 // refuseArgs records a call whose arguments could not be read one way only.
-// The record keeps them as a string, so no reader decodes them differently.
+// Args is {} and the arguments sent are kept as text, so no reader decodes them.
 func (l *Loop) refuseArgs(call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
-	raw, _ := json.Marshal(string(call.Args))
 	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
-		CallID: call.ID, Tool: call.Name, Args: raw, Reason: why.Error(),
+		CallID: call.ID, Tool: call.Name, Args: json.RawMessage(`{}`), RawArgs: string(call.Args), Reason: why.Error(),
 	}); err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 	}

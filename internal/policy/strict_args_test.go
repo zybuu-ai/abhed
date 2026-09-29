@@ -17,7 +17,8 @@ func TestAmbiguousArgumentsAreDeniedInEveryMode(t *testing.T) {
 			{"bash", `{"command":"echo safe","Command":"touch /tmp/pwned"}`},
 			{"bash", `{"command":"echo safe","command":"rm -rf /"}`},
 			{"delete", `{"path":"/ws/a","Path":"/etc/passwd"}`},
-			{"write", `{"path":"/ws/a","path":"/etc/passwd"}`},
+			{"write", `{"path":"/ws/a","p\u0061th":"/etc/passwd"}`},
+			{"write", `{"path":"/ws/a","\u0050ath":"/etc/passwd"}`},
 			{"bash", `{"command":"echo safe"} {"command":"rm -rf /"}`},
 		} {
 			if d := e.Evaluate(c.tool, true, json.RawMessage(c.raw)); d.Decision != Deny || d.Step != "args" {
@@ -36,7 +37,8 @@ func TestSubjectMatchesKeysAsAToolStructDoes(t *testing.T) {
 	for _, c := range []struct{ tool, raw string }{
 		{"bash", `{"COMMAND":"rm -rf /"}`},
 		{"read", `{"PATH":"/etc/shadow"}`},
-		{"read", `{"Path":"/etc/shadow"}`},
+		{"read", `{"\u0050ath":"/etc/shadow"}`},
+		{"read", `{"p\u0041th":"/etc/shadow"}`},
 	} {
 		if d := e.Evaluate(c.tool, true, json.RawMessage(c.raw)); d.Decision != Deny || d.Step != "deny" {
 			t.Errorf("%s: %s at %s", c.raw, d.Decision, d.Step)

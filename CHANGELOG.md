@@ -6,6 +6,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- Tool calls whose arguments repeat a key, spell a key two ways, or carry an
+  argument policy reads that the tool does not declare are now refused at
+  step `args`, and the model is asked to retry. Extra keys the built-in
+  tools do not take, such as `timeout` on `bash` or `file_path` on `read`,
+  are dropped rather than refused and listed in the request's
+  `dropped_args`. An MCP or extension tool whose schema sets
+  `additionalProperties: false` now has undeclared keys refused.
+- `action.requested` gains `raw_args` and `dropped_args`.
+
 ### Security
 
 - A tool call's arguments could be read one way by policy and another by the
@@ -22,16 +33,19 @@ All notable changes to Abhed are recorded here. The format follows
   - Arguments are now decoded once, strictly, before policy. A repeated key,
     two keys that differ only in case (at any depth, with case folded as Go
     folds it), data after the object, or arguments that are not an object
-    are refused. `bash`, `read`, `write`, `edit`, `glob`, `grep` and `todo`
-    also refuse a key their schema does not name. Other tools, MCP and
-    extension tools among them, refuse a key spelled like a declared one in
-    another case, or an undeclared `command`, `path` or other key policy
-    reads.
+    are refused. Every tool refuses a key spelled like a declared one in
+    another case, and an undeclared `command`, `path` or other key policy
+    reads. `bash`, `read`, `write`, `edit`, `glob`, `grep` and `todo` drop
+    any other key their schema does not name before policy, so they run
+    exactly what was judged; the record names the keys dropped.
   - The accepted arguments are re-encoded once. Policy, hooks, the monitor,
     the approver, the record, the transcript and the tool, including what is
     sent to an MCP server or extension, all get those same bytes.
-  - A refusal is recorded as a denial at step `args`, with the arguments
-    kept as a string, and the model is told the arguments were malformed.
+  - A refusal is recorded as a denial at step `args`. The request's `args`
+    is `{}` and the arguments as sent are in its `raw_args`, as text, so a
+    resumed session replays the call with arguments its provider accepts.
+    The model is told the arguments were malformed. A resumed session also
+    replays as `{}` any recorded arguments that are not one object.
   - `policy.Evaluate` also denies ambiguous arguments at step `args` for
     callers outside the loop, such as the workbench, and reads a lone key in
     another case as the tool would.

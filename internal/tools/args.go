@@ -82,11 +82,11 @@ func strictValue(dec *json.Decoder, depth int) (any, error) {
 			}
 			k, _ := kt.(string)
 			if _, dup := m[k]; dup {
-				return nil, fmt.Errorf("duplicate key %q", k)
+				return nil, fmt.Errorf("duplicate key %q", clipKey(k))
 			}
 			fk := FoldKey(k)
 			if prev, clash := folded[fk]; clash {
-				return nil, fmt.Errorf("keys %q and %q differ only in case", prev, k)
+				return nil, fmt.Errorf("keys %q and %q differ only in case", clipKey(prev), clipKey(k))
 			}
 			folded[fk] = k
 			if m[k], err = strictValue(dec, depth+1); err != nil {
@@ -144,41 +144,53 @@ func Lookup(m map[string]any, name string) (any, bool) {
 
 // CanonicalArgs checks a call's arguments against its tool and returns the one
 // encoding that policy judges, the approver sees, the record keeps and the tool runs.
-func CanonicalArgs(t Tool, raw json.RawMessage) (json.RawMessage, error) {
+// A fixed tool's unknown keys that no reader could take for another are dropped and named.
+func CanonicalArgs(t Tool, raw json.RawMessage) (canon json.RawMessage, dropped []string, err error) {
 	m, err := DecodeArgs(raw)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	props, open := schemaProps(t.Schema())
-	if _, ok := t.(FixedArgs); ok {
-		open = false
-	}
+	props, closed := schemaProps(t.Schema())
+	_, fixed := t.(FixedArgs)
 	names := make([]string, 0, len(props))
 	for p := range props {
 		names = append(names, p)
 	}
 	sort.Strings(names)
+	list := strings.Join(names, ", ")
 	for k := range m {
-		if _, declared := props[k]; declared {
+		if props[k] {
 			continue
 		}
 		fk := FoldKey(k)
 		switch {
-		case !open:
-			return nil, fmt.Errorf("%w: %q is not an argument of %s (arguments: %s)", ErrMalformedArgs, k, t.Name(), strings.Join(names, ", "))
 		case foldsToAny(fk, names):
-			return nil, fmt.Errorf("%w: %q must be spelled exactly as in the schema (arguments: %s)", ErrMalformedArgs, k, strings.Join(names, ", "))
-		case len(props) > 0 && foldsToAny(fk, SubjectKeys):
-			return nil, fmt.Errorf("%w: %q is not an argument of %s (arguments: %s)", ErrMalformedArgs, k, t.Name(), strings.Join(names, ", "))
+			return nil, nil, fmt.Errorf("%w: %q must be spelled exactly as in the schema (arguments: %s)", ErrMalformedArgs, clipKey(k), list)
+		case (fixed || len(props) > 0) && foldsToAny(fk, SubjectKeys):
+			return nil, nil, fmt.Errorf("%w: %q is not an argument of %s (arguments: %s)", ErrMalformedArgs, clipKey(k), t.Name(), list)
+		case fixed:
+			dropped = append(dropped, k)
+			delete(m, k)
+		case closed:
+			return nil, nil, fmt.Errorf("%w: %q is not an argument of %s (arguments: %s)", ErrMalformedArgs, clipKey(k), t.Name(), list)
 		}
 	}
+	sort.Strings(dropped)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(m); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrMalformedArgs, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrMalformedArgs, err)
 	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+	return bytes.TrimRight(buf.Bytes(), "\n"), dropped, nil
+}
+
+// clipKey shortens a model-chosen key before it is echoed back.
+func clipKey(k string) string {
+	if r := []rune(k); len(r) > 64 {
+		return string(r[:64]) + "…"
+	}
+	return k
 }
 
 func foldsToAny(fk string, names []string) bool {
@@ -190,18 +202,18 @@ func foldsToAny(fk string, names []string) bool {
 	return false
 }
 
-// schemaProps reads a schema's top-level property names, and whether it admits others.
+// schemaProps reads a schema's top-level property names, and whether it refuses others.
 func schemaProps(schema json.RawMessage) (map[string]bool, bool) {
 	var s struct {
 		Properties           map[string]json.RawMessage `json:"properties"`
 		AdditionalProperties json.RawMessage            `json:"additionalProperties"`
 	}
 	if json.Unmarshal(schema, &s) != nil {
-		return nil, true
+		return nil, false
 	}
 	props := make(map[string]bool, len(s.Properties))
 	for k := range s.Properties {
 		props[k] = true
 	}
-	return props, strings.TrimSpace(string(s.AdditionalProperties)) != "false"
+	return props, strings.TrimSpace(string(s.AdditionalProperties)) == "false"
 }

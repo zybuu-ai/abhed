@@ -14,9 +14,11 @@ func TestDecodeArgsRefusesWhatTwoReadersCouldReadTwoWays(t *testing.T) {
 	for _, raw := range []string{
 		`{"command":"a","command":"b"}`,
 		`{"command":"a","Command":"b"}`,
-		`{"command":"a","command":"b"}`,
+		`{"command":"a","\u0063ommand":"b"}`,
+		`{"command":"a","\u0043ommand":"b"}`,
+		`{"ho\u017Ft":"a","host":"b"}`,
 		`{"hoſt":"a","host":"b"}`,
-		`{"Kind":"a","kind":"b"}`,
+		`{"\u212Aind":"a","kind":"b"}`,
 		`{"x":{"path":"a","PATH":"b"}}`,
 		`{"x":[{"path":"a"},{"path":"a","path":"b"}]}`,
 		`{"command":"a"}{"command":"b"}`,
@@ -42,7 +44,7 @@ func TestFoldKeyAgreesWithEncodingJSON(t *testing.T) {
 		Host string `json:"host"`
 		Kind string `json:"kind"`
 	}
-	for _, k := range []string{"HOST", "hoſt", "Host", "Kind", "KIND"} {
+	for _, k := range []string{"HOST", "hoſt", "Host", "\u212Aind", "KIND", "k\u0131nd"} {
 		v.Host, v.Kind = "", ""
 		_ = json.Unmarshal([]byte(`{"`+k+`":"x"}`), &v)
 		matched := v.Host == "x" || v.Kind == "x"
@@ -61,25 +63,29 @@ func TestCanonicalArgsForFixedAndOpenTools(t *testing.T) {
 		tool Tool
 		raw  string
 		want string // empty means refused
+		drop string
 	}{
-		{Bash{}, `{"description":"d","command":"a<b"}`, `{"command":"a<b","description":"d"}`},
-		{Bash{}, `{"command":"a","description":"d","path":"/x"}`, ""},
-		{Bash{}, `{"Command":"a","description":"d"}`, ""},
-		{Write{}, `{"path":"/a","content":"x","command":"ls"}`, ""},
-		{Grep{}, `{"pattern":"x","context":12345678901234567890}`, `{"context":12345678901234567890,"pattern":"x"}`},
-		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","other":1}`, `{"other":1,"path":"/a"}`},
-		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","Path":"/b"}`, ""},
-		{openTool{`{"properties":{"path":{}}}`}, `{"PATH":"/b"}`, ""},
-		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","command":"rm"}`, ""},
-		{openTool{`{"properties":{"path":{}},"additionalProperties":false}`}, `{"path":"/a","other":1}`, ""},
-		{openTool{`{}`}, `{"command":"x","anything":1}`, `{"anything":1,"command":"x"}`},
+		{Bash{}, `{"description":"d","command":"a<b"}`, `{"command":"a<b","description":"d"}`, ""},
+		{Bash{}, `{"command":"a","description":"d","path":"/x"}`, "", ""},
+		{Bash{}, `{"Command":"a","description":"d"}`, "", ""},
+		{Write{}, `{"path":"/a","content":"x","command":"ls"}`, "", ""},
+		{Grep{}, `{"pattern":"x","context":12345678901234567890}`, `{"context":12345678901234567890,"pattern":"x"}`, ""},
+		{Bash{}, `{"command":"ls","description":"d","timeout":5,"file_path":"x"}`, `{"command":"ls","description":"d"}`, "file_path,timeout"},
+		{Read{}, `{"file_path":"/etc/x"}`, `{}`, "file_path"},
+		{Read{}, `{"path":"/a","paths":["/b"]}`, `{"path":"/a"}`, "paths"},
+		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","other":1}`, `{"other":1,"path":"/a"}`, ""},
+		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","Path":"/b"}`, "", ""},
+		{openTool{`{"properties":{"path":{}}}`}, `{"PATH":"/b"}`, "", ""},
+		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","command":"rm"}`, "", ""},
+		{openTool{`{"properties":{"path":{}},"additionalProperties":false}`}, `{"path":"/a","other":1}`, "", ""},
+		{openTool{`{}`}, `{"command":"x","anything":1}`, `{"anything":1,"command":"x"}`, ""},
 	} {
-		got, err := CanonicalArgs(c.tool, json.RawMessage(c.raw))
+		got, dropped, err := CanonicalArgs(c.tool, json.RawMessage(c.raw))
 		switch {
 		case c.want == "" && err == nil:
 			t.Errorf("%s %s: accepted as %s", c.tool.Name(), c.raw, got)
-		case c.want != "" && (err != nil || string(got) != c.want):
-			t.Errorf("%s %s: got %s, %v; want %s", c.tool.Name(), c.raw, got, err, c.want)
+		case c.want != "" && (err != nil || string(got) != c.want || strings.Join(dropped, ",") != c.drop):
+			t.Errorf("%s %s: got %s dropping %v, %v; want %s dropping %s", c.tool.Name(), c.raw, got, dropped, err, c.want, c.drop)
 		}
 	}
 }
@@ -118,5 +124,24 @@ func TestFixedToolSchemasMatchTheirStructs(t *testing.T) {
 		if !reflect.DeepEqual(fromSchema, fromStruct) {
 			t.Errorf("%s: schema %v, struct %v", c.tool.Name(), fromSchema, fromStruct)
 		}
+	}
+}
+
+func TestDepthLimitAndClippedKeys(t *testing.T) {
+	deep := func(n int) string { return strings.Repeat(`{"a":`, n) + "1" + strings.Repeat("}", n) }
+	if _, err := DecodeArgs(json.RawMessage(deep(maxArgsDepth))); err != nil {
+		t.Fatalf("depth %d: %v", maxArgsDepth, err)
+	}
+	if _, err := DecodeArgs(json.RawMessage(deep(maxArgsDepth + 1))); !errors.Is(err, ErrMalformedArgs) {
+		t.Fatalf("depth %d accepted", maxArgsDepth+1)
+	}
+	long := strings.Repeat("k", 1<<20)
+	_, err := DecodeArgs(json.RawMessage(`{"` + long + `":1,"` + long + `":2}`))
+	if err == nil || len(err.Error()) > 300 {
+		t.Fatalf("a long key is echoed in full: %d bytes", len(err.Error()))
+	}
+	_, _, err = CanonicalArgs(Bash{}, json.RawMessage(`{"command":"a","`+strings.ToUpper(long[:100])+`":1,"COMMAND`+long[:10]+`":1}`))
+	if err != nil && len(err.Error()) > 400 {
+		t.Fatalf("a long key is echoed in full: %d bytes", len(err.Error()))
 	}
 }

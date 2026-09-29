@@ -75,8 +75,9 @@ func TestAmbiguousArgumentsAreRefusedBeforePolicy(t *testing.T) {
 	ok := filepath.Join(dir, "ok.txt")
 	for name, c := range map[string]model.ToolCall{
 		"same-case duplicate": rawCall("bash", `{"command":"echo a","command":"touch x","description":"x"}`),
-		"escaped duplicate":   rawCall("bash", `{"command":"echo a","command":"touch x","description":"x"}`),
-		"escaped case":        rawCall("bash", `{"command":"echo a","Command":"touch x","description":"x"}`),
+		"escaped duplicate":   rawCall("bash", `{"command":"echo a","\u0063ommand":"touch x","description":"x"}`),
+		"escaped case":        rawCall("bash", `{"command":"echo a","\u0043ommand":"touch x","description":"x"}`),
+		"escaped lone case":   rawCall("bash", `{"\u0043OMMAND":"touch x","description":"x"}`),
 		"unicode fold":        rawCall("bash", `{"command":"echo a","description":"x","deſcription":"y"}`),
 		"lone case variant":   rawCall("bash", `{"COMMAND":"touch x","description":"x"}`),
 		"write path case":     rawCall("write", `{"path":"`+ok+`","Path":"`+secret+`","content":"x"}`),
@@ -107,21 +108,37 @@ func TestAmbiguousArgumentsAreRefusedBeforePolicy(t *testing.T) {
 	}
 }
 
-// What policy judged is what the tool ran and what the record kept.
+// spy is the write tool, keeping the bytes it was given.
+type spy struct {
+	tools.Write
+	got []json.RawMessage
+}
+
+func (s *spy) Run(ctx context.Context, sess *tools.Session, args json.RawMessage) tools.Result {
+	s.got = append(s.got, args)
+	return s.Write.Run(ctx, sess, args)
+}
+
+// What policy judged is what the tool ran, what the record kept and what history holds.
 func TestCanonicalArgumentsAreWhatRunsAndIsRecorded(t *testing.T) {
 	dir := tempDir(t)
 	out := filepath.Join(dir, "out.txt")
 	l, store := harnessIn(t, dir, []scriptedTurn{
-		{calls: []model.ToolCall{rawCall("write", `{"content":"a<b>","path":"`+out+`"}`)}},
+		{calls: []model.ToolCall{rawCall("write", `{"p\u0061th":"`+out+`","timeout":5,"content":"a<b>"}`)}},
 		{text: "done"},
 	}, policy.ModeBypass, true)
+	w := &spy{}
+	l.Tools.Add(w)
 	if _, err := l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(out); err != nil || string(b) != "a<b>" {
-		t.Fatalf("the escaped key was not read as path: %q %v", b, err)
-	}
 	want := `{"content":"a<b>","path":"` + out + `"}`
+	if len(w.got) != 1 || string(w.got[0]) != want {
+		t.Fatalf("the tool got %s, want %s", w.got, want)
+	}
+	if b, err := os.ReadFile(out); err != nil || string(b) != "a<b>" {
+		t.Fatalf("wrote %q %v", b, err)
+	}
 	var escaped bytes.Buffer
 	json.HTMLEscape(&escaped, []byte(want))
 	evs, _ := store.Events("sess1")
@@ -129,8 +146,8 @@ func TestCanonicalArgumentsAreWhatRunsAndIsRecorded(t *testing.T) {
 		if e.Type == EvActionRequested {
 			var p ActionRequested
 			_ = json.Unmarshal(e.Payload, &p)
-			if string(p.Args) != escaped.String() {
-				t.Fatalf("recorded %s, want %s", p.Args, want)
+			if string(p.Args) != escaped.String() || len(p.Dropped) != 1 || p.Dropped[0] != "timeout" {
+				t.Fatalf("recorded %s dropping %v, want %s dropping timeout", p.Args, p.Dropped, want)
 			}
 		}
 	}
@@ -161,7 +178,7 @@ func TestMCPArgumentsSentAreTheOnesJudged(t *testing.T) {
 		"duplicate":           {`{"path":"/ok","path":"/etc/x"}`, true},
 		"case variant":        {`{"path":"/ok","PATH":"/etc/x"}`, true},
 		"undeclared subject":  {`{"command":"ls","path":"/etc/x"}`, true},
-		"declared spelling":   {`{"path":"/ok","Mode":"fast","extra":{"a":1}}`, false},
+		"declared spelling":   {`{"path":"/ok","extra":{"b":1,"a":"<2>"},"\u004dode":"fast"}`, false},
 		"misspelled declared": {`{"path":"/ok","mode":"fast"}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -185,6 +202,9 @@ func TestMCPArgumentsSentAreTheOnesJudged(t *testing.T) {
 			}
 			if len(r.got) != 1 {
 				t.Fatal("the call was not sent")
+			}
+			if want := `{"Mode":"fast","extra":{"a":"<2>","b":1},"path":"/ok"}`; string(r.got[0]) != want {
+				t.Fatalf("sent %s, want %s", r.got[0], want)
 			}
 			if s := policy.Subject(r.Name(), r.got[0]); s != "/ok" {
 				t.Fatalf("sent arguments whose subject is %q", s)
