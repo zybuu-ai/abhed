@@ -46,6 +46,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // Event is one recorded action or observation. The stream is the session: a
@@ -128,8 +129,18 @@ type Options struct {
 	// AppendSystem adds host-specific rules to the built-in prompt.
 	AppendSystem string
 
-	// Extensions are subprocesses that may veto a tool call.
+	// Extensions are subprocesses that may veto a tool call. With
+	// ConfiguredTools, the tools they provide are offered too.
 	Extensions []ExtensionConfig
+
+	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
+	// configuration enables it: subagents (task and tasks, sharing this
+	// agent's policy, approver and budget), MCP servers, the tools extensions
+	// provide, skills and their pipelines, web search, retrieval, rag corpora,
+	// and the Kubernetes and SSH tools. Off, the agent has the built-in file,
+	// shell and todo tools only, so an embedder decides what else it reaches.
+	// A configuration file ConfigDir holds that is not trusted adds none of it.
+	ConfiguredTools bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
@@ -158,7 +169,7 @@ type Agent struct {
 	registry *tools.Registry
 	loop     *agent.Loop
 	store    *agent.MemStore
-	host     *extension.Host
+	set      *toolset.Set
 	id       string
 	fwd      *forwarder
 	redact   *secrets.Redactor
@@ -265,14 +276,21 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		tools.AddStatePath(p)
 	}
 
-	host := extension.NewHost(nil)
-	specs := append(cfg.ExtensionSpecs(), opts.Extensions...)
-	if len(specs) > 0 {
-		host.Load(ctx, specs)
-		if host.Len() > 0 {
-			pol.Hooks = append(pol.Hooks, host.PolicyHook(ctx, "embedded"))
+	parts := toolset.Vetoes
+	if opts.ConfiguredTools {
+		parts = toolset.All
+	}
+	set := toolset.Build(ctx, cfg, toolset.Options{
+		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
+	})
+	// A skill's own directory is reachable, as it is from the command line.
+	for _, dir := range set.SkillDirs() {
+		if err := sess.AddRoot(dir); err != nil {
+			set.Close()
+			return nil, fmt.Errorf("abhed: skill directory: %w", err)
 		}
 	}
+	toolset.Police(set.Extensions, pol, "embedded")
 
 	store := agent.NewMemStore()
 	id := fmt.Sprintf("embedded-%d", time.Now().UnixNano())
@@ -284,33 +302,38 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	system := opts.SystemPrompt
 	if system == "" {
-		system = agent.BuildSystemPrompt(agent.BuildOptions{
-			Profile: "main", Workspace: opts.Workspace,
-			// Named as the adapter names itself, so SetModel can rewrite the line.
-			Model: adapter.Profile().Name, ContextWindow: adapter.Profile().ContextWindow,
-		})
+		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing)
 	}
 	if opts.AppendSystem != "" {
 		system += "\n\n" + opts.AppendSystem
 	}
 
-	loopCfg := agent.DefaultConfig()
-	loopCfg.SystemPrompt = system
+	loopCfg := toolset.LoopConfig(cfg, system)
+	// The file's max_turns binds an embedded agent only when the organisation sets it.
+	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns
 	if (opts.MaxTurns > 0 || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
 		loopCfg.MaxTurns = cfg.Limits.MaxTurns
 	}
 
-	registry := tools.NewRegistry(
-		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, bash, tools.Todo{},
-	)
+	approver := approverFor(opts.Approve, red)
+	registry := set.Registry
+	budget := toolset.Budget(cfg)
+	if opts.ConfiguredTools {
+		// The child's events stay in the store, reached through the parent's
+		// subagent.* events; OnEvent carries this agent's own record, as the
+		// command line's JSON output does.
+		f := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
+			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red}
+		registry = toolset.Subagents(registry, f, cfg.Limits.MaxParallelSubagents)
+	}
 
-	loop := agent.NewLoop(adapter, registry, pol, approverFor(opts.Approve, red),
-		sess, rec, loopCfg)
+	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
+	toolset.Summarize(loop.Compactor, set.Extensions, id)
+	loop.Budget = budget
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
-	a := &Agent{loop: loop, store: store, host: host, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace}
+	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace}
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -446,10 +469,10 @@ func (a *Agent) Flush(ctx context.Context) error { return a.fwd.flush(ctx) }
 // errClosed is Flush's answer once the agent is closed and delivery has stopped.
 var errClosed = errors.New("abhed: the agent is closed; no more events are delivered")
 
-// Close releases the extensions and stops delivering events.
+// Close releases the extensions and MCP servers and stops delivering events.
 func (a *Agent) Close() {
 	a.fwd.close()
-	a.host.Close()
+	a.set.Close()
 }
 
 // Providers lists the model provider types this build supports.

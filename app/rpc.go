@@ -75,6 +75,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				Allow: req.Allow, Deny: req.Deny,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
+				// The agent the terminal runs, subagents and configured tools included.
+				ConfiguredTools: true,
 				// Events are forwarded as they happen so a caller can render
 				// progress rather than waiting for the final answer.
 				OnEvent: func(ev agent.Event) {
