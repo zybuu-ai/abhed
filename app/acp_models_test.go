@@ -393,3 +393,35 @@ func TestACPAdapterRefusesASwitchDuringAPrompt(t *testing.T) {
 		t.Fatalf("the agent was switched during a prompt: %v", fake.switched)
 	}
 }
+
+// A managed file that sets model.default pins the model: the editor is
+// offered only that one and cannot switch away.
+func TestACPManagedDefaultPinsTheModel(t *testing.T) {
+	a1, b1 := newACPModelStub(t, "a", false), newACPModelStub(t, "b", false)
+	agents := acpModelsEnv(t, `{"model":{"default":"beta","providers":{"alpha":`+stubProvider(a1.URL, "m-a")+
+		`,"beta":`+stubProvider(b1.URL, "m-b")+`}}}`)
+	path := filepath.Join(t.TempDir(), "managed.json")
+	if err := os.WriteFile(path, []byte(`{"model":{"default":"alpha"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managed.ConfigFile = path // acpModelsEnv restores it
+	cl := newACPClient(t, nil)
+	s := acpOpen(t, cl, t.TempDir())
+	current, listed := selectedModels(t, s.ConfigOptions)
+	if current != "alpha" || fmt.Sprint(listed) != "[alpha=alpha=m-a (openai-compatible)]" {
+		t.Fatalf("under a managed default: current %q, listed %v; want alpha only", current, listed)
+	}
+	if s.Models.CurrentModelID != "alpha" || len(s.Models.AvailableModels) != 1 {
+		t.Fatalf("legacy models under a managed default: %+v", s.Models)
+	}
+	res := cl.request(3, "session/set_config_option", map[string]any{"sessionId": s.SessionID, "configId": "model", "value": "beta"})
+	if res.Error == nil || res.Error.Code != -32602 {
+		t.Fatalf("switch away from the managed model: %s %+v, want invalid params", res.Result, res.Error)
+	}
+	if res := cl.request(4, "session/set_model", map[string]any{"sessionId": s.SessionID, "modelId": "beta"}); res.Error == nil || res.Error.Code != -32602 {
+		t.Fatalf("set_model away from the managed model: %s %+v", res.Result, res.Error)
+	}
+	if got := switchedTo(agents()[0]); len(got) != 0 {
+		t.Fatalf("a refused switch was recorded: %v", got)
+	}
+}
