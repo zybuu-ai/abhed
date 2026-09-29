@@ -28,6 +28,15 @@ type bgModel struct {
 	saw           []string // task_status results the parent saw
 	// workOnNotice makes the parent answer a result with more work.
 	workOnNotice bool
+	// inCall counts children that have reached their model call.
+	inCall int
+}
+
+// childrenInCall is how many children have reached their model call.
+func (m *bgModel) childrenInCall() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.inCall
 }
 
 func newBGModel(children ...string) *bgModel {
@@ -54,6 +63,9 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 	m.mu.Unlock()
 	switch {
 	case isChild:
+		m.mu.Lock()
+		m.inCall++
+		m.mu.Unlock()
 		select {
 		case <-gate:
 			ch <- model.Chunk{Type: model.ChunkText, Text: "result of " + first + " sk-live-abcdefghijklmnop"}

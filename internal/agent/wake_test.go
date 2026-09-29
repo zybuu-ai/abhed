@@ -81,6 +81,7 @@ func TestChildOutlivesRunAndIdleNotify(t *testing.T) {
 	if end.Background != 1 || end.Settled {
 		t.Fatalf("the run's end: %+v", end)
 	}
+	waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
 	calls := r.m.calls.Load()
 	time.Sleep(100 * time.Millisecond) // well past the settle window the run's end opened
 	r.m.release("one")
@@ -164,7 +165,7 @@ func TestWakeSkipped(t *testing.T) {
 		set       func(r *bgRig, h *wakeHost)
 	}{
 		{"limit", "wake_limit", func(r *bgRig, _ *wakeHost) { r.l.Background.policy.MaxWakesPerHour = 0 }},
-		{"budget", "budget", func(r *bgRig, _ *wakeHost) { r.l.Budget.MaxTokens = 1 }},
+		{"budget", "budget", func(r *bgRig, _ *wakeHost) { r.l.Budget.Spend(2_000_000) }},
 		{"max turns", "max_turns", func(r *bgRig, _ *wakeHost) { r.l.Config.MaxTurns = r.l.turns }},
 		{"host", "host_busy", func(_ *bgRig, h *wakeHost) { h.can = false }},
 		{"host refused", "host", func(_ *bgRig, h *wakeHost) { h.refuse = true }},
@@ -182,6 +183,7 @@ func TestWakeSkipped(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.set(r, h)
+			waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
 			calls := r.m.calls.Load()
 			r.m.release("one")
 			waitFor(t, "the notice", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 1 })
