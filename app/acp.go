@@ -236,8 +236,12 @@ func (c *acpConn) closeAll() {
 	c.sessMu.Lock()
 	defer c.sessMu.Unlock()
 	for _, s := range c.sessions {
-		if s.cancel != nil {
-			s.cancel()
+		// A prompt sets and clears cancel under s.mu while it runs.
+		s.mu.Lock()
+		cancel := s.cancel
+		s.mu.Unlock()
+		if cancel != nil {
+			cancel()
 		}
 		s.agent.Close()
 	}
