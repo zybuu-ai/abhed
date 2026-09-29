@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
@@ -154,8 +156,8 @@ type Options struct {
 	Config   config.Config
 	Adapter  model.Adapter
 	Registry *tools.Registry
-	// Redact rewrites every event payload before it is written; the app sets
-	// it from the secrets store. Nil records payloads as they are.
+	// Redact rewrites every event payload before it is written. Nil, a typed
+	// nil included, means the operator's secrets store, as the CLI uses.
 	Redact agent.Redactor
 	// SkillListing is the rendered skill index for the system prompt. The
 	// server takes the rendered string rather than the registry, because the
@@ -316,6 +318,9 @@ type liveSession struct {
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
+	}
+	if v := reflect.ValueOf(opts.Redact); !v.IsValid() || v.Kind() == reflect.Pointer && v.IsNil() {
+		opts.Redact = secrets.Default().Redactor()
 	}
 	st := opts.Store
 	// The tap wraps only what the loop writes through. Optional interfaces

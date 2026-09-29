@@ -1,0 +1,51 @@
+package server
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/secrets"
+)
+
+// A server built with no redactor, or a typed nil one, redacts with the
+// operator's secrets store rather than recording a stored value as it is.
+func TestServerWithNoRedactorUsesTheSecretsStore(t *testing.T) {
+	const raw = "fake-server-secret-71b0"
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"FAKE_TOKEN":"`+raw+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(secrets.EnvFile, path)
+	var typedNil *secrets.Redactor
+	for name, set := range map[string]func(*Options){
+		"nil":       func(o *Options) { o.Redact = nil },
+		"typed nil": func(o *Options) { o.Redact = typedNil },
+	} {
+		wb := shellBenchOpts(t, nil, set)
+		start := wb.startShell()
+		wb.typeLines(start.ID, enter("echo "+raw, "exit")...)
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			var all strings.Builder
+			closed := false
+			for _, e := range wb.events() {
+				all.Write(e.Payload)
+				closed = closed || e.Type == agent.EvObservation
+			}
+			if strings.Contains(all.String(), raw) {
+				t.Fatalf("%s: a stored value reached the record:\n%s", name, all.String())
+			}
+			if closed && strings.Contains(all.String(), "[secret:FAKE_TOKEN]") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the shell's line was not recorded redacted:\n%s", name, all.String())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+}
