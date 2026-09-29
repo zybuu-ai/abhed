@@ -68,7 +68,10 @@ extensions, skill directories, corpora, clusters, hosts) is ignored either
 way. The built-in prompt then carries the `ABHED.md` memory files too; without
 `ConfiguredTools` it has none. Either way the prompt names only the web tools
 the agent has. `Close` ends the MCP connections and extension processes, and
-the cluster logins and hosts the agent's session made.
+the cluster logins and hosts the agent's session made. `Options.Warn`
+receives what the tool set skipped or found unsafe as it was built, such as
+an MCP server that did not start or a cluster that skips TLS verification;
+nil discards it.
 
 A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,

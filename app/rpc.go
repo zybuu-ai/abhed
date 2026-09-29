@@ -77,6 +77,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
 				ConfiguredTools: true,
+				// Stdout is the protocol; what the tool set skipped goes to stderr.
+				Warn: warnf,
 				// Events are forwarded as they happen so a caller can render
 				// progress rather than waiting for the final answer.
 				OnEvent: func(ev agent.Event) {

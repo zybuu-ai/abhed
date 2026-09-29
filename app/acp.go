@@ -324,7 +324,9 @@ func (c *acpConn) newSession(msg rpcMessage) {
 		Workspace: cwd, ConfigDir: cwd, Sandbox: true, WorkspaceTrust: trust, AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
-		OnEvent:         func(ev abhed.Event) { c.forward(s, ev) },
+		// Stdout is the protocol; what the tool set skipped goes to stderr.
+		Warn:    warnf,
+		OnEvent: func(ev abhed.Event) { c.forward(s, ev) },
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)
 		},

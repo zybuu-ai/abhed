@@ -135,6 +135,11 @@ type Options struct {
 	// ConfiguredTools, the tools they provide are offered too.
 	Extensions []ExtensionConfig
 
+	// Warn receives what the tool set skipped or found unsafe as it was
+	// built: an MCP server or extension that did not start, a cluster or
+	// host that skips verification. Nil discards it.
+	Warn func(format string, args ...any)
+
 	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
 	// configuration enables it: subagents (task and tasks, sharing this
 	// agent's policy, approver and budget), MCP servers, the tools extensions
@@ -293,7 +298,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
 		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
-		Vault: secrets.Default(),
+		Vault: secrets.Default(), Warn: opts.Warn,
 	})
 	// A skill's own directory is reachable, as it is from the command line.
 	for _, dir := range set.SkillDirs() {

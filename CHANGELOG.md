@@ -508,6 +508,10 @@ All notable changes to Abhed are recorded here. The format follows
   made.
 - `subagent.ask` carries the subagent's `target`: where its call sends a
   credential, as the subagent's own `action.requested` names it.
+- SDK: `Options.Warn` receives what the tool set skipped or found unsafe as
+  it was built: an MCP server or extension that did not start, a cluster or
+  host that skips verification. `abhed rpc` and `abhed acp` write these to
+  stderr, as the terminal does; their stdout stays the protocol.
 
 ### Changed
 
