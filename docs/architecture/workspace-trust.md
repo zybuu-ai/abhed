@@ -51,7 +51,8 @@ store that cannot be read. In either case no workspace is trusted and a
 warning says why. Writes to the store hold an operating-system lock (`flock`,
 or `LockFileEx` on Windows) on a file beside it, so two decisions made at
 once both land. The system drops the lock when its holder exits, so a crash
-leaves nothing to wait for. If a grant at the prompt cannot be recorded, the
+leaves nothing to wait for. A decision waits at most five seconds for another
+to finish and then fails without recording anything. If a grant at the prompt cannot be recorded, the
 session goes on with the file untrusted.
 
 The path is compared as spelled after links are resolved. On a volume that
@@ -152,7 +153,9 @@ subcommand). These never prompt. Trust comes from one of:
 - `-trust-workspace`, for this run only
 - `ABHED_TRUST_WORKSPACE=1`, for this run only
 
-The flag goes before the subcommand, or right after it:
+The flag goes before the subcommand, or right after one that loads the
+workspace configuration (the registry marks which; an edition's own
+subcommands take it only before):
 `abhed -trust-workspace serve` and `abhed serve -trust-workspace` are the
 same. `serve`, `eval` and `resolve` also take it among their own flags. It is
 never taken as a value or after `--`. Neither the flag nor the
@@ -170,7 +173,12 @@ line per ignored setting.
   tightens. The wire cannot grant trust, and any other value is an error.
 - `rpc`: the `ready` event carries `workspace_trust`.
 - SDK: `Options.WorkspaceTrust` sets the choice, and `Agent.WorkspaceTrust()`
-  reports it.
+  reports it. When the untrusted file's model settings were ignored and no
+  `Options.Provider` is given, `New` returns `ErrUntrustedModel` unless
+  `Options.AllowDefaultModel` is set; `acp`, `rpc` and `resolve` set it and
+  report the decision instead.
+- A failed headless run repeats, next to its error, that the file's model
+  settings were ignored and which provider it used.
 
 `reason` takes one of these values:
 

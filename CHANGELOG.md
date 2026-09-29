@@ -23,8 +23,19 @@ All notable changes to Abhed are recorded here. The format follows
     `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
     `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
     migrate` refuse to start and say how to go on, rather than run with no
-    sign-in or an in-memory record. Other ignored settings, such as
-    providers and MCP servers, are left out with a warning on stderr.
+    sign-in or an in-memory record. Every other command goes on without
+    the ignored settings, with a warning on stderr: a headless run (`-p`,
+    `rpc`, `acp`, `resolve`) uses the built-in or user default model and
+    endpoint instead of the file's, without its MCP servers and extensions,
+    and in the default mode instead of the file's. A CI job can therefore
+    run a different model with fewer tools and still exit 0. A failed run
+    repeats that the file's model settings were ignored.
+  - Grants are stored in `~/.abhed/trust.json` of the user who runs Abhed.
+    In a container or CI runner whose home directory does not persist, a
+    grant is lost with it: use `-trust-workspace` or
+    `ABHED_TRUST_WORKSPACE=1` for that step, or move the settings to the
+    managed file. Set the variable for a single step, not in a shell
+    profile.
     Settings kept in `~/.abhed/config.json` or the managed
     `/etc/abhed/config.json` are unaffected.
   - Editors on ACP: `session/new` now reports the decision in
@@ -34,7 +45,10 @@ All notable changes to Abhed are recorded here. The format follows
   them, with only a line on stderr, until it trusts the file. Set
   `Options.WorkspaceTrust` to `config.TrustGranted` when the program owns
   that file, or trust it once with `abhed trust grant`.
-  `Agent.WorkspaceTrust()` reports the decision and what was ignored.
+  `Agent.WorkspaceTrust()` reports the decision and what was ignored. When
+  the ignored settings include the model and no `Options.Provider` is given,
+  `New` returns `ErrUntrustedModel` instead of running on another model;
+  set `Options.AllowDefaultModel` to run on the default anyway.
 - A permission rule that does not parse now stops every command from
   loading the configuration. `serve` and `resolve` used to drop it, and every
   rule after it in the same list, without a word. Check with `abhed doctor`
@@ -46,8 +60,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
-- A repository could ship a `.abhed/config.json` that Abhed applied whole in
-  every mode: the CLI, `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
+- In every release up to and including 1.2.1, a repository could ship a
+  `.abhed/config.json` that Abhed applied whole in every mode: the CLI, `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
   could set bypass or auto mode, add allow rules, point a provider's
   `base_url` at another server so the code went there, start `extensions`
   and `mcp` processes, turn `sandbox.allow_network` on or lower

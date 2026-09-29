@@ -108,7 +108,10 @@ managed file is read. The `.abhed/config.json` in `ConfigDir` is untrusted
 until the person trusts it (`abhed trust grant`), and until then only its
 tightening settings apply. `Options.WorkspaceTrust` overrides that for one
 agent (`config.TrustGranted` or `config.TrustRefused`), and
-`Agent.WorkspaceTrust()` reports what was decided and what was ignored.
+`Agent.WorkspaceTrust()` reports what was decided and what was ignored. If
+the untrusted file names its own model and `Options.Provider` is nil, `New`
+returns `abhed.ErrUntrustedModel` rather than run on a different model; set
+`Options.AllowDefaultModel` to run on the configured default instead.
 
 | Option | Without a managed file | Under a managed file |
 |---|---|---|
