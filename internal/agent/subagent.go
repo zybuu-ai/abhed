@@ -346,6 +346,11 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	if parent != nil {
 		provider = parent.provider
 	}
+	// The organisation's choice of model for a managed role binds, as its
+	// turn cap does: a call cannot move the role to another provider.
+	if def.Source == SourceManaged && def.Model != "" && childModel(req.Model, "") != "" && req.Model != def.Model {
+		return nil, fmt.Errorf("agent type %s runs on model %q, set by the organisation; omit model", def.Name, def.Model)
+	}
 	if name := childModel(req.Model, def.Model); name != "" {
 		if err := ValidModelName(name); err != nil {
 			return nil, err

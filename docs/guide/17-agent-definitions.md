@@ -99,7 +99,10 @@ policed as it would be for the parent.
 `model` names a provider from your configuration's `model.providers`, the
 same names `abhed -model` and the console's model picker take. The `task` and
 `tasks` calls take a `model` too, and it wins over the definition's; `inherit`,
-or no value, is the definition's model and then the parent's.
+or no value, is the definition's model and then the parent's. A managed
+definition's model binds: a call naming another model for that role is
+refused, so a role the organisation pinned to an on-premises provider stays
+there.
 
 - **A name, never an endpoint.** A value holding `://`, a `/` or a space is
   refused before anything is looked up. The key comes from the environment of

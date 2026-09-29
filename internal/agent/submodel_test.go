@@ -229,3 +229,30 @@ func TestInheritedModelRecordsParentsProvider(t *testing.T) {
 		t.Fatalf("the child's record names provider %q", got)
 	}
 }
+
+// A managed role's model binds: a call naming another is refused, and the
+// same model or none runs it there.
+func TestManagedDefinitionModelBinds(t *testing.T) {
+	f, parent, fast, _ := modelFactory(t, NewBudget(1_000_000, 10, false))
+	f.Definitions = WithDefinitions(&Definition{Name: "onprem", Description: "d", Instruction: "i", Model: "fast", Source: SourceManaged})
+	parent.turns = []scriptedTurn{{text: "parent answer"}}
+	fast.turns = []scriptedTurn{{text: "a"}, {text: "b"}, {text: "c"}}
+	f.Models = func(name string) (model.Adapter, error) {
+		if name == "fast" {
+			return fast, nil
+		}
+		return parent, nil
+	}
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", AgentType: "onprem", Model: "main"}); err == nil ||
+		!strings.Contains(err.Error(), "set by the organisation") {
+		t.Fatalf("a call moved a managed role to another model: %v", err)
+	}
+	for _, m := range []string{"", "inherit", "fast"} {
+		if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", AgentType: "onprem", Model: m}); err != nil {
+			t.Fatalf("model %q: %v", m, err)
+		}
+	}
+	if len(parent.gotRequests) != 0 || len(fast.gotRequests) != 3 {
+		t.Fatalf("calls: parent %d, fast %d", len(parent.gotRequests), len(fast.gotRequests))
+	}
+}
