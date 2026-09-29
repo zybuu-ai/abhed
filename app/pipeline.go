@@ -16,12 +16,12 @@ import (
 // pipelineRunner builds the function the skill tool calls to execute a
 // declared pipeline.
 //
-// A tool step is put through the running loop as the model's own call is:
+// A tool step is put through the loop that called the skill, as its own call is:
 // policy, hooks, the monitor, the approver, the sandbox, redaction and the
 // record. A model step is a completion on the configured adapter, and sees
 // tool output only once secrets are stripped from it. The pipeline decides
 // what happens and in what order; it does not decide what is permitted.
-func pipelineRunner(adapter model.Adapter, loop *agent.LoopHolder) func(context.Context, *skills.Skill, string) (string, error) {
+func pipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, string) (string, error) {
 
 	return func(ctx context.Context, s *skills.Skill, input string) (string, error) {
 		var p pipeline.Pipeline
@@ -34,15 +34,16 @@ func pipelineRunner(adapter model.Adapter, loop *agent.LoopHolder) func(context.
 		if err := refuseUnsafe(p); err != nil {
 			return "", err
 		}
-		// With no loop there is no policy or record to put a step through.
-		steps, err := loop.Steps("skill " + s.Name + " pipeline")
+		// Steps run on the loop that called the skill, or the pipeline is refused.
+		steps, err := agent.StepsFor(ctx, "skill "+s.Name+" pipeline")
 		if err != nil {
 			return "", err
 		}
 
 		runner := &pipeline.Runner{
 			Tool: func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-				res, err := steps.Run(ctx, name, args)
+				runFor, _ := pipeline.ToolTimeout(ctx)
+				res, err := steps.Run(ctx, name, args, runFor)
 				if err != nil {
 					return "", err
 				}
@@ -58,8 +59,10 @@ func pipelineRunner(adapter model.Adapter, loop *agent.LoopHolder) func(context.
 			// verdict and the reason for every extra hop are visible in the
 			// transcript rather than being inferred from tool calls.
 			Event: func(stage, detail string, data map[string]any) {
-				loop.RecordPipelineStage(s.Name, stage, detail, data)
+				steps.Stage(s.Name, stage, detail, data)
 			},
+			// A step's timeout starts once it is approved, not while a person decides.
+			ToolTimes: true,
 		}
 
 		res, err := runner.Run(ctx, p, input)

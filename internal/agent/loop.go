@@ -202,6 +202,8 @@ type Loop struct {
 	// asks puts the asks of this loop's subagents to its approver one at a time.
 	asks     chan struct{}
 	asksOnce sync.Once
+	// stepRun keeps a mutating pipeline step apart from the loop's other steps.
+	stepRun sync.RWMutex
 	depth    int // how deep this loop is among subagents; 0 for a top-level loop
 
 	// dropEffort is set once a turn has spent its whole output budget on

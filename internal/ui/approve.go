@@ -137,6 +137,9 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 
 	s := a.Style
 	fmt.Fprintf(a.Out, "\n%s %s %s\n", s.Yellow("●"), s.Bold(tool), s.Dim(summarizeArgs(tool, args)))
+	if via := agent.PipelineOf(ctx); via != "" {
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by "+via))
+	}
 	if who := agent.SubagentOf(ctx); who != "" {
 		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by subagent: "+who))
 	}

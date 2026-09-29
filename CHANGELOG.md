@@ -18,13 +18,19 @@ All notable changes to Abhed are recorded here. The format follows
   steps' output. File-tool path checks and a configured sandbox still
   applied. Nothing about the step reached the record, and a pipeline's model
   steps were sent tool output before secret values were stripped from it.
-  Each tool step is now put through the running session as the model's own
-  call is: policy, hooks, the monitor and the approver, one ask at a time.
-  A step that needs approval in a headless run, or with no approver, is
-  refused. Each step is recorded with `via` naming the skill's pipeline,
-  which HawkEYE shows. Model steps get tool output with secrets redacted.
-  A pipeline with no running session to check its steps, or with a step
-  that calls the `skill` tool, is refused rather than run.
+  Each tool step is now put through the loop that called the skill, as that
+  loop's own call is: its policy, hooks, the monitor and the approver, one
+  ask at a time across the session, and its session, depth and record. A
+  pipeline a subagent starts is judged as that subagent, so a `task` step in
+  it is a nested spawn and `nested_subagents` still applies. A step that
+  needs approval in a headless run, or with no approver, is refused. Each
+  step is recorded with `via` naming the skill's pipeline, which HawkEYE
+  shows, and an approval prompt says which pipeline asks. A step's timeout
+  starts once it is approved. Model steps and gates get their whole prompt
+  with secrets redacted. A pipeline is refused rather than run when no
+  session's `skill` call started it, when a step calls the `skill` tool, or
+  when it would start beneath another pipeline's step, which bounds
+  skill, pipeline and subagent recursion.
 
 ## [1.2.1] - 2026-09-28
 

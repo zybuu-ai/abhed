@@ -101,7 +101,7 @@ func Text(r Report) string {
 			}
 			fmt.Fprintf(&b, "  %s #%-4d %-6s %-52s %-8s %s\n", mark, c.Seq, c.Tool, clip(oneLine(c.Subject), 52), c.Step, dur(c.DurationMS))
 			if c.Via != "" {
-				fmt.Fprintf(&b, "           via %s\n", c.Via)
+				fmt.Fprintf(&b, "           via %s\n", clip(oneLine(c.Via), 80))
 			}
 		}
 	}
