@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -69,8 +70,20 @@ type Options struct {
 
 	// ConfigDir loads .abhed/config.json from a directory, the same file the
 	// CLI reads, with the user's and the managed file. Provider overrides what
-	// it names. Without it only the managed file, if any, is read.
+	// it names. Without it only the managed file, if any, is read. That file
+	// is untrusted until the person trusts it (`abhed trust`); until then
+	// only the settings that tighten apply. Agent.WorkspaceTrust reports it.
 	ConfigDir string
+
+	// WorkspaceTrust overrides the recorded decision about ConfigDir's file:
+	// config.TrustGranted takes it whole for this agent, config.TrustRefused
+	// takes only what tightens. Empty follows the decision and ABHED_TRUST_WORKSPACE.
+	WorkspaceTrust config.TrustChoice
+
+	// AllowDefaultModel runs on the configured default model when ConfigDir's
+	// untrusted file names its own and was ignored. Without it New returns
+	// ErrUntrustedModel then, unless WorkspaceTrust or Provider is set.
+	AllowDefaultModel bool
 
 	// Provider names the model directly, for a caller that would rather not
 	// keep a config file.
@@ -124,6 +137,10 @@ type Options struct {
 	Sandbox bool
 }
 
+// ErrUntrustedModel is New's refusal to run on another model than the one
+// ConfigDir's file names, because that file is not trusted.
+var ErrUntrustedModel = errors.New("the workspace configuration's model settings were ignored because it is not trusted")
+
 // Provider names a model endpoint.
 type Provider struct {
 	Type          string // anthropic, openai, ollama, vllm, … see Providers()
@@ -145,6 +162,7 @@ type Agent struct {
 	id       string
 	fwd      *forwarder
 	redact   *secrets.Redactor
+	trust    config.WorkspaceTrust
 }
 
 // New builds an agent.
@@ -156,11 +174,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// The managed configuration applies with or without a config file.
 	load := config.LoadManaged
 	if opts.ConfigDir != "" {
-		load = func() (config.Config, error) { return config.Load(opts.ConfigDir) }
+		load = func() (config.Config, error) {
+			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust})
+		}
 	}
 	cfg, err := load()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	if keys := untrustedModelKeys(cfg.Workspace); len(keys) > 0 && opts.Provider == nil &&
+		opts.WorkspaceTrust == config.TrustAsStored && !opts.AllowDefaultModel {
+		return nil, fmt.Errorf("abhed: %w (%s in %s): trust it with `abhed trust grant`, or set Options.WorkspaceTrust, "+
+			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
 		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
@@ -285,7 +310,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
-	a := &Agent{loop: loop, store: store, host: host, id: id, registry: loop.Tools, fwd: fwd, redact: red}
+	a := &Agent{loop: loop, store: store, host: host, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace}
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -369,6 +394,10 @@ func (a *Agent) Continue(ctx context.Context, prompt string) (string, error) {
 // Steer redirects a run already in progress, applied at the next turn
 // boundary. Safe to call from another goroutine.
 func (a *Agent) Steer(text string) { a.loop.Steer(text) }
+
+// WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
+// of its settings were ignored because it is not trusted.
+func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
 
 // Events returns everything recorded so far.
 func (a *Agent) Events() []Event {
@@ -484,4 +513,15 @@ func orDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// untrustedModelKeys are the model settings an untrusted file could not make.
+func untrustedModelKeys(st config.WorkspaceTrust) []string {
+	var out []string
+	for _, k := range st.Ignored {
+		if k.Key == "model" || strings.HasPrefix(k.Key, "model.") || strings.HasPrefix(k.Key, "custom_providers") {
+			out = append(out, k.Key)
+		}
+	}
+	return out
 }

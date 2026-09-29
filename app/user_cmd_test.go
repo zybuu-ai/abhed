@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/config"
 )
 
 // userWorkspace is a workspace with local accounts and a scratch home, so no
@@ -27,6 +28,7 @@ func userWorkspace(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	return ws
 }
 
@@ -39,7 +41,7 @@ func runUser(t *testing.T, ws string, args ...string) (int, string) {
 	}
 	oldErr, oldOut := os.Stderr, os.Stdout
 	os.Stderr, os.Stdout = w, w
-	code := userCmd(ws, args)
+	code := userCmd(ws, args, "")
 	os.Stderr, os.Stdout = oldErr, oldOut
 	_ = w.Close()
 	out, _ := io.ReadAll(r)
@@ -90,6 +92,7 @@ func TestUserCommandsRefuseAStateFileServeRefuses(t *testing.T) {
 		[]byte(`{"auth":{"mode":"local","users_file":"`+filepath.ToSlash(file)+`"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	for _, args := range [][]string{
 		{"add", "yuki", "-password", "correct-horse-1"},
 		{"passwd", "yuki"},

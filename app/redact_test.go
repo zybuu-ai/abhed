@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -53,6 +54,8 @@ func leakingModel(t *testing.T) string {
 
 // credsWorkspace is a workspace holding creds.txt and a config for model.
 func credsWorkspace(t *testing.T, cfg string) string {
+	// The model lives in the workspace file, so the test trusts it.
+	t.Setenv(config.TrustEnv, "1")
 	t.Helper()
 	ws, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -156,7 +159,7 @@ func TestResolvePrintsNoStoredSecret(t *testing.T) {
 	}
 	stubForge(t, &fakeForge{})
 	_, msg := resolveStderr(t, func() int {
-		return resolveCmd(repo, []string{"--mode", "default", "https://git.example/t/r/issues/5"})
+		return resolveCmd(repo, []string{"--mode", "default", "https://git.example/t/r/issues/5"}, config.TrustGranted)
 	})
 	if !strings.Contains(msg, "[secret:FAKE_TOKEN]") {
 		t.Fatalf("the agent's message was not printed redacted:\n%s", msg)
@@ -229,13 +232,13 @@ func TestEntryPointsRefuseAnUnloadableSecretsStore(t *testing.T) {
 				t.Fatal(err)
 			}
 			stubForge(t, &fakeForge{})
-			code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}) })
+			code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}, config.TrustGranted) })
 			if code == 0 {
 				t.Fatal("resolve ran")
 			}
 			wantRefusal(t, "resolve", msg, path)
 
-			code, msg = resolveStderr(t, func() int { return evalCmd(ws, t.TempDir(), "") })
+			code, msg = resolveStderr(t, func() int { return evalCmd(ws, t.TempDir(), "", "") })
 			if code == 0 {
 				t.Fatal("eval ran")
 			}
@@ -288,7 +291,7 @@ func TestResolvePrintsTheLastMessageOfASlowDelivery(t *testing.T) {
 	old := resolveEvent
 	t.Cleanup(func() { resolveEvent = old })
 	resolveEvent = func(ev abhed.Event) { time.Sleep(40 * time.Millisecond); old(ev) }
-	_, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}) })
+	_, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}, config.TrustGranted) })
 	if !strings.Contains(msg, "closing-message-marker") {
 		t.Fatalf("the run's last message was not printed:\n%s", msg)
 	}

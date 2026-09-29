@@ -16,6 +16,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 type Config struct {
@@ -58,6 +59,8 @@ type Config struct {
 	Unknown []UnknownKey `json:"-"`
 	// SetKeys are the settings any file made, as dotted paths; see Sets.
 	SetKeys []string `json:"-"`
+	// Workspace is what loading decided about the workspace's own file.
+	Workspace WorkspaceTrust `json:"-"`
 }
 
 type ModelConfig struct {
@@ -513,6 +516,9 @@ func Default() Config {
 				"bash(git status*)", "bash(git diff*)", "bash(git log*)",
 				"bash(ls*)", "bash(pwd)", "bash(cat *)",
 			},
+			// A command that trusts a workspace for a nested run is the
+			// person's decision, not the agent's.
+			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,
@@ -539,16 +545,26 @@ func Default() Config {
 	}
 }
 
-// Load assembles configuration from all sources in precedence order.
+// Load assembles configuration from all sources in precedence order, taking
+// the workspace's file whole only once the person has trusted it.
 func Load(workspace string) (Config, error) {
+	return LoadWith(workspace, LoadOptions{})
+}
+
+// LoadWith is Load with the caller's say over the workspace file.
+func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg := Default()
 
+	var userFile string
 	if home, err := os.UserHomeDir(); err == nil {
-		if err := mergeFile(&cfg, filepath.Join(home, ".abhed", "config.json")); err != nil {
+		userFile = filepath.Join(home, ".abhed", "config.json")
+		if err := mergeFile(&cfg, userFile); err != nil {
 			return cfg, err
 		}
 	}
-	if err := mergeFile(&cfg, filepath.Join(workspace, ".abhed", "config.json")); err != nil {
+	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	cfg.Workspace = st
+	if err != nil {
 		return cfg, err
 	}
 
@@ -560,6 +576,9 @@ func Load(workspace string) (Config, error) {
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
+	if !o.Quiet {
+		warnUntrusted(cfg.Workspace)
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -585,6 +604,11 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	return mergeData(cfg, path, data)
+}
+
+// mergeData merges a file's contents, already read, into cfg.
+func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
 	if err := json.Unmarshal(data, cfg); err != nil {
@@ -719,6 +743,17 @@ func (c Config) Validate() error {
 	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
 	}
+	// Checked here so every path fails on a bad rule, not only the CLI.
+	for _, l := range []struct {
+		name  string
+		rules []string
+	}{{"deny", c.Permissions.Deny}, {"ask", c.Permissions.Ask}, {"allow", c.Permissions.Allow}} {
+		for _, r := range l.rules {
+			if _, err := policy.ParseRule(r); err != nil {
+				return fmt.Errorf("permissions.%s: %w", l.name, err)
+			}
+		}
+	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
 	}
@@ -813,12 +848,17 @@ func WriteDefault(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(Default(), "", "  ")
+	data, err := defaultConfigJSON()
 	if err != nil {
 		return err
 	}
 	// A config can carry keys. Owner-only, like every other file that can.
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	return os.WriteFile(path, data, 0o600)
+}
+
+func defaultConfigJSON() ([]byte, error) {
+	data, err := json.MarshalIndent(Default(), "", "  ")
+	return append(data, '\n'), err
 }
 
 // TelemetryConfig exports the event stream as OpenTelemetry traces.

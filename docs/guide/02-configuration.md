@@ -3,6 +3,11 @@
 Abhed reads `.abhed/config.json` from the workspace. `abhed init` writes a
 starter file; everything below is optional and has a default.
 
+The workspace file is untrusted until you trust its exact contents, because a
+repository can ship one. Until then Abhed applies only what makes it stricter
+and names each setting it ignored. See [Trusting the workspace
+configuration](#trusting-the-workspace-configuration).
+
 ```json
 {
   "model": {
@@ -350,3 +355,29 @@ decoding does, so `Model` is read as `model` and is not reported. A key that
 starts with `_` or `$`, such as `_comment` or `$schema`, is an annotation for
 people and is never reported. An unknown key in the managed file
 (`/etc/abhed/config.json`) is marked as such, since only its owner can correct it.
+
+## Trusting the workspace configuration
+
+A `.abhed/config.json` that came with a repository could turn on bypass mode,
+send your code to another model server, or start processes. Until you trust
+it, Abhed applies only its deny and ask rules, a narrower mode (`plan` or
+`default`), a stricter sandbox and lower limits. It ignores the rest, and
+prints a warning naming each ignored setting. `abhed doctor` lists them too.
+`serve`, `user` and `migrate` refuse to start when an untrusted file sets
+`auth`, `storage` or `server`, since running without those would leave the
+server open.
+
+- **Interactive `abhed`** asks once, listing what the file would change: trust,
+  don't trust, or view the file.
+- **Headless runs** (`-p`, `acp`, `rpc`, `resolve`, `serve`) never ask. They
+  use your stored decision, or trust the file for one run with
+  `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`.
+- **`abhed trust`** shows the file and what it would change. `abhed trust
+  grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
+  list` lists every decision.
+
+Trust is for the file's exact contents: after an edit it is asked about again.
+`abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and
+the managed `/etc/abhed/config.json` are not affected, and the managed file
+still wins. The full classification of every setting is in [Workspace
+trust](../architecture/workspace-trust.md).

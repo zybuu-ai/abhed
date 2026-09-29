@@ -39,6 +39,9 @@ type App struct {
 	taps       []TapBuilder
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
+	// trust is -trust-workspace: the say the command line gives over the
+	// workspace's own configuration file.
+	trust config.TrustChoice
 }
 
 // Option configures the App that Main builds.
@@ -158,21 +161,29 @@ func OnServe(h ServeHook) Option {
 }
 
 // subcommands are the ones Main dispatches itself, as its usage lists them.
-var subcommands = []struct{ name, about string }{
-	{"serve", "run the server: the console, the workbench and the API (-addr)"},
-	{"init", "write a starter .abhed/config.json in the workspace"},
-	{"doctor", "check the configuration, the model endpoint and the sandbox"},
-	{"providers", "list the model provider types this build supports"},
-	{"user", "manage local accounts: add, list, passwd, remove, import"},
-	{"secret", "manage stored secrets: set, list, rm"},
-	{"hawkeye", "report on a session, from its id or an exported events file"},
-	{"migrate", "apply the database schema as the owning role"},
-	{"resolve", "work on a forge issue in its own branch and open a pull request"},
-	{"acp", "speak the Agent Client Protocol on stdio, for editors"},
-	{"rpc", "take line-delimited JSON requests on stdin, answer on stdout"},
-	{"index", "build the workspace's search index ahead of a session"},
-	{"eval", "run the evaluation corpus against the configured model"},
-	{"version", "print the version and exit"},
+// subcommand is one Main dispatches itself. trust marks those that load the
+// workspace configuration and so take -trust-workspace right after the name.
+type subcommand struct {
+	name, about string
+	trust       bool
+}
+
+var subcommands = []subcommand{
+	{name: "serve", about: "run the server: the console, the workbench and the API (-addr)", trust: true},
+	{name: "init", about: "write a starter .abhed/config.json in the workspace, trusted"},
+	{name: "trust", about: "show, grant or revoke trust in the workspace's .abhed/config.json"},
+	{name: "doctor", about: "check the configuration, the model endpoint and the sandbox", trust: true},
+	{name: "providers", about: "list the model provider types this build supports"},
+	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
+	{name: "secret", about: "manage stored secrets: set, list, rm"},
+	{name: "hawkeye", about: "report on a session, from its id or an exported events file", trust: true},
+	{name: "migrate", about: "apply the database schema as the owning role", trust: true},
+	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},
+	{name: "acp", about: "speak the Agent Client Protocol on stdio, for editors", trust: true},
+	{name: "rpc", about: "take line-delimited JSON requests on stdin, answer on stdout", trust: true},
+	{name: "index", about: "build the workspace's search index ahead of a session", trust: true},
+	{name: "eval", about: "run the evaluation corpus against the configured model", trust: true},
+	{name: "version", about: "print the version and exit"},
 }
 
 // builtinCommands are the subcommands an edition cannot replace.
@@ -239,7 +250,7 @@ func (a *App) checkEdition(cfg config.Config) error {
 // the paid keys configure; the CLI loop does not, because none of those keys
 // change what a terminal session does.
 func (a *App) loadConfig(workspace string) (config.Config, error) {
-	cfg, err := config.Load(workspace)
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust})
 	if err != nil {
 		return cfg, err
 	}

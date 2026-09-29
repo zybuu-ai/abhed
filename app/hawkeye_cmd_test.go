@@ -21,7 +21,7 @@ func hawkeyeOn(t *testing.T, path string) (string, int) {
 	}
 	old := os.Stdout
 	os.Stdout = w
-	code := hawkeyeCmd(t.TempDir(), []string{path})
+	code := hawkeyeCmd(t.TempDir(), []string{path}, "")
 	os.Stdout = old
 	_ = w.Close()
 	out, _ := io.ReadAll(r)

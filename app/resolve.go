@@ -75,7 +75,7 @@ func resolveMode(cfg config.Config, fs *flag.FlagSet, mode string) string {
 	return mode
 }
 
-func resolveCmd(workspace string, args []string) int {
+func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	kind := fs.String("kind", "", "github, gitlab or gitea; inferred from the host when empty")
 	base := fs.String("base", "", "branch the pull request targets (default: the repository's default branch)")
@@ -84,6 +84,7 @@ func resolveCmd(workspace string, args []string) int {
 	mode := fs.String("mode", "auto", "permission mode for the run; a mode the managed configuration pins replaces the default")
 	allow := fs.String("allow", "", "comma-separated allow rules for the run, e.g. 'bash(go test*)'")
 	yes := fs.Bool("y", false, "open the pull request without asking (an allow rule forge_pr(*) does the same)")
+	trustWS := fs.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: abhed resolve [flags] <issue-url>\n"+
 			"  Reads the issue, works on it in a branch in its own worktree, commits, pushes,\n"+
@@ -95,6 +96,9 @@ func resolveCmd(workspace string, args []string) int {
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
 		fs.Usage()
 		return 2
+	}
+	if *trustWS {
+		trust = config.TrustGranted
 	}
 	stopper := cancelOnStop(stopReturns)
 	defer stopper.stop()
@@ -121,7 +125,7 @@ func resolveCmd(workspace string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	cfg, err := config.Load(workspace)
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		return fail(err)
 	}
@@ -169,7 +173,7 @@ func resolveCmd(workspace string, args []string) int {
 	}()
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
-		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode,
+		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode, WorkspaceTrust: trust, AllowDefaultModel: true,
 		Allow: splitRules(*allow), Sandbox: true,
 		OnEvent: func(ev abhed.Event) { resolveEvent(ev) },
 	})

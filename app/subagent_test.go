@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
@@ -72,6 +73,7 @@ func TestHeadlessSubagentAsksAreRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	helper := exec.Command(os.Args[0], "-test.run=^TestSubagentHelper$")
 	helper.Env = append(os.Environ(), "ABHED_SUBAGENT_WS="+ws, "HOME="+t.TempDir())
 	out, _ := helper.CombinedOutput()

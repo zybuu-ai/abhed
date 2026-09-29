@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	abhed "github.com/zybuu-ai/abhed/sdk"
@@ -330,6 +331,7 @@ func TestACPRealAgentShowsTheToolCallFirst(t *testing.T) {
 	}))
 	defer srv.Close()
 	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	t.Setenv(config.TrustEnv, "1")
 	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}

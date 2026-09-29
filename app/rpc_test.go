@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -70,7 +71,7 @@ func runRPC(t *testing.T, workspace string, lines ...string) string {
 		}
 		_ = inW.Close()
 	}()
-	rpcCmd(workspace)
+	rpcCmd(workspace, "")
 	_ = outW.Close()
 	<-done
 	return got.String()
@@ -106,6 +107,7 @@ func TestRPCRunsBashInTheConfiguredSandbox(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 
 	out := runRPC(t, ws,
 		`{"id":"1","method":"start","allow":["bash"]}`,
@@ -140,6 +142,7 @@ func TestRPCRefusesATierItCannotHonour(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	out := runRPC(t, ws, `{"id":"1","method":"start"}`, `{"id":"2","method":"quit"}`)
 	if strings.Contains(out, `"type":"ready"`) || !strings.Contains(out, `"type":"error"`) {
 		t.Fatalf("rpc started without the configured sandbox:\n%s", out)

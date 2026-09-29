@@ -27,6 +27,7 @@ Status: Draft · 2026-09-02
 | T5 | Exfiltration | Any egress path | Source code / secret loss |
 | T6 | Cross-tenant leakage | Shared cache, shared FS | Confidentiality breach |
 | T7 | Resource exhaustion | Runaway loop, fork bomb | Denial of service |
+| T8 | Repository-supplied configuration | A `.abhed/config.json` shipped in a cloned repository | Mode, allow rules, model endpoint, processes and sandbox widened before any prompt; untrusted until the person trusts its contents ([Workspace trust](workspace-trust.md)) |
 
 **T2/T3 are the defining hazard of an agentic system.** A coding agent's entire job is to
 read untrusted text and act on it. There is no known complete defense — which is exactly why

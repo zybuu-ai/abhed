@@ -33,6 +33,17 @@ choose its own tenant by setting a header — there is a test asserting exactly 
 The mode for a pilot, an air-gapped enclave, or a team standing Abhed up before
 central IT is involved.
 
+**Where these settings go.** Put the `auth` and `storage` blocks in the
+managed `/etc/abhed/config.json` (for a deployment), or in the server user's
+`~/.abhed/config.json`. A workspace's own `.abhed/config.json` works only once
+it is trusted (`abhed trust grant`, or `abhed -trust-workspace serve`): if an
+untrusted workspace file sets anything under `auth`, `storage` or `server`,
+`abhed serve`, `abhed user` and `abhed migrate` refuse to start rather than
+run with no sign-in. A grant is kept in the server user's
+`~/.abhed/trust.json`, so a container whose home does not persist needs the
+flag or the managed file. See [Workspace
+trust](../architecture/workspace-trust.md).
+
 ```json
 {
   "auth": {

@@ -102,7 +102,8 @@ func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), c
 		t.Fatal(err)
 	}
 	c.cmd = exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
-	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+t.TempDir(), "USERPROFILE="+t.TempDir())
+	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+t.TempDir(), "USERPROFILE="+t.TempDir(),
+		"ABHED_TRUST_WORKSPACE=1") // the test wrote this configuration
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

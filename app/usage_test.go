@@ -40,7 +40,7 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 		if !strings.HasPrefix(out, "Usage: abhed [flags] [command [args]]") && !strings.Contains(out, "\nUsage: abhed [flags]") {
 			t.Errorf("%v: no synopsis:\n%s", args, out)
 		}
-		for _, c := range append(subcommands, struct{ name, about string }{"audit-export", "a command of this edition"}) {
+		for _, c := range append(subcommands, subcommand{name: "audit-export", about: "a command of this edition"}) {
 			if !strings.Contains(out, "  "+c.name+strings.Repeat(" ", max(1, 11-len(c.name)))+c.about) {
 				t.Errorf("%v: %s is not listed with its description:\n%s", args, c.name, out)
 			}
