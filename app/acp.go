@@ -26,6 +26,10 @@ import (
 
 const acpProtocolVersion = 1
 
+// acpMetaKey names Abhed's fields in a message's _meta, namespaced as the
+// spec's extensibility section recommends.
+const acpMetaKey = "zybuu.ai/abhed"
+
 // acpAgent is what the adapter needs from a session. *abhed.Agent is one; the
 // conformance test supplies another so no model is needed to drive the wire.
 type acpAgent interface {
@@ -383,23 +387,35 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if bind == "" {
 		bind = callID
 	}
+	// The editor is shown the request as recorded, redacted; outside a loop
+	// there is no record and the call's own values are all there is.
+	shown, reason, shownScope := args, d.Reason, scope
+	if rec, ok := agent.RequestedOf(ctx); ok {
+		shown, reason, shownScope = rec.Args, rec.Reason, rec.Scope
+	}
+	// The tool_call goes out first, so the editor has the card this asks about.
+	if s.agent != nil {
+		flushed, cancel := context.WithTimeout(ctx, flushWait)
+		_ = s.agent.Flush(flushed)
+		cancel()
+	}
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
 	if scope != "" {
-		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + scope, "kind": "allow_always"})
+		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + shownScope, "kind": "allow_always"})
 	}
 	options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
-	meta := map[string]any{"step": d.Step, "reason": d.Reason, "destructive": d.Step == "destructive"}
+	meta := map[string]any{"tool": tool, "step": d.Step, "reason": reason, "destructive": d.Step == "destructive"}
 	if requestID != "" {
 		meta["requestId"] = requestID
 	}
 	if scope != "" {
-		meta["scope"] = scope
+		meta["scope"] = shownScope
 	}
 	res, err := c.call(ctx, "session/request_permission", map[string]any{
 		"sessionId": s.id,
-		"toolCall": map[string]any{"toolCallId": callID, "title": toolTitle(tool, args),
-			"kind": toolKind(tool), "status": "pending", "rawInput": args, "_meta": map[string]any{"abhed": meta}},
+		"toolCall": map[string]any{"toolCallId": callID, "title": toolTitle(tool, shown),
+			"kind": toolKind(tool), "status": "pending", "rawInput": shown, "_meta": map[string]any{acpMetaKey: meta}},
 		"options": options,
 	})
 	if err != nil {
@@ -411,26 +427,29 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 			OptionID string `json:"optionId"`
 		} `json:"outcome"`
 	}
-	_ = json.Unmarshal(res, &out)
-	if out.Outcome.Outcome != "selected" {
+	readable := json.Unmarshal(res, &out) == nil
+	switch {
+	case readable && out.Outcome.Outcome == "selected":
+	case readable && out.Outcome.Outcome == "cancelled":
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the editor cancelled the request"})
+		return false, nil
+	default:
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the editor's answer could not be read"})
 		return false, nil
 	}
-	switch out.Outcome.OptionID {
-	case always:
-		// An editor may send an option it was not offered.
-		if scope == "" {
-			return true, nil
-		}
+	switch {
+	case out.Outcome.OptionID == always && scope != "":
 		s.mu.Lock()
 		s.always[scope] = true
 		s.mu.Unlock()
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: scope})
 		return true, nil
-	case once:
+	case out.Outcome.OptionID == once:
 		return true, nil
-	case reject:
+	case out.Outcome.OptionID == reject:
 		return false, nil
 	}
+	// Includes an "always" that was withheld, as it is for every step but default.
 	abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the editor's answer named an option not offered for this call"})
 	return false, nil
 }
@@ -489,7 +508,7 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 		var p agent.ActionRequested
 		_ = json.Unmarshal(ev.Payload, &p)
 		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": toolTitle(p.Tool, p.Args),
-			"name": p.Tool, "kind": toolKind(p.Tool), "status": "pending", "rawInput": p.Args})
+			"kind": toolKind(p.Tool), "status": "pending", "rawInput": p.Args, "_meta": map[string]any{acpMetaKey: map[string]any{"tool": p.Tool}}})
 	case agent.EvActionApproved:
 		var p struct {
 			CallID string `json:"call_id"`

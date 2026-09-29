@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,40 @@ type acpClient struct {
 	in     io.Writer
 	lines  chan rpcMessage
 	answer func(method string, params json.RawMessage) any
+	// order is the tool_call updates and permission requests, as they arrived.
+	orderMu sync.Mutex
+	order   []string
+}
+
+// arrived returns the tool_call updates ("call c1") and permission requests
+// ("ask c1") in the order the editor read them.
+func (cl *acpClient) arrived() []string {
+	cl.orderMu.Lock()
+	defer cl.orderMu.Unlock()
+	return append([]string(nil), cl.order...)
+}
+
+func (cl *acpClient) note(m rpcMessage) {
+	var p struct {
+		Update   map[string]any `json:"update"`
+		ToolCall struct {
+			ToolCallID string `json:"toolCallId"`
+		} `json:"toolCall"`
+	}
+	_ = json.Unmarshal(m.Params, &p)
+	var line string
+	switch {
+	case m.Method == "session/request_permission":
+		line = "ask " + p.ToolCall.ToolCallID
+	case m.Method == "session/update" && p.Update["sessionUpdate"] == "tool_call":
+		line, _ = p.Update["toolCallId"].(string)
+		line = "call " + line
+	default:
+		return
+	}
+	cl.orderMu.Lock()
+	cl.order = append(cl.order, line)
+	cl.orderMu.Unlock()
 }
 
 func newACPClient(t *testing.T, answer func(string, json.RawMessage) any) *acpClient {
@@ -99,6 +134,7 @@ func newACPClient(t *testing.T, answer func(string, json.RawMessage) any) *acpCl
 			if json.Unmarshal(sc.Bytes(), &m) != nil {
 				continue
 			}
+			cl.note(m)
 			// A request from the agent is answered from the script, like a dialog.
 			if m.Method != "" && m.ID != nil && cl.answer != nil {
 				res, _ := json.Marshal(cl.answer(m.Method, m.Params))

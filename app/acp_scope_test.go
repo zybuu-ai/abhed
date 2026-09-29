@@ -18,7 +18,7 @@ import (
 // the option of that kind, counting the requests. An "always" it was not
 // offered is sent anyway, bound to the request as the offered ones are.
 func editorConn(t *testing.T, kind string) (*acpConn, *atomic.Int32) {
-	return answeringConn(t, func(params json.RawMessage) map[string]any {
+	return answeringConn(t, func(params json.RawMessage) any {
 		choice := chosen(params, kind)
 		if kind == "allow_always" && choice["outcome"].(map[string]any)["outcome"] == "cancelled" {
 			once := chosen(params, "allow_once")["outcome"].(map[string]any)["optionId"].(string)
@@ -28,14 +28,7 @@ func editorConn(t *testing.T, kind string) (*acpConn, *atomic.Int32) {
 	})
 }
 
-// fixedEditorConn is an adapter whose editor answers every request with optionID.
-func fixedEditorConn(t *testing.T, optionID string) (*acpConn, *atomic.Int32) {
-	return answeringConn(t, func(json.RawMessage) map[string]any {
-		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}}
-	})
-}
-
-func answeringConn(t *testing.T, answer func(json.RawMessage) map[string]any) (*acpConn, *atomic.Int32) {
+func answeringConn(t *testing.T, answer func(json.RawMessage) any) (*acpConn, *atomic.Int32) {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -105,17 +98,22 @@ func TestACPAskRuleIgnoresARememberedScope(t *testing.T) {
 	}
 }
 
-// An editor that sends "always" where it was not offered approves once and
-// widens nothing.
-func TestACPAlwaysNotOfferedApprovesOnce(t *testing.T) {
-	c, _ := editorConn(t, "allow_always")
-	s := &acpSession{id: "s1", always: map[string]bool{}}
-	ctx, answer := agent.ExpectAnswer(context.Background())
-	d := abhed.Decision{Decision: policy.Ask, Step: "ask", Scope: "bash(git tag *)"}
-	if ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"git tag v1"}`), d); err != nil || !ok {
-		t.Fatalf("ok %v err %v", ok, err)
-	}
-	if len(s.always) != 0 || answer.Granted != "" {
-		t.Fatalf("always %v answer %+v", s.always, answer)
+// An editor that sends "always" where it was withheld is refused by the
+// system and widens nothing, for an ask rule and a destructive command alike.
+func TestACPAlwaysNotOfferedIsRefused(t *testing.T) {
+	for _, d := range []abhed.Decision{
+		{Decision: policy.Ask, Step: "ask", Scope: "bash(git tag *)"},
+		{Decision: policy.Ask, Step: "destructive", Reason: "delete or replace a tag"},
+	} {
+		c, _ := editorConn(t, "allow_always")
+		s := &acpSession{id: "s1", always: map[string]bool{}}
+		ctx, answer := agent.ExpectAnswer(context.Background())
+		ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"git tag -d v1"}`), d)
+		if err != nil || ok || answer.By != agent.BySystem {
+			t.Fatalf("step %s: ok %v err %v answer %+v", d.Step, ok, err, answer)
+		}
+		if len(s.always) != 0 || answer.Granted != "" {
+			t.Fatalf("step %s: always %v answer %+v", d.Step, s.always, answer)
+		}
 	}
 }

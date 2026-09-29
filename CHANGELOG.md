@@ -6,21 +6,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- ACP editors must answer a permission request with one of the option ids it
+  offers. The ids are no longer the fixed `once`, `always` and `reject`; they
+  are bound to the request, and any other answer is refused. An editor that
+  picks from the offered options, as the protocol intends, needs no change.
+- An ACP editor that read the tool name from a `tool_call` update's root
+  `name` field reads it from `_meta["zybuu.ai/abhed"].tool`. The spec does not
+  allow custom root fields.
+
 ### Fixed
 
 - `abhed acp`: a permission request's `toolCallId` is now the id of the
-  `tool_call` it asks about. It was derived from the tool name and argument
-  length, so it matched no tool call and two calls could share it.
-- `abhed acp`: an answer is bound to its request. Option ids carry the
-  recorded request's id, and an answer naming an option not offered for that
-  call is refused and recorded as refused by the system. An editor that sent
-  the fixed ids `once`, `always` or `reject` without reading the offered
-  options now gets a denial.
+  `tool_call` it asks about, and that `tool_call` is sent first. The id was
+  derived from the tool name and argument length, so it matched no tool call
+  and two calls could share it.
+- `abhed acp`: an answer is bound to its request. An answer naming an option
+  not offered for that call, including *Always allow* where it was withheld
+  (which approved once before), is refused. A refused, cancelled or unreadable
+  answer is recorded as refused by the system, not as a reviewer's rejection.
 
 ### Added
 
-- `abhed acp`: a permission request's `toolCall._meta.abhed` carries the
-  policy `step`, `reason`, `destructive`, `scope` and `requestId`.
+- `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
+  carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
+  `requestId`. The title, `rawInput` and reason shown are the recorded copy.
 - SDK: `CallIDOf` and `RequestIDOf` name, inside `Options.Approve`, the call
   and the recorded request being asked about.
 
