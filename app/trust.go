@@ -71,7 +71,7 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 		fmt.Fprintln(out, "It has changed since you trusted it.")
 	} else {
 		fmt.Fprintln(out, "You have not trusted it yet. A file that came with a repository can widen what the agent may do.")
-		fmt.Fprintln(out, "Since 1.2.2, Abhed asks about workspace configuration, including files you wrote.")
+		fmt.Fprintln(out, "Abhed now asks about workspace configuration, including files you wrote.")
 	}
 	describeTrust(out, st)
 	for {
@@ -342,5 +342,5 @@ func noteIgnoredModel(cfg config.Config) {
 	}
 	fmt.Fprintf(os.Stderr, "abhed: note: the workspace configuration's model settings (%s) were ignored because it is not trusted; "+
 		"this run used provider %q at %s. Trust it with `abhed trust grant`, or -trust-workspace for one run\n",
-		strings.Join(keys, ", "), config.Printable(cfg.Model.Default), config.Printable(endpoint))
+		strings.Join(keys, ", "), config.Printable(cfg.Model.Default), config.PrintableURL(endpoint))
 }

@@ -405,6 +405,9 @@ func TestIgnoredTextCannotForgeLines(t *testing.T) {
 	if !strings.Contains(PrintableText("a\nb\tc\rd\x1b"), "a\nb\tc") || strings.ContainsAny(PrintableText("\r\x1b"), "\r\x1b") {
 		t.Fatal("PrintableText keeps newlines and tabs and nothing else")
 	}
+	if got := PrintableURL("http://bob:hunter2@h/v1?api_key=SEKRET&x=1"); strings.Contains(got, "hunter2") || strings.Contains(got, "SEKRET") || !strings.Contains(got, "x=1") {
+		t.Fatalf("PrintableURL kept a credential: %q", got)
+	}
 }
 
 // Credentials in ignored settings are redacted wherever they are shown.

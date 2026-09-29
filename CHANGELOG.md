@@ -19,7 +19,8 @@ All notable changes to Abhed are recorded here. The format follows
   - A deployment or CI job that keeps its settings (storage, auth, providers,
     MCP servers, extensions) in the workspace file must either run `abhed
     trust grant` once as the user it runs as, or start with
-    `-trust-workspace` (before or after the subcommand) or
+    `-trust-workspace` (before the subcommand, or as the first argument
+    after it) or
     `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
     `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
     migrate` refuse to start and say how to go on, rather than run with no
@@ -42,7 +43,8 @@ All notable changes to Abhed are recorded here. The format follows
     `_meta.abhed.workspaceTrust`.
 - SDK: a `ConfigDir` file is untrusted in the same way, so an embedding
   program that keeps its providers, MCP servers or extensions there loses
-  them, with only a line on stderr, until it trusts the file. Set
+  them, with a line on stderr (or, for the model, an error from `New`),
+  until it trusts the file. Set
   `Options.WorkspaceTrust` to `config.TrustGranted` when the program owns
   that file, or trust it once with `abhed trust grant`.
   `Agent.WorkspaceTrust()` reports the decision and what was ignored. When
@@ -95,8 +97,8 @@ All notable changes to Abhed are recorded here. The format follows
   `_meta.abhed.trust: "untrusted"`. The rpc `ready` event carries
   `workspace_trust`. The SDK adds `Options.WorkspaceTrust` and
   `Agent.WorkspaceTrust()`, and the config package adds `LoadWith`,
-  `InspectWorkspace`, `GrantTrust`, `DeclineTrust`, `RevokeTrust` and
-  `InitWorkspace`.
+  `InspectWorkspace`, `GrantTrust`, `DeclineTrust`, `RevokeTrust`,
+  `InitWorkspace`, `Printable`, `PrintableText` and `PrintableURL`.
 
 ## [1.2.1] - 2026-09-28
 

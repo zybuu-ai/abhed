@@ -144,7 +144,10 @@ That covers fields named like a key, secret, password, token, DSN, header or
 environment; free-form maps (`providers.*.extra`, `rag` `body`); the value
 after a flag such as `--token` or `--api-key` in `args`; and passwords and
 secret-looking query values in URLs. A field naming an environment
-variable (`*_env`) is shown.
+variable (`*_env`) is shown. Redaction is best-effort: it can miss a
+credential in an unexpected place (a short flag, a positional `Bearer`
+token) and hide some harmless values, so review the file itself before
+trusting it.
 
 **Headless** (`-p`, `rpc`, `acp`, `resolve`, `serve`, and every other
 subcommand). These never prompt. Trust comes from one of:

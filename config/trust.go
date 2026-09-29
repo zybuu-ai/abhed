@@ -416,6 +416,9 @@ func shortJSON(v any) string {
 // text from the file cannot draw lines of its own in the prompt.
 func Printable(s string) string { return printable(s, false) }
 
+// PrintableURL is Printable with a password or secret query value hidden.
+func PrintableURL(s string) string { return Printable(redactURL(s)) }
+
 // PrintableText is Printable keeping newlines and tabs, for a framed body.
 func PrintableText(s string) string { return printable(s, true) }
 
