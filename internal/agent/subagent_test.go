@@ -735,3 +735,42 @@ func TestWorktreeSubagentInheritsScopedState(t *testing.T) {
 		t.Fatalf("the worktree subagent saw %v, not its parent's login", saw)
 	}
 }
+
+// targeted is a mutating tool that says where its call sends a credential.
+type targeted struct{}
+
+func (targeted) Name() string            { return "deploy" }
+func (targeted) Description() string     { return "deploys" }
+func (targeted) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (targeted) Mutates() bool           { return true }
+func (targeted) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	return tools.Result{Content: "deployed"}
+}
+func (targeted) Target(*tools.Session, json.RawMessage) string {
+	return "cluster prod at https://api.prod.example:6443"
+}
+
+// A subagent's ask in the parent's record names where the call sends a
+// credential, as the child's own request does.
+func TestSubagentAskNamesItsTarget(t *testing.T) {
+	store := NewMemStore()
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "ship", "description": "ship"})}},
+		{calls: []model.ToolCall{{ID: "d1", Name: "deploy", Args: json.RawMessage(`{}`)}}},
+		{text: "could not"},
+		{text: "done"},
+	}}
+	l, _, f := taskTree(t, adapter, &askingApprover{}, store, store, false)
+	f.Tools.Add(targeted{})
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	asks := payloads[SubagentAsk](evs, EvSubagentAsk)
+	if len(asks) != 1 {
+		t.Fatalf("want one subagent.ask, got %d: %s", len(asks), types(evs))
+	}
+	if asks[0].Target != "cluster prod at https://api.prod.example:6443" {
+		t.Fatalf("subagent.ask does not name the target: %+v", asks[0])
+	}
+}

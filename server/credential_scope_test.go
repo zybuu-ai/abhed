@@ -230,3 +230,132 @@ func TestDeletingASessionClosesItsScopedState(t *testing.T) {
 		t.Fatalf("the session's scoped state was closed %d times on delete, want 1", closed.Load())
 	}
 }
+
+// A console subagent is part of its parent's conversation: it uses the login
+// its parent session made, and never another person's. Alice logs in, then
+// delegates; Bob only delegates. Bob's subagent must not reach the cluster with
+// Alice's token, and Alice's must.
+func TestSubagentUsesItsParentSessionsLogin(t *testing.T) {
+	const aliceToken = "tok-alice-5c90-subagent"
+	var mu sync.Mutex
+	var seen []string
+	cluster := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer "+aliceToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"kind":"Status","message":"Unauthorized"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/version") {
+			fmt.Fprint(w, `{"major":"1","minor":"29"}`)
+			return
+		}
+		fmt.Fprint(w, `{"kind":"NodeList","items":[{"metadata":{"name":"alice-only-node"}}]}`)
+	}))
+	defer cluster.Close()
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cluster.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The operator's kubeconfig names no reachable cluster, so an unnamed
+	// k8s_get works only through a login.
+	mgr := k8s.NewManager(k8s.Config{Kubeconfig: filepath.Join(t.TempDir(), "none"), CAFile: ca,
+		Clusters: []k8s.LoginCluster{{Name: "prod", Server: cluster.URL}}})
+	secret := func(name string) (string, error) {
+		if name == "ALICE_TOKEN" {
+			return aliceToken, nil
+		}
+		return "", fmt.Errorf("no secret named %s", name)
+	}
+	reg := tools.NewRegistry(k8s.GetTool{M: mgr}, k8s.LoginTool{M: mgr, Secret: secret})
+
+	loginArgs, _ := json.Marshal(map[string]string{"cluster": "prod", "token_secret": "ALICE_TOKEN"})
+	adapter := promptAdapter{calls: map[string]model.ToolCall{
+		"log in":   {ID: "l1", Name: "k8s_login", Args: loginArgs},
+		"delegate": {ID: "t1", Name: "task", Args: json.RawMessage(`{"description":"list nodes","prompt":"nodes"}`)},
+		"nodes":    {ID: "g1", Name: "k8s_get", Args: json.RawMessage(`{"resource":"nodes","cluster":"prod"}`)},
+	}}
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	cfg.Permissions.Mode = "bypass"
+	cfg.Permissions.Allow = []string{"secret(ALICE_TOKEN)"}
+	st := agent.NewMemStore()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: adapter,
+		Registry: reg, Store: st, Redact: noRedact{}})
+
+	ended := func(id string, n int) []agent.Event {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			evs, _ := st.Events(id)
+			got := 0
+			for _, e := range evs {
+				if e.Type == agent.EvSessionEnded {
+					got++
+				}
+			}
+			if got >= n {
+				return evs
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("session %s ended %d times, want %d: %v", id, got, n, typesOf(evs))
+			}
+		}
+	}
+	// What the subagent's own k8s_get returned, from the child's record.
+	childSaw := func(parent []agent.Event) string {
+		t.Helper()
+		for _, e := range parent {
+			if e.Type != agent.EvSubagentSpawned {
+				continue
+			}
+			var sp struct {
+				Session string `json:"session"`
+			}
+			_ = json.Unmarshal(e.Payload, &sp)
+			evs, _ := st.Events(sp.Session)
+			for _, c := range evs {
+				if c.Type == agent.EvObservation {
+					return string(c.Payload)
+				}
+			}
+		}
+		t.Fatalf("no subagent call in the parent's record: %v", typesOf(parent))
+		return ""
+	}
+
+	alice := sessionOf(t, callAs(t, s, "alice", "", "POST", "/v1/sessions", `{"prompt":"log in"}`))
+	ended(alice, 1)
+	if w := callAs(t, s, "alice", "", "POST", "/v1/sessions/"+alice+"/messages", `{"prompt":"delegate"}`); w.Code >= 300 {
+		t.Fatalf("continue: %d %s", w.Code, w.Body)
+	}
+	if got := childSaw(ended(alice, 2)); !strings.Contains(got, "alice-only-node") {
+		t.Fatalf("alice's subagent did not use her session's login: %s", got)
+	}
+
+	mu.Lock()
+	before := len(seen)
+	mu.Unlock()
+	bob := sessionOf(t, callAs(t, s, "bob", "", "POST", "/v1/sessions", `{"prompt":"delegate"}`))
+	if got := childSaw(ended(bob, 1)); strings.Contains(got, "alice-only-node") {
+		t.Fatalf("bob's subagent read the cluster with alice's login: %s", got)
+	}
+	mu.Lock()
+	for _, auth := range seen[before:] {
+		if strings.Contains(auth, aliceToken) {
+			t.Errorf("bob's subagent sent alice's token")
+		}
+	}
+	mu.Unlock()
+
+	for _, id := range []string{alice, bob} {
+		evs, _ := st.Events(id)
+		for _, e := range evs {
+			if strings.Contains(string(e.Payload), aliceToken) {
+				t.Errorf("alice's token reached the record in %s: %s", e.Type, e.Payload)
+			}
+		}
+	}
+}

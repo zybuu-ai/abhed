@@ -500,6 +500,8 @@ type SubagentAsk struct {
 	Reason    string          `json:"reason,omitempty"`
 	Scope     string          `json:"scope,omitempty"`
 	Via       string          `json:"via,omitempty"`
+	// Target is where the call sends a credential, as the child's request names it.
+	Target string `json:"target,omitempty"`
 }
 
 // mirrorInto copies the child's settled calls that matter to an audit into
@@ -535,7 +537,7 @@ func mirrorInto(parent *parentLink, child, description string) func(Event) {
 					parent.record(EvSubagentAsk, ev.Actor, SubagentAsk{
 						Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
 						Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
-						Reason: a.Reason, Scope: a.Scope, Via: a.Via,
+						Reason: a.Reason, Scope: a.Scope, Via: a.Via, Target: a.Target,
 					})
 				}
 			}

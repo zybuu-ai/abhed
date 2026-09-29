@@ -43,6 +43,11 @@ subagents run in, and record into, that person's session only. On a
 server every account shares one workspace, so those worktrees are
 in the same directory tree as everyone else's.
 
+A subagent, in a worktree or not, uses the cluster logins and connected
+hosts of the session that started it, and never another session's: a
+`k8s_login` in one person's console session does not reach another
+person's subagents. See [Clusters and machines](../ops/infrastructure.md).
+
 ## Isolation
 
 The interesting case is when subagents **write**. Two agents editing one

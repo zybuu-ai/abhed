@@ -284,6 +284,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
 		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
+		Vault: secrets.Default(),
 	})
 	// A skill's own directory is reachable, as it is from the command line.
 	for _, dir := range set.SkillDirs() {
@@ -480,10 +481,12 @@ func (a *Agent) Flush(ctx context.Context) error { return a.fwd.flush(ctx) }
 // errClosed is Flush's answer once the agent is closed and delivery has stopped.
 var errClosed = errors.New("abhed: the agent is closed; no more events are delivered")
 
-// Close releases the extensions and MCP servers and stops delivering events.
+// Close releases the extensions and MCP servers, the logins and hosts the
+// agent's session made, and stops delivering events.
 func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
+	a.loop.Session.CloseScoped()
 }
 
 // Providers lists the model provider types this build supports.
