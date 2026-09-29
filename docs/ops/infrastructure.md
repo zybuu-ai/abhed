@@ -38,8 +38,25 @@ production is not recoverable the way a file edit is.
 ### Logging in during a conversation
 
 A cluster token expires, and a stale one in a kubeconfig produces a 401 that
-reads like a permissions problem. When that happens, store the new token on
-the machine Abhed runs on, allow it, and tell the agent its name:
+reads like a permissions problem. `k8s_login` takes a fresh one, but only for
+a cluster the operator declared:
+
+```json
+{
+  "k8s": {
+    "enabled": true,
+    "ca_file": "/etc/abhed/cluster-ca.pem",
+    "clusters": [
+      { "name": "prod", "server": "https://api.prod.example.com:6443" },
+      { "name": "lab",  "server": "https://api.lab.example.com:6443",
+        "ca_file": "/etc/abhed/lab-ca.pem" }
+    ]
+  }
+}
+```
+
+Store the token on the machine Abhed runs on, allow it, and tell the agent
+the cluster and the secret's name:
 
 ```
 abhed secret set OCP_TOKEN         # paste the sha256~... token at the prompt
@@ -50,13 +67,31 @@ abhed secret set OCP_TOKEN         # paste the sha256~... token at the prompt
 ```
 
 ```
-log in to https://api.cluster.example.com:6443 with OCP_TOKEN
+log in to prod with OCP_TOKEN
 ```
 
-The agent calls `k8s_login` with the server and `token_secret: "OCP_TOKEN"`.
-It asks for approval, reads the token from the store, checks it against the
-cluster, and holds it **for that session only**. It is never written to your
-kubeconfig.
+The agent calls `k8s_login` with `cluster: "prod"` and
+`token_secret: "OCP_TOKEN"`. The approval prompt, and the record's
+`action.requested` (its `reason` and `target`), say where the token goes:
+cluster `prod` at its server, and how its certificate is checked. Abhed reads
+the token from the store, checks it against the cluster, and holds it
+**for that session only**. It is never written to your kubeconfig.
+
+**The token goes only to a declared cluster, over verified TLS.** The model
+names a cluster; it never supplies a URL. A name not in `k8s.clusters`, or a
+URL, is refused before the secret is read or any request is made, and with no
+clusters declared `k8s_login` reaches nothing. A server the model chose could
+be anyone's, and a person approving what reads as a login would not notice.
+
+The server's certificate is verified against the system roots plus the
+cluster's `ca_file`, or `k8s.ca_file` when it names none. The server must be
+`https://`. For a lab cluster with no usable certificate,
+`"insecure_skip_tls_verify": true` on that cluster turns verification off:
+whoever answers at that address, or in the path to it, gets the token. It is
+config only, never an argument, and Abhed names such a cluster on stderr at
+start, in `abhed doctor`, in the `abhed serve` banner, and in each approval
+prompt (`TLS NOT VERIFIED`). Clusters from a workspace's `.abhed/config.json`
+apply only once that file is trusted.
 
 The token is not an argument, and should not be pasted into the chat. An
 argument is judged, shown for approval, recorded, and sent back to the model
@@ -131,7 +166,11 @@ on it or see its name, and a name an `ssh.hosts` entry uses cannot be taken.
 
 For a host with a password rather than a key, store the password with
 `abhed secret set VM_PASSWORD`, allow `secret(VM_PASSWORD)`, and name it:
-the agent passes `password_secret: "VM_PASSWORD"`, never the password.
+the agent passes `password_secret: "VM_PASSWORD"`, never the password. A
+password goes only to a host whose key is already in `~/.ssh/known_hosts`:
+with `accept_host_key` the call is refused, since whoever answered at the
+address would receive it. A key file needs no pinned host, because key
+authentication signs and reveals nothing.
 `password_env` is for `ssh.hosts` only: from the model, it could name any
 variable in Abhed's environment, provider keys included, and send it to a
 host the model chose.

@@ -139,10 +139,14 @@ All notable changes to Abhed are recorded here. The format follows
   was also an argument to `k8s_login`, so it was kept in the record's
   `action.requested`, and from there in exports, the event stream, the
   console, OTLP and HawkEYE, shown in the approval prompt, and sent back to
-  the model on every turn. And `ssh_connect`'s `password_env` read any
-  variable in Abhed's own environment, provider keys included, as the
-  password for a host the model named. Affected: every release, 0.1.0
-  through 1.2.1.
+  the model on every turn. `k8s_login` also sent the token to whatever
+  server URL the model gave, with TLS verification off, so a
+  prompt-injected model could name its own host and a person approving
+  what read as a login handed the token over. And `ssh_connect`'s
+  `password_env` read any variable in Abhed's own environment, provider
+  keys included, as the password for a host the model named, and
+  `accept_host_key` let it go to whoever answered. Affected: every release,
+  0.1.0 through 1.2.1.
   - A login and a connected host now belong to the session that made them,
     its subagents included, and go when the session is deleted. Both tools
     refuse when there is no session to hold them.
@@ -155,6 +159,18 @@ All notable changes to Abhed are recorded here. The format follows
     call, and a value where a secret's name belongs is recorded as
     `[withheld: not a secret name]`. Arguments to either tool refused as
     malformed are not kept in `raw_args`.
+  - `k8s_login` takes `cluster`, a name from the new `k8s.clusters`, instead
+    of `server`. A URL or an undeclared name is refused before the secret is
+    read or any request is made. TLS is verified against the system roots
+    plus the cluster's `ca_file` or `k8s.ca_file`, and the server must be
+    `https://`. A cluster's `insecure_skip_tls_verify` is config only and is
+    named on stderr at start, in `abhed doctor`, in the `abhed serve` banner
+    and in the approval prompt.
+  - The approval prompt's reason, and the new `target` field of
+    `action.requested`, name the cluster and server a token goes to and how
+    its certificate is checked.
+  - `ssh_connect` sends a stored password only to a host whose key is
+    already in `known_hosts`, and refuses one with `accept_host_key`.
   - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
@@ -262,12 +278,28 @@ All notable changes to Abhed are recorded here. The format follows
   abhed secret set OCP_TOKEN
   "allow": ["secret(OCP_TOKEN)"]
   ```
-  A token pasted into a chat is still in that message's record; store it
-  instead. On `abhed serve`, secrets are the operator's, so users ask the
+  Then ask the agent to log in to the cluster by name. A token pasted into
+  a chat is still in that message's record; store it instead. On `abhed serve`, secrets are the operator's, so users ask the
   operator to store one; a login made with it holds for that user's session
   only. Log in again in each new session, and after a server restart.
+- `k8s_login` reaches only clusters declared in `k8s.clusters`, and takes
+  `cluster` (a name) instead of `server`. With none declared it refuses.
+  Declare each cluster people log in to, with its CA if the system roots do
+  not verify it:
+  ```json
+  "k8s": {"clusters": [{"name": "prod", "server": "https://api.prod.example.com:6443",
+                        "ca_file": "/etc/abhed/prod-ca.pem"}]}
+  ```
+  A cluster whose certificate verified nothing before, such as an OpenShift
+  lab with a self-signed CA, now fails the login with a certificate error
+  until its CA is configured, or until the operator sets
+  `insecure_skip_tls_verify` on it. Clusters in an untrusted workspace
+  `.abhed/config.json` are ignored.
 - A host added with `ssh_connect` is usable only in the session that added
-  it, and a name used in `ssh.hosts` cannot be reused for one.
+  it, and a name used in `ssh.hosts` cannot be reused for one. A password
+  needs the host's key in `known_hosts` first; connect once with `ssh`, or
+  use a key file.
+- `action.requested` gains `target`.
 
 ### Fixed
 
