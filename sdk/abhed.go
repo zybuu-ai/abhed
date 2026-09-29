@@ -284,7 +284,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		sess, rec, loopCfg)
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 
-	a := &Agent{loop: loop, store: store, host: host, id: id, registry: registry, fwd: fwd, redact: red}
+	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
+	a := &Agent{loop: loop, store: store, host: host, id: id, registry: loop.Tools, fwd: fwd, redact: red}
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -439,6 +440,7 @@ func approverFor(f func(context.Context, string, json.RawMessage, Decision) (boo
 	}
 	// The approver is shown the call as the record holds it, stored values redacted.
 	return approverFn(func(ctx context.Context, tool string, args json.RawMessage, d Decision) (bool, error) {
+		d.Reason, d.Scope = redactText(red, d.Reason), redactText(red, d.Scope)
 		return f(ctx, tool, redactJSON(red, args), d)
 	})
 }

@@ -3,6 +3,7 @@ package abhed_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -171,5 +172,77 @@ func TestSDKRefusesAnUnloadableSecretsStore(t *testing.T) {
 				t.Fatalf("the refusal does not name the file and the fix, or leaks the value: %v", err)
 			}
 		})
+	}
+}
+
+// A structured answer holding a stored value is returned redacted.
+func TestSDKStructuredAnswerIsRedacted(t *testing.T) {
+	vaultWith(t)
+	srv, _ := scripted(t, frameCall("result", map[string]string{"token": fakeSecret}))
+	a, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(), Mode: "default",
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	var out struct {
+		Token string `json:"token"`
+	}
+	schema := json.RawMessage(`{"type":"object","properties":{"token":{"type":"string"}},"required":["token"]}`)
+	if err := a.RunJSON(context.Background(), "give the token", schema, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Token != "[secret:FAKE_TOKEN]" {
+		t.Fatalf("the structured answer was not redacted: %q", out.Token)
+	}
+}
+
+// A run that ends without a result reports its last message redacted.
+func TestSDKNoResultMessageIsRedacted(t *testing.T) {
+	vaultWith(t)
+	say := `{"choices":[{"delta":{"content":"the token is ` + fakeSecret + `"}}]}`
+	srv, _ := scripted(t, say, say, say, say, say, say, say, say)
+	a, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(), Mode: "default", MaxTurns: 3,
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	schema := json.RawMessage(`{"type":"object","properties":{"token":{"type":"string"}},"required":["token"]}`)
+	err = a.RunJSON(context.Background(), "give the token", schema, nil)
+	var nr abhed.ErrNoResult
+	if !errors.As(err, &nr) {
+		t.Fatalf("want ErrNoResult, got %v", err)
+	}
+	if strings.Contains(nr.LastMessage, fakeSecret) || !strings.Contains(nr.LastMessage, "[secret:FAKE_TOKEN]") {
+		t.Fatalf("the last message was not redacted: %q", nr.LastMessage)
+	}
+}
+
+// The approver's decision, its suggested scope included, is redacted too.
+func TestSDKApproverScopeIsRedacted(t *testing.T) {
+	vaultWith(t)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := scripted(t, frameCall("write", map[string]string{"path": filepath.Join(ws, "n-"+fakeSecret+".txt"), "content": "x\n"}))
+	var seen []string
+	a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "default",
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
+		Approve: func(_ context.Context, _ string, _ json.RawMessage, d abhed.Decision) (bool, error) {
+			seen = append(seen, d.Scope, d.Reason)
+			return false, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, err := a.Run(context.Background(), "write it"); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(seen, "\n")
+	if len(seen) == 0 || !strings.Contains(got, "[secret:FAKE_TOKEN]") || strings.Contains(got, fakeSecret) {
+		t.Fatalf("the approver's decision was not redacted: %q", got)
 	}
 }
