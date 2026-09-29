@@ -135,7 +135,8 @@ the call, the reason and the `request_id` an answer names), and a
 an approver, with the same `request_id`. On a server with durable storage a
 subagent's session row belongs to the person whose session started it and
 names that session as its parent; it is not listed among their sessions, and
-nobody else can open it. Deleting the session deletes its subagents the same
+nobody else can open it. Resuming a subagent's session id is refused, in the
+CLI and the console; resume the session that started it. Deleting the session deletes its subagents the same
 way: in Postgres the rows are marked deleted and kept for the audit, as the
 session's own are. Calls the
 policy allowed on its own are in the subagent's record only. HawkEYE's

@@ -253,9 +253,9 @@ type SessionRecord struct {
 
 var _ agent.SessionCreator = (*Postgres)(nil)
 
-// CreateSubSession records a subagent's session row. Subagents are sessions in
-// their own right, so their events need a parent row like any other; the row
-// names its parent, so lists leave it out and a delete of the parent takes it.
+// CreateSubSession records a subagent's session row with no parent named, as
+// before CreateSubagentSession: such a row is listed like a session of its own
+// and is not deleted with the session that started it.
 func (p *Postgres) CreateSubSession(ctx context.Context, id, description string) error {
 	return p.CreateSubagentSession(ctx, id, "", description)
 }

@@ -342,6 +342,8 @@ All notable changes to Abhed are recorded here. The format follows
   `limits.max_tokens`. `abhed eval` runs with memory files, the `todo` list
   and subagents, and without MCP servers, extensions, rag corpora, the code
   index, Kubernetes and SSH, so a score does not depend on what those reach.
+- `/resume` and the console refuse a subagent's session id and name the
+  session that started it, through which the subagent's work goes on.
 - A skill pipeline's input is the request its own loop is answering, and its
   model steps run on that loop's current model. It was the last CLI prompt,
   process-wide, and the model the CLI started with.

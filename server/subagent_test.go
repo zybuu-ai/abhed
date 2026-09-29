@@ -238,6 +238,10 @@ func TestSubagentsOfTwoUsersAreKeptApart(t *testing.T) {
 	if w := callAs(t, s, "alice", "default", "GET", "/v1/sessions/"+children["alice"]+"/events", ""); w.Code != http.StatusOK {
 		t.Fatalf("alice cannot read her own subagent: %d", w.Code)
 	}
+	// Read, never resumed on its own: it goes on only through its parent.
+	if w := callAs(t, s, "alice", "default", "POST", "/v1/sessions/"+children["alice"]+"/messages", `{"prompt":"go on"}`); w.Code < 400 {
+		t.Fatalf("alice resumed her subagent's session on its own: %d %s", w.Code, w.Body)
+	}
 	var listed []sessionSummary
 	_ = json.Unmarshal(callAs(t, s, "alice", "default", "GET", "/v1/sessions", "").Body.Bytes(), &listed)
 	if len(listed) != 1 || listed[0].ID != parents["alice"] {

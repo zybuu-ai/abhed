@@ -438,3 +438,39 @@ func TestDoubleCtrlCEndsAsInterrupted(t *testing.T) {
 		}
 	}
 }
+
+// A subagent's record is not resumed on its own: it goes on only through the
+// session that started it.
+func TestResumeRefusesASubagentsSession(t *testing.T) {
+	ms := agent.NewMemStore()
+	msg, _ := json.Marshal(agent.Message{Text: "child work ZEBRA-77"})
+	_ = ms.Append(agent.Event{ID: "k1", SessionID: "s-kid", ParentID: "s-top", Seq: 1, Type: agent.EvUserMessage, Payload: msg})
+	sess, err := tools.NewSession(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
+	st.fresh()
+	st.open = func(id string) *agent.Loop {
+		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
+		st.loop, st.sessionID = l, id
+		return l
+	}
+	var shown bytes.Buffer
+	handleCommand(context.Background(), "/resume s-kid", ui.NewRenderer(&shown, false), policy.New(policy.ModeDefault), sess, st)
+	if st.loop != nil || st.sessionID == "s-kid" {
+		t.Fatal("a subagent's session was resumed on its own")
+	}
+	if err := resumeConversation(context.Background(), st, "s-kid", mustEvents(t, ms, "s-kid")); err == nil || !strings.Contains(err.Error(), "s-top") {
+		t.Fatalf("the refusal does not name the session to resume: %v", err)
+	}
+}
+
+func mustEvents(t *testing.T, st agent.Store, id string) []agent.Event {
+	t.Helper()
+	evs, err := st.Events(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
