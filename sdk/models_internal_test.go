@@ -237,3 +237,34 @@ func TestManagedDefaultPinsTheModel(t *testing.T) {
 		t.Fatalf("switch away from the managed model: %v, want ErrUnknownModel", err)
 	}
 }
+
+// SetModel and SwitchModelNamed from two goroutines never interleave: under
+// -race an unguarded adapter write is reported, and the name left current is
+// always the model the loop is on.
+func TestSetModelAndSwitchModelNamedExcludeEachOther(t *testing.T) {
+	a1, b1, c1 := newModelStub(t, "a", false), newModelStub(t, "b", false), newModelStub(t, "c", false)
+	modelsEnv(t, `{"model":{"default":"alpha","providers":{"alpha":`+provider(a1.URL, "m-a")+`,"beta":`+provider(b1.URL, "m-b")+`}}}`, "")
+	a := newModelsAgent(t, "")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			if err := a.SetModel(Provider{Type: "openai-compatible", BaseURL: c1.URL, Model: "m-c", ContextWindow: 8192}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		if err := a.SwitchModelNamed([]string{"alpha", "beta"}[i%2]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
+	want := map[string]string{"": "m-c", "alpha": "m-a", "beta": "m-b"}[a.current]
+	if got := a.loop.Adapter.Profile().Name; got != want {
+		t.Fatalf("current %q names %s, but the loop is on %s", a.current, want, got)
+	}
+}

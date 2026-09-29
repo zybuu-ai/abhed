@@ -516,14 +516,14 @@ func (a *Agent) SetModel(p Provider) error {
 	if err != nil {
 		return err
 	}
+	// Under forkMu, as SwitchModelNamed is, so the two never interleave.
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
 	// Recorded, so the record names the model that answers from here on.
 	if err := a.loop.SwitchModel("", next); err != nil {
 		return err
 	}
-	// No configured model is current now.
-	a.forkMu.Lock()
-	a.current = ""
-	a.forkMu.Unlock()
+	a.current = "" // no configured model is current now
 	return nil
 }
 
