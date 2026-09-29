@@ -40,6 +40,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
+| `Models`, `SwitchModelNamed` | list the configured models, and move the conversation to one by its configured name, recorded as `model.switched`. Only providers a trusted configuration file defines are listed, never a built-in nobody configured, and a managed `model.default` pins the model. An unknown name is `ErrUnknownModel`, a switch while a run is in progress is `ErrSwitchDuringRun`, and a provider whose `api_key_env` is unset is an error naming the variable |
 | `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses is an error and is not made |
 | `Providers` | the provider types this build supports |
 
