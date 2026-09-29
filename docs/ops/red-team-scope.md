@@ -46,9 +46,18 @@ Each is a property Abhed asserts. Breaking any one is a critical finding.
 
 1. **Workspace confinement.** No path, symlink, race, or shell construction lets
    the agent read or write outside its workspace.
-2. **Egress denial.** With `allow_network: false`, no channel reaches the network
-   — including DNS, ICMP, unix sockets to host daemons, and abuse of a permitted
-   toolchain (a package manager's fetch, a language runtime's HTTP client).
+2. **Egress denial.** With `allow_network: false` and neither `web_search` nor
+   `web_fetch` enabled, no channel reaches the network — including DNS, ICMP,
+   unix sockets to host daemons, and abuse of a permitted toolchain (a package
+   manager's fetch, a language runtime's HTTP client). With either web tool
+   enabled, network access through that tool is by design; what `web_fetch`
+   asserts instead is a target in its own right:
+   - no internal, loopback, link-local or metadata address is reached, on any
+     redirect hop, however the host resolves or is spelled;
+   - no stored secret is sent in a URL;
+   - each call is one GET with no body;
+   - neither `web_fetch.allowed_hosts` nor a deny rule on a host, port or path
+     can be stepped around by spelling the URL another way.
 3. **Deny is absolute for tool calls.** No mode, rule ordering, argument
    encoding, or command chaining gets a tool call that matches a deny rule
    executed, whether the agent or a person makes it. Out of scope: what a person

@@ -269,36 +269,56 @@ All notable changes to Abhed are recorded here. The format follows
   text) and `dropped_args` (keys a built-in tool dropped); the SDK's
   `ActionRequested` gains `RawArgs` and `Dropped`. Refusals of malformed
   arguments are recorded at the new policy step `args`.
-- `web_fetch`: reads one http or https page through Abhed, not the sandboxed
-  shell, and returns its text (HTML reduced to headings, paragraphs, lists and
-  links), in parts of up to `web_fetch.max_chars` characters. Off by default
-  and enabled on its own with `web_fetch.enabled`; `web_fetch.allowed_hosts`
-  limits it to named hosts. It refuses other schemes, any loopback, private,
-  link-local, metadata or reserved address (checked where it connects, on
-  every redirect hop), a URL holding a stored secret in any case, and a URL
-  not written in its one form: no surrounding spaces; a port as a plain
-  number, the default left out; an address as four decimal numbers or
-  compressed IPv6, never IPv4 as IPv6 or as one number, and no host ending
-  in a number that is not an IPv4 address; and no `.`, `..`, empty,
-  dots-only or control-character path segment, raw or encoded. So a rule on
-  a host, port or path prefix cannot be stepped around, and
-  `web_fetch(http*://host/*)` covers both schemes. A redirect to anything
-  but the same URL (or its https upgrade) is handed back as a new call. Policy rules match the URL:
-  `url` is now a subject key. With no `allowed_hosts`, each call asks in the
-  default, accept-edits, auto and plan modes unless an allow rule such as
+
+## [Unreleased — next minor]
+
+These entries are for the next minor release, not for a 1.2.x patch.
+
+### Upgrading
+
+- `url` is now a policy subject for MCP and extension tools. A tool whose
+  only subject-like argument is `url` is matched on that URL, so deny and
+  ask rules written as `mcp__x(https://…/*)` that never fired now do, and an
+  allow rule written that way now approves calls it did not before. Re-read
+  such rules before upgrading.
+- An argument named `url` that a tool's schema does not declare is now
+  refused, as the other subject keys are, rather than passed through.
+
+### Added
+
+- `web_fetch`: reads one http or https page through Abhed, not the
+  sandboxed shell, and returns its text (HTML reduced to headings,
+  paragraphs, lists and links), in parts of up to `web_fetch.max_chars`
+  characters. Off by default and enabled on its own with
+  `web_fetch.enabled`; `web_fetch.allowed_hosts` limits it to named hosts.
+  It refuses other schemes, any loopback, private, link-local, metadata or
+  reserved address (checked where it connects, on every redirect hop), a
+  URL holding a stored secret in any case, and a URL not written in its one
+  form: no surrounding spaces; a port as a plain number, the default left
+  out; an address as four decimal numbers or compressed IPv6, never IPv4 as
+  IPv6 or as one number, and no host ending in a number that is not an IPv4
+  address; and no `.`, `..`, empty, dots-only or control-character path
+  segment, raw or encoded, and no encoded slash. So a rule on a host, port
+  or path prefix cannot be stepped around, and `web_fetch(http*://host/*)`
+  covers both schemes. A redirect to anything but the same URL (or its
+  https upgrade) is handed back as a new call. Policy rules match the URL:
+  `url` is now a subject key.
+- With no `allowed_hosts`, each `web_fetch` call asks in the default,
+  accept-edits, auto and plan modes unless an allow rule such as
   `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
-  to any site; "always allow" is offered for any URL on the site. Bypass runs
-  it, a run with no one to ask refuses it, and `abhed eval`, which approves
-  every ask, fetches. With `allowed_hosts` set, calls to those hosts do not
-  ask on the scheme's default port; a URL naming another port asks.
+  to any site; "always allow" is offered for any URL on the site. Bypass
+  runs it, a run with no one to ask refuses it, and `abhed eval`, which
+  approves every ask, fetches. With `allowed_hosts` set, calls to those
+  hosts do not ask on the scheme's default port; a URL naming another port
+  asks.
 
 ### Changed
 
-- `bash`'s description says whether commands can reach the network. When the
-  sandbox has none and a command fails for that reason, the result ends with
-  a note saying so and pointing at `web_search` and `web_fetch`. A model that
-  ran `curl` in a sandbox with no network was given no reason for the
-  failure.
+- `bash`'s description says whether commands can reach the network. When
+  the sandbox has none and a command fails for that reason, the result ends
+  with a note saying so and pointing at `web_search` and `web_fetch`. A
+  model that ran `curl` in a sandbox with no network was given no reason
+  for the failure.
 - The system prompt names only the web tools the session has. It told the
   model to use `web_search` when search was off. `web_search`'s description
   pointed at a fetch tool that did not exist; it now names `web_fetch` when
@@ -307,12 +327,6 @@ All notable changes to Abhed are recorded here. The format follows
   set, as the server's already did.
 - `abhed serve` and `abhed doctor` report web fetch, and the console's
   overview shows it.
-- An argument named `url` that a tool's schema does not declare is now
-  refused, as the other subject keys are.
-- An MCP or extension tool whose only subject-like argument is `url` now has
-  that URL as its policy subject, so an argument-scoped rule such as
-  `mcp__browser__open(https://intranet/*)` matches it. Deny and ask rules
-  that never fired now do, and an allow rule written that way now approves.
 
 ## [1.2.1] - 2026-09-28
 
