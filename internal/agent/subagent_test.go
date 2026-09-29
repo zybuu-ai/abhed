@@ -529,7 +529,7 @@ func TestSubagentRecordCopiesAllowedAsksOnly(t *testing.T) {
 	appr := &grantingApprover{}
 	l, store, dir := parentWithTask(t, []scriptedTurn{
 		{calls: []model.ToolCall{taskCall("t1", "work")}},
-		{calls: []model.ToolCall{call("read", map[string]string{"file_path": "notes.txt"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "notes.txt"})}},
 		{calls: []model.ToolCall{bashCall("b1", "mkdir out")}},
 		{text: "made it"},
 		{text: "done"},
@@ -568,7 +568,7 @@ func TestFailedSubagentReturnIsRecorded(t *testing.T) {
 	store := NewMemStore()
 	l, _, _ := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
 		{calls: []model.ToolCall{taskCall("t1", "work")}},
-		{calls: []model.ToolCall{call("read", map[string]string{"file_path": "x"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "x"})}},
 	}}, AutoApprove{Yes: false}, store, failingStore{store}, false)
 	if _, err := l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)

@@ -880,7 +880,11 @@ func truncateKey(k string) string {
 // a time while the approved calls can then run together: two permission prompts
 // racing for the same terminal is unusable, and the user cannot tell which one
 // they are answering.
-func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.Result, TerminalReason) {
+//
+// It replaces the call's arguments with their canonical encoding, so everything
+// after it, the tool included, reads the value policy judged.
+func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
+	call := *c
 	tool, found := l.Tools.Get(call.Name)
 	if !found {
 		// Recorded like any refused call, so the record accounts for every
@@ -900,6 +904,12 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 			IsError: true,
 		}, ""
 	}
+
+	canon, err := tools.CanonicalArgs(tool, call.Args)
+	if err != nil {
+		return l.refuseArgs(call, err)
+	}
+	c.Args, call.Args = canon, canon
 
 	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
@@ -1019,6 +1029,24 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	}
 	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
+}
+
+// refuseArgs records a call whose arguments could not be read one way only.
+// The record keeps them as a string, so no reader decodes them differently.
+func (l *Loop) refuseArgs(call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+	raw, _ := json.Marshal(string(call.Args))
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: raw, Reason: why.Error(),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why.Error(), "step": "args", "by": BySystem,
+	})
+	return false, tools.Result{
+		Content: fmt.Sprintf("Refused: %s. Nothing was run. Send one JSON object with each argument once, spelled exactly as in the tool's schema.", why),
+		IsError: true,
+	}, ""
 }
 
 // invoke runs an already-authorized tool and records its observation.
@@ -1261,8 +1289,8 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
-	for i, call := range calls {
-		decision, res, terminal := l.authorize(ctx, call)
+	for i := range calls {
+		decision, res, terminal := l.authorize(ctx, &calls[i])
 		if terminal != "" {
 			results[i] = callOutcome{result: res, terminal: terminal, set: true}
 			l.appendEnded(calls, results, terminal, i+1)

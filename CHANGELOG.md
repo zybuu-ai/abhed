@@ -6,6 +6,36 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A tool call's arguments could be read one way by policy and another by the
+  tool. Policy took the subject from the exact key `command` (or `path`,
+  `pattern`, ...), while the tools decode into Go structs, which match keys
+  whatever their case and keep the last of a repeated key. So
+  `{"command":"echo safe","Command":"touch x"}` was judged, shown for
+  approval and recorded as `echo safe`, and ran `touch x`. The same held for
+  `write`, `edit` and `read` paths, and a `command` key added to a `write`
+  call was judged in place of its path. This got past deny, ask and allow
+  rules and the destructive-command confirmation, in every mode, and a
+  prompt-injected model can write such arguments. Affected: every release,
+  0.1.0 through 1.2.1.
+  - Arguments are now decoded once, strictly, before policy. A repeated key,
+    two keys that differ only in case (at any depth, with case folded as Go
+    folds it), data after the object, or arguments that are not an object
+    are refused. `bash`, `read`, `write`, `edit`, `glob`, `grep` and `todo`
+    also refuse a key their schema does not name. Other tools, MCP and
+    extension tools among them, refuse a key spelled like a declared one in
+    another case, or an undeclared `command`, `path` or other key policy
+    reads.
+  - The accepted arguments are re-encoded once. Policy, hooks, the monitor,
+    the approver, the record, the transcript and the tool, including what is
+    sent to an MCP server or extension, all get those same bytes.
+  - A refusal is recorded as a denial at step `args`, with the arguments
+    kept as a string, and the model is told the arguments were malformed.
+  - `policy.Evaluate` also denies ambiguous arguments at step `args` for
+    callers outside the loop, such as the workbench, and reads a lone key in
+    another case as the tool would.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading

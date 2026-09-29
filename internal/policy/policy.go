@@ -321,24 +321,25 @@ func (e *Engine) Screens(tool string) bool {
 // consequential field and ssh already asks unconditionally. Scoping ssh by host
 // needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
 func Subject(tool string, args json.RawMessage) string {
-	_, s := subjectOf(args)
+	_, s, _ := subjectOf(args)
 	return s
 }
 
-// subjectOf is Subject with the argument it came from.
-func subjectOf(args json.RawMessage) (key, subject string) {
-	var m map[string]any
-	if err := json.Unmarshal(args, &m); err != nil {
-		return "", ""
+// subjectOf is Subject with the argument it came from. Arguments are decoded
+// strictly and keys matched as a tool's struct matches them, so both read one value.
+func subjectOf(args json.RawMessage) (key, subject string, err error) {
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", "", err
 	}
-	for _, key := range []string{"command", "path", "pattern", "action", "resource", "host", "namespace", "name"} {
-		if v, found := m[key]; found {
+	for _, key := range tools.SubjectKeys {
+		if v, found := tools.Lookup(m, key); found {
 			if s, isStr := v.(string); isStr {
-				return key, s
+				return key, s, nil
 			}
 		}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // pathSubjects are the spellings a path rule is matched against. Deny and ask
@@ -426,7 +427,10 @@ func (e *Engine) pathRules(tool string) bool {
 
 // Evaluate applies the ordered decision flow.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	key, subject := subjectOf(args)
+	key, subject, err := subjectOf(args)
+	if err != nil {
+		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
+	}
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
 	// approves only a simple command, and never a multi-line subject.
 	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
