@@ -7,8 +7,12 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // blockedPrefixes are ranges no fetch may reach, beyond what netip's own
@@ -191,6 +195,11 @@ func canonical(raw string) (*url.URL, error) {
 	if port != "" {
 		hostport += ":" + port
 	}
+	// Written with /, %2F names another resource (GitLab's group%2Fproject),
+	// so there is no spelling to suggest.
+	if strings.Contains(strings.ToLower(u.EscapedPath()), "%2f") {
+		return nil, errors.New("the path has an encoded slash (%2F); such a URL cannot be fetched")
+	}
 	if err := plainPath(u.Path); err != nil {
 		return nil, err
 	}
@@ -219,6 +228,9 @@ func canonicalHost(host string) (string, error) {
 		return "", errors.New("the host is not a valid address")
 	}
 	labels := strings.Split(host, ".")
+	if slices.Contains(labels, "") {
+		return "", errors.New("the host has an empty part: two dots in a row, or more than one at the end")
+	}
 	last := labels[len(labels)-1]
 	if strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "" {
 		return "", errors.New("a host that ends in a number must be an IPv4 address written as four decimal numbers, such as 93.184.216.34")
@@ -281,6 +293,13 @@ func plainPath(p string) error {
 		if name == "" || strings.Trim(name, ". ") == "" {
 			return errors.New("the path has an empty, . or .. segment; write the path " +
 				"of the page itself, with each folder named once")
+		}
+		// A server that applies NFKC reads fullwidth dots as dots, and one that
+		// trims Unicode spaces drops a no-break space.
+		folded := strings.TrimFunc(norm.NFKC.String(name), unicode.IsSpace)
+		if strings.Trim(folded, ". ") == "" || strings.ContainsAny(folded, "/\\") {
+			return errors.New("the path has a segment that reads as . or .. or holds a slash " +
+				"once normalised; write the path of the page itself")
 		}
 		// A control character, or an escape left after decoding, is how a
 		// server that trims or decodes twice turns a segment into .. or /.

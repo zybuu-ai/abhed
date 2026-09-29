@@ -68,7 +68,10 @@ What it refuses:
   segment of dots, a control character or a doubly encoded `.`, `/` or `\`.
   A URL that carries another URL in its path, as `web.archive.org` links do
   (`https://web.archive.org/web/2020/https://example.com/`), has an empty
-  segment and cannot be fetched.
+  segment and cannot be fetched. Nor can one with an encoded slash (`%2F`)
+  in its path, such as GitLab's `projects/group%2Fproject` or npm's
+  `@scope%2Fname`: written with `/` it names another resource, so no
+  spelling is suggested.
 
 It follows a redirect only to the same URL or its upgrade from `http` to
 `https`, up to five. Any other redirect, including to another path on the

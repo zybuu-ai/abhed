@@ -640,3 +640,26 @@ func TestAHostListRunsUnaskedOnlyOnTheDefaultPort(t *testing.T) {
 		t.Error("a disabled tool set an ask")
 	}
 }
+
+// Round 3: segments that read as dots once Unicode-normalised, encoded
+// slashes with no spelling offered, and an empty host label named as such.
+func TestUnicodeDotsEncodedSlashesAndEmptyLabels(t *testing.T) {
+	for _, p := range []string{"/%EF%BC%8E%EF%BC%8E/admin", "/%C2%A0../x", "/..%C2%A0/x", "/%EF%BC%8F/x"} {
+		if _, err := (&Tool{}).check("https://example.com" + p); err == nil {
+			t.Errorf("%s: accepted", p)
+		}
+	}
+	for _, u := range []string{"https://gitlab.com/api/v4/projects/group%2Fproj", "https://registry.npmjs.org/@scope%2fname"} {
+		_, err := (&Tool{}).check(u)
+		if err == nil || !strings.Contains(err.Error(), "encoded slash") || strings.Contains(err.Error(), "write the URL as") {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+	_, err := (&Tool{}).check("https://example.com../")
+	if err == nil || !strings.Contains(err.Error(), "empty part") {
+		t.Errorf("example.com..: %v", err)
+	}
+	if _, err := (&Tool{}).check("https://example.com/caf%C3%A9/.well-known/x"); err != nil {
+		t.Errorf("an ordinary path refused: %v", err)
+	}
+}

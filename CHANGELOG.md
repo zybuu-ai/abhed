@@ -282,8 +282,8 @@ All notable changes to Abhed are recorded here. The format follows
   in a number that is not an IPv4 address; and no `.`, `..`, empty,
   dots-only or control-character path segment, raw or encoded. So a rule on
   a host, port or path prefix cannot be stepped around, and
-  `web_fetch(http*://host/*)` covers both schemes. A redirect to anything but the same URL (or its
-  https upgrade) is handed back as a new call. Policy rules match the URL:
+  `web_fetch(http*://host/*)` covers both schemes. A redirect to anything
+  but the same URL (or its https upgrade) is handed back as a new call. Policy rules match the URL:
   `url` is now a subject key. With no `allowed_hosts`, each call asks in the
   default, accept-edits, auto and plan modes unless an allow rule such as
   `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data

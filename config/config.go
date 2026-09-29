@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -939,6 +940,16 @@ func validHostPattern(h string) bool {
 	// *.com would allow every site under a top-level domain.
 	if wild && !strings.Contains(h, ".") {
 		return false
+	}
+	// A name ending in a number is never a host web_fetch fetches, and a
+	// wildcard over one would match address numbers: only a plain IPv4
+	// address may end in digits.
+	labels := strings.Split(h, ".")
+	if last := strings.ToLower(labels[len(labels)-1]); strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "" {
+		a, err := netip.ParseAddr(h)
+		if wild || err != nil || !a.Is4() || a.String() != h {
+			return false
+		}
 	}
 	for _, label := range strings.Split(h, ".") {
 		if label == "" || len(label) > 63 {
