@@ -27,6 +27,7 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -34,6 +35,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -203,6 +205,9 @@ type Options struct {
 	SkillRegistry *skills.Registry
 	// Gateway holds the MCP connections, so a server can be added at runtime.
 	Gateway *mcp.Gateway
+	// Extensions are the running extensions: each session's policy carries
+	// their veto, and compaction asks them for a summary. Nil runs none.
+	Extensions *extension.Host
 	// Index backs the retrieval tool, for a reindex triggered from settings.
 	Index        *index.Index
 	IndexOptions index.BuildOptions
@@ -1151,36 +1156,86 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		model:    adapter.Profile().Name,
 	}
 
-	cfg := agent.DefaultConfig()
-	cfg.SystemPrompt = agent.BuildSystemPrompt(agent.BuildOptions{
-		Profile:       "main",
-		Workspace:     s.opts.Workspace,
-		Model:         adapter.Profile().Name,
-		ContextWindow: adapter.Profile().ContextWindow,
-		MemoryFiles:   agent.DiscoverMemoryFiles(s.opts.Workspace),
-		Skills:        s.skillListing(skillReg),
-	})
-	cfg.MaxTurns = s.opts.Config.Limits.MaxTurns
-	// The server built its loops on the defaults and ignored the operator's
-	// context settings; the CLI has always honoured them.
-	if at := s.opts.Config.Context.CompactAt; at > 0 {
-		cfg.CompactAt = at
-	}
-	cfg.OffloadAt = s.opts.Config.Context.OffloadFraction()
+	// The prompt, loop settings and budget as the CLI builds them.
+	cfg := toolset.LoopConfig(s.opts.Config,
+		toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg)))
+	toolset.Police(s.opts.Extensions, pol, sessionID)
 
 	var approver agent.Approver = live
 	if spec.Unattended {
 		approver = agent.AutoApprove{Yes: false}
 	}
-	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	budget := toolset.Budget(s.opts.Config)
+	loop := agent.NewLoop(adapter, s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec),
+		pol, approver, sess, rec, cfg)
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
-	loop.Budget = agent.NewBudget(
-		int64(s.opts.Config.Limits.MaxBudgetTokens),
-		s.opts.Config.Limits.MaxSubagents,
-		s.opts.Config.Limits.NestedSubagents,
-	)
+	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
+	loop.Budget = budget
 	live.Loop = loop
 	return live, loop, nil
+}
+
+// sessionTools is the shared registry with this session's own tools bound to
+// it: the skill tool over the skills loaded now, and task and tasks spawning
+// into this session's workspace, record, policy and budget.
+//
+// A subagent has no approver of its own: its asks go to the approver of the
+// loop that spawned it, which for an attended session is the person in the
+// console, through the same pending request and answer as the parent's, and
+// for an unattended one the refuser. None is approved on its behalf.
+func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
+	registry *tools.Registry, skillReg *skills.Registry, pol *policy.Engine, sess *tools.Session,
+	budget *agent.Budget, cfg agent.Config, rec *agent.Recorder) *tools.Registry {
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
+	// Bound per session, so a skill reloaded in settings reaches the next session's tool too.
+	if skillReg != nil {
+		registry = registry.Clone()
+		registry.Remove("skill")
+		if skillReg.Len() > 0 {
+			registry.Add(toolset.SkillTool(skillReg))
+		}
+	}
+	f := &agent.SubagentFactory{
+		Adapter: adapter, Policy: pol, Session: sess, Budget: budget, Config: cfg,
+		Workspace: sess.Root, Redact: rec.Redact,
+		Store: s.subagentStore(sessionID, spec, mode),
+	}
+	return toolset.Subagents(registry, f, s.opts.Config.Limits.MaxParallelSubagents)
+}
+
+// subagentStore is where a session's subagents record. With session rows it
+// writes each child's row as the session owner's, in the session's tenant and
+// naming the session that spawned it, so a child is served only to whoever may
+// see its parent, is left out of lists, and is deleted with it.
+func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) agent.Store {
+	if s.sessions == nil {
+		return s.store
+	}
+	tenant, user, workspace := storeTenant(s.opts.Config, spec.Tenant), spec.User, s.opts.Workspace
+	return subSessions{EventStore: s.store, create: func(ctx context.Context, id, parentID, description string) error {
+		if parentID == "" {
+			parentID = sessionID
+		}
+		return s.sessions.CreateSession(ctx, store.SessionRecord{
+			ID: id, Tenant: tenant, User: user, Workspace: workspace,
+			Model: "subagent", Mode: mode, ParentID: parentID,
+			Prompt: description, StartedAt: time.Now().UTC(),
+		})
+	}}
+}
+
+// subSessions gives the subagent factory the parent's owner for each child row.
+type subSessions struct {
+	EventStore
+	create func(ctx context.Context, id, parentID, description string) error
+}
+
+var _ agent.SessionCreator = subSessions{}
+
+func (c subSessions) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
+	return c.create(ctx, id, parentID, description)
 }
 
 // resumeSession continues a finished session from its record, on this node.
@@ -1203,7 +1258,8 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if err != nil {
 		return nil, fmt.Errorf("read record: %w", err)
 	}
-	if len(events) == 0 {
+	// A subagent's record goes on only through the session that started it.
+	if _, child := agent.SubagentRecord(events); len(events) == 0 || child {
 		return nil, errNoSession
 	}
 	// Ownership and mode come from the stored row when there is one.
@@ -1578,7 +1634,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				// filter has to be here, or one person's list of prompts
 				// (which is a list of what they were working on, and often
 				// what they uploaded) is shown to everyone else in the tenant.
-				if !ownsSession(rec.Tenant, rec.User, tenant, user) {
+				if !ownsSession(rec.Tenant, rec.User, tenant, user) || rec.ParentID != "" {
 					continue
 				}
 				state, reason, prompt := "done", rec.TerminalReason, rec.Prompt
@@ -1648,6 +1704,11 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 	}
 	if s.sessions == nil {
 		return false
+	}
+	// Found by id where the store can: a list is bounded and leaves subagents out.
+	if g, ok := s.sessions.(sessionGetter); ok {
+		rec, err := g.GetSession(r.Context(), id)
+		return err == nil && ownsSession(rec.Tenant, rec.User, tenant, user)
 	}
 	records, err := s.sessions.ListSessions(r.Context(), 500)
 	if err != nil {

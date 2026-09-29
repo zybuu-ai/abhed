@@ -261,8 +261,14 @@ type Loop struct {
 	emptyTurns int
 
 	// todos is the agent's task list, recorded whenever it changes so a replay
-	// shows what the plan was believed to be at each point.
-	todos []Todo
+	// shows what the plan was believed to be at each point. Guarded because
+	// two todo calls in one turn run concurrently.
+	todos   []Todo
+	todosMu sync.Mutex
+
+	// prompt is the last message a person sent, which a skill's pipeline takes
+	// as its input; guarded by steerMu.
+	prompt string
 
 	// steer carries messages sent while the agent is working. Reading them at
 	// a turn boundary is what lets a user redirect a run instead of killing it.
@@ -353,17 +359,37 @@ func (l *Loop) deliverQueued() error {
 			return err
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
+		l.setPrompt(q.Text)
 	}
 	return nil
 }
 
+func (l *Loop) setPrompt(text string) {
+	l.steerMu.Lock()
+	l.prompt = text
+	l.steerMu.Unlock()
+}
+
+// Prompt is the last message a person sent this loop, or a subagent's task.
+func (l *Loop) Prompt() string {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return l.prompt
+}
+
 // Todos returns the current task list.
-func (l *Loop) Todos() []Todo { return l.todos }
+func (l *Loop) Todos() []Todo {
+	l.todosMu.Lock()
+	defer l.todosMu.Unlock()
+	return l.todos
+}
 
 // RecordTodos stores a new list and emits the event. It is exported so the
 // todo tool can report through the loop rather than carrying a recorder.
 func (l *Loop) RecordTodos(items []Todo, note string) {
+	l.todosMu.Lock()
 	l.todos = items
+	l.todosMu.Unlock()
 	// The list is loop state first and a record second: a store that cannot
 	// take this event will fail the next tool event, which does stop the run.
 	_, _ = l.Recorder.Record(EvTodoUpdated, ActorAgent, Trusted, TodoList{Items: items, Note: note})
@@ -455,6 +481,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
+	l.setPrompt(m.Text)
 	return l.run(ctx)
 }
 
@@ -967,7 +994,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	canon = tools.WithholdSecretValues(tool, canon)
 	c.Args, call.Args = canon, canon
 
-	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
+	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
 	if refused := l.secretsRefused(tool, call); refused != "" {
@@ -983,7 +1010,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision.Reason = "refused before approval: the call could not succeed"
 	}
 	if l.Monitor != nil && doomed == nil {
-		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
+		decision = l.reviewed(ctx, call, tools.MutatesCall(tool, call.Args), decision)
 	}
 
 	// Where a credential goes is part of what is approved, so it is in the
@@ -1361,23 +1388,6 @@ func (l *Loop) resultLimitChars() int {
 	return window / 4 * 36 / 10
 }
 
-// LoopHolder lets a tool built before the loop report into it once it exists.
-//
-// The registry is constructed first — tools have to be known before a loop can
-// be given them — so a tool that needs to record an event has nothing to record
-// into yet. A holder makes that ordering explicit and scoped, where a package
-// variable would silently share one loop across every session in the process.
-type LoopHolder struct{ loop *Loop }
-
-func (h *LoopHolder) Set(l *Loop) { h.loop = l }
-
-// RecordTodos forwards to the current loop, and does nothing before one is set.
-func (h *LoopHolder) RecordTodos(items []Todo, note string) {
-	if h != nil && h.loop != nil {
-		h.loop.RecordTodos(items, note)
-	}
-}
-
 // runCalls executes a turn's tool calls and appends their results.
 //
 // Independent calls run concurrently. A model that asks to read four files
@@ -1428,7 +1438,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 			continue
 		}
 		tool, found := l.Tools.Get(call.Name)
-		if found && tool.Mutates() {
+		if found && tools.MutatesCall(tool, call.Args) {
 			mutating = append(mutating, i)
 			continue
 		}

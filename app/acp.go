@@ -80,7 +80,14 @@ type acpSession struct {
 	// awaiting a result, oldest first.
 	lastIdless idlessCall
 	ranIdless  []idlessCall
+	// subAsks are the subagent asks shown as tool calls, by request id, so
+	// their answer settles the card and no other subagent.action draws one.
+	subAsks map[string]bool
 }
+
+// subagentCallID names a subagent's ask to the editor. A child's call ids are
+// its own and may repeat the parent's, so its request id is used instead.
+func subagentCallID(requestID string) string { return "subagent-" + requestID }
 
 type idlessCall struct{ id, tool string }
 
@@ -315,7 +322,9 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	s := &acpSession{id: "s-" + acpID(), cwd: cwd, always: map[string]bool{}}
 	opts := abhed.Options{
 		Workspace: cwd, ConfigDir: cwd, Sandbox: true, WorkspaceTrust: trust, AllowDefaultModel: true,
-		OnEvent: func(ev abhed.Event) { c.forward(s, ev) },
+		// The agent the terminal runs, subagents and configured tools included.
+		ConfiguredTools: true,
+		OnEvent:         func(ev abhed.Event) { c.forward(s, ev) },
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)
 		},
@@ -425,6 +434,10 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	// The request names the call its tool_call update names, and its options
 	// carry the engine's request id so an answer meant for another ask is refused.
 	callID, requestID := abhed.CallIDOf(ctx), abhed.RequestIDOf(ctx)
+	sub := agent.SubagentOf(ctx)
+	if sub != "" && requestID != "" {
+		callID = subagentCallID(requestID) // as forward names the subagent.ask
+	}
 	if callID == "" {
 		callID = requestID // as forward names a call without an id
 	}
@@ -465,12 +478,17 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if requestID != "" {
 		meta["requestId"] = requestID
 	}
+	title := toolTitle(tool, shown)
+	if sub != "" {
+		meta["subagent"] = sub
+		title = "subagent " + sub + ": " + title
+	}
 	if scope != "" && shownScope != "" {
 		meta["scope"] = shownScope
 	}
 	res, err := c.call(ctx, "session/request_permission", map[string]any{
 		"sessionId": s.id,
-		"toolCall": map[string]any{"toolCallId": callID, "title": toolTitle(tool, shown),
+		"toolCall": map[string]any{"toolCallId": callID, "title": title,
 			"kind": toolKind(tool), "status": "pending", "rawInput": shown, "_meta": map[string]any{acpMetaKey: meta}},
 		"options": options,
 	})
@@ -642,6 +660,41 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": status,
 			"content": []any{map[string]any{"type": "content", "content": text(p.Content)}}, "rawOutput": p.Content})
+	case agent.EvSubagentAsk:
+		// A subagent's call waiting on the editor: its card goes out before the ask.
+		var p agent.SubagentAsk
+		if json.Unmarshal(ev.Payload, &p) != nil || p.RequestID == "" {
+			break
+		}
+		s.mu.Lock()
+		if s.subAsks == nil {
+			s.subAsks = map[string]bool{}
+		}
+		s.subAsks[p.RequestID] = true
+		s.mu.Unlock()
+		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": subagentCallID(p.RequestID),
+			"title": "subagent " + p.Subagent + ": " + toolTitle(p.Tool, p.Args), "kind": toolKind(p.Tool),
+			"status": "pending", "rawInput": p.Args,
+			"_meta": map[string]any{acpMetaKey: map[string]any{"tool": p.Tool, "subagent": p.Subagent}}})
+	case agent.EvSubagentAction:
+		var p agent.SubagentAction
+		if json.Unmarshal(ev.Payload, &p) != nil || p.RequestID == "" {
+			break
+		}
+		s.mu.Lock()
+		shown := s.subAsks[p.RequestID]
+		delete(s.subAsks, p.RequestID)
+		s.mu.Unlock()
+		if !shown {
+			break
+		}
+		// The call's result is in the subagent's record; the editor learns the answer.
+		status, note := "completed", "Allowed; the subagent ran it."
+		if p.Decision != "allowed" {
+			status, note = "failed", "Denied: "+p.Reason
+		}
+		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": subagentCallID(p.RequestID),
+			"status": status, "content": []any{map[string]any{"type": "content", "content": text(note)}}})
 	case agent.EvTodoUpdated:
 		var p agent.TodoList
 		_ = json.Unmarshal(ev.Payload, &p)

@@ -1330,6 +1330,29 @@ function render(ev){
       break;
     }
 
+    case 'subagent.spawned': tx.appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
+    case 'subagent.returned': tx.appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+
+    // A subagent's call waiting on you, answered as the agent's own are, by
+    // its request id. Its own calls are in its record, not drawn here.
+    case 'subagent.ask': {
+      hideThinking();
+      const id = 'subagent-' + p.request_id;
+      const wrap = node('call');
+      const hdr = node('hdr');
+      hdr.append(node('tool', p.tool), node('arg', 'subagent ' + (p.subagent || '') + ' · ' + summarize(p.tool, p.args)));
+      wrap.appendChild(hdr);
+      (turnEl || newTurn()).appendChild(wrap);
+      calls.set(id, wrap);
+      approval(Object.assign({}, p, {call_id: id}), p.request_id);
+      break;
+    }
+    case 'subagent.action': {
+      if(p.request_id) resolveApproval('subagent-' + p.request_id,
+        p.decision === 'allowed' ? 'approved' : 'rejected', p.decision === 'allowed' ? 'ok' : 'no');
+      break;
+    }
+
     case 'conversation.forked': {
       tx.appendChild(node('note', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
       turnEl = null;
@@ -1573,6 +1596,9 @@ function approval(p, rid){
   h.textContent = 'Approval required — ' + p.tool;
   card.appendChild(h);
   if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: p.reason}));
+  // A subagent's ask answers for the session: a scope allowed here covers the agent too.
+  if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
+    {className: 'scope-note', textContent: 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'}));
 
   const pre = document.createElement('pre');
   try{
@@ -1590,7 +1616,7 @@ function approval(p, rid){
   // scope narrow enough to be safe to remember.
   const always = p.scope
     ? Object.assign(document.createElement('button'),
-        {className:'no', textContent:'Always allow', title: p.scope})
+        {className:'no', textContent: p.subagent ? 'Always allow in this session' : 'Always allow', title: p.scope})
     : null;
   const buttons = always ? [yes, no, always] : [yes, no];
   const decide = (ok, scope) => async () => {

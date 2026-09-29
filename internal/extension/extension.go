@@ -36,6 +36,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -166,7 +167,9 @@ type Extension struct {
 	mu     sync.Mutex
 	subs   map[Event]bool
 	dead   bool
-	logf   func(string, ...any)
+	// down mirrors dead for readers that must not wait behind a call in flight.
+	down atomic.Bool
+	logf func(string, ...any)
 }
 
 const defaultTimeout = 5 * time.Second
@@ -228,8 +231,12 @@ func Start(ctx context.Context, cfg Config, logf func(string, ...any)) (*Extensi
 
 func (e *Extension) Name() string { return e.cfg.Name }
 
+// Running reports whether the extension is still being asked: one that
+// crashed, hung or was closed is not, and the agent runs without it.
+func (e *Extension) Running() bool { return !e.down.Load() }
+
 // Subscribed reports whether this extension wants an event.
-func (e *Extension) Subscribed(ev Event) bool { return !e.dead && e.subs[ev] }
+func (e *Extension) Subscribed(ev Event) bool { return !e.down.Load() && e.subs[ev] }
 
 // Call sends one request and waits for the reply.
 //
@@ -300,6 +307,7 @@ func (e *Extension) die(format string, args ...any) {
 		return
 	}
 	e.dead = true
+	e.down.Store(true)
 	e.logf("extension %s disabled: %s", e.cfg.Name, fmt.Sprintf(format, args...))
 	_ = e.stdin.Close()
 	if e.cmd.Process != nil {
@@ -315,6 +323,7 @@ func (e *Extension) Close() error {
 		return nil
 	}
 	e.dead = true
+	e.down.Store(true)
 	_ = e.stdin.Close()
 	if e.cmd.Process != nil {
 		_ = e.cmd.Process.Kill()

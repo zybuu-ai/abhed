@@ -1,11 +1,10 @@
-package app
+package toolset
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -13,15 +12,17 @@ import (
 	"github.com/zybuu-ai/abhed/internal/skills"
 )
 
-// pipelineRunner builds the function the skill tool calls to execute a
-// declared pipeline.
+// PipelineRunner builds the function the skill tool calls to execute a
+// declared pipeline. A nil adapter runs the model steps on the calling loop's
+// model, as it is when the skill is called; an empty input takes the request
+// that loop is answering.
 //
 // A tool step is put through the loop that called the skill, as its own call is:
 // policy, hooks, the monitor, the approver, the sandbox, redaction and the
 // record. A model step is a completion on the configured adapter, and sees
 // tool output only once secrets are stripped from it. The pipeline decides
 // what happens and in what order; it does not decide what is permitted.
-func pipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, string) (string, error) {
+func PipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, string) (string, error) {
 
 	return func(ctx context.Context, s *skills.Skill, input string) (string, error) {
 		var p pipeline.Pipeline
@@ -39,6 +40,13 @@ func pipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, 
 		if err != nil {
 			return "", err
 		}
+		stepModel := adapter
+		if stepModel == nil {
+			stepModel = steps.Adapter()
+		}
+		if input == "" {
+			input = steps.Input()
+		}
 
 		runner := &pipeline.Runner{
 			Tool: func(ctx context.Context, name string, args json.RawMessage) (string, error) {
@@ -53,7 +61,7 @@ func pipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, 
 				return res.Content, nil
 			},
 			Model: func(ctx context.Context, prompt string, schema json.RawMessage) (string, error) {
-				return completeOnce(ctx, adapter, steps.Redact(prompt), schema)
+				return completeOnce(ctx, stepModel, steps.Redact(prompt), schema)
 			},
 			// Each stage is recorded, so the decomposition, the sufficiency
 			// verdict and the reason for every extra hop are visible in the
@@ -160,27 +168,4 @@ func format(v any) string {
 		}
 		return string(b)
 	}
-}
-
-// lastPrompt returns the request the current turn is answering.
-//
-// A pipeline needs it and the skill tool's arguments do not carry it: the model
-// calls the skill by name, not by repeating the question. Holding it here keeps
-// the tool's schema unchanged, so a skill invocation still looks the same to
-// the model.
-var currentPrompt struct {
-	mu sync.Mutex
-	s  string
-}
-
-func setPrompt(p string) {
-	currentPrompt.mu.Lock()
-	currentPrompt.s = p
-	currentPrompt.mu.Unlock()
-}
-
-func lastPrompt() string {
-	currentPrompt.mu.Lock()
-	defer currentPrompt.mu.Unlock()
-	return currentPrompt.s
 }

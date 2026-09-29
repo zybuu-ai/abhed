@@ -1586,6 +1586,10 @@ function render(ev){
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  // A subagent's call waiting on you, answered as the agent's own are, by its request id.
+  case 'subagent.ask': { const id = 'subagent-' + p.request_id;
+    asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
+  case 'subagent.action': if(p.request_id) settleAsk('subagent-' + p.request_id, p.decision === 'allowed' ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break;
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
@@ -1649,7 +1653,9 @@ function askApproval(p, rid){
         // Only the server running the session can check the answer against its request.
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
         a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
-  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope, '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
+  // A subagent's ask answers for the session: a scope allowed here covers the agent too.
+  if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'));
+  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon();
   // A pending question is never left half off screen, wherever the reader had scrolled to.
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });

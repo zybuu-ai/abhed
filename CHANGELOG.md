@@ -353,6 +353,28 @@ All notable changes to Abhed are recorded here. The format follows
   request to that cluster, not when the context is opened. `abhed doctor`
   and the `abhed serve` banner no longer run it, so a helper that fails is
   reported by the first cluster call instead.
+- `abhed rpc` and `abhed acp` sessions now have the CLI's tool set: they
+  start the MCP servers and extensions a trusted workspace configuration
+  names, load its skills, and can run subagents. A CI job on `abhed rpc`
+  whose configuration names a server or extension it never started before
+  now starts it.
+- `abhed serve` now starts the configured extensions; their veto applies to
+  every console and workbench session, and their tools are offered there.
+- Embedders: `limits.max_budget_tokens`, `limits.max_tokens`,
+  `context.compact_at` and `context.offload_at` now apply. With
+  `Options.ConfiguredTools` the built-in prompt carries the workspace's
+  `ABHED.md` memory files, as the CLI's does; without it, as before, it
+  carries none. `abhed rpc` and `abhed acp` set it.
+- `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
+  asks in default mode, is refused in plan mode, and is refused where nobody
+  can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
+  names `tasks`. A script that relied on `-p` making worktrees needs
+  `-allow tasks` or the rule in its configuration.
+- `Postgres.CreateSubagentSession` records a subagent's row with its
+  parent session's id; `CreateSubSession` is unchanged and records none.
+  `ListSessions` leaves out rows with a parent
+  and returns `ParentID`; deleting a session marks its subagents' rows
+  deleted too.
 
 ### Fixed
 
@@ -373,6 +395,21 @@ All notable changes to Abhed are recorded here. The format follows
   1.0.0.
 - `abhed resolve` could close its session before it printed the agent's last
   messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
+- `abhed serve` did not start the configured extensions, so their veto did
+  not apply to console or workbench sessions and their tools were missing.
+- The SDK's `todo` tool recorded nothing, so an ACP editor's plan panel never
+  updated. It now records `todo.updated` on every surface.
+- The CLI's subagents spent from a budget of their own, apart from the
+  session's, so `limits.max_budget_tokens` did not count their spend against
+  the conversation and the conversation's against them. There is now one
+  budget, and a subagent stops when it runs out rather than after.
+- A subagent's `todo` list replaced its parent's; it is now kept in the
+  subagent's own record.
+- A skill reloaded in the server's settings reached the next session's
+  prompt but not its `skill` tool, which kept the skills loaded at start.
+- A CLI subagent's session row in Postgres did not name its parent, so it
+  was listed as a session of user `agent`, and deleting the conversation
+  left it behind.
 
 ### Added
 
@@ -399,6 +436,48 @@ All notable changes to Abhed are recorded here. The format follows
   call for the agent, such as `skill research pipeline`; the SDK's
   `ActionRequested` and HawkEYE's `calls[].via` show it, and an approval
   prompt names the pipeline that asks.
+- Subagents (`task`, `tasks`) in the console and workbench, `abhed rpc`,
+  `abhed acp` and the SDK, with the CLI's guarantees: the parent session's
+  policy judges each call, the budget and `limits.max_parallel_subagents`
+  are the session's, worktrees are made in the session's workspace, and
+  `subagent.*` events are in the parent's record. A subagent's ask goes to
+  whoever the session asks: the person in the console, on the parent
+  session's prompt; the ACP editor's permission dialog; the SDK's `Approve`.
+  With nobody to ask (an unattended server run, `rpc`, an SDK agent without
+  `Approve`) it is refused. On a server with durable storage a subagent's
+  session row is its parent's owner's, names the parent, and is not listed.
+- `subagent.ask` in the parent's record: a subagent's call waiting on the
+  approver, with the call, reason, scope and the `request_id` an answer
+  names. `subagent.action` gains `request_id`.
+- Skill pipelines run in console and workbench sessions, their steps put
+  through the session's loop as from the CLI.
+- SDK: `Options.ConfiguredTools` gives an embedded agent the CLI's tool set as
+  the configuration enables it: subagents, MCP servers, extension tools,
+  skills and pipelines, web search, the code index, rag corpora, Kubernetes
+  and SSH. Off by default; `abhed rpc` and `abhed acp` turn it on.
+- `abhed acp`: a subagent's ask is a permission request on a `tool_call`
+  named `subagent-<request id>`, sent first, and its answer settles that call.
+- `server.Options.Extensions` puts running extensions' veto and compaction
+  summary on every session. The capabilities list names `task` and `tasks`,
+  and gives each configured extension's `status` (`running`, `stopped` or
+  `not started`); the serve banner names one that is not running.
+- The console and workbench say on a subagent's approval card that *Always
+  allow* covers the whole session, the agent and every subagent.
+
+### Changed
+
+- The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
+  system prompt, loop settings and budget in one place, so a surface differs
+  from the CLI only where it says why. The server now applies
+  `limits.max_tokens`. `abhed eval` runs with memory files, the `todo` list
+  and subagents, and without MCP servers, extensions, rag corpora, the code
+  index, Kubernetes and SSH, so a score does not depend on what those reach.
+- `/resume` and the console refuse a subagent's session id; its work goes on
+  through the session that started it. The CLI names that session when the
+  record carries it, and the console answers as for an unknown session.
+- A skill pipeline's input is the request its own loop is answering, and its
+  model steps run on that loop's current model. It was the last CLI prompt,
+  process-wide, and the model the CLI started with.
 
 ## [1.2.1] - 2026-09-28
 

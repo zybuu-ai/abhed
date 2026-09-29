@@ -118,6 +118,24 @@ func TestCrashedExtensionIsSkippedNotFatal(t *testing.T) {
 	}
 }
 
+// One server shares an extension across sessions, so a crash seen by one call
+// races the others asking whether it is still subscribed; -race catches it.
+func TestConcurrentCallsToACrashingExtension(t *testing.T) {
+	h := hostWith(t, "crasher.sh")
+	done := make(chan struct{})
+	for range 8 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for range 5 {
+				h.OnToolCall(context.Background(), "s1", "bash", []byte(`{"command":"ls"}`))
+			}
+		}()
+	}
+	for range 8 {
+		<-done
+	}
+}
+
 // A hung extension must time out rather than stall the agent forever.
 func TestHungExtensionTimesOut(t *testing.T) {
 	h := NewHost(func(string, ...any) {})

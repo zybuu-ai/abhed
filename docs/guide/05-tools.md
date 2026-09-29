@@ -7,7 +7,8 @@
 | `read`, `write`, `edit` | files, scoped to the workspace |
 | `glob`, `grep` | find files and search contents |
 | `bash` | shell, sandboxed, destructive commands always confirm |
-| `todo` | the agent's task list for multi-step work |
+| `todo` | the agent's task list for multi-step work, recorded as `todo.updated` |
+| `task`, `tasks` | run one subagent, or several at once; see [Parallel subagents](14-parallel-subagents.md) |
 | `skill` | load a procedure on demand |
 | `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng |
 | `ssh`, `ssh_connect` | remote execution, off by default |
@@ -78,6 +79,14 @@ Edits and saves made by a person in the [workbench](16-workbench.md) are
 never refused: they are saved, with the warning. Refused changes appear in
 [HawkEYE](15-hawkeye.md) as `broken-edit`. `tools.syntax_check` sets the
 behaviour: `refuse` (the default), `report` to apply and warn, or `off`.
+
+The console and workbench, `abhed rpc`, `abhed acp` and `abhed eval` build
+the same tool set as the CLI, from one place, together with the system
+prompt and its `ABHED.md` memory files. Where one differs it is by design:
+the SDK takes the configured tools only with `Options.ConfiguredTools`, and
+`abhed eval` leaves out MCP servers, extensions, rag corpora, the code index
+and the Kubernetes and SSH tools, so a score depends on the harness and the
+task rather than on what those reach.
 
 ## Adding your own
 

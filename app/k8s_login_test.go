@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // A cluster the operator marks insecure is named on stderr at start, as an SSH
@@ -21,7 +23,8 @@ func TestInsecureLoginClusterWarns(t *testing.T) {
 		{Name: "prod", Server: "https://api.prod.example:6443"},
 	}
 	var warn bytes.Buffer
-	ts := buildInfra(cfg, secrets.Open(filepath.Join(t.TempDir(), "s.json")), &warn)
+	ts := toolset.InfraTools(cfg, secrets.Open(filepath.Join(t.TempDir(), "s.json")),
+		func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
 	if !strings.Contains(warn.String(), `"lab" skips TLS verification`) {
 		t.Fatalf("no warning for an insecure cluster: %q", warn.String())
 	}

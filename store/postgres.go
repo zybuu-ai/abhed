@@ -251,13 +251,22 @@ type SessionRecord struct {
 	ContextWindow *int64
 }
 
-// CreateSubSession records a subagent's session row. Subagents are sessions in
-// their own right, so their events need a parent row like any other.
+var _ agent.SessionCreator = (*Postgres)(nil)
+
+// CreateSubSession records a subagent's session row with no parent named, as
+// before CreateSubagentSession: such a row is listed like a session of its own
+// and is not deleted with the session that started it.
 func (p *Postgres) CreateSubSession(ctx context.Context, id, description string) error {
+	return p.CreateSubagentSession(ctx, id, "", description)
+}
+
+// CreateSubagentSession is CreateSubSession with the spawning session's id,
+// so the row is listed and deleted with its parent.
+func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
 		ID: id, Tenant: p.tenant, User: "agent",
 		Workspace: description, Model: "subagent", Mode: "auto",
-		StartedAt: time.Now().UTC(),
+		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})
 }
 
@@ -405,8 +414,9 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
-		       context_tokens, context_window
-		FROM sessions WHERE deleted_at IS NULL ORDER BY started_at DESC LIMIT $1`, limit)
+		       context_tokens, context_window, COALESCE(parent_id,'')
+		FROM sessions WHERE deleted_at IS NULL AND parent_id IS NULL
+		ORDER BY started_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +428,7 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 		if err := rows.Scan(&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt,
 			&s.StartedAt, &s.EndedAt, &s.TerminalReason,
 			&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
-			&s.ContextTokens, &s.ContextWindow); err != nil {
+			&s.ContextTokens, &s.ContextWindow, &s.ParentID); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -432,12 +442,12 @@ func (p *Postgres) GetSession(ctx context.Context, id string) (SessionRecord, er
 		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
-		       context_tokens, context_window
+		       context_tokens, context_window, COALESCE(parent_id,'')
 		FROM sessions WHERE id = $1 AND deleted_at IS NULL`, id).Scan(
 		&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt,
 		&s.StartedAt, &s.EndedAt, &s.TerminalReason,
 		&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
-		&s.ContextTokens, &s.ContextWindow)
+		&s.ContextTokens, &s.ContextWindow, &s.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s, ErrNotFound
 	}
@@ -678,9 +688,16 @@ func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Dur
 func (p *Postgres) DeleteSession(sessionID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// The session's subagents go with it: their records hold its work. They
+	// are marked the same way, so their rows stay for the audit too.
 	_, err := p.pool.Exec(ctx, `
+		WITH RECURSIVE tree(id) AS (
+			SELECT id FROM sessions WHERE id = $1
+			UNION
+			SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
+		)
 		UPDATE sessions SET deleted_at = now(), deleted_by = user_id
-		WHERE id = $1 AND deleted_at IS NULL`, sessionID)
+		WHERE id IN (SELECT id FROM tree) AND deleted_at IS NULL`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
 	}

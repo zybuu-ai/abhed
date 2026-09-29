@@ -18,6 +18,30 @@ decides that, not a flag.
 Up to eight per call. Concurrency is bounded by `limits.max_parallel_subagents`
 (zero means all at once), and each subagent still counts against
 `limits.max_subagents` and the token budget exactly as a single `task` does.
+The budget (`limits.max_budget_tokens`) is one allowance for the session and
+all its subagents: a subagent spends from it turn by turn and stops when it
+runs out, as its parent does.
+
+## Where subagents run
+
+`task` and `tasks` are part of the same agent on every surface:
+
+| Surface | Subagents | A subagent's ask goes to |
+|---|---|---|
+| CLI, interactive | yes | your prompt, naming the subagent |
+| CLI, `-p` | yes | nobody: refused as `headless` |
+| `abhed serve`: console and workbench | yes | the person in the console, on the parent session |
+| server, unattended runs (schedules) | yes | nobody: refused as `headless` |
+| `abhed acp` | yes | the editor's permission dialog |
+| `abhed rpc` | yes | nobody, as the rpc session has no approver: refused |
+| SDK | with `Options.ConfiguredTools` | your `Approve`, or refused without one |
+| `abhed eval` | yes | the eval's own approver, which approves (eval refuses to run under a managed configuration) |
+
+A subagent's worktrees are made under the session's workspace, and on a
+server each session binds its own `task` and `tasks`, so one person's
+subagents run in, and record into, that person's session only. On a
+server every account shares one workspace, so those worktrees are
+in the same directory tree as everyone else's.
 
 ## Isolation
 
@@ -65,6 +89,11 @@ worktree's own path, is refused rather than followed.
 
 ## Requirements and limits
 
+- `tasks` with `"isolation": "worktree"` is a mutating call, because it
+  makes branches and checkouts before any subagent runs: it asks in default
+  mode, plan mode refuses it, and with nobody to ask it is refused unless an
+  allow rule (`tasks`) permits it. Without isolation it asks nothing; each
+  subagent's own calls are judged as they come.
 - Isolation needs the workspace to be a git repository, and `git` on the
   path. Asking for it elsewhere is refused with that reason, before spawning.
 - A worktree the subagent left exactly as it was made — no change, no commit,
@@ -85,10 +114,16 @@ and anything it routes to a person goes to the parent's approver:
   from subagents running together come one at a time, and one whose turn is
   interrupted while it waits is not asked;
 - in `-p`, nobody can be asked, so they are refused as `headless`, as the
-  parent's own asks would be.
+  parent's own asks would be;
+- in the console and the workbench, the parent session's approval prompt,
+  labelled with the subagent, answered like the agent's own: the answer names
+  the subagent's request, and a stale answer is refused. In a run with nobody
+  attending it, a scheduled one, they are refused as `headless`;
+- in an ACP editor, a permission request whose tool call is named
+  `subagent-<request id>`, sent after a `tool_call` of the same id.
 
-Subagents are offered in the CLI only; the server, `abhed rpc`, `abhed acp`
-and the SDK do not have `task` or `tasks`.
+Wherever a person can be asked, nothing a subagent asks is approved on its
+behalf; only `abhed eval`, which has no person, approves its own asks.
 
 A subagent runs inside its parent's session, so an "Always allow" chosen
 earlier in the session covers its calls, and one chosen at a subagent's
@@ -96,8 +131,17 @@ prompt lasts for the rest of the session, as it would for the parent.
 
 Each subagent keeps its own record, whose events carry the parent's session
 as `parent_id`. The parent's record holds `subagent.spawned` and
-`subagent.returned` naming that `session`, and a `subagent.action` for every
-call of the subagent's that was refused or put to an approver. Calls the
+`subagent.returned` naming that `session`, a `subagent.ask` for each call
+the subagent put to the approver (written before the approver is asked, with
+the call, the reason and the `request_id` an answer names), and a
+`subagent.action` for every call of the subagent's that was refused or put to
+an approver, with the same `request_id`. On a server with durable storage a
+subagent's session row belongs to the person whose session started it and
+names that session as its parent; it is not listed among their sessions, and
+nobody else can open it. Resuming a subagent's session id is refused, in the
+CLI and the console; resume the session that started it. Deleting the session deletes its subagents the same
+way: in Postgres the rows are marked deleted and kept for the audit, as the
+session's own are. Calls the
 policy allowed on its own are in the subagent's record only. HawkEYE's
 report on the parent lists each subagent's session, a `subagent-denied`
 finding for each refused call and a `subagent-destructive` warning for each

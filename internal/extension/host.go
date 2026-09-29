@@ -53,6 +53,15 @@ func (h *Host) Names() []string {
 	return out
 }
 
+// Running maps each started extension's name to whether it is still asked.
+func (h *Host) Running() map[string]bool {
+	out := make(map[string]bool, len(h.exts))
+	for _, e := range h.exts {
+		out[e.Name()] = e.Running()
+	}
+	return out
+}
+
 func (h *Host) Close() {
 	for _, e := range h.exts {
 		_ = e.Close()

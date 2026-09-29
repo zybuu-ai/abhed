@@ -44,6 +44,34 @@ function resolveApproval(){}
 	}
 }
 
+// A subagent's ask is drawn as an approval card that says whose it is and
+// that Always allow covers the session, answered by the subagent's request id
+// on the parent session, and settled by the subagent.action that follows.
+func TestConsoleAsksForASubagent(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
+const tx = new El('div'); tx.id='tx';
+globalThis.__root = tx;
+const els = { tx };
+globalThis.$ = id => els[id] || null;
+let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1';
+const calls = new Map();
+let approvals = new Map();
+const stats = {turns:0,tin:0,tout:0,cached:0,tools:{},reason:null,compactions:0};
+globalThis.hideThinking = ()=>{};
+globalThis.showThinking = ()=>{};
+globalThis.refresh = ()=>{};
+globalThis.openDrawer = ()=>{};
+globalThis.paintOpenPill = ()=>{};
+globalThis.__posted = [];
+const api = async (path, opts) => { __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+function newTurn(){ turnEl = node('turn'); tx.appendChild(turnEl); return turnEl; }
+`
+	if out, err := runConsoleCases(t, "ask", harness, "console_ask_cases.mjs"); err != nil {
+		t.Fatalf("the console's subagent ask failed:\n%s", out)
+	}
+}
+
 // TestConsoleWorkbenchDrawsContentAsText drives the functions that put a file
 // and a diff on the page. What they are given is untrusted — a repository's
 // files, the agent's edits — and the page runs with the session cookie, so

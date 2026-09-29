@@ -27,6 +27,24 @@ type Tool interface {
 	Run(ctx context.Context, sess *Session, args json.RawMessage) Result
 }
 
+// CallMutator is a tool whose calls mutate or not by their arguments, such as
+// one that changes the host only when asked to.
+type CallMutator interface {
+	MutatesCall(args json.RawMessage) bool
+}
+
+// MutatesCall reports whether this call of t can change state: Mutates, or
+// what a CallMutator says of these arguments.
+func MutatesCall(t Tool, args json.RawMessage) bool {
+	if t.Mutates() {
+		return true
+	}
+	if m, ok := t.(CallMutator); ok {
+		return m.MutatesCall(args)
+	}
+	return false
+}
+
 // Prechecker is an optional check that needs no side effect to make. The loop
 // runs it before asking a person, so nobody approves a call that cannot succeed.
 type Prechecker interface {
