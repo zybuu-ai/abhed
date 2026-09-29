@@ -35,6 +35,7 @@ Where a credential goes is the operator's choice, not the model's.
 `k8s_login` sends a token only to a cluster named in `k8s.clusters`, over TLS
 verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
+`k8s_get` and `k8s_apply` then take `cluster` to use that login.
 `ssh_connect` sends a password only to a host whose key is already in
 `known_hosts`.
 

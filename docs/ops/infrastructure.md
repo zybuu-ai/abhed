@@ -104,8 +104,18 @@ A login belongs to the session that made it, and to that session's
 subagents. Another session on the same server, another user's included,
 keeps using the operator's kubeconfig, and a new session, or the same one
 after a server restart, logs in again. The secret itself is the operator's:
-on `abhed serve`, users ask the operator to store one, and a
-`secret(NAME)` rule decides who may use it.
+on `abhed serve`, users ask the operator to store one. A `secret(NAME)` rule
+decides whether sessions on this deployment may use it, not which user may:
+any session there can name a secret the rules allow. What stays per session
+is the login made with it.
+
+After logging in, name the cluster on each call: `k8s_get` and `k8s_apply`
+take `cluster`, a declared cluster this session logged in to. With a single
+login and no `cluster` or `context`, that login is used; with several, the
+call must name one. A kubeconfig `context` always uses the kubeconfig's own
+credential: a login token is never put on a kubeconfig client, whose TLS
+settings and exec credential are not the ones the login was approved with.
+A session's logins close their connections when it is deleted.
 
 **Do not expect `oc login` through bash to work.** Three separate things stop
 it, and the combination produced a confusing failure in practice:
@@ -162,7 +172,9 @@ connect to 52.116.120.159, key is at ~/Downloads/id_rsa
 the agent calls `ssh_connect`, which asks for approval once, verifies the
 connection works, and registers the host **for that session only**. Nothing
 is written to `~/.ssh/config`. Another session on the same server cannot run
-on it or see its name, and a name an `ssh.hosts` entry uses cannot be taken.
+on it or see its name. A name an `ssh.hosts` entry uses, in any case, cannot
+be taken, and names are plain ASCII so one cannot pass for another. The
+approval for each `ssh` command names the account and address it runs on.
 
 For a host with a password rather than a key, store the password with
 `abhed secret set VM_PASSWORD`, allow `secret(VM_PASSWORD)`, and name it:

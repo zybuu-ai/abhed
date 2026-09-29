@@ -153,12 +153,18 @@ All notable changes to Abhed are recorded here. The format follows
   - `k8s_login` takes `token_secret`, the name of a token stored with
     `abhed secret set`, instead of `token`; `ssh_connect` takes
     `password_secret` instead of `password_env`. Each name needs its own
-    `secret(NAME)` allow rule, as a `bash` secret does. The model never
-    holds the value, so nothing records it.
+    `secret(NAME)` allow rule, as a `bash` secret does. Rules apply to the
+    whole deployment, so on `abhed serve` any session there may name a
+    secret the rules allow; what is per session is the login made with it.
+    The tools never ask the model for a value, so the record holds names.
   - A `token` or `password` sent anyway is dropped before policy reads the
     call, and a value where a secret's name belongs is recorded as
     `[withheld: not a secret name]`. Arguments to either tool refused as
-    malformed are not kept in `raw_args`.
+    malformed are not kept in `raw_args`. A value the model writes where
+    nothing expects one, such as in `cluster`, `namespace`, a dropped key's
+    name, or a call to a tool this deployment does not have, is still
+    recorded as written, as it already stands in the model's own reply;
+    paste credentials into `abhed secret set`, not into the chat.
   - `k8s_login` takes `cluster`, a name from the new `k8s.clusters`, instead
     of `server`. A URL or an undeclared name is refused before the secret is
     read or any request is made. TLS is verified against the system roots
@@ -166,12 +172,23 @@ All notable changes to Abhed are recorded here. The format follows
     `https://`. A cluster's `insecure_skip_tls_verify` is config only and is
     named on stderr at start, in `abhed doctor`, in the `abhed serve` banner
     and in the approval prompt.
+  - `k8s_get` and `k8s_apply` take `cluster`, a declared cluster the session
+    logged in to. A login token goes only on that cluster's own client, never
+    on a kubeconfig client, whose TLS settings and exec credential are not
+    the ones approved. With one login and no `cluster` or `context`, the
+    login is used; with several, the call must name one.
+  - A session's logins close their connections when the session is
+    deleted or a login is replaced, and idle connections time out.
+  - `k8s.clusters` is checked when the configuration loads: names must be
+    present and distinct ignoring case, and servers `https://` URLs.
   - The approval prompt's reason, and the new `target` field of
     `action.requested`, name the cluster and server a token goes to and how
     its certificate is checked.
   - `ssh_connect` sends a stored password only to a host whose key is
     already in `known_hosts`, and refuses one with `accept_host_key`.
-  - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses.
+  - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses, in
+    any case, and a name that is not plain ASCII. The approval for an `ssh`
+    command names the account and address it runs on.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
 
@@ -279,24 +296,34 @@ All notable changes to Abhed are recorded here. The format follows
   "allow": ["secret(OCP_TOKEN)"]
   ```
   Then ask the agent to log in to the cluster by name. A token pasted into
-  a chat is still in that message's record; store it instead. On `abhed serve`, secrets are the operator's, so users ask the
-  operator to store one; a login made with it holds for that user's session
-  only. Log in again in each new session, and after a server restart.
+  a chat is still in that message's record; store it instead. On `abhed
+  serve`, secrets are the operator's, so users ask the operator to store
+  one, and any session on the deployment may name a secret the rules allow;
+  a login made with it holds for that session only. Log in again in each
+  new session, and after a server restart.
 - `k8s_login` reaches only clusters declared in `k8s.clusters`, and takes
   `cluster` (a name) instead of `server`. With none declared it refuses.
   Declare each cluster people log in to, with its CA if the system roots do
   not verify it:
   ```json
-  "k8s": {"clusters": [{"name": "prod", "server": "https://api.prod.example.com:6443",
+  "k8s": {"clusters": [{"name": "prod",
+                        "server": "https://api.prod.example.com:6443",
                         "ca_file": "/etc/abhed/prod-ca.pem"}]}
   ```
   A cluster whose certificate verified nothing before, such as an OpenShift
   lab with a self-signed CA, now fails the login with a certificate error
   until its CA is configured, or until the operator sets
   `insecure_skip_tls_verify` on it. Clusters in an untrusted workspace
-  `.abhed/config.json` are ignored.
+  `.abhed/config.json` are ignored. A configuration whose clusters repeat a
+  name, leave one empty, or give a server that is not `https://` no longer
+  loads.
+- After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
+  the kubeconfig's own credential, not the login. Name the logged-in
+  cluster as `cluster` instead. A session logged in to several clusters
+  must name one on each call.
 - A host added with `ssh_connect` is usable only in the session that added
-  it, and a name used in `ssh.hosts` cannot be reused for one. A password
+  it, and a name used in `ssh.hosts`, in any case, cannot be reused for
+  one, nor can a name that is not plain ASCII. A password
   needs the host's key in `known_hosts` first; connect once with `ssh`, or
   use a key file.
 - `action.requested` gains `target`.
