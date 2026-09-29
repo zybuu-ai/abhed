@@ -40,7 +40,7 @@ runs out, as its parent does.
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
 subagents run in, and record into, that person's session only. On a
-Community server every account shares one workspace, so those worktrees are
+server every account shares one workspace, so those worktrees are
 in the same directory tree as everyone else's.
 
 ## Isolation
