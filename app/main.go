@@ -205,11 +205,17 @@ func Main(args []string, opts ...Option) int {
 }
 
 // leadingTrustFlag takes -trust-workspace when it is the first argument
-// after the subcommand, where it can only be a flag; serve, eval and resolve
-// also parse it among their own flags.
+// after a subcommand the registry marks as loading the workspace
+// configuration; for any other, an edition's included, it is left alone.
+// serve, eval and resolve also parse it among their own flags.
 func leadingTrustFlag(args []string, trust *bool) []string {
-	switch args[0] {
-	case "trust", "secret", "init", "version", "providers":
+	takes := false
+	for _, c := range subcommands {
+		if c.name == args[0] {
+			takes = c.trust
+		}
+	}
+	if !takes {
 		return args
 	}
 	switch args[1] {
@@ -521,10 +527,14 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
+		noteIgnoredModel(appCfg)
 		return agent.TermError.ExitCode()
 	}
 	if !jsonOut {
 		printUsage(r, loop.Usage())
+	}
+	if reason.ExitCode() != 0 {
+		noteIgnoredModel(appCfg)
 	}
 	return reason.ExitCode()
 }

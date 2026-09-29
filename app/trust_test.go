@@ -348,11 +348,50 @@ func TestLeadingTrustFlag(t *testing.T) {
 		{[]string{"user", "add", "-trust-workspace"}, false, []string{"user", "add", "-trust-workspace"}},
 		{[]string{"rpc", "--", "-trust-workspace"}, false, []string{"rpc", "--", "-trust-workspace"}},
 		{[]string{"secret", "-trust-workspace"}, false, []string{"secret", "-trust-workspace"}},
+		{[]string{"trust", "-trust-workspace"}, false, []string{"trust", "-trust-workspace"}},
+		{[]string{"audit-export", "-trust-workspace"}, false, []string{"audit-export", "-trust-workspace"}},
 	} {
 		var got bool
 		left := leadingTrustFlag(append([]string(nil), c.args...), &got)
 		if got != c.trust || strings.Join(left, " ") != strings.Join(c.left, " ") {
 			t.Errorf("%v: trust %v left %v", c.args, got, left)
 		}
+	}
+}
+
+// Every registered subcommand says whether it loads the workspace
+// configuration, and the ones that never read it do not take the flag.
+func TestSubcommandsDeclareTrust(t *testing.T) {
+	never := map[string]bool{"init": true, "trust": true, "providers": true, "secret": true, "version": true}
+	for _, c := range subcommands {
+		if c.trust == never[c.name] {
+			t.Errorf("%s: trust %v; a subcommand that loads the workspace configuration takes the flag, one that does not never does", c.name, c.trust)
+		}
+	}
+}
+
+// A headless run that fails says, where it fails, that the workspace file's
+// model settings were not used.
+func TestFailedRunNamesIgnoredModelSettings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		http.Error(w, `{"error":{"message":"no such model"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	home, ws := trustWorkspace(t, `{"model":{"default":"gpu","providers":{"gpu":{"type":"openai-compatible","base_url":"http://gpu.internal/v1","model":"big","context_window":8192}}}}`)
+	user := `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` +
+		srv.URL + `","model":"m","context_window":8192}}}}`
+	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(user), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := mainHelper([]string{"-C", ws, "-p", "hi"})
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("the run against a failing model succeeded:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "note: the workspace configuration's model settings (model.default, model.providers.gpu) were ignored") ||
+		!strings.Contains(out.String(), srv.URL) {
+		t.Fatalf("the failure does not name the ignored model settings:\n%s", out.String())
 	}
 }

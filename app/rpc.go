@@ -71,7 +71,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				ws = workspace
 			}
 			opts := abhed.Options{
-				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: trust,
+				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: trust, AllowDefaultModel: true,
 				Allow: req.Allow, Deny: req.Deny,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,

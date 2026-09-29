@@ -71,6 +71,7 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 		fmt.Fprintln(out, "It has changed since you trusted it.")
 	} else {
 		fmt.Fprintln(out, "You have not trusted it yet. A file that came with a repository can widen what the agent may do.")
+		fmt.Fprintln(out, "Since 1.2.2, Abhed asks about workspace configuration, including files you wrote.")
 	}
 	describeTrust(out, st)
 	for {
@@ -315,4 +316,31 @@ func printDoctorTrust(out io.Writer, st config.WorkspaceTrust) {
 	if len(st.Ignored) > 0 {
 		fmt.Fprintln(out, "            review it with `abhed trust`; trust it with `abhed trust grant`")
 	}
+}
+
+// ignoredModelKeys are the model settings an untrusted file could not make.
+func ignoredModelKeys(st config.WorkspaceTrust) []string {
+	var out []string
+	for _, k := range st.Ignored {
+		if k.Key == "model" || strings.HasPrefix(k.Key, "model.") || strings.HasPrefix(k.Key, "custom_providers") {
+			out = append(out, k.Key)
+		}
+	}
+	return out
+}
+
+// noteIgnoredModel repeats, where a run failed, that the model it used was
+// not the one the untrusted workspace file names; CI logs bury the warning.
+func noteIgnoredModel(cfg config.Config) {
+	keys := ignoredModelKeys(cfg.Workspace)
+	if len(keys) == 0 {
+		return
+	}
+	endpoint := "its default endpoint"
+	if p, err := cfg.Provider(); err == nil && p.BaseURL != "" {
+		endpoint = p.BaseURL
+	}
+	fmt.Fprintf(os.Stderr, "abhed: note: the workspace configuration's model settings (%s) were ignored because it is not trusted; "+
+		"this run used provider %q at %s. Trust it with `abhed trust grant`, or -trust-workspace for one run\n",
+		strings.Join(keys, ", "), config.Printable(cfg.Model.Default), config.Printable(endpoint))
 }

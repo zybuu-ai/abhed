@@ -9,13 +9,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// lockFile takes an exclusive advisory lock on f, waiting for it. The kernel
-// releases it when the holder exits, so a crash leaves nothing to take over.
-func lockFile(f *os.File) error {
+// tryLockFile takes an exclusive advisory lock on f without waiting, and
+// reports whether it did. The kernel drops it when the holder exits.
+func tryLockFile(f *os.File) (bool, error) {
 	for {
-		err := unix.Flock(int(f.Fd()), unix.LOCK_EX)
-		if !errors.Is(err, unix.EINTR) {
-			return err
+		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, unix.EWOULDBLOCK):
+			return false, nil
+		case !errors.Is(err, unix.EINTR):
+			return false, err
 		}
 	}
 }

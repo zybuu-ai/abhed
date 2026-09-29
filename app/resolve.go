@@ -158,7 +158,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	}()
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
-		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode, WorkspaceTrust: trust,
+		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode, WorkspaceTrust: trust, AllowDefaultModel: true,
 		Allow: splitRules(*allow), Sandbox: true,
 		OnEvent: func(ev abhed.Event) {
 			if ev.Type == "agent.message" {

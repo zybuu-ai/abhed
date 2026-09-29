@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -73,6 +74,11 @@ type Options struct {
 	// config.TrustGranted takes it whole for this agent, config.TrustRefused
 	// takes only what tightens. Empty follows the decision and ABHED_TRUST_WORKSPACE.
 	WorkspaceTrust config.TrustChoice
+
+	// AllowDefaultModel runs on the configured default model when ConfigDir's
+	// untrusted file names its own and was ignored. Without it New returns
+	// ErrUntrustedModel then, unless WorkspaceTrust or Provider is set.
+	AllowDefaultModel bool
 
 	// Provider names the model directly, for a caller that would rather not
 	// keep a config file.
@@ -126,6 +132,10 @@ type Options struct {
 	Sandbox bool
 }
 
+// ErrUntrustedModel is New's refusal to run on another model than the one
+// ConfigDir's file names, because that file is not trusted.
+var ErrUntrustedModel = errors.New("the workspace configuration's model settings were ignored because it is not trusted")
+
 // Provider names a model endpoint.
 type Provider struct {
 	Type          string // anthropic, openai, ollama, vllm, … see Providers()
@@ -165,6 +175,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	cfg, err := load()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	if keys := untrustedModelKeys(cfg.Workspace); len(keys) > 0 && opts.Provider == nil &&
+		opts.WorkspaceTrust == config.TrustAsStored && !opts.AllowDefaultModel {
+		return nil, fmt.Errorf("abhed: %w (%s in %s): trust it with `abhed trust grant`, or set Options.WorkspaceTrust, "+
+			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
 		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
@@ -456,4 +471,15 @@ func orDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// untrustedModelKeys are the model settings an untrusted file could not make.
+func untrustedModelKeys(st config.WorkspaceTrust) []string {
+	var out []string
+	for _, k := range st.Ignored {
+		if k.Key == "model" || strings.HasPrefix(k.Key, "model.") || strings.HasPrefix(k.Key, "custom_providers") {
+			out = append(out, k.Key)
+		}
+	}
+	return out
 }

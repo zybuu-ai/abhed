@@ -94,17 +94,30 @@ func updateTrust(change func(map[string]TrustRecord)) error {
 	return rewriteTrust(change)
 }
 
+// lockWait bounds how long a decision waits for another to finish writing.
+var lockWait = 5 * time.Second
+
 // lockTrust holds an exclusive lock on the lock file beside the store until
-// the returned function runs. The file itself is never removed, so every
-// writer locks the same one.
+// the returned function runs, waiting at most lockWait. The file itself is
+// never removed, so every writer locks the same one.
 func lockTrust(lock string) (func(), error) {
 	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- the lock beside the user's trust store
 	if err != nil {
 		return nil, err
 	}
-	if err := lockFile(f); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("lock %s: %w", lock, err)
+	for deadline := time.Now().Add(lockWait); ; time.Sleep(20 * time.Millisecond) {
+		ok, err := tryLockFile(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("lock %s: %w", lock, err)
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nil, fmt.Errorf("the trust store is busy: another abhed has held %s for %s; nothing was recorded", lock, lockWait)
+		}
 	}
 	return func() {
 		_ = unlockFile(f)

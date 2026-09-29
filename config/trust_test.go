@@ -521,8 +521,8 @@ func TestDefaultAsksBeforeANestedTrustedRun(t *testing.T) {
 	}
 }
 
-// A writer waits for the one holding the lock, and a lock file left behind
-// by a process that died holds nobody up.
+// A writer waits for the one holding the lock, but not forever, and a lock
+// file left behind by a process that died holds nobody up.
 func TestTrustStoreLockWaitsAndOutlivesACrash(t *testing.T) {
 	trustHome(t, "", "")
 	path, _ := TrustStorePath()
@@ -553,6 +553,23 @@ func TestTrustStoreLockWaitsAndOutlivesACrash(t *testing.T) {
 	}
 	if recs, _ := TrustRecords(); len(recs) != 2 {
 		t.Fatalf("%d decisions, want 2", len(recs))
+	}
+
+	// A holder that never lets go makes a decision fail, not hang.
+	old := lockWait
+	lockWait = 200 * time.Millisecond
+	t.Cleanup(func() { lockWait = old })
+	unlock, err = lockTrust(path + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	start := time.Now()
+	if err := GrantTrust(t.TempDir(), strings.Repeat("c", 64)); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("a grant under a held lock: %v", err)
+	}
+	if waited := time.Since(start); waited > 3*time.Second {
+		t.Fatalf("the grant waited %s", waited)
 	}
 }
 
