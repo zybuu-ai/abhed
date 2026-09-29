@@ -63,18 +63,30 @@ func WithCallID(ctx context.Context, id string) context.Context {
 
 type requestedKey struct{}
 
-// RequestedOf reports the action.requested an Approver is asked about as it
-// was recorded, redacted, so what is shown to a person matches the record.
-func RequestedOf(ctx context.Context) (ActionRequested, bool) {
+// Requested is the action.requested an Approver is asked about, as recorded
+// (redacted when the session has a redactor).
+type Requested struct {
+	ActionRequested
+	// Withheld is true when the record holds no readable copy, as when
+	// redaction withheld the payload; then nothing of the call can be shown.
+	Withheld bool
+}
+
+// RequestedOf reports the recorded request an Approver is asked about, so what
+// is shown to a person matches the record. ok is false outside the loop.
+func RequestedOf(ctx context.Context) (Requested, bool) {
 	ev, ok := ctx.Value(requestedKey{}).(Event)
 	if !ok {
-		return ActionRequested{}, false
+		return Requested{}, false
 	}
 	var p ActionRequested
-	if json.Unmarshal(ev.Payload, &p) != nil {
-		return ActionRequested{}, true
+	var held struct {
+		Withheld *string `json:"withheld"`
 	}
-	return p, true
+	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil || p.CallID == "" {
+		return Requested{Withheld: true}, true
+	}
+	return Requested{ActionRequested: p}, true
 }
 
 // WithRequested carries the recorded action.requested an Approver is asked about.

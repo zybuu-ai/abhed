@@ -174,7 +174,8 @@ the policy `step` that asked, its `reason`, `destructive` (true for a command
 with no undo, which is never offered *Always allow*), the `scope` *Always
 allow* would grant when offered, and the `requestId` of the recorded
 `action.requested`. The title, `rawInput` and reason are the copy the
-session records. An editor can use `destructive` to confirm more firmly. A
+session records. If the record withheld that copy, the call is refused without asking,
+since nobody can review input they cannot see. An editor can use `destructive` to confirm more firmly. A
 `tool_call` update names its tool in the same `_meta` key. The agent's text, its
 reasoning, every tool call with its outcome, the plan and the context usage
 stream to the editor as `session/update` notifications, and the session is

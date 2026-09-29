@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	abhed "github.com/zybuu-ai/abhed/sdk"
@@ -29,6 +30,10 @@ const acpProtocolVersion = 1
 // acpMetaKey names Abhed's fields in a message's _meta, namespaced as the
 // spec's extensibility section recommends.
 const acpMetaKey = "zybuu.ai/abhed"
+
+// askFlushWait bounds the wait for a call's tool_call to reach the editor
+// before the permission request that names it.
+const askFlushWait = time.Second
 
 // acpAgent is what the adapter needs from a session. *abhed.Agent is one; the
 // conformance test supplies another so no model is needed to drive the wire.
@@ -387,21 +392,26 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if bind == "" {
 		bind = callID
 	}
-	// The editor is shown the request as recorded, redacted; outside a loop
-	// there is no record and the call's own values are all there is.
+	// The editor is shown the request as recorded (redacted when the session has
+	// a redactor); outside a loop there is no record, only the call's own values.
 	shown, reason, shownScope := args, d.Reason, scope
 	if rec, ok := agent.RequestedOf(ctx); ok {
+		// A person cannot review input the record withheld, so it is not asked.
+		if rec.Withheld {
+			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the request was withheld from the record, so it cannot be shown for review"})
+			return false, nil
+		}
 		shown, reason, shownScope = rec.Args, rec.Reason, rec.Scope
 	}
 	// The tool_call goes out first, so the editor has the card this asks about.
 	if s.agent != nil {
-		flushed, cancel := context.WithTimeout(ctx, flushWait)
+		flushed, cancel := context.WithTimeout(ctx, askFlushWait)
 		_ = s.agent.Flush(flushed)
 		cancel()
 	}
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
-	if scope != "" {
+	if scope != "" && shownScope != "" {
 		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + shownScope, "kind": "allow_always"})
 	}
 	options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
@@ -409,7 +419,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if requestID != "" {
 		meta["requestId"] = requestID
 	}
-	if scope != "" {
+	if scope != "" && shownScope != "" {
 		meta["scope"] = shownScope
 	}
 	res, err := c.call(ctx, "session/request_permission", map[string]any{
@@ -438,7 +448,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		return false, nil
 	}
 	switch {
-	case out.Outcome.OptionID == always && scope != "":
+	case out.Outcome.OptionID == always && scope != "" && shownScope != "":
 		s.mu.Lock()
 		s.always[scope] = true
 		s.mu.Unlock()

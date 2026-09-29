@@ -88,3 +88,20 @@ func TestApproverSeesTheRedactedRequest(t *testing.T) {
 		t.Fatalf("approver saw %q", got.args)
 	}
 }
+
+// A request the record withheld is reported as withheld, never as an empty one.
+func TestRequestedOfReportsAWithheldRecord(t *testing.T) {
+	for _, payload := range []string{string(withheldPayload), `{"call_id":`, `{"tool":"bash"}`} {
+		r, ok := RequestedOf(WithRequested(context.Background(), Event{Payload: json.RawMessage(payload)}))
+		if !ok || !r.Withheld || r.Args != nil {
+			t.Fatalf("payload %s: ok %v requested %+v", payload, ok, r)
+		}
+	}
+	good, _ := json.Marshal(ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
+	if r, ok := RequestedOf(WithRequested(context.Background(), Event{Payload: good})); !ok || r.Withheld || r.CallID != "c1" {
+		t.Fatalf("readable record: ok %v requested %+v", ok, r)
+	}
+	if _, ok := RequestedOf(context.Background()); ok {
+		t.Fatal("a request outside the loop was reported")
+	}
+}

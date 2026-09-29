@@ -31,7 +31,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 - `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
   carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
-  `requestId`. The title, `rawInput` and reason shown are the recorded copy.
+  `requestId`. The title, `rawInput` and reason shown are the recorded copy. A
+  request whose recorded copy was withheld is refused without asking.
 - SDK: `CallIDOf` and `RequestIDOf` name, inside `Options.Approve`, the call
   and the recorded request being asked about.
 

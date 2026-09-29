@@ -338,3 +338,41 @@ func TestACPRealAgentShowsTheToolCallFirst(t *testing.T) {
 		t.Fatalf("_meta %+v", m)
 	}
 }
+
+// A request the record withheld is not put to the editor: nobody can review
+// input they cannot see, and no scope is granted on it.
+func TestACPWithheldRequestIsRefusedWithoutAsking(t *testing.T) {
+	c, asked := answeringConn(t, func(json.RawMessage) any {
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:ev-a"}}
+	})
+	s := &acpSession{id: "s1", always: map[string]bool{}}
+	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
+	withheld := abhed.Event{ID: "ev-a", Type: agent.EvActionRequested, Payload: json.RawMessage(`{"withheld":"x"}`)}
+	ctx, answer := agent.ExpectAnswer(agent.WithRequested(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"), withheld))
+	ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), d)
+	if err != nil || ok || asked.Load() != 0 || answer.By != agent.BySystem || len(s.always) != 0 {
+		t.Fatalf("ok %v err %v asked %d answer %+v always %v", ok, err, asked.Load(), answer, s.always)
+	}
+}
+
+// A scope the record does not show is not offered, and an "always" for it
+// grants nothing.
+func TestACPUnshownScopeIsNotOffered(t *testing.T) {
+	var params json.RawMessage
+	c, _ := answeringConn(t, func(p json.RawMessage) any {
+		params = p
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:ev-a"}}
+	})
+	s := &acpSession{id: "s1", always: map[string]bool{}}
+	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
+	rec, _ := json.Marshal(agent.ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
+	ctx, answer := agent.ExpectAnswer(agent.WithRequested(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"),
+		abhed.Event{ID: "ev-a", Payload: rec}))
+	ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), d)
+	if err != nil || ok || answer.By != agent.BySystem || len(s.always) != 0 {
+		t.Fatalf("ok %v err %v answer %+v always %v", ok, err, answer, s.always)
+	}
+	if strings.Contains(string(params), "allow_always") {
+		t.Fatalf("offered an always it could not name: %s", params)
+	}
+}
