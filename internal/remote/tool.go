@@ -53,6 +53,34 @@ func (r *Registry) names() []string {
 	return out
 }
 
+// resembles returns the operator's host whose name matches name once case
+// and look-alike letters are folded, or "". A session's host must not pass
+// for one of them in a later approval.
+func (r *Registry) resembles(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	want := foldName(name)
+	for n := range r.hosts {
+		if foldName(n) == want {
+			return n
+		}
+	}
+	return ""
+}
+
+func foldName(n string) string { return strings.ToLower(n) }
+
+// plainName reports whether a session host's name is printable ASCII: with
+// no look-alike letters, case folding is all it takes to compare names.
+func plainName(n string) bool {
+	for _, r := range n {
+		if r <= ' ' || r > '~' {
+			return false
+		}
+	}
+	return n != ""
+}
+
 func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -163,6 +191,25 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	}
 }
 
+// Target shows the account and address a command runs on: an approval that
+// names only the host would not show which machine that is.
+func (t Tool) Target(sess *tools.Session, raw json.RawMessage) string {
+	var a sshArgs
+	if json.Unmarshal(raw, &a) != nil || a.Host == "" {
+		return ""
+	}
+	h, ok := sessionHostsOf(sess, t.R, false).get(a.Host)
+	origin := "added in this session"
+	if !ok && t.R != nil {
+		h, ok = t.R.get(a.Host)
+		origin = "declared by the operator"
+	}
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("runs as %s@%s, %s", h.User(), h.Addr(), origin)
+}
+
 // knownNames lists the operator's hosts and the session's own.
 func knownNames(r *Registry, mine *sessionHosts) []string {
 	var out []string
@@ -195,8 +242,9 @@ func errf(format string, a ...any) tools.Result {
 // sessionHosts are the hosts ssh_connect added in one session. They are
 // never put in the Registry, which every session on a server shares.
 type sessionHosts struct {
-	mu    sync.Mutex
-	hosts map[string]*Host
+	mu     sync.Mutex
+	hosts  map[string]*Host
+	closed bool
 }
 
 // hostsKey keys a session's hosts by registry, so two registries never meet.
@@ -236,14 +284,26 @@ func (s *sessionHosts) names() []string {
 	return out
 }
 
-func (s *sessionHosts) add(h *Host) {
+// add keeps h for the session. After the session is gone it closes h instead
+// and reports false, so a connect that finished late leaves nothing open.
+func (s *sessionHosts) add(h *Host) bool {
+	if s == nil {
+		_ = h.Close()
+		return false
+	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = h.Close()
+		return false
+	}
 	old := s.hosts[h.Name()]
 	s.hosts[h.Name()] = h
 	s.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
+	return true
 }
 
 // Close ends the session's connections when the session goes.
@@ -253,7 +313,7 @@ func (s *sessionHosts) Close() error {
 	for _, h := range s.hosts {
 		_ = h.Close()
 	}
-	s.hosts = map[string]*Host{}
+	s.hosts, s.closed = map[string]*Host{}, true
 	return nil
 }
 
@@ -344,12 +404,16 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	if a.Name == "" {
 		a.Name = a.Addr
 	}
+	if !plainName(a.Name) {
+		return errf("Host names are plain ASCII letters, digits and punctuation, so one cannot " +
+			"pass for another; choose another name.")
+	}
 	// An operator's host keeps its name: a session cannot put another machine
 	// behind it.
 	if t.R != nil {
-		if _, taken := t.R.get(a.Name); taken {
-			return errf("%q is a host the operator declared; use it with the ssh tool, "+
-				"or choose another name for this one.", a.Name)
+		if taken := t.R.resembles(a.Name); taken != "" {
+			return errf("%q is, or reads like, %q, a host the operator declared; use that "+
+				"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
 		}
 	}
 
@@ -392,6 +456,7 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 		IdentityFile:             a.IdentityFile,
 		InsecureSkipHostKeyCheck: a.AcceptHostKey,
 		password:                 password,
+		connected:                true,
 	})
 	if err != nil {
 		return errf("%v", err)
@@ -409,7 +474,9 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 		return errf("Connected to %s but the host did not run a command as expected.", a.Addr)
 	}
 
-	sessionHostsOf(sess, t.R, true).add(h)
+	if !sessionHostsOf(sess, t.R, true).add(h) {
+		return errf("The session ended before the host could be registered; nothing was kept.")
+	}
 	key := "the ssh agent"
 	switch {
 	case a.IdentityFile != "":

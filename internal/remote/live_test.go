@@ -527,3 +527,89 @@ func TestUnknownHostKeyErrorNamesTheRetry(t *testing.T) {
 		t.Errorf("error does not name the retry option: %v", err)
 	}
 }
+
+// When the session goes, the hosts it connected are closed, and a connect
+// that finishes after that keeps nothing open.
+func TestClosingTheSessionClosesItsHosts(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	pinHome(t, srv)
+	sess := newSession(t)
+	connect := ConnectTool{Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "vm1",
+		"password_secret": "VM_PASSWORD"})
+	if res := connect.Run(context.Background(), sess, args); res.IsError {
+		t.Fatalf("connect failed: %s", res.Content)
+	}
+	h, ok := sessionHostsOf(sess, nil, false).get("vm1")
+	if !ok {
+		t.Fatal("host not kept")
+	}
+	sess.CloseScoped()
+	h.mu.Lock()
+	open := h.client != nil
+	h.mu.Unlock()
+	if open {
+		t.Fatal("the session's host kept its connection after the session ended")
+	}
+
+	late, _ := NewHost(HostConfig{Name: "late", Addr: srv.addr, User: "tester"})
+	if (&sessionHosts{hosts: map[string]*Host{}, closed: true}).add(late) {
+		t.Fatal("a host added after the session ended was kept")
+	}
+	if res := connect.Run(context.Background(), sess, args); !res.IsError {
+		t.Fatalf("a connect after the session ended registered a host: %s", res.Content)
+	}
+}
+
+// A session's host cannot take a name that reads like an operator's, and the
+// approval for a command names the account and address it runs on.
+func TestSessionHostCannotPassForAnOperatorHost(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	pinHome(t, srv)
+	reg, _ := NewRegistry([]HostConfig{{Name: "prod", Addr: "10.0.0.1", User: "ops"}})
+	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	for _, name := range []string{"Prod", "PROD", "prоd" /* Cyrillic о */} {
+		args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": name,
+			"password_secret": "VM_PASSWORD"})
+		if res := connect.Run(context.Background(), newSession(t), args); !res.IsError {
+			t.Errorf("a session host named %q was allowed beside the operator's prod", name)
+		}
+	}
+
+	sess := newSession(t)
+	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "vm1",
+		"password_secret": "VM_PASSWORD"})
+	if res := connect.Run(context.Background(), sess, args); res.IsError {
+		t.Fatal(res.Content)
+	}
+	tool := Tool{R: reg}
+	if got := tool.Target(sess, json.RawMessage(`{"host":"vm1","command":"id"}`)); !strings.Contains(got, "tester@"+srv.addr) {
+		t.Errorf("the approval does not show where vm1 is: %q", got)
+	}
+	if got := tool.Target(sess, json.RawMessage(`{"host":"prod","command":"id"}`)); !strings.Contains(got, "ops@10.0.0.1:22") {
+		t.Errorf("the approval does not show where prod is: %q", got)
+	}
+}
+
+// A password connect to a host that is not pinned says how to pin it, not to
+// accept any key, which ssh_connect refuses for a password.
+func TestUnpinnedPasswordHostErrorNamesTheWayForward(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	t.Setenv("HOME", t.TempDir())
+	_ = os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".ssh"), 0o700)
+	_ = os.WriteFile(filepath.Join(os.Getenv("HOME"), ".ssh", "known_hosts"), nil, 0o600)
+	connect := ConnectTool{Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "password_secret": "VM_PASSWORD"})
+	res := connect.Run(context.Background(), newSession(t), args)
+	if !res.IsError || strings.Contains(res.Content, "accept_host_key: true") || !strings.Contains(res.Content, "key file") {
+		t.Fatalf("the error does not name a way forward that works: %s", res.Content)
+	}
+	h, _ := NewHost(HostConfig{Name: "x", Addr: srv.addr, User: "tester", connected: true})
+	t.Setenv("SSH_AUTH_SOCK", "")
+	if _, err := h.authMethods(); err == nil || strings.Contains(err.Error(), "password_env") {
+		t.Fatalf("a session host is told to use a config key: %v", err)
+	}
+}
