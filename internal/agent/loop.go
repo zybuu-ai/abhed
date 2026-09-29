@@ -83,7 +83,7 @@ func RequestedOf(ctx context.Context) (Requested, bool) {
 	var held struct {
 		Withheld *string `json:"withheld"`
 	}
-	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil || p.CallID == "" {
+	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
 		return Requested{Withheld: true}, true
 	}
 	return Requested{ActionRequested: p}, true

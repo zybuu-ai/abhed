@@ -26,6 +26,8 @@ type askedCall struct {
 	args     json.RawMessage
 	d        abhed.Decision
 	recorded agent.ActionRequested
+	// payload, when set, is the recorded payload as it is, such as a withheld one.
+	payload json.RawMessage
 }
 
 // callsAgent asks about each call as the loop does, and delivers its events
@@ -53,6 +55,9 @@ func (a *callsAgent) Run(ctx context.Context, _ string) (string, error) {
 		asked.CallID, asked.Tool, asked.RequiresApproval = c.id, "bash", true
 		a.emit(agent.EvActionRequested, "ev-"+c.id, asked)
 		raw, _ := json.Marshal(asked)
+		if c.payload != nil {
+			raw = c.payload
+		}
 		actx := agent.WithRequested(agent.WithCallID(agent.WithRequestID(ctx, "ev-"+c.id), c.id),
 			abhed.Event{ID: "ev-" + c.id, Type: agent.EvActionRequested, Payload: raw})
 		ok, err := a.opts.Approve(actx, "bash", c.args, c.d)
@@ -374,5 +379,43 @@ func TestACPUnshownScopeIsNotOffered(t *testing.T) {
 	}
 	if strings.Contains(string(params), "allow_always") {
 		t.Fatalf("offered an always it could not name: %s", params)
+	}
+}
+
+// The editor is told why a withheld request was refused, as there is no dialog.
+func TestACPWithheldRequestIsExplainedToTheEditor(t *testing.T) {
+	calls := []askedCall{{id: "c1", args: json.RawMessage(`{"command":"ls a"}`),
+		d:       abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"},
+		payload: json.RawMessage(`{"withheld":"x"}`)}}
+	_, asked, updates := runCalls(t, calls, func(p json.RawMessage) any { return chosen(p, "allow_always") })
+	said := false
+	for _, u := range updates {
+		if u["sessionUpdate"] == "agent_message_chunk" {
+			text, _ := u["content"].(map[string]any)["text"].(string)
+			said = said || strings.Contains(text, "withheld")
+		}
+	}
+	if len(asked) != 0 || !said {
+		t.Fatalf("asked %d, explained %v: %v", len(asked), said, updates)
+	}
+}
+
+// A call salvaged from a model's prose has no id; it is still asked, under
+// an id of its own.
+func TestACPCallWithoutAnIDIsAsked(t *testing.T) {
+	var params json.RawMessage
+	c, asked := answeringConn(t, func(p json.RawMessage) any {
+		params = p
+		return chosen(p, "allow_once")
+	})
+	s := &acpSession{id: "s1", always: map[string]bool{}}
+	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
+	rec, _ := json.Marshal(agent.ActionRequested{Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`), Reason: d.Reason, Scope: d.Offer()})
+	ctx := agent.WithRequested(agent.WithRequestID(context.Background(), "ev-a"), abhed.Event{ID: "ev-a", Payload: rec})
+	ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), d)
+	var r permissionRequest
+	_ = json.Unmarshal(params, &r)
+	if err != nil || !ok || asked.Load() != 1 || !strings.HasPrefix(r.ToolCall.ToolCallID, "ask-") {
+		t.Fatalf("ok %v err %v asked %d toolCallId %q", ok, err, asked.Load(), r.ToolCall.ToolCallID)
 	}
 }

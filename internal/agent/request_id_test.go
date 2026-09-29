@@ -91,7 +91,7 @@ func TestApproverSeesTheRedactedRequest(t *testing.T) {
 
 // A request the record withheld is reported as withheld, never as an empty one.
 func TestRequestedOfReportsAWithheldRecord(t *testing.T) {
-	for _, payload := range []string{string(withheldPayload), `{"call_id":`, `{"tool":"bash"}`} {
+	for _, payload := range []string{string(withheldPayload), `{"call_id":`, `["x"]`} {
 		r, ok := RequestedOf(WithRequested(context.Background(), Event{Payload: json.RawMessage(payload)}))
 		if !ok || !r.Withheld || r.Args != nil {
 			t.Fatalf("payload %s: ok %v requested %+v", payload, ok, r)
@@ -100,6 +100,10 @@ func TestRequestedOfReportsAWithheldRecord(t *testing.T) {
 	good, _ := json.Marshal(ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
 	if r, ok := RequestedOf(WithRequested(context.Background(), Event{Payload: good})); !ok || r.Withheld || r.CallID != "c1" {
 		t.Fatalf("readable record: ok %v requested %+v", ok, r)
+	}
+	// A call salvaged from prose has no id; its record is readable all the same.
+	if r, ok := RequestedOf(WithRequested(context.Background(), Event{Payload: json.RawMessage(`{"tool":"bash"}`)})); !ok || r.Withheld || r.Tool != "bash" {
+		t.Fatalf("record without a call id: ok %v requested %+v", ok, r)
 	}
 	if _, ok := RequestedOf(context.Background()); ok {
 		t.Fatal("a request outside the loop was reported")

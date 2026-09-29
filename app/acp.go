@@ -399,6 +399,9 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		// A person cannot review input the record withheld, so it is not asked.
 		if rec.Withheld {
 			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the request was withheld from the record, so it cannot be shown for review"})
+			c.notification("session/update", map[string]any{"sessionId": s.id, "update": map[string]any{
+				"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text",
+					"text": "\nA " + tool + " call was refused without asking: its input was withheld from the record, so it cannot be shown for review.\n"}}})
 			return false, nil
 		}
 		shown, reason, shownScope = rec.Args, rec.Reason, rec.Scope
