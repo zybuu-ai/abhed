@@ -176,3 +176,16 @@ func TestShortValuesLeaveKeysAlone(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+// Short is counted in characters, as `abhed secret set` counts: a value of
+// fewer than 8 characters leaves keys alone however many bytes it takes.
+func TestShortIsCountedInCharacters(t *testing.T) {
+	s := Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := s.Set("WIDE", "ключ"); err != nil { // 4 characters, 8 bytes
+		t.Fatal(err)
+	}
+	got := string(s.Redactor().Redact([]byte(`{"ключ":"ключ"}`)))
+	if got != `{"ключ":"[secret:WIDE]"}` {
+		t.Fatalf("got %s", got)
+	}
+}

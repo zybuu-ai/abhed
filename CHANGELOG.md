@@ -31,9 +31,10 @@ All notable changes to Abhed are recorded here. The format follows
   packages.
 - A secrets store that existed but could not be loaded made every path, the
   CLI included, run with nothing to redact. That covers a store that was
-  empty (0 bytes), corrupt, readable by others or unreadable. Now the terminal, the server, `eval`, `acp`, `rpc`, `resolve`
-  and the SDK refuse to start with an error that names the file and the fix,
-  and `abhed doctor` reports the store as not ready. A server built with no
+  empty (0 bytes), corrupt, readable by others or unreadable. Now the
+  terminal, the server, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse
+  to start with an error that names the file and the fix, and `abhed doctor`
+  reports the store as not ready. A server built with no
   `Options.Redact` withholds every payload instead. A missing store still
   means no secrets. Upgrading: an empty file left by `touch
   ~/.abhed/secrets.json` now stops every session; write `{}` to it or remove

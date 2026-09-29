@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // EnvFile names the environment variable that overrides the store's location.
@@ -64,19 +65,11 @@ func (s *Store) Path() string { return s.path }
 const MaxFileSize = 1 << 20
 
 func (s *Store) load() (map[string]string, error) {
-	// A FIFO or device is refused before opening, since opening one can block.
-	pre, err := os.Stat(s.path)
+	// Judged only on the open file, so what is checked is what is read.
+	f, err := openStore(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]string{}, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	if !pre.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file (%s)", s.path, pre.Mode().Type())
-	}
-	// Then judged on the open file, so what is checked is what is read.
-	f, err := os.Open(s.path)
 	if err != nil {
 		return nil, err
 	}
@@ -85,8 +78,8 @@ func (s *Store) load() (map[string]string, error) {
 	switch {
 	case err != nil:
 		return nil, err
-	case !info.Mode().IsRegular() || !os.SameFile(pre, info):
-		return nil, fmt.Errorf("%s was replaced while it was opened", s.path)
+	case !info.Mode().IsRegular():
+		return nil, fmt.Errorf("%s is not a regular file (%s)", s.path, info.Mode().Type())
 	case info.Mode().Perm()&0o077 != 0:
 		return nil, fmt.Errorf("%s is readable by others (mode %o); run chmod 600 on it", s.path, info.Mode().Perm())
 	case info.Size() == 0:
@@ -209,9 +202,8 @@ type pair struct {
 	short bool
 }
 
-// MinLength is the shortest value `abhed secret set` accepts. A shorter one,
-// stored before, is still redacted, but not in JSON keys, where a common word
-// such as "type" would break the payload's structure.
+// MinLength is the fewest characters `abhed secret set` accepts. A shorter value
+// stored before is still redacted, but not in JSON keys, whose structure it could break.
 const MinLength = 8
 
 // Redactor returns a redactor for the values stored now. A store that exists
@@ -265,7 +257,7 @@ func (s *Store) LoadRedactor() (*Redactor, error) {
 		for _, n := range []string{value, escaped(value, true), escaped(value, false)} {
 			if !seen[n] {
 				seen[n] = true
-				pairs = append(pairs, pair{n, label, len(value) < MinLength})
+				pairs = append(pairs, pair{n, label, utf8.RuneCountInString(value) < MinLength})
 			}
 		}
 	}

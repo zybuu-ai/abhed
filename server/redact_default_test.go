@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +103,7 @@ func TestServerReadsTheStoreForEachSession(t *testing.T) {
 		if err := secrets.Open(path).Set("LATER_TOKEN", later); err != nil {
 			t.Fatal(err)
 		}
-		wb.session = wb.openIdle("acme")
+		wb.session = freshSession(wb)
 		start := wb.startShell()
 		wb.typeLines(start.ID, enter("echo "+later, "exit")...)
 		deadline := time.Now().Add(3 * time.Second)
@@ -126,4 +129,59 @@ func TestServerReadsTheStoreForEachSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// A store that breaks while the server runs withholds the next session's
+// payloads rather than record a value it can no longer redact.
+func TestServerWithholdsWhenTheStoreBreaksMidRun(t *testing.T) {
+	const later = "fake-broken-later-8e3f"
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"FIRST_TOKEN":"fake-first-value-22bb"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(secrets.EnvFile, path)
+	wb := shellBenchOpts(t, nil, func(o *Options) { o.Redact = secrets.Open(path).Live() })
+	if err := secrets.Open(path).Set("LATER_TOKEN", later); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wb.session = freshSession(wb)
+	start := wb.startShell()
+	wb.typeLines(start.ID, enter("echo "+later, "exit")...)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var all strings.Builder
+		closed := false
+		for _, e := range wb.events() {
+			all.Write(e.Payload)
+			closed = closed || e.Type == agent.EvObservation
+		}
+		if strings.Contains(all.String(), later) {
+			t.Fatalf("a value the broken store holds reached the new session's record:\n%s", all.String())
+		}
+		if closed && strings.Contains(all.String(), agent.Withheld) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the new session's record was not withheld:\n%s", all.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// freshSession opens another workbench session, so its recorder starts now.
+func freshSession(wb *workbench) string {
+	wb.t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/sessions", strings.NewReader(`{"workbench":true}`))
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	wb.h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		wb.t.Fatalf("open a workbench session: %d %s", rec.Code, rec.Body)
+	}
+	var created createResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	return created.SessionID
 }
