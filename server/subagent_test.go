@@ -335,3 +335,37 @@ func TestListKeepsASessionOnAModelNamedSubagent(t *testing.T) {
 		t.Fatalf("listed %+v, want the top-level session only", listed)
 	}
 }
+
+// The resume backstop: a row that names no parent, as a 1.2.x CLI subagent's
+// row does, is refused when its record is a subagent's, whether its events
+// name the parent or, from before they did, it begins with the child's spawn.
+func TestResumeRefusesASubagentRecordByItsEvents(t *testing.T) {
+	for name, first := range map[string]agent.Event{
+		"events name a parent":  {Type: agent.EvUserMessage, ParentID: "s-top"},
+		"begins with its spawn": {Type: agent.EvSubagentSpawned},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+			s, _ := delegatingServer(t, [2]string{}, st, func(c *config.Config) { c.Auth.Mode = "proxy" })
+			const id = "s-legacy-child"
+			if err := st.CreateSession(context.Background(), store.SessionRecord{ID: id, Tenant: "default",
+				User: "alice", Model: "subagent", Mode: "default", StartedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			first.ID, first.SessionID, first.Seq, first.Payload = "k1", id, 1, json.RawMessage(`{"description":"subtask"}`)
+			msg, _ := json.Marshal(agent.Message{Text: "child work"})
+			for _, ev := range []agent.Event{first,
+				{ID: "k2", SessionID: id, ParentID: first.ParentID, Seq: 2, Type: agent.EvUserMessage, Payload: msg},
+				{ID: "k3", SessionID: id, ParentID: first.ParentID, Seq: 3, Type: agent.EvSessionEnded, Payload: json.RawMessage(`{"reason":"completed"}`)},
+			} {
+				if err := st.Append(ev); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := callAs(t, s, "alice", "default", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"go on"}`)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("a subagent's record was resumed on its own: %d %s", w.Code, w.Body)
+			}
+		})
+	}
+}

@@ -2067,12 +2067,15 @@ func cliUser() string {
 // resumeConversation makes recorded session id the conversation the next task
 // continues, rebuilt from its record with its turn count, as in the server.
 func resumeConversation(ctx context.Context, st *cliState, id string, events []agent.Event) error {
-	// A subagent's record goes on only through the session that started it.
-	if len(events) > 0 && events[0].ParentID != "" {
-		return fmt.Errorf("session %s is a subagent's; resume %s, the session that started it", id, events[0].ParentID)
-	}
 	if err := ownedHere(ctx, st, id); err != nil {
 		return err
+	}
+	// A subagent's record goes on only through the session that started it.
+	if parent, child := agent.SubagentRecord(events); child {
+		if parent == "" {
+			return fmt.Errorf("session %s is a subagent's; resume the session that started it", id)
+		}
+		return fmt.Errorf("session %s is a subagent's; resume %s, the session that started it", id, parent)
 	}
 	live := id == st.sessionID && st.loop != nil
 	if rec, ok, err := storedSession(ctx, st, id); err != nil {

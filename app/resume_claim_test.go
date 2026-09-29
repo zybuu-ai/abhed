@@ -474,3 +474,20 @@ func mustEvents(t *testing.T, st agent.Store, id string) []agent.Event {
 	}
 	return evs
 }
+
+// Ownership is checked first, so another user's subagent record is refused
+// as theirs without naming the session that started it; a record from before
+// events named a parent is known by its first event, the subagent's spawn.
+func TestResumeChecksTheOwnerBeforeTheSubagent(t *testing.T) {
+	child := []agent.Event{{ID: "k1", SessionID: "s-old", ParentID: "s-secret-parent", Seq: 1, Type: agent.EvUserMessage}}
+	st, _, _, _ := resumeRig(t, "mallory", "default")
+	if err := resumeConversation(context.Background(), st, "s-old", child); err == nil ||
+		!strings.Contains(err.Error(), "another user") || strings.Contains(err.Error(), "s-secret-parent") {
+		t.Fatalf("another user's subagent record: %v", err)
+	}
+	st, _, _, _ = resumeRig(t, "me", "default")
+	legacy := []agent.Event{{ID: "k1", SessionID: "s-old", Seq: 1, Type: agent.EvSubagentSpawned}}
+	if err := resumeConversation(context.Background(), st, "s-old", legacy); err == nil || !strings.Contains(err.Error(), "subagent") {
+		t.Fatalf("a subagent record with no parent named was resumed: %v", err)
+	}
+}

@@ -376,6 +376,17 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	return summary, nil
 }
 
+// SubagentRecord reports whether a record is a subagent's, and the session
+// that started it when the record names one. Records from before events
+// carried a parent are known by their first event, the child's own spawn.
+func SubagentRecord(events []Event) (parent string, ok bool) {
+	if len(events) == 0 {
+		return "", false
+	}
+	first := events[0]
+	return first.ParentID, first.ParentID != "" || first.Type == EvSubagentSpawned
+}
+
 // parentKey carries the loop running a tool, so a subagent that tool spawns
 // answers to the same approver and is linked into the same record.
 type parentKey struct{}

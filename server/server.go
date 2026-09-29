@@ -1259,7 +1259,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		return nil, fmt.Errorf("read record: %w", err)
 	}
 	// A subagent's record goes on only through the session that started it.
-	if len(events) == 0 || events[0].ParentID != "" {
+	if _, child := agent.SubagentRecord(events); len(events) == 0 || child {
 		return nil, errNoSession
 	}
 	// Ownership and mode come from the stored row when there is one.
