@@ -173,8 +173,10 @@ trusted it; `session/new` reports the decision in
 `_meta.abhed.workspaceTrust`, with the settings it ignored, so the editor can
 ask and then run `abhed trust grant`. The editor may send
 `_meta.abhed.trust: "untrusted"` to take only what tightens; it cannot grant
-trust over the wire. Start `abhed -trust-workspace acp` to trust every
-session's file for the life of the process. See [Workspace
+trust over the wire; pass the reported `sha256` to `abhed trust grant
+-sha256` so only the content the person saw is trusted. Starting
+`abhed -trust-workspace acp` trusts the file of every workspace the editor
+opens for the life of the process, not only the one it was started in. See [Workspace
 trust](../architecture/workspace-trust.md).
 
 Not yet supported: `session/load` (resuming an editor session from the

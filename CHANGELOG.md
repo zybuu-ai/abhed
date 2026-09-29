@@ -19,15 +19,28 @@ All notable changes to Abhed are recorded here. The format follows
   - A deployment or CI job that keeps its settings (storage, auth, providers,
     MCP servers, extensions) in the workspace file must either run `abhed
     trust grant` once as the user it runs as, or start with
-    `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`. Otherwise `abhed serve`
-    starts with those settings ignored and says so on stderr. Settings kept
-    in `~/.abhed/config.json` or the managed `/etc/abhed/config.json` are
-    unaffected.
+    `-trust-workspace` (before or after the subcommand) or
+    `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
+    `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
+    migrate` refuse to start and say how to go on, rather than run with no
+    sign-in or an in-memory record. Other ignored settings, such as
+    providers and MCP servers, are left out with a warning on stderr.
+    Settings kept in `~/.abhed/config.json` or the managed
+    `/etc/abhed/config.json` are unaffected.
   - Editors on ACP: `session/new` now reports the decision in
     `_meta.abhed.workspaceTrust`.
-- SDK: a `ConfigDir` file is untrusted in the same way. Set
-  `Options.WorkspaceTrust` to `config.TrustGranted` when the embedding
-  program owns that file. `Agent.WorkspaceTrust()` reports the decision.
+- SDK: a `ConfigDir` file is untrusted in the same way, so an embedding
+  program that keeps its providers, MCP servers or extensions there loses
+  them, with only a line on stderr, until it trusts the file. Set
+  `Options.WorkspaceTrust` to `config.TrustGranted` when the program owns
+  that file, or trust it once with `abhed trust grant`.
+  `Agent.WorkspaceTrust()` reports the decision and what was ignored.
+- A permission rule that does not parse now stops every command from
+  loading the configuration. `serve` and `resolve` used to drop it, and every
+  rule after it in the same list, without a word.
+- The default configuration asks before a bash command that mentions
+  `ABHED_TRUST_WORKSPACE` or `trust-workspace`. A configuration that sets
+  its own `permissions.ask` list replaces these.
 - `abhed init` trusts the file it writes. After an edit, trust it again.
 
 ### Security
@@ -46,6 +59,11 @@ All notable changes to Abhed are recorded here. The format follows
     narrower mode, a stronger sandbox tier, network off, lower limits, a
     stricter syntax check, and turning features off. Every other setting is
     ignored and named on stderr and in `abhed doctor`.
+  - Settings under `auth`, `storage` and `server`, whose defaults are the
+    loosest values, fail closed: `serve`, `user` and `migrate` refuse to run
+    without them.
+  - Ignored values are shown with credentials redacted, and text from the
+    file is escaped so it cannot draw lines of its own in the prompt.
   - The managed configuration still wins over everything, and the user's own
     `~/.abhed/config.json` is trusted as before.
   - Commands the agent runs on the host no longer inherit
@@ -55,7 +73,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- `abhed trust` shows, grants, revokes and lists trust decisions, and
+- `abhed trust` shows, grants, revokes and lists trust decisions;
+  `abhed trust grant -sha256 H` grants only the content that was reviewed.
   `-trust-workspace` trusts the workspace file for one run.
 - ACP `session/new` reports `_meta.abhed.workspaceTrust` and accepts
   `_meta.abhed.trust: "untrusted"`. The rpc `ready` event carries

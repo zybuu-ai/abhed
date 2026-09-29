@@ -48,7 +48,12 @@ already true of every other file in that directory.
 
 A store with a second hard link is refused, as the configuration is. So is a
 store that cannot be read. In either case no workspace is trusted and a
-warning says why.
+warning says why. Writes to the store hold a lock file beside it, so two
+decisions made at once both land.
+
+The path is compared as spelled after links are resolved. On a volume that
+ignores case, `/Users/x/Proj` and `/users/x/proj` are two keys. That fails
+closed: the second spelling is asked about again.
 
 `abhed init` writes the starter file and trusts it, since the person asked for
 exactly that content. Abhed's own settings page never writes this file, so no
@@ -69,13 +74,16 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `permissions.allow` | ignored: an allow rule widens what runs without asking |
 | `sandbox.min_tier` | **applied** only for a stronger tier (none < process < container < vm) |
 | `sandbox.allow_network` | **applied** only when false |
-| `sandbox.max_memory_mb`, `max_procs`, `terminal_idle_minutes` | **applied** only when lower |
+| `sandbox.max_memory_mb`, `max_procs`, `terminal_idle_minutes` | **applied** only when lower than the value in effect; zero means the default (4096, 512 and 30) |
 | `sandbox.terminal` | **applied** only for `lines` |
 | `sandbox.read_only_paths` | ignored: it mounts more of the host into the sandbox |
-| `limits.max_turns`, `max_tokens`, `max_budget_tokens`, `max_subagents`, `max_parallel_subagents` | **applied** only when lower; zero means unlimited, so any positive value is lower than zero |
+| `limits.max_tokens`, `max_budget_tokens`, `max_subagents` | **applied** only when lower; zero means unlimited, so any positive value is lower |
+| `limits.max_turns` | **applied** only when lower; zero means no turns, so nothing is lower |
+| `limits.max_parallel_subagents` | **applied** only when lower; zero means the tool's cap of 8 |
 | `limits.nested_subagents` | **applied** only when false |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
-| `web_search.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `telemetry.enabled` | **applied** only when false |
+| `web_search.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false |
+| `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
 | `custom_providers` | ignored: the same |
@@ -86,12 +94,29 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `k8s` (other keys), `ssh.hosts`, `telemetry` (other keys) | ignored: each names an endpoint, credentials or machines |
-| `storage` | ignored: it decides where the record goes, and with which credentials |
-| `auth` | ignored: it decides who may sign in |
-| `server` | ignored: deployment settings for `serve` |
+| `web_search` (other keys), `k8s` (other keys), `ssh.hosts` | ignored: each names an endpoint, credentials or machines |
+| `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
+| `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
+| `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `schedules` | ignored: prompts that the server runs on its own |
 | an unknown key | ignored, and reported as before |
+
+A deny or ask rule that does not parse is set aside and named with the parse
+error; the file's other rules still apply. A bad rule in a trusted file, or in
+any other file, stops every command from loading the configuration. Before,
+`serve` and `resolve` dropped it and every rule after it without saying so.
+
+### Deployment settings fail closed
+
+For most settings, leaving the file's value out keeps the safer default. For
+`auth`, `storage` and `server` the default is the loosest value: no sign-in,
+an in-memory record, no group restriction. Ignoring an untrusted `auth`
+section would therefore start `serve` as an open console. So when an
+untrusted file sets anything under these three sections, `serve`, `user` and
+`migrate` refuse to start. The error names the settings and says how to go
+on: `abhed trust grant`, `abhed -trust-workspace serve`, or moving the
+settings to `~/.abhed/config.json` or the managed file. Commands that do not
+serve anyone, such as the CLI and `-p`, run with the settings ignored and warn.
 
 ## Asking
 
@@ -105,7 +130,15 @@ content. The prompt:
 
 Only an explicit `t` trusts the file. An empty line asks again, and the end of
 input counts as no answer. Text from the file is shown with control characters
-escaped, so a file cannot drive the terminal it is displayed on.
+escaped, newlines and tabs included, so a file can neither drive the terminal
+nor draw lines of its own in the prompt. Only the body of **v**iew keeps its
+line breaks, between marker lines.
+
+Values that carry credentials are redacted wherever ignored settings are
+shown: the prompt, the warning, `abhed doctor`, `abhed trust`, ACP and rpc.
+That covers fields named like a key, secret, password, token, DSN, header or
+environment, and any password in a URL. A field naming an environment
+variable (`*_env`) is shown.
 
 **Headless** (`-p`, `rpc`, `acp`, `resolve`, `serve`, and every other
 subcommand). These never prompt. Trust comes from one of:
@@ -114,7 +147,10 @@ subcommand). These never prompt. Trust comes from one of:
 - `-trust-workspace`, for this run only
 - `ABHED_TRUST_WORKSPACE=1`, for this run only
 
-Neither the flag nor the variable records anything. When a file is untrusted,
+The flag goes before or after the subcommand: `abhed -trust-workspace serve`
+and `abhed serve -trust-workspace` are the same. Neither the flag nor the
+variable records anything. On `acp` and `rpc` they trust the file of every
+workspace the client opens, not only the one named on the command line. When a file is untrusted,
 a warning on stderr names every ignored setting, and `abhed doctor` prints one
 line per ignored setting.
 
@@ -148,7 +184,7 @@ line per ignored setting.
 | Command | What it does |
 |---|---|
 | `abhed trust [show] [dir]` | shows the file, its hash, the decision, and what it sets beyond tightening |
-| `abhed trust grant [dir]` | trusts the current content |
+| `abhed trust grant [-sha256 H] [dir]` | trusts the current content; with `-sha256`, only if it is still the content with that hash, as `show` or ACP reported it |
 | `abhed trust revoke [dir]` | forgets the decision |
 | `abhed trust list` | lists every stored decision |
 
@@ -158,8 +194,11 @@ line per ignored setting.
   files are still read into the prompt as untrusted text (docs 03 §2, L1).
 - **A trusted file is trusted whole.** Trust is a decision about content the
   person has read. It is not a sandbox for that content.
-- **The variable is for one run.** Commands the agent runs do not inherit
-  `ABHED_TRUST_WORKSPACE`: the process tier passes only an allowlist, and a
-  command on the host has it removed. An `abhed` those commands start
-  therefore trusts only what the person granted. Set the variable for a single CI step, not in a
-  shell profile.
+- **The variable and the flag are not inherited.** Commands the agent runs do
+  not inherit `ABHED_TRUST_WORKSPACE`: the process tier passes only an
+  allowlist, and a command on the host has it removed. A command can still set
+  the variable or pass `-trust-workspace` itself, so the default configuration
+  asks before any bash command that mentions either
+  (`bash(*ABHED_TRUST_WORKSPACE*)`, `bash(*trust-workspace*)`). A
+  configuration that replaces `permissions.ask` drops these defaults. Set the
+  variable for a single CI step, not in a shell profile.

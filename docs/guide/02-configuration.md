@@ -363,6 +363,9 @@ send your code to another model server, or start processes. Until you trust
 it, Abhed applies only its deny and ask rules, a narrower mode (`plan` or
 `default`), a stricter sandbox and lower limits. It ignores the rest, and
 prints a warning naming each ignored setting. `abhed doctor` lists them too.
+`serve`, `user` and `migrate` refuse to start when an untrusted file sets
+`auth`, `storage` or `server`, since running without those would leave the
+server open.
 
 - **Interactive `abhed`** asks once, listing what the file would change: trust,
   don't trust, or view the file.
