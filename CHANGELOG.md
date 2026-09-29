@@ -244,8 +244,9 @@ All notable changes to Abhed are recorded here. The format follows
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
   names `tasks`. A script that relied on `-p` making worktrees needs
   `-allow tasks` or the rule in its configuration.
-- `Postgres.CreateSubSession` takes the parent session's id, and a
-  subagent's row records it. `ListSessions` leaves out rows with a parent
+- `Postgres.CreateSubagentSession` records a subagent's row with its
+  parent session's id; `CreateSubSession` is unchanged and records none.
+  `ListSessions` leaves out rows with a parent
   and returns `ParentID`; deleting a session marks its subagents' rows
   deleted too.
 

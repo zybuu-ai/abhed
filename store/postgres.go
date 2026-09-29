@@ -256,7 +256,13 @@ var _ agent.SessionCreator = (*Postgres)(nil)
 // CreateSubSession records a subagent's session row. Subagents are sessions in
 // their own right, so their events need a parent row like any other; the row
 // names its parent, so lists leave it out and a delete of the parent takes it.
-func (p *Postgres) CreateSubSession(ctx context.Context, id, parentID, description string) error {
+func (p *Postgres) CreateSubSession(ctx context.Context, id, description string) error {
+	return p.CreateSubagentSession(ctx, id, "", description)
+}
+
+// CreateSubagentSession is CreateSubSession with the spawning session's id,
+// so the row is listed and deleted with its parent.
+func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
 		ID: id, Tenant: p.tenant, User: "agent",
 		Workspace: description, Model: "subagent", Mode: "auto",

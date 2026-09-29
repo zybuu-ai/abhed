@@ -20,7 +20,7 @@ func TestSubagentRowsFollowTheirParent(t *testing.T) {
 	var children []string
 	for i := 0; i < 3; i++ {
 		child := testID(t, "sess-child-")
-		if err := p.CreateSubSession(ctx, child, parent, "subtask"); err != nil {
+		if err := p.CreateSubagentSession(ctx, child, parent, "subtask"); err != nil {
 			t.Fatal(err)
 		}
 		if err := p.Append(ev(child, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "work"})); err != nil {

@@ -236,7 +236,7 @@ func (e *Extension) Name() string { return e.cfg.Name }
 func (e *Extension) Running() bool { return !e.down.Load() }
 
 // Subscribed reports whether this extension wants an event.
-func (e *Extension) Subscribed(ev Event) bool { return !e.dead && e.subs[ev] }
+func (e *Extension) Subscribed(ev Event) bool { return !e.down.Load() && e.subs[ev] }
 
 // Call sends one request and waits for the reply.
 //

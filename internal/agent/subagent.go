@@ -203,7 +203,7 @@ type SubagentFactory struct {
 // before events can reference it. The memory store does not implement it, so
 // the local path is unaffected. parentID is the session that spawned it.
 type SessionCreator interface {
-	CreateSubSession(ctx context.Context, id, parentID, description string) error
+	CreateSubagentSession(ctx context.Context, id, parentID, description string) error
 }
 
 // MaxSummaryChars bounds what a subagent returns to its parent. The point of
@@ -240,7 +240,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		if parent != nil && parent.rec != nil {
 			parentSession = parent.rec.sessionID
 		}
-		if err := creator.CreateSubSession(ctx, sessionID, parentSession, req.Description); err != nil {
+		if err := creator.CreateSubagentSession(ctx, sessionID, parentSession, req.Description); err != nil {
 			return "", fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}

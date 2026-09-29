@@ -1234,7 +1234,7 @@ type subSessions struct {
 
 var _ agent.SessionCreator = subSessions{}
 
-func (c subSessions) CreateSubSession(ctx context.Context, id, parentID, description string) error {
+func (c subSessions) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return c.create(ctx, id, parentID, description)
 }
 
