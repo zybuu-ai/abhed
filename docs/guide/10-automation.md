@@ -160,26 +160,37 @@ binary:
 ```
 
 The editor's approval dialog is the approver: an `ask` decision becomes a
-permission request with *Allow once*, *Always allow* the rule policy suggests
-when one is offered, and *Deny*. It can answer an ask; it cannot lift a deny
-rule, and the sandbox tier and the workspace boundary are whatever the
-configuration says, exactly as from the terminal. The request's `toolCallId`
-is the id of the `tool_call` update for the same call, and that update is sent
-first, so the editor can show the prompt on that call. The option ids are
-bound to the request. An answer naming any other option is refused, and so is
-a cancelled or unreadable reply; each is recorded as refused by the system,
-not as a reviewer's no. That includes *Always allow* sent where it was not
-offered. The request's `toolCall._meta["zybuu.ai/abhed"]` carries the `tool`,
-the policy `step` that asked, its `reason`, `destructive` (true for a command
-with no undo, which is never offered *Always allow*), the `scope` *Always
-allow* would grant when offered, and the `requestId` of the recorded
-`action.requested`. The title, `rawInput` and reason are the copy the
-session records. If the record withheld that copy, the call is refused without asking,
-since nobody can review input they cannot see. An editor can use `destructive` to confirm more firmly. A
-`tool_call` update names its tool in the same `_meta` key. The agent's text, its
-reasoning, every tool call with its outcome, the plan and the context usage
-stream to the editor as `session/update` notifications, and the session is
-recorded like any other.
+permission request with *Allow once*, *Always allow* the rule policy
+suggests when one is offered, and *Deny*. It can answer an ask; it cannot
+lift a deny rule, and the sandbox tier and the workspace boundary are
+whatever the configuration says, exactly as from the terminal.
+
+The request's `toolCallId` is the id of the `tool_call` update for the same
+call, and that update is sent first, so the editor can show the prompt on
+that call. A call the model wrote as prose has no id of its own; it is named
+by its `requestId` everywhere instead.
+
+The option ids are bound to the request. An answer naming any other option
+is refused, including *Always allow* where it was not offered, and so is a
+cancelled or unreadable reply. Each is recorded as refused by the system,
+not as a reviewer's no.
+
+The request's `toolCall._meta["zybuu.ai/abhed"]` carries:
+
+- `tool`, and the policy `step` that asked, with its `reason`;
+- `destructive`, true for a command with no undo, whichever step asked, so
+  an editor can confirm it more firmly;
+- `scope`, the rule *Always allow* would grant, when it is offered;
+- `requestId`, the id of the recorded `action.requested`.
+
+The title, `rawInput` and reason are the copy the session records. If the
+record withheld that copy, the call is refused without asking, since nobody
+can review input they cannot see, and the editor is told why. A `tool_call`
+update names its tool in the same `_meta` key.
+
+The agent's text, its reasoning, every tool call with its outcome, the plan
+and the context usage stream to the editor as `session/update`
+notifications, and the session is recorded like any other.
 
 Not yet supported: `session/load` (resuming an editor session from the
 record) and editor-side modes. A conformance test drives the adapter with a

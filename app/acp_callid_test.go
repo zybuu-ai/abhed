@@ -28,6 +28,8 @@ type askedCall struct {
 	recorded agent.ActionRequested
 	// payload, when set, is the recorded payload as it is, such as a withheld one.
 	payload json.RawMessage
+	// event is the action.requested id, "ev-"+id when unset.
+	event string
 }
 
 // callsAgent asks about each call as the loop does, and delivers its events
@@ -47,19 +49,26 @@ func (a *callsAgent) emit(t agent.EventType, id string, payload any) {
 }
 
 func (a *callsAgent) Run(ctx context.Context, _ string) (string, error) {
-	for _, c := range a.calls {
+	approved := make([]bool, len(a.calls))
+	for i, c := range a.calls {
+		event := c.event
+		if event == "" {
+			event = "ev-" + c.id
+		}
 		asked := c.recorded
 		if asked.Args == nil {
 			asked.Args, asked.Reason, asked.Scope = c.args, c.d.Reason, c.d.Offer()
 		}
 		asked.CallID, asked.Tool, asked.RequiresApproval = c.id, "bash", true
-		a.emit(agent.EvActionRequested, "ev-"+c.id, asked)
-		raw, _ := json.Marshal(asked)
+		var raw json.RawMessage
+		raw, _ = json.Marshal(asked)
 		if c.payload != nil {
 			raw = c.payload
 		}
-		actx := agent.WithRequested(agent.WithCallID(agent.WithRequestID(ctx, "ev-"+c.id), c.id),
-			abhed.Event{ID: "ev-" + c.id, Type: agent.EvActionRequested, Payload: raw})
+		// One recorded event goes both to OnEvent and to the approver, as in the loop.
+		a.emit(agent.EvActionRequested, event, raw)
+		actx := agent.WithRequested(agent.WithCallID(agent.WithRequestID(ctx, event), c.id),
+			abhed.Event{ID: event, Type: agent.EvActionRequested, Payload: raw})
 		ok, err := a.opts.Approve(actx, "bash", c.args, c.d)
 		if err != nil {
 			return "", err
@@ -69,6 +78,13 @@ func (a *callsAgent) Run(ctx context.Context, _ string) (string, error) {
 			continue
 		}
 		a.emit(agent.EvActionApproved, "", map[string]string{"call_id": c.id, "by": "reviewer"})
+		approved[i] = true
+	}
+	for i, c := range a.calls {
+		if !approved[i] {
+			continue
+		}
+		a.emit(agent.EvObservation, "", agent.Observation{CallID: c.id, Tool: "bash", Content: "ran " + string(c.args)})
 	}
 	return "", nil
 }
@@ -239,8 +255,9 @@ func TestACPAnswerForAnotherCallIsRefused(t *testing.T) {
 	})
 	status := map[string]string{}
 	for _, u := range updates {
-		if u["sessionUpdate"] == "tool_call_update" {
-			status[u["toolCallId"].(string)] = u["status"].(string)
+		id := u["toolCallId"]
+		if u["sessionUpdate"] == "tool_call_update" && status[id.(string)] == "" {
+			status[id.(string)] = u["status"].(string)
 		}
 	}
 	if status["c1"] != "in_progress" || status["c2"] != "failed" {
@@ -388,11 +405,13 @@ func TestACPWithheldRequestIsExplainedToTheEditor(t *testing.T) {
 		d:       abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"},
 		payload: json.RawMessage(`{"withheld":"x"}`)}}
 	_, asked, updates := runCalls(t, calls, func(p json.RawMessage) any { return chosen(p, "allow_always") })
-	said := false
+	said, carded := false, false
 	for _, u := range updates {
+		carded = carded || u["sessionUpdate"] == "tool_call"
 		if u["sessionUpdate"] == "agent_message_chunk" {
 			text, _ := u["content"].(map[string]any)["text"].(string)
-			said = said || strings.Contains(text, "withheld")
+			// The note follows the card it explains.
+			said = said || (carded && strings.Contains(text, "withheld"))
 		}
 	}
 	if len(asked) != 0 || !said {
@@ -401,7 +420,7 @@ func TestACPWithheldRequestIsExplainedToTheEditor(t *testing.T) {
 }
 
 // A call salvaged from a model's prose has no id; it is still asked, under
-// an id of its own.
+// its request's event id, as its tool_call is named.
 func TestACPCallWithoutAnIDIsAsked(t *testing.T) {
 	var params json.RawMessage
 	c, asked := answeringConn(t, func(p json.RawMessage) any {
@@ -415,7 +434,69 @@ func TestACPCallWithoutAnIDIsAsked(t *testing.T) {
 	ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), d)
 	var r permissionRequest
 	_ = json.Unmarshal(params, &r)
-	if err != nil || !ok || asked.Load() != 1 || !strings.HasPrefix(r.ToolCall.ToolCallID, "ask-") {
+	if err != nil || !ok || asked.Load() != 1 || r.ToolCall.ToolCallID != "ev-a" {
 		t.Fatalf("ok %v err %v asked %d toolCallId %q", ok, err, asked.Load(), r.ToolCall.ToolCallID)
+	}
+}
+
+// Calls salvaged from a model's prose have no id. Each is named by its
+// request's event id, the same in its tool_call, its permission request and
+// its updates, so two of them never share one.
+func TestACPSalvagedCallsGetMatchingDistinctIDs(t *testing.T) {
+	calls := []askedCall{
+		{event: "ev-x", args: json.RawMessage(`{"command":"ls a"}`), d: abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}},
+		{event: "ev-y", args: json.RawMessage(`{"command":"ls b"}`), d: abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}},
+	}
+	cl, asked, updates := runCalls(t, calls, func(p json.RawMessage) any { return chosen(p, "allow_once") })
+	if want := []string{"call ev-x", "ask ev-x", "call ev-y", "ask ev-y"}; !slices.Equal(cl.arrived(), want) {
+		t.Fatalf("editor read %v, want %v", cl.arrived(), want)
+	}
+	if len(asked) != 2 {
+		t.Fatalf("asked %d", len(asked))
+	}
+	got := map[string][]string{}
+	for _, u := range updates {
+		if u["sessionUpdate"] == "tool_call_update" {
+			id := u["toolCallId"].(string)
+			got[id] = append(got[id], u["status"].(string))
+		}
+	}
+	for _, id := range []string{"ev-x", "ev-y"} {
+		if !slices.Equal(got[id], []string{"in_progress", "completed"}) {
+			t.Fatalf("updates by id %v", got)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("updates went to other ids: %v", got)
+	}
+}
+
+// A command with no undo is marked destructive whichever step asked, such as
+// a hook that asks before the destructive step is reached.
+func TestACPDestructiveCommandIsMarkedWhateverTheStep(t *testing.T) {
+	for _, tc := range []struct {
+		step, command string
+		want          bool
+	}{
+		{"hook", "rm -rf build", true},
+		{"ask", "git push --force origin main", true},
+		{"hook", "ls build", false},
+	} {
+		var params json.RawMessage
+		c, _ := answeringConn(t, func(p json.RawMessage) any {
+			params = p
+			return chosen(p, "reject_once")
+		})
+		s := &acpSession{id: "s1", always: map[string]bool{}}
+		args, _ := json.Marshal(map[string]string{"command": tc.command})
+		d := abhed.Decision{Decision: policy.Ask, Step: tc.step, Reason: "asked by " + tc.step}
+		if _, err := c.askEditor(context.Background(), s, "bash", args, d); err != nil {
+			t.Fatal(err)
+		}
+		var r permissionRequest
+		_ = json.Unmarshal(params, &r)
+		if m, _ := r.meta(); m.Destructive == nil || *m.Destructive != tc.want {
+			t.Errorf("%s step, %q: _meta %+v, want destructive %v", tc.step, tc.command, m, tc.want)
+		}
 	}
 }

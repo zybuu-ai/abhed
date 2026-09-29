@@ -66,6 +66,11 @@ Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.De
 },
 ```
 
+Inside `Approve`, `abhed.CallIDOf(ctx)` is the call id its tool call events
+carry (empty for a call the model wrote as prose), and
+`abhed.RequestIDOf(ctx)` is the id of its `action.requested` event, unique in
+the session; bind a person's answer to the latter.
+
 `d.Offer()` is the scope a person may choose to always allow, and the only
 one a remembered choice may satisfy. It is empty for an ask rule, a
 destructive command, or anything else that must ask every time, even where

@@ -12,6 +12,9 @@ All notable changes to Abhed are recorded here. The format follows
   offers. The ids are no longer the fixed `once`, `always` and `reject`; they
   are bound to the request, and any other answer is refused. An editor that
   picks from the offered options, as the protocol intends, needs no change.
+- A cancelled or unreadable ACP editor reply is now recorded `by: system`
+  with its reason, not as a reviewer's denial. A request whose recorded copy
+  was withheld is refused without asking and recorded the same way.
 - An ACP editor that read the tool name from a `tool_call` update's root
   `name` field reads it from `_meta["zybuu.ai/abhed"].tool`. The spec does not
   allow custom root fields.
@@ -26,13 +29,16 @@ All notable changes to Abhed are recorded here. The format follows
   not offered for that call, including *Always allow* where it was withheld
   (which approved once before), is refused. A refused, cancelled or unreadable
   answer is recorded as refused by the system, not as a reviewer's rejection.
+- `abhed acp`: a call the model wrote as prose, which has no call id, is
+  named by its `requestId` in its `tool_call`, permission request and
+  updates. Such calls all had the id `""`.
 
 ### Added
 
 - `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
   carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
-  `requestId`. The title, `rawInput` and reason shown are the recorded copy. A
-  request whose recorded copy was withheld is refused without asking.
+  `requestId`. `destructive` is true for any command with no undo, whichever
+  step asked. The title, `rawInput` and reason shown are the recorded copy.
 - SDK: `CallIDOf` and `RequestIDOf` name, inside `Options.Approve`, the call
   and the recorded request being asked about.
 

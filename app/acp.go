@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -73,7 +74,14 @@ type acpSession struct {
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
 	always map[string]bool
+	// A call salvaged from prose has no id, so the editor knows it by its
+	// action.requested id: the last one requested, and those approved and
+	// awaiting a result, oldest first.
+	lastIdless idlessCall
+	ranIdless  []idlessCall
 }
+
+type idlessCall struct{ id, tool string }
 
 type acpConn struct {
 	out     io.Writer
@@ -345,6 +353,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	ctx, cancel := context.WithCancel(c.root())
 	s.mu.Lock()
 	s.cancel = cancel
+	s.ranIdless = nil // a result the last turn never recorded will not come
 	s.mu.Unlock()
 	defer func() {
 		cancel()
@@ -386,11 +395,20 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	// carry the engine's request id so an answer meant for another ask is refused.
 	callID, requestID := abhed.CallIDOf(ctx), abhed.RequestIDOf(ctx)
 	if callID == "" {
+		callID = requestID // as forward names a call without an id
+	}
+	if callID == "" {
 		callID = "ask-" + acpID()
 	}
 	bind := requestID
 	if bind == "" {
 		bind = callID
+	}
+	// The tool_call goes out first, so the editor has the card this asks about.
+	if s.agent != nil {
+		flushed, cancel := context.WithTimeout(ctx, askFlushWait)
+		_ = s.agent.Flush(flushed)
+		cancel()
 	}
 	// The editor is shown the request as recorded (redacted when the session has
 	// a redactor); outside a loop there is no record, only the call's own values.
@@ -406,19 +424,13 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		}
 		shown, reason, shownScope = rec.Args, rec.Reason, rec.Scope
 	}
-	// The tool_call goes out first, so the editor has the card this asks about.
-	if s.agent != nil {
-		flushed, cancel := context.WithTimeout(ctx, askFlushWait)
-		_ = s.agent.Flush(flushed)
-		cancel()
-	}
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
 	if scope != "" && shownScope != "" {
 		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + shownScope, "kind": "allow_always"})
 	}
 	options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
-	meta := map[string]any{"tool": tool, "step": d.Step, "reason": reason, "destructive": d.Step == "destructive"}
+	meta := map[string]any{"tool": tool, "step": d.Step, "reason": reason, "destructive": destructive(tool, args, d)}
 	if requestID != "" {
 		meta["requestId"] = requestID
 	}
@@ -467,6 +479,25 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	return false, nil
 }
 
+// destructive reports a call with no undo, whichever step asked about it: a
+// hook or ask rule may ask first about a command the destructive step would.
+func destructive(tool string, args json.RawMessage, d abhed.Decision) bool {
+	if d.Step == "destructive" {
+		return true
+	}
+	if tool != "bash" {
+		return false
+	}
+	var a struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(args, &a) != nil {
+		return false
+	}
+	_, yes := tools.IsDestructive(a.Command)
+	return yes
+}
+
 func toolKind(tool string) string {
 	switch tool {
 	case "read", "glob":
@@ -492,6 +523,20 @@ func toolTitle(tool string, args json.RawMessage) string {
 		}
 	}
 	return tool
+}
+
+// takeIdless names the result of an approved call without an id: the oldest
+// such call of that tool still awaiting one.
+func (s *acpSession) takeIdless(tool string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.ranIdless {
+		if c.tool == tool {
+			s.ranIdless = append(s.ranIdless[:i], s.ranIdless[i+1:]...)
+			return c.id
+		}
+	}
+	return ""
 }
 
 // forward maps the record's events onto session/update notifications.
@@ -520,6 +565,12 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 	case agent.EvActionRequested:
 		var p agent.ActionRequested
 		_ = json.Unmarshal(ev.Payload, &p)
+		if p.CallID == "" {
+			p.CallID = ev.ID
+			s.mu.Lock()
+			s.lastIdless = idlessCall{id: ev.ID, tool: p.Tool}
+			s.mu.Unlock()
+		}
 		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": toolTitle(p.Tool, p.Args),
 			"kind": toolKind(p.Tool), "status": "pending", "rawInput": p.Args, "_meta": map[string]any{acpMetaKey: map[string]any{"tool": p.Tool}}})
 	case agent.EvActionApproved:
@@ -527,6 +578,13 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 			CallID string `json:"call_id"`
 		}
 		_ = json.Unmarshal(ev.Payload, &p)
+		if p.CallID == "" {
+			// Calls are approved one at a time, right after their request.
+			s.mu.Lock()
+			p.CallID = s.lastIdless.id
+			s.ranIdless = append(s.ranIdless, s.lastIdless)
+			s.mu.Unlock()
+		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": "in_progress"})
 	case agent.EvActionDenied:
 		var p struct {
@@ -534,11 +592,19 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 			Reason string `json:"reason"`
 		}
 		_ = json.Unmarshal(ev.Payload, &p)
+		if p.CallID == "" {
+			s.mu.Lock()
+			p.CallID = s.lastIdless.id
+			s.mu.Unlock()
+		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": "failed",
 			"content": []any{map[string]any{"type": "content", "content": text("Denied: " + p.Reason)}}})
 	case agent.EvObservation:
 		var p agent.Observation
 		_ = json.Unmarshal(ev.Payload, &p)
+		if p.CallID == "" {
+			p.CallID = s.takeIdless(p.Tool)
+		}
 		status := "completed"
 		if p.IsError {
 			status = "failed"
