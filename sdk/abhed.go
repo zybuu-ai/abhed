@@ -35,7 +35,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -178,8 +178,11 @@ type Agent struct {
 	fwd      *forwarder
 	redact   *secrets.Redactor
 	trust    config.WorkspaceTrust
-	// running counts the runs in progress; Fork refuses while one is.
-	running atomic.Int32
+	// running counts the runs in progress, under forkMu: Fork holds it while
+	// it forks and refuses while a run is in progress, and a run starting
+	// meanwhile waits for the fork to finish.
+	forkMu  sync.Mutex
+	running int
 }
 
 // New builds an agent.
@@ -363,8 +366,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 // Run sends a prompt and returns the agent's final message.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
-	a.running.Add(1)
-	defer a.running.Add(-1)
+	defer a.startRun()()
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err
@@ -406,8 +408,7 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 // RunStructured is RunJSON without the decode: the validated JSON, with stored
 // secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
-	a.running.Add(1)
-	defer a.running.Add(-1)
+	defer a.startRun()()
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
 	if err != nil {
 		var nr agent.ErrNoResult
@@ -462,13 +463,29 @@ func (a *Agent) Usage() Usage { return a.loop.Usage() }
 // Live), and it refuses a step past the end or one an earlier fork abandoned.
 // It returns ErrForkDuringRun while Run, Continue, RunJSON or RunStructured is
 // in progress: a fork rewrites the conversation and ends its logins, which
-// must not happen under a turn.
+// must not happen under a turn. A run started while a fork is under way
+// waits for it.
 func (a *Agent) Fork(throughSeq int64) error {
-	if a.running.Load() > 0 {
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
+	if a.running > 0 {
 		return ErrForkDuringRun
 	}
 	_, err := a.loop.ForkTo(a.Events(), throughSeq)
 	return err
+}
+
+// startRun counts a run in progress, after any fork under way, and returns
+// what ends it.
+func (a *Agent) startRun() func() {
+	a.forkMu.Lock()
+	a.running++
+	a.forkMu.Unlock()
+	return func() {
+		a.forkMu.Lock()
+		a.running--
+		a.forkMu.Unlock()
+	}
 }
 
 // ErrForkDuringRun is Fork's refusal while a run is in progress. Fork once
