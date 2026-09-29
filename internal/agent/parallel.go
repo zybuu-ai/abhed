@@ -31,6 +31,9 @@ type Tasks struct {
 	Agents *Definitions
 	// Models are the provider names a task may choose, offered when more than one.
 	Models []string
+	// Background starts children that outlive the call; nil offers no
+	// background property.
+	Background func(ctx context.Context, req SubagentRequest) (string, error)
 	// Workspace is the parent's root; worktrees are created beneath it.
 	Workspace string
 	// MaxParallel bounds concurrency. Zero means all at once.
@@ -71,7 +74,7 @@ func (t Tasks) Description() string {
 func (t Tasks) Schema() json.RawMessage {
 	return mustSchema(map[string]any{
 		"type": "object",
-		"properties": map[string]any{
+		"properties": withModel(map[string]any{
 			"tasks": map[string]any{
 				"type": "array", "minItems": 1, "maxItems": 8,
 				"items": map[string]any{
@@ -81,20 +84,21 @@ func (t Tasks) Schema() json.RawMessage {
 						"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
 						"agent_type":  agentTypeSchema(t.Agents),
 						"max_turns":   map[string]any{"type": "integer"},
-					}, t.Models),
+					}, t.Models, false),
 					"required": []string{"prompt", "description"},
 				},
 			},
 			"isolation": map[string]any{"type": "string", "enum": []string{"none", "worktree"},
 				"description": "worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."},
-		},
+		}, nil, t.Background != nil),
 		"required": []string{"tasks"},
 	})
 }
 
 type tasksArgs struct {
-	Tasks     []taskArgs `json:"tasks"`
-	Isolation string     `json:"isolation"`
+	Tasks      []taskArgs `json:"tasks"`
+	Isolation  string     `json:"isolation"`
+	Background bool       `json:"background"`
 }
 
 type taskOutcome struct {
@@ -142,6 +146,19 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		anyIsolated = anyIsolated || isolate[i]
 	}
 
+	// Background is all or nothing: a call that would pass the session's
+	// limit is refused as a whole, before any worktree or child.
+	if a.Background {
+		if t.Background == nil {
+			return tools.Result{Content: "this agent runs no background tasks; call tasks without background.", IsError: true}
+		}
+		b, _ := managerOf(ctx)
+		if free := b.Free(); free < len(a.Tasks) {
+			return tools.Result{Content: fmt.Sprintf("background task limit: %d more may run now, and this call asks for %d. "+
+				"Start fewer, or run them in the foreground.", max(free, 0), len(a.Tasks)), IsError: true}
+		}
+	}
+
 	if anyIsolated {
 		if err := requireGitRepo(ctx, t.Workspace); err != nil {
 			return tools.Result{Content: "isolation \"worktree\" needs the workspace to be a git " +
@@ -169,6 +186,10 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 			return tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
 		}
 		trees[i] = wt
+	}
+
+	if a.Background {
+		return t.startAll(ctx, a, trees)
 	}
 
 	limit := t.MaxParallel
@@ -216,6 +237,32 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		fmt.Fprintf(&b, "[%d of %d tasks failed]\n", failed, len(outcomes))
 	}
 	return tools.Result{Content: b.String(), IsError: failed == len(outcomes)}
+}
+
+// startAll starts every task in the background, each settling its own
+// worktree when it ends.
+func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree) tools.Result {
+	var b strings.Builder
+	failed := 0
+	for i, tk := range a.Tasks {
+		req := SubagentRequest{Prompt: tk.Prompt, Description: tk.Description,
+			AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model}
+		if wt := trees[i]; wt != nil {
+			req.Workspace, req.settle = wt.Dir, settleLater(t.Workspace, wt)
+		}
+		fmt.Fprintf(&b, "## Task %d — %s\n", i+1, tk.Description)
+		id, err := t.Background(ctx, req)
+		if err != nil {
+			failed++
+			if req.settle != nil {
+				req.settle(context.WithoutCancel(ctx))
+			}
+			fmt.Fprintf(&b, "FAILED: %v\n\n", err)
+			continue
+		}
+		b.WriteString(startedText(id, tk.Description) + "\n\n")
+	}
+	return tools.Result{Content: b.String(), IsError: failed == len(a.Tasks)}
 }
 
 // settle removes a worktree the subagent left as it was made, with its branch,

@@ -539,12 +539,17 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
 
-	"limits.max_turns":              {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
-	"limits.max_tokens":             {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
-	"limits.max_budget_tokens":      {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }, zeroUnlimited), "only lower"},
-	"limits.max_subagents":          {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }, zeroUnlimited), "only lower"},
-	"limits.max_parallel_subagents": {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},
-	"limits.nested_subagents":       {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
+	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
+	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
+	"limits.max_budget_tokens":        {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }, zeroUnlimited), "only lower"},
+	"limits.max_subagents":            {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }, zeroUnlimited), "only lower"},
+	"limits.max_parallel_subagents":   {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},
+	"limits.nested_subagents":         {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
+	"limits.max_background_subagents": {lowerOrZero(func(c *Config) *int { return &c.Limits.MaxBackgroundSubagents }), "only lower; zero allows none"},
+	"limits.background_max_minutes":   {lower(func(c *Config) *int { return &c.Limits.BackgroundMaxMinutes }, zeroIs(60)), "only lower"},
+	"subagents.wake":                  {tighterWake, "only tighter: off < notify < auto"},
+	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},
+	"subagents.wake_max_turns":        {lower(func(c *Config) *int { return &c.Subagents.WakeMaxTurns }, zeroIs(8)), "only lower"},
 
 	"tools.syntax_check": {stricterSyntax, "only stricter"},
 
@@ -630,6 +635,34 @@ func lower(field func(*Config) *int, zero zeroMeans) func(dst, ws *Config) bool 
 		*d = v
 		return true
 	}
+}
+
+// lowerOrZero takes a value no higher than the current one, zero included:
+// for these limits zero is the tightest setting, not "unset".
+func lowerOrZero(field func(*Config) *int) func(dst, ws *Config) bool {
+	return func(dst, ws *Config) bool {
+		d, v := field(dst), *field(ws)
+		if v < 0 || v > *d {
+			return false
+		}
+		*d = v
+		return true
+	}
+}
+
+var wakeRank = map[string]int{"off": 0, "notify": 1, "auto": 2}
+
+func tighterWake(dst, ws *Config) bool {
+	v, ok := wakeRank[ws.Subagents.Wake]
+	cur := dst.Subagents.Wake
+	if cur == "" {
+		cur = "notify"
+	}
+	if !ok || v > wakeRank[cur] {
+		return false
+	}
+	dst.Subagents.Wake = ws.Subagents.Wake
+	return true
 }
 
 func onlyFalse(field func(*Config) *bool) func(dst, ws *Config) bool {

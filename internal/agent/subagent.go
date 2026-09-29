@@ -89,6 +89,9 @@ type Task struct {
 	// Models are the provider names a call may choose. The model property is
 	// offered only when there is more than one to choose from.
 	Models []string
+	// Background starts a child that outlives the call; nil offers no
+	// background property.
+	Background func(ctx context.Context, req SubagentRequest) (string, error)
 }
 
 type SubagentRequest struct {
@@ -126,10 +129,14 @@ func (t Task) MutatesCall(raw json.RawMessage) bool {
 }
 
 func (t Task) Description() string {
+	note := ""
+	if t.Background != nil {
+		note = backgroundNote
+	}
 	return "Spawn a subagent with a fresh context to handle a self-contained subtask. " +
 		"Use when a task needs extensive exploration whose intermediate detail you do not need — " +
 		"the subagent returns only a summary. The prompt must be COMPLETE and self-contained: " +
-		"the subagent cannot see this conversation. Agent types:" + t.Agents.listing()
+		"the subagent cannot see this conversation." + note + " Agent types:" + t.Agents.listing()
 }
 
 func (t Task) Schema() json.RawMessage {
@@ -140,14 +147,18 @@ func (t Task) Schema() json.RawMessage {
 			"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
 			"agent_type":  agentTypeSchema(t.Agents),
 			"max_turns":   map[string]any{"type": "integer", "description": "Turn cap for the subagent."},
-		}, t.Models),
+		}, t.Models, t.Background != nil),
 		"required": []string{"prompt", "description"},
 	})
 }
 
 // withModel adds the model property when there is a choice to make. With one
 // model configured it would only cost prompt tokens.
-func withModel(props map[string]any, models []string) map[string]any {
+func withModel(props map[string]any, models []string, background bool) map[string]any {
+	if background {
+		props["background"] = map[string]any{"type": "boolean",
+			"description": "Start it and continue at once; its result is delivered to you automatically."}
+	}
 	if len(models) > 1 {
 		props["model"] = map[string]any{"type": "string", "enum": models,
 			"description": "A configured model to run the subagent on. Omit to use the agent type's, or yours."}
@@ -183,6 +194,7 @@ type taskArgs struct {
 	AgentType   string `json:"agent_type"`
 	MaxTurns    int    `json:"max_turns"`
 	Model       string `json:"model"`
+	Background  bool   `json:"background"`
 }
 
 // unknownType refuses an agent type the session does not offer, naming those it does.
@@ -223,6 +235,26 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		MaxTurns:    a.MaxTurns,
 		Model:       a.Model,
 	}
+	if a.Background {
+		if t.Background == nil {
+			return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
+		}
+		if def.Isolation == "worktree" {
+			wt, res := makeWorktree(ctx, t.Workspace, req.AgentType)
+			if wt == nil {
+				return res
+			}
+			req.Workspace, req.settle = wt.Dir, settleLater(t.Workspace, wt)
+		}
+		id, err := t.Background(ctx, req)
+		if err != nil {
+			if req.settle != nil {
+				req.settle(context.WithoutCancel(ctx))
+			}
+			return tools.Result{Content: err.Error(), IsError: true}
+		}
+		return tools.Result{Content: startedText(id, req.Description)}
+	}
 	if def.Isolation == "worktree" {
 		return runInWorktree(ctx, t.Spawn, t.Workspace, req)
 	}
@@ -233,15 +265,32 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	return tools.Result{Content: summary}
 }
 
-// runInWorktree runs one subagent in a worktree of its own and says what it
-// left there, for a role whose definition works in one.
-func runInWorktree(ctx context.Context, spawn func(context.Context, SubagentRequest) (string, error), ws string, req SubagentRequest) tools.Result {
+// makeWorktree makes a worktree for a role that works in one, or says why not.
+func makeWorktree(ctx context.Context, ws, agentType string) (*worktree, tools.Result) {
 	if err := requireGitRepo(ctx, ws); err != nil {
-		return tools.Result{Content: fmt.Sprintf("agent type %q works in its own worktree, which needs the workspace to be a git repository: %v", req.AgentType, err), IsError: true}
+		return nil, tools.Result{Content: fmt.Sprintf("agent type %q works in its own worktree, which needs the workspace to be a git repository: %v", agentType, err), IsError: true}
 	}
 	wt, err := addWorktree(ctx, ws)
 	if err != nil {
-		return tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
+		return nil, tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
+	}
+	return wt, tools.Result{}
+}
+
+// settleLater settles a background child's worktree when the child ends.
+func settleLater(ws string, wt *worktree) func(context.Context) string {
+	return func(ctx context.Context) string {
+		rel, _ := filepath.Rel(ws, wt.Dir)
+		return settleWorktree(ctx, ws, rel, wt)
+	}
+}
+
+// runInWorktree runs one subagent in a worktree of its own and says what it
+// left there, for a role whose definition works in one.
+func runInWorktree(ctx context.Context, spawn func(context.Context, SubagentRequest) (string, error), ws string, req SubagentRequest) tools.Result {
+	wt, res := makeWorktree(ctx, ws, req.AgentType)
+	if wt == nil {
+		return res
 	}
 	req.Workspace = wt.Dir
 	summary, err := spawn(ctx, req)
@@ -280,6 +329,10 @@ type SubagentFactory struct {
 	Models func(name string) (model.Adapter, error)
 	// ModelNames are the names Models resolves, as the tools offer them.
 	ModelNames []string
+	// Background offers background tasks: the task and tasks tools take a
+	// background flag, and task_status and task_cancel are offered. The
+	// loop that runs them needs a Background manager.
+	Background bool
 }
 
 // SessionCreator is implemented by durable stores that need a session row

@@ -9,6 +9,7 @@ package toolset
 
 import (
 	"context"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -309,10 +310,39 @@ func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *
 	if f.Models != nil {
 		models = f.ModelNames
 	}
-	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models})
+	var bg func(context.Context, agent.SubagentRequest) (string, error)
+	if f.Background {
+		bg = f.SpawnBackground
+		out.Add(agent.TaskStatus{})
+		out.Add(agent.TaskCancel{})
+	}
+	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models, Background: bg})
 	out.Add(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
-		Workspace: f.Workspace, MaxParallel: maxParallel, Models: models})
+		Workspace: f.Workspace, MaxParallel: maxParallel, Models: models, Background: bg})
 	return out
+}
+
+// BackgroundPolicy is a session's background limits from the configuration,
+// with the wake mode no wider than ceiling, the most the surface can host:
+// off where nobody can come back to the conversation, notify where nothing
+// can start a run on its own.
+func BackgroundPolicy(cfg config.Config, ceiling agent.WakeMode) agent.BackgroundPolicy {
+	mode, err := agent.ParseWakeMode(cfg.Subagents.Wake)
+	if err != nil {
+		mode = agent.WakeOff // Validate refuses it; fail to the tightest here too
+	}
+	minutes := cfg.Limits.BackgroundMaxMinutes
+	if minutes <= 0 {
+		minutes = 60
+	}
+	return agent.BackgroundPolicy{
+		Wake:            mode.Tighter(ceiling),
+		Ceiling:         ceiling,
+		MaxLive:         cfg.Limits.MaxBackgroundSubagents,
+		Lifetime:        time.Duration(min(minutes, 480)) * time.Minute,
+		MaxWakesPerHour: cfg.Subagents.MaxWakesPerHour,
+		WakeMaxTurns:    cfg.Subagents.WakeMaxTurns,
+	}
 }
 
 // SkillTool offers reg's skills. A skill declaring a pipeline is run rather

@@ -81,8 +81,11 @@ var ErrBackgroundLifetime = errors.New("the background task's lifetime ran out")
 type BackgroundPolicy struct {
 	// Wake is the session's effective wake mode.
 	Wake WakeMode
-	// MaxLive bounds the children alive at once, across runs. Zero is 4.
+	// MaxLive bounds the children alive at once, across runs. Zero allows none.
 	MaxLive int
+	// Ceiling is the widest wake mode this surface may run; SetWake cannot
+	// go above it. Empty is the policy's own mode.
+	Ceiling WakeMode
 	// Lifetime bounds each child's wall-clock life. Zero is 60 minutes.
 	Lifetime time.Duration
 	// MaxWakesPerHour bounds automatic wake runs in a rolling hour.
@@ -97,12 +100,7 @@ type BackgroundPolicy struct {
 	Now func() time.Time
 }
 
-func (p BackgroundPolicy) maxLive() int {
-	if p.MaxLive <= 0 {
-		return 4
-	}
-	return p.MaxLive
-}
+func (p BackgroundPolicy) maxLive() int { return max(p.MaxLive, 0) }
 
 func (p BackgroundPolicy) lifetime() time.Duration {
 	if p.Lifetime <= 0 {
@@ -192,6 +190,30 @@ func (b *Background) SetMode(m WakeMode) {
 	b.mu.Lock()
 	b.policy.Wake = m
 	b.mu.Unlock()
+}
+
+// SetWake is the session's own switch: it records session.wake_set and
+// changes the mode, never above the surface's ceiling.
+func (b *Background) SetWake(m WakeMode, by string) error {
+	if b == nil {
+		return errors.New("this session runs no background tasks")
+	}
+	if _, err := ParseWakeMode(string(m)); err != nil || m == "" {
+		return fmt.Errorf("wake mode %q is not off, notify or auto", m)
+	}
+	b.mu.Lock()
+	ceiling := b.policy.Ceiling
+	b.mu.Unlock()
+	if ceiling != "" && m.Tighter(ceiling) != m {
+		return fmt.Errorf("wake mode %s is not allowed here; the most this session may use is %s", m, ceiling)
+	}
+	if b.loop != nil {
+		if _, err := b.loop.Recorder.Record(EvWakeSet, ActorUser, Trusted, WakeSet{Wake: m, By: by, Ceiling: ceiling}); err != nil {
+			return err
+		}
+	}
+	b.SetMode(m)
+	return nil
 }
 
 // Unacted is how many results were delivered while idle and not yet seen by a run.

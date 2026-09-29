@@ -299,3 +299,33 @@ func TestAgentFileCaps(t *testing.T) {
 		t.Fatalf("size cap: agents %v, problems %v", st.Agents, st.AgentsProblems)
 	}
 }
+
+// An untrusted workspace may only lower the background limits and tighten
+// the wake mode; never raise or loosen them.
+func TestWorkspaceCannotRaiseWake(t *testing.T) {
+	for _, c := range []struct {
+		file string
+		want func(Config) bool
+	}{
+		{`{"subagents":{"wake":"auto"}}`, func(c Config) bool { return c.Subagents.Wake == "notify" }},
+		{`{"subagents":{"wake":"off"}}`, func(c Config) bool { return c.Subagents.Wake == "off" }},
+		{`{"subagents":{"max_wakes_per_hour":40}}`, func(c Config) bool { return c.Subagents.MaxWakesPerHour == 4 }},
+		{`{"subagents":{"max_wakes_per_hour":0}}`, func(c Config) bool { return c.Subagents.MaxWakesPerHour == 0 }},
+		{`{"subagents":{"wake_max_turns":50}}`, func(c Config) bool { return c.Subagents.WakeMaxTurns == 8 }},
+		{`{"subagents":{"wake_max_turns":2}}`, func(c Config) bool { return c.Subagents.WakeMaxTurns == 2 }},
+		{`{"limits":{"max_background_subagents":9}}`, func(c Config) bool { return c.Limits.MaxBackgroundSubagents == 4 }},
+		{`{"limits":{"max_background_subagents":0}}`, func(c Config) bool { return c.Limits.MaxBackgroundSubagents == 0 }},
+		{`{"limits":{"background_max_minutes":480}}`, func(c Config) bool { return c.Limits.BackgroundMaxMinutes == 60 }},
+		{`{"limits":{"background_max_minutes":10}}`, func(c Config) bool { return c.Limits.BackgroundMaxMinutes == 10 }},
+	} {
+		_, ws := trustHome(t, "", c.file)
+		cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !c.want(cfg) {
+			t.Fatalf("%s gave wake %q, wakes %d, turns %d, live %d, minutes %d", c.file, cfg.Subagents.Wake,
+				cfg.Subagents.MaxWakesPerHour, cfg.Subagents.WakeMaxTurns, cfg.Limits.MaxBackgroundSubagents, cfg.Limits.BackgroundMaxMinutes)
+		}
+	}
+}

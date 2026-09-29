@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // agentsHome isolates the home directory, the trust store and the managed
@@ -126,5 +129,37 @@ func TestModelResolverOnlyOffered(t *testing.T) {
 	}
 	if _, err := ModelResolver(cfg)("mine"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The surface's ceiling caps the configured wake mode.
+func TestBackgroundPolicyCeiling(t *testing.T) {
+	cfg := config.Default()
+	cfg.Subagents.Wake = "auto"
+	for ceiling, want := range map[agent.WakeMode]agent.WakeMode{agent.WakeAuto: agent.WakeAuto, agent.WakeNotify: agent.WakeNotify, agent.WakeOff: agent.WakeOff} {
+		if got := BackgroundPolicy(cfg, ceiling).Wake; got != want {
+			t.Fatalf("ceiling %s gave %s", ceiling, got)
+		}
+	}
+	cfg.Subagents.Wake = "off"
+	if got := BackgroundPolicy(cfg, agent.WakeAuto).Wake; got != agent.WakeOff {
+		t.Fatalf("configured off became %s", got)
+	}
+	cfg.Limits.BackgroundMaxMinutes = 10_000
+	if p := BackgroundPolicy(cfg, agent.WakeAuto); p.Lifetime != 480*time.Minute || p.MaxLive != 4 {
+		t.Fatalf("policy: %+v", p)
+	}
+}
+
+// Subagents registers task_status and task_cancel only with background.
+func TestBackgroundToolsOnlyWithBackground(t *testing.T) {
+	for _, bg := range []bool{false, true} {
+		f := &agent.SubagentFactory{Workspace: t.TempDir(), Background: bg}
+		reg := Subagents(tools.NewRegistry(), f, 2)
+		_, status := reg.Get("task_status")
+		_, cancel := reg.Get("task_cancel")
+		if status != bg || cancel != bg {
+			t.Fatalf("background %v: task_status %v task_cancel %v", bg, status, cancel)
+		}
 	}
 }

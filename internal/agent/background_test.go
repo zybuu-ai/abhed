@@ -132,7 +132,7 @@ func newBGRig(t *testing.T, mode WakeMode, children ...string) *bgRig {
 	reg.Add(bgTool{f})
 	l := NewLoop(m, reg, policy.New(policy.ModeDefault), AutoApprove{}, sess, NewRecorder(store, "parent", ""), DefaultConfig())
 	l.Budget = f.Budget
-	NewBackground(l, BackgroundPolicy{Wake: mode, Settle: 20 * time.Millisecond})
+	NewBackground(l, BackgroundPolicy{Wake: mode, MaxLive: 4, Settle: 20 * time.Millisecond})
 	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
 	return &bgRig{l: l, f: f, m: m, store: store}
 }
