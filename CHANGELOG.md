@@ -210,6 +210,36 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
+  asks in default mode, is refused in plan mode, and is refused where nobody
+  can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
+  names `tasks`. A script that relied on `-p` making worktrees needs
+  `-allow tasks` or the rule in its configuration.
+- `abhed rpc` and `abhed acp` sessions now have the CLI's tool set: they
+  start the MCP servers and extensions a trusted workspace configuration
+  names, load its skills, and can run subagents. A CI job on `abhed rpc`
+  whose configuration names a server or extension it never started before
+  now starts it.
+- `Postgres.CreateSubagentSession` records a subagent's row with its
+  parent session's id; `CreateSubSession` is unchanged and records none.
+  `ListSessions` leaves out rows with a parent
+  and returns `ParentID`; deleting a session marks its subagents' rows
+  deleted too.
+- With no `allowed_hosts`, each `web_fetch` call asks in the default,
+  accept-edits, auto and plan modes unless an allow rule such as
+  `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
+  to any site; "always allow" is offered for any URL on the site. Bypass
+  runs it, a run with no one to ask refuses it, and `abhed eval`, which
+  approves every ask, fetches. With `allowed_hosts` set, calls to those
+  hosts do not ask on the scheme's default port; a URL naming another port
+  asks.
+- `url` is now a policy subject for MCP and extension tools. A tool whose
+  only subject-like argument is `url` is matched on that URL, so deny and
+  ask rules written as `mcp__x(https://…/*)` that never fired now do, and an
+  allow rule written that way now approves calls it did not before. Re-read
+  such rules before upgrading.
+- An argument named `url` that a tool's schema does not declare is now
+  refused, as the other subject keys are, rather than passed through.
 - ACP editors must answer a permission request with one of the option ids it
   offers. The ids are no longer the fixed `once`, `always` and `reject`; they
   are bound to the request, and any other answer is refused. An editor that
@@ -354,11 +384,6 @@ All notable changes to Abhed are recorded here. The format follows
   request to that cluster, not when the context is opened. `abhed doctor`
   and the `abhed serve` banner no longer run it, so a helper that fails is
   reported by the first cluster call instead.
-- `abhed rpc` and `abhed acp` sessions now have the CLI's tool set: they
-  start the MCP servers and extensions a trusted workspace configuration
-  names, load its skills, and can run subagents. A CI job on `abhed rpc`
-  whose configuration names a server or extension it never started before
-  now starts it.
 - `abhed serve` now starts the configured extensions; their veto applies to
   every console and workbench session, and their tools are offered there.
 - Embedders: `limits.max_budget_tokens`, `limits.max_tokens`,
@@ -366,16 +391,6 @@ All notable changes to Abhed are recorded here. The format follows
   `Options.ConfiguredTools` the built-in prompt carries the workspace's
   `ABHED.md` memory files, as the CLI's does; without it, as before, it
   carries none. `abhed rpc` and `abhed acp` set it.
-- `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
-  asks in default mode, is refused in plan mode, and is refused where nobody
-  can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
-  names `tasks`. A script that relied on `-p` making worktrees needs
-  `-allow tasks` or the rule in its configuration.
-- `Postgres.CreateSubagentSession` records a subagent's row with its
-  parent session's id; `CreateSubSession` is unchanged and records none.
-  `ListSessions` leaves out rows with a parent
-  and returns `ParentID`; deleting a session marks its subagents' rows
-  deleted too.
 - SDK: `Agent.Fork` returns `ErrForkDuringRun` while `Run`, `Continue`,
   `RunJSON` or `RunStructured` is in progress. A fork ends the session's
   logins and rewrites the conversation, so it must come after the run returns.
@@ -467,38 +482,6 @@ All notable changes to Abhed are recorded here. The format follows
   `not started`); the serve banner names one that is not running.
 - The console and workbench say on a subagent's approval card that *Always
   allow* covers the whole session, the agent and every subagent.
-
-### Changed
-
-- The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
-  system prompt, loop settings and budget in one place, so a surface differs
-  from the CLI only where it says why. The server now applies
-  `limits.max_tokens`. `abhed eval` runs with memory files, the `todo` list
-  and subagents, and without MCP servers, extensions, rag corpora, the code
-  index, Kubernetes and SSH, so a score does not depend on what those reach.
-- `/resume` and the console refuse a subagent's session id; its work goes on
-  through the session that started it. The CLI names that session when the
-  record carries it, and the console answers as for an unknown session.
-- A skill pipeline's input is the request its own loop is answering, and its
-  model steps run on that loop's current model. It was the last CLI prompt,
-  process-wide, and the model the CLI started with.
-
-## [Unreleased — next minor]
-
-These entries are for the next minor release, not for a 1.2.x patch.
-
-### Upgrading
-
-- `url` is now a policy subject for MCP and extension tools. A tool whose
-  only subject-like argument is `url` is matched on that URL, so deny and
-  ask rules written as `mcp__x(https://…/*)` that never fired now do, and an
-  allow rule written that way now approves calls it did not before. Re-read
-  such rules before upgrading.
-- An argument named `url` that a tool's schema does not declare is now
-  refused, as the other subject keys are, rather than passed through.
-
-### Added
-
 - `web_fetch`: reads one http or https page through Abhed, not the
   sandboxed shell, and returns its text (HTML reduced to headings,
   paragraphs, lists and links), in parts of up to `web_fetch.max_chars`
@@ -518,17 +501,28 @@ These entries are for the next minor release, not for a 1.2.x patch.
   covers both schemes. A redirect to anything but the same URL (or its
   https upgrade) is handed back as a new call. Policy rules match the URL:
   `url` is now a subject key.
-- With no `allowed_hosts`, each `web_fetch` call asks in the default,
-  accept-edits, auto and plan modes unless an allow rule such as
-  `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
-  to any site; "always allow" is offered for any URL on the site. Bypass
-  runs it, a run with no one to ask refuses it, and `abhed eval`, which
-  approves every ask, fetches. With `allowed_hosts` set, calls to those
-  hosts do not ask on the scheme's default port; a URL naming another port
-  asks.
+- Subagents in the console, `abhed rpc`, `abhed acp` and the SDK use the
+  cluster logins and connected hosts of the session that started them,
+  never another session's. The SDK's `Close`, a new `start` on `abhed rpc`
+  and the end of an `abhed acp` connection close the ones an embedded agent
+  made.
+- `subagent.ask` carries the subagent's `target`: where its call sends a
+  credential, as the subagent's own `action.requested` names it.
 
 ### Changed
 
+- The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
+  system prompt, loop settings and budget in one place, so a surface differs
+  from the CLI only where it says why. The server now applies
+  `limits.max_tokens`. `abhed eval` runs with memory files, the `todo` list
+  and subagents, and without MCP servers, extensions, rag corpora, the code
+  index, Kubernetes and SSH, so a score does not depend on what those reach.
+- `/resume` and the console refuse a subagent's session id; its work goes on
+  through the session that started it. The CLI names that session when the
+  record carries it, and the console answers as for an unknown session.
+- A skill pipeline's input is the request its own loop is answering, and its
+  model steps run on that loop's current model. It was the last CLI prompt,
+  process-wide, and the model the CLI started with.
 - `bash`'s description says whether commands can reach the network. When
   the sandbox has none and a command fails for that reason, the result ends
   with a note saying so and pointing at `web_search` and `web_fetch`. A
