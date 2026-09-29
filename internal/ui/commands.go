@@ -25,6 +25,8 @@ var Commands = []Command{
 	{"/cost", "", "tokens, cache hit rate, compactions this session"},
 	{"/compact", "[hint]", "compact the context now"},
 	{"/clear", "", "start a new conversation and session, keep the workspace"},
+	{"/tasks", "[cancel <id|all>]", "list background tasks, or cancel them"},
+	{"/wake", "[off|notify|auto]", "show or set what a background result does while idle"},
 	{"/memory", "", "show the ABHED.md files in effect"},
 	{"/model", "[name]", "show or switch the model, keeping the conversation"},
 	{"/sessions", "", "list recent sessions (durable store)"},

@@ -317,16 +317,48 @@ func (r *Renderer) Event(ev agent.Event) {
 			fmt.Fprintf(r.w, "\n%s\n", r.s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq)))
 		}
 
+	case agent.EvSubagentNotice:
+		var n agent.Notice
+		if json.Unmarshal(ev.Payload, &n) != nil || r.quiet {
+			return
+		}
+		r.pause()
+		turns := ""
+		if n.Turns > 0 {
+			turns = fmt.Sprintf(", %d turn%s", n.Turns, map[bool]string{true: "", false: "s"}[n.Turns == 1])
+		}
+		fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("◆"), r.s.Dim(fmt.Sprintf("background: %s finished (%s%s); result added to the conversation",
+			orStr(n.Description, n.TaskID), n.Status, turns)))
+
+	case agent.EvSessionWoken:
+		if !r.quiet {
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("◆"), r.s.Dim("woke to act on background results"))
+		}
+
 	case agent.EvSessionEnded:
 		r.StopThinking()
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) != nil || r.quiet {
 			return
 		}
+		if e.Settled {
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("◆"), r.s.Dim("background work finished"))
+			return
+		}
+		if e.Background > 0 {
+			fmt.Fprintf(r.w, "  %s\n", r.s.Dim(fmt.Sprintf("%d background task(s) still running; /tasks lists them", e.Background)))
+		}
 		if e.Reason != agent.TermCompleted {
 			fmt.Fprintf(r.w, "\n%s %s\n", r.s.Yellow("!"), r.s.Dim("ended: "+string(e.Reason)))
 		}
 	}
+}
+
+func orStr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // summarizeArgs renders the one useful detail per tool, so the line stays

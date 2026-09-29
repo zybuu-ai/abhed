@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -336,7 +337,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
-		Redact: vault.Redactor(), Definitions: set.Agents,
+		Redact: vault.Redactor(), Definitions: set.Agents, Background: true,
 		// A subagent may run on another configured model, never an endpoint.
 		Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg),
 	}
@@ -418,6 +419,13 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	loop.Provider = appCfg.Model.Default
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
+	// Nobody comes back to a -p run, so its background tasks are joined: the
+	// run, and the exit code, wait for them.
+	agent.NewBackground(loop, toolset.BackgroundPolicy(appCfg, agent.WakeOff))
+	defer loop.Background.Close(agent.TermSessionClosed)
+	if appCfg.Sets("subagents.wake") && appCfg.Subagents.Wake != "off" {
+		fmt.Fprintf(os.Stderr, "abhed: note: subagents.wake is %s, but -p runs background tasks joined: it waits for them\n", config.Printable(appCfg.Subagents.Wake))
+	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
 	reason, err := loop.Run(ctx, prompt)
@@ -523,6 +531,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.scopes = ap.Session
 	}
 	sessionState.fresh()
+	// Wake runs the background manager asks for, run by the loop below.
+	wakeCh := make(chan []string, 1)
 	// One conversation per session: every task continues the same loop and
 	// record until /clear, and /fork and /resume change what it continues from.
 	sessionState.open = func(id string) *agent.Loop {
@@ -536,71 +546,44 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
 		toolset.Summarize(loop.Compactor, extHost, id)
+		// Background tasks belong to the conversation and outlive a task;
+		// their results are shown as they arrive, at the prompt too.
+		agent.NewBackground(loop, toolset.BackgroundPolicy(sessionState.appCfg, agent.WakeAuto))
+		loop.Background.SetHooks(agent.BackgroundHooks{
+			// A wake waits while something is typed: that message will carry the result.
+			CanWake: func() (bool, string) {
+				if editor.Typing() {
+					return false, "typing"
+				}
+				return true, ""
+			},
+			Wake: func(ids []string) bool {
+				select {
+				case wakeCh <- ids:
+					return true
+				default:
+					return false
+				}
+			},
+		})
+		sessionState.endBackground()
 		sessionState.loop, sessionState.sessionID = loop, id
+		sessionState.follow(store, id, r)
 		return loop
 	}
+	defer sessionState.endBackground()
 
-	for {
-		if !editor.Raw() {
-			fmt.Print(ui.Prompt(s))
-		}
-		var line string
-		select {
-		case <-readErr:
-			fmt.Println()
-			return 0
-		case <-ctx.Done():
-			return 0
-		case <-interruptCh:
-			// At the prompt, Ctrl-C only abandons the line being typed.
-			continue
-		case line = <-lines:
-		}
-		if line == "" {
-			continue
-		}
-		// "exit" and "quit" without a slash are commands too. They were sent to
-		// the model as prompts, which replied "Goodbye!" while the session
-		// stayed open — the CLI ignoring the one word everyone tries first.
-		if bare := strings.ToLower(strings.TrimSpace(line)); bare == "exit" || bare == "quit" {
-			line = "/" + bare
-		}
-		if strings.HasPrefix(line, "/") {
-			if quit := handleCommand(ctx, line, r, pol, sess, sessionState); quit {
-				return 0
-			}
-			continue
-		}
+	eof := false
+	// lastCtrlC is when Ctrl-C was pressed at the prompt with background
+	// tasks running; a second within two seconds cancels them.
+	var lastCtrlC time.Time
+	idleTick := time.NewTicker(250 * time.Millisecond)
+	defer idleTick.Stop()
 
-		turn++
-		if err := claimResumed(ctx, sessionState); err != nil {
-			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
-			continue
-		}
-		if err := recordMove(sessionState); err != nil {
-			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
-			continue
-		}
-		if sessionState.loop == nil {
-			id := newConversationID()
-			// The session state's config: /model changes which provider it names.
-			if err := recordSession(ctx, store, id, sessionState.appCfg); err != nil {
-				fmt.Printf("  %s not started: %v\n", s.Red("✕"), err)
-				continue
-			}
-			sessionState.open(id)
-		}
-		loop, sessionID := sessionState.loop, sessionState.sessionID
-
-		events := store.Subscribe(sessionID)
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			for ev := range events {
-				r.Event(ev)
-			}
-		}()
-
+	// runTurn drives one run: the prompt's own, or a wake. It returns an exit
+	// code and true when the session should end.
+	runTurn := func(start func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error)) (int, bool) {
+		loop := sessionState.loop
 		// Each task gets its own cancellable context so Ctrl-C interrupts the
 		// task without killing the session.
 		taskCtx, cancelTask := context.WithCancel(ctx)
@@ -620,14 +603,13 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		editor.Quiet(true)
 		r.StartThinking()
 		go func() {
-			reason, err := loop.Run(taskCtx, line)
+			reason, err := start(taskCtx, loop)
 			finished <- turnOutcome{reason, err}
 		}()
 
 		var runErr error
 		var runReason agent.TerminalReason
 		var queued []string
-		eof := false
 		interrupts := 0
 	steering:
 		for {
@@ -635,14 +617,16 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			case <-interruptCh:
 				// Ctrl-C stops the turn, and a pending approval with it: its
 				// wait ends on the cancelled context, so the call is refused.
+				// Stop means stop: the background tasks go too.
 				interrupts++
 				if interrupts > 1 {
 					r.StopThinking()
 					fmt.Printf("  %s\n", s.Dim("interrupted again — exiting"))
 				}
+				go loop.Background.CancelAll(agent.TermUserInterrupt)
 				if code, stopped := interruptTurn(interrupts, cancelTask, finished, exitGrace); code != 0 {
 					endOnExit(sessionState, stopped)
-					return code
+					return code, true
 				}
 				wasOn := r.PauseThinking()
 				fmt.Printf("  %s\n", s.Dim("interrupting…"))
@@ -695,13 +679,12 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		cancelTask()
 		r.StopThinking() // every exit path converges here
+		// What the run recorded is drawn before its usage is printed.
+		sessionState.waitRendered(loop.Recorder.LastAppended())
 		editor.Quiet(false)
 		// The loop's usage covers the whole conversation; this task is the difference.
 		spent := usageSince(before, loop.Usage())
 		sessionState.accumulate(spent)
-
-		store.Unsubscribe(sessionID, events)
-		<-done
 
 		if runErr != nil {
 			fmt.Printf("%s %s\n", s.Red("error:"), runErr)
@@ -718,16 +701,111 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		for _, cmd := range queued {
 			fmt.Printf("%s%s\n", ui.Prompt(s), cmd)
 			if quit := handleCommand(ctx, cmd, r, pol, sess, sessionState); quit {
-				return 0
+				return 0, true
 			}
 		}
-		if eof {
+		if ctx.Err() != nil {
+			return 130, true
+		}
+		return 0, false
+	}
+
+	prompted := false
+	for {
+		// End of piped input waits for the background work, and for the
+		// wakes its results start, before the session ends.
+		if eof && sessionState.backgroundIdle() {
 			fmt.Println()
 			return 0
 		}
+		if !editor.Raw() && !eof && !prompted {
+			fmt.Print(ui.Prompt(s))
+			prompted = true
+		}
+		var line string
+		select {
+		case <-readErr:
+			readErr, eof = nil, true
+			prompter.Close()
+			continue
+		case <-ctx.Done():
+			return 0
+		case <-idleTick.C:
+			continue
+		case <-interruptCh:
+			// At the prompt, Ctrl-C only abandons the line being typed, unless
+			// background tasks run: then a second one within two seconds
+			// cancels them.
+			if n := sessionState.liveTasks(); n > 0 {
+				if time.Since(lastCtrlC) < 2*time.Second {
+					sessionState.loop.Background.CancelAll(agent.TermUserInterrupt)
+					fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("cancelled %d background task(s)", n)))
+					lastCtrlC = time.Time{}
+				} else {
+					fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("%d background task(s) running; Ctrl-C again within 2 s to cancel them", n)))
+					lastCtrlC = time.Now()
+				}
+			}
+			continue
+		case ids := <-wakeCh:
+			// A wake run, for background results, through the same driver as a task.
+			if sessionState.loop == nil {
+				continue
+			}
+			prompted = false
+			if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				return loop.RunWoken(ctx, agent.Wake{By: "policy", TaskIDs: ids})
+			}); quit {
+				return code
+			}
+			continue
+		case line = <-lines:
+			prompted = false
+		}
+		// An approval a background task is waiting on takes the line, when
+		// input is piped and so arrives as lines.
+		if prompter.Deliver(line) {
+			continue
+		}
+		if line == "" {
+			continue
+		}
+		// "exit" and "quit" without a slash are commands too. They were sent to
+		// the model as prompts, which replied "Goodbye!" while the session
+		// stayed open — the CLI ignoring the one word everyone tries first.
+		if bare := strings.ToLower(strings.TrimSpace(line)); bare == "exit" || bare == "quit" {
+			line = "/" + bare
+		}
+		if strings.HasPrefix(line, "/") {
+			if quit := handleCommand(ctx, line, r, pol, sess, sessionState); quit {
+				return 0
+			}
+			continue
+		}
 
-		if ctx.Err() != nil {
-			return 130
+		turn++
+		if err := claimResumed(ctx, sessionState); err != nil {
+			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
+			continue
+		}
+		if err := recordMove(sessionState); err != nil {
+			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
+			continue
+		}
+		if sessionState.loop == nil {
+			id := newConversationID()
+			// The session state's config: /model changes which provider it names.
+			if err := recordSession(ctx, store, id, sessionState.appCfg); err != nil {
+				fmt.Printf("  %s not started: %v\n", s.Red("✕"), err)
+				continue
+			}
+			sessionState.open(id)
+		}
+		task := line
+		if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+			return loop.Run(ctx, task)
+		}); quit {
+			return code
 		}
 	}
 }
@@ -813,6 +891,77 @@ type cliState struct {
 	transcript []agent.Event
 	// scopes are the "always allow" answers, which end with the session.
 	scopes *ui.AllowList
+	// unfollow ends the conversation's subscription; rendered is the last
+	// seq it drew.
+	unfollow func()
+	rendered atomic.Int64
+}
+
+// follow draws the conversation's events as they are recorded, for as long as
+// it is open: a background result arrives at the prompt as well as in a task.
+func (c *cliState) follow(store server.EventStore, id string, r *ui.Renderer) {
+	events := store.Subscribe(id)
+	c.rendered.Store(0)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range events {
+			r.Event(ev)
+			c.rendered.Store(ev.Seq)
+		}
+	}()
+	c.unfollow = func() {
+		store.Unsubscribe(id, events)
+		<-done
+	}
+}
+
+// waitRendered waits a moment for the events up to seq to be drawn, so a
+// task's usage prints after its output.
+func (c *cliState) waitRendered(seq int64) {
+	for deadline := time.Now().Add(time.Second); c.rendered.Load() < seq && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// liveTasks is how many background tasks the conversation has running.
+func (c *cliState) liveTasks() int {
+	if c.loop == nil {
+		return 0
+	}
+	return c.loop.Background.Live()
+}
+
+// backgroundIdle reports whether nothing is left to wait for: no background
+// task running, no result waiting to be delivered.
+func (c *cliState) backgroundIdle() bool {
+	return c.loop == nil || c.loop.Background.Live() == 0 && c.loop.Background.Pending() == 0
+}
+
+// endBackground ends the conversation's background work as the conversation
+// closes (exit, /clear, /resume): every task is cancelled as session_closed,
+// and the count is said.
+func (c *cliState) endBackground() {
+	if c.loop != nil && c.loop.Background != nil {
+		n := c.loop.Background.Live()
+		if n > 0 {
+			fmt.Printf("  cancelling %d background task(s)\n", n)
+		}
+		c.loop.Background.Close(agent.TermSessionClosed)
+		ended := 0
+		for _, t := range c.loop.Background.Tasks() {
+			if t.Reason == string(agent.TermSessionClosed) {
+				ended++
+			}
+		}
+		if n > 0 {
+			fmt.Printf("  %d background task(s) ended as the session closed\n", ended)
+		}
+	}
+	if c.unfollow != nil {
+		c.unfollow()
+		c.unfollow = nil
+	}
 }
 
 // fresh forgets the last conversation's cost, transcript, undo log and allowed
@@ -847,6 +996,36 @@ func (c *cliState) accumulate(u agent.Usage) {
 	c.total.ColdPrefillTokens += u.ColdPrefillTokens
 	c.total.Turns += u.Turns
 	c.total.Compactions += u.Compactions
+}
+
+// tasksCommand is /tasks: the conversation's background tasks, or cancelling
+// one or all of them, as a stop by the person.
+func tasksCommand(args []string, st *cliState, s ui.Style) {
+	if st.loop == nil {
+		fmt.Println(s.Dim("  no background tasks"))
+		return
+	}
+	b := st.loop.Background
+	if len(args) >= 2 && args[0] == "cancel" {
+		if args[1] == "all" {
+			fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("cancelled %d background task(s)", b.CancelAll(agent.TermUserInterrupt))))
+			return
+		}
+		if !b.Cancel(args[1], agent.TermUserInterrupt) {
+			fmt.Printf("  %s no running task %s\n", s.Red("✕"), args[1])
+			return
+		}
+		fmt.Printf("  %s\n", s.Dim("cancelled "+args[1]))
+		return
+	}
+	list := b.Tasks()
+	if len(list) == 0 {
+		fmt.Println(s.Dim("  no background tasks"))
+		return
+	}
+	for _, t := range list {
+		fmt.Printf("  %s  %-10s %s\n", t.ID, t.Status, t.Description)
+	}
 }
 
 // switchMode is /mode. The managed configuration binds it as it binds -mode,
@@ -1024,8 +1203,27 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 			}
 		}
 
+	case "/tasks":
+		tasksCommand(fields[1:], st, s)
+
+	case "/wake":
+		if st.loop == nil {
+			fmt.Println(s.Dim("  no conversation yet; background tasks start with one"))
+			return false
+		}
+		if len(fields) < 2 {
+			fmt.Printf("  %s\n", s.Dim("wake: "+string(st.loop.Background.Mode())))
+			return false
+		}
+		if err := st.loop.Background.SetWake(agent.WakeMode(fields[1]), agent.ByUser); err != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), err)
+			return false
+		}
+		fmt.Printf("  %s\n", s.Dim("wake: "+fields[1]))
+
 	case "/clear":
 		// The next task starts a new conversation, and with it a new session.
+		st.endBackground()
 		st.loop, st.sessionID = nil, ""
 		st.fresh()
 		fmt.Println(s.Dim("  context cleared; the workspace is untouched"))
