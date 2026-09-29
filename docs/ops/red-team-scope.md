@@ -46,18 +46,29 @@ Each is a property Abhed asserts. Breaking any one is a critical finding.
 
 1. **Workspace confinement.** No path, symlink, race, or shell construction lets
    the agent read or write outside its workspace.
-2. **Egress denial.** With `allow_network: false` and neither `web_search` nor
-   `web_fetch` enabled, no channel reaches the network — including DNS, ICMP,
-   unix sockets to host daemons, and abuse of a permitted toolchain (a package
-   manager's fetch, a language runtime's HTTP client). With either web tool
-   enabled, network access through that tool is by design; what `web_fetch`
-   asserts instead is a target in its own right:
+2. **Egress denial from the sandbox.** With `allow_network: false`, no command
+   the sandboxed shell runs, nor the toolchains it starts, reaches the network
+   — including DNS, ICMP, unix sockets to host daemons, and abuse of a
+   permitted toolchain (a package manager's fetch, a language runtime's HTTP
+   client). Out of scope for this property are the channels that reach the
+   network by design, each off unless configured except the first: the model
+   endpoint, and the opt-in host-process tools in
+   [03-security §6](../architecture/03-security.md) — `ssh`, the `k8s_*`
+   tools, remote RAG, `web_search`, `web_fetch` — and remote MCP servers.
+   What `web_fetch` asserts instead is a target in its own right:
    - no internal, loopback, link-local or metadata address is reached, on any
      redirect hop, however the host resolves or is spelled;
-   - no stored secret is sent in a URL;
-   - each call is one GET with no body;
-   - neither `web_fetch.allowed_hosts` nor a deny rule on a host, port or path
-     can be stepped around by spelling the URL another way.
+   - no stored secret is sent in a URL as written, percent-encoded or in
+     another case. Other encodings (base64, hex) and a value split across the
+     URL are out of scope: the ask or the host list governs them;
+   - a call sends only GETs with no body, to the one URL policy judged: a
+     redirect is followed only to that same URL or its https upgrade, at most
+     five times, and any other is handed back as a new call;
+   - `web_fetch.allowed_hosts` and host and port rules cannot be stepped
+     around by spelling the host or port another way, nor path rules by dot,
+     encoding or Unicode respellings of the path. Two limits are documented,
+     not findings: path rules match case-sensitively, and a query is matched
+     exactly as written, order and duplicates included.
 3. **Deny is absolute for tool calls.** No mode, rule ordering, argument
    encoding, or command chaining gets a tool call that matches a deny rule
    executed, whether the agent or a person makes it. Out of scope: what a person

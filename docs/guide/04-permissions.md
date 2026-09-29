@@ -54,6 +54,14 @@ reads it as an address. So `"deny": ["web_fetch(https://example.com/*)"]`
 cannot be stepped around by writing `HTTPS://Example.COM:0443`, and
 `web_fetch(https://example.com/admin*)` cannot by writing `/public/../admin`.
 
+Two things are not normalised. A path rule matches case-sensitively:
+`web_fetch(http*://example.com/admin*)` does not match `/Admin/`, which a
+server that ignores case (IIS, or a static server on a case-insensitive disk)
+serves as `/admin/`. A query is matched exactly as written, its parameters'
+order and duplicates included. For a server that ignores case, or content you
+must keep out whatever the path or query, deny the host:
+`web_fetch(http*://example.com/*)`.
+
 Write a deny rule for a host so it covers both schemes:
 `web_fetch(http*://example.com/*)`. A rule written with `https://` alone
 leaves `http://` to the same host open. A host on another port needs its own

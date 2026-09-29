@@ -343,20 +343,23 @@ pytest are unaffected.
 **`web_search` and `web_fetch`, when enabled**, are the two narrow,
 structured exceptions: a Go tool in the Abhed process makes the request, not
 the sandboxed shell. `web_search` sends a query to the configured provider.
-`web_fetch` sends one HTTP GET per call to one public host and nothing else:
-no other method, no body, no connection the model holds. A port other than
+`web_fetch` sends only GETs with no body, to the one URL policy judged on a
+public host (a redirect is followed only to that same URL or its https
+upgrade, at most five times), and nothing else: no other method, no
+connection the model holds. A port other than
 the scheme's default asks unless an allow rule names it, even for a host on
 `web_fetch.allowed_hosts`, except in bypass mode and `abhed eval`, which
 approve every ask. Both are off by default (`web_search.enabled`
 and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
-enabled on its own, and neither enables shell networking. `web_fetch` makes
-one GET to one URL that policy has judged: it refuses schemes other than
+enabled on its own, and neither enables shell networking. `web_fetch`
+fetches only the URL policy has judged: it refuses schemes other than
 http and https, and any loopback, private, link-local, metadata or reserved
 address, checked on the address it connects to, on every redirect hop
 (`internal/webfetch/guard.go`). It follows a redirect only to the same URL
 or its https upgrade, and hands any other back to the model as a new call.
 It ignores proxy settings from the environment, refuses a URL that holds a
-stored secret as written or percent-encoded (not one encoded otherwise), and
+stored secret as written, percent-encoded or in another case (not one
+encoded otherwise or split across the URL), and
 can be held to an operator's host list (`web_fetch.allowed_hosts`). A URL is
 a channel out: whatever the model puts in it reaches the site. Without a
 host list every call asks, in plan mode too, unless an operator's allow rule

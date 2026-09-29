@@ -2,9 +2,10 @@
 //
 // The sandboxed shell usually has no network, and it should not: a command
 // that can reach anywhere is an exfiltration channel. This tool is the narrow
-// alternative. It is off by default, it makes one GET for one URL the policy
-// engine has judged, it never reaches an internal address, and it returns
-// text, tagged untrusted like every other tool result.
+// alternative. It is off by default, it sends only bodiless GETs to the one
+// URL the policy engine judged (a redirect is followed only to that same URL),
+// it never reaches an internal address, and it returns text, tagged untrusted
+// like every other tool result.
 package webfetch
 
 import (

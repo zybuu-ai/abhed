@@ -298,8 +298,10 @@ These entries are for the next minor release, not for a 1.2.x patch.
   out; an address as four decimal numbers or compressed IPv6, never IPv4 as
   IPv6 or as one number, and no host ending in a number that is not an IPv4
   address; and no `.`, `..`, empty, dots-only or control-character path
-  segment, raw or encoded, and no encoded slash. So a rule on a host, port
-  or path prefix cannot be stepped around, and `web_fetch(http*://host/*)`
+  segment, raw or encoded, and no encoded slash. So a rule on a host or port
+  cannot be stepped around by respelling it, nor a rule on a path prefix by
+  dot, encoding or Unicode respellings; path rules still match
+  case-sensitively and a query exactly as written. `web_fetch(http*://host/*)`
   covers both schemes. A redirect to anything but the same URL (or its
   https upgrade) is handed back as a new call. Policy rules match the URL:
   `url` is now a subject key.

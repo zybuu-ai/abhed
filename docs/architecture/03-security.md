@@ -145,7 +145,7 @@ boundary, and the consequences are worth stating plainly:
 | `ssh` | Always asks — it reports `Mutates() = true`, so no mode auto-approves it |
 | `k8s_get`, `web_search` | Read-only, so **auto mode approves them without a prompt** |
 | `k8s_apply` | Mutating, so it asks |
-| `web_fetch` | Read-only, but it composes a URL that can carry data to the site, so with no `web_fetch.allowed_hosts` it **asks in the default, accept-edits, auto and plan modes** unless an allow rule names the URL. With `allowed_hosts`, a listed host runs unasked on the scheme's default port and asks on any other port. Bypass mode and `abhed eval` approve every ask. It refuses internal, loopback and metadata addresses on every hop and a URL holding a stored secret |
+| `web_fetch` | Read-only, but it composes a URL that can carry data to the site, so with no `web_fetch.allowed_hosts` it **asks in the default, accept-edits, auto and plan modes** unless an allow rule names the URL. With `allowed_hosts`, a listed host runs unasked on the scheme's default port and asks on any other port. Bypass mode (unless a managed policy disables it) and `abhed eval` approve every ask. It refuses internal, loopback and metadata addresses on every hop and a URL holding a stored secret |
 
 The read-only pair is the sharp edge: in an unattended or `auto` deployment, an injected
 instruction in untrusted content can drive them to read and to reach the network with no

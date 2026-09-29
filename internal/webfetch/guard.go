@@ -296,7 +296,14 @@ func plainPath(p string) error {
 		}
 		// A server that applies NFKC reads fullwidth dots as dots, and one that
 		// trims Unicode spaces drops a no-break space.
-		folded := strings.TrimFunc(norm.NFKC.String(name), unicode.IsSpace)
+		// Format characters (zero-width space, soft hyphen, BOM) are invisible
+		// and dropped here, so they cannot pad a segment that reads as dots.
+		folded := strings.TrimFunc(norm.NFKC.String(strings.Map(func(r rune) rune {
+			if unicode.Is(unicode.Cf, r) {
+				return -1
+			}
+			return r
+		}, name)), unicode.IsSpace)
 		if strings.Trim(folded, ". ") == "" || strings.ContainsAny(folded, "/\\") {
 			return errors.New("the path has a segment that reads as . or .. or holds a slash " +
 				"once normalised; write the path of the page itself")

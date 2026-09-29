@@ -171,9 +171,10 @@ on its scheme's default port; a URL naming another port asks ("web_fetch
 asks: the URL names a port…") unless an allow rule names it.
 
 Without `allowed_hosts`, any public site can be fetched, and a URL can carry
-whatever the model puts in it, so every call asks in the `default`, `accept-edits`, `auto` and `plan` modes (the
-reason reads "web_fetch asks: no allowed_hosts configured") unless an allow
-rule such as `"allow": ["web_fetch(https://docs.python.org/*)"]` matches.
+whatever the model puts in it, so every call asks in the `default`,
+`accept-edits`, `auto` and `plan` modes (the reason reads "web_fetch asks:
+no allowed_hosts configured") unless an allow rule such as
+`"allow": ["web_fetch(https://docs.python.org/*)"]` matches.
 `plan` asks too, because a console client can narrow any session to it.
 `bypass` runs it. A headless run, which has no one to ask, needs such an
 allow rule or `allowed_hosts`; `abhed eval` approves every ask, so an eval

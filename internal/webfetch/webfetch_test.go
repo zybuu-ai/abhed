@@ -663,3 +663,13 @@ func TestUnicodeDotsEncodedSlashesAndEmptyLabels(t *testing.T) {
 		t.Errorf("an ordinary path refused: %v", err)
 	}
 }
+
+// Invisible format characters beside dots do not make a segment other than
+// . or .. to a reader.
+func TestInvisibleCharactersBesideDotsAreRefused(t *testing.T) {
+	for _, p := range []string{"/%E2%80%8B../x", "/..%E2%80%8B/x", "/%C2%AD../x", "/..%EF%BB%BF/x", "/.%E2%80%8B./x"} {
+		if _, err := (&Tool{}).check("https://example.com" + p); err == nil {
+			t.Errorf("%s: accepted", p)
+		}
+	}
+}
