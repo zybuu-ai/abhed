@@ -50,11 +50,23 @@ it.
 
 ## Writing one that works
 
-Skills are followed by the model, not executed by the harness, and a smaller
-model follows a long conditional procedure unreliably. If a step must always
+A skill body is followed by the model, not executed by the harness, and a
+smaller model follows a long conditional procedure unreliably. If a step must always
 happen, that is a job for an [extension](07-extensions.md) or a
 [tool](05-tools.md), not a paragraph.
 
 What works: numbered steps, one action each; explicit stop conditions; naming
 what to report rather than assuming. What does not: several pages of prose, or a
 rule stated once in the middle and expected to hold.
+
+## Pipelines
+
+A skill directory may also hold a `pipeline.json`, whose stages the harness
+runs itself in the CLI (`abhed`, `abhed -p`); the server, console and SDK do
+not run pipelines. Each tool step is an ordinary tool call of the loop that
+called the skill: deny and ask rules, the mode, approvals and the record all
+apply, and the record names the pipeline in `via`. With no one to approve
+(`-p`), a step that would be asked about is refused, so give it an allow rule.
+A pipeline is refused when it would call the `skill` tool or start beneath
+another pipeline's step, including from a subagent a step started; that
+skill then falls back to its instructions.

@@ -1231,13 +1231,6 @@ func (h *LoopHolder) RecordTodos(items []Todo, note string) {
 	}
 }
 
-// RecordPipelineStage forwards to the current loop.
-func (h *LoopHolder) RecordPipelineStage(skill, stage, detail string, data map[string]any) {
-	if h != nil && h.loop != nil {
-		h.loop.RecordPipelineStage(skill, stage, detail, data)
-	}
-}
-
 // runCalls executes a turn's tool calls and appends their results.
 //
 // Independent calls run concurrently. A model that asks to read four files
