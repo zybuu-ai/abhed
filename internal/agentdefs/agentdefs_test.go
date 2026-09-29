@@ -101,6 +101,10 @@ func TestWideningKeyRefusesDefinition(t *testing.T) {
 		"permission: plan\n",
 		"max_turn: 3\n",
 		"mode: plan\n",
+		"exclude: bash\n",
+		"block: [bash]\n",
+		"blocked: bash\n",
+		"restrict: read\n",
 		// Nested under a key that is not ours.
 		"settings:\n  disallowedTools: bash\n",
 		"settings:\n  tools: read\n",
@@ -228,6 +232,64 @@ func TestRefusedManagedNameStaysReserved(t *testing.T) {
 	if msg := errText(errs); strings.Count(msg, "belongs to the organisation's") != 3 {
 		t.Fatalf("the refusals do not say why: %s", msg)
 	}
+
+	// Files refused while the directory is read still claim their names: a
+	// link to an unsafe target, an oversized file, a second hard link and an
+	// unreadable file.
+	managed, op = t.TempDir(), t.TempDir()
+	target := writeDef(t, t.TempDir(), "t.md", def("linked", ""))
+	if err := os.Symlink(target, filepath.Join(managed, "linked.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeDef(t, managed, "big.md", def("big", "")+strings.Repeat("x", 70<<10))
+	hard := writeDef(t, t.TempDir(), "h.md", def("hard", ""))
+	if err := os.Link(hard, filepath.Join(managed, "hard.md")); err != nil {
+		t.Fatal(err)
+	}
+	locked := writeDef(t, managed, "locked.md", def("locked", ""))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+	for _, n := range []string{"linked", "big", "hard", "locked", "free"} {
+		writeDef(t, op, n+".md", def(n, ""))
+	}
+	defs, errs = Load(Options{ManagedDir: managed, Dirs: []string{op}})
+	if len(defs) != 1 || defs[0].Name != "free" {
+		t.Fatalf("a file refused while reading gave up its name: %+v\n%s", defs, errText(errs))
+	}
+
+	// A link to a root-owned, unshared file is followed.
+	old := ManagedOwnerOK
+	ManagedOwnerOK = func(os.FileInfo) bool { return true }
+	defer func() { ManagedOwnerOK = old }()
+	defs, _ = Load(Options{ManagedDir: managed, Dirs: []string{op}})
+	names := map[string]string{}
+	for _, d := range defs {
+		names[d.Name] = d.Source
+	}
+	if names["linked"] != agent.SourceManaged {
+		t.Fatalf("a safe managed link was not followed: %v", names)
+	}
+}
+
+// A managed directory that exists but cannot be listed fails closed: no
+// workspace or operator definition loads, since which names it holds is
+// unknown.
+func TestUnlistableManagedDirFailsClosed(t *testing.T) {
+	managed, op := t.TempDir(), t.TempDir()
+	writeDef(t, op, "free.md", def("free", ""))
+	if err := os.Chmod(managed, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(managed, 0o700) })
+	if _, err := os.ReadDir(managed); err == nil {
+		t.Skip("the directory can still be listed (running as root?)")
+	}
+	defs, errs := Load(Options{ManagedDir: managed, Dirs: []string{op}})
+	if len(defs) != 0 || !strings.Contains(errText(errs), "cannot be listed") {
+		t.Fatalf("an unlistable managed directory let definitions load: %+v %s", defs, errText(errs))
+	}
 }
 
 // An operator's definition that is a link is refused, as a workspace's is.
@@ -240,5 +302,18 @@ func TestOperatorLinkRefused(t *testing.T) {
 	defs, errs := Load(Options{Dirs: []string{dir}})
 	if len(defs) != 0 || !strings.Contains(errText(errs), "not a regular file") {
 		t.Fatalf("a linked definition loaded: %+v %s", defs, errText(errs))
+	}
+}
+
+// The ownership check itself: a file the test owns, not root, fails it, as
+// does one others may write.
+func TestRootOwnership(t *testing.T) {
+	p := writeDef(t, t.TempDir(), "x.md", def("x", ""))
+	info, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getuid() != 0 && rootOwnedNotShared(info) {
+		t.Fatal("a file owned by the test user passed as root's")
 	}
 }

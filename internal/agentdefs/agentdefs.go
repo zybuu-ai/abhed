@@ -66,10 +66,23 @@ func Load(o Options) ([]*agent.Definition, []error) {
 	}
 	var levels []level
 	var errs []error
+	// Every name a managed file claims is the organisation's, whether or not
+	// that file loads here: a managed role that cannot run must not be
+	// replaced by another file under its name.
+	managedClaim := map[string]string{}
 	if o.ManagedDir != "" {
-		fs, e := readDir(o.ManagedDir)
+		fs, claims, unlistable, e := readManaged(o.ManagedDir)
 		levels = append(levels, level{agent.SourceManaged, fs})
 		errs = append(errs, e...)
+		for name, path := range claims {
+			managedClaim[name] = path
+		}
+		if unlistable {
+			// Which names the organisation holds cannot be known, so no
+			// other file may take any: only the built-in roles remain.
+			errs = append(errs, fmt.Errorf("agent definitions: %s exists but cannot be listed, so no workspace or operator definition is loaded", config.Printable(o.ManagedDir)))
+			o.Disabled, o.Workspace = true, nil
+		}
 	}
 	if !o.Disabled {
 		var ws []file
@@ -89,10 +102,6 @@ func Load(o Options) ([]*agent.Definition, []error) {
 
 	byName := map[string]*agent.Definition{}
 	seen := map[string]bool{} // files already loaded, so a directory named twice loads once
-	// Every name a managed file claims is the organisation's, whether or not
-	// that file loads here: a managed role that cannot run must not be
-	// replaced by another file under its name.
-	managedClaim := map[string]string{}
 	var out []*agent.Definition
 	for _, lv := range levels {
 		for _, f := range lv.files {
@@ -147,6 +156,67 @@ func claimedName(path string, data []byte) string {
 		}
 	}
 	return strings.TrimSuffix(filepath.Base(path), ".md")
+}
+
+// ManagedOwnerOK decides whether a managed definition reached through a
+// symlink may be followed: the target must be owned by root and writable by
+// nobody else. A variable so a test, which does not run as root, can say.
+var ManagedOwnerOK = rootOwnedNotShared
+
+// readManaged reads the organisation's directory. Every *.md entry claims
+// its file name, and a file that loads claims its name key too, whether or
+// not either loads in the end. A directory that exists but cannot be listed
+// is reported as unlistable, and the caller fails closed.
+func readManaged(dir string) (files []file, claims map[string]string, unlistable bool, errs []error) {
+	claims = map[string]string{}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, claims, false, nil
+	}
+	if err != nil {
+		return nil, claims, true, []error{fmt.Errorf("agent definitions: read %s: %w", config.Printable(dir), err)}
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		claims[strings.TrimSuffix(name, ".md")] = path
+		data, err := readManagedFile(path)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("agent definition %s refused, and its name stays the organisation's: %w", config.Printable(path), err))
+			continue
+		}
+		claims[claimedName(path, data)] = path
+		files = append(files, file{path: path, data: data})
+	}
+	return files, claims, false, errs
+}
+
+// readManagedFile reads a managed definition. A symlink, as configuration
+// management installs them, is followed only to a regular file owned by
+// root and writable by nobody else.
+func readManagedFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return config.ReadAgentFile(path)
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	tinfo, err := os.Lstat(target)
+	if err != nil {
+		return nil, err
+	}
+	if !tinfo.Mode().IsRegular() || !ManagedOwnerOK(tinfo) {
+		return nil, fmt.Errorf("a link is followed only to a regular file owned by root and writable by nobody else")
+	}
+	return config.ReadAgentFile(target)
 }
 
 // readDir reads a directory's *.md files, sorted. A missing directory is not
@@ -233,7 +303,7 @@ func refusedKey(k string) string {
 	// one: denied_tools, permission, max_turn. Ignoring it could leave a
 	// restriction out, so it refuses.
 	if !honoured[k] {
-		for _, like := range []string{"tool", "mode", "model", "turn", "permission"} {
+		for _, like := range []string{"tool", "mode", "model", "turn", "permission", "exclude", "block", "restrict"} {
 			if strings.Contains(k, like) {
 				return "it reads like a restriction, and only tools, disallowed_tools, model, max_turns and permission_mode are honoured"
 			}
