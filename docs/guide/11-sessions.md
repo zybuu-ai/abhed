@@ -59,7 +59,8 @@ the steps it abandoned stay in the record for audit, but no later `/fork`,
 running elsewhere, and on Postgres only one recorded as yours, in your
 tenant; another user's session is not replayed either. A subagent's session
 id is refused, in the CLI and in the console: it is shown, but continues only
-through the session that started it, which the refusal names. On Postgres each
+through the session that started it. The CLI names that session when the
+record carries it; the console refuses the id as it refuses an unknown session. On Postgres each
 task's end releases the session, so the CLI claims it again before the next
 task, `/fork` or `/compact` writes to it. If another process has continued it
 meanwhile, the conversation is rebuilt from the record first; if another

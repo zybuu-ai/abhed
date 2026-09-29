@@ -39,7 +39,9 @@ runs out, as its parent does.
 
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
-subagents run in, and record into, that person's session only.
+subagents run in, and record into, that person's session only. On a
+Community server every account shares one workspace, so those worktrees are
+in the same directory tree as everyone else's.
 
 ## Isolation
 
@@ -120,7 +122,8 @@ and anything it routes to a person goes to the parent's approver:
 - in an ACP editor, a permission request whose tool call is named
   `subagent-<request id>`, sent after a `tool_call` of the same id.
 
-Nothing a subagent asks is approved on its behalf.
+Wherever a person can be asked, nothing a subagent asks is approved on its
+behalf; only `abhed eval`, which has no person, approves its own asks.
 
 A subagent runs inside its parent's session, so an "Always allow" chosen
 earlier in the session covers its calls, and one chosen at a subagent's
