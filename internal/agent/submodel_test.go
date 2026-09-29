@@ -195,7 +195,10 @@ func TestModelEnumOnlyWithAChoice(t *testing.T) {
 // task and tasks pass the model the call names to the spawn.
 func TestTaskToolsPassTheModel(t *testing.T) {
 	var got []string
-	spawn := func(_ context.Context, req SubagentRequest) (string, error) { got = append(got, req.Model); return "ok", nil }
+	spawn := func(_ context.Context, req SubagentRequest) (string, error) {
+		got = append(got, req.Model)
+		return "ok", nil
+	}
 	Task{Spawn: spawn}.Run(context.Background(), nil, json.RawMessage(`{"prompt":"p","description":"d","model":"fast"}`))
 	Tasks{Spawn: spawn, MaxParallel: 1}.Run(context.Background(), nil, json.RawMessage(`{"tasks":[{"prompt":"p","description":"d","model":"slow"}]}`))
 	if strings.Join(got, ",") != "fast,slow" {

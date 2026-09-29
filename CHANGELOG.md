@@ -348,6 +348,71 @@ All notable changes to Abhed are recorded here. The format follows
   model steps run on that loop's current model. It was the last CLI prompt,
   process-wide, and the model the CLI started with.
 
+## [Unreleased — next minor]
+
+### Added
+
+- Agent definitions: markdown files whose frontmatter names a subagent role
+  (`name`, `description`, `tools`, `disallowed_tools`, `model`, `max_turns`,
+  `isolation`, `permission_mode`) and whose body is its instructions. They
+  load from the managed `/etc/abhed/agents`, then a workspace's
+  `.abhed/agents` when the workspace is trusted for that content, then
+  `agents.dirs` (default `~/.abhed/agents`); a higher level wins a name and
+  the shadowed file is named. `task` and `tasks` offer them beside the
+  built-in roles, on every surface (the SDK with `ConfiguredTools`; `eval`
+  keeps the built-in roles). See the new guide, Agent definitions.
+- Every key only narrows: a tool the session lacks refuses the spawn and is
+  named, `permission_mode` (`plan` or `default`) applies only where it
+  narrows, `max_turns` caps the role and binds the call, a `worktree` role
+  gets its own checkout. The built-in names are reserved. A key concerning
+  authority that Abhed does not honour (`hooks`, `mcpServers`,
+  `permissions`, allow or deny keys, sandbox settings), a wider mode, or a
+  model that is not a configured provider refuses the definition.
+- A subagent may run on another configured provider: `model` on the `task`
+  and `tasks` calls, or in a definition. It is a provider name, never an
+  endpoint; on a server only a provider sessions may run on. A model that
+  cannot be had refuses the call, with no fallback and no spawn counted. The
+  `model` property is offered only when more than one provider is.
+- Configuration keys `agents.dirs` (never from an untrusted workspace file)
+  and `agents.disabled` (an untrusted file may set it only to true).
+- `POST /v1/admin/agents/reload` reads the definitions again for sessions
+  started afterwards; a running session keeps the set it started with.
+- `subagent.spawned` records `definition`, `definition_source`,
+  `definition_sha256`, `tools`, `model` and `provider`; `subagent.returned`
+  records `model` and `provider`.
+- `abhed trust grant -agents-sha256 H`. The trust report (ACP, rpc, SDK)
+  gains `agents`, `agents_sha256`, `agents_trusted`, `agents_reason` and
+  `agents_problems`; the config package adds `GrantReviewed`,
+  `RecordDecision` and `RefreshAgents`.
+
+### Changed
+
+- Workspace trust covers `.abhed/agents` with a hash of its own, decided
+  apart from `config.json`: the prompt, `abhed trust` and `abhed doctor` show
+  each definition's name, model and tools, and declining new definitions
+  keeps a file already trusted. A trust record from an earlier version
+  decides nothing about definitions, so a workspace without them is not
+  asked again. A definition that is a link, has a second name or is larger
+  than 64 KiB is refused.
+- `agent_type` on `task` and `tasks` is an enum of the session's agent types,
+  and the `task` description lists each with when to use it.
+- Skills are read by a frontmatter reader shared with agent definitions;
+  they parse as before.
+
+### Fixed
+
+- `tasks` ran a task naming an unknown `agent_type` as the general role; it
+  now refuses the call before anything runs, as `task` does.
+- A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
+  cap is now never above its parent's.
+- The parent loop's own asks now share the one-at-a-time queue its
+  subagents use, so a person is never asked two things at once by the tree.
+- On the server, an approval that ended always set the session to
+  `running`, even when no run was live; it now restores `running`, `idle` or
+  `done` as fits. A message sent while an ask was pending and no run was
+  live was queued as steering into a loop that was not running; it now
+  starts a run.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading

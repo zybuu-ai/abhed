@@ -138,11 +138,11 @@ func TestDefinitionModelIsAConfiguredName(t *testing.T) {
 	if d, _, err := Parse("x.md", []byte(def("x", "model: fast\n")), agent.SourceOperator, models); err != nil || d.Model != "fast" {
 		t.Fatalf("a configured model: %+v %v", d, err)
 	}
-	_, _, err := Parse("x.md", []byte(def("x", "model: sonnet\n")), agent.SourceOperator, models)
+	_, _, err := Parse("x.md", []byte(def("x", "model: swift\n")), agent.SourceOperator, models)
 	if err == nil || !strings.Contains(err.Error(), "available: fast, local") {
 		t.Fatalf("an alias that is not configured: %v", err)
 	}
-	for _, v := range []string{"http://evil.example/v1", "openai/gpt", "a b"} {
+	for _, v := range []string{"http://evil.example/v1", "vendor/big", "a b"} {
 		if _, _, err := Parse("x.md", []byte(def("x", "model: "+v+"\n")), agent.SourceOperator, append(models, v)); err == nil {
 			t.Fatalf("model %q loaded", v)
 		}
