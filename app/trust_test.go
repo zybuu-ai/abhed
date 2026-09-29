@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 )
@@ -192,7 +193,14 @@ func TestTrustCommand(t *testing.T) {
 	if out := run(); !strings.Contains(out, "trust       NOT TRUSTED") || !strings.Contains(out, "permissions.mode") {
 		t.Fatalf("show:\n%s", out)
 	}
-	if out := run("grant"); !strings.Contains(out, "Trusted ") {
+	st, _ := config.InspectWorkspace(ws)
+	if code := trustCmd(ws, []string{"grant", "-sha256", strings.Repeat("0", 64)}, io.Discard); code != 1 {
+		t.Fatalf("a grant for content not on disk exited %d", code)
+	}
+	if st2, _ := config.InspectWorkspace(ws); st2.Trusted {
+		t.Fatal("a grant for other content trusted the file")
+	}
+	if out := run("grant", "-sha256", st.SHA256); !strings.Contains(out, "Trusted ") {
 		t.Fatalf("grant:\n%s", out)
 	}
 	if out := run("show", ws); !strings.Contains(out, "trust       trusted") {
@@ -277,5 +285,52 @@ func TestACPReportsWorkspaceTrust(t *testing.T) {
 	}
 	if st = trustOf(cl.request(4, "session/new", map[string]any{"cwd": ws, "_meta": map[string]any{"abhed": map[string]any{"trust": "untrusted"}}})); st.Trusted || st.Reason != "refused" {
 		t.Fatalf("the editor's refusal: %+v", st)
+	}
+}
+
+// serve, user and migrate refuse to run without the auth, storage or server
+// settings an untrusted file made: without them a console would be open.
+func TestDeploymentCommandsRefuseAnUntrustedDeployment(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"auth":{"mode":"local","require_group":"eng"},"storage":{"driver":"postgres","dsn":"postgres://app:pw@127.0.0.1:1/abhed"}}`)
+	for _, args := range [][]string{
+		{"-C", ws, "serve", "-addr", "127.0.0.1:0"},
+		{"-C", ws, "user", "list"},
+		{"-C", ws, "migrate"},
+	} {
+		cmd := mainHelper(args)
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		done := make(chan error, 1)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(out.String(), "abhed trust grant") || !strings.Contains(out.String(), "auth.mode") {
+				t.Errorf("%v: %v\n%s", args[2:], err, out.String())
+			}
+		case <-time.After(20 * time.Second):
+			_ = cmd.Process.Kill() // the helper this test started
+			t.Fatalf("%v started instead of refusing:\n%s", args[2:], out.String())
+		}
+	}
+	// Trusted, a file with auth is taken.
+	t.Setenv(config.TrustEnv, "1")
+	cfgFile := `{"auth":{"mode":"local"}}`
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfgFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runUser(t, ws, "list"); code != 0 {
+		t.Fatalf("user refused a trusted file: %d %s", code, out)
+	}
+}
+
+// -trust-workspace is taken after the subcommand too.
+func TestTrustFlagAfterTheSubcommand(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"permissions":{"mode":"accept-edits"}}`)
+	out, _ := stdoutOf(t, func() int { return Main([]string{"-C", ws, "doctor", "-trust-workspace"}) })
+	if !strings.Contains(out, "trust       trusted for this run (-trust-workspace)") || !strings.Contains(out, "mode        accept-edits") {
+		t.Fatalf("the trailing flag was not taken:\n%s", out)
 	}
 }

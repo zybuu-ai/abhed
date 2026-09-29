@@ -122,6 +122,11 @@ func Main(args []string, opts ...Option) int {
 	if err != nil {
 		fail(err)
 	}
+	// Also accepted after the subcommand, as in `abhed serve -trust-workspace`.
+	rest := fs.Args()
+	if len(rest) > 1 {
+		rest = append(rest[:1:1], dropTrustFlag(rest[1:], trustWS)...)
+	}
 	if *trustWS {
 		a.trust = config.TrustGranted
 	}
@@ -139,17 +144,17 @@ func Main(args []string, opts ...Option) int {
 			"Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n", path)
 		return 0
 	case "trust":
-		return trustCmd(workspace, fs.Args()[1:], os.Stdout)
+		return trustCmd(workspace, rest[1:], os.Stdout)
 	case "doctor":
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
 	case "hawkeye":
-		return hawkeyeCmd(workspace, fs.Args()[1:], a.trust)
+		return hawkeyeCmd(workspace, rest[1:], a.trust)
 	case "migrate":
 		return migrateCmd(workspace, a.migrate, a.trust)
 	case "resolve":
-		return resolveCmd(workspace, fs.Args()[1:], a.trust)
+		return resolveCmd(workspace, rest[1:], a.trust)
 	case "acp":
 		// The Agent Client Protocol over stdio, for editors that speak it.
 		return acpCmd(workspace, a.version, a.trust)
@@ -158,29 +163,29 @@ func Main(args []string, opts ...Option) int {
 		// can drive Abhed as a subprocess without running a server.
 		return rpcCmd(workspace, a.trust)
 	case "user":
-		return userCmd(workspace, fs.Args()[1:], a.trust)
+		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
-		return secretCmd(fs.Args()[1:])
+		return secretCmd(rest[1:])
 	case "index":
 		return buildIndexCmd(workspace, a.trust)
 	case "eval":
 		evalFlags := flag.NewFlagSet("eval", flag.ExitOnError)
 		corpus := evalFlags.String("corpus", "internal/eval/corpus", "task corpus directory")
 		jsonOut := evalFlags.String("json", "", "write the full report to this path")
-		_ = evalFlags.Parse(fs.Args()[1:])
+		_ = evalFlags.Parse(rest[1:])
 		return evalCmd(workspace, *corpus, *jsonOut, a.trust)
 	case "serve":
 		// Re-parse the remaining args so `abhed serve -addr :9000` works: Go's
 		// flag package stops at the first non-flag argument.
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
 		serveAddr := serveFlags.String("addr", *listenAddr, "listen address")
-		_ = serveFlags.Parse(fs.Args()[1:])
+		_ = serveFlags.Parse(rest[1:])
 		return a.serveCmd(workspace, *serveAddr)
 	default:
 		// An edition's own subcommand. Any other word is an error: opening a
 		// session for a mistyped command looked like the command had run.
 		if cmd, ok := a.commands[fs.Arg(0)]; ok {
-			return cmd(workspace, fs.Args()[1:])
+			return cmd(workspace, rest[1:])
 		}
 		if fs.NArg() > 0 {
 			fmt.Fprintf(os.Stderr, "abhed: unknown command %q; run a prompt with -p \"...\", or see abhed -h\n", fs.Arg(0))
@@ -189,6 +194,20 @@ func Main(args []string, opts ...Option) int {
 	}
 
 	return run(a, workspace, *prompt, *mode, *modelID, *maxTurns, *format, *allow, *deny, *addDirs)
+}
+
+// dropTrustFlag removes -trust-workspace from a subcommand's arguments and
+// sets *trust when it was there.
+func dropTrustFlag(args []string, trust *bool) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "-trust-workspace" || a == "--trust-workspace" || a == "-trust-workspace=true" || a == "--trust-workspace=true" {
+			*trust = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // outputFormats are the values -output-format takes. json is one event per
@@ -1304,6 +1323,10 @@ func printUsage(r *ui.Renderer, u agent.Usage) {
 // the same event stream the CLI consumes.
 func (a *App) serveCmd(workspace, addr string) int {
 	cfg, err := a.loadConfig(workspace)
+	if err == nil {
+		// Serving without the file's auth or storage would fail open.
+		err = cfg.Workspace.DeploymentError("serve")
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		var ed *EditionError
@@ -1747,6 +1770,9 @@ func splitPositional(args []string) (flags []string, positional string) {
 // userCmd manages local accounts: abhed user add | list | passwd | remove.
 func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
+	if err == nil {
+		err = cfg.Workspace.DeploymentError("user")
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -3232,6 +3258,9 @@ func writeHawkeye(path string, rep hawkeye.Report) error {
 // what the server needs. It is the one place the owner's credentials are used.
 func migrateCmd(workspace string, extensions []store.Extension, trust config.TrustChoice) int {
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
+	if err == nil {
+		err = cfg.Workspace.DeploymentError("migrate")
+	}
 	if err != nil {
 		fail(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // A workspace's own .abhed/config.json arrives with the repository, so it is
@@ -57,10 +59,44 @@ type WorkspaceTrust struct {
 	Ignored []IgnoredKey `json:"ignored,omitempty"`
 }
 
-// IgnoredKey is one setting of an untrusted file, with its value as written.
+// IgnoredKey is one setting of an untrusted file, with its value as written
+// and secrets redacted.
 type IgnoredKey struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	// Reason is set when the value was refused rather than merely not trusted.
+	Reason string `json:"reason,omitempty"`
+}
+
+// deploymentSections decide who may sign in and where the record goes, so
+// leaving them out opens a server rather than narrowing it.
+var deploymentSections = []string{"auth", "storage", "server"}
+
+// IgnoredDeployment lists the ignored settings under auth, storage or server.
+func (w WorkspaceTrust) IgnoredDeployment() []string {
+	var out []string
+	for _, k := range w.Ignored {
+		for _, sec := range deploymentSections {
+			if k.Key == sec || strings.HasPrefix(k.Key, sec+".") {
+				out = append(out, k.Key)
+			}
+		}
+	}
+	return out
+}
+
+// DeploymentError refuses to run a server-side command without settings an
+// untrusted file made, since running without them fails open.
+func (w WorkspaceTrust) DeploymentError(command string) error {
+	keys := w.IgnoredDeployment()
+	if len(keys) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the workspace configuration %s sets %s, but it is not trusted. "+
+		"%s refuses to run without them: it would start with no sign-in or no durable record. "+
+		"Review it with `abhed trust`, then trust it with `abhed trust grant` or run `abhed -trust-workspace %s`; "+
+		"or move these settings to ~/.abhed/config.json or the managed /etc/abhed/config.json",
+		Printable(w.File), strings.Join(keys, ", "), command, command)
 }
 
 // NeedsDecision reports whether the person should be asked: an untrusted file
@@ -94,7 +130,7 @@ func (w WorkspaceTrust) Warning() string {
 	}
 	return fmt.Sprintf("the workspace configuration %s %s; ignored %s. Only its deny, ask and "+
 		"other tightening settings apply. Review it with `abhed trust`",
-		w.File, why, strings.Join(w.IgnoredKeys(), ", "))
+		Printable(w.File), why, strings.Join(w.IgnoredKeys(), ", "))
 }
 
 func warnUntrusted(w WorkspaceTrust) {
@@ -202,6 +238,18 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 	dec.UseNumber()
 	_ = dec.Decode(&raw)
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
+	// A rule that does not parse is set aside here, so it cannot stop Abhed starting.
+	for key, list := range map[string]*[]string{"permissions.deny": &ws.Permissions.Deny, "permissions.ask": &ws.Permissions.Ask} {
+		var ok []string
+		for _, r := range *list {
+			if _, err := policy.ParseRule(r); err != nil {
+				st.Ignored = append(st.Ignored, IgnoredKey{Key: key, Value: shortJSON(r), Reason: Printable(err.Error())})
+				continue
+			}
+			ok = append(ok, r)
+		}
+		*list = ok
+	}
 	type setting struct {
 		key string
 		val any
@@ -216,9 +264,87 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 			cfg.SetKeys = append(cfg.SetKeys, s.key)
 			continue
 		}
-		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(s.val)})
+		st.Ignored = append(st.Ignored, IgnoredKey{Key: Printable(s.key), Value: shortJSON(redact(s.key, s.val))})
 	}
+	sort.SliceStable(st.Ignored, func(i, j int) bool { return st.Ignored[i].Key < st.Ignored[j].Key })
 	return nil
+}
+
+// secretKey names a field whose value is a credential or carries one; a
+// field naming an environment variable, or a limit, is not.
+func secretKey(k string) bool {
+	k = strings.ToLower(k)
+	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") {
+		return false
+	}
+	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization"} {
+		if strings.Contains(k, s) {
+			return true
+		}
+	}
+	return k == "env" || k == "key"
+}
+
+// redact replaces credentials in a value about to be shown: the values of
+// secret-looking fields, and any password in a URL.
+func redact(key string, v any) any {
+	last := key
+	if i := strings.LastIndex(key, "."); i >= 0 {
+		last = key[i+1:]
+	}
+	if secretKey(last) {
+		return redactAll(v)
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = redact(k, e)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redact(key, e)
+		}
+		return out
+	case string:
+		return redactURL(t)
+	}
+	return v
+}
+
+// redactAll keeps a secret field's shape and names, never its values.
+func redactAll(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k := range t {
+			out[k] = "[redacted]"
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i := range t {
+			out[i] = "[redacted]"
+		}
+		return out
+	case nil:
+		return nil
+	}
+	return "[redacted]"
+}
+
+func redactURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.User == nil {
+		return s
+	}
+	if _, has := u.User.Password(); has {
+		u.User = url.UserPassword(u.User.Username(), "redacted")
+		return u.String()
+	}
+	return s
 }
 
 func shortJSON(v any) string {
@@ -233,12 +359,17 @@ func shortJSON(v any) string {
 	return string(s[:77]) + "..."
 }
 
-// Printable escapes what a terminal would act on, since the file's text is
-// shown to the person deciding whether to trust it.
-func Printable(s string) string {
+// Printable escapes what a terminal would act on, newlines and tabs too, so
+// text from the file cannot draw lines of its own in the prompt.
+func Printable(s string) string { return printable(s, false) }
+
+// PrintableText is Printable keeping newlines and tabs, for a framed body.
+func PrintableText(s string) string { return printable(s, true) }
+
+func printable(s string, lines bool) string {
 	var b strings.Builder
 	for _, r := range s {
-		if r == '\n' || r == '\t' || (unicode.IsPrint(r) && r != utf8.RuneError) {
+		if (lines && (r == '\n' || r == '\t')) || (r != '\r' && unicode.IsPrint(r) && r != utf8.RuneError) {
 			b.WriteRune(r)
 			continue
 		}
@@ -300,17 +431,17 @@ var workspaceRules = map[string]fieldRule{
 
 	"sandbox.min_tier":              {raiseTier, "only a stronger tier"},
 	"sandbox.allow_network":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
-	"sandbox.max_memory_mb":         {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }), "only lower"},
-	"sandbox.max_procs":             {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }), "only lower"},
+	"sandbox.max_memory_mb":         {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
+	"sandbox.max_procs":             {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
 	"sandbox.terminal":              {onlyLines, "only lines"},
-	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }), "only lower"},
+	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
 
-	"limits.max_turns":              {lower(func(c *Config) *int { return &c.Limits.MaxTurns }), "only lower"},
-	"limits.max_tokens":             {lower(func(c *Config) *int { return &c.Limits.MaxTokens }), "only lower"},
-	"limits.max_budget_tokens":      {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }), "only lower"},
-	"limits.max_subagents":          {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }), "only lower"},
-	"limits.max_parallel_subagents": {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }), "only lower"},
+	"limits.max_turns":              {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
+	"limits.max_tokens":             {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
+	"limits.max_budget_tokens":      {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }, zeroUnlimited), "only lower"},
+	"limits.max_subagents":          {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }, zeroUnlimited), "only lower"},
+	"limits.max_parallel_subagents": {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},
 	"limits.nested_subagents":       {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
 
 	"tools.syntax_check": {stricterSyntax, "only stricter"},
@@ -324,8 +455,7 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.hosts":          {nil, "names machines and keys the agent reaches"},
 	"skills.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":        {nil, "a skill is instructions to the agent"},
-	"telemetry.enabled":  {onlyFalse(func(c *Config) *bool { return &c.Telemetry.Enabled }), "only false"},
-	"telemetry":          {nil, "sends the event stream to an endpoint"},
+	"telemetry":          {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
 
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},
 	"model":            {nil, "a provider and its base_url receive the code"},
@@ -364,12 +494,33 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-// lower takes a positive value no higher than the current one; a current
-// zero or less means unlimited, so any positive value is lower.
-func lower(field func(*Config) *int) func(dst, ws *Config) bool {
+// zeroMeans is what a zero or negative value of a limit stands for.
+type zeroMeans struct {
+	unlimited bool
+	value     int
+}
+
+var (
+	zeroUnlimited = zeroMeans{unlimited: true}
+	zeroIsZero    = zeroMeans{}
+)
+
+func zeroIs(v int) zeroMeans { return zeroMeans{value: v} }
+
+// lower takes a positive value no higher than the current one, compared with
+// what the current value means in effect: its default when zero.
+func lower(field func(*Config) *int, zero zeroMeans) func(dst, ws *Config) bool {
 	return func(dst, ws *Config) bool {
 		d, v := field(dst), *field(ws)
-		if v <= 0 || (*d > 0 && v > *d) {
+		if v <= 0 {
+			return false
+		}
+		cur := *d
+		if cur <= 0 {
+			if !zero.unlimited && v > zero.value {
+				return false
+			}
+		} else if v > cur {
 			return false
 		}
 		*d = v

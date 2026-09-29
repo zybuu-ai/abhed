@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -99,7 +100,7 @@ func describeTrust(out io.Writer, st config.WorkspaceTrust) {
 			width = max(width, len(k.Key))
 		}
 		for _, k := range st.Ignored {
-			fmt.Fprintf(out, "  %-*s  %s\n", width, k.Key, k.Value)
+			fmt.Fprintf(out, "  %-*s  %s%s\n", width, k.Key, k.Value, refusedNote(k))
 		}
 	}
 	if len(st.Applied) > 0 {
@@ -118,7 +119,7 @@ func showFile(out io.Writer, st config.WorkspaceTrust) {
 		fmt.Fprintln(out, "The file changed while you were being asked. Answer d, and run abhed again to review the new version.")
 		return
 	}
-	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.Printable(string(bytes.TrimRight(data, "\n"))))
+	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.PrintableText(string(bytes.TrimRight(data, "\n"))))
 }
 
 // readAnswer reads one line a byte at a time, so nothing past it is taken
@@ -145,11 +146,30 @@ func readAnswer(in io.Reader) (string, error) {
 	return string(b), nil
 }
 
-// trustCmd is `abhed trust [show|grant|revoke|list] [dir]`.
+// refusedNote says why a value was refused outright, such as a rule that does not parse.
+func refusedNote(k config.IgnoredKey) string {
+	if k.Reason == "" {
+		return ""
+	}
+	return "  (refused: " + k.Reason + ")"
+}
+
+// trustCmd is `abhed trust [show|grant [-sha256 H]|revoke|list] [dir]`.
 func trustCmd(workspace string, args []string, out io.Writer) int {
 	verb := "show"
 	if len(args) > 0 {
 		verb, args = args[0], args[1:]
+	}
+	// -sha256 pins a grant to the content that was reviewed.
+	var want string
+	if verb == "grant" {
+		fs := flag.NewFlagSet("abhed trust grant", flag.ContinueOnError)
+		fs.SetOutput(os.Stderr)
+		sum := fs.String("sha256", "", "grant only if the file still has this hash")
+		if err := fs.Parse(args); err != nil {
+			return 2
+		}
+		want, args = strings.ToLower(*sum), fs.Args()
 	}
 	dir := workspace
 	if len(args) > 0 {
@@ -182,6 +202,11 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		if st.Reason == "home" {
 			fmt.Fprintf(out, "%s is your own configuration and is always trusted.\n", config.Printable(st.File))
 			return 0
+		}
+		if want != "" && want != st.SHA256 {
+			fmt.Fprintf(os.Stderr, "abhed: trust: %s has changed: its sha256 is %s, not the %s you reviewed. "+
+				"Nothing was trusted; review it again with `abhed trust`\n", config.Printable(st.File), st.SHA256, config.Printable(want))
+			return 1
 		}
 		// The hash is of the content just classified, not of a second read.
 		if err := config.GrantTrust(dir, st.SHA256); err != nil {
@@ -267,7 +292,7 @@ func printTrust(out io.Writer, st config.WorkspaceTrust) {
 		fmt.Fprintln(out, "  nothing: every setting in it only tightens")
 	}
 	for _, k := range st.Ignored {
-		fmt.Fprintf(out, "  %s  %s\n", k.Key, k.Value)
+		fmt.Fprintf(out, "  %s  %s%s\n", k.Key, k.Value, refusedNote(k))
 	}
 	if len(st.Applied) > 0 {
 		fmt.Fprintf(out, "Applied either way, since they only tighten: %s\n", strings.Join(st.Applied, ", "))
@@ -282,7 +307,7 @@ func printDoctorTrust(out io.Writer, st config.WorkspaceTrust) {
 	}
 	fmt.Fprintf(out, "trust       %s — %s\n", trustLabel(st), config.Printable(st.File))
 	for _, k := range st.Ignored {
-		fmt.Fprintf(out, "            ⚠ ignored %s %s\n", k.Key, k.Value)
+		fmt.Fprintf(out, "            ⚠ ignored %s %s%s\n", k.Key, k.Value, refusedNote(k))
 	}
 	if len(st.Ignored) > 0 {
 		fmt.Fprintln(out, "            review it with `abhed trust`; trust it with `abhed trust grant`")

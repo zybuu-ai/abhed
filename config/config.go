@@ -16,6 +16,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 type Config struct {
@@ -515,6 +516,9 @@ func Default() Config {
 				"bash(git status*)", "bash(git diff*)", "bash(git log*)",
 				"bash(ls*)", "bash(pwd)", "bash(cat *)",
 			},
+			// A command that trusts a workspace for a nested run is the
+			// person's decision, not the agent's.
+			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,
@@ -738,6 +742,17 @@ func (c Config) Validate() error {
 	}
 	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
+	}
+	// Checked here so every path fails on a bad rule, not only the CLI.
+	for _, l := range []struct {
+		name  string
+		rules []string
+	}{{"deny", c.Permissions.Deny}, {"ask", c.Permissions.Ask}, {"allow", c.Permissions.Allow}} {
+		for _, r := range l.rules {
+			if _, err := policy.ParseRule(r); err != nil {
+				return fmt.Errorf("permissions.%s: %w", l.name, err)
+			}
+		}
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

@@ -76,8 +76,47 @@ func lookupTrust(workspace string) (TrustRecord, bool, error) {
 	return e, ok, nil
 }
 
-// updateTrust rewrites the store through a temporary file, owner-only.
+// updateTrust rewrites the store through a temporary file, owner-only,
+// holding the store's lock so two decisions at once both land.
 func updateTrust(change func(map[string]TrustRecord)) error {
+	path, err := TrustStorePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	unlock, err := lockTrust(path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return rewriteTrust(change)
+}
+
+// lockTrust takes an exclusive lock file, waiting up to five seconds. A lock
+// older than 30 seconds was left by a process that died and is taken over.
+func lockTrust(lock string) (func(), error) {
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- the lock beside the user's trust store
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if info, serr := os.Stat(lock); serr == nil && time.Since(info.ModTime()) > 30*time.Second {
+			_ = os.Remove(lock)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("the trust store is locked by another abhed (%s)", lock)
+		}
+	}
+}
+
+func rewriteTrust(change func(map[string]TrustRecord)) error {
 	f, path, err := readTrust()
 	if err != nil && path == "" {
 		return err
