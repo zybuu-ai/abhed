@@ -504,6 +504,8 @@ var workspaceRules = map[string]fieldRule{
 
 	"web_search.enabled": {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search":         {nil, "a search provider, key and endpoint receive the agent's queries"},
+	"web_fetch.enabled":  {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
+	"web_fetch":          {nil, "names the hosts the agent may fetch from"},
 	"k8s.enabled":        {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
 	"k8s.allow_writes":   {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
 	"k8s":                {nil, "names which cluster and credentials the agent reaches"},

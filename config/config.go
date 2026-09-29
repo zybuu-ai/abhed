@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -38,6 +39,7 @@ type Config struct {
 	MCP         MCPConfig         `json:"mcp"`
 	Retrieval   RetrievalConfig   `json:"retrieval"`
 	WebSearch   WebSearchConfig   `json:"web_search"`
+	WebFetch    WebFetchConfig    `json:"web_fetch,omitempty"`
 	Extensions  []ExtensionConfig `json:"extensions,omitempty"`
 	// CustomProviders adds model providers without a rebuild.
 	CustomProviders []CustomProviderConfig `json:"custom_providers,omitempty"`
@@ -257,6 +259,21 @@ type WebSearchConfig struct {
 	// BaseURL points at a self-hosted instance or an egress broker.
 	BaseURL    string `json:"base_url,omitempty"`
 	MaxResults int    `json:"max_results,omitempty"`
+}
+
+// WebFetchConfig controls the web_fetch tool, which reads one page through
+// Abhed rather than the sandboxed shell.
+//
+// OFF by default, and separate from web_search: turning search on does not
+// open a way to send a request to any site, which this does.
+type WebFetchConfig struct {
+	Enabled bool `json:"enabled"`
+	// AllowedHosts, when set, is every host that may be fetched:
+	// "docs.python.org" or "*.github.com". Internal addresses are refused
+	// whatever it says.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	// MaxChars caps the text returned per call; 0 means 20,000.
+	MaxChars int `json:"max_chars,omitempty"`
 }
 
 // StorageConfig selects the event store. Memory is fine for a CLI session;
@@ -826,6 +843,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown web_search.provider %q "+
 			"(want duckduckgo, brave, tavily, serper or searxng)", c.WebSearch.Provider)
 	}
+	for _, h := range c.WebFetch.AllowedHosts {
+		if !validHostPattern(h) {
+			return fmt.Errorf("web_fetch.allowed_hosts: %q is not a host name or *.domain "+
+				"(no scheme, port or path; a wildcard needs a domain of two labels or more)", h)
+		}
+	}
 	switch c.Storage.Driver {
 	case "memory", "postgres", "":
 	default:
@@ -949,4 +972,40 @@ func (c ContextConfig) OffloadFraction() float64 {
 		return 0.60
 	}
 	return *c.OffloadAt
+}
+
+// validHostPattern is a host name, or *. and a domain: what web_fetch's
+// allowlist can match. A URL or a pattern of any other shape would match
+// nothing, and an operator would believe it did.
+func validHostPattern(h string) bool {
+	h, wild := strings.CutPrefix(h, "*.")
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	// *.com would allow every site under a top-level domain.
+	if wild && !strings.Contains(h, ".") {
+		return false
+	}
+	// A name ending in a number is never a host web_fetch fetches, and a
+	// wildcard over one would match address numbers: only a plain IPv4
+	// address may end in digits.
+	labels := strings.Split(h, ".")
+	if last := strings.ToLower(labels[len(labels)-1]); strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "" {
+		a, err := netip.ParseAddr(h)
+		if wild || err != nil || !a.Is4() || a.String() != h {
+			return false
+		}
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for _, c := range label {
+			ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-'
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -2,6 +2,7 @@ package toolset
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/internal/websearch"
 )
 
@@ -30,9 +32,27 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 	return out
 }
 
+// WebFetchTool constructs web_fetch when enabled, or returns nil. It reads
+// vault on each call, so a secret stored while the session runs is covered,
+// and refuses a URL holding a stored value. With no vault it cannot check a
+// URL, so it fetches nothing.
+func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
+	if !cfg.WebFetch.Enabled {
+		return nil
+	}
+	load := func() (*secrets.Redactor, error) {
+		return nil, errors.New("no secrets store")
+	}
+	if vault != nil {
+		load = vault.LoadRedactor
+	}
+	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
+		Secrets: load, MaxChars: cfg.WebFetch.MaxChars}
+}
+
 // WebSearchTool constructs the web search tool when enabled. Returns nil, nil
 // when the operator has left it off, which is the default.
-func WebSearchTool(cfg config.Config) (tools.Tool, error) {
+func WebSearchTool(cfg config.Config) (*websearch.Tool, error) {
 	if !cfg.WebSearch.Enabled {
 		return nil, nil
 	}

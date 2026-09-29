@@ -363,3 +363,31 @@ func (r *Redactor) Span() int {
 	}
 	return len(r.pairs[0].needle)
 }
+
+// FindFold is Find with case ignored.
+func (r *Redactor) FindFold(s string) (label string, found bool) {
+	if r.broken {
+		return "", true
+	}
+	s = strings.ToLower(s)
+	for _, p := range r.pairs {
+		if strings.Contains(s, strings.ToLower(p.needle)) {
+			return p.label, true
+		}
+	}
+	return "", false
+}
+
+// Find reports whether s holds a stored value, and its label. A store that
+// could not be loaded holds everything, since nothing can be ruled out.
+func (r *Redactor) Find(s string) (label string, found bool) {
+	if r.broken {
+		return "", true
+	}
+	for _, p := range r.pairs {
+		if strings.Contains(s, p.needle) {
+			return p.label, true
+		}
+	}
+	return "", false
+}

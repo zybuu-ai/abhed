@@ -47,6 +47,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
 
 // Event is one recorded action or observation. The stream is the session: a
@@ -240,6 +241,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	// Set whatever the tool set holds: web_fetch with no host list asks.
+	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {

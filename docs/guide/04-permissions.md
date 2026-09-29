@@ -35,7 +35,39 @@ A rule is a tool name, optionally followed by a pattern:
 ```
 
 `*` matches anything, newlines included; the pattern is matched against the
-command or path.
+command or path, or for a tool with neither, the first of its `pattern`,
+`action`, `resource`, `host`, `namespace`, `name` or `url` arguments. So an
+MCP tool that takes only a `url` is matched on it:
+`mcp__browser__open(https://intranet.example/*)`.
+
+For `web_fetch` the pattern is matched against the URL exactly as the model
+wrote it, and the tool fetches that string or nothing. It only fetches a URL
+written in one form — no spaces around it, lower-case scheme and host, no user
+name, no trailing dot on the host, a port written as a plain number from 1 to
+65535 and left out when it is the scheme's default, an address written as
+four decimal numbers (IPv4) or in compressed form (IPv6, never an IPv4 address
+written as IPv6), a path of at least `/` with no `.`, `..` or empty segment
+(raw or `%`-encoded), no needless `%` escapes and no `#fragment` — and
+refuses any other spelling. A host whose last part is a number and is not an
+IPv4 address, such as `1572395042` or `127.1`, is refused, since a resolver
+reads it as an address. So `"deny": ["web_fetch(https://example.com/*)"]`
+cannot be stepped around by writing `HTTPS://Example.COM:0443`, and
+`web_fetch(https://example.com/admin*)` cannot by writing `/public/../admin`.
+
+Two things are not normalised. A path rule matches case-sensitively:
+`web_fetch(http*://example.com/admin*)` does not match `/Admin/`, which a
+server that ignores case (IIS, or a static server on a case-insensitive disk)
+serves as `/admin/`. A query is matched exactly as written, its parameters'
+order and duplicates included. For a server that ignores case, or content you
+must keep out whatever the path or query, deny the host:
+`web_fetch(http*://example.com/*)`.
+
+Write a deny rule for a host so it covers both schemes:
+`web_fetch(http*://example.com/*)`. A rule written with `https://` alone
+leaves `http://` to the same host open. A host on another port needs its own
+rule, such as `web_fetch(http*://example.com:8080/*)`. A redirect to anything
+but the same URL is not followed but handed back, so it is judged as a call
+of its own.
 
 A deny or ask path pattern matches the path as the tool was given it, the
 absolute path, the path with its links resolved, and the path relative to the

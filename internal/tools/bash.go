@@ -67,6 +67,12 @@ func (Bash) Mutates() bool { return true }
 
 func (b Bash) Description() string {
 	d := "Run a shell command in the session workspace. Use for builds, tests, git, and package managers. Prefer read/glob/grep for file inspection — they are cheaper and safer. Note: a call that is just `cd <folder>` sets the working directory for later calls; shell state (variables, functions) and a cd inside a longer command do not carry over."
+	switch b.network() {
+	case networkOff:
+		d += " The sandbox has no network: commands cannot reach the internet or any other host, so curl, wget, package installs and git fetch fail. To read from the web, use web_search or web_fetch if they are in your tools; otherwise tell the user."
+	case networkOn:
+		d += " Commands can reach the network."
+	}
 	if len(b.SecretNames) > 0 {
 		d += " Secrets available by name, as environment variables for one command when listed in `secrets`: " + strings.Join(b.SecretNames, ", ") + ". You never see their values."
 	}
@@ -335,7 +341,9 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
 	// On the host the same text is the operating system's refusal, not a sandbox's.
-	if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
+	if exitCode != 0 && b.network() == networkOff && networkFailure(content) {
+		content += "\n\n" + networkHint
+	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
 		content += "\n\n" + hint
 	}
 	return Result{
@@ -344,6 +352,67 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		ExitCode:  &exitCode,
 	}
 }
+
+type networkState int
+
+const (
+	networkUnknown networkState = iota
+	networkOff
+	networkOn
+)
+
+// network is whether commands can reach the network, as far as this bash
+// knows: on the host they can, and a sandbox says; one it does not describe
+// is not guessed at.
+func (b Bash) network() networkState {
+	switch t := b.tier(); {
+	case t == "none":
+		return networkOn
+	case t == "":
+		return networkUnknown
+	case b.Isolation.Network:
+		return networkOn
+	}
+	return networkOff
+}
+
+// networkFailures are what common clients print when a name does not resolve
+// or no route exists: what a command sees with the network cut. A refused
+// connection is left out, since a server that is not running on loopback,
+// which the sandbox keeps, says the same.
+var networkFailures = regexp.MustCompile(`(?i)could not resolve host|could not resolve proxy|` +
+	`temporary failure in name resolution|name or service not known|` +
+	`nodename nor servname provided|no address associated with hostname|` +
+	`network is unreachable|no route to host|` +
+	`getaddrinfo (?:enotfound|eai_again)|\beai_again\b|\benotfound\b|` +
+	`dial tcp: lookup [^ ]+|failed to establish a new connection|` +
+	`unable to access 'https?://|could not resolve hostname|` +
+	`temporary failure resolving|failed to resolve (?:host|address|hostname|name)|unable to resolve host address`)
+
+// failedConnect is curl's message for an address it could not reach, which
+// counts unless the address is loopback.
+var failedConnect = regexp.MustCompile(`(?i)failed to connect to \[?([^\s\]]+)\]? port`)
+
+func networkFailure(output string) bool {
+	if networkFailures.MatchString(output) {
+		return true
+	}
+	for _, m := range failedConnect.FindAllStringSubmatch(output, -1) {
+		h := strings.ToLower(m[1])
+		if h != "localhost" && !strings.HasPrefix(h, "127.") && h != "::1" {
+			return true
+		}
+	}
+	return false
+}
+
+// networkHint says why a command that reached for the network failed. Without
+// it a model that ran curl sees only "could not resolve host", and neither it
+// nor the user learns that the sandbox, not the site, is the reason.
+const networkHint = "NOTE: this sandbox has no network access, so the command could not reach " +
+	"the host. Retrying will fail the same way. To read from the web, use web_search or " +
+	"web_fetch if they are in your tools; otherwise tell the user that commands here " +
+	"cannot reach the network."
 
 // sandboxHint explains a failure the sandbox caused, and names what to do
 // instead.

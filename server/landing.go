@@ -392,9 +392,13 @@ function renderFacts(o){
     o.storage, o.durable ? 'on' : 'off'));
   f.appendChild(card('Authentication', authValue(o), authDetail(o),
     o.auth_mode === 'none' ? 'off' : 'on'));
+  const online = o.web_search !== 'disabled' || o.web_fetch;
   f.appendChild(card('Web search', o.web_search,
-    o.web_search === 'disabled' ? 'the agent stays offline' : 'the agent can reach the internet',
+    online ? 'the agent can reach the internet' : 'the agent stays offline',
     o.web_search === 'disabled' ? 'off' : 'warn'));
+  f.appendChild(card('Web fetch', o.web_fetch ? 'enabled' : 'disabled',
+    o.web_fetch ? 'the agent can read web pages' : 'the agent reads no web pages',
+    o.web_fetch ? 'warn' : 'off'));
 
   // ---- activity
   const st = $('stats');

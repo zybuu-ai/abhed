@@ -86,7 +86,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.max_parallel_subagents` | **applied** only when lower; zero means the tool's cap of 8 |
 | `limits.nested_subagents` | **applied** only when false |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
-| `web_search.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false |
+| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
@@ -98,7 +98,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `k8s` (other keys), `ssh.hosts` | ignored: each names an endpoint, credentials or machines |
+| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts` | ignored: each names an endpoint, hosts, credentials or machines |
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |

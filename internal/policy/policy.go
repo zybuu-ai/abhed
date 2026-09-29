@@ -12,6 +12,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -270,6 +271,13 @@ type Engine struct {
 	// Roots returns the workspace and added directories, so a path rule
 	// written relative to one matches. Nil matches paths only as given.
 	Roots func() []string
+
+	// AskReadOnly names read-only tools that may still ask in the default,
+	// accept-edits, auto and plan modes. Each is given the call's subject and
+	// returns why it asks, or "" when it need not. An allow rule approves
+	// them and bypass mode runs them. It is for a tool whose reads can carry
+	// data out, such as web_fetch.
+	AskReadOnly map[string]func(subject string) string
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
@@ -500,7 +508,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		if mutates {
 			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 		}
-		return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+		// A read that can carry data out is not made safe by plan mode, which
+		// any client may narrow a session to: it goes on to the allow rules and asks.
+		if e.readOnlyAsk(tool, subject) == "" {
+			return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+		}
 	case ModeBypass:
 		if e.Managed {
 			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy", Scope: "", Step: "mode"}
@@ -511,7 +523,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode"}
 		}
 	case ModeAuto:
-		if !mutates {
+		if !mutates && e.readOnlyAsk(tool, subject) == "" {
 			return Result{Decision: Allow, Reason: "read-only tool in auto mode", Scope: "", Step: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
@@ -530,10 +542,21 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 6. Default: read-only tools proceed, mutations ask.
+	if why := e.readOnlyAsk(tool, subject); why != "" && !mutates {
+		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
+	}
 	if !mutates {
 		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
 	}
 	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+}
+
+// readOnlyAsk is why a read-only call asks anyway, or "".
+func (e *Engine) readOnlyAsk(tool, subject string) string {
+	if f := e.AskReadOnly[tool]; f != nil {
+		return f(subject)
+	}
+	return ""
 }
 
 // askReason says why a call is put to a person. A command is asked about
@@ -574,6 +597,13 @@ func suggestScope(tool, subject string) string {
 			return ""
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)
+	}
+	// A page's site, not the page: "always allow" for one URL would ask again
+	// for the next page there.
+	if tool == "web_fetch" {
+		if u, err := url.Parse(subject); err == nil && u.Scheme != "" && u.Host != "" {
+			return fmt.Sprintf("%s(%s://%s/*)", tool, u.Scheme, u.Host)
+		}
 	}
 	return fmt.Sprintf("%s(%s)", tool, subject)
 }

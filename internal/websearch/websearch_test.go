@@ -166,3 +166,14 @@ func TestLiveDuckDuckGo(t *testing.T) {
 		t.Logf("  %d. %s — %s", i+1, r.Title, r.URL)
 	}
 }
+
+// The description points at web_fetch only when it is registered: there was
+// once a pointer to a fetch tool that did not exist.
+func TestDescriptionNamesWebFetchOnlyWhenPresent(t *testing.T) {
+	if d := (&Tool{}).Description(); strings.Contains(d, "fetch") {
+		t.Errorf("names a fetch tool that is not there: %s", d)
+	}
+	if d := (&Tool{Fetch: true}).Description(); !strings.Contains(d, "web_fetch") {
+		t.Errorf("does not point at web_fetch: %s", d)
+	}
+}

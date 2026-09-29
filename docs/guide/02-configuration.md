@@ -43,6 +43,7 @@ configuration](#trusting-the-workspace-configuration).
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | provider and result count |
+| `web_fetch` | whether the agent can read a web page, and from which hosts — [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
@@ -138,6 +139,54 @@ policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+
+With `allow_network` false, the `bash` tool's description tells the model
+that commands cannot reach the network, and a command that fails for that
+reason (a name that does not resolve, no route to a host) ends with a note
+saying so and pointing at `web_search` and `web_fetch`.
+
+## Web fetch
+
+```json
+"web_fetch": {
+  "enabled": true,
+  "allowed_hosts": ["docs.python.org", "*.github.com"],
+  "max_chars": 20000
+}
+```
+
+Off by default, and separate from `web_search`: turning search on does not
+let the agent send a request to any site, and turning this on does not give
+the shell a network. `web_fetch` reads one http or https page through Abhed
+and returns its text. It never reaches a loopback, private, link-local,
+metadata or reserved address, whatever the host name resolves to.
+
+`allowed_hosts`, when set, is every host the agent may fetch: a name, or
+`*.` and a domain for any host under it (not the domain itself). An entry
+with a scheme, port or path is refused at load, and so is one that could
+never match a host as web_fetch writes it: a name ending in a number, an
+IPv4 address not written as four plain decimal numbers, or a wildcard over
+address numbers such as `*.216.34`. A listed host runs without asking only
+on its scheme's default port; a URL naming another port asks ("web_fetch
+asks: the URL names a port…") unless an allow rule names it.
+
+Without `allowed_hosts`, any public site can be fetched, and a URL can carry
+whatever the model puts in it, so every call asks in the `default`,
+`accept-edits`, `auto` and `plan` modes (the reason reads "web_fetch asks:
+no allowed_hosts configured") unless an allow rule such as
+`"allow": ["web_fetch(https://docs.python.org/*)"]` matches.
+`plan` asks too, because a console client can narrow any session to it.
+`bypass` runs it. A headless run, which has no one to ask, needs such an
+allow rule or `allowed_hosts`; `abhed eval` approves every ask, so an eval
+run with `web_fetch` on and no host list fetches any public URL.
+
+A wildcard over a single label, such as `*.com`, is refused. Be careful with
+wildcards over shared hosting — `*.github.io`, `*.vercel.app`,
+`*.s3.amazonaws.com`, `*.githubusercontent.com` — where anyone can publish a
+site: listing one lets any of those sites receive, without asking, whatever
+the model puts in a URL. `max_chars` is the most text
+one call returns; unset means 20,000, and the most is 100,000. A longer page
+is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 
 ## Storage
 

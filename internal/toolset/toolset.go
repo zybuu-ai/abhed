@@ -20,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
 
 // Part is a piece of the tool set the configuration can add.
@@ -44,9 +45,12 @@ const (
 	RAG
 	// Infra offers the Kubernetes and SSH tools when enabled.
 	Infra
+	// WebFetch offers web_fetch when web_fetch.enabled. A policy engine the
+	// set is used with needs webfetch.AskReadOnly, or the tool never asks.
+	WebFetch
 
 	// All is what the CLI runs with.
-	All = MCP | Vetoes | ExtensionTools | Skills | WebSearch | Retrieval | RAG | Infra
+	All = MCP | Vetoes | ExtensionTools | Skills | WebSearch | Retrieval | RAG | Infra | WebFetch
 )
 
 // Options are what a surface decides; everything else comes from the configuration.
@@ -63,7 +67,8 @@ type Options struct {
 	// trust when it is loaded: an untrusted file adds none.
 	Extensions []extension.Config
 	// Vault is the secrets store a login tool reads a credential from by
-	// name. Nil offers no stored secrets.
+	// name, and web_fetch refuses a URL holding a value from. Nil offers no
+	// stored secrets, and leaves web_fetch unable to fetch.
 	Vault *secrets.Store
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
@@ -144,12 +149,21 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			s.Registry.Add(SkillTool(s.Skills))
 		}
 	}
+	var fetch *webfetch.Tool
+	if o.Parts&WebFetch != 0 {
+		fetch = WebFetchTool(cfg, o.Vault)
+	}
 	if o.Parts&WebSearch != 0 {
 		if t, err := WebSearchTool(cfg); err != nil {
 			warn("web search disabled: %v", err)
 		} else if t != nil {
+			// Results point at web_fetch only where it is offered.
+			t.Fetch = fetch != nil
 			s.Registry.Add(t)
 		}
+	}
+	if fetch != nil {
+		s.Registry.Add(fetch)
 	}
 	// Retrieval is an accelerator over grep, not a replacement.
 	if o.Parts&Retrieval != 0 && cfg.Retrieval.Enabled {

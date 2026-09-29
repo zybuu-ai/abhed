@@ -36,6 +36,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -1107,6 +1108,7 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
+	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
 
@@ -2574,6 +2576,7 @@ type overviewResponse struct {
 	// the guard is the boundary.
 	Admin      bool     `json:"admin"`
 	WebSearch  string   `json:"web_search"`
+	WebFetch   bool     `json:"web_fetch"`
 	Retrieval  bool     `json:"retrieval"`
 	MCPServers int      `json:"mcp_servers"`
 	Tools      []string `json:"tools"`
@@ -2618,6 +2621,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	if cfg.WebSearch.Enabled {
 		o.WebSearch = orDefaultStr(cfg.WebSearch.Provider, "duckduckgo")
 	}
+	o.WebFetch = cfg.WebFetch.Enabled
 
 	if reg := s.state.toolRegistry(); reg != nil {
 		o.Tools = reg.Names()

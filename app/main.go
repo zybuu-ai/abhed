@@ -48,6 +48,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
 	"golang.org/x/term"
@@ -291,6 +292,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	}
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
 	must(pol.AddDeny(cfg.Permissions.Deny...))
@@ -316,7 +318,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
 		Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
-			Isolation: tools.Isolation{Tier: string(sb.Tier())}},
+			Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
 		Parts: toolset.All,
 		Vault: vault,
 		Warn:  warnf,
@@ -1297,6 +1299,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	fmt.Printf("auth        %s\n", authLabel(cfg, authMW))
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
 	if line, failed := extensionsLabel(cfg, set); line != "" {
 		fmt.Printf("extensions  %s\n", line)
 		// Every session runs without a veto that did not start, so it is said where the operator looks.
@@ -1544,7 +1547,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 			return nil, eval.Result{}, err
 		}
 		vault := openVault()
-		// Skills, web search, the todo list and subagents are part of the
+		// Skills, the web tools, the todo list and subagents are part of the
 		// agent under test, not extras: a corpus exercising one would
 		// otherwise measure an agent that never had it. MCP servers, corpora,
 		// clusters, hosts, the index and extensions are left out, so a score
@@ -1552,8 +1555,9 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		set := toolset.Build(ctx, cfg, toolset.Options{
 			Workspace: ws,
 			Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
-				Isolation: tools.Isolation{Tier: string(sb.Tier())}},
-			Parts: toolset.Skills | toolset.WebSearch,
+				Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
+			Parts: toolset.Skills | toolset.WebSearch | toolset.WebFetch,
+			Vault: vault,
 		})
 		defer set.Close()
 		if err := grantDirs(sess, config.Config{}, set.SkillDirs()); err != nil {
@@ -1561,6 +1565,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		}
 
 		pol := policy.New(policy.ModeAuto)
+		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 		pol.Roots = sess.PolicyRoots
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the
@@ -2405,6 +2410,16 @@ func webSearchLabel(cfg config.Config) string {
 	return p + " (agent can reach the public internet)"
 }
 
+func webFetchLabel(cfg config.Config) string {
+	switch {
+	case !cfg.WebFetch.Enabled:
+		return "disabled"
+	case len(cfg.WebFetch.AllowedHosts) > 0:
+		return "enabled for " + strings.Join(cfg.WebFetch.AllowedHosts, ", ")
+	}
+	return "enabled (agent can read any public web page)"
+}
+
 // buildSandbox selects an execution backend meeting the configured minimum
 // tier. Select never silently downgrades, so a failure here is a real
 // configuration problem the operator must see.
@@ -2523,6 +2538,7 @@ func (a *App) doctor(workspace string) int {
 		}
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
 	vaultErr := vaultLoads()
 	if vaultErr != nil {
 		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
