@@ -143,7 +143,9 @@ a cluster only by naming a context you already have, so the worst it can reach
 is what your own `kubectl` can. Token, tokenFile, client certificates and `exec`
 credential helpers (the cloud CLIs) all work; exec tokens are refreshed before
 they expire, because an expired token returns a 401 that reads like a
-permissions problem.
+permissions problem. An `exec` helper runs only when Abhed sends a request:
+never while a `k8s_apply` waits for approval, and never for a call that is
+denied or refused in plan mode.
 
 Abhed talks to the API directly rather than importing `client-go`, which would
 add roughly a hundred transitive dependencies to a bundle where each one is

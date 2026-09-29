@@ -194,7 +194,9 @@ All notable changes to Abhed are recorded here. The format follows
     whether this session's login or a kubeconfig context's own credential
     is used. A user or password written into a server URL is left out, and
     the write goes to the server the approval named even if the kubeconfig
-    changes in between.
+    changes in between. Building it runs nothing: a kubeconfig `exec`
+    credential helper runs when a request is first sent, so a call that is
+    denied, refused in plan mode or rejected runs no helper.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
 
@@ -333,6 +335,10 @@ All notable changes to Abhed are recorded here. The format follows
   needs the host's key in `known_hosts` first; connect once with `ssh`, or
   use a key file.
 - `action.requested` gains `target`.
+- A kubeconfig `exec` credential helper now runs when Abhed first sends a
+  request to that cluster, not when the context is opened. `abhed doctor`
+  and the `abhed serve` banner no longer run it, so a helper that fails is
+  reported by the first cluster call instead.
 
 ### Fixed
 

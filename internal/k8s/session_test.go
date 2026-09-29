@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -449,5 +450,25 @@ func TestApplyGoesWhereItsApprovalSaid(t *testing.T) {
 	}
 	if hitB.Load() != 0 || hitA.Load() != 1 {
 		t.Fatalf("approved %q, but the write reached A %d times and B %d times", target, hitA.Load(), hitB.Load())
+	}
+}
+
+// A token in a server's query or fragment is left out too, and a kubeconfig
+// that cannot be opened is named with a reason that holds none of its values.
+func TestApplyTargetLeavesOutQueryAndExplainsFailure(t *testing.T) {
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, "https://kube.example:6443/?access_token=q-tok-11#frag-tok-22")})
+	got := ApplyTool{M: mgr}.Target(newSession(t), json.RawMessage(`{"action":"delete","context":"ctx"}`))
+	if !strings.Contains(got, "https://kube.example:6443") || strings.Contains(got, "q-tok-11") || strings.Contains(got, "frag-tok-22") {
+		t.Fatalf("target %q", got)
+	}
+
+	bad := filepath.Join(t.TempDir(), "config")
+	body := "apiVersion: v1\nusers:\n- name: u\n  user:\n    token: bad-kube-tok-33\n   oops\n"
+	if err := os.WriteFile(bad, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got = ApplyTool{M: NewManager(Config{Kubeconfig: bad})}.Target(newSession(t), json.RawMessage(`{"action":"delete","context":"ctx"}`))
+	if !strings.Contains(got, "could not be opened") || strings.Contains(got, "bad-kube-tok-33") {
+		t.Fatalf("target for a broken kubeconfig: %q", got)
 	}
 }

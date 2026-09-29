@@ -172,3 +172,128 @@ func TestCredentialToolSecretNeedsItsOwnRule(t *testing.T) {
 		t.Fatal("k8s_login used a secret no rule allows")
 	}
 }
+
+// markerApprover answers as told and notes whether the helper had already run
+// when it was asked.
+type markerApprover struct {
+	yes    bool
+	marker string
+	asked  int
+	ranBy  bool // the helper had run when the first approval was asked
+}
+
+func (a *markerApprover) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+	if a.asked++; a.asked == 1 {
+		_, err := os.Stat(a.marker)
+		a.ranBy = err == nil
+	}
+	return a.yes, nil
+}
+
+// A kubeconfig's exec credential helper is a command from the operator's
+// config, run outside the sandbox. Building the approval for a k8s_apply must
+// not run it: a call that is denied, refused in plan mode, or rejected runs
+// nothing, and an approved one runs it once, when it first sends a request.
+func TestExecHelperRunsOnlyForARequestThatIsSent(t *testing.T) {
+	var deletes atomic.Int32
+	cluster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer exec-tok-51c" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		deletes.Add(1)
+		fmt.Fprint(w, `{"kind":"Status","status":"Success"}`)
+	}))
+	defer cluster.Close()
+
+	setup := func(t *testing.T) (kubeconfig, marker string) {
+		dir := t.TempDir()
+		marker = filepath.Join(dir, "helper-ran")
+		helper := filepath.Join(dir, "helper.sh")
+		script := "#!/bin/sh\necho ran >> '" + marker + "'\n" +
+			`echo '{"apiVersion":"client.authentication.k8s.io/v1","status":{"token":"exec-tok-51c"}}'` + "\n"
+		if err := os.WriteFile(helper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		kubeconfig = filepath.Join(dir, "config")
+		body := "apiVersion: v1\nclusters:\n- cluster:\n    server: " + cluster.URL + "\n  name: c\n" +
+			"contexts:\n- context:\n    cluster: c\n    user: u\n    namespace: prod\n  name: ctx\n" +
+			"current-context: ctx\nusers:\n- name: u\n  user:\n    exec:\n      command: " + helper + "\n"
+		if err := os.WriteFile(kubeconfig, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return kubeconfig, marker
+	}
+	del := func(id string) model.ToolCall {
+		return call("k8s_apply", map[string]string{"action": "delete", "resource": "pods", "name": "web-" + id, "context": "ctx"})
+	}
+	run := func(t *testing.T, pol *policy.Engine, approver Approver, calls int) (string, *MemStore) {
+		kube, marker := setup(t)
+		reg := tools.NewRegistry(k8s.ApplyTool{M: k8s.NewManager(k8s.Config{Kubeconfig: kube})})
+		var turns []scriptedTurn
+		for i := 0; i < calls; i++ {
+			c := del(fmt.Sprint(i))
+			c.ID = fmt.Sprint("c", i)
+			turns = append(turns, scriptedTurn{calls: []model.ToolCall{c}})
+		}
+		turns = append(turns, scriptedTurn{text: "done"})
+		sess, _ := tools.NewSession(t.TempDir())
+		store := NewMemStore()
+		if ma, ok := approver.(*markerApprover); ok {
+			ma.marker = marker
+		}
+		l := NewLoop(&scriptedAdapter{turns: turns}, reg, pol, approver, sess, NewRecorder(store, "s1", ""), DefaultConfig())
+		if _, err := l.Run(context.Background(), "delete it"); err != nil {
+			t.Fatal(err)
+		}
+		return marker, store
+	}
+	ran := func(marker string) int {
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			return 0
+		}
+		return strings.Count(string(data), "ran")
+	}
+
+	denyRule := policy.New(policy.ModeDefault)
+	_ = denyRule.AddDeny("k8s_apply")
+	for name, tc := range map[string]struct {
+		pol      *policy.Engine
+		approver Approver
+	}{
+		"denied by a rule": {denyRule, AutoApprove{Yes: true}},
+		"plan mode":        {policy.New(policy.ModePlan), AutoApprove{Yes: true}},
+		"rejected":         {policy.New(policy.ModeDefault), &markerApprover{yes: false}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			marker, store := run(t, tc.pol, tc.approver, 1)
+			evs, _ := store.Events("s1")
+			if !hasEvent(evs, EvActionDenied) {
+				t.Fatal("the call was not refused, so the test proves nothing")
+			}
+			if n := ran(marker); n != 0 {
+				t.Fatalf("the exec credential helper ran %d times for a call that was refused", n)
+			}
+			if ma, ok := tc.approver.(*markerApprover); ok && ma.ranBy {
+				t.Fatal("the helper ran before the person answered")
+			}
+		})
+	}
+
+	t.Run("approved", func(t *testing.T) {
+		before := deletes.Load()
+		ma := &markerApprover{yes: true}
+		marker, store := run(t, policy.New(policy.ModeDefault), ma, 2)
+		if ma.ranBy {
+			t.Fatal("the helper ran before the person answered")
+		}
+		if n := ran(marker); n != 1 {
+			t.Fatalf("the helper ran %d times for two approved writes, want once", n)
+		}
+		if got := deletes.Load() - before; got != 2 {
+			evs, _ := store.Events("s1")
+			t.Fatalf("%d writes reached the cluster with the helper's token, want 2: %v", got, evs)
+		}
+	})
+}

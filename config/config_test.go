@@ -326,6 +326,8 @@ func TestK8sClustersAreValidatedAtLoad(t *testing.T) {
 		"http":        {{Name: "a", Server: "http://x.example"}},
 		"no host":     {{Name: "a", Server: "https://"}},
 		"userinfo":    {{Name: "a", Server: "https://u:p@x.example"}},
+		"query":       {{Name: "a", Server: "https://x.example/?access_token=t"}},
+		"fragment":    {{Name: "a", Server: "https://x.example/#t"}},
 		"not a url":   {{Name: "a", Server: "x.example"}},
 	} {
 		c := Default()

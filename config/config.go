@@ -393,9 +393,9 @@ func (k K8sConfig) validateClusters() error {
 		case err != nil:
 			// Not echoed: text that does not parse may still hold a credential.
 			return fmt.Errorf("k8s.clusters %q: server is not a URL", c.Name)
-		case u.User != nil:
-			return fmt.Errorf("k8s.clusters %q: server must not carry a user or password; "+
-				"the token comes from k8s_login", c.Name)
+		case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+			return fmt.Errorf("k8s.clusters %q: server must not carry a user, password, query "+
+				"or fragment; the token comes from k8s_login", c.Name)
 		case u.Scheme != "https" || u.Host == "":
 			return fmt.Errorf("k8s.clusters %q: server must be an https:// URL with a host, got %q", c.Name, u.String())
 		}

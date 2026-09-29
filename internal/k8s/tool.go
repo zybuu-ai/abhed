@@ -161,7 +161,9 @@ func (m *Manager) kubeClient(ctxName string) (*Cluster, error) {
 	return c, nil
 }
 
-// where describes the client cluster() would pick, without opening one.
+// where describes the client cluster() would pick. A kubeconfig client is
+// opened, and kept for the call, only to read its server: opening one runs no
+// credential helper and sends nothing.
 func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string {
 	if clusterName != "" && ctxName != "" {
 		return "names both a cluster and a context, so the call will be refused"
@@ -192,20 +194,26 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 	// have changed since that client was opened.
 	c, err := m.kubeClient(ctxName)
 	if err != nil {
-		return ""
+		// Open's errors name files, contexts and lines, never their values.
+		name := ctxName
+		if name == "" {
+			name = "(current)"
+		}
+		return fmt.Sprintf("kubeconfig context %s could not be opened, so the call will fail: %v", name, err)
 	}
 	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential",
 		c.Name, displayURL(c.Server))
 }
 
-// displayURL is a server URL fit to show and record: any user or password
-// written into it is left out.
+// displayURL is a server URL fit to show and record: any user, password,
+// query or fragment written into it is left out.
 func displayURL(server string) string {
 	u, err := url.Parse(server)
 	if err != nil {
 		return "(a server address that is not a URL)"
 	}
-	u.User = nil
+	// A query or fragment can carry a token as readily as userinfo.
+	u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
 	return u.String()
 }
 

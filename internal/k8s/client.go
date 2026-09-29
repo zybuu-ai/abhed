@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,8 +38,10 @@ type Cluster struct {
 	Namespace string
 
 	client *http.Client
-	// bearer is resolved once at construction. An exec-based credential
-	// (cloud CLIs use this) is re-run when it expires.
+	// bearer is resolved at construction, except an exec-based credential
+	// (cloud CLIs use this), which is run before the first request and again
+	// when it expires. tokMu guards both.
+	tokMu    sync.Mutex
 	bearer   string
 	execCfg  *execConfig
 	expires  time.Time
@@ -250,13 +253,10 @@ func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
 			c.bearer = strings.TrimSpace(string(tok))
 		case u.Exec != nil:
 			// Cloud providers hand out short-lived tokens through a helper
-			// binary. Running it is the documented mechanism, but it is still
-			// executing a command from a config file, so it is reported at
-			// startup rather than done silently.
+			// binary. It runs when the first request is sent, not here: an
+			// approval opens the client to name its server, and a call that
+			// is then refused must run nothing.
 			c.execCfg = u.Exec
-			if err := c.refreshExecToken(); err != nil {
-				return nil, err
-			}
 		}
 		if cert, key := clientCert(u.ClientCertificateData, u.ClientCertificate,
 			u.ClientKeyData, u.ClientKey); cert != nil {
@@ -433,14 +433,27 @@ func (c *Cluster) refreshExecToken() error {
 
 // ---------------------------------------------------------------- requests
 
+// credential returns the bearer to send, running the exec helper first when
+// there is none yet or it is about to expire.
+func (c *Cluster) credential() (string, error) {
+	c.tokMu.Lock()
+	defer c.tokMu.Unlock()
+	if c.execCfg != nil && (c.bearer == "" ||
+		!c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second))) {
+		if err := c.refreshExecToken(); err != nil {
+			return "", err
+		}
+	}
+	return c.bearer, nil
+}
+
 // Do issues a request against the API server.
 func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	// A short-lived token that has expired produces a 401 that looks like a
 	// permissions problem; refresh before that happens.
-	if c.execCfg != nil && !c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second)) {
-		if err := c.refreshExecToken(); err != nil {
-			return nil, err
-		}
+	bearer, err := c.credential()
+	if err != nil {
+		return nil, err
 	}
 
 	var rdr io.Reader
@@ -451,8 +464,8 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 	if err != nil {
 		return nil, err
 	}
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -461,7 +474,7 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", c.Server, err)
+		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", displayURL(c.Server), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -494,24 +507,23 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 // patch semantics from that header — apply, merge, and strategic-merge are
 // three different operations behind one HTTP verb.
 func (c *Cluster) doPatch(ctx context.Context, path string, body []byte, contentType string) ([]byte, error) {
-	if c.execCfg != nil && !c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second)) {
-		if err := c.refreshExecToken(); err != nil {
-			return nil, err
-		}
+	bearer, err := c.credential()
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Server+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", c.Server, err)
+		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", displayURL(c.Server), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
