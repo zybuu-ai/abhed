@@ -380,7 +380,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	for _, t := range buildRAG(cfg) {
 		registry.Add(t)
 	}
-	for _, t := range buildInfra(cfg) {
+	for _, t := range buildInfra(cfg, vault) {
 		registry.Add(t)
 	}
 	skillReg, skillListing := buildSkills(cfg)
@@ -1464,7 +1464,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	for _, t := range buildRAG(cfg) {
 		registry.Add(t)
 	}
-	for _, t := range buildInfra(cfg) {
+	for _, t := range buildInfra(cfg, vault) {
 		registry.Add(t)
 	}
 	skillReg, skillListing := buildSkills(cfg)
@@ -2654,8 +2654,9 @@ func buildSkills(cfg config.Config) (*skills.Registry, string) {
 
 // buildInfra constructs the cluster and remote-host tools. Both are off by
 // default and both report why they are unavailable rather than silently
-// registering nothing.
-func buildInfra(cfg config.Config) []tools.Tool {
+// registering nothing. A credential obtained at run time is read from vault by
+// name and held by the session that obtained it, never by these tools.
+func buildInfra(cfg config.Config, vault *secrets.Store) []tools.Tool {
 	var out []tools.Tool
 
 	if cfg.K8s.Enabled {
@@ -2667,7 +2668,8 @@ func buildInfra(cfg config.Config) []tools.Tool {
 			// directory the agent itself can read.
 			Token: os.Getenv("ABHED_K8S_TOKEN"),
 		})
-		out = append(out, k8s.GetTool{M: mgr}, k8s.LoginTool{M: mgr})
+		out = append(out, k8s.GetTool{M: mgr},
+			k8s.LoginTool{M: mgr, Secret: vault.Value, SecretNames: vaultNames(vault)})
 		if cfg.K8s.AllowWrites {
 			out = append(out, k8s.ApplyTool{M: mgr})
 		}
@@ -2694,7 +2696,7 @@ func buildInfra(cfg config.Config) []tools.Tool {
 		for _, err := range errs {
 			fmt.Fprintf(os.Stderr, "abhed: ssh: %v\n", err)
 		}
-		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg})
+		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg, Secret: vault.Value})
 	}
 	return out
 }

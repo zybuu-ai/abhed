@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -87,6 +88,7 @@ func (t Tool) Description() string {
 		hosts = " Declared hosts: " + strings.Join(t.R.names(), ", ") + "."
 	}
 	return "Run a shell command on a remote machine over SSH." + hosts +
+		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
 		"the sandbox with no undo. Prefer one command that answers the question " +
 		"over several exploratory ones."
@@ -110,29 +112,34 @@ type sshArgs struct {
 	Timeout int    `json:"timeout_seconds"`
 }
 
-func (t Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
+func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a sshArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for ssh: %v", err)
 	}
-	if t.R == nil || t.R.Len() == 0 {
+	mine := sessionHostsOf(sess, t.R, false)
+	names := knownNames(t.R, mine)
+	if len(names) == 0 {
 		return errf("No SSH hosts are configured. An operator declares them in " +
-			"ssh.hosts; the agent cannot add one.")
+			"ssh.hosts, or the user gives one for ssh_connect.")
 	}
 	if strings.TrimSpace(a.Host) == "" {
-		return errf("host is required. Configured: %s", strings.Join(t.R.names(), ", "))
+		return errf("host is required. Configured: %s", strings.Join(names, ", "))
 	}
 	if strings.TrimSpace(a.Command) == "" {
 		return errf("command is required.")
 	}
 
-	h, ok := t.R.get(a.Host)
+	h, ok := mine.get(a.Host)
+	if !ok && t.R != nil {
+		h, ok = t.R.get(a.Host)
+	}
 	if !ok {
 		// Naming the alternatives ends the retry loop a bare "not found"
 		// otherwise causes.
 		return errf("No host named %q. Configured hosts: %s. "+
 			"Abhed cannot connect to a host that is not declared.",
-			a.Host, strings.Join(t.R.names(), ", "))
+			a.Host, strings.Join(names, ", "))
 	}
 
 	timeout := time.Duration(a.Timeout) * time.Second
@@ -156,6 +163,17 @@ func (t Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	}
 }
 
+// knownNames lists the operator's hosts and the session's own.
+func knownNames(r *Registry, mine *sessionHosts) []string {
+	var out []string
+	if r != nil {
+		out = r.names()
+	}
+	out = append(out, mine.names()...)
+	sort.Strings(out)
+	return out
+}
+
 func combine(o *Output) string {
 	var b strings.Builder
 	if s := strings.TrimRight(o.Stdout, "\n"); s != "" {
@@ -174,12 +192,69 @@ func errf(format string, a ...any) tools.Result {
 	return tools.Result{Content: fmt.Sprintf(format, a...), IsError: true}
 }
 
-// Add registers a host discovered during a conversation. Operator-equivalent
-// input: it comes from what the USER typed, not from anything the model read.
-func (r *Registry) Add(h *Host) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.hosts[h.Name()] = h
+// sessionHosts are the hosts ssh_connect added in one session. They are
+// never put in the Registry, which every session on a server shares.
+type sessionHosts struct {
+	mu    sync.Mutex
+	hosts map[string]*Host
+}
+
+// hostsKey keys a session's hosts by registry, so two registries never meet.
+type hostsKey struct{ r *Registry }
+
+// sessionHostsOf returns the session's hosts, made when create is set. Nil
+// when there are none, or no session to keep them in.
+func sessionHostsOf(sess *tools.Session, r *Registry, create bool) *sessionHosts {
+	var mk func() any
+	if create {
+		mk = func() any { return &sessionHosts{hosts: map[string]*Host{}} }
+	}
+	h, _ := sess.Scoped(hostsKey{r}, mk).(*sessionHosts)
+	return h
+}
+
+func (s *sessionHosts) get(name string) (*Host, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, ok := s.hosts[name]
+	return h, ok
+}
+
+func (s *sessionHosts) names() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.hosts))
+	for n := range s.hosts {
+		out = append(out, n)
+	}
+	return out
+}
+
+func (s *sessionHosts) add(h *Host) {
+	s.mu.Lock()
+	old := s.hosts[h.Name()]
+	s.hosts[h.Name()] = h
+	s.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+}
+
+// Close ends the session's connections when the session goes.
+func (s *sessionHosts) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, h := range s.hosts {
+		_ = h.Close()
+	}
+	s.hosts = map[string]*Host{}
+	return nil
 }
 
 // ---------------------------------------------------------------- connect
@@ -193,8 +268,15 @@ func (r *Registry) Add(h *Host) {
 // calls, and the failure is opaque.
 //
 // The key is read by Abhed, outside the sandbox, and the host is remembered for
-// the life of the process. Nothing is written to ~/.ssh/config.
-type ConnectTool struct{ R *Registry }
+// the session that connected, never for the process: a server runs every
+// user's sessions in one. A password comes from the secrets store by name, so
+// it is never an argument the record or the model holds. Nothing is written
+// to ~/.ssh/config.
+type ConnectTool struct {
+	R *Registry
+	// Secret returns a stored secret's value; nil means no store.
+	Secret func(name string) (string, error)
+}
 
 func (ConnectTool) Name() string { return "ssh_connect" }
 
@@ -202,11 +284,19 @@ func (ConnectTool) Name() string { return "ssh_connect" }
 // whom, which deserves the same confirmation as a write.
 func (ConnectTool) Mutates() bool { return true }
 
+// FixedArgs: a password sent as an unknown argument is dropped, not recorded.
+func (ConnectTool) FixedArgs() {}
+
+// SecretArgs puts password_secret to a secret(NAME) rule.
+func (ConnectTool) SecretArgs() []string { return []string{"password_secret"} }
+
 func (ConnectTool) Description() string {
 	return "Register a remote machine for SSH, for this session only. Use when the user " +
-		"gives an address and a key path or password. Call this FIRST with the path " +
+		"gives an address and a key path, or a password they stored with " +
+		"`abhed secret set NAME`. Call this FIRST with the key path " +
 		"exactly as the user wrote it — it resolves typos and common locations itself, " +
-		"so do not search the filesystem for the key beforehand. " +
+		"so do not search the filesystem for the key beforehand. Never pass a password " +
+		"itself: ask the user to store it and pass its NAME as password_secret. " +
 		"Do NOT use `ssh` through bash: the sandbox denies reads of key material, and a " +
 		"connection made inside a bash call does not survive to the next one. " +
 		"After this succeeds, run commands with the `ssh` tool."
@@ -220,7 +310,7 @@ func (ConnectTool) Schema() json.RawMessage {
     "addr":{"type":"string","description":"Hostname or IP, optionally host:port."},
     "user":{"type":"string","description":"Login user. Defaults to root."},
     "identity_file":{"type":"string","description":"Path to the private key, as the user gave it."},
-    "password_env":{"type":"string","description":"Environment variable holding a password, if there is no key."},
+    "password_secret":{"type":"string","description":"NAME of the stored secret holding the password, if there is no key. Never the password."},
     "accept_host_key":{"type":"boolean","description":"Accept the host key on first sight. Only set this when the user has said the host is new or ephemeral."}
   },
   "required":["addr"]
@@ -228,18 +318,22 @@ func (ConnectTool) Schema() json.RawMessage {
 }
 
 type connectArgs struct {
-	Name          string `json:"name"`
-	Addr          string `json:"addr"`
-	User          string `json:"user"`
-	IdentityFile  string `json:"identity_file"`
-	PasswordEnv   string `json:"password_env"`
-	AcceptHostKey bool   `json:"accept_host_key"`
+	Name           string `json:"name"`
+	Addr           string `json:"addr"`
+	User           string `json:"user"`
+	IdentityFile   string `json:"identity_file"`
+	PasswordSecret string `json:"password_secret"`
+	AcceptHostKey  bool   `json:"accept_host_key"`
 }
 
-func (t ConnectTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
+func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a connectArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for ssh_connect: %v", err)
+	}
+	// Without a session the host would have nowhere of its own to live.
+	if sess == nil {
+		return errf("ssh_connect needs a session to hold the host; nothing was registered.")
 	}
 	if strings.TrimSpace(a.Addr) == "" {
 		return errf("addr is required.")
@@ -249,6 +343,30 @@ func (t ConnectTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMess
 	}
 	if a.Name == "" {
 		a.Name = a.Addr
+	}
+	// An operator's host keeps its name: a session cannot put another machine
+	// behind it.
+	if t.R != nil {
+		if _, taken := t.R.get(a.Name); taken {
+			return errf("%q is a host the operator declared; use it with the ssh tool, "+
+				"or choose another name for this one.", a.Name)
+		}
+	}
+
+	var password string
+	if a.PasswordSecret != "" {
+		if !secrets.ValidName(a.PasswordSecret) {
+			return errf("password_secret is the NAME of a stored secret, such as VM_PASSWORD, " +
+				"not the password. Ask the user to store it with `abhed secret set NAME`.")
+		}
+		if t.Secret == nil {
+			return errf("No secrets store is available here, so ssh_connect cannot read a password.")
+		}
+		pw, err := t.Secret(a.PasswordSecret)
+		if err != nil {
+			return errf("%v", err)
+		}
+		password = pw
 	}
 
 	if a.IdentityFile != "" {
@@ -265,8 +383,8 @@ func (t ConnectTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMess
 	h, err := NewHost(HostConfig{
 		Name: a.Name, Addr: a.Addr, User: a.User,
 		IdentityFile:             a.IdentityFile,
-		PasswordEnv:              a.PasswordEnv,
 		InsecureSkipHostKeyCheck: a.AcceptHostKey,
+		password:                 password,
 	})
 	if err != nil {
 		return errf("%v", err)
@@ -284,14 +402,17 @@ func (t ConnectTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMess
 		return errf("Connected to %s but the host did not run a command as expected.", a.Addr)
 	}
 
-	t.R.Add(h)
+	sessionHostsOf(sess, t.R, true).add(h)
 	key := "the ssh agent"
-	if a.IdentityFile != "" {
+	switch {
+	case a.IdentityFile != "":
 		key = a.IdentityFile
+	case a.PasswordSecret != "":
+		key = "the password in secret " + a.PasswordSecret
 	}
 	return tools.Result{Content: fmt.Sprintf(
-		"Connected to %s@%s as %q using %s. This host is registered for this Abhed "+
-			"process only and is not written to ~/.ssh/config. "+
+		"Connected to %s@%s as %q using %s. This host is registered for this session "+
+			"only and is not written to ~/.ssh/config. "+
 			"Run commands on it with the ssh tool.", a.User, a.Addr, a.Name, key)}
 }
 

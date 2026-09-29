@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // fakeAPIServer stands in for a cluster, recording what was asked of it.
@@ -196,6 +198,26 @@ func TestUnknownContextListsAvailable(t *testing.T) {
 	}
 }
 
+// stored stands in for the secrets store.
+func stored(vals map[string]string) func(string) (string, error) {
+	return func(name string) (string, error) {
+		v, ok := vals[name]
+		if !ok {
+			return "", fmt.Errorf("no secret named %s is stored", name)
+		}
+		return v, nil
+	}
+}
+
+func newSession(t *testing.T) *tools.Session {
+	t.Helper()
+	s, err := tools.NewSession(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 // A credential supplied at runtime must override the kubeconfig entirely. The
 // reported failure was a stale token in ~/.kube/config producing a 401 while
 // the user had a working token in hand and no way to hand it over.
@@ -220,10 +242,11 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 
 	// The kubeconfig holds a stale token, as in the real report.
 	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	sess := newSession(t)
 
 	// Before login: the stale token fails with a message naming the fix.
 	args, _ := json.Marshal(map[string]string{"resource": "nodes"})
-	res := GetTool{M: mgr}.Run(context.Background(), nil, args)
+	res := GetTool{M: mgr}.Run(context.Background(), sess, args)
 	if !res.IsError {
 		t.Fatal("a stale token was accepted")
 	}
@@ -231,9 +254,10 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 		t.Errorf("401 does not name the fix: %s", res.Content)
 	}
 
-	// Login with a working token.
-	loginArgs, _ := json.Marshal(map[string]string{"server": srv.URL, "token": "fresh-token"})
-	lres := LoginTool{M: mgr}.Run(context.Background(), nil, loginArgs)
+	// Login with a working token, named in the store.
+	login := LoginTool{M: mgr, Secret: stored(map[string]string{"OCP_TOKEN": "fresh-token"})}
+	loginArgs, _ := json.Marshal(map[string]string{"server": srv.URL, "token_secret": "OCP_TOKEN"})
+	lres := login.Run(context.Background(), sess, loginArgs)
 	if lres.IsError {
 		t.Fatalf("login failed: %s", lres.Content)
 	}
@@ -242,7 +266,7 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 	}
 
 	// After login: the same call succeeds, using the new credential.
-	res = GetTool{M: mgr}.Run(context.Background(), nil, args)
+	res = GetTool{M: mgr}.Run(context.Background(), sess, args)
 	if res.IsError {
 		t.Fatalf("still failing after login: %s", res.Content)
 	}
@@ -264,12 +288,13 @@ func TestLoginVerifiesBeforeStoring(t *testing.T) {
 	defer srv.Close()
 
 	mgr := NewManager(Config{})
-	args, _ := json.Marshal(map[string]string{"server": srv.URL, "token": "bad"})
-	res := LoginTool{M: mgr}.Run(context.Background(), nil, args)
+	sess := newSession(t)
+	args, _ := json.Marshal(map[string]string{"server": srv.URL, "token_secret": "BAD"})
+	res := LoginTool{M: mgr, Secret: stored(map[string]string{"BAD": "bad"})}.Run(context.Background(), sess, args)
 	if !res.IsError {
 		t.Fatal("a token that does not work was accepted")
 	}
-	if len(mgr.sessions) != 0 {
+	if mgr.logins(sess, false) != nil {
 		t.Error("a failing credential was stored anyway")
 	}
 }
@@ -284,13 +309,16 @@ func TestLoginRequiresApproval(t *testing.T) {
 
 func TestLoginValidatesArguments(t *testing.T) {
 	mgr := NewManager(Config{})
+	login := LoginTool{M: mgr, Secret: stored(map[string]string{"TOK": "y"})}
 	for _, a := range []map[string]string{
-		{"token": "x"},                      // no server
-		{"server": "https://x"},             // no token
-		{"server": "ftp://x", "token": "y"}, // wrong scheme
+		{"token_secret": "TOK"},                               // no server
+		{"server": "https://x"},                               // no secret
+		{"server": "ftp://x", "token_secret": "TOK"},          // wrong scheme
+		{"server": "https://x", "token_secret": "sha256~abc"}, // a token, not a name
+		{"server": "https://x", "token_secret": "MISSING"},    // not stored
 	} {
 		raw, _ := json.Marshal(a)
-		if res := (LoginTool{M: mgr}).Run(context.Background(), nil, raw); !res.IsError {
+		if res := login.Run(context.Background(), newSession(t), raw); !res.IsError {
 			t.Errorf("accepted invalid login args %v", a)
 		}
 	}

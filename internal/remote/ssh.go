@@ -53,6 +53,10 @@ type HostConfig struct {
 	InsecureSkipHostKeyCheck bool `json:"insecure_skip_host_key_check,omitempty"`
 
 	Timeout time.Duration `json:"-"`
+
+	// password is one ssh_connect read from the secrets store. Unexported so
+	// no config file can carry it.
+	password string
 }
 
 // Host is a connection to one machine, dialed lazily and reused across calls.
@@ -116,6 +120,10 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 			return nil, fmt.Errorf("host %s: parse %s: %w", h.cfg.Name, path, err)
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
+	}
+
+	if h.cfg.password != "" {
+		methods = append(methods, ssh.Password(h.cfg.password))
 	}
 
 	if h.cfg.PasswordEnv != "" {

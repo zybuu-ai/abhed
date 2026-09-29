@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // A real SSH server, so the transport, auth and host key verification are
@@ -310,51 +312,147 @@ func TestResolveKeyPathExplainsFailure(t *testing.T) {
 	}
 }
 
+// stored stands in for the secrets store.
+func stored(vals map[string]string) func(string) (string, error) {
+	return func(name string) (string, error) {
+		v, ok := vals[name]
+		if !ok {
+			return "", fmt.Errorf("no secret named %s is stored", name)
+		}
+		return v, nil
+	}
+}
+
+func newSession(t *testing.T) *tools.Session {
+	t.Helper()
+	s, err := tools.NewSession(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.CloseScoped)
+	return s
+}
+
 // ssh_connect must verify before registering: a host stored but unreachable
 // turns one clear failure into a confusing one on the next command.
 func TestConnectVerifiesBeforeRegistering(t *testing.T) {
 	reg, _ := NewRegistry(nil)
+	sess := newSession(t)
 	args, _ := json.Marshal(map[string]any{
 		"addr": "127.0.0.1:1", "user": "nobody", "accept_host_key": true})
-	res := ConnectTool{R: reg}.Run(context.Background(), nil, args)
+	res := ConnectTool{R: reg}.Run(context.Background(), sess, args)
 
 	if !res.IsError {
 		t.Fatal("registered a host it could not reach")
 	}
-	if reg.Len() != 0 {
+	if len(knownNames(reg, sessionHostsOf(sess, reg, false))) != 0 {
 		t.Error("an unreachable host was registered anyway")
 	}
 }
 
 func TestConnectRegistersWorkingHost(t *testing.T) {
-	srv := startSSHServer(t, "pw")
+	srv := startSSHServer(t, "pw-from-store")
 	defer srv.stop()
-	t.Setenv("TEST_SSH_PW", "pw")
 
 	reg, _ := NewRegistry(nil)
 	defer reg.Close()
+	sess := newSession(t)
 
 	host, port, _ := net.SplitHostPort(srv.addr)
 	args, _ := json.Marshal(map[string]any{
 		"addr": host + ":" + port, "user": "tester", "name": "vm1",
-		"password_env": "TEST_SSH_PW", "accept_host_key": true})
-	res := ConnectTool{R: reg}.Run(context.Background(), nil, args)
+		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw-from-store"})}
+	res := connect.Run(context.Background(), sess, args)
 
 	if res.IsError {
 		t.Fatalf("connect failed: %s", res.Content)
 	}
-	if reg.Len() != 1 {
-		t.Fatalf("host not registered: %v", reg.names())
-	}
 	if !strings.Contains(res.Content, "not written to ~/.ssh/config") {
 		t.Errorf("does not say where the credential lives: %s", res.Content)
+	}
+	if strings.Contains(res.Content, "pw-from-store") {
+		t.Errorf("the result carries the password: %s", res.Content)
 	}
 
 	// And the ssh tool can now use it.
 	runArgs, _ := json.Marshal(map[string]any{"host": "vm1", "command": "hostname"})
-	run := Tool{R: reg}.Run(context.Background(), nil, runArgs)
+	run := Tool{R: reg}.Run(context.Background(), sess, runArgs)
 	if run.IsError {
 		t.Fatalf("registered host is not usable: %s", run.Content)
+	}
+}
+
+// One registry serves every session on a server. A host one session connected
+// must not be reachable, or even listed, from another.
+func TestConnectedHostIsScopedToTheSession(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	reg, _ := NewRegistry(nil)
+	defer reg.Close()
+	a, b := newSession(t), newSession(t)
+
+	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "vm1",
+		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	if res := connect.Run(context.Background(), a, args); res.IsError {
+		t.Fatalf("session A could not connect: %s", res.Content)
+	}
+
+	runArgs, _ := json.Marshal(map[string]any{"host": "vm1", "command": "hostname"})
+	if res := (Tool{R: reg}).Run(context.Background(), a, runArgs); res.IsError {
+		t.Fatalf("session A cannot use its own host: %s", res.Content)
+	}
+	for name, sess := range map[string]*tools.Session{"session B": b, "no session": nil} {
+		res := Tool{R: reg}.Run(context.Background(), sess, runArgs)
+		if !res.IsError || strings.Contains(res.Content, "abhed-test-vm") {
+			t.Fatalf("%s ran a command on session A's host: %s", name, res.Content)
+		}
+		if strings.Contains(res.Content, "vm1") && !strings.Contains(res.Content, `"vm1"`) {
+			t.Fatalf("%s is told about session A's host: %s", name, res.Content)
+		}
+	}
+}
+
+// With no session the host would be kept where every caller finds it, so
+// ssh_connect refuses; nor may a session put its machine behind an operator's name.
+func TestConnectRefusesWhatItCannotIsolate(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	reg, _ := NewRegistry([]HostConfig{{Name: "prod", Addr: "10.0.0.1", User: "ops"}})
+	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+
+	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "vm1",
+		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+	if res := connect.Run(context.Background(), nil, args); !res.IsError {
+		t.Fatalf("connected with no session to hold the host: %s", res.Content)
+	}
+	shadow, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "prod",
+		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+	if res := connect.Run(context.Background(), newSession(t), shadow); !res.IsError {
+		t.Fatalf("a session replaced the operator's host: %s", res.Content)
+	}
+}
+
+// A password is named, never sent: the old password_env argument, which read
+// any variable in Abhed's own environment, is gone, and a value put where the
+// name belongs is withheld before anything records it.
+func TestConnectTakesNoPasswordArgument(t *testing.T) {
+	schema := string(ConnectTool{}.Schema())
+	if strings.Contains(schema, "password_env") || strings.Contains(schema, `"password"`) {
+		t.Fatalf("ssh_connect still takes a password or an environment variable: %s", schema)
+	}
+	canon, _, err := tools.CanonicalArgs(ConnectTool{}, json.RawMessage(
+		`{"addr":"h","password":"hunter2-pasted","password_env":"OPENAI_API_KEY"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(canon), "hunter2") || strings.Contains(string(canon), "OPENAI") {
+		t.Fatalf("kept: %s", canon)
+	}
+	got := tools.WithholdSecretValues(ConnectTool{}, json.RawMessage(`{"addr":"h","password_secret":"hunter2 pasted"}`))
+	if strings.Contains(string(got), "hunter2") {
+		t.Fatalf("a password in password_secret was kept: %s", got)
 	}
 }
 
