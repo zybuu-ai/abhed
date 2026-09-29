@@ -57,6 +57,22 @@ type WorkspaceTrust struct {
 	Applied []string `json:"applied,omitempty"`
 	// Ignored are the settings an untrusted file made that were not applied.
 	Ignored []IgnoredKey `json:"ignored,omitempty"`
+
+	// Agents are the workspace's definition files (.abhed/agents/*.md),
+	// relative to it, that the decision below covers.
+	Agents []string `json:"agents,omitempty"`
+	// AgentsSHA256 is one hash over every definition's path and content.
+	AgentsSHA256 string `json:"agents_sha256,omitempty"`
+	// AgentsTrusted is whether the definitions load. It is decided apart
+	// from the configuration file, against AgentsSHA256.
+	AgentsTrusted bool `json:"agents_trusted,omitempty"`
+	// AgentsReason is as Reason, for the definitions; none when there are none.
+	AgentsReason string `json:"agents_reason,omitempty"`
+	// AgentsProblems are definition files that were refused before any
+	// decision: a link, a second name, too large. They never load.
+	AgentsProblems []string `json:"agents_problems,omitempty"`
+
+	agentFiles []AgentFile
 }
 
 // IgnoredKey is one setting of an untrusted file, with its value as written
@@ -102,6 +118,10 @@ func (w WorkspaceTrust) DeploymentError(command string) error {
 // NeedsDecision reports whether the person should be asked: an untrusted file
 // that would change something, and no answer yet for this content.
 func (w WorkspaceTrust) NeedsDecision() bool {
+	return w.configNeedsDecision() || w.agentsNeedDecision()
+}
+
+func (w WorkspaceTrust) configNeedsDecision() bool {
 	return w.File != "" && !w.Trusted && len(w.Ignored) > 0 &&
 		(w.Reason == "new" || w.Reason == "changed")
 }
@@ -118,19 +138,30 @@ func (w WorkspaceTrust) IgnoredKeys() []string {
 // Warning is the one-line notice for an untrusted file that was partly
 // ignored, or "" when there is nothing to say.
 func (w WorkspaceTrust) Warning() string {
-	if w.Trusted || len(w.Ignored) == 0 {
+	var ignored []string
+	what, reason, tighten := Printable(w.File), w.Reason, ""
+	if !w.Trusted && len(w.Ignored) > 0 {
+		ignored = w.IgnoredKeys()
+		tighten = " Only its deny, ask and other tightening settings apply."
+	}
+	if agents := w.IgnoredAgents(); len(agents) > 0 {
+		ignored = append(ignored, agents...)
+		if tighten == "" {
+			what, reason = Printable(filepath.Join(w.Workspace, filepath.FromSlash(WorkspaceAgentsDir))), w.AgentsReason
+		}
+	}
+	if len(ignored) == 0 {
 		return ""
 	}
 	why := "is not trusted"
-	switch w.Reason {
+	switch reason {
 	case "changed":
 		why = "changed since it was trusted"
 	case "declined":
 		why = "was not trusted when you were asked"
 	}
-	return fmt.Sprintf("the workspace configuration %s %s; ignored %s. Only its deny, ask and "+
-		"other tightening settings apply. Review it with `abhed trust`",
-		Printable(w.File), why, strings.Join(w.IgnoredKeys(), ", "))
+	return fmt.Sprintf("the workspace configuration %s %s; ignored %s.%s Review it with `abhed trust`",
+		what, why, strings.Join(ignored, ", "), tighten)
 }
 
 func warnUntrusted(w WorkspaceTrust) {
@@ -163,6 +194,14 @@ func hashOf(data []byte) string {
 // what tightens when not. userFile is the user config already merged.
 func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (WorkspaceTrust, error) {
 	st := WorkspaceTrust{Workspace: canonical(workspace), Reason: "none"}
+	// The definitions are decided on their own content, whether or not
+	// there is a configuration file beside them.
+	readWorkspaceAgents(workspace, &st)
+	if isHome(workspace) {
+		st.AgentsTrusted, st.AgentsReason = len(st.Agents) > 0, "home"
+	} else {
+		st.AgentsTrusted, st.AgentsReason = decideAgents(st, o)
+	}
 	path := filepath.Join(workspace, ".abhed", "config.json")
 	if n, err := nlink.Linked(path); err != nil {
 		return st, fmt.Errorf("read %s: %w", path, err)
@@ -207,7 +246,8 @@ func decide(st WorkspaceTrust, o LoadOptions) (bool, string) {
 		return false, "new"
 	}
 	switch {
-	case !ok:
+	case !ok || e.SHA256 == "":
+		// A record made for agent definitions alone decided nothing about the file.
 		return false, "new"
 	case e.SHA256 != st.SHA256:
 		return false, "changed"
@@ -446,8 +486,14 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 		}
 	}
 	st, err := mergeWorkspace(&cfg, workspace, userFile, LoadOptions{Trust: TrustRefused})
-	if err != nil || st.File == "" || st.Reason == "home" {
+	if err != nil {
 		return st, err
+	}
+	if st.AgentsReason != "home" {
+		st.AgentsTrusted, st.AgentsReason = decideAgents(st, LoadOptions{})
+	}
+	if st.File == "" || st.Reason == "home" {
+		return st, nil
 	}
 	st.Trusted, st.Reason = decide(st, LoadOptions{})
 	return st, nil

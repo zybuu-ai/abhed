@@ -64,6 +64,44 @@ exactly that content. Abhed's own settings page never writes this file, so no
 other file is trusted automatically. When the workspace is the home directory,
 the file is the user's own and is trusted as before.
 
+## Agent definitions
+
+A workspace can also carry subagent definitions in `.abhed/agents/*.md`
+([Agent definitions](../guide/17-agent-definitions.md)). A definition is more
+than instructions: it can choose a model, and so a provider that receives the
+code, and it sets a role's turn cap and tools. So the definitions load only
+under a trust decision too, bound to their exact content.
+
+- **One hash covers them all.** `agents_sha256` is the SHA-256 over each
+  file's path and the SHA-256 of its bytes, sorted by path. Editing, adding or
+  removing a definition changes it, and the definitions are asked about again
+  with the reason `changed`.
+- **They are decided apart from `config.json`.** A person can trust a
+  configuration file and decline the definitions beside it. The stored record
+  keeps `agents_sha256` and, when the two answers differ, `agents_decision`.
+  Declining new definitions at the prompt keeps a file already trusted.
+- **Old records re-prompt nobody without definitions.** A record written
+  before definitions were covered has no `agents_sha256`. For a workspace with
+  no `.abhed/agents` nothing changes; for one with definitions, those alone are
+  asked about (`reason` `new`), and the trusted file stays trusted.
+- **A workspace with definitions and no `config.json`** still gets a decision.
+- **What loads is what was hashed.** The files are read once, as regular files
+  with one name each and at most 64 KiB, at most 64 of them. A link, a second
+  hard link, a linked `.abhed` or `agents` directory, or a larger file is
+  refused, named, and never loaded. The loader takes the bytes that were
+  hashed, not a second read.
+- **Untrusted definitions are listed as ignored** (`agents/<name>`) in the
+  warning, and `abhed trust` and `abhed doctor` name them. The prompt and
+  `abhed trust` show each definition's name, model and tools.
+- `-trust-workspace` and `ABHED_TRUST_WORKSPACE` trust them for one run, as
+  they do the file; a caller's refusal refuses them. The home directory's
+  `.abhed/agents` is the user's own.
+
+The report (`WorkspaceTrust`, on ACP, rpc and the SDK) gains `agents`,
+`agents_sha256`, `agents_trusted`, `agents_reason` and `agents_problems`.
+`agents_reason` takes the values in the table below, and `none` when there are
+no definitions.
+
 ## Untrusted: what applies
 
 Each setting in the file resolves to a rule, found by its dotted path or the
@@ -202,7 +240,7 @@ line per ignored setting.
 | Command | What it does |
 |---|---|
 | `abhed trust [show] [dir]` | shows the file, its hash, the decision, and what it sets beyond tightening |
-| `abhed trust grant [-sha256 H] [dir]` | trusts the current content; with `-sha256`, only if it is still the content with that hash, as `show` or ACP reported it |
+| `abhed trust grant [-sha256 H] [-agents-sha256 H] [dir]` | trusts the current content, the file and the agent definitions; with `-sha256` or `-agents-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
 | `abhed trust revoke [dir]` | forgets the decision |
 | `abhed trust list` | lists every stored decision |
 

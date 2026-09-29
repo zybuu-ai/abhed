@@ -121,3 +121,24 @@ func TestCLIPromptDeclineIsRemembered(t *testing.T) {
 		t.Fatalf("asked again about content already declined:\n%s", again.text())
 	}
 }
+
+// Declining new agent definitions keeps the file the person already trusted.
+func TestCLIPromptDeclineAgentsKeepsTrustedFile(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"permissions":{"deny":["bash(curl*)"],"mode":"plan"}}`)
+	st, _ := config.InspectWorkspace(ws)
+	if err := config.GrantTrust(ws, st.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	workspaceAgent(t, ws, "reviewer.md", "---\ndescription: reviews\nmodel: remote\n---\nReview.")
+	r := startOnPty(t, []string{"-C", ws})
+	r.waitFor("Trust these definitions?", 1)
+	if !strings.Contains(r.text(), "reviewer  model remote") {
+		t.Fatalf("the prompt does not show the definition:\n%s", r.text())
+	}
+	r.send("d\n")
+	r.waitFor("Type a task", 1)
+	st, _ = config.InspectWorkspace(ws)
+	if !st.Trusted || st.Reason != "stored" || st.AgentsTrusted || st.AgentsReason != "declined" {
+		t.Fatalf("declining the definitions: %+v", st)
+	}
+}

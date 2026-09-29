@@ -21,9 +21,17 @@ const (
 
 // TrustRecord is one recorded decision about a workspace's configuration.
 type TrustRecord struct {
-	SHA256   string    `json:"sha256"`
-	Decision string    `json:"decision"`
-	At       time.Time `json:"at"`
+	SHA256   string `json:"sha256"`
+	Decision string `json:"decision"`
+	// AgentsSHA256 is the hash of the agent definitions the decision covers.
+	// A record from before definitions were covered has none, and decides
+	// nothing about them.
+	AgentsSHA256 string `json:"agents_sha256,omitempty"`
+	// AgentsDecision, when set, is the decision about the definitions where it
+	// differs from Decision: a person may decline new definitions and keep a
+	// configuration file they trusted.
+	AgentsDecision string    `json:"agents_decision,omitempty"`
+	At             time.Time `json:"at"`
 }
 
 type trustFile struct {
@@ -169,24 +177,45 @@ func isParseError(err error) bool {
 
 // GrantTrust records that the person trusts the workspace's configuration
 // with this content. sha256 is the hash of what they reviewed, not a re-read.
+// It decides nothing about agent definitions; GrantReviewed covers both.
 func GrantTrust(workspace, sha256 string) error {
-	return record(workspace, sha256, decisionTrusted)
+	return RecordDecision(workspace, Reviewed{SHA256: sha256}, true, false)
 }
 
 // DeclineTrust records that the person chose not to trust this content, so
 // they are not asked again until it changes.
 func DeclineTrust(workspace, sha256 string) error {
-	return record(workspace, sha256, decisionDeclined)
+	return RecordDecision(workspace, Reviewed{SHA256: sha256}, false, false)
 }
 
-func record(workspace, sha256, decision string) error {
-	if sha256 == "" {
-		return fmt.Errorf("no configuration file to decide on in %s", workspace)
+// GrantReviewed trusts the configuration file and the agent definitions with
+// exactly the content reviewed.
+func GrantReviewed(workspace string, r Reviewed) error {
+	return RecordDecision(workspace, r, true, true)
+}
+
+// RecordDecision records one answer about the reviewed content: whether the
+// configuration file is trusted, and whether the agent definitions are.
+func RecordDecision(workspace string, r Reviewed, configTrusted, agentsTrusted bool) error {
+	if r.SHA256 == "" && r.AgentsSHA256 == "" {
+		return fmt.Errorf("no configuration file or agent definitions to decide on in %s", workspace)
+	}
+	rec := TrustRecord{SHA256: r.SHA256, Decision: decisionOf(configTrusted), At: time.Now().UTC()}
+	if r.AgentsSHA256 != "" {
+		rec.AgentsSHA256 = r.AgentsSHA256
+		if agentsTrusted != configTrusted {
+			rec.AgentsDecision = decisionOf(agentsTrusted)
+		}
 	}
 	key := canonical(workspace)
-	return updateTrust(func(m map[string]TrustRecord) {
-		m[key] = TrustRecord{SHA256: sha256, Decision: decision, At: time.Now().UTC()}
-	})
+	return updateTrust(func(m map[string]TrustRecord) { m[key] = rec })
+}
+
+func decisionOf(trusted bool) string {
+	if trusted {
+		return decisionTrusted
+	}
+	return decisionDeclined
 }
 
 // RevokeTrust forgets any decision about the workspace and reports whether
