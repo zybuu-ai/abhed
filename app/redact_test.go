@@ -54,9 +54,9 @@ func leakingModel(t *testing.T) string {
 
 // credsWorkspace is a workspace holding creds.txt and a config for model.
 func credsWorkspace(t *testing.T, cfg string) string {
+	t.Helper()
 	// The model lives in the workspace file, so the test trusts it.
 	t.Setenv(config.TrustEnv, "1")
-	t.Helper()
 	ws, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
