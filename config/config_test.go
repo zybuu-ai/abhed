@@ -313,3 +313,30 @@ func TestOfferedListsOnlyConfiguredProviders(t *testing.T) {
 		}
 	}
 }
+
+// k8s_login finds a cluster by name and sends it a token, so two clusters it
+// cannot tell apart, an empty name, or a server that is not https:// are
+// refused when the config loads rather than at the first login.
+func TestK8sClustersAreValidatedAtLoad(t *testing.T) {
+	good := K8sClusterConfig{Name: "prod", Server: "https://api.prod.example:6443"}
+	for name, clusters := range map[string][]K8sClusterConfig{
+		"duplicate":   {good, {Name: "Prod", Server: "https://other.example"}},
+		"empty name":  {{Name: "", Server: "https://x.example"}},
+		"spaced name": {{Name: " prod", Server: "https://x.example"}},
+		"http":        {{Name: "a", Server: "http://x.example"}},
+		"no host":     {{Name: "a", Server: "https://"}},
+		"userinfo":    {{Name: "a", Server: "https://u:p@x.example"}},
+		"not a url":   {{Name: "a", Server: "x.example"}},
+	} {
+		c := Default()
+		c.K8s.Clusters = clusters
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted %v", name, clusters)
+		}
+	}
+	c := Default()
+	c.K8s.Clusters = []K8sClusterConfig{good, {Name: "lab", Server: "https://lab.example"}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("refused valid clusters: %v", err)
+	}
+}

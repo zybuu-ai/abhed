@@ -376,6 +376,26 @@ type K8sConfig struct {
 	CAFile string `json:"ca_file,omitempty"`
 }
 
+// validateClusters refuses clusters k8s_login could not tell apart or reach
+// safely, at load rather than at the first login.
+func (k K8sConfig) validateClusters() error {
+	seen := map[string]string{}
+	for i, c := range k.Clusters {
+		if strings.TrimSpace(c.Name) == "" || c.Name != strings.TrimSpace(c.Name) {
+			return fmt.Errorf("k8s.clusters[%d]: name is required, without surrounding spaces", i)
+		}
+		if prev, dup := seen[strings.ToLower(c.Name)]; dup {
+			return fmt.Errorf("k8s.clusters: %q and %q name the same cluster", prev, c.Name)
+		}
+		seen[strings.ToLower(c.Name)] = c.Name
+		u, err := url.Parse(c.Server)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return fmt.Errorf("k8s.clusters %q: server must be an https:// URL with a host, got %q", c.Name, c.Server)
+		}
+	}
+	return nil
+}
+
 // K8sClusterConfig declares one cluster k8s_login may reach.
 type K8sClusterConfig struct {
 	Name   string `json:"name"`
@@ -789,6 +809,9 @@ func (c Config) Validate() error {
 	}
 	if u := c.Auth.ProxyLogoutURL; u != "" && !validLogoutURL(u) {
 		return fmt.Errorf("auth.proxy_logout_url %q must be an http(s) URL or a path on this host", u)
+	}
+	if err := c.K8s.validateClusters(); err != nil {
+		return err
 	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":
