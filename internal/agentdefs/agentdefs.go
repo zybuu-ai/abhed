@@ -89,6 +89,10 @@ func Load(o Options) ([]*agent.Definition, []error) {
 
 	byName := map[string]*agent.Definition{}
 	seen := map[string]bool{} // files already loaded, so a directory named twice loads once
+	// Every name a managed file claims is the organisation's, whether or not
+	// that file loads here: a managed role that cannot run must not be
+	// replaced by another file under its name.
+	managedClaim := map[string]string{}
 	var out []*agent.Definition
 	for _, lv := range levels {
 		for _, f := range lv.files {
@@ -97,6 +101,15 @@ func Load(o Options) ([]*agent.Definition, []error) {
 				continue
 			}
 			seen[key] = true
+			if lv.source == agent.SourceManaged {
+				managedClaim[claimedName(f.path, f.data)] = f.path
+			} else if owner, claimed := managedClaim[claimedName(f.path, f.data)]; claimed {
+				if _, loaded := byName[claimedName(f.path, f.data)]; !loaded {
+					errs = append(errs, fmt.Errorf("agent definition %s refused: the name %q belongs to the organisation's %s, which did not load",
+						config.Printable(f.path), claimedName(f.path, f.data), config.Printable(owner)))
+					continue
+				}
+			}
 			def, warns, err := Parse(f.path, f.data, lv.source, o.Models)
 			for _, w := range warns {
 				errs = append(errs, fmt.Errorf("agent definition %s: %s", config.Printable(f.path), w))
@@ -121,6 +134,19 @@ func Load(o Options) ([]*agent.Definition, []error) {
 type file struct {
 	path string
 	data []byte
+}
+
+// claimedName is the name a file would define: its name key when the header
+// reads, its file name otherwise. A managed file claims it even when refused.
+func claimedName(path string, data []byte) string {
+	if doc, err := frontmatter.Parse(string(data)); err == nil {
+		for _, f := range doc.Top() {
+			if keyOf(f.Key) == "name" && strings.TrimSpace(f.Value) != "" {
+				return strings.TrimSpace(f.Value)
+			}
+		}
+	}
+	return strings.TrimSuffix(filepath.Base(path), ".md")
 }
 
 // readDir reads a directory's *.md files, sorted. A missing directory is not

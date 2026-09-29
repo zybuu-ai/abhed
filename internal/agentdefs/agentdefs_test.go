@@ -209,6 +209,27 @@ func TestManagedAgentWins(t *testing.T) {
 	}
 }
 
+// A managed file that does not load on this host still owns its name: no
+// workspace or operator file takes the role in its place.
+func TestRefusedManagedNameStaysReserved(t *testing.T) {
+	managed, ws, op := t.TempDir(), t.TempDir(), t.TempDir()
+	writeDef(t, managed, "sec.md", def("sec", "model: corp\n")) // corp is not offered here
+	writeDef(t, managed, "stem.md", "no header at all")           // claims its file name
+	wsPath := writeDef(t, ws, "sec.md", def("sec", ""))
+	wsData, _ := os.ReadFile(wsPath)
+	writeDef(t, op, "sec.md", def("sec", ""))
+	writeDef(t, op, "stem.md", def("stem", ""))
+	writeDef(t, op, "free.md", def("free", ""))
+	defs, errs := Load(Options{ManagedDir: managed, Dirs: []string{op}, Models: []string{"local"},
+		Workspace: []config.AgentFile{{Path: wsPath, Data: wsData}}})
+	if len(defs) != 1 || defs[0].Name != "free" {
+		t.Fatalf("a lower level took a managed name: %+v", defs)
+	}
+	if msg := errText(errs); strings.Count(msg, "belongs to the organisation's") != 3 {
+		t.Fatalf("the refusals do not say why: %s", msg)
+	}
+}
+
 // An operator's definition that is a link is refused, as a workspace's is.
 func TestOperatorLinkRefused(t *testing.T) {
 	dir, other := t.TempDir(), t.TempDir()

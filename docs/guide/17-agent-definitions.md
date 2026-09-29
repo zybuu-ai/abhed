@@ -120,7 +120,9 @@ offered, so a single-model deployment pays nothing for it in the prompt.
 Highest first:
 
 1. **Managed:** `/etc/abhed/agents/*.md`. Always loaded, and no other file can
-   take one of these names.
+   take one of these names, even when the managed file does not load on this
+   host (for example, it names a model that is not configured here): the role
+   is then unavailable, never replaced.
 2. **The workspace:** `.abhed/agents/*.md`, only when you trust that exact
    content (below).
 3. **Yours:** `agents.dirs`, by default `~/.abhed/agents`. With several
