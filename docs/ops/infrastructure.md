@@ -38,16 +38,39 @@ production is not recoverable the way a file edit is.
 ### Logging in during a conversation
 
 A cluster token expires, and a stale one in a kubeconfig produces a 401 that
-reads like a permissions problem. When that happens, paste the login:
+reads like a permissions problem. When that happens, store the new token on
+the machine Abhed runs on, allow it, and tell the agent its name:
 
 ```
-oc login --token=sha256~... --server=https://api.cluster.example.com:6443
+abhed secret set OCP_TOKEN         # paste the sha256~... token at the prompt
 ```
 
-The agent calls `k8s_login`, which asks for approval once and then holds the
-credential **in memory for that Abhed process only**. It is never written to
-your kubeconfig, the event store, or a log — a token pasted into a chat should
-not become a durable artifact of that chat.
+```json
+"allow": ["secret(OCP_TOKEN)"]
+```
+
+```
+log in to https://api.cluster.example.com:6443 with OCP_TOKEN
+```
+
+The agent calls `k8s_login` with the server and `token_secret: "OCP_TOKEN"`.
+It asks for approval, reads the token from the store, checks it against the
+cluster, and holds it **for that session only**. It is never written to your
+kubeconfig.
+
+The token is not an argument, and should not be pasted into the chat. An
+argument is judged, shown for approval, recorded, and sent back to the model
+on every turn; the record is append-only, so a token that reached it could
+not be taken out. A `token` argument sent anyway is dropped, and a value in
+`token_secret` that is not a secret's name is recorded as
+`[withheld: not a secret name]`.
+
+A login belongs to the session that made it, and to that session's
+subagents. Another session on the same server, another user's included,
+keeps using the operator's kubeconfig, and a new session, or the same one
+after a server restart, logs in again. The secret itself is the operator's:
+on `abhed serve`, users ask the operator to store one, and a
+`secret(NAME)` rule decides who may use it.
 
 **Do not expect `oc login` through bash to work.** Three separate things stop
 it, and the combination produced a confusing failure in practice:
@@ -102,8 +125,16 @@ connect to 52.116.120.159, key is at ~/Downloads/id_rsa
 ```
 
 the agent calls `ssh_connect`, which asks for approval once, verifies the
-connection works, and registers the host for the life of the process. Nothing
-is written to `~/.ssh/config`.
+connection works, and registers the host **for that session only**. Nothing
+is written to `~/.ssh/config`. Another session on the same server cannot run
+on it or see its name, and a name an `ssh.hosts` entry uses cannot be taken.
+
+For a host with a password rather than a key, store the password with
+`abhed secret set VM_PASSWORD`, allow `secret(VM_PASSWORD)`, and name it:
+the agent passes `password_secret: "VM_PASSWORD"`, never the password.
+`password_env` is for `ssh.hosts` only: from the model, it could name any
+variable in Abhed's environment, provider keys included, and send it to a
+host the model chose.
 
 `ssh.enabled` is all that is required — the `hosts` list is optional. Requiring
 a pre-declared host to reach the tool that declares hosts was a real bug: a user
@@ -127,8 +158,8 @@ SSH: the command runs with the remote account's full authority, outside any
 scoping, with no undo. Calling `cat` safe there would be judging the string
 rather than the consequence.
 
-The agent can only name a host from this list. It cannot introduce one, so the
-blast radius is the operator's decision.
+The agent can name a host from this list, or one the user gave `ssh_connect`
+in the same session with approval. It cannot introduce one on its own.
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment

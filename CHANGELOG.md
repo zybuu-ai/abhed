@@ -130,6 +130,34 @@ All notable changes to Abhed are recorded here. The format follows
   - `policy.Evaluate` also denies ambiguous arguments at step `args` for
     callers outside the loop, such as the workbench, and reads a lone key in
     another case as the tool would.
+- A cluster login or SSH host added during a conversation belonged to the
+  whole process, not the session. On `abhed serve`, where every user's
+  sessions share one process, one user's `k8s_login` token became the
+  credential every other user's `k8s_get` and `k8s_apply` used, and a host
+  one session added with `ssh_connect` could be run on from every session,
+  or replace an operator's host of the same name for all of them. The token
+  was also an argument to `k8s_login`, so it was kept in the record's
+  `action.requested`, and from there in exports, the event stream, the
+  console, OTLP and HawkEYE, shown in the approval prompt, and sent back to
+  the model on every turn. And `ssh_connect`'s `password_env` read any
+  variable in Abhed's own environment, provider keys included, as the
+  password for a host the model named. Affected: every release, 0.1.0
+  through 1.2.1.
+  - A login and a connected host now belong to the session that made them,
+    its subagents included, and go when the session is deleted. Both tools
+    refuse when there is no session to hold them.
+  - `k8s_login` takes `token_secret`, the name of a token stored with
+    `abhed secret set`, instead of `token`; `ssh_connect` takes
+    `password_secret` instead of `password_env`. Each name needs its own
+    `secret(NAME)` allow rule, as a `bash` secret does. The model never
+    holds the value, so nothing records it.
+  - A `token` or `password` sent anyway is dropped before policy reads the
+    call, and a value where a secret's name belongs is recorded as
+    `[withheld: not a secret name]`. Arguments to either tool refused as
+    malformed are not kept in `raw_args`.
+  - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses.
+  - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
+    included, are the operator's configuration and work as before.
 
 ### Upgrading
 
@@ -227,6 +255,19 @@ All notable changes to Abhed are recorded here. The format follows
   `dropped_args`. An MCP or extension tool whose schema sets
   `additionalProperties: false` now has undeclared keys refused.
 - `action.requested` gains `raw_args` and `dropped_args`.
+- `k8s_login` no longer accepts a token, and `ssh_connect` no longer accepts
+  `password_env`. Store the credential once on the machine Abhed runs on,
+  add a rule for it, and give the agent its name:
+  ```
+  abhed secret set OCP_TOKEN
+  "allow": ["secret(OCP_TOKEN)"]
+  ```
+  A token pasted into a chat is still in that message's record; store it
+  instead. On `abhed serve`, secrets are the operator's, so users ask the
+  operator to store one; a login made with it holds for that user's session
+  only. Log in again in each new session, and after a server restart.
+- A host added with `ssh_connect` is usable only in the session that added
+  it, and a name used in `ssh.hosts` cannot be reused for one.
 
 ### Fixed
 

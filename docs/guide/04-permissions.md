@@ -387,7 +387,9 @@ The model sees the **names**, and asks for one on a single command:
 ```
 
 That command, and only that command, runs with `GITHUB_TOKEN` in its
-environment. Whether it may is decided by a rule:
+environment. `k8s_login` names a token as `token_secret` and `ssh_connect` a
+password as `password_secret`, and use it for that session's login only.
+Whether any of them may is decided by a rule:
 
 ```json
 "allow": ["secret(GITHUB_TOKEN)"],
