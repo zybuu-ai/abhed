@@ -204,7 +204,7 @@ type Loop struct {
 	asksOnce sync.Once
 	// stepRun keeps a mutating pipeline step apart from the loop's other steps.
 	stepRun sync.RWMutex
-	depth    int // how deep this loop is among subagents; 0 for a top-level loop
+	depth   int // how deep this loop is among subagents; 0 for a top-level loop
 
 	// dropEffort is set once a turn has spent its whole output budget on
 	// reasoning without acting; later calls ask for low effort, where the
