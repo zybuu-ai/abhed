@@ -77,8 +77,12 @@ A definition can make a subagent do less than its parent, never more:
 
 A key Abhed does not honour and that would concern authority refuses the whole
 definition, with a warning: `hooks`, `mcpServers`, `permissions`, any key
-naming `allow` or `deny` other than `disallowed_tools`, and sandbox or network
-settings. An author who wrote one expected a restriction, and must not get a
+naming `allow` or `deny` other than `disallowed_tools`, sandbox or network
+settings, and any other key that reads like one of the honoured ones (naming a
+tool, a mode, a model, turns or permission, such as `denied_tools`). A key is
+the same key quoted or not, and one nested under another key is checked too:
+`settings:` holding `disallowedTools` refuses the definition rather than
+passing unread. An author who wrote one expected a restriction, and must not get a
 looser agent without being told. Cosmetic keys such as `color` are ignored
 with a warning, and so is any other key Abhed does not know.
 

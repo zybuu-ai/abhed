@@ -95,11 +95,36 @@ func TestWideningKeyRefusesDefinition(t *testing.T) {
 		"allowedTools: [bash]\n",
 		"permissions:\n  allow: [bash]\n",
 		"sandbox: none\n",
+		// Lookalikes of honoured keys, which a reader would take as restrictions.
+		"denied_tools: [bash]\n",
+		"blocked_tools: bash\n",
+		"permission: plan\n",
+		"max_turn: 3\n",
+		"mode: plan\n",
+		// Nested under a key that is not ours.
+		"settings:\n  disallowedTools: bash\n",
+		"settings:\n  tools: read\n",
 	} {
 		_, _, err := Parse("x.md", []byte(def("x", extra)), agent.SourceOperator, nil)
 		if err == nil {
 			t.Fatalf("%q loaded", extra)
 		}
+	}
+}
+
+// A quoted key is the key: a quoted restriction binds as an unquoted one does.
+func TestQuotedKeysBind(t *testing.T) {
+	d, _, err := Parse("x.md", []byte("---\n\"name\": x\n'description': d\n\"tools\": [read]\n\"permissionMode\": plan\n\"max_turns\": 5\n\"disallowed_tools\": [grep]\n---\nbody\n"),
+		agent.SourceOperator, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(d.Tools, []string{"read"}) || d.PermissionMode != "plan" || d.MaxTurns != 5 ||
+		!reflect.DeepEqual(d.DisallowedTools, []string{"grep"}) || d.Name != "x" || d.Description != "d" {
+		t.Fatalf("quoted keys were not honoured: %+v", d)
+	}
+	if _, _, err := Parse("x.md", []byte(def("x", "\"hooks\": x\n")), agent.SourceOperator, nil); err == nil {
+		t.Fatal("a quoted authority key loaded")
 	}
 }
 

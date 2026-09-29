@@ -169,9 +169,19 @@ func expandHome(path string) string {
 
 // keyOf folds the spellings of one key: permissionMode, permission_mode and
 // permission-mode are the same key.
+// A quoted key is the same key: "tools" and tools must read alike, or a
+// quoted restriction would be ignored.
 func keyOf(k string) string {
-	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(strings.TrimSpace(k)))
+	k = strings.TrimSpace(k)
+	if len(k) >= 2 && (k[0] == '"' && k[len(k)-1] == '"' || k[0] == '\'' && k[len(k)-1] == '\'') {
+		k = strings.TrimSpace(k[1 : len(k)-1])
+	}
+	return strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(k))
 }
+
+// honoured are the keys a definition may set, folded.
+var honoured = map[string]bool{"name": true, "description": true, "tools": true, "disallowedtools": true,
+	"model": true, "maxturns": true, "isolation": true, "permissionmode": true}
 
 // cosmetic keys change nothing Abhed enforces, so they are ignored with a warning.
 var cosmetic = map[string]bool{"color": true, "colour": true, "icon": true, "emoji": true}
@@ -193,6 +203,16 @@ func refusedKey(k string) string {
 	case strings.Contains(k, "sandbox"), strings.Contains(k, "network"), k == "env", strings.Contains(k, "readonly"):
 		return "the sandbox is configured by the operator, not by a definition"
 	}
+	// A key that is not one of ours but reads like one was probably meant as
+	// one: denied_tools, permission, max_turn. Ignoring it could leave a
+	// restriction out, so it refuses.
+	if !honoured[k] {
+		for _, like := range []string{"tool", "mode", "model", "turn", "permission"} {
+			if strings.Contains(k, like) {
+				return "it reads like a restriction, and only tools, disallowed_tools, model, max_turns and permission_mode are honoured"
+			}
+		}
+	}
 	return ""
 }
 
@@ -209,6 +229,20 @@ func Parse(path string, data []byte, source string, models []string) (*agent.Def
 	sum := sha256.Sum256(data)
 	def := &agent.Definition{Source: source, Path: path, SHA256: hex.EncodeToString(sum[:])}
 	var warns []string
+	// A key nested under another is checked as a top-level one is: a
+	// restriction inside a settings: block must not pass as ignored.
+	for _, f := range doc.Fields {
+		if !f.Nested {
+			continue
+		}
+		why := refusedKey(keyOf(f.Key))
+		if honoured[keyOf(f.Key)] {
+			why = "it is honoured only at the top level"
+		}
+		if why != "" {
+			return nil, warns, fmt.Errorf("nested key %q is not honoured: %s. A definition that expected it would run looser than its author meant", config.Printable(f.Key), why)
+		}
+	}
 	set := map[string]bool{}
 	for _, f := range doc.Top() {
 		k := keyOf(f.Key)
@@ -217,7 +251,7 @@ func Parse(path string, data []byte, source string, models []string) (*agent.Def
 		}
 		set[k] = true
 		if why := refusedKey(k); why != "" {
-			return nil, warns, fmt.Errorf("%q is not honoured: %s. A definition that expected it would run looser than its author meant", f.Key, why)
+			return nil, warns, fmt.Errorf("%q is not honoured: %s. A definition that expected it would run looser than its author meant", config.Printable(f.Key), why)
 		}
 		switch k {
 		case "name", "description", "model", "maxturns", "isolation", "permissionmode":
