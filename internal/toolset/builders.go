@@ -126,11 +126,11 @@ func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 		}
 		p, err := cfg.ProviderNamed(name)
 		if err != nil {
-			return nil, fmt.Errorf("%v; available: %s", err, avail)
+			return nil, fmt.Errorf("%w; available: %s", err, avail)
 		}
 		a, err := p.Adapter()
 		if err != nil {
-			return nil, fmt.Errorf("%v; available: %s", err, avail)
+			return nil, fmt.Errorf("%w; available: %s", err, avail)
 		}
 		return a, nil
 	}

@@ -95,7 +95,7 @@ func (s *Server) providerNames() []string {
 func (s *Server) subagentModel(name string) (model.Adapter, error) {
 	a, err := s.resolveProvider(name)
 	if err != nil {
-		return nil, fmt.Errorf("%v; available: %s", err, strings.Join(s.providerNames(), ", "))
+		return nil, fmt.Errorf("%w; available: %s", err, strings.Join(s.providerNames(), ", "))
 	}
 	return a, nil
 }

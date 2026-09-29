@@ -325,7 +325,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		}
 		a, err := f.Models(name)
 		if err != nil {
-			return "", fmt.Errorf("model %q is not available: %v", name, err)
+			return "", fmt.Errorf("model %q is not available: %w", name, err)
 		}
 		adapter, provider = a, name
 	}
@@ -516,8 +516,16 @@ func childTools(parent *tools.Registry, def *Definition) (*tools.Registry, error
 	}
 	reg := parent
 	if def.Tools != nil {
+		// recall is every loop's own, bound to its record, and never in the
+		// parent's registry; naming it asks for nothing the child lacks.
+		names := make([]string, 0, len(def.Tools))
+		for _, n := range def.Tools {
+			if !strings.EqualFold(n, "recall") {
+				names = append(names, n)
+			}
+		}
 		var missing []string
-		if reg, missing = parent.SubsetStrict(def.Tools); len(missing) > 0 {
+		if reg, missing = parent.SubsetStrict(names); len(missing) > 0 {
 			return nil, fmt.Errorf("definition %s names tools this session does not have: %s. Use another agent type, or do the work directly",
 				def.Name, strings.Join(missing, ", "))
 		}

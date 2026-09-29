@@ -84,3 +84,37 @@ func TestOwnAskGivesUpInTheQueue(t *testing.T) {
 		t.Fatal("an ask was put while another held the queue")
 	}
 }
+
+// The queue belongs to the loop, not a run: an ask still held from before
+// (a child's, waiting while no run was live) keeps a new run's own ask
+// unpublished until it is answered, and then the new ask goes out.
+func TestAsksSerializedAcrossRuns(t *testing.T) {
+	appr := &countingApprover{}
+	l, _ := harnessIn(t, tempDir(t), []scriptedTurn{{calls: []model.ToolCall{bashCall("b", "touch x")}}}, "default", false)
+	l.Approver = appr
+	if _, err := l.Run(context.Background(), "first run"); err != nil {
+		t.Fatal(err)
+	}
+	before := appr.asked.Load()
+	queue := l.askQueue(context.Background())
+	queue <- struct{}{} // an earlier ask is still waiting for its answer
+	l.Adapter = &scriptedAdapter{turns: []scriptedTurn{{calls: []model.ToolCall{bashCall("b2", "touch y")}}}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = l.Run(context.Background(), "second run")
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if appr.asked.Load() != before {
+		t.Fatal("a new run's ask was published while an earlier ask held the queue")
+	}
+	<-queue // the earlier ask is answered
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the new run's ask never went out")
+	}
+	if appr.asked.Load() != before+1 {
+		t.Fatalf("the new run's ask was not put once the queue was free: %d asks", appr.asked.Load()-before)
+	}
+}

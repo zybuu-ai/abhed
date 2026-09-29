@@ -92,7 +92,7 @@ func TestDefinitionUnknownToolFailsClosed(t *testing.T) {
 // and the tools it ran with.
 func TestDefinitionRoleToolsAndRecord(t *testing.T) {
 	def := &Definition{Name: "auditor", Description: "d", Instruction: "Audit with care.", Source: SourceOperator,
-		SHA256: "abc", Tools: []string{"Read", "Grep", "Glob", "mcp__docs__*"}, DisallowedTools: []string{"glob"}}
+		SHA256: "abc", Tools: []string{"Read", "Grep", "Glob", "mcp__docs__*", "recall"}, DisallowedTools: []string{"glob"}}
 	f, ad := defFactory(t, []scriptedTurn{{text: "found nothing"}}, def)
 	f.Tools.Add(fakeMCP{"mcp__docs__search"})
 	f.Tools.Add(fakeMCP{"mcp__other__x"})
