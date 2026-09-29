@@ -271,6 +271,22 @@ All notable changes to Abhed are recorded here. The format follows
   `ActionRequested` gains `RawArgs` and `Dropped`. Refusals of malformed
   arguments are recorded at the new policy step `args`.
 
+### Upgrading
+
+- Skill pipelines (CLI only): a tool step that policy would ask about is
+  refused in `abhed -p` and anywhere else with no approver, so a CI job whose
+  pipeline runs such steps needs allow rules for them. A pipeline that calls
+  the `skill` tool, runs with no calling loop, or would start beneath another
+  pipeline's step is refused, and the skill falls back to its instructions.
+  A step's timeout now starts after its approval.
+
+### Added
+
+- The record's `action.requested` carries `via` when the harness issued a
+  call for the agent, such as `skill research pipeline`; the SDK's
+  `ActionRequested` and HawkEYE's `calls[].via` show it, and an approval
+  prompt names the pipeline that asks.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading
