@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -63,7 +64,8 @@ func (b *Budget) Carry(tokens int64, spawned int) {
 	}
 	for cur := b.tokens.Load(); tokens > cur && !b.tokens.CompareAndSwap(cur, tokens); cur = b.tokens.Load() {
 	}
-	for cur := b.spawned.Load(); int32(spawned) > cur && !b.spawned.CompareAndSwap(cur, int32(spawned)); cur = b.spawned.Load() { //nolint:gosec // a spawn count
+	n := int32(min(max(spawned, 0), math.MaxInt32)) // #nosec G115 -- clamped to int32's range first
+	for cur := b.spawned.Load(); n > cur && !b.spawned.CompareAndSwap(cur, n); cur = b.spawned.Load() {
 	}
 }
 
