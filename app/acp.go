@@ -188,6 +188,11 @@ func (c *acpConn) notification(method string, params any) {
 	c.send(rpcMessage{JSONRPC: "2.0", Method: method, Params: raw})
 }
 
+// sessionUpdate sends one session/update notification.
+func (c *acpConn) sessionUpdate(sessionID string, u map[string]any) {
+	c.notification("session/update", map[string]any{"sessionId": sessionID, "update": u})
+}
+
 // call sends an agent→client request and waits for the answer.
 func (c *acpConn) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.pendMu.Lock()
@@ -284,6 +289,10 @@ func (c *acpConn) request(msg rpcMessage) {
 		c.newSession(msg)
 	case "session/prompt":
 		c.prompt(msg)
+	case "session/set_config_option":
+		c.setConfigOption(msg)
+	case "session/set_model":
+		c.setModel(msg)
 	case "session/load", "session/set_mode":
 		c.reply(msg.ID, nil, &rpcError{-32601, msg.Method + " is not supported by this agent"})
 	default:
@@ -349,7 +358,139 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	if r, ok := a.(trustReporter); ok {
 		res["_meta"] = map[string]any{"abhed": map[string]any{"workspaceTrust": r.WorkspaceTrust()}}
 	}
+	if m, ok := a.(modelSwitcher); ok {
+		if models := m.Models(); len(models) > 0 {
+			res["configOptions"] = modelConfigOptions(models)
+			res["models"] = legacyModelState(models)
+		}
+	}
 	c.reply(msg.ID, res, nil)
+}
+
+// Choosing the model from the editor.
+//
+// Follows ACP schema v1.23.0: session config options, a "select" option of
+// category "model" set with session/set_config_option and reported with a
+// config_option_update. Editors built on the earlier unstable API (schema
+// v0.6.0: "models" in session/new and session/set_model) are answered too.
+// The value is a configured provider's name, looked up in the configuration;
+// nothing from the editor is ever used as an endpoint.
+
+// modelSwitcher is an agent whose model can be chosen by configured name; the
+// SDK's agent is one.
+type modelSwitcher interface {
+	Models() []abhed.Model
+	SwitchModelNamed(name string) error
+}
+
+// modelConfigID is the model selector's id among the session's config options.
+const modelConfigID = "model"
+
+// modelDescription says what a configured model is without its endpoint, key
+// or the variable holding the key.
+func modelDescription(m abhed.Model) string {
+	return m.Model + " (" + m.Type + ")"
+}
+
+func currentModel(models []abhed.Model) string {
+	for _, m := range models {
+		if m.Current {
+			return m.Name
+		}
+	}
+	return ""
+}
+
+// modelConfigOptions is the session's full set of config options: the model selector.
+func modelConfigOptions(models []abhed.Model) []any {
+	opts := make([]any, 0, len(models))
+	for _, m := range models {
+		opts = append(opts, map[string]any{"value": m.Name, "name": m.Name, "description": modelDescription(m)})
+	}
+	return []any{map[string]any{
+		"id": modelConfigID, "name": "Model", "description": "The configured model this session runs on",
+		"category": "model", "type": "select", "currentValue": currentModel(models), "options": opts,
+	}}
+}
+
+// legacyModelState is the same list in the unstable SessionModelState shape.
+func legacyModelState(models []abhed.Model) map[string]any {
+	avail := make([]any, 0, len(models))
+	for _, m := range models {
+		avail = append(avail, map[string]any{"modelId": m.Name, "name": m.Name, "description": modelDescription(m)})
+	}
+	return map[string]any{"currentModelId": currentModel(models), "availableModels": avail}
+}
+
+// switchModel moves a session to the configured model name, or says why not.
+func (c *acpConn) switchModel(sessionID, name string) (modelSwitcher, *rpcError) {
+	s := c.session(sessionID)
+	if s == nil {
+		return nil, &rpcError{-32602, "unknown session"}
+	}
+	m, ok := s.agent.(modelSwitcher)
+	if !ok {
+		return nil, &rpcError{-32601, "this session's model cannot be changed"}
+	}
+	s.mu.Lock()
+	running := s.cancel != nil
+	s.mu.Unlock()
+	if running {
+		return nil, &rpcError{-32000, "a prompt is running in this session; change the model once it ends"}
+	}
+	switch err := m.SwitchModelNamed(name); {
+	case err == nil:
+		return m, nil
+	case errors.Is(err, abhed.ErrSwitchDuringRun):
+		return nil, &rpcError{-32000, "a prompt is running in this session; change the model once it ends"}
+	case errors.Is(err, abhed.ErrUnknownModel):
+		return nil, &rpcError{-32602, fmt.Sprintf("no model named %q is configured for this session", name)}
+	default:
+		return nil, &rpcError{-32000, err.Error()}
+	}
+}
+
+func (c *acpConn) setConfigOption(msg rpcMessage) {
+	var p struct {
+		SessionID string          `json:"sessionId"`
+		ConfigID  string          `json:"configId"`
+		Value     json.RawMessage `json:"value"`
+	}
+	_ = json.Unmarshal(msg.Params, &p)
+	if p.ConfigID != modelConfigID {
+		c.reply(msg.ID, nil, &rpcError{-32602, fmt.Sprintf("unknown config option %q", p.ConfigID)})
+		return
+	}
+	var name string
+	if json.Unmarshal(p.Value, &name) != nil {
+		c.reply(msg.ID, nil, &rpcError{-32602, "the model option takes a configured model's name"})
+		return
+	}
+	m, e := c.switchModel(p.SessionID, name)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	opts := modelConfigOptions(m.Models())
+	c.reply(msg.ID, map[string]any{"configOptions": opts}, nil)
+	c.sessionUpdate(p.SessionID, map[string]any{"sessionUpdate": "config_option_update", "configOptions": opts})
+}
+
+// setModel answers the unstable session/set_model; its result has no fields,
+// so the model now current is in _meta.
+func (c *acpConn) setModel(msg rpcMessage) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		ModelID   string `json:"modelId"`
+	}
+	_ = json.Unmarshal(msg.Params, &p)
+	m, e := c.switchModel(p.SessionID, p.ModelID)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	c.reply(msg.ID, map[string]any{"_meta": map[string]any{acpMetaKey: map[string]any{
+		"currentModelId": currentModel(m.Models())}}}, nil)
 }
 
 // promptText flattens the prompt's content blocks. Text is taken as it is;
@@ -597,7 +738,7 @@ func (s *acpSession) takeIdless(tool string) string {
 // forward maps the record's events onto session/update notifications.
 func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 	update := func(u map[string]any) {
-		c.notification("session/update", map[string]any{"sessionId": s.id, "update": u})
+		c.sessionUpdate(s.id, u)
 	}
 	text := func(t string) map[string]any { return map[string]any{"type": "text", "text": t} }
 	switch ev.Type {

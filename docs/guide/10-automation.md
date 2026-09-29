@@ -214,6 +214,43 @@ trust over the wire; pass the reported `sha256` to `abhed trust grant
 opens for the life of the process, not only the one it was started in. See [Workspace
 trust](../architecture/workspace-trust.md).
 
+### Choosing the model
+
+`session/new` lists the models the configuration defines as a session
+config option, the form ACP schema v1.23.0 prefers:
+
+```json
+{"sessionId": "s-…", "configOptions": [{"id": "model", "name": "Model",
+  "category": "model", "type": "select", "currentValue": "local",
+  "options": [{"value": "local", "name": "local", "description": "qwen3:8b (ollama)"},
+              {"value": "work", "name": "work", "description": "llama-3.3-70b (openai-compatible)"}]}],
+ "models": {"currentModelId": "local", "availableModels": [
+  {"modelId": "local", "name": "local", "description": "qwen3:8b (ollama)"}, …]}}
+```
+
+Each value is a provider's name under `model.providers`; the description
+is its model id and type, never its `base_url`, key or `api_key_env`. To
+switch, the editor sends
+
+```json
+{"method": "session/set_config_option",
+ "params": {"sessionId": "s-…", "configId": "model", "value": "work"}}
+```
+
+and the reply is the full `configOptions` with the new `currentValue`,
+followed by a `config_option_update`. `models` and `session/set_model`
+(`{"sessionId", "modelId"}`, reply `_meta["zybuu.ai/abhed"].currentModelId`)
+are the earlier unstable form, for editors that predate config options.
+
+The name is looked up in the configuration and nothing else, so an editor
+cannot point the session at an endpoint. Offered are the providers a
+trusted file defines: an untrusted workspace file adds none, and a built-in
+provider nobody configured is not listed. A managed file that sets
+`model.default` pins the model to it. A switch is refused while a prompt is
+running, for a name not offered, and for a provider whose `api_key_env`
+variable is unset, with the variable named. A switch is recorded as
+`model.switched` before the new model answers, and the conversation is kept.
+
 Not yet supported: `session/load` (resuming an editor session from the
 record) and editor-side modes. A conformance test drives the adapter with a
 scripted client, so no editor is needed in CI.

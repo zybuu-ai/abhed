@@ -433,6 +433,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `abhed acp`: an editor can list the configured models and switch between
+  them mid-session. `session/new` returns a `configOptions` model selector
+  (category `model`), and `session/set_config_option` switches it, answering
+  with the full options and a `config_option_update`. Editors on the older
+  unstable API get `models` in `session/new` and `session/set_model`. Each
+  choice is a configured provider's name, described by its model id and
+  type, never its endpoint or key. Only providers a trusted configuration
+  defines are offered, and a managed `model.default` pins the model. A
+  switch is refused while a prompt runs, for an unknown name, and for a
+  provider whose `api_key_env` is unset, naming the variable. It is recorded
+  as `model.switched`.
+- SDK: `Agent.Models` and `Agent.SwitchModelNamed` list and choose the
+  configured models by name, with `ErrUnknownModel` and `ErrSwitchDuringRun`.
 - `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
   carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
   `requestId`. `destructive` is true for any command with no undo, whichever
