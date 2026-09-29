@@ -93,6 +93,7 @@ func Main(args []string, opts ...Option) int {
 		deny       = fs.String("deny", "", "comma-separated deny rules")
 		showVer    = fs.Bool("version", false, "print version and exit")
 		listenAddr = fs.String("addr", ":8080", "listen address for abhed serve")
+		trustWS    = fs.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	)
 	fs.Usage = func() { a.usage(fs) }
 	if err := fs.Parse(args); err != nil {
@@ -121,46 +122,53 @@ func Main(args []string, opts ...Option) int {
 	if err != nil {
 		fail(err)
 	}
+	if *trustWS {
+		a.trust = config.TrustGranted
+	}
 
 	switch fs.Arg(0) {
 	case "version":
 		return 0 // printed above, before the workspace is needed
 	case "init":
-		path := filepath.Join(workspace, ".abhed", "config.json")
-		if err := config.WriteDefault(path); err != nil {
+		// Trusted as written: the person asked for exactly this content.
+		path, err := config.InitWorkspace(workspace)
+		if err != nil {
 			fail(err)
 		}
-		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n", path)
+		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n"+
+			"Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n", path)
 		return 0
+	case "trust":
+		return trustCmd(workspace, fs.Args()[1:], os.Stdout)
 	case "doctor":
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
 	case "hawkeye":
-		return hawkeyeCmd(workspace, fs.Args()[1:])
+		return hawkeyeCmd(workspace, fs.Args()[1:], a.trust)
 	case "migrate":
-		return migrateCmd(workspace, a.migrate)
+		return migrateCmd(workspace, a.migrate, a.trust)
 	case "resolve":
-		return resolveCmd(workspace, fs.Args()[1:])
+		return resolveCmd(workspace, fs.Args()[1:], a.trust)
 	case "acp":
 		// The Agent Client Protocol over stdio, for editors that speak it.
-		return acpCmd(workspace, a.version)
+		return acpCmd(workspace, a.version, a.trust)
 	case "rpc":
 		// Line-delimited JSON on stdin and stdout, so a caller in any language
 		// can drive Abhed as a subprocess without running a server.
-		return rpcCmd(workspace)
+		return rpcCmd(workspace, a.trust)
 	case "user":
-		return userCmd(workspace, fs.Args()[1:])
+		return userCmd(workspace, fs.Args()[1:], a.trust)
 	case "secret":
 		return secretCmd(fs.Args()[1:])
 	case "index":
-		return buildIndexCmd(workspace)
+		return buildIndexCmd(workspace, a.trust)
 	case "eval":
 		evalFlags := flag.NewFlagSet("eval", flag.ExitOnError)
 		corpus := evalFlags.String("corpus", "internal/eval/corpus", "task corpus directory")
 		jsonOut := evalFlags.String("json", "", "write the full report to this path")
 		_ = evalFlags.Parse(fs.Args()[1:])
-		return evalCmd(workspace, *corpus, *jsonOut)
+		return evalCmd(workspace, *corpus, *jsonOut, a.trust)
 	case "serve":
 		// Re-parse the remaining args so `abhed serve -addr :9000` works: Go's
 		// flag package stops at the first non-flag argument.
@@ -221,7 +229,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	defer stopper.stop()
 	ctx := stopper.ctx
 
-	cfg, err := config.Load(workspace)
+	cfg, err := loadSession(workspace, a.trust, prompt == "")
 	if err != nil {
 		fail(err)
 	}
@@ -1559,8 +1567,8 @@ var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(ca
 // Per docs P1 the harness is the dominant variable in agent success, so this is
 // how a harness change is judged. Per P10 the report carries behavioural flags
 // alongside the score, because identical pass rates hide different behaviour.
-func evalCmd(workspace, corpusDir, jsonPath string) int {
-	cfg, err := config.Load(workspace)
+func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) int {
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -1737,8 +1745,8 @@ func splitPositional(args []string) (flags []string, positional string) {
 }
 
 // userCmd manages local accounts: abhed user add | list | passwd | remove.
-func userCmd(workspace string, args []string) int {
-	cfg, err := config.Load(workspace)
+func userCmd(workspace string, args []string, trust config.TrustChoice) int {
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -2407,8 +2415,8 @@ func openIndex(ctx context.Context, cfg config.Config, workspace string) (*index
 
 // buildIndexCmd implements `abhed index`, so a large repo can be indexed once
 // rather than on every session start.
-func buildIndexCmd(workspace string) int {
-	cfg, err := config.Load(workspace)
+func buildIndexCmd(workspace string, trust config.TrustChoice) int {
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -2734,6 +2742,7 @@ func (a *App) doctor(workspace string) int {
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
 	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
+	printDoctorTrust(os.Stdout, cfg.Workspace)
 	unknown := printUnknown(os.Stdout, cfg)
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
 		label := string(sb.Tier())
@@ -3139,7 +3148,7 @@ func parseEvents(data []byte) ([]agent.Event, error) {
 
 // hawkeyeCmd reports on a finished session: from an exported events file, or
 // by id from the durable store. It never needs a model or a network.
-func hawkeyeCmd(workspace string, args []string) int {
+func hawkeyeCmd(workspace string, args []string, trust config.TrustChoice) int {
 	fl := flag.NewFlagSet("hawkeye", flag.ExitOnError)
 	out := fl.String("o", "", "write the report here (.html or .json); the summary still prints")
 	fl.Usage = func() {
@@ -3163,7 +3172,7 @@ func hawkeyeCmd(workspace string, args []string) int {
 			id = events[0].SessionID
 		}
 	} else {
-		cfg, err := config.Load(workspace)
+		cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 		if err != nil {
 			fail(err)
 		}
@@ -3221,8 +3230,8 @@ func writeHawkeye(path string, rep hawkeye.Report) error {
 
 // migrateCmd applies the schema as the owning role and grants the runtime role
 // what the server needs. It is the one place the owner's credentials are used.
-func migrateCmd(workspace string, extensions []store.Extension) int {
-	cfg, err := config.Load(workspace)
+func migrateCmd(workspace string, extensions []store.Extension, trust config.TrustChoice) int {
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fail(err)
 	}

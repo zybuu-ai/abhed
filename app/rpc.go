@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
@@ -23,7 +24,7 @@ import (
 // One request per line, one or more events back per request. Every event the
 // agent records is forwarded, so a caller sees tool calls and results as they
 // happen rather than only the final answer.
-func rpcCmd(workspace string) int {
+func rpcCmd(workspace string, trust config.TrustChoice) int {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	out := json.NewEncoder(os.Stdout)
@@ -70,7 +71,7 @@ func rpcCmd(workspace string) int {
 				ws = workspace
 			}
 			opts := abhed.Options{
-				Workspace: ws, ConfigDir: ws, Mode: req.Mode,
+				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: trust,
 				Allow: req.Allow, Deny: req.Deny,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
@@ -86,7 +87,8 @@ func rpcCmd(workspace string) int {
 				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error()})
 				continue
 			}
-			emit(rpcResponse{ID: req.ID, Type: "ready"})
+			st := a.WorkspaceTrust()
+			emit(rpcResponse{ID: req.ID, Type: "ready", WorkspaceTrust: &st})
 
 		case "prompt":
 			if a == nil {
@@ -172,4 +174,6 @@ type rpcResponse struct {
 	Event     *agent.Event `json:"event,omitempty"`
 	Usage     *agent.Usage `json:"usage,omitempty"`
 	Providers []string     `json:"providers,omitempty"`
+	// WorkspaceTrust, on ready, says whether the workspace file applied whole.
+	WorkspaceTrust *config.WorkspaceTrust `json:"workspace_trust,omitempty"`
 }

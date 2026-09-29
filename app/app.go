@@ -39,6 +39,9 @@ type App struct {
 	taps       []TapBuilder
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
+	// trust is -trust-workspace: the say the command line gives over the
+	// workspace's own configuration file.
+	trust config.TrustChoice
 }
 
 // Option configures the App that Main builds.
@@ -160,7 +163,8 @@ func OnServe(h ServeHook) Option {
 // subcommands are the ones Main dispatches itself, as its usage lists them.
 var subcommands = []struct{ name, about string }{
 	{"serve", "run the server: the console, the workbench and the API (-addr)"},
-	{"init", "write a starter .abhed/config.json in the workspace"},
+	{"init", "write a starter .abhed/config.json in the workspace, trusted"},
+	{"trust", "show, grant or revoke trust in the workspace's .abhed/config.json"},
 	{"doctor", "check the configuration, the model endpoint and the sandbox"},
 	{"providers", "list the model provider types this build supports"},
 	{"user", "manage local accounts: add, list, passwd, remove, import"},
@@ -239,7 +243,7 @@ func (a *App) checkEdition(cfg config.Config) error {
 // the paid keys configure; the CLI loop does not, because none of those keys
 // change what a terminal session does.
 func (a *App) loadConfig(workspace string) (config.Config, error) {
-	cfg, err := config.Load(workspace)
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust})
 	if err != nil {
 		return cfg, err
 	}

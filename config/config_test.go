@@ -15,6 +15,7 @@ func TestDefaultIsValid(t *testing.T) {
 }
 
 func TestProjectConfigOverridesUser(t *testing.T) {
+	t.Setenv(TrustEnv, "1") // these files are the person's own
 	ws := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
 	os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{
@@ -281,6 +282,7 @@ func TestSetsNamesWhatAFileSet(t *testing.T) {
 // The built-in local provider is offered for choosing only when it is the
 // default or a file names it; a file's own providers are always offered.
 func TestOfferedListsOnlyConfiguredProviders(t *testing.T) {
+	t.Setenv(TrustEnv, "1") // these files are the person's own
 	for _, c := range []struct {
 		file      string
 		wantLocal bool

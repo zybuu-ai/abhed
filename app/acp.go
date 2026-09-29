@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
@@ -73,6 +74,8 @@ type acpConn struct {
 	outMu   sync.Mutex
 	version string
 	base    string // the workspace given on the command line, when cwd is absent
+	// trust is -trust-workspace, the default for every session's cwd.
+	trust config.TrustChoice
 	// ctx ends every agent and prompt on a stop signal, and busy holds the
 	// exit that follows until a prompt has ended; nil for neither.
 	ctx  context.Context
@@ -95,10 +98,10 @@ func (c *acpConn) root() context.Context {
 }
 
 // acpCmd serves one editor for the life of the process.
-func acpCmd(workspace, version string) int {
+func acpCmd(workspace, version string, trust config.TrustChoice) int {
 	stopper := cancelOnStop(stopExits)
 	defer stopper.stop()
-	c := &acpConn{out: os.Stdout, version: version, base: workspace, ctx: stopper.ctx, busy: stopper.busy,
+	c := &acpConn{out: os.Stdout, version: version, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
 	err := c.serve(os.Stdin)
 	c.closeAll()
@@ -262,18 +265,41 @@ func (c *acpConn) request(msg rpcMessage) {
 	}
 }
 
+// trustReporter is an agent that can say what it decided about the
+// workspace's configuration file; the SDK's agent is one.
+type trustReporter interface {
+	WorkspaceTrust() config.WorkspaceTrust
+}
+
 func (c *acpConn) newSession(msg rpcMessage) {
 	var p struct {
-		Cwd string `json:"cwd"`
+		Cwd  string `json:"cwd"`
+		Meta struct {
+			Abhed struct {
+				// Trust "untrusted" takes only what tightens, whatever was recorded.
+				Trust string `json:"trust"`
+			} `json:"abhed"`
+		} `json:"_meta"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	cwd := p.Cwd
 	if cwd == "" {
 		cwd = c.base
 	}
+	trust := c.trust
+	switch p.Meta.Abhed.Trust {
+	case "":
+	case string(config.TrustRefused):
+		trust = config.TrustRefused
+	default:
+		// Trust is granted by the person, with abhed trust or the flag, never over the wire.
+		c.reply(msg.ID, nil, &rpcError{-32602, `_meta.abhed.trust may only be "untrusted"; ` +
+			"trust a workspace with `abhed trust grant` or -trust-workspace"})
+		return
+	}
 	s := &acpSession{id: "s-" + acpID(), cwd: cwd, always: map[string]bool{}, calls: map[string]string{}}
 	opts := abhed.Options{
-		Workspace: cwd, ConfigDir: cwd, Sandbox: true,
+		Workspace: cwd, ConfigDir: cwd, Sandbox: true, WorkspaceTrust: trust,
 		OnEvent: func(ev abhed.Event) { c.forward(s, ev) },
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)
@@ -288,7 +314,12 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	c.sessMu.Lock()
 	c.sessions[s.id] = s
 	c.sessMu.Unlock()
-	c.reply(msg.ID, map[string]any{"sessionId": s.id}, nil)
+	res := map[string]any{"sessionId": s.id}
+	// The editor learns whether the workspace file applied, so it can ask the person.
+	if r, ok := a.(trustReporter); ok {
+		res["_meta"] = map[string]any{"abhed": map[string]any{"workspaceTrust": r.WorkspaceTrust()}}
+	}
+	c.reply(msg.ID, res, nil)
 }
 
 // promptText flattens the prompt's content blocks. Text is taken as it is;

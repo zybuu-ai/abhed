@@ -58,6 +58,8 @@ type Config struct {
 	Unknown []UnknownKey `json:"-"`
 	// SetKeys are the settings any file made, as dotted paths; see Sets.
 	SetKeys []string `json:"-"`
+	// Workspace is what loading decided about the workspace's own file.
+	Workspace WorkspaceTrust `json:"-"`
 }
 
 type ModelConfig struct {
@@ -539,16 +541,26 @@ func Default() Config {
 	}
 }
 
-// Load assembles configuration from all sources in precedence order.
+// Load assembles configuration from all sources in precedence order, taking
+// the workspace's file whole only once the person has trusted it.
 func Load(workspace string) (Config, error) {
+	return LoadWith(workspace, LoadOptions{})
+}
+
+// LoadWith is Load with the caller's say over the workspace file.
+func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg := Default()
 
+	var userFile string
 	if home, err := os.UserHomeDir(); err == nil {
-		if err := mergeFile(&cfg, filepath.Join(home, ".abhed", "config.json")); err != nil {
+		userFile = filepath.Join(home, ".abhed", "config.json")
+		if err := mergeFile(&cfg, userFile); err != nil {
 			return cfg, err
 		}
 	}
-	if err := mergeFile(&cfg, filepath.Join(workspace, ".abhed", "config.json")); err != nil {
+	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	cfg.Workspace = st
+	if err != nil {
 		return cfg, err
 	}
 
@@ -560,6 +572,9 @@ func Load(workspace string) (Config, error) {
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
+	if !o.Quiet {
+		warnUntrusted(cfg.Workspace)
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -585,6 +600,11 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	return mergeData(cfg, path, data)
+}
+
+// mergeData merges a file's contents, already read, into cfg.
+func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
 	if err := json.Unmarshal(data, cfg); err != nil {
@@ -813,12 +833,17 @@ func WriteDefault(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(Default(), "", "  ")
+	data, err := defaultConfigJSON()
 	if err != nil {
 		return err
 	}
 	// A config can carry keys. Owner-only, like every other file that can.
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	return os.WriteFile(path, data, 0o600)
+}
+
+func defaultConfigJSON() ([]byte, error) {
+	data, err := json.MarshalIndent(Default(), "", "  ")
+	return append(data, '\n'), err
 }
 
 // TelemetryConfig exports the event stream as OpenTelemetry traces.

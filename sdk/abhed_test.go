@@ -170,6 +170,7 @@ func TestSandboxedSessionRefusesALinkedStateFile(t *testing.T) {
 // A session whose workspace is a worktree inside the configuration's folder,
 // as a resolve run's is, cannot read that folder's .abhed from its commands.
 func TestConfigFoldersStateIsHiddenFromAWorktreeSession(t *testing.T) {
+	t.Setenv("ABHED_TRUST_WORKSPACE", "1") // the test wrote this configuration
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("ABHED_SECRETS_FILE", "")
@@ -232,6 +233,7 @@ func TestConfigFoldersStateIsHiddenFromAWorktreeSession(t *testing.T) {
 // A relative deny rule holds against an absolute path in the workspace, which
 // needs the session's roots on the policy.
 func TestRelativeDenyStopsAnAbsolutePath(t *testing.T) {
+	t.Setenv("ABHED_TRUST_WORKSPACE", "1") // the test wrote this configuration
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("ABHED_SECRETS_FILE", "")

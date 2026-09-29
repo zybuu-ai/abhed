@@ -60,7 +60,7 @@ func resolveMode(cfg config.Config, fs *flag.FlagSet, mode string) string {
 	return mode
 }
 
-func resolveCmd(workspace string, args []string) int {
+func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	kind := fs.String("kind", "", "github, gitlab or gitea; inferred from the host when empty")
 	base := fs.String("base", "", "branch the pull request targets (default: the repository's default branch)")
@@ -106,7 +106,7 @@ func resolveCmd(workspace string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	cfg, err := config.Load(workspace)
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		return fail(err)
 	}
@@ -154,7 +154,7 @@ func resolveCmd(workspace string, args []string) int {
 	}()
 
 	runner, err := newResolveRunner(ctx, abhed.Options{
-		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode,
+		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode, WorkspaceTrust: trust,
 		Allow: splitRules(*allow), Sandbox: true,
 		OnEvent: func(ev abhed.Event) {
 			if ev.Type == "agent.message" {

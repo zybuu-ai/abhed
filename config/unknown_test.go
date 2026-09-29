@@ -13,6 +13,7 @@ import (
 // A key no setting reads still loads, as it did, but is named with its
 // path and, where one is close, the key that was probably meant.
 func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
+	t.Setenv(TrustEnv, "1") // these files are the person's own
 	t.Setenv("HOME", t.TempDir())
 	ws := t.TempDir()
 	path := filepath.Join(ws, ".abhed", "config.json")

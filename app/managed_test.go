@@ -94,12 +94,12 @@ func TestEvalIsRefusedUnderAManagedFile(t *testing.T) {
 		if err := evalAllowed(cfg); err == nil || !strings.Contains(err.Error(), "refused under the managed configuration "+managed.ConfigFile) {
 			t.Errorf("%s: %v", body, err)
 		}
-		if code := evalCmd(t.TempDir(), t.TempDir(), ""); code == 0 {
+		if code := evalCmd(t.TempDir(), t.TempDir(), "", ""); code == 0 {
 			t.Errorf("%s: an eval ran under a managed file", body)
 		}
 	}
 	managedConfig(t, "")
-	if code := evalCmd(t.TempDir(), t.TempDir(), ""); code != 0 {
+	if code := evalCmd(t.TempDir(), t.TempDir(), "", ""); code != 0 {
 		t.Errorf("an empty corpus with no managed configuration exits %d", code)
 	}
 }
