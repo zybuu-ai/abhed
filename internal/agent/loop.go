@@ -50,6 +50,50 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 
+type callIDKey struct{}
+
+// CallIDOf reports the model's id for the call an Approver is asked about, the
+// call_id its action.requested carries.
+func CallIDOf(ctx context.Context) string { id, _ := ctx.Value(callIDKey{}).(string); return id }
+
+// WithCallID names the call an Approver is asked about.
+func WithCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callIDKey{}, id)
+}
+
+type requestedKey struct{}
+
+// Requested is the action.requested an Approver is asked about, as recorded
+// (redacted when the session has a redactor).
+type Requested struct {
+	ActionRequested
+	// Withheld is true when the record holds no readable copy, as when
+	// redaction withheld the payload; then nothing of the call can be shown.
+	Withheld bool
+}
+
+// RequestedOf reports the recorded request an Approver is asked about, so what
+// is shown to a person matches the record. ok is false outside the loop.
+func RequestedOf(ctx context.Context) (Requested, bool) {
+	ev, ok := ctx.Value(requestedKey{}).(Event)
+	if !ok {
+		return Requested{}, false
+	}
+	var p ActionRequested
+	var held struct {
+		Withheld *string `json:"withheld"`
+	}
+	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
+		return Requested{Withheld: true}, true
+	}
+	return Requested{ActionRequested: p}, true
+}
+
+// WithRequested carries the recorded action.requested an Approver is asked about.
+func WithRequested(ctx context.Context, ev Event) context.Context {
+	return context.WithValue(ctx, requestedKey{}, ev)
+}
+
 // Who settled a call, as action.approved and action.denied record it in "by".
 const (
 	ByPolicy   = "policy"   // a policy rule or the mode decided, and no one was asked
@@ -952,7 +996,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 
 	case policy.Ask:
 		var actx context.Context
-		actx, answer = ExpectAnswer(WithRequestID(ctx, asked.ID))
+		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
 		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
