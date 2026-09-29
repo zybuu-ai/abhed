@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,9 +22,10 @@ import (
 // A real SSH server, so the transport, auth and host key verification are
 // exercised rather than mocked. Everything below runs against it.
 type testServer struct {
-	addr    string
-	hostKey ssh.PublicKey
-	stop    func()
+	addr     string
+	hostKey  ssh.PublicKey
+	stop     func()
+	attempts *atomic.Int32 // passwords offered to it
 }
 
 func startSSHServer(t *testing.T, password string) *testServer {
@@ -38,8 +40,10 @@ func startSSHServer(t *testing.T, password string) *testServer {
 		t.Fatal(err)
 	}
 
+	attempts := &atomic.Int32{}
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			attempts.Add(1)
 			if c.User() == "tester" && string(pass) == password {
 				return nil, nil
 			}
@@ -70,7 +74,8 @@ func startSSHServer(t *testing.T, password string) *testServer {
 
 	return &testServer{
 		addr: ln.Addr().String(), hostKey: signer.PublicKey(),
-		stop: func() { close(done); _ = ln.Close() },
+		stop:     func() { close(done); _ = ln.Close() },
+		attempts: attempts,
 	}
 }
 
@@ -323,6 +328,24 @@ func stored(vals map[string]string) func(string) (string, error) {
 	}
 }
 
+// pinHome makes the test server's key the one in ~/.ssh/known_hosts, the
+// only place ssh_connect trusts a host key from.
+func pinHome(t *testing.T, s *testServer) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	data, err := os.ReadFile(knownHostsFor(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "known_hosts"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newSession(t *testing.T) *tools.Session {
 	t.Helper()
 	s, err := tools.NewSession(t.TempDir())
@@ -353,6 +376,7 @@ func TestConnectVerifiesBeforeRegistering(t *testing.T) {
 func TestConnectRegistersWorkingHost(t *testing.T) {
 	srv := startSSHServer(t, "pw-from-store")
 	defer srv.stop()
+	pinHome(t, srv)
 
 	reg, _ := NewRegistry(nil)
 	defer reg.Close()
@@ -361,7 +385,7 @@ func TestConnectRegistersWorkingHost(t *testing.T) {
 	host, port, _ := net.SplitHostPort(srv.addr)
 	args, _ := json.Marshal(map[string]any{
 		"addr": host + ":" + port, "user": "tester", "name": "vm1",
-		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+		"password_secret": "VM_PASSWORD"})
 	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw-from-store"})}
 	res := connect.Run(context.Background(), sess, args)
 
@@ -388,12 +412,13 @@ func TestConnectRegistersWorkingHost(t *testing.T) {
 func TestConnectedHostIsScopedToTheSession(t *testing.T) {
 	srv := startSSHServer(t, "pw")
 	defer srv.stop()
+	pinHome(t, srv)
 	reg, _ := NewRegistry(nil)
 	defer reg.Close()
 	a, b := newSession(t), newSession(t)
 
 	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "vm1",
-		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+		"password_secret": "VM_PASSWORD"})
 	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
 	if res := connect.Run(context.Background(), a, args); res.IsError {
 		t.Fatalf("session A could not connect: %s", res.Content)
@@ -419,18 +444,37 @@ func TestConnectedHostIsScopedToTheSession(t *testing.T) {
 func TestConnectRefusesWhatItCannotIsolate(t *testing.T) {
 	srv := startSSHServer(t, "pw")
 	defer srv.stop()
+	pinHome(t, srv)
 	reg, _ := NewRegistry([]HostConfig{{Name: "prod", Addr: "10.0.0.1", User: "ops"}})
 	connect := ConnectTool{R: reg, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
 
 	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "vm1",
-		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+		"password_secret": "VM_PASSWORD"})
 	if res := connect.Run(context.Background(), nil, args); !res.IsError {
 		t.Fatalf("connected with no session to hold the host: %s", res.Content)
 	}
 	shadow, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": "prod",
-		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+		"password_secret": "VM_PASSWORD"})
 	if res := connect.Run(context.Background(), newSession(t), shadow); !res.IsError {
 		t.Fatalf("a session replaced the operator's host: %s", res.Content)
+	}
+}
+
+// A stored password goes only to a host whose key is already pinned: with
+// accept_host_key, whoever answers at the address the model gave would get it.
+func TestConnectSendsNoPasswordToAnUnpinnedHost(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	t.Setenv("HOME", t.TempDir()) // nothing pinned
+	connect := ConnectTool{Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester",
+		"password_secret": "VM_PASSWORD", "accept_host_key": true})
+	res := connect.Run(context.Background(), newSession(t), args)
+	if !res.IsError || !strings.Contains(res.Content, "known_hosts") {
+		t.Fatalf("a stored password was offered to an unpinned host: %s", res.Content)
+	}
+	if n := srv.attempts.Load(); n != 0 {
+		t.Fatalf("%d passwords reached the host", n)
 	}
 }
 

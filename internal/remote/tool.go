@@ -310,7 +310,7 @@ func (ConnectTool) Schema() json.RawMessage {
     "addr":{"type":"string","description":"Hostname or IP, optionally host:port."},
     "user":{"type":"string","description":"Login user. Defaults to root."},
     "identity_file":{"type":"string","description":"Path to the private key, as the user gave it."},
-    "password_secret":{"type":"string","description":"NAME of the stored secret holding the password, if there is no key. Never the password."},
+    "password_secret":{"type":"string","description":"NAME of the stored secret holding the password, if there is no key. Never the password. Only for a host whose key is already in known_hosts."},
     "accept_host_key":{"type":"boolean","description":"Accept the host key on first sight. Only set this when the user has said the host is new or ephemeral."}
   },
   "required":["addr"]
@@ -354,6 +354,13 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	}
 
 	var password string
+	if a.PasswordSecret != "" && a.AcceptHostKey {
+		// A password goes to whoever answers; only a host key already pinned
+		// in known_hosts says who that is. A key signs, and reveals nothing.
+		return errf("A stored password is sent only to a host whose key is already in " +
+			"known_hosts, and accept_host_key would take any. Ask the user to add the host " +
+			"key, or to connect with a key file instead.")
+	}
 	if a.PasswordSecret != "" {
 		if !secrets.ValidName(a.PasswordSecret) {
 			return errf("password_secret is the NAME of a stored secret, such as VM_PASSWORD, " +
