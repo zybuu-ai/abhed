@@ -311,6 +311,19 @@ func TestNearMissCredentialToolArgsAreWithheld(t *testing.T) {
 		{calls: []model.ToolCall{raw("c3", "k8s_logn", `{"token":"LEAK-typo"}`)}},
 		{calls: []model.ToolCall{raw("c4", "ssh_conect", `{"password":"LEAK-ssh"}`)}},
 		{calls: []model.ToolCall{raw("c5", "frobnicate", `{"note":"kept-as-sent"}`)}},
+		// Namespaced or wrapped as models and MCP clients write them.
+		{calls: []model.ToolCall{raw("c6", "functions.k8s_login", `{"token":"LEAK-functions"}`)}},
+		{calls: []model.ToolCall{raw("c7", "default_api.k8s_login", `{"token":"LEAK-default-api"}`)}},
+		{calls: []model.ToolCall{raw("c8", "mcp__k8s__k8s_login", `{"token":"LEAK-mcp"}`)}},
+		{calls: []model.ToolCall{raw("c9", "k8s_login_tool", `{"token":"LEAK-suffixed"}`)}},
+		{calls: []model.ToolCall{raw("c10", "tools/ssh_connect", `{"password":"LEAK-path"}`)}},
+		{calls: []model.ToolCall{raw("c16", "functions.K8s_Logn", `{"token":"LEAK-namespaced-typo"}`)}},
+		// Other tools' names, near but not credential tools, keep their arguments.
+		{calls: []model.ToolCall{raw("c11", "k8s_get", `{"note":"kept-k8s_get"}`)}},
+		{calls: []model.ToolCall{raw("c12", "k8s_logs", `{"note":"kept-k8s_logs"}`)}},
+		{calls: []model.ToolCall{raw("c13", "ssh_run", `{"note":"kept-ssh_run"}`)}},
+		{calls: []model.ToolCall{raw("c14", "oc_login", `{"note":"kept-oc_login"}`)}},
+		{calls: []model.ToolCall{raw("c15", "kubectl_login", `{"note":"kept-kubectl_login"}`)}},
 		{text: "done"},
 	}
 	sess, _ := tools.NewSession(t.TempDir())
@@ -323,19 +336,24 @@ func TestNearMissCredentialToolArgsAreWithheld(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs, _ := store.Events("s1")
-	withheld, kept := 0, false
+	withheld := 0
+	kept := map[string]bool{}
 	for _, e := range evs {
 		if strings.Contains(string(e.Payload), "LEAK-") {
 			t.Errorf("a near-miss credential call reached the record: %s", e.Payload)
 		}
 		withheld += strings.Count(string(e.Payload), WithheldLookalikeArgs)
-		kept = kept || strings.Contains(string(e.Payload), "kept-as-sent")
+		for _, k := range []string{"as-sent", "k8s_get", "k8s_logs", "ssh_run", "oc_login", "kubectl_login"} {
+			kept[k] = kept[k] || strings.Contains(string(e.Payload), "kept-"+k)
+		}
 	}
-	if withheld != 4 {
-		t.Errorf("%d calls marked withheld, want 4", withheld)
+	if withheld != 10 {
+		t.Errorf("%d calls marked withheld, want 10", withheld)
 	}
-	if !kept {
-		t.Error("an unrelated unknown call lost its arguments")
+	for k, ok := range kept {
+		if !ok {
+			t.Errorf("the unknown call %s lost its arguments", k)
+		}
 	}
 	for _, req := range adapter.gotRequests {
 		for _, m := range req.Messages {
