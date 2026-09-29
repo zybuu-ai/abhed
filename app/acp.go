@@ -44,8 +44,14 @@ type acpAgent interface {
 	Steer(text string)
 	// Flush waits until every event of the run has been forwarded.
 	Flush(ctx context.Context) error
+	// CancelTasks stops every background task, for session/cancel.
+	CancelTasks() int
 	Close()
 }
+
+// heldAskWait bounds how long an ask made with no prompt turn open waits
+// for one; then it is refused.
+var heldAskWait = 30 * time.Minute
 
 // newACPAgent builds a session. A variable so tests can replace it.
 var newACPAgent = func(ctx context.Context, opts abhed.Options) (acpAgent, error) {
@@ -83,6 +89,22 @@ type acpSession struct {
 	// subAsks are the subagent asks shown as tool calls, by request id, so
 	// their answer settles the card and no other subagent.action draws one.
 	subAsks map[string]bool
+	// turnOpen is closed while a prompt turn is open, and replaced when it
+	// ends: an ask made between turns waits on it, since the editor can only
+	// be asked inside a turn.
+	turnOpen chan struct{}
+}
+
+// gate returns nil while a prompt turn is open, and otherwise the channel
+// that closes when the next one opens. The caller holds mu.
+func (s *acpSession) gate() chan struct{} {
+	if s.cancel != nil {
+		return nil
+	}
+	if s.turnOpen == nil {
+		s.turnOpen = make(chan struct{})
+	}
+	return s.turnOpen
 }
 
 // subagentCallID names a subagent's ask to the editor. A child's call ids are
@@ -183,7 +205,7 @@ func (c *acpConn) reply(id json.RawMessage, result any, e *rpcError) {
 	c.send(msg)
 }
 
-func (c *acpConn) notification(method string, params any) {
+func (c *acpConn) notification(method string, params any) { //nolint:unparam // each call names its ACP method, as the protocol does
 	raw, _ := json.Marshal(params)
 	c.send(rpcMessage{JSONRPC: "2.0", Method: method, Params: raw})
 }
@@ -258,6 +280,8 @@ func (c *acpConn) notify(msg rpcMessage) {
 			s.cancel()
 		}
 		s.mu.Unlock()
+		// Stop means stop: the background tasks too, with or without a turn open.
+		go s.agent.CancelTasks()
 	}
 }
 
@@ -324,7 +348,10 @@ func (c *acpConn) newSession(msg rpcMessage) {
 		Workspace: cwd, ConfigDir: cwd, Sandbox: true, WorkspaceTrust: trust, AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
-		OnEvent:         func(ev abhed.Event) { c.forward(s, ev) },
+		// Background tasks outlive a turn and report as they finish; the
+		// editor is never started on its own, so notify is the most.
+		Background: "notify",
+		OnEvent:    func(ev abhed.Event) { c.forward(s, ev) },
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)
 		},
@@ -394,6 +421,11 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	s.mu.Lock()
 	s.cancel = cancel
 	s.ranIdless = nil // a result the last turn never recorded will not come
+	// An ask held since the last turn goes out now, inside this one.
+	if s.turnOpen != nil {
+		close(s.turnOpen)
+		s.turnOpen = nil
+	}
 	s.mu.Unlock()
 	defer func() {
 		cancel()
@@ -447,6 +479,28 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	bind := requestID
 	if bind == "" {
 		bind = callID
+	}
+	// The editor can be asked only inside a prompt turn. An ask from a
+	// background task between turns waits for the next one, its card saying
+	// so, and is refused if none opens in time.
+	s.mu.Lock()
+	gate := s.gate()
+	s.mu.Unlock()
+	if gate != nil {
+		c.notification("session/update", map[string]any{"sessionId": s.id, "update": map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "pending",
+			"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text",
+				"text": "Waiting for your approval; send a message to review it."}}}}})
+		held := time.NewTimer(heldAskWait)
+		defer held.Stop()
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-held.C:
+			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "no prompt turn opened to ask"})
+			return false, nil
+		}
 	}
 	// The tool_call goes out first, so the editor has the card this asks about.
 	if s.agent != nil {
@@ -695,6 +749,31 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": subagentCallID(p.RequestID),
 			"status": status, "content": []any{map[string]any{"type": "content", "content": text(note)}}})
+	case agent.EvSubagentSpawned:
+		// A background task gets a card of its own, open while it runs.
+		var p struct {
+			Background  bool   `json:"background"`
+			TaskID      string `json:"task_id"`
+			Description string `json:"description"`
+		}
+		if json.Unmarshal(ev.Payload, &p) != nil || !p.Background || p.TaskID == "" {
+			break
+		}
+		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": "bg-" + p.TaskID,
+			"title": "background: " + p.Description, "kind": "think", "status": "in_progress",
+			"_meta": map[string]any{acpMetaKey: map[string]any{"taskId": p.TaskID}}})
+	case agent.EvSubagentNotice:
+		// Its result completes the card, whether or not a turn is open.
+		var n agent.Notice
+		if json.Unmarshal(ev.Payload, &n) != nil || n.TaskID == "" {
+			break
+		}
+		status := "completed"
+		if n.Status != "completed" {
+			status = "failed"
+		}
+		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "bg-" + n.TaskID, "status": status,
+			"content": []any{map[string]any{"type": "content", "content": text(n.Content)}}})
 	case agent.EvTodoUpdated:
 		var p agent.TodoList
 		_ = json.Unmarshal(ev.Payload, &p)

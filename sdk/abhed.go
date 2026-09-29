@@ -144,11 +144,25 @@ type Options struct {
 	// trusted adds none of it.
 	ConfiguredTools bool
 
+	// Background is what background tasks do, with ConfiguredTools: "off"
+	// (the default) joins them, so Run returns when the work is done, as it
+	// always has; "notify" lets them outlive a Run, their results recorded
+	// and delivered to OnEvent as they arrive, for the next Run or an
+	// explicit Wake. The configuration may only tighten it. An embedded agent
+	// never starts a run on its own.
+	Background string
+
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
 	Sandbox bool
 }
+
+// TaskInfo describes one background task.
+type TaskInfo = agent.TaskInfo
+
+// ErrNothingToWake is Wake's answer when no background result waits.
+var ErrNothingToWake = agent.ErrNothingToWake
 
 // ErrUntrustedModel is New's refusal to run on another model than the one
 // ConfigDir's file names, because that file is not trusted.
@@ -329,18 +343,31 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	approver := approverFor(opts.Approve, red)
 	registry := set.Registry
 	budget := toolset.Budget(cfg)
+	// An embedded agent never wakes on its own: notify at most, and off
+	// unless the caller asks, so Run keeps returning when the work is done.
+	mode, err := agent.ParseWakeMode(opts.Background)
+	if opts.Background == "" {
+		mode, err = agent.WakeOff, nil
+	}
+	if err != nil || mode == agent.WakeAuto {
+		set.Close()
+		return nil, fmt.Errorf("abhed: Background is off or notify, not %q", opts.Background)
+	}
+	bgCfg := cfg
+	bgCfg.Subagents.Wake = string(mode.Tighter(wakeOf(cfg)))
 	if opts.ConfiguredTools {
 		// The child's events stay in the store, reached through the parent's
 		// subagent.* events; OnEvent carries this agent's own record, as the
 		// command line's JSON output does.
 		f := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red, Definitions: set.Agents,
+			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red, Definitions: set.Agents, Background: true,
 			Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg)}
 		registry = toolset.Subagents(registry, f, cfg.Limits.MaxParallelSubagents)
 	}
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
+	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeNotify))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
 	loop.Budget = budget
@@ -483,9 +510,66 @@ func (a *Agent) Flush(ctx context.Context) error { return a.fwd.flush(ctx) }
 var errClosed = errors.New("abhed: the agent is closed; no more events are delivered")
 
 // Close releases the extensions and MCP servers and stops delivering events.
+//
+// Background tasks still running are cancelled as session_closed first, and
+// Close waits a bounded time for them to record their end.
 func (a *Agent) Close() {
+	a.loop.Background.Close(agent.TermSessionClosed)
 	a.fwd.close()
 	a.set.Close()
+}
+
+// Background lists this agent's background tasks. Approve may be called for
+// one of them at any time until Close, including after Run has returned.
+func (a *Agent) Background() []TaskInfo { return a.loop.Background.Tasks() }
+
+// CancelTask stops one running background task, as a person's stop.
+func (a *Agent) CancelTask(id string) error {
+	if !a.loop.Background.Cancel(id, agent.TermUserInterrupt) {
+		return fmt.Errorf("abhed: no running background task %q", id)
+	}
+	return nil
+}
+
+// CancelTasks stops every running background task, as a person's stop, and
+// reports how many.
+func (a *Agent) CancelTasks() int { return a.loop.Background.CancelAll(agent.TermUserInterrupt) }
+
+// WaitBackground waits until no background task is running, or ctx ends.
+func (a *Agent) WaitBackground(ctx context.Context) error {
+	t := time.NewTicker(20 * time.Millisecond)
+	defer t.Stop()
+	for a.loop.Background.Live() > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	return nil
+}
+
+// Wake runs the agent on the background results waiting for it, with no new
+// prompt, and returns its answer. It is recorded as session.woken by the
+// caller. ErrNothingToWake when no result waits.
+func (a *Agent) Wake(ctx context.Context) (string, error) {
+	reason, err := a.loop.RunWoken(ctx, agent.Wake{By: "caller"})
+	if err != nil {
+		return "", err
+	}
+	if reason != agent.TermCompleted && reason != agent.TermWakeLimit {
+		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+	}
+	return a.lastMessage(), nil
+}
+
+// wakeOf is the configured wake mode, notify when unset or unreadable.
+func wakeOf(cfg config.Config) agent.WakeMode {
+	m, err := agent.ParseWakeMode(cfg.Subagents.Wake)
+	if err != nil {
+		return agent.WakeOff
+	}
+	return m
 }
 
 // Providers lists the model provider types this build supports.
