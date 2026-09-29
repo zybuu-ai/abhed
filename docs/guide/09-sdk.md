@@ -100,9 +100,12 @@ ask should be stricter than a terminal with somebody watching, not looser.
 Stored secrets are redacted as from the command line. A value in the
 operator's store (`~/.abhed/secrets.json`, or `ABHED_SECRETS_FILE`) becomes
 `[secret:NAME]` before it reaches the record, `OnEvent`, the model, the
-arguments passed to `Approve`, or the text `Run` and `RunJSON` return. The SDK
-has no option to turn this off, and `New` returns an error when the store
-exists but cannot be loaded. See [Secrets](04-permissions.md#secrets).
+arguments and decision passed to `Approve`, or what `Run` and `RunJSON` return.
+The SDK has no option to turn this off, and `New` returns an error when the
+store exists but cannot be loaded. The store is read once, when `New` is
+called. A structured answer is redacted after it is validated, so a redacted
+answer may no longer match the caller's schema, for example a `pattern`, an
+`enum` or a length bound. See [Secrets](04-permissions.md#secrets).
 
 Edits that would break a file's syntax are refused, as from the command line;
 see [Tools](05-tools.md#an-edit-that-would-break-the-file).

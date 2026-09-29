@@ -18,8 +18,8 @@ All notable changes to Abhed are recorded here. The format follows
   - `OnEvent`, the `rpc` event lines and the `session/update` stream sent to
     an ACP editor;
   - ACP permission requests and the arguments passed to `Approve`;
-  - the answer from `Run`, `RunJSON` and `rpc`, and the agent's messages
-    that `resolve` prints;
+  - the answer from `Run` and `rpc`, `ErrNoResult.LastMessage` from
+    `RunJSON`, and the agent's messages that `resolve` prints;
   - the tool output sent back to the model.
 
   The terminal, the server and console, and `abhed eval` were not affected.
@@ -29,16 +29,35 @@ All notable changes to Abhed are recorded here. The format follows
   secrets store, and the subagent redacts as its parent does. The `abhed`
   binary always set both, so this only affects a program that embeds these
   packages.
-- A secrets store that existed but could not be loaded (corrupt, readable by
-  others, or unreadable) made every path, the CLI included, run with nothing
-  to redact. Now the terminal, the server, `eval`, `acp`, `rpc`, `resolve`
+- A secrets store that existed but could not be loaded made every path, the
+  CLI included, run with nothing to redact. That covers a store that was
+  empty (0 bytes), corrupt, readable by others or unreadable. Now the terminal, the server, `eval`, `acp`, `rpc`, `resolve`
   and the SDK refuse to start with an error that names the file and the fix,
   and `abhed doctor` reports the store as not ready. A server built with no
   `Options.Redact` withholds every payload instead. A missing store still
-  means no secrets.
+  means no secrets. Upgrading: an empty file left by `touch
+  ~/.abhed/secrets.json` now stops every session; write `{}` to it or remove
+  it.
+- The store is now opened once and checked on the open file. A FIFO or
+  device at its path is refused instead of blocking or reading without end,
+  and a store over 1 MiB is refused.
+- `abhed serve` read the store once at start, so a secret added while it ran
+  was not redacted until a restart. Each server session now reads the store
+  when it starts. CLI subagents redact with their conversation's reading
+  rather than the one taken when the process started.
+- The SDK's `Approve` is now given the decision's reason and scope redacted,
+  as well as the arguments.
+- `abhed secret set` refuses a value under 8 characters. A shorter value
+  already stored still has its values redacted, but no longer has matching
+  JSON object keys rewritten, which broke decoding events for SDK and `rpc`
+  readers.
 
 ### Fixed
 
+- The SDK's `RunJSON` and `RunStructured` never delivered a result: the loop
+  runs on its own copy of the tool registry, and the `result` tool was added
+  to the original, so every run ended with `ErrNoResult`. This dates from
+  1.0.0.
 - `abhed resolve` could close its session before it printed the agent's last
   messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
 
