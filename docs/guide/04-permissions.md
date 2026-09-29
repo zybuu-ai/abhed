@@ -35,17 +35,23 @@ A rule is a tool name, optionally followed by a pattern:
 ```
 
 `*` matches anything, newlines included; the pattern is matched against the
-command or path.
+command or path, or for a tool with neither, the first of its `pattern`,
+`action`, `resource`, `host`, `namespace`, `name` or `url` arguments. So an
+MCP tool that takes only a `url` is matched on it:
+`mcp__browser__open(https://intranet.example/*)`.
 
-For `web_fetch` the pattern is matched against the URL. The tool only
-fetches a URL written in one form — lower-case scheme and host, no user
-name, no default port, no trailing dot on the host, a path of at least `/`,
-no needless `%` escapes and no `#fragment` — and refuses any other spelling,
-naming the one to use. So `"deny": ["web_fetch(https://example.com/*)"]`
-cannot be stepped around by writing `HTTPS://Example.COM:443`. Write a rule
-for a host with its scheme, the host and a `/`, and `*` after it; a host on
-another port needs its own rule. A redirect to another host is not followed
-but handed back, so it is judged as a call of its own.
+For `web_fetch` the pattern is matched against the URL exactly as the model
+wrote it, and the tool fetches that string or nothing. It only fetches a URL
+written in one form — no spaces around it, lower-case scheme and host, no user
+name, no default port, no trailing dot on the host, a path of at least `/`
+with no `.`, `..` or empty segment (raw or `%`-encoded), no needless `%`
+escapes and no `#fragment` — and refuses any other spelling. So
+`"deny": ["web_fetch(https://example.com/*)"]` cannot be stepped around by
+writing `HTTPS://Example.COM:443`, and `web_fetch(https://example.com/admin*)`
+cannot by writing `/public/../admin`. Write a rule for a host with its scheme,
+the host and a `/`, and `*` after it; a host on another port needs its own
+rule. A redirect to anything but the same URL is not followed but handed
+back, so it is judged as a call of its own.
 
 A deny or ask path pattern matches the path as the tool was given it, the
 absolute path, the path with its links resolved, and the path relative to the

@@ -118,8 +118,10 @@ func TestRefusesAHostThatResolvesInternally(t *testing.T) {
 // next time is judged by the address dialled on each hop. The internal server
 // listens on the same port on ::1, so without the check the second hop lands.
 func TestRebindingOnARedirectIsRefusedAtConnect(t *testing.T) {
+	// A redirect to the same URL is the one kind followed, so the second hop
+	// dials the name again.
 	tool, srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/next", http.StatusFound)
+		http.Redirect(w, r, r.URL.Path, http.StatusFound)
 	}))
 	ap := netip.MustParseAddrPort(strings.TrimPrefix(srv.URL, "http://"))
 	ln, err := net.Listen("tcp", netip.AddrPortFrom(netip.IPv6Loopback(), ap.Port()).String())
@@ -168,19 +170,30 @@ func TestARedirectToAnotherHostIsHandedBack(t *testing.T) {
 	}
 }
 
-func TestSameSiteRedirectsAreFollowedWithALimit(t *testing.T) {
+// A redirect to another path on the same host is handed back too: a rule on
+// that path must see it. Only a redirect to the same URL is followed, up to
+// the limit.
+func TestOnlyARedirectToTheSameURLIsFollowed(t *testing.T) {
+	var reachedNew atomic.Bool
 	tool, srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/old":
-			http.Redirect(w, r, "/new", http.StatusMovedPermanently)
-		case "/new":
-			fmt.Fprint(w, "moved here")
+			http.Redirect(w, r, "/admin/new", http.StatusMovedPermanently)
+		case "/admin/new":
+			reachedNew.Store(true)
+		case "/creds":
+			http.Redirect(w, r, "http://u:p@"+r.Host+"/creds", http.StatusFound)
 		default:
-			http.Redirect(w, r, r.URL.Path+"x", http.StatusFound)
+			http.Redirect(w, r, r.URL.Path, http.StatusFound)
 		}
 	}))
-	if res := run(t, tool, siteURL(srv, "/old")); res.IsError || !strings.Contains(res.Content, "moved here") {
-		t.Fatalf("same-site redirect not followed: %q", res.Content)
+	res := run(t, tool, siteURL(srv, "/old"))
+	if res.IsError || reachedNew.Load() || !strings.Contains(res.Content, "redirects to "+siteURL(srv, "/admin/new")) {
+		t.Fatalf("a same-host redirect to another path must be handed back: %q", res.Content)
+	}
+	res = run(t, tool, siteURL(srv, "/creds"))
+	if strings.Contains(res.Content, "u:p@") || !strings.Contains(res.Content, "not followed") {
+		t.Fatalf("a redirect carrying user info must be handed back without it: %q", res.Content)
 	}
 	if res := run(t, tool, siteURL(srv, "/loop")); !res.IsError || !strings.Contains(res.Content, "redirects") {
 		t.Fatalf("want the redirect limit, got %q", res.Content)
@@ -374,5 +387,121 @@ func TestIgnoresAProxyFromTheEnvironment(t *testing.T) {
 	res := run(t, tool, siteURL(srv, "/"))
 	if proxied.Load() || !strings.Contains(res.Content, "direct") {
 		t.Fatalf("went through the proxy: %q", res.Content)
+	}
+}
+
+// judge runs one call as the loop does: canonical arguments, the policy
+// decision on them, and the tool on the same arguments when allowed.
+func judge(t *testing.T, e *policy.Engine, tool *Tool, rawURL string) (policy.Decision, tools.Result) {
+	t.Helper()
+	args, _ := json.Marshal(map[string]string{"url": rawURL})
+	canon, _, err := tools.CanonicalArgs(tool, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := e.Evaluate("web_fetch", false, canon).Decision
+	if d != policy.Allow {
+		return d, tools.Result{}
+	}
+	return d, tool.Run(context.Background(), nil, canon)
+}
+
+// Policy and the tool judge the same string: a URL padded with spaces or a
+// line break is refused, not trimmed and fetched past a deny rule.
+func TestAPaddedURLNeverGetsPastADenyRule(t *testing.T) {
+	var reached atomic.Bool
+	tool, srv := serve(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Store(true) }))
+	e := policy.New(policy.ModeBypass)
+	if err := e.AddDeny("web_fetch(" + siteURL(srv, "/*") + ")"); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := judge(t, e, tool, siteURL(srv, "/x")); d != policy.Deny {
+		t.Fatalf("the plain URL: %s", d)
+	}
+	for _, u := range []string{" " + siteURL(srv, "/x"), siteURL(srv, "/x") + "\n", "\t" + siteURL(srv, "/x") + " "} {
+		d, res := judge(t, e, tool, u)
+		if d == policy.Allow && !res.IsError {
+			t.Errorf("%q: fetched: %q", u, res.Content)
+		}
+	}
+	if reached.Load() {
+		t.Fatal("a padded URL reached the server")
+	}
+}
+
+// A path with . or .. or an empty segment is refused, raw or encoded, so a
+// rule on a path prefix cannot be dodged, nor an allow rule widened, and the
+// refusal never offers a dotted spelling.
+func TestDotSegmentsCannotDodgeOrWidenAPathRule(t *testing.T) {
+	var hits atomic.Int32
+	tool, srv := serve(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	deny := policy.New(policy.ModeBypass)
+	_ = deny.AddDeny("web_fetch(" + siteURL(srv, "/admin*") + ")")
+	allow := policy.New(policy.ModeDefault)
+	allow.AskReadOnly = AskReadOnly(true)
+	_ = allow.AddAllow("web_fetch(" + siteURL(srv, "/public/*") + ")")
+
+	for _, p := range []string{
+		"/public/../admin/x", "/./admin/x", "//admin/x", "/public/%2e%2e/admin/x",
+		"/public/%2E%2E/admin/x", "/%2e/admin/x", "/public/..;/admin/x", "/public/%2f/admin",
+		"/public\\..\\admin",
+	} {
+		for name, e := range map[string]*policy.Engine{"deny": deny, "allow": allow} {
+			d, res := judge(t, e, tool, siteURL(srv, p))
+			if d == policy.Allow && !res.IsError {
+				t.Errorf("%s %s: fetched: %q", name, p, res.Content)
+			}
+		}
+		_, err := tool.check(siteURL(srv, p))
+		if err == nil {
+			t.Errorf("%s: accepted", p)
+		} else if strings.Contains(err.Error(), "/..") || strings.Contains(err.Error(), "/./") || strings.Contains(err.Error(), "write the URL as") {
+			t.Errorf("%s: the refusal offers a spelling: %v", p, err)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("the server was reached %d times", hits.Load())
+	}
+	// A trailing slash is ordinary.
+	if _, err := tool.check(siteURL(srv, "/public/docs/")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMoreIPv6FormsAreRefused(t *testing.T) {
+	for _, a := range []string{"::127.0.0.1", "::ffff:0:a00:1", "::", "2001:10::1", "3fff::1", "192.88.99.1"} {
+		why := blockedAddr(netip.MustParseAddr(a))
+		if why == "" {
+			t.Errorf("%s allowed", a)
+		}
+	}
+	if why := blockedAddr(netip.MustParseAddr("::")); why != "an unspecified address" {
+		t.Errorf("%q", why)
+	}
+	if why := blockedAddr(netip.MustParseAddr("2606:4700::1111")); why != "" {
+		t.Errorf("a public address refused: %s", why)
+	}
+}
+
+// A value written in another case, such as into a host name, which is
+// lower-cased on the way out, is still refused.
+func TestASecretIsFoundWhateverItsCase(t *testing.T) {
+	store := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := store.Set("TOKEN", "S3cr3tValue123"); err != nil {
+		t.Fatal(err)
+	}
+	tool := &Tool{Secrets: store.LoadRedactor}
+	if _, err := tool.check("https://s3cr3tvalue123.attacker.example/"); err == nil || !strings.Contains(err.Error(), "[secret:TOKEN]") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestHTMLTextWithAnUnclosedHeadAndAQuotedBracket(t *testing.T) {
+	_, text := htmlText(`<html><head><title>T</title><body><p>Body text</p><a href="/x" title="a>b">link</a>`, nil)
+	if !strings.Contains(text, "Body text") {
+		t.Errorf("the body was lost:\n%s", text)
+	}
+	if strings.Contains(text, `b">`) {
+		t.Errorf("attribute text leaked:\n%s", text)
 	}
 }

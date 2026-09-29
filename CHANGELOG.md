@@ -275,15 +275,18 @@ All notable changes to Abhed are recorded here. The format follows
   and enabled on its own with `web_fetch.enabled`; `web_fetch.allowed_hosts`
   limits it to named hosts. It refuses other schemes, any loopback, private,
   link-local, metadata or reserved address (checked where it connects, on
-  every redirect hop), a URL holding a stored secret, and a URL not written
-  in its one form, so a `web_fetch(https://host/*)` rule cannot be stepped
-  around. A redirect to another host is handed back as a new call. Policy
-  rules match the URL: `url` is now a subject key. With no `allowed_hosts`,
-  each call asks in the default, accept-edits and auto modes unless an allow
-  rule such as `web_fetch(https://docs.python.org/*)` matches, since a URL
-  can carry data to any site; "always allow" is offered for the site. Plan
-  and bypass modes treat it as any read-only tool, and with `allowed_hosts`
-  set, calls to those hosts do not ask.
+  every redirect hop), a URL holding a stored secret in any case, and a URL
+  not written in its one form: no surrounding spaces, and no `.`, `..` or
+  empty path segment, raw or encoded. So a rule on a host or a path prefix
+  cannot be stepped around. A redirect to anything but the same URL (or its
+  https upgrade) is handed back as a new call. Policy rules match the URL:
+  `url` is now a subject key. With no `allowed_hosts`, each call asks in the
+  default, accept-edits, auto and plan modes unless an allow rule such as
+  `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
+  to any site; "always allow" is offered for any URL on the site. Bypass runs
+  it, a run with no one to ask refuses it, and `abhed eval`, which approves
+  every ask, fetches. With `allowed_hosts` set, calls to those hosts do not
+  ask.
 
 ### Changed
 
@@ -302,6 +305,10 @@ All notable changes to Abhed are recorded here. The format follows
   overview shows it.
 - An argument named `url` that a tool's schema does not declare is now
   refused, as the other subject keys are.
+- An MCP or extension tool whose only subject-like argument is `url` now has
+  that URL as its policy subject, so an argument-scoped rule such as
+  `mcp__browser__open(https://intranet/*)` matches it. Deny and ask rules
+  that never fired now do, and an allow rule written that way now approves.
 
 ## [1.2.1] - 2026-09-28
 

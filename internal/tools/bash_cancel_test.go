@@ -292,6 +292,7 @@ func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 		{"succeeded", off, `echo "Could not resolve host: in a log file"`, false},
 		{"a local server not running", off, `echo "curl: (7) Failed to connect to localhost port 8080"; exit 7`, false},
 		{"an ordinary failure", off, `echo "FAIL: TestParse"; exit 1`, false},
+		{"a rust build error", off, `echo "error[E0433]: failed to resolve: use of undeclared crate or module ` + "`serde`" + `"; exit 101`, false},
 	} {
 		res := run(t, tc.bash, s, bashArgs{Command: tc.command, Description: "x"})
 		if got := strings.Contains(res.Content, "this sandbox has no network access"); got != tc.hint {

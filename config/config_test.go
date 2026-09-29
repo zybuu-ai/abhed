@@ -195,6 +195,7 @@ func TestWebFetchAllowedHostsAreValidated(t *testing.T) {
 		"docs.python.org": true, "*.github.com": true, "localhost": true,
 		"https://docs.python.org": false, "docs.python.org/3": false, "example.com:443": false,
 		"*": false, "*.": false, "a..b": false, "": false, "ex ample.com": false,
+		"*.com": false, "*.co.uk": true,
 	} {
 		c := Default()
 		c.WebFetch.AllowedHosts = []string{h}

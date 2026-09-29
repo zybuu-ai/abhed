@@ -33,6 +33,13 @@ var blockedPrefixes = func() []netip.Prefix {
 		"fec0::/10",          // site-local, deprecated but still routed in places
 		"169.254.169.254/32", // cloud metadata; link-local covers it, named for the reader
 		"fd00:ec2::254/128",  // the EC2 metadata service over IPv6
+		"::/96",              // IPv4-compatible: ::127.0.0.1 and the like
+		"::ffff:0:0:0/96",    // SIIT: translates to an IPv4 address
+		"192.88.99.0/24",     // 6to4 relay anycast
+		"2001:10::/28",       // ORCHID
+		"2001:20::/28",       // ORCHIDv2
+		"3fff::/20",          // documentation
+		"5f00::/16",          // segment routing
 	} {
 		out = append(out, netip.MustParsePrefix(s))
 	}
@@ -46,21 +53,21 @@ func blockedAddr(a netip.Addr) string {
 	case !a.IsValid():
 		return "not an address"
 	case a.IsLoopback():
-		return "loopback"
+		return "a loopback address"
 	case a.IsPrivate():
-		return "private"
+		return "a private address"
 	case a.IsLinkLocalUnicast(), a.IsLinkLocalMulticast():
-		return "link-local"
+		return "a link-local address"
 	case a.IsUnspecified():
-		return "unspecified"
+		return "an unspecified address"
 	case a.IsMulticast(), a.IsInterfaceLocalMulticast():
-		return "multicast"
+		return "a multicast address"
 	case !a.IsGlobalUnicast():
 		return "not a public unicast address"
 	}
 	for _, p := range blockedPrefixes {
 		if p.Contains(a) {
-			return "reserved or internal"
+			return "a reserved or internal address"
 		}
 	}
 	return ""
@@ -76,9 +83,9 @@ type blockedError struct {
 
 func (e *blockedError) Error() string {
 	if e.host != "" && e.host != e.addr.String() {
-		return fmt.Sprintf("%s resolves to %s, a %s address, which web_fetch never reaches", e.host, e.addr, e.why)
+		return fmt.Sprintf("%s resolves to %s, %s, which web_fetch never reaches", e.host, e.addr, e.why)
 	}
-	return fmt.Sprintf("%s is a %s address, which web_fetch never reaches", e.addr, e.why)
+	return fmt.Sprintf("%s is %s, which web_fetch never reaches", e.addr, e.why)
 }
 
 // dial resolves the host itself and connects only to an address it checked,
@@ -176,6 +183,9 @@ func canonical(raw string) (*url.URL, error) {
 	if port != "" {
 		hostport += ":" + port
 	}
+	if err := plainPath(u.Path); err != nil {
+		return nil, err
+	}
 	out := &url.URL{Scheme: scheme, Host: hostport, Path: u.Path, RawQuery: u.RawQuery}
 	if out.Path == "" {
 		out.Path = "/"
@@ -203,11 +213,40 @@ func hostAllowed(list []string, host string) bool {
 	return false
 }
 
-// sameSite reports whether a redirect may be followed without going back
-// through policy: the same host, and the same scheme and port, or the upgrade
-// from http to https on the default ports.
-func sameSite(from, to *url.URL) bool {
-	if from.Hostname() != to.Hostname() {
+// plainPath refuses a path a server would rewrite before acting on it: a .
+// or .. segment, an empty one, or a backslash, decoded or not (u.Path is
+// decoded). A rule on /admin must not be dodged by /public/../admin, and the
+// refusal must not offer that spelling, so these are refused, not cleaned.
+func plainPath(p string) error {
+	if strings.Contains(p, "\\") {
+		return errors.New("the path has a backslash; write it with / only")
+	}
+	if p == "" || p == "/" {
+		return nil
+	}
+	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for i, seg := range segs {
+		// A trailing slash leaves one empty last segment, which is ordinary.
+		if seg == "" && i == len(segs)-1 {
+			continue
+		}
+		// Some servers drop ;parameters before resolving, so /..;/ is .. to them.
+		name, _, _ := strings.Cut(seg, ";")
+		if name == "" || name == "." || name == ".." {
+			return errors.New("the path has an empty, . or .. segment; write the path " +
+				"of the page itself, with each folder named once")
+		}
+	}
+	return nil
+}
+
+// sameTarget reports whether a redirect may be followed without going back
+// through policy: to the very same URL, or its upgrade from http to https on
+// the default ports. Anything else, even on the same host, could be a path a
+// rule judges differently.
+func sameTarget(from, to *url.URL) bool {
+	if to.User != nil || from.Hostname() != to.Hostname() ||
+		from.EscapedPath() != to.EscapedPath() || from.RawQuery != to.RawQuery {
 		return false
 	}
 	if from.Scheme == to.Scheme && from.Port() == to.Port() {

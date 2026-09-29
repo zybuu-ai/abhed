@@ -342,21 +342,23 @@ pytest are unaffected.
 
 **`web_search` and `web_fetch`, when enabled**, are the two narrow,
 structured exceptions: a Go tool in the Abhed process makes the request, not
-the sandboxed shell, so a compromised session cannot turn either into an
-arbitrary outbound connection. Both are off by default (`web_search.enabled`
+the sandboxed shell. `web_search` sends a query to the configured provider.
+`web_fetch` sends one HTTP GET per call to one public host, on any port,
+and nothing else: no other method, no body, no connection the model holds. Both are off by default (`web_search.enabled`
 and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. `web_fetch` makes
 one GET to one URL that policy has judged: it refuses schemes other than
 http and https, and any loopback, private, link-local, metadata or reserved
 address, checked on the address it connects to, on every redirect hop
-(`internal/webfetch/guard.go`). It follows a redirect only within the same
-site, and hands one to another host back to the model as a new call. It
-ignores proxy settings from the environment, refuses a URL that holds a
-stored secret, and can be held to an operator's host list
-(`web_fetch.allowed_hosts`). A URL is a channel out: whatever the model puts
-in it reaches the site, so without a host list every call asks in the
-`default`, `accept-edits` and `auto` modes unless an operator's allow rule
-names it (`Engine.AskReadOnly` in `internal/policy/policy.go`).
+(`internal/webfetch/guard.go`). It follows a redirect only to the same URL
+or its https upgrade, and hands any other back to the model as a new call.
+It ignores proxy settings from the environment, refuses a URL that holds a
+stored secret as written or percent-encoded (not one encoded otherwise), and
+can be held to an operator's host list (`web_fetch.allowed_hosts`). A URL is
+a channel out: whatever the model puts in it reaches the site. Without a
+host list every call asks, in plan mode too, unless an operator's allow rule
+names it (`Engine.AskReadOnly` in `internal/policy/policy.go`); bypass mode
+and `abhed eval` do not ask, and a run with no one to ask refuses it.
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic

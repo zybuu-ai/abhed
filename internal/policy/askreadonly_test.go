@@ -6,7 +6,7 @@ import (
 )
 
 // A read-only tool that can carry data out asks in the modes that would run
-// it unasked, unless an allow rule names it; plan and bypass are unchanged.
+// it unasked, plan included, unless an allow rule names it; bypass runs it.
 func TestAskReadOnlyAsksUnlessAllowed(t *testing.T) {
 	const why = "web_fetch asks: no allowed_hosts configured"
 	args, _ := json.Marshal(map[string]string{"url": "https://example.com/weather"})
@@ -22,7 +22,8 @@ func TestAskReadOnlyAsksUnlessAllowed(t *testing.T) {
 		{ModeAuto, []string{"web_fetch(https://example.com/*)"}, Allow, "allow"},
 		{ModeDefault, []string{"web_fetch(https://example.com/*)"}, Allow, "allow"},
 		{ModeDefault, []string{"web_fetch(https://other.com/*)"}, Ask, "default"},
-		{ModePlan, nil, Allow, "mode"},
+		{ModePlan, nil, Ask, "default"},
+		{ModePlan, []string{"web_fetch(https://example.com/*)"}, Allow, "allow"},
 		{ModeBypass, nil, Allow, "mode"},
 	} {
 		e := New(tc.mode)

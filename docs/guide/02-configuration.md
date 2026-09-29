@@ -165,11 +165,19 @@ metadata or reserved address, whatever the host name resolves to.
 `*.` and a domain for any host under it (not the domain itself). An entry
 with a scheme, port or path is refused at load. Without it, any public site
 can be fetched, and a URL can carry whatever the model puts in it, so every
-call asks in the `default`, `accept-edits` and `auto` modes (the reason reads
-"web_fetch asks: no allowed_hosts configured") unless an allow rule such as
-`"allow": ["web_fetch(https://docs.python.org/*)"]` matches. `plan` and
-`bypass` treat it as any read-only tool. A headless run, which has no one to
-ask, needs such an allow rule or `allowed_hosts`. `max_chars` is the most text
+call asks in the `default`, `accept-edits`, `auto` and `plan` modes (the
+reason reads "web_fetch asks: no allowed_hosts configured") unless an allow
+rule such as `"allow": ["web_fetch(https://docs.python.org/*)"]` matches.
+`plan` asks too, because a console client can narrow any session to it.
+`bypass` runs it. A headless run, which has no one to ask, needs such an
+allow rule or `allowed_hosts`; `abhed eval` approves every ask, so an eval
+run with `web_fetch` on and no host list fetches any public URL.
+
+A wildcard over a single label, such as `*.com`, is refused. Be careful with
+wildcards over shared hosting — `*.github.io`, `*.vercel.app`,
+`*.s3.amazonaws.com`, `*.githubusercontent.com` — where anyone can publish a
+site: listing one lets any of those sites receive, without asking, whatever
+the model puts in a URL. `max_chars` is the most text
 one call returns; unset means 20,000, and the most is 100,000. A longer page
 is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 

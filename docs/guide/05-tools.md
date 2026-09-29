@@ -36,12 +36,15 @@ headings, paragraphs, list items and links, with scripts and styles removed.
 Plain text, JSON, XML and other text types come back as they are; images,
 PDFs and other binary types are refused. It reads up to 5 MiB of a page and
 returns up to `web_fetch.max_chars` characters per call, with the `start`
-to pass to read on. The result is tagged untrusted like any tool output.
+to pass to read on. Each part is a new request, so a page that changes
+between parts can shift. The result is tagged untrusted like any tool output.
 
 The request is made by Abhed, not the sandboxed shell, and every call is
 judged by policy and recorded like any other. With no
-`web_fetch.allowed_hosts`, each call asks unless an allow rule matches; the
-approval offers "always allow" for the site (`web_fetch(https://host/*)`).
+`web_fetch.allowed_hosts`, each call asks unless an allow rule matches, in
+plan mode too; the approval offers "always allow" for the site
+(`web_fetch(https://host/*)`), which covers any URL on it for the session,
+and whatever such a URL carries.
 What it refuses:
 
 - a scheme other than `http` or `https`, and a URL with a user name or
@@ -52,14 +55,18 @@ What it refuses:
   that resolves to a public address once and an internal one the next time
   is refused;
 - a URL that holds a value from the secrets store, as written or
-  percent-encoded;
+  percent-encoded, in any case. A value encoded otherwise (base64, hex) or
+  split across the URL is not caught: the ask, or the host list, is the
+  control for that;
 - a host not on `web_fetch.allowed_hosts`, when that is set;
 - a URL written in any but its one form (see
   [Permissions](04-permissions.md#rules)).
 
-It follows up to five redirects within the same site, and the upgrade from
-`http` to `https`. A redirect to another host is handed back to the model,
-which fetches it as a new call if it needs it. It ignores `HTTP_PROXY` and
+It follows a redirect only to the same URL or its upgrade from `http` to
+`https`, up to five. Any other redirect, including to another path on the
+same host, is handed back to the model, without any user name or password
+it carried, and the model fetches it as a new call if it needs it, judged by
+the rules again. It ignores `HTTP_PROXY` and
 the other proxy variables, since through a proxy it could not check where
 the connection goes.
 

@@ -273,9 +273,9 @@ type Engine struct {
 	Roots func() []string
 
 	// AskReadOnly names read-only tools that still ask in the default,
-	// accept-edits and auto modes, each with the reason given. An allow rule
-	// approves them; plan and bypass modes treat them as any read-only tool.
-	// It is for a tool whose reads can carry data out, such as web_fetch.
+	// accept-edits, auto and plan modes, each with the reason given. An allow
+	// rule approves them and bypass mode runs them. It is for a tool whose
+	// reads can carry data out, such as web_fetch.
 	AskReadOnly map[string]string
 }
 
@@ -507,7 +507,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		if mutates {
 			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 		}
-		return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+		// A read that can carry data out is not made safe by plan mode, which
+		// any client may narrow a session to: it goes on to the allow rules and asks.
+		if _, asks := e.AskReadOnly[tool]; !asks {
+			return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+		}
 	case ModeBypass:
 		if e.Managed {
 			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy", Scope: "", Step: "mode"}

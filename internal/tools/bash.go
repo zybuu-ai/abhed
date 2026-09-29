@@ -387,7 +387,7 @@ var networkFailures = regexp.MustCompile(`(?i)could not resolve host|could not r
 	`getaddrinfo (?:enotfound|eai_again)|\beai_again\b|\benotfound\b|` +
 	`dial tcp: lookup [^ ]+|failed to establish a new connection|` +
 	`unable to access 'https?://|could not resolve hostname|` +
-	`temporary failure resolving|failed to resolve|unable to resolve host address`)
+	`temporary failure resolving|failed to resolve (?:host|address|hostname|name)|unable to resolve host address`)
 
 // failedConnect is curl's message for an address it could not reach, which
 // counts unless the address is loopback.

@@ -807,7 +807,7 @@ func (c Config) Validate() error {
 	for _, h := range c.WebFetch.AllowedHosts {
 		if !validHostPattern(h) {
 			return fmt.Errorf("web_fetch.allowed_hosts: %q is not a host name or *.domain "+
-				"(no scheme, port or path)", h)
+				"(no scheme, port or path; a wildcard needs a domain of two labels or more)", h)
 		}
 	}
 	switch c.Storage.Driver {
@@ -939,8 +939,12 @@ func (c ContextConfig) OffloadFraction() float64 {
 // allowlist can match. A URL or a pattern of any other shape would match
 // nothing, and an operator would believe it did.
 func validHostPattern(h string) bool {
-	h = strings.TrimPrefix(h, "*.")
+	h, wild := strings.CutPrefix(h, "*.")
 	if h == "" || len(h) > 253 {
+		return false
+	}
+	// *.com would allow every site under a top-level domain.
+	if wild && !strings.Contains(h, ".") {
 		return false
 	}
 	for _, label := range strings.Split(h, ".") {

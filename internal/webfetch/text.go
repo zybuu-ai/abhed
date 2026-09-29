@@ -85,7 +85,7 @@ func htmlText(page string, base *url.URL) (title, text string) {
 			i += 4 + end + 3
 			continue
 		}
-		gt := strings.IndexByte(rest, '>')
+		gt := tagEnd(rest)
 		if gt < 0 {
 			break
 		}
@@ -101,10 +101,14 @@ func htmlText(page string, base *url.URL) (title, text string) {
 		}
 
 		if skip != "" {
-			if closing && name == skip {
+			switch {
+			case closing && name == skip:
 				skip = ""
-			} else if name == "title" && skip == "head" {
+			case name == "title" && skip == "head":
 				inTitle = !closing
+			case name == "body" && skip == "head" && !closing:
+				// </head> may be left out; the body still starts.
+				skip = ""
 			}
 			continue
 		}
@@ -176,6 +180,25 @@ func htmlText(page string, base *url.URL) (title, text string) {
 	text = strings.TrimSpace(reBlank.ReplaceAllString(strings.Join(lines, "\n"), "\n\n"))
 	title = strings.TrimSpace(reSpaces.ReplaceAllString(html.UnescapeString(titleB.String()), " "))
 	return title, text
+}
+
+// tagEnd finds the > that ends the tag s starts with, skipping any inside a
+// quoted attribute value, or -1.
+func tagEnd(s string) int {
+	var quote byte
+	for i := 1; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '>':
+			return i
+		}
+	}
+	return -1
 }
 
 // hrefOf is a link's target made absolute, or "" for one that is not a page:

@@ -39,7 +39,8 @@ const (
 )
 
 // AskReason is the policy reason a call asks when no host list is set.
-const AskReason = "web_fetch asks: no allowed_hosts configured, so any public site could receive what the URL carries"
+const AskReason = "web_fetch asks: no allowed_hosts configured, so any public site could receive what the URL carries. " +
+	"Always allow covers any URL on this site for the session, and whatever such a URL carries"
 
 // AskReadOnly is the policy setting for a deployment's web_fetch: it asks
 // unless an allow rule matches, when no host list limits it.
@@ -82,7 +83,8 @@ func (t *Tool) Description() string {
 		"returns its text. Use it for a URL the user gives, a search result whose " +
 		"snippet is not enough, or documentation at a known address. Internal and " +
 		"private addresses are refused. Write the URL plainly (lower-case host, no " +
-		"#fragment). Long pages come in parts: call again with `start` to read on."
+		"#fragment, no . or .. in the path). Long pages come in parts: call again with " +
+		"`start` to read on; each part is a new request."
 	if len(t.AllowedHosts) > 0 {
 		d += " This deployment fetches only these hosts: " + strings.Join(t.AllowedHosts, ", ") + "."
 	}
@@ -120,13 +122,17 @@ func (t *Tool) Precheck(_ *tools.Session, raw json.RawMessage) error {
 // address check happens again at connect time; this one only gives a clear
 // answer early for an address written as a literal.
 func (t *Tool) check(raw string) (*url.URL, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	// Judged exactly as given: policy matched this string, so the tool fetches
+	// it or nothing, never a trimmed or cleaned version.
+	if strings.TrimSpace(raw) == "" {
 		return nil, errors.New("url is required")
 	}
 	// First, so no later message can echo a secret back.
 	if err := t.secretFree(raw); err != nil {
 		return nil, err
+	}
+	if raw != strings.TrimSpace(raw) {
+		return nil, errors.New("the URL has spaces or line breaks around it; pass it without them")
 	}
 	u, err := canonical(raw)
 	if err != nil {
@@ -178,8 +184,10 @@ func (t *Tool) secretFree(raw string) error {
 	if p, err := url.PathUnescape(raw); err == nil {
 		forms = append(forms, p)
 	}
+	// Case is ignored: a host is lower-cased on the way out, so a value written
+	// into a subdomain would otherwise pass.
 	for _, f := range forms {
-		if label, found := red.Find(f); found {
+		if label, found := red.FindFold(f); found {
 			if label == "" {
 				return errors.New("the secrets store could not be read, so the URL cannot be checked for a stored value; not fetched")
 			}
@@ -221,8 +229,9 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 			MaxResponseHeaderBytes: 64 << 10,
 			ForceAttemptHTTP2:      true,
 		},
-		// A redirect within the same site is followed; one to another host is
-		// handed back, so that URL goes through policy as a call of its own.
+		// Only a redirect to the same URL, or its upgrade to https, is
+		// followed; any other is handed back, so its target goes through
+		// policy as a call of its own, path rules included.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			hops++
 			if hops > maxRedirects {
@@ -232,7 +241,7 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("redirected to a %s: URL, which is not fetched", req.URL.Scheme)
 			}
-			if !sameSite(prev, req.URL) {
+			if !sameTarget(prev, req.URL) {
 				elsewhere = req.URL
 				return http.ErrUseLastResponse
 			}
@@ -257,11 +266,11 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	final := resp.Request.URL.String()
+	final := withoutUser(resp.Request.URL)
 	if elsewhere != nil {
 		return tools.Result{Content: fmt.Sprintf(
-			"%s redirects to %s, on another site. It was not followed: call web_fetch "+
-				"with that URL if you need it, and it is checked like any other call.", final, withoutUser(elsewhere))}
+			"%s redirects to %s. It was not followed: call web_fetch with that URL if "+
+				"you need it, and it is checked like any other call.", final, withoutUser(elsewhere))}
 	}
 
 	maxBytes := t.MaxBytes
