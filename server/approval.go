@@ -237,6 +237,18 @@ func writeRecordedNotApplied(w http.ResponseWriter) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"recorded": true, "applied": false})
 }
 
+// stateAfterAsk is the session's state once an ask has ended: running while a
+// run is live, else what it was before the ask, or done. Called with mu held.
+func (l *liveSession) stateAfterAsk(prior string) string {
+	switch {
+	case l.ran != nil:
+		return "running"
+	case prior == "idle" || prior == "done":
+		return prior
+	}
+	return "done"
+}
+
 // Approve implements agent.Approver for a server session: it publishes the
 // pending request and blocks until a reviewer answers or the session is
 // cancelled. This is what enables headless runs with a human gate.
@@ -258,6 +270,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	p := &pendingApproval{RequestID: agent.RequestIDOf(ctx), Tool: tool, Args: args, Reason: res.Reason, Scope: offer,
 		ready: make(chan struct{}), answer: make(chan struct{}), final: make(chan struct{})}
 	l.mu.Lock()
+	prior := l.State
 	l.State = "waiting_approval"
 	l.pending = p
 	l.mu.Unlock()
@@ -265,7 +278,9 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	defer func() {
 		l.mu.Lock()
 		l.move(p, askEnded, false, "") // a no-op once taken
-		l.State = "running"
+		// The state that fits now, not a forced "running": an ask can outlive
+		// the run it came from, and must not revive a session that ended.
+		l.State = l.stateAfterAsk(prior)
 		if l.pending == p {
 			l.pending = nil
 		}

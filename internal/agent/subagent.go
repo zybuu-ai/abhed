@@ -616,11 +616,7 @@ type parentLink struct {
 
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
 func (l *Loop) asParent(ctx context.Context) context.Context {
-	l.asksOnce.Do(func() { l.asks = make(chan struct{}, 1) })
-	asks := l.asks
-	if p, ok := ctx.Value(parentKey{}).(*parentLink); ok {
-		asks = p.asks
-	}
+	asks := l.askQueue(ctx)
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
 		adapter: l.Adapter, provider: l.Provider, loop: l,

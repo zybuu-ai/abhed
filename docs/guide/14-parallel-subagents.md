@@ -52,6 +52,14 @@ is not available refuses that call, and no other model is used instead.
 | SDK | with `Options.ConfiguredTools` | your `Approve`, or refused without one |
 | `abhed eval` | yes | the eval's own approver, which approves (eval refuses to run under a managed configuration) |
 
+Asks reach the person one at a time for the whole tree: a subagent's, a
+nested subagent's and the parent's own share one queue, so the console's one
+pending request, the terminal and the editor's permission dialog never hold
+two at once. An ask still waiting when its run is cancelled gives up without
+being shown. On a server an ask that ends leaves the session as it was
+(`running` while a run is live, otherwise `done` or `idle`), and a message
+sent while no run is live starts one rather than being queued as steering.
+
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
 subagents run in, and record into, that person's session only.

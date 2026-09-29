@@ -1043,7 +1043,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	case policy.Ask:
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
-		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
+		approved, err := l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.

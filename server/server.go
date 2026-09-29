@@ -2071,7 +2071,9 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 		return
 	}
-	busy := live.State == "running" || live.State == "waiting_approval"
+	// Busy means a run is live, not an ask pending: an ask can wait with no
+	// run, and a message queued then would reach no loop that runs it.
+	busy := live.ran != nil
 	if busy && !req.Interrupt {
 		// A message to a working agent steers it rather than being refused.
 		// Interrupting and re-asking throws away everything the run has
@@ -2108,7 +2110,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		live.mu.Lock()
-		if live.State != "done" {
+		if live.ran != nil {
 			live.mu.Unlock()
 			WriteError(w, http.StatusConflict, "another turn started first")
 			return
