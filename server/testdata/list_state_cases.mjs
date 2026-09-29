@@ -23,4 +23,7 @@ current = 's1'; live = false; stats.reason = 'shutdown';
 paintOpenPill();
 check('the open session\'s pill shows the drain as it ends', open.className === 'pill shutdown' && open.textContent === 'shutdown');
 check('another session\'s pill is left alone', other.className === 'pill running' && other.textContent === 'running');
+const badges = listBadges({background:2, pending_ask:{tool:'bash', subagent:'scan'}}).map(b => b.textContent);
+check('a row names its background tasks and a waiting approval', badges.join('|') === 'background 2|approval waiting');
+check('a quiet row has no badges', listBadges({state:'done'}).length === 0);
 if(!ok) process.exit(1);

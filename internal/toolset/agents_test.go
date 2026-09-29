@@ -149,6 +149,11 @@ func TestBackgroundPolicyCeiling(t *testing.T) {
 	if p := BackgroundPolicy(cfg, agent.WakeAuto); p.Lifetime != 480*time.Minute || p.MaxLive != 4 {
 		t.Fatalf("policy: %+v", p)
 	}
+	// The session's own switch cannot go above the configured mode.
+	cfg.Subagents.Wake = "notify"
+	if p := BackgroundPolicy(cfg, agent.WakeAuto); p.Ceiling != agent.WakeNotify {
+		t.Fatalf("ceiling %s above the configured notify", p.Ceiling)
+	}
 }
 
 // Subagents registers task_status and task_cancel only with background.

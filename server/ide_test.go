@@ -88,7 +88,7 @@ func TestIDEChatLeavesOutThePersonsOwnCalls(t *testing.T) {
 globalThis.__root = new El('div');
 El.prototype.addEventListener = () => {};
 globalThis.__added = []; globalThis.__logged = 0; globalThis.__changes = 0; globalThis.__agentTerm = [];
-let live = true, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
+let live = true, bgLive = false, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
 const calls = new Map(), mineCalls = new Set();
 const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
 const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}, askApproval = () => {};
@@ -146,7 +146,7 @@ El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[typ
 globalThis.__focused = []; El.prototype.focus = function(){ __focused.push(this); };
 El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
 Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
-let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
+let current = null, live = false, bgLive = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '', sessionList = [{id:'s1', prompt:'x'}];
 const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map();
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
@@ -180,7 +180,7 @@ const api = async (url, opts) => {
 // drops, a shell's stream and a failed request all send the page to ask.
 func TestIDEShowsWhenTheServerHasGone(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
-let current = 's1', live = true, es = null, lastSeq = 0, leaving = false, activeTerm = null;
+let current = 's1', live = true, bgLive = false, es = null, lastSeq = 0, leaving = false, activeTerm = null;
 let connState = null, connTimer = 0, connWait = 0, signedIn = false, signInGone = false;
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
 const el = (tag, cls, text) => { const n = new El(tag); if(cls) n.className = cls; if(text != null) n.textContent = text; return n; };

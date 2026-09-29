@@ -25,6 +25,8 @@ type bgAdapter struct {
 	mu    sync.Mutex
 	gates map[string]chan struct{}
 	slow  time.Duration
+	// askOnWake answers a background result with a command that asks.
+	askOnWake bool
 }
 
 func newBGAdapter(names ...string) *bgAdapter {
@@ -60,6 +62,9 @@ func (a *bgAdapter) Complete(ctx context.Context, req model.Request) (<-chan mod
 		c := model.ToolCall{ID: "t" + name, Name: "task",
 			Args: json.RawMessage(`{"prompt":"` + name + `","description":"` + name + `","background":true}`)}
 		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case last.Role == model.RoleTool && strings.HasPrefix(last.ToolCallID, "bgn_") && a.askOnWake:
+		c := model.ToolCall{ID: "w" + last.ToolCallID, Name: "bash", Args: json.RawMessage(`{"command":"touch woke.txt"}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
 	default:
 		if last.Role == model.RoleTool {
 			time.Sleep(a.slow) // the run stays live a while after the start
@@ -81,6 +86,10 @@ type bgServer struct {
 }
 
 func newBGServer(t *testing.T, st EventStore, names ...string) *bgServer {
+	return newBGServerWith(t, st, nil, names...)
+}
+
+func newBGServerWith(t *testing.T, st EventStore, tune func(*config.Config, *Options), names ...string) *bgServer {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
@@ -88,9 +97,11 @@ func newBGServer(t *testing.T, st EventStore, names ...string) *bgServer {
 	if st == nil {
 		st = agent.NewMemStore()
 	}
-	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{}), Store: st})
-	agent.TurnEndWait = time.Second
-	t.Cleanup(func() { agent.TurnEndWait = 5 * time.Second })
+	opts := Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{}), Store: st}
+	if tune != nil {
+		tune(&opts.Config, &opts)
+	}
+	s := New(opts)
 	return &bgServer{t: t, s: s, h: s.Handler(), ad: ad, store: st, ended: make(chan string, 4)}
 }
 

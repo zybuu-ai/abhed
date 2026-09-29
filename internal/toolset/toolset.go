@@ -335,9 +335,12 @@ func BackgroundPolicy(cfg config.Config, ceiling agent.WakeMode) agent.Backgroun
 	if minutes <= 0 {
 		minutes = 60
 	}
+	// The session's own switch may go no higher than what the configuration
+	// and the surface both allow.
+	mode = mode.Tighter(ceiling)
 	return agent.BackgroundPolicy{
-		Wake:            mode.Tighter(ceiling),
-		Ceiling:         ceiling,
+		Wake:            mode,
+		Ceiling:         mode,
 		MaxLive:         cfg.Limits.MaxBackgroundSubagents,
 		Lifetime:        time.Duration(min(minutes, 480)) * time.Minute,
 		MaxWakesPerHour: cfg.Subagents.MaxWakesPerHour,

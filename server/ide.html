@@ -120,7 +120,8 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .plus{color:var(--add)}.minus{color:var(--del)}
 .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
 .dot.running{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}
+.dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}.dot.background{background:var(--warn)}
+.badge{font-size:10px;padding:0 4px;border-radius:3px;color:var(--muted)}.badge.warn{color:var(--warn)}
 .dot.done.error,.dot.done.max_turns,.dot.done.max_budget,.dot.done.retry_exhausted,.dot.done.policy_denied,.dot.done.stalled,.dot.done.deadline{background:var(--del)}
 .card{margin:6px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
 .card .t{display:flex;gap:8px;align-items:baseline}
@@ -502,6 +503,7 @@ function signInEnded(why){
 }
 
 /* ---------------------------------------------------------------- state */
+let bgLive = false; // the open session still has background tasks, with no run
 let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let caps = null, streaming = null, streamBody = null, todoNode = null, thinkBlock = null;
 const calls = new Map();            // call_id -> {node, res, tool, subject, args, out}
@@ -1141,6 +1143,8 @@ async function loadSessions(){
   for(const s of sessionList){
     const row = el('button', 'row'); row.type = 'button'; row.setAttribute('aria-current', String(s.id === current));
     row.appendChild(el('span', 'dot ' + s.state + (s.reason ? ' ' + s.reason : ''))); row.appendChild(el('span', 'name', sessionLabel(s)));
+    if(s.background) row.appendChild(el('span', 'badge', 'bg ' + s.background));
+    if(s.pending_ask) row.appendChild(el('span', 'badge warn', 'approval waiting'));
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
   }
 }
@@ -1264,7 +1268,7 @@ function connect(id){
   es.onopen = () => setConn(true);
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
   es.onerror = () => { if(!es) return; es.close(); es = null;
-    if(live && current === id){ connLost(true); setTimeout(() => { if(current === id && !es) connect(id); }, 1000); }
+    if((live || bgLive) && current === id){ connLost(true); setTimeout(() => { if(current === id && !es) connect(id); }, 1000); }
     else{ connLost(false); if(current === id) loadHawkeye(); } };
 }
 // Messages still queued on the server, for a page opened while a run is going.
@@ -1586,6 +1590,11 @@ function render(ev){
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  // A background task's result: the subagent's summary, never the person's words.
+  case 'subagent.notice': { const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
+    add(el('div', 'sys bgnotice', 'background: ' + (p.description || p.task_id || '') + ' finished (' + (p.status || p.reason || '') + turns + '); result added to the conversation'));
+    if(p.content) add(el('div', 'sys bgbody', p.content)); break; }
+  case 'session.woken': add(el('div', 'sys', 'woke to act on background results')); break;
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   case 'subagent.ask': { const id = 'subagent-' + p.request_id;
     asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
@@ -1596,7 +1605,9 @@ function render(ev){
     if(b && !b.delivered){ const kept = !$('q').value || $('q').value === b.text;
       failed(b, (p.reason || 'the run ended first') + (kept ? '; its text is back in the message box' : ''), 'Not delivered'); }
     break; }
-  case 'session.ended': { endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; asks.clear(); setLive(false);
+  case 'session.ended': { if(p.settled){ bgLive = false; add(el('div', 'sys', 'background work finished')); break; }
+    bgLive = (p.background || 0) > 0;
+    endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; asks.clear(); setLive(false);
     for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
     add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
     loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); break; }

@@ -199,6 +199,11 @@ type Options struct {
 	// SkillDirs, which holds each loaded skill's own directory so its assets
 	// can be read. A reload has to scan the roots.
 	SkillRoots []string
+	// OwnerActive says whether a session's owner may still act, before an
+	// automatic wake run starts on their behalf; nil uses the local
+	// accounts when there are any, and assumes active otherwise. An edition
+	// supplies its own to cover disabled or departed users.
+	OwnerActive func(ctx context.Context, tenant, user string) bool
 	// Agents are the subagent types sessions offer: the built-in roles and
 	// the loaded definitions. Nil offers the built-in roles only, until an
 	// admin reload reads the definitions.
@@ -1181,12 +1186,16 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// Background children belong to the session. An unattended run has
 	// nobody to come back to it, so its children are joined: it waits for
 	// them, and its end, and OnEnd, come after theirs.
-	ceiling := agent.WakeNotify
+	ceiling := agent.WakeAuto
 	if spec.Unattended {
 		ceiling = agent.WakeOff
 	}
 	agent.NewBackground(loop, toolset.BackgroundPolicy(s.opts.Config, ceiling))
-	loop.Background.SetHooks(agent.BackgroundHooks{Idle: func(ev agent.IdleEvent) { s.onIdle(live, ev) }})
+	loop.Background.SetHooks(agent.BackgroundHooks{
+		Idle:    func(ev agent.IdleEvent) { s.onIdle(live, ev) },
+		CanWake: func() (bool, string) { return s.canWake(live) },
+		Wake:    func(ids []string) bool { return s.wake(live, ids) },
+	})
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget
@@ -2255,6 +2264,63 @@ func (s *Server) onIdle(live *liveSession, ev agent.IdleEvent) {
 	}
 	live.mu.Unlock()
 	s.releaseNodeIfQuiet(live)
+}
+
+// canWake says whether this server may start a wake run for the session now.
+// An owner who is no longer active cannot answer its asks, so their
+// session's children are cancelled rather than left to wait.
+func (s *Server) canWake(live *liveSession) (bool, string) {
+	switch {
+	case s.draining.Load():
+		return false, "draining"
+	case live.unclaimed.Load():
+		return false, "not_claimed"
+	case !s.ownerActive(live):
+		go live.Loop.Background.CancelAll(agent.TermOwnerInactive)
+		return false, "owner_inactive"
+	}
+	return true, ""
+}
+
+// ownerActive asks Options.OwnerActive, or the local accounts when there
+// are any: the owner's account must still exist.
+func (s *Server) ownerActive(live *liveSession) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if s.opts.OwnerActive != nil {
+		return s.opts.OwnerActive(ctx, live.Tenant, live.User)
+	}
+	local := s.LocalAuth()
+	if local == nil {
+		return true
+	}
+	users, err := local.Store.List(ctx)
+	if err != nil {
+		return false // unknown is not active: no run starts on their behalf
+	}
+	for _, u := range users {
+		if u.Username == live.User || u.Email != "" && u.Email == live.User {
+			return true
+		}
+	}
+	return false
+}
+
+// wake starts a wake run for background results, through the same start
+// path as a message, so draining, the claim and steering hold as they do
+// for one. It reports false when a run is live or starting one is refused.
+func (s *Server) wake(live *liveSession, ids []string) bool {
+	live.claimMu.Lock()
+	defer live.claimMu.Unlock()
+	live.mu.Lock()
+	if live.ran != nil || s.draining.Load() || live.unclaimed.Load() {
+		live.mu.Unlock()
+		return false
+	}
+	s.startRunLocked(live, "wake", func(ctx context.Context) (agent.TerminalReason, error) {
+		return live.Loop.RunWoken(ctx, agent.Wake{By: "policy", TaskIDs: ids})
+	})
+	return true
 }
 
 // holdNode keeps this node's claim on the session fresh while it has a run
