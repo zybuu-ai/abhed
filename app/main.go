@@ -1293,6 +1293,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	fmt.Printf("auth        %s\n", authLabel(cfg, authMW))
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	if line, failed := extensionsLabel(cfg, set); line != "" {
+		fmt.Printf("extensions  %s\n", line)
+		// Every session runs without a veto that did not start, so it is said where the operator looks.
+		for _, name := range failed {
+			fmt.Fprintf(os.Stderr, "abhed: warning: extension %s is not running; sessions run without its veto\n", name)
+		}
+	}
 	if cfg.K8s.Enabled {
 		writes := "read-only"
 		if cfg.K8s.AllowWrites {
@@ -3069,4 +3076,29 @@ func secretCmd(args []string) int {
 // warnf reports something that failed and was left out, on stderr.
 func warnf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "abhed: "+format+"\n", args...)
+}
+
+// extensionsLabel describes the configured extensions for the serve banner,
+// and names those not running.
+func extensionsLabel(cfg config.Config, set *toolset.Set) (string, []string) {
+	status := toolset.ExtensionStatus(cfg, set.Extensions)
+	if len(status) == 0 {
+		return "", nil
+	}
+	var running, failed []string
+	for _, e := range cfg.Extensions {
+		if status[e.Name] == toolset.ExtensionRunning {
+			running = append(running, e.Name)
+		} else {
+			failed = append(failed, e.Name)
+		}
+	}
+	line := strings.Join(running, ", ")
+	if len(failed) > 0 {
+		if line != "" {
+			line += " · "
+		}
+		line += "NOT RUNNING: " + strings.Join(failed, ", ")
+	}
+	return line + " (one process each, seeing every user's calls)", failed
 }

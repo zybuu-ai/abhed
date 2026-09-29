@@ -172,6 +172,36 @@ func (s *Set) Close() {
 	}
 }
 
+// Extension states, as ExtensionStatus reports them.
+const (
+	ExtensionRunning    = "running"
+	ExtensionStopped    = "stopped"     // started, then crashed, hung or was closed
+	ExtensionNotStarted = "not started" // configured, but it failed to start
+)
+
+// ExtensionStatus says of each configured extension whether its veto is in
+// force. One that is not running leaves every session without it, which an
+// operator of a shared server needs to see rather than find in a log.
+func ExtensionStatus(cfg config.Config, h *extension.Host) map[string]string {
+	running := map[string]bool{}
+	if h != nil {
+		running = h.Running()
+	}
+	out := make(map[string]string, len(cfg.Extensions))
+	for _, e := range cfg.Extensions {
+		up, started := running[e.Name]
+		switch {
+		case !started:
+			out[e.Name] = ExtensionNotStarted
+		case up:
+			out[e.Name] = ExtensionRunning
+		default:
+			out[e.Name] = ExtensionStopped
+		}
+	}
+	return out
+}
+
 // SkillDirs are the loaded skills' own directories, which a session is
 // granted so a skill can reference the scripts shipped beside it.
 func (s *Set) SkillDirs() []string {

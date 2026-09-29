@@ -14,6 +14,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 //go:embed ide.html
@@ -201,6 +202,8 @@ type capTool struct {
 type capExtension struct {
 	Name   string   `json:"name"`
 	Events []string `json:"events"`
+	// Status is running, stopped or not started; only a running one's veto applies.
+	Status string `json:"status"`
 }
 
 func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
@@ -262,8 +265,9 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	}
 	// Names and events only. An extension's command line and environment are
 	// the operator's business and may carry credentials.
+	status := toolset.ExtensionStatus(cfg, s.opts.Extensions)
 	for _, e := range cfg.Extensions {
-		c.Extensions = append(c.Extensions, capExtension{Name: e.Name, Events: nonNil(e.Events)})
+		c.Extensions = append(c.Extensions, capExtension{Name: e.Name, Events: nonNil(e.Events), Status: status[e.Name]})
 	}
 	WriteJSON(w, http.StatusOK, c)
 }
