@@ -61,6 +61,27 @@ func WithCallID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, callIDKey{}, id)
 }
 
+type requestedKey struct{}
+
+// RequestedOf reports the action.requested an Approver is asked about as it
+// was recorded, redacted, so what is shown to a person matches the record.
+func RequestedOf(ctx context.Context) (ActionRequested, bool) {
+	ev, ok := ctx.Value(requestedKey{}).(Event)
+	if !ok {
+		return ActionRequested{}, false
+	}
+	var p ActionRequested
+	if json.Unmarshal(ev.Payload, &p) != nil {
+		return ActionRequested{}, true
+	}
+	return p, true
+}
+
+// WithRequested carries the recorded action.requested an Approver is asked about.
+func WithRequested(ctx context.Context, ev Event) context.Context {
+	return context.WithValue(ctx, requestedKey{}, ev)
+}
+
 // Who settled a call, as action.approved and action.denied record it in "by".
 const (
 	ByPolicy   = "policy"   // a policy rule or the mode decided, and no one was asked
@@ -963,7 +984,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 
 	case policy.Ask:
 		var actx context.Context
-		actx, answer = ExpectAnswer(WithCallID(WithRequestID(ctx, asked.ID), call.ID))
+		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
 		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is

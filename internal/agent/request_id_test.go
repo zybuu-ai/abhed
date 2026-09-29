@@ -4,17 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
-type requestIDs struct{ seen, calls []string }
+type requestIDs struct{ seen, calls, recorded []string }
 
 func (r *requestIDs) Approve(ctx context.Context, _ string, _ json.RawMessage, _ policy.Result) (bool, error) {
 	r.seen = append(r.seen, RequestIDOf(ctx))
 	r.calls = append(r.calls, CallIDOf(ctx))
+	if p, ok := RequestedOf(ctx); ok {
+		r.recorded = append(r.recorded, p.CallID+" "+string(p.Args))
+	}
 	return true, nil
 }
 
@@ -40,6 +45,9 @@ func TestApproverIsToldAUniqueRequestIDPerAsk(t *testing.T) {
 	if len(ids.calls) != 2 || ids.calls[0] != "call_0" || ids.calls[1] != "call_0" {
 		t.Fatalf("call ids = %q, want the model's call_0 twice", ids.calls)
 	}
+	if len(ids.recorded) != 2 || !strings.Contains(ids.recorded[0], "a.txt") || !strings.Contains(ids.recorded[1], "b.txt") {
+		t.Fatalf("recorded requests = %q, want each ask's own", ids.recorded)
+	}
 	evs, _ := store.Events("sess1")
 	var asked []string
 	for _, e := range evs {
@@ -49,5 +57,34 @@ func TestApproverIsToldAUniqueRequestIDPerAsk(t *testing.T) {
 	}
 	if len(asked) != 2 || asked[0] != ids.seen[0] || asked[1] != ids.seen[1] {
 		t.Fatalf("request ids %q are not the action.requested events %q", ids.seen, asked)
+	}
+}
+
+type requestedArgs struct{ args []string }
+
+func (r *requestedArgs) Approve(ctx context.Context, _ string, _ json.RawMessage, _ policy.Result) (bool, error) {
+	p, _ := RequestedOf(ctx)
+	r.args = append(r.args, string(p.Args))
+	return false, nil
+}
+
+// The approver is shown the request as recorded, so a secret in the call's
+// arguments reaches it redacted, as it reaches the record.
+func TestApproverSeesTheRedactedRequest(t *testing.T) {
+	dir := tempDir(t)
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("TOKEN", "hunter2-s3cr3t-value"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]string{"path": filepath.Join(dir, "a.txt"), "content": "hunter2-s3cr3t-value"})
+	l, _ := harnessIn(t, dir, []scriptedTurn{{calls: []model.ToolCall{{ID: "call_0", Name: "write", Args: b}}}}, policy.ModeDefault, true)
+	l.Recorder.Redact = vault.Redactor()
+	got := &requestedArgs{}
+	l.Approver = got
+	if _, err := l.Run(context.Background(), "write it"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.args) != 1 || strings.Contains(got.args[0], "hunter2") || !strings.Contains(got.args[0], "[secret:TOKEN]") {
+		t.Fatalf("approver saw %q", got.args)
 	}
 }
