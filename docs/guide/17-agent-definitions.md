@@ -182,6 +182,10 @@ roles it started with, since they are part of its prompt and of what its
 record says it was offered. `abhed eval` offers the built-in roles only, so a
 score does not depend on local files.
 
+A subagent resumed with `task`'s `resume` runs as its definition is at the
+time of the resume, never wider; see [Parallel
+subagents](14-parallel-subagents.md#resuming-a-finished-subagent).
+
 ## In the record
 
 `subagent.spawned` names the role and what it ran with: `definition`,

@@ -51,7 +51,14 @@ send(method="prompt", prompt="fix the failing tests")
 | `usage` | tokens, turns, compactions |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
-| `quit` | close |
+| `tasks` | the session's background tasks |
+| `cancel_task` | stop one background task — `task_id` |
+| `wake` | run the agent on background results waiting for it; an error when none waits |
+| `quit` | close; running background tasks end as `session_closed` |
+
+`start` takes `wake`: `off` (the default), so `prompt` answers when the work,
+background tasks included, is done; or `notify`, so they outlive the prompt
+and their results arrive as event lines. rpc never starts a run on its own.
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
@@ -214,6 +221,14 @@ trust over the wire; pass the reported `sha256` to `abhed trust grant
 opens for the life of the process, not only the one it was started in. See [Workspace
 trust](../architecture/workspace-trust.md).
 
+Background tasks run in `notify` mode. Each gets a `tool_call` card named
+`bg-<task id>`, open while it runs and completed (or failed) by its result,
+whether or not a prompt turn is open. A background task's ask needs an open
+prompt turn, since that is when an editor can be asked: between turns its
+card says it is waiting, and the ask goes out, first, when your next prompt
+opens; it is refused after 30 minutes. `session/cancel` stops every
+background task too, with or without a prompt open.
+
 Not yet supported: `session/load` (resuming an editor session from the
 record) and editor-side modes. A conformance test drives the adapter with a
 scripted client, so no editor is needed in CI.
@@ -237,7 +252,15 @@ SID=$(curl -s -X POST $B/v1/sessions -d '{"prompt":"...","mode":"plan"}' | jq -r
 curl -sN $B/v1/sessions/$SID/events     # live
 curl -s  $B/v1/sessions/$SID/replay     # the full audit trail
 curl -s  $B/v1/sessions                 # your sessions, each with its state
+curl -s  $B/v1/sessions/$SID/tasks      # its background tasks
+curl -s -X POST $B/v1/sessions/$SID/tasks/<task_id>/cancel
+curl -s -X POST $B/v1/sessions/$SID/wake -d '{"wake":"off"}'   # off, notify or auto, up to the server's
 ```
+
+A session whose run has ended with background tasks still running is listed
+as `background`, with their count in `background`; an approval waiting, run
+or not, is in `pending_ask`. Its event stream stays open until the closing
+end. These endpoints, like the session's approvals, answer only its owner.
 
 A session's `state` in the list is `running`, `waiting_approval`, `idle` or
 `done`. A `done` session also has a `reason`, how its last run ended as

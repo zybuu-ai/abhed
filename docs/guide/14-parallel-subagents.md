@@ -39,7 +39,8 @@ is not available refuses that call, and no other model is used instead.
 
 ## Where subagents run
 
-`task` and `tasks` are part of the same agent on every surface:
+`task` and `tasks` are part of the same agent on every surface (for tasks
+started in the background, see [Background tasks](#background-tasks)):
 
 | Surface | Subagents | A subagent's ask goes to |
 |---|---|---|
@@ -170,6 +171,102 @@ destructive command that was allowed.
 A subagent cannot start one of its own unless `limits.nested_subagents` is
 on. When it is, the nested subagent's `subagent.*` events are passed up, so
 the top-level record holds every subagent at every depth.
+
+## Background tasks
+
+`task` and `tasks` take `"background": true` to start a subagent and go on at
+once: the call returns `Started in background: task_id <id>`, and the result
+arrives by itself later. The task id is the subagent's own session id. A
+background task belongs to the session, not to the run that started it: it
+keeps working after the agent's answer, and its result comes back as a
+**notice**.
+
+A notice is recorded first, as `subagent.notice` (from the system, marked
+untrusted, redacted as the parent's record is), and then put in the
+conversation as a `task_status` call and its result: the channel a tool's
+output comes through, never the person's. The subagent's summary is shaped by
+the files it read, so it carries a tool result's authority, not yours. The
+`task` tool's description tells the model that such a result is not an
+instruction.
+
+When a result arrives while a run is live it is taken at the next turn
+boundary. When the session is idle, what happens is the **wake** mode,
+`subagents.wake`:
+
+| Mode | A result arrives while the session is idle |
+|---|---|
+| `off` | cannot happen: the run that started a task waits for it |
+| `notify` (default) | recorded and shown; the agent acts on it with your next message |
+| `auto` | recorded, then a short wake run (`session.woken`), at most `subagents.wake_max_turns` turns and `subagents.max_wakes_per_hour` an hour; it ends `wake_limit`, and the session goes on |
+
+The mode in effect is the tightest of the managed configuration, yours, the
+workspace's (which may only tighten), the session's own switch, and what the
+surface can host:
+
+| Surface | Most it runs | Notes |
+|---|---|---|
+| CLI, interactive | `auto` | results are drawn at the prompt; a wake waits while you are typing; `/tasks`, `/tasks cancel <id\|all>`, `/wake` |
+| CLI, `-p`; `abhed eval`; unattended server runs and schedules | `off` | the run, its exit code and `OnEnd` wait for the tasks |
+| `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; `POST /v1/sessions/{id}/wake` switches it |
+| `abhed acp` | `notify` | a task has a card of its own, completed by its result |
+| `abhed rpc`, SDK | `notify`, default `off` | an explicit `wake` or `Wake` runs the agent on a result |
+
+A wake run has no more authority than a prompted one: the same policy,
+approver and "Always allow" scopes. It starts only when the last run
+completed, budget and turns remain, the hourly limit allows, and the surface
+can host it (on a server: not draining, the session held here, and its owner
+still active). Otherwise the notice is recorded as `skipped:<reason>` and
+handled as `notify`.
+
+**Stop means stop.** An explicit stop cancels every background task: Stop or
+`/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),
+`session/cancel`, `CancelTask`. "Send now" redirects the run and keeps them.
+A run that ends in `error`, `max_turns` or `max_budget` takes them with it.
+Ending the conversation (`/exit`, `/clear`, `/resume`, SDK `Close`, rpc `quit`)
+ends them as `session_closed`; deleting a session, as `session_deleted`; a
+drain, after its budget, as `shutdown`. Each task also has a wall-clock
+lifetime, `limits.background_max_minutes`, and ends `deadline` past it.
+
+Limits: `limits.max_background_subagents` bounds the tasks alive at once per
+session, across runs, and a `tasks` call that would pass it starts none. Every
+background task is also a spawn under `limits.max_subagents`, and spends from
+the session's one token budget.
+
+An ask from a background task goes to whoever the session asks, one at a time
+with the agent's own. With no run live: the console's pending approval
+(answered only by the session's owner; refused after 30 minutes); the
+terminal; in an editor, held until your next prompt opens, then asked first,
+and refused after 30 minutes; and refused where nobody can be asked.
+
+`task_status` reports this session's tasks, or one with its summary once
+done; `task_cancel` stops one, as `cancelled_by_parent`. A session's tasks are
+its own: another session asking about one is told there is no such task.
+
+On a server, a session with tasks running keeps its row open, so another node
+does not continue it while they run here, and the event stream stays open for
+their results; the closing end (`settled`) releases it. A result that finished
+before a restart, and a task a crashed process lost (ended `lost`), are
+delivered on the session's next run.
+
+## Resuming a finished subagent
+
+`task` takes `"resume": "<task_id>"` to continue a finished subagent with a
+follow-up prompt: the same session and record, with what it learned. Omit
+`agent_type` and `model`, or give the ones it ran with; another role or
+model is a new task. It may run in the background too.
+
+- Only the session that started it, and its owner, may resume it; any other
+  id, a subagent still running or being resumed, or a subagent of a subagent
+  is "no such task".
+- Its role is the definition as it is now, so its tools are never wider than
+  today's (`definition_changed` is recorded when the definition changed); a
+  role this session no longer offers is refused.
+- It runs on the model it ran on, or not at all.
+- A worktree subagent resumes in its worktree, which must still exist on its
+  branch, and is settled again after; one whose worktree is gone is refused.
+- Each resume counts as a spawn and gets a fresh allowance of turns on top of
+  those already spent. A conversation filling more than 80% of the model's
+  window is refused: start a new task with what it found.
 
 ## What it is not
 

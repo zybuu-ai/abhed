@@ -295,8 +295,48 @@ All notable changes to Abhed are recorded here. The format follows
   `done` as fits. A message sent while an ask was pending and no run was
   live was queued as steering into a loop that was not running; it now
   starts a run.
+- A server process that died mid-run left its session's row open, and no
+  node could ever continue it. The next message to such a session now takes
+  it over, when no live node holds it, and records the ends the crashed
+  process never wrote (`recovered`; lost background tasks as `lost`).
+- Continuing a session elsewhere reset its token and spawn allowance; the
+  budget now goes on from what its record says it spent.
+- A server turn continued by a message never refreshed or released this
+  node's claim on the session; every run now holds it, with its heartbeat,
+  while it or a background task is live.
 
 ### Added
+
+- Background subagents. `task` and `tasks` take `background: true`: the
+  call returns at once, the task outlives the run, and its result comes back
+  as a `subagent.notice` (recorded first, untrusted, redacted), delivered as
+  a `task_status` call and result, never as the person's message.
+  `subagents.wake` (`off`, `notify` by default, `auto`) says what a result
+  does while the session is idle; `auto` runs a short wake run
+  (`session.woken`, `wake_limit`) within `subagents.max_wakes_per_hour` and
+  `subagents.wake_max_turns`. `-p`, eval and unattended runs join their
+  tasks; editors, rpc and the SDK never wake on their own. New limits
+  `limits.max_background_subagents` (4) and `limits.background_max_minutes`
+  (60, at most 480). New tools `task_status` and `task_cancel`. An explicit
+  stop cancels every background task; "send now" keeps them.
+- Resuming a finished subagent: `task` takes `resume`, a task id of this
+  session's, and continues that subagent's own conversation with a new
+  prompt, on the model it ran on, in its worktree, under its role as it is
+  now.
+- Server: the session state `background`; `GET /v1/sessions/{id}/tasks`,
+  `POST /v1/sessions/{id}/tasks/{task}/cancel` and `POST
+  /v1/sessions/{id}/wake`, owner only; the session list's `background` and
+  `pending_ask`; `Options.OwnerActive`. The console and workbench draw
+  background results, wakes and the closing end, and list background counts
+  and waiting approvals. `session.ended` gains `background`, `settled` and
+  `recovered`; in Postgres a session with background tasks running keeps its
+  row open until the closing end, and a store may implement `ClaimOrphan`.
+- CLI: results drawn at the prompt, `/tasks`, `/wake`; Ctrl-C twice at the
+  prompt cancels background tasks. rpc: `start.wake`, `tasks`,
+  `cancel_task`, `wake`. SDK: `Options.Background`, `Background`,
+  `CancelTask`, `CancelTasks`, `WaitBackground`, `Wake`,
+  `ErrNothingToWake`. ACP: a card per background task; an ask made between
+  prompt turns waits for the next one.
 
 - `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
   carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
@@ -406,6 +446,10 @@ All notable changes to Abhed are recorded here. The format follows
   another key, refuses the definition. A managed definition's name stays
   reserved even when that file does not load, and its model binds the call.
   `disallowed_tools` removes every tool a name could mean, `recall` too.
+- The event stream of a session with background tasks running stays open
+  past its run's end, until the closing end.
+- The interactive CLI follows a conversation's events for as long as it is
+  open, not per task.
 
 ## [1.2.1] - 2026-09-28
 

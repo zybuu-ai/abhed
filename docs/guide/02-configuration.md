@@ -40,6 +40,7 @@ configuration](#trusting-the-workspace-configuration).
 | `auth` | who may use a server deployment |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
+| `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
@@ -114,6 +115,30 @@ subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
+
+## Background tasks
+
+```json
+"limits": {
+  "max_background_subagents": 4,
+  "background_max_minutes": 60
+},
+"subagents": {
+  "wake": "notify",
+  "max_wakes_per_hour": 4,
+  "wake_max_turns": 8
+}
+```
+
+`max_background_subagents` bounds a session's background tasks alive at once,
+across its runs; zero allows none. `background_max_minutes` is each task's
+lifetime, at most 480. `wake` is `off`, `notify` (the default) or `auto`:
+what a result arriving while the session is idle does. `auto` runs the agent
+on it, up to `wake_max_turns` turns and `max_wakes_per_hour` times an hour
+(zero never wakes). A surface may allow less: `-p`, eval and unattended runs
+are always `off`, and editors, rpc and the SDK never wake on their own. An
+untrusted workspace file may only lower these limits and tighten `wake`. See
+[Parallel subagents](14-parallel-subagents.md#background-tasks).
 
 ## Agents
 
