@@ -286,14 +286,18 @@ func secretKey(k string) bool {
 }
 
 // redact replaces credentials in a value about to be shown: the values of
-// secret-looking fields, and any password in a URL.
+// secret-looking fields, free-form maps that may hold one, the value after a
+// secret-looking flag in args, and passwords and secret query values in URLs.
 func redact(key string, v any) any {
 	last := key
 	if i := strings.LastIndex(key, "."); i >= 0 {
 		last = key[i+1:]
 	}
-	if secretKey(last) {
+	if secretKey(last) || last == "extra" || last == "body" {
 		return redactAll(v)
+	}
+	if list, ok := v.([]any); ok && last == "args" {
+		return redactArgs(list)
 	}
 	switch t := v.(type) {
 	case map[string]any:
@@ -335,16 +339,65 @@ func redactAll(v any) any {
 	return "[redacted]"
 }
 
+// redactArgs hides the value that follows a flag such as --token, and the
+// value of one written --token=value.
+func redactArgs(list []any) []any {
+	out := make([]any, len(list))
+	hideNext := false
+	for i, e := range list {
+		a, ok := e.(string)
+		switch {
+		case !ok:
+			out[i], hideNext = redact("", e), false
+			continue
+		case hideNext:
+			out[i], hideNext = "[redacted]", false
+			continue
+		}
+		out[i] = redactURL(a)
+		if name, val, has := strings.Cut(strings.TrimLeft(a, "-"), "="); strings.HasPrefix(a, "-") && secretFlag(name) {
+			if has {
+				out[i] = a[:len(a)-len(val)] + "[redacted]"
+			} else {
+				hideNext = true
+			}
+		}
+	}
+	return out
+}
+
+func secretFlag(name string) bool {
+	return name != "" && secretKey(strings.ReplaceAll(name, "-", "_"))
+}
+
 func redactURL(s string) string {
 	u, err := url.Parse(s)
-	if err != nil || u.User == nil {
+	if err != nil || u.Scheme == "" {
 		return s
 	}
-	if _, has := u.User.Password(); has {
-		u.User = url.UserPassword(u.User.Username(), "redacted")
-		return u.String()
+	changed := false
+	if u.User != nil {
+		if _, has := u.User.Password(); has {
+			u.User = url.UserPassword(u.User.Username(), "redacted")
+			changed = true
+		}
 	}
-	return s
+	if u.RawQuery != "" {
+		q := u.Query()
+		for name := range q {
+			if secretFlag(name) {
+				q.Set(name, "redacted")
+				changed = true
+			}
+		}
+		if changed {
+			u.RawQuery = q.Encode()
+		}
+	}
+	if !changed {
+		return s
+	}
+	return u.String()
 }
 
 func shortJSON(v any) string {

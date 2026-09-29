@@ -125,7 +125,7 @@ func Main(args []string, opts ...Option) int {
 	// Also accepted after the subcommand, as in `abhed serve -trust-workspace`.
 	rest := fs.Args()
 	if len(rest) > 1 {
-		rest = append(rest[:1:1], dropTrustFlag(rest[1:], trustWS)...)
+		rest = leadingTrustFlag(rest, trustWS)
 	}
 	if *trustWS {
 		a.trust = config.TrustGranted
@@ -172,14 +172,22 @@ func Main(args []string, opts ...Option) int {
 		evalFlags := flag.NewFlagSet("eval", flag.ExitOnError)
 		corpus := evalFlags.String("corpus", "internal/eval/corpus", "task corpus directory")
 		jsonOut := evalFlags.String("json", "", "write the full report to this path")
+		evalTrust := evalFlags.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 		_ = evalFlags.Parse(rest[1:])
+		if *evalTrust {
+			a.trust = config.TrustGranted
+		}
 		return evalCmd(workspace, *corpus, *jsonOut, a.trust)
 	case "serve":
 		// Re-parse the remaining args so `abhed serve -addr :9000` works: Go's
 		// flag package stops at the first non-flag argument.
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
 		serveAddr := serveFlags.String("addr", *listenAddr, "listen address")
+		serveTrust := serveFlags.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 		_ = serveFlags.Parse(rest[1:])
+		if *serveTrust {
+			a.trust = config.TrustGranted
+		}
 		return a.serveCmd(workspace, *serveAddr)
 	default:
 		// An edition's own subcommand. Any other word is an error: opening a
@@ -196,18 +204,20 @@ func Main(args []string, opts ...Option) int {
 	return run(a, workspace, *prompt, *mode, *modelID, *maxTurns, *format, *allow, *deny, *addDirs)
 }
 
-// dropTrustFlag removes -trust-workspace from a subcommand's arguments and
-// sets *trust when it was there.
-func dropTrustFlag(args []string, trust *bool) []string {
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "-trust-workspace" || a == "--trust-workspace" || a == "-trust-workspace=true" || a == "--trust-workspace=true" {
-			*trust = true
-			continue
-		}
-		out = append(out, a)
+// leadingTrustFlag takes -trust-workspace when it is the first argument
+// after the subcommand, where it can only be a flag; serve, eval and resolve
+// also parse it among their own flags.
+func leadingTrustFlag(args []string, trust *bool) []string {
+	switch args[0] {
+	case "trust", "secret", "init", "version", "providers":
+		return args
 	}
-	return out
+	switch args[1] {
+	case "-trust-workspace", "--trust-workspace", "-trust-workspace=true", "--trust-workspace=true":
+		*trust = true
+		return append(args[:1:1], args[2:]...)
+	}
+	return args
 }
 
 // outputFormats are the values -output-format takes. json is one event per

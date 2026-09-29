@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -516,6 +517,65 @@ func TestDefaultAsksBeforeANestedTrustedRun(t *testing.T) {
 		raw, _ := json.Marshal(map[string]string{"command": cmd})
 		if got := pol.Evaluate("bash", true, raw).Decision; got != policy.Ask {
 			t.Errorf("%s: %v, want ask", cmd, got)
+		}
+	}
+}
+
+// A writer waits for the one holding the lock, and a lock file left behind
+// by a process that died holds nobody up.
+func TestTrustStoreLockWaitsAndOutlivesACrash(t *testing.T) {
+	trustHome(t, "", "")
+	path, _ := TrustStorePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// What a crash leaves: the lock file, with no one holding it.
+	if err := os.WriteFile(path+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantTrust(t.TempDir(), strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("a leftover lock file blocked a grant: %v", err)
+	}
+	unlock, err := lockTrust(path + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- GrantTrust(t.TempDir(), strings.Repeat("b", 64)) }()
+	select {
+	case <-done:
+		t.Fatal("a grant went ahead while another held the lock")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if recs, _ := TrustRecords(); len(recs) != 2 {
+		t.Fatalf("%d decisions, want 2", len(recs))
+	}
+}
+
+// Credentials in argument lists, URL queries and free-form maps are redacted
+// too, and what is not a credential is kept.
+func TestRedactArgsQueriesAndMaps(t *testing.T) {
+	var v any
+	if err := json.Unmarshal([]byte(`{
+	  "mcp":{"servers":[{"name":"n","command":"srv","args":["--token","hunter8","--api-key=hunter9","-v","--url","https://q.example/v1?api_key=hunter10&model=m","--password","hunter14","plain"]}]},
+	  "custom_providers":[{"name":"c","base_url":"https://c.example/v1?key=hunter11&region=eu"}],
+	  "rag":{"corpora":[{"name":"r","body":{"q":"hunter12"}}]},
+	  "model":{"providers":{"x":{"extra":{"x-sig":"hunter13"}}}}}`), &v); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := json.Marshal(redact("", v))
+	for _, secret := range []string{"hunter8", "hunter9", "hunter10", "hunter11", "hunter12", "hunter13", "hunter14"} {
+		if strings.Contains(string(out), secret) {
+			t.Errorf("%s was shown: %s", secret, out)
+		}
+	}
+	for _, kept := range []string{`"-v"`, "model=m", "region=eu", `"plain"`, `"--api-key=[redacted]"`, `"x-sig"`} {
+		if !strings.Contains(string(out), kept) {
+			t.Errorf("%s was lost: %s", kept, out)
 		}
 	}
 }

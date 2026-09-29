@@ -334,3 +334,25 @@ func TestTrustFlagAfterTheSubcommand(t *testing.T) {
 		t.Fatalf("the trailing flag was not taken:\n%s", out)
 	}
 }
+
+// The flag is taken only where it is a flag: first after the subcommand, or
+// among serve's, eval's and resolve's own flags; never as a value or after --.
+func TestLeadingTrustFlag(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		trust bool
+		left  []string
+	}{
+		{[]string{"doctor", "-trust-workspace"}, true, []string{"doctor"}},
+		{[]string{"acp", "--trust-workspace"}, true, []string{"acp"}},
+		{[]string{"user", "add", "-trust-workspace"}, false, []string{"user", "add", "-trust-workspace"}},
+		{[]string{"rpc", "--", "-trust-workspace"}, false, []string{"rpc", "--", "-trust-workspace"}},
+		{[]string{"secret", "-trust-workspace"}, false, []string{"secret", "-trust-workspace"}},
+	} {
+		var got bool
+		left := leadingTrustFlag(append([]string(nil), c.args...), &got)
+		if got != c.trust || strings.Join(left, " ") != strings.Join(c.left, " ") {
+			t.Errorf("%v: trust %v left %v", c.args, got, left)
+		}
+	}
+}

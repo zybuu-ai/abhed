@@ -94,26 +94,22 @@ func updateTrust(change func(map[string]TrustRecord)) error {
 	return rewriteTrust(change)
 }
 
-// lockTrust takes an exclusive lock file, waiting up to five seconds. A lock
-// older than 30 seconds was left by a process that died and is taken over.
+// lockTrust holds an exclusive lock on the lock file beside the store until
+// the returned function runs. The file itself is never removed, so every
+// writer locks the same one.
 func lockTrust(lock string) (func(), error) {
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- the lock beside the user's trust store
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(lock) }, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if info, serr := os.Stat(lock); serr == nil && time.Since(info.ModTime()) > 30*time.Second {
-			_ = os.Remove(lock)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("the trust store is locked by another abhed (%s)", lock)
-		}
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- the lock beside the user's trust store
+	if err != nil {
+		return nil, err
 	}
+	if err := lockFile(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock %s: %w", lock, err)
+	}
+	return func() {
+		_ = unlockFile(f)
+		_ = f.Close()
+	}, nil
 }
 
 func rewriteTrust(change func(map[string]TrustRecord)) error {

@@ -37,7 +37,8 @@ All notable changes to Abhed are recorded here. The format follows
   `Agent.WorkspaceTrust()` reports the decision and what was ignored.
 - A permission rule that does not parse now stops every command from
   loading the configuration. `serve` and `resolve` used to drop it, and every
-  rule after it in the same list, without a word.
+  rule after it in the same list, without a word. Check with `abhed doctor`
+  before restarting a server, so a bad rule is found before it refuses to start.
 - The default configuration asks before a bash command that mentions
   `ABHED_TRUST_WORKSPACE` or `trust-workspace`. A configuration that sets
   its own `permissions.ask` list replaces these.

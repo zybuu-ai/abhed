@@ -69,6 +69,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	mode := fs.String("mode", "auto", "permission mode for the run; a mode the managed configuration pins replaces the default")
 	allow := fs.String("allow", "", "comma-separated allow rules for the run, e.g. 'bash(go test*)'")
 	yes := fs.Bool("y", false, "open the pull request without asking (an allow rule forge_pr(*) does the same)")
+	trustWS := fs.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: abhed resolve [flags] <issue-url>\n"+
 			"  Reads the issue, works on it in a branch in its own worktree, commits, pushes,\n"+
@@ -80,6 +81,9 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
 		fs.Usage()
 		return 2
+	}
+	if *trustWS {
+		trust = config.TrustGranted
 	}
 	stopper := cancelOnStop(stopReturns)
 	defer stopper.stop()

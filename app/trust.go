@@ -44,7 +44,10 @@ func loadSession(workspace string, trust config.TrustChoice, interactive bool) (
 		return cfg, nil
 	}
 	if err := config.GrantTrust(workspace, st.SHA256); err != nil {
-		return cfg, fmt.Errorf("could not record trust: %w", err)
+		// The session goes on untrusted rather than ending on a failed write.
+		fmt.Fprintf(os.Stderr, "abhed: could not record trust, so the file stays untrusted: %v\n", err)
+		warnTrust(st)
+		return cfg, nil
 	}
 	// Reloaded: the grant covers the content reviewed, and a file changed
 	// since is untrusted again.

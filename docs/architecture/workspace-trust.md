@@ -48,8 +48,11 @@ already true of every other file in that directory.
 
 A store with a second hard link is refused, as the configuration is. So is a
 store that cannot be read. In either case no workspace is trusted and a
-warning says why. Writes to the store hold a lock file beside it, so two
-decisions made at once both land.
+warning says why. Writes to the store hold an operating-system lock (`flock`,
+or `LockFileEx` on Windows) on a file beside it, so two decisions made at
+once both land. The system drops the lock when its holder exits, so a crash
+leaves nothing to wait for. If a grant at the prompt cannot be recorded, the
+session goes on with the file untrusted.
 
 The path is compared as spelled after links are resolved. On a volume that
 ignores case, `/Users/x/Proj` and `/users/x/proj` are two keys. That fails
@@ -137,7 +140,9 @@ line breaks, between marker lines.
 Values that carry credentials are redacted wherever ignored settings are
 shown: the prompt, the warning, `abhed doctor`, `abhed trust`, ACP and rpc.
 That covers fields named like a key, secret, password, token, DSN, header or
-environment, and any password in a URL. A field naming an environment
+environment; free-form maps (`providers.*.extra`, `rag` `body`); the value
+after a flag such as `--token` or `--api-key` in `args`; and passwords and
+secret-looking query values in URLs. A field naming an environment
 variable (`*_env`) is shown.
 
 **Headless** (`-p`, `rpc`, `acp`, `resolve`, `serve`, and every other
@@ -147,8 +152,10 @@ subcommand). These never prompt. Trust comes from one of:
 - `-trust-workspace`, for this run only
 - `ABHED_TRUST_WORKSPACE=1`, for this run only
 
-The flag goes before or after the subcommand: `abhed -trust-workspace serve`
-and `abhed serve -trust-workspace` are the same. Neither the flag nor the
+The flag goes before the subcommand, or right after it:
+`abhed -trust-workspace serve` and `abhed serve -trust-workspace` are the
+same. `serve`, `eval` and `resolve` also take it among their own flags. It is
+never taken as a value or after `--`. Neither the flag nor the
 variable records anything. On `acp` and `rpc` they trust the file of every
 workspace the client opens, not only the one named on the command line. When a file is untrusted,
 a warning on stderr names every ignored setting, and `abhed doctor` prints one
