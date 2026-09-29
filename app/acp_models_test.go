@@ -81,6 +81,8 @@ func acpModelsEnv(t *testing.T, userCfg string) (captured func() []*abhed.Agent)
 	}
 	var mu sync.Mutex
 	var made []*abhed.Agent
+	oldAgent := newACPAgent
+	t.Cleanup(func() { newACPAgent = oldAgent })
 	newACPAgent = func(ctx context.Context, o abhed.Options) (acpAgent, error) {
 		a, err := abhed.New(ctx, o)
 		if err == nil {
@@ -90,9 +92,6 @@ func acpModelsEnv(t *testing.T, userCfg string) (captured func() []*abhed.Agent)
 		}
 		return a, err
 	}
-	t.Cleanup(func() {
-		newACPAgent = func(ctx context.Context, o abhed.Options) (acpAgent, error) { return abhed.New(ctx, o) }
-	})
 	return func() []*abhed.Agent {
 		mu.Lock()
 		defer mu.Unlock()
@@ -370,15 +369,19 @@ func (a *switchingACPAgent) SwitchModelNamed(name string) error {
 
 func TestACPAdapterRefusesASwitchDuringAPrompt(t *testing.T) {
 	fake := &switchingACPAgent{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	oldAgent := newACPAgent
+	t.Cleanup(func() { newACPAgent = oldAgent })
 	newACPAgent = func(context.Context, abhed.Options) (acpAgent, error) { return fake, nil }
-	t.Cleanup(func() {
-		newACPAgent = func(ctx context.Context, o abhed.Options) (acpAgent, error) { return abhed.New(ctx, o) }
-	})
 	cl := newACPClient(t, nil)
 	s := acpOpen(t, cl, "/ws")
 	raw, _ := json.Marshal(map[string]any{"sessionId": s.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}})
 	cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("3"), Method: "session/prompt", Params: raw})
-	<-fake.entered
+	select {
+	case <-fake.entered:
+	case <-time.After(10 * time.Second):
+		close(fake.release)
+		t.Fatal("the prompt never reached the agent")
+	}
 	res := cl.request(4, "session/set_model", map[string]any{"sessionId": s.SessionID, "modelId": "beta"})
 	close(fake.release)
 	if res.Error == nil || !strings.Contains(res.Error.Message, "prompt is running") {
