@@ -49,6 +49,26 @@ has not taken yet is held in memory. Before a process exits on a stopped
 run, call `Flush` with a deadline so the run's end reaches `OnEvent`. Never
 call it from `OnEvent`, whose own goroutine delivers what it waits for.
 
+## Tools
+
+By default an embedded agent has the built-in tools: `read`, `write`,
+`edit`, `glob`, `grep`, `bash` and `todo`, whose list is recorded as
+`todo.updated` like the CLI's. `Options.ConfiguredTools` gives it the tool
+set the CLI runs with, as the configuration enables it: subagents (`task`
+and `tasks`, which share the agent's policy, approver and budget; see
+[Parallel subagents](14-parallel-subagents.md)), MCP servers, the tools
+extensions provide, skills and their pipelines, web search, the code index,
+rag corpora, and the Kubernetes and SSH tools. It is off by default so an
+embedder decides what else its agent can reach; `abhed rpc` and `abhed acp`
+turn it on. What an untrusted `ConfigDir` file names (MCP servers,
+extensions, skill directories, corpora, clusters, hosts) is ignored either
+way. `Close` ends the MCP connections and extension processes.
+
+A subagent's own events stay in the agent's store; `Events` and `OnEvent`
+carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
+`subagent.action` and `subagent.returned` stand for them, as the CLI's JSON
+output does.
+
 ## Who settled a call
 
 Every `action.approved` and `action.denied` says who settled it in `by`.
@@ -152,11 +172,12 @@ Not bound by the managed file:
 
 - `Provider` and `SetModel`, which name any endpoint, as a user's own config
   file may.
-- The organisation's `/etc/abhed/ABHED.md`: the SDK loads no memory files, so
-  an embedded agent never sees it, and `SystemPrompt` replaces the built-in
-  prompt entirely.
-- `limits.max_budget_tokens` and `limits.max_tokens`, which the SDK does not
-  apply at all.
+- `SystemPrompt`, which replaces the built-in prompt entirely, and with it
+  the memory files (`ABHED.md`, the organisation's `/etc/abhed/ABHED.md`
+  included) the built-in prompt carries as the CLI's does.
+
+`limits.max_budget_tokens` and `limits.max_tokens` apply as they do from the
+command line.
 
 The binding holds for the shipped entry points (the CLI, the server, the SDK)
 and for any program that builds its configuration with `config.Load` or

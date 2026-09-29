@@ -57,6 +57,10 @@ Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
 per run.
 
+The session has the CLI's tool set, subagents, MCP servers, skills and the
+other tools the configuration enables included. There is no approver, so a
+call that needs approval, a subagent's too, is refused.
+
 Commands run in the sandbox tier the workspace's configuration sets
 (`sandbox.min_tier`, `process` by default), as from the terminal: `start`
 answers `{"type":"error"}` when no backend meets that tier, rather than running
@@ -190,7 +194,14 @@ update names its tool in the same `_meta` key.
 
 The agent's text, its reasoning, every tool call with its outcome, the plan
 and the context usage stream to the editor as `session/update`
-notifications, and the session is recorded like any other.
+notifications, and the session is recorded like any other. The plan is the
+agent's `todo` list, sent as a `plan` update each time it changes.
+
+The session has the CLI's tool set, subagents included. A subagent's ask is a
+permission request like the agent's own, labelled with the subagent, named
+`subagent-<request id>` and preceded by a `tool_call` of that id; its answer
+settles that call. The subagent's other calls are in its own record, not
+streamed to the editor.
 
 The workspace's `.abhed/config.json` applies whole only once the person has
 trusted it; `session/new` reports the decision in
