@@ -392,8 +392,7 @@ func TestForkLeavesOutPipelineSteps(t *testing.T) {
 	}
 	// The skill's result lies past the cut, so its turn goes and the request stays.
 	if len(cut) != 1 || cut[0].Role != model.RoleUser {
-		t.Fatalf("a cut inside a step kept more than the request:
-%s", dump(cut))
+		t.Fatalf("a cut inside a step kept more than the request:\n%s", dump(cut))
 	}
 	for _, m := range cut {
 		for _, c := range m.ToolCalls {
