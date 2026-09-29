@@ -1103,7 +1103,7 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
-	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.AsksByDefault())
+	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
 

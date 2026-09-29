@@ -95,7 +95,6 @@ func TestRefusesInternalAddressesWrittenAsLiterals(t *testing.T) {
 		"http://[::1]/",
 		"http://[fd00::1]/",
 		"http://[fe80::1]/",
-		"http://[::ffff:10.0.0.1]/",
 		"http://100.64.0.1/",
 		"http://0.0.0.0/",
 	} {
@@ -438,7 +437,7 @@ func TestDotSegmentsCannotDodgeOrWidenAPathRule(t *testing.T) {
 	deny := policy.New(policy.ModeBypass)
 	_ = deny.AddDeny("web_fetch(" + siteURL(srv, "/admin*") + ")")
 	allow := policy.New(policy.ModeDefault)
-	allow.AskReadOnly = AskReadOnly(true)
+	allow.AskReadOnly = AskReadOnly(true, nil)
 	_ = allow.AddAllow("web_fetch(" + siteURL(srv, "/public/*") + ")")
 
 	for _, p := range []string{
@@ -503,5 +502,141 @@ func TestHTMLTextWithAnUnclosedHeadAndAQuotedBracket(t *testing.T) {
 	}
 	if strings.Contains(text, `b">`) {
 		t.Errorf("attribute text leaked:\n%s", text)
+	}
+}
+
+// A host and a port have one spelling each, so a rule on an address or a port
+// cannot be stepped around by writing it another way.
+func TestHostAndPortHaveOneSpelling(t *testing.T) {
+	var reached atomic.Int32
+	tool, srv := serve(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Add(1) }))
+	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+	e := policy.New(policy.ModeBypass)
+	_ = e.AddDeny("web_fetch(http://site.test:"+port+"/*)", "web_fetch(http://127.0.0.1:"+port+"/*)")
+	for _, u := range []string{"http://site.test:" + port + "/x", "http://127.0.0.1:" + port + "/x"} {
+		if d, _ := judge(t, e, tool, u); d != policy.Deny {
+			t.Fatalf("%s: %s, want the rule to hold", u, d)
+		}
+	}
+	for _, u := range []string{
+		"http://site.test:0" + port + "/x",
+		"http://site.test:00" + port + "/admin",
+		"http://127.0.0.1:0" + port + "/x",
+		"http://[::ffff:127.0.0.1]:" + port + "/x",
+		"http://[::ffff:7f00:1]:" + port + "/x",
+		"http://2130706433:" + port + "/x",
+		"http://127.1:" + port + "/x",
+		"http://0x7f.1:" + port + "/x",
+		"http://0x7f000001:" + port + "/x",
+		"http://127.0.0.01:" + port + "/x",
+	} {
+		d, res := judge(t, e, tool, u)
+		if d == policy.Allow && !res.IsError {
+			t.Errorf("%s: fetched past the rule: %q", u, res.Content)
+		}
+		if _, err := tool.check(u); err == nil {
+			t.Errorf("%s: accepted", u)
+		}
+	}
+	if reached.Load() != 0 {
+		t.Fatalf("the server was reached %d times", reached.Load())
+	}
+
+	plain := &Tool{}
+	for u, want := range map[string]string{
+		"https://example.com:0443/":         "write the URL as https://example.com/",
+		"https://example.com:08443/a":       "write the URL as https://example.com:8443/a",
+		"https://example.com:0/":            "1 to 65535",
+		"https://example.com:65536/":        "1 to 65535",
+		"http://[::ffff:93.184.216.34]/":    "write the address as 93.184.216.34",
+		"http://[2606:4700:0:0::1111]/":     "write the URL as http://[2606:4700::1111]/",
+		"http://1572395042/":                "four decimal numbers",
+		"http://93.184.55330/":              "four decimal numbers",
+		"http://example.com.123/":           "four decimal numbers",
+		"http://93.184.216.34/":             "ok",
+		"http://[2606:4700::1111]:8080/a?b": "ok",
+	} {
+		_, err := plain.check(u)
+		switch {
+		case want == "ok":
+			if err != nil {
+				t.Errorf("%s: refused: %v", u, err)
+			}
+		case err == nil:
+			t.Errorf("%s: accepted", u)
+		case !strings.Contains(err.Error(), want):
+			t.Errorf("%s: %v, want %q", u, err, want)
+		}
+	}
+}
+
+// Segments a server that trims or decodes twice would read as .. or / are
+// refused too.
+func TestLookAlikeDotSegmentsAreRefused(t *testing.T) {
+	for _, p := range []string{"/%252e%252e/admin", "/..%00/admin", "/..%09/admin", "/%20../admin",
+		"/.../admin", "/a%252fb", "/a%255cb", "/ok/%2e%20/x"} {
+		if _, err := (&Tool{}).check("https://example.com" + p); err == nil {
+			t.Errorf("%s: accepted", p)
+		}
+	}
+	if _, err := (&Tool{}).check("https://example.com/v1.2/file.tar.gz"); err != nil {
+		t.Errorf("an ordinary dotted name refused: %v", err)
+	}
+}
+
+// One deny rule written with http* covers both schemes, as the docs advise.
+func TestADenyRuleCanCoverBothSchemes(t *testing.T) {
+	var reached atomic.Int32
+	tool, srv := serve(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Add(1) }))
+	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+	e := policy.New(policy.ModeBypass)
+	_ = e.AddDeny("web_fetch(http*://site.test:" + port + "/*)")
+	for _, u := range []string{"http://site.test:" + port + "/x", "https://site.test:" + port + "/x"} {
+		if d, _ := judge(t, e, tool, u); d != policy.Deny {
+			t.Errorf("%s: %s", u, d)
+		}
+	}
+	if d, _ := judge(t, e, tool, "http://other.test/"); d != policy.Allow {
+		t.Errorf("another host: %s", d)
+	}
+	if reached.Load() != 0 {
+		t.Fatal("the server was reached")
+	}
+}
+
+// With a host list, a listed host runs unasked on its scheme's default port
+// only; another port asks, in plan mode too, unless an allow rule names it.
+func TestAHostListRunsUnaskedOnlyOnTheDefaultPort(t *testing.T) {
+	ask := AskReadOnly(true, []string{"docs.example.com"})
+	for _, tc := range []struct {
+		mode  policy.Mode
+		url   string
+		allow string
+		want  policy.Decision
+	}{
+		{policy.ModeDefault, "https://docs.example.com/a", "", policy.Allow},
+		{policy.ModeDefault, "http://docs.example.com/a", "", policy.Allow},
+		{policy.ModeDefault, "https://docs.example.com:8443/a", "", policy.Ask},
+		{policy.ModeAuto, "http://docs.example.com:6379/", "", policy.Ask},
+		{policy.ModePlan, "http://docs.example.com:25/", "", policy.Ask},
+		{policy.ModeDefault, "https://docs.example.com:8443/a", "web_fetch(https://docs.example.com:8443/*)", policy.Allow},
+		{policy.ModeBypass, "https://docs.example.com:8443/a", "", policy.Allow},
+	} {
+		e := policy.New(tc.mode)
+		e.AskReadOnly = ask
+		if tc.allow != "" {
+			_ = e.AddAllow(tc.allow)
+		}
+		args, _ := json.Marshal(map[string]string{"url": tc.url})
+		got := e.Evaluate("web_fetch", false, args)
+		if got.Decision != tc.want {
+			t.Errorf("%s %s: %s (%s), want %s", tc.mode, tc.url, got.Decision, got.Reason, tc.want)
+		}
+		if got.Decision == policy.Ask && got.Reason != PortAskReason {
+			t.Errorf("%s: reason %q", tc.url, got.Reason)
+		}
+	}
+	if AskReadOnly(false, nil) != nil {
+		t.Error("a disabled tool set an ask")
 	}
 }

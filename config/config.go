@@ -275,13 +275,6 @@ type WebFetchConfig struct {
 	MaxChars int `json:"max_chars,omitempty"`
 }
 
-// AsksByDefault reports whether web_fetch calls ask unless an allow rule
-// matches: it is on with no host list, so any public site could be sent
-// whatever the model puts in a URL.
-func (c WebFetchConfig) AsksByDefault() bool {
-	return c.Enabled && len(c.AllowedHosts) == 0
-}
-
 // StorageConfig selects the event store. Memory is fine for a CLI session;
 // audit and replay across restarts need Postgres (docs §10).
 type StorageConfig struct {

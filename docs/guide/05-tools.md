@@ -42,7 +42,10 @@ between parts can shift. The result is tagged untrusted like any tool output.
 The request is made by Abhed, not the sandboxed shell, and every call is
 judged by policy and recorded like any other. With no
 `web_fetch.allowed_hosts`, each call asks unless an allow rule matches, in
-plan mode too; the approval offers "always allow" for the site
+plan mode too. With it, a listed host runs without asking only on its
+scheme's default port (80 for `http`, 443 for `https`); a URL that names
+another port asks, since that is another service on the host. In either
+case the approval offers "always allow" for the site
 (`web_fetch(https://host/*)`), which covers any URL on it for the session,
 and whatever such a URL carries.
 What it refuses:
@@ -60,7 +63,12 @@ What it refuses:
   control for that;
 - a host not on `web_fetch.allowed_hosts`, when that is set;
 - a URL written in any but its one form (see
-  [Permissions](04-permissions.md#rules)).
+  [Permissions](04-permissions.md#rules)), including a port with leading
+  zeros, an IPv4 address written as IPv6 or as one number, and a path
+  segment of dots, a control character or a doubly encoded `.`, `/` or `\`.
+  A URL that carries another URL in its path, as `web.archive.org` links do
+  (`https://web.archive.org/web/2020/https://example.com/`), has an empty
+  segment and cannot be fetched.
 
 It follows a redirect only to the same URL or its upgrade from `http` to
 `https`, up to five. Any other redirect, including to another path on the

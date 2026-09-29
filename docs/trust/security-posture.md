@@ -343,8 +343,10 @@ pytest are unaffected.
 **`web_search` and `web_fetch`, when enabled**, are the two narrow,
 structured exceptions: a Go tool in the Abhed process makes the request, not
 the sandboxed shell. `web_search` sends a query to the configured provider.
-`web_fetch` sends one HTTP GET per call to one public host, on any port,
-and nothing else: no other method, no body, no connection the model holds. Both are off by default (`web_search.enabled`
+`web_fetch` sends one HTTP GET per call to one public host and nothing else:
+no other method, no body, no connection the model holds. A port other than
+the scheme's default always asks unless an allow rule names it, even for a
+host on `web_fetch.allowed_hosts`. Both are off by default (`web_search.enabled`
 and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. `web_fetch` makes
 one GET to one URL that policy has judged: it refuses schemes other than

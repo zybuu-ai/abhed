@@ -163,7 +163,9 @@ metadata or reserved address, whatever the host name resolves to.
 
 `allowed_hosts`, when set, is every host the agent may fetch: a name, or
 `*.` and a domain for any host under it (not the domain itself). An entry
-with a scheme, port or path is refused at load. Without it, any public site
+with a scheme, port or path is refused at load. A listed host runs without
+asking only on its scheme's default port; a URL naming another port asks
+("web_fetch asks: the URL names a port…") unless an allow rule names it. Without it, any public site
 can be fetched, and a URL can carry whatever the model puts in it, so every
 call asks in the `default`, `accept-edits`, `auto` and `plan` modes (the
 reason reads "web_fetch asks: no allowed_hosts configured") unless an allow

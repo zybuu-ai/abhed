@@ -27,7 +27,7 @@ func TestAskReadOnlyAsksUnlessAllowed(t *testing.T) {
 		{ModeBypass, nil, Allow, "mode"},
 	} {
 		e := New(tc.mode)
-		e.AskReadOnly = map[string]string{"web_fetch": why}
+		e.AskReadOnly = map[string]func(string) string{"web_fetch": func(string) string { return why }}
 		if err := e.AddAllow(tc.allow...); err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +55,7 @@ func TestAskReadOnlyAsksUnlessAllowed(t *testing.T) {
 	}
 	// A deny rule still wins.
 	e := New(ModeBypass)
-	e.AskReadOnly = map[string]string{"web_fetch": why}
+	e.AskReadOnly = map[string]func(string) string{"web_fetch": func(string) string { return why }}
 	_ = e.AddDeny("web_fetch(https://example.com/*)")
 	if d := e.Evaluate("web_fetch", false, args).Decision; d != Deny {
 		t.Errorf("deny: %s", d)

@@ -42,14 +42,31 @@ const (
 const AskReason = "web_fetch asks: no allowed_hosts configured, so any public site could receive what the URL carries. " +
 	"Always allow covers any URL on this site for the session, and whatever such a URL carries"
 
-// AskReadOnly is the policy setting for a deployment's web_fetch: it asks
-// unless an allow rule matches, when no host list limits it.
-func AskReadOnly(asks bool) map[string]string {
-	if !asks {
+// AskReadOnly is the policy setting for a deployment's web_fetch. With no
+// host list every call asks unless an allow rule matches. With one, a listed
+// host runs unasked on its scheme's default port only: another port there is
+// another service, which listing the host did not name.
+func AskReadOnly(enabled bool, allowedHosts []string) map[string]func(string) string {
+	if !enabled {
 		return nil
 	}
-	return map[string]string{"web_fetch": AskReason}
+	if len(allowedHosts) == 0 {
+		return map[string]func(string) string{"web_fetch": func(string) string { return AskReason }}
+	}
+	return map[string]func(string) string{"web_fetch": func(subject string) string {
+		u, err := url.Parse(subject)
+		if err != nil {
+			return PortAskReason
+		}
+		if p := u.Port(); p != "" {
+			return PortAskReason
+		}
+		return ""
+	}}
 }
+
+// PortAskReason is the policy reason a call to a listed host asks.
+const PortAskReason = "web_fetch asks: the URL names a port, and allowed_hosts runs calls unasked only on the default port (80 for http, 443 for https)"
 
 // Tool fetches one URL and returns its text.
 type Tool struct {

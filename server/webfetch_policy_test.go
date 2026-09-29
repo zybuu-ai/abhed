@@ -24,4 +24,8 @@ func TestServerPolicyAsksBeforeWebFetchWithoutAHostList(t *testing.T) {
 	if got := s.newPolicy(policy.ModeAuto).Evaluate("web_fetch", false, args); got.Decision != policy.Allow {
 		t.Fatalf("with a host list: %+v", got)
 	}
+	// Another port on a listed host is another service: it asks.
+	if got := s.newPolicy(policy.ModeAuto).Evaluate("web_fetch", false, []byte(`{"url":"https://example.com:8443/"}`)); got.Decision != policy.Ask {
+		t.Fatalf("a listed host on another port: %+v", got)
+	}
 }

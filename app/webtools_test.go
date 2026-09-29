@@ -56,14 +56,14 @@ func TestWebFetchAsksWithoutAHostList(t *testing.T) {
 	cfg.WebFetch.Enabled = true
 	for _, mode := range []policy.Mode{policy.ModeDefault, policy.ModeAuto} {
 		pol := policy.New(mode)
-		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.AsksByDefault())
+		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 		if got := pol.Evaluate("web_fetch", false, args); got.Decision != policy.Ask || !strings.Contains(got.Reason, "no allowed_hosts") {
 			t.Errorf("%s: %+v", mode, got)
 		}
 	}
 	cfg.WebFetch.AllowedHosts = []string{"example.com"}
 	pol := policy.New(policy.ModeDefault)
-	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.AsksByDefault())
+	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	if got := pol.Evaluate("web_fetch", false, args); got.Decision != policy.Allow {
 		t.Errorf("with a host list: %+v", got)
 	}

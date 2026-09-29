@@ -276,9 +276,13 @@ All notable changes to Abhed are recorded here. The format follows
   limits it to named hosts. It refuses other schemes, any loopback, private,
   link-local, metadata or reserved address (checked where it connects, on
   every redirect hop), a URL holding a stored secret in any case, and a URL
-  not written in its one form: no surrounding spaces, and no `.`, `..` or
-  empty path segment, raw or encoded. So a rule on a host or a path prefix
-  cannot be stepped around. A redirect to anything but the same URL (or its
+  not written in its one form: no surrounding spaces; a port as a plain
+  number, the default left out; an address as four decimal numbers or
+  compressed IPv6, never IPv4 as IPv6 or as one number, and no host ending
+  in a number that is not an IPv4 address; and no `.`, `..`, empty,
+  dots-only or control-character path segment, raw or encoded. So a rule on
+  a host, port or path prefix cannot be stepped around, and
+  `web_fetch(http*://host/*)` covers both schemes. A redirect to anything but the same URL (or its
   https upgrade) is handed back as a new call. Policy rules match the URL:
   `url` is now a subject key. With no `allowed_hosts`, each call asks in the
   default, accept-edits, auto and plan modes unless an allow rule such as
@@ -286,7 +290,7 @@ All notable changes to Abhed are recorded here. The format follows
   to any site; "always allow" is offered for any URL on the site. Bypass runs
   it, a run with no one to ask refuses it, and `abhed eval`, which approves
   every ask, fetches. With `allowed_hosts` set, calls to those hosts do not
-  ask.
+  ask on the scheme's default port; a URL naming another port asks.
 
 ### Changed
 

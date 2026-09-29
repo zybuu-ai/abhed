@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -172,7 +173,14 @@ func canonical(raw string) (*url.URL, error) {
 			return nil, errors.New("write an international host name in its ASCII (xn--) form")
 		}
 	}
-	port := u.Port()
+	host, err = canonicalHost(host)
+	if err != nil {
+		return nil, err
+	}
+	port, err := canonicalPort(u.Port())
+	if err != nil {
+		return nil, err
+	}
 	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
 		port = ""
 	}
@@ -191,6 +199,44 @@ func canonical(raw string) (*url.URL, error) {
 		out.Path = "/"
 	}
 	return out, nil
+}
+
+// canonicalHost gives a host its one spelling. An address is written as
+// netip writes it, and a name whose last label is a number is refused: the
+// resolver reads 1572395042, 127.1 and 0x7f.1 as addresses, so each would be
+// another spelling of an address a rule names.
+func canonicalHost(host string) (string, error) {
+	if a, err := netip.ParseAddr(host); err == nil {
+		if a.Zone() != "" {
+			return "", errors.New("an address with a zone is not fetched")
+		}
+		if a.Is4In6() {
+			return "", fmt.Errorf("write the address as %s, not as IPv6", a.Unmap())
+		}
+		return a.String(), nil
+	}
+	if strings.Contains(host, ":") {
+		return "", errors.New("the host is not a valid address")
+	}
+	labels := strings.Split(host, ".")
+	last := labels[len(labels)-1]
+	if strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "" {
+		return "", errors.New("a host that ends in a number must be an IPv4 address written as four decimal numbers, such as 93.184.216.34")
+	}
+	return host, nil
+}
+
+// canonicalPort is the port as a plain number, 1 to 65535: 0443 is another
+// spelling of 443 that a rule would not match.
+func canonicalPort(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 || strings.Trim(p, "0123456789") != "" {
+		return "", errors.New("the port must be a number from 1 to 65535")
+	}
+	return strconv.Itoa(n), nil
 }
 
 // hostAllowed applies the operator's allowlist: "example.com" names that host,
@@ -232,9 +278,17 @@ func plainPath(p string) error {
 		}
 		// Some servers drop ;parameters before resolving, so /..;/ is .. to them.
 		name, _, _ := strings.Cut(seg, ";")
-		if name == "" || name == "." || name == ".." {
+		if name == "" || strings.Trim(name, ". ") == "" {
 			return errors.New("the path has an empty, . or .. segment; write the path " +
 				"of the page itself, with each folder named once")
+		}
+		// A control character, or an escape left after decoding, is how a
+		// server that trims or decodes twice turns a segment into .. or /.
+		lower := strings.ToLower(seg)
+		if strings.ContainsFunc(seg, func(r rune) bool { return r < 0x20 || r == 0x7f }) ||
+			strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+			return errors.New("the path has a control character or a doubly encoded . / or \\; " +
+				"write the path of the page itself")
 		}
 	}
 	return nil
