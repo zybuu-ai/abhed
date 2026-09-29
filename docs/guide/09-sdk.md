@@ -105,7 +105,8 @@ The SDK has no option to turn this off, and `New` returns an error when the
 store exists but cannot be loaded. The store is read once, when `New` is
 called. A structured answer is redacted after it is validated, so a redacted
 answer may no longer match the caller's schema, for example a `pattern`, an
-`enum` or a length bound. See [Secrets](04-permissions.md#secrets).
+`enum` or a length bound. One whose redaction fails comes back as
+`{"withheld": ...}`, which will not decode into the caller's type. See [Secrets](04-permissions.md#secrets).
 
 Edits that would break a file's syntax are refused, as from the command line;
 see [Tools](05-tools.md#an-edit-that-would-break-the-file).

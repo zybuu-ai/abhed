@@ -332,7 +332,8 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 	return nil
 }
 
-// RunStructured is RunJSON without the decode: the validated JSON as sent.
+// RunStructured is RunJSON without the decode: the validated JSON, with stored
+// secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
 	if err != nil {

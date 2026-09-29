@@ -6,6 +6,34 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading
+
+- A secrets store that exists but cannot be loaded now stops sessions from
+  starting: the terminal and `-p`, `abhed serve`, `eval`, `acp`, `rpc`,
+  `resolve` and `sdk.New` all refuse. Before upgrading, run `abhed doctor`
+  from 1.2.2: it reports the store and exits 1 without starting anything.
+  The fix depends on the case:
+  - readable by others: `chmod 600` the file;
+  - empty (0 bytes), as `touch ~/.abhed/secrets.json` leaves it: write `{}`
+    to it or delete it;
+  - not valid JSON, over 1 MiB, or not a regular file: fix it, or remove it
+    and add the secrets again with `abhed secret set`.
+- An editor using `abhed acp`, and a CI job running `abhed rpc` or
+  `abhed resolve`, now fails at start over such a store where it used to
+  run. The editor's log or the job's output shows the message.
+- Embedders:
+  - `sdk.New` can return this error.
+  - `Approve` now receives the arguments, reason and scope with stored
+    values redacted.
+  - What `Run`, `RunJSON` and `RunStructured` return is redacted. A redacted
+    structured answer may no longer match a `pattern`, `enum` or length in
+    the caller's schema, and one whose redaction fails comes back as
+    `{"withheld": ...}`, which will not decode into the caller's type.
+  - A program that builds `server.Options` or an `agent.SubagentFactory`
+    without `Redact` now redacts.
+- `abhed secret set` refuses a value under 8 characters. Values already
+  stored keep working.
+
 ### Security
 
 - Sessions started through the SDK did not redact stored secrets. In 1.2.1
@@ -34,11 +62,11 @@ All notable changes to Abhed are recorded here. The format follows
   empty (0 bytes), corrupt, readable by others or unreadable. Now the
   terminal, the server, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse
   to start with an error that names the file and the fix, and `abhed doctor`
-  reports the store as not ready. A server built with no
-  `Options.Redact` withholds every payload instead. A missing store still
-  means no secrets. Upgrading: an empty file left by `touch
-  ~/.abhed/secrets.json` now stops every session; write `{}` to it or remove
-  it.
+  reports the store as not ready. A missing store still means no secrets.
+  If the store breaks while `abhed serve` runs, each new session starts but
+  withholds every event payload, and the server logs why, until the file is
+  fixed; a server built with no `Options.Redact` does the same. See
+  Upgrading.
 - The store is now opened once and checked on the open file. A FIFO or
   device at its path is refused instead of blocking or reading without end,
   and a store over 1 MiB is refused.

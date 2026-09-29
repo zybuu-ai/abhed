@@ -104,6 +104,18 @@ func (s *Store) load() (map[string]string, error) {
 	return m, nil
 }
 
+// fixHint says how to repair a store that cannot be loaded.
+const fixHint = "Fix the file (a JSON object of NAME: value, chmod 600) or remove it and add the secrets again with `abhed secret set`"
+
+// loadFixable is load with the repair named when the store cannot be loaded.
+func (s *Store) loadFixable() (map[string]string, error) {
+	m, err := s.load()
+	if err != nil {
+		return nil, fmt.Errorf("the secrets store cannot be loaded: %w. %s", err, fixHint)
+	}
+	return m, nil
+}
+
 func (s *Store) save(m map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
@@ -129,7 +141,7 @@ func (s *Store) Set(name, value string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return err
 	}
@@ -141,7 +153,7 @@ func (s *Store) Set(name, value string) error {
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return err
 	}
@@ -153,7 +165,7 @@ func (s *Store) Remove(name string) error {
 func (s *Store) Names() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +183,7 @@ func (s *Store) Names() ([]string, error) {
 func (s *Store) Env(names []string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +251,7 @@ func (s *Store) LoadRedactor() (*Redactor, error) {
 	m, err := s.load()
 	s.mu.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("refusing to start: the secrets store cannot be loaded, so stored values could not be redacted: %w. "+
-			"Fix the file (a JSON object of NAME: value, chmod 600) or remove it and add the secrets again with `abhed secret set`", err)
+		return nil, fmt.Errorf("refusing to start: the secrets store cannot be loaded, so stored values could not be redacted: %w. %s", err, fixHint)
 	}
 	if len(m) == 0 {
 		return &Redactor{}, nil

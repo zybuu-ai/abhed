@@ -362,3 +362,32 @@ func TestSecretSetRefusesAShortValue(t *testing.T) {
 		t.Fatalf("an 11-character value was refused (%d): %s", code, msg)
 	}
 }
+
+// abhed secret set and rm on a store that cannot be loaded name the same fix
+// as a refused start.
+func TestSecretCommandsNameTheFixForABrokenStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"FAKE_TOKEN": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABHED_SECRETS_FILE", path)
+	for _, args := range [][]string{{"rm", "FAKE_TOKEN"}, {"list"}} {
+		code, msg := resolveStderr(t, func() int { return secretCmd(args) })
+		if code == 0 || !strings.Contains(msg, path) || !strings.Contains(msg, "remove it and add the secrets again") {
+			t.Fatalf("secret %v (%d) did not name the file and the fix: %s", args, code, msg)
+		}
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.WriteString("long-enough-value\n")
+	_ = w.Close()
+	old := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = old }()
+	code, msg := resolveStderr(t, func() int { return secretCmd([]string{"set", "FAKE_TOKEN"}) })
+	if code == 0 || !strings.Contains(msg, "remove it and add the secrets again") {
+		t.Fatalf("secret set (%d) did not name the fix: %s", code, msg)
+	}
+}
