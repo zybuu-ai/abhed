@@ -297,3 +297,98 @@ func TestExecHelperRunsOnlyForARequestThatIsSent(t *testing.T) {
 		}
 	})
 }
+
+// A call to a tool this deployment does not have is recorded as sent, except
+// when its name is a near miss for a tool that takes credentials: those
+// arguments may hold one, and are withheld from the record and the history.
+func TestNearMissCredentialToolArgsAreWithheld(t *testing.T) {
+	raw := func(id, name, args string) model.ToolCall {
+		return model.ToolCall{ID: id, Name: name, Args: json.RawMessage(args)}
+	}
+	turns := []scriptedTurn{
+		{calls: []model.ToolCall{raw("c1", "k8s_login", `{"cluster":"prod","token":"LEAK-off-deploy"}`)}},
+		{calls: []model.ToolCall{raw("c2", "K8S_Login", `{"token":"LEAK-case"}`)}},
+		{calls: []model.ToolCall{raw("c3", "k8s_logn", `{"token":"LEAK-typo"}`)}},
+		{calls: []model.ToolCall{raw("c4", "ssh_conect", `{"password":"LEAK-ssh"}`)}},
+		{calls: []model.ToolCall{raw("c5", "frobnicate", `{"note":"kept-as-sent"}`)}},
+		{text: "done"},
+	}
+	sess, _ := tools.NewSession(t.TempDir())
+	store := NewMemStore()
+	adapter := &scriptedAdapter{turns: turns}
+	// No credential tool is registered: k8s and ssh are off here.
+	l := NewLoop(adapter, tools.NewRegistry(tools.Read{}), policy.New(policy.ModeDefault), AutoApprove{Yes: true},
+		sess, NewRecorder(store, "s1", ""), DefaultConfig())
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("s1")
+	withheld, kept := 0, false
+	for _, e := range evs {
+		if strings.Contains(string(e.Payload), "LEAK-") {
+			t.Errorf("a near-miss credential call reached the record: %s", e.Payload)
+		}
+		withheld += strings.Count(string(e.Payload), WithheldLookalikeArgs)
+		kept = kept || strings.Contains(string(e.Payload), "kept-as-sent")
+	}
+	if withheld != 4 {
+		t.Errorf("%d calls marked withheld, want 4", withheld)
+	}
+	if !kept {
+		t.Error("an unrelated unknown call lost its arguments")
+	}
+	for _, req := range adapter.gotRequests {
+		for _, m := range req.Messages {
+			for _, c := range m.ToolCalls {
+				if strings.Contains(string(c.Args), "LEAK-") {
+					t.Errorf("sent back to the model: %s", c.Args)
+				}
+			}
+		}
+	}
+}
+
+func TestWithinOneEdit(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"k8s_login", "k8s_login", true}, {"k8s_logn", "k8s_login", true}, {"k8s_loginx", "k8s_login", true},
+		{"k8s_lagin", "k8s_login", true}, {"xk8s_login", "k8s_login", true}, {"k8s_lgn", "k8s_login", false},
+		{"ssh", "ssh_connect", false}, {"", "a", true}, {"ab", "ba", false},
+	} {
+		if got := withinOneEdit([]rune(tc.a), []rune(tc.b)); got != tc.want {
+			t.Errorf("withinOneEdit(%q, %q) = %v", tc.a, tc.b, got)
+		}
+	}
+}
+
+// closeCounter counts closes of what a tool kept.
+type closeCounter struct{ n *int }
+
+func (c closeCounter) Close() error { *c.n++; return nil }
+
+// A fork starts without the logins and hosts of the conversation it forks:
+// what was made after the fork point must not outlive the turns that made it.
+func TestForkResetsScopedState(t *testing.T) {
+	sess, _ := tools.NewSession(t.TempDir())
+	store := NewMemStore()
+	l := NewLoop(&scriptedAdapter{turns: []scriptedTurn{{text: "hi"}}}, tools.NewRegistry(), policy.New(policy.ModeDefault),
+		AutoApprove{}, sess, NewRecorder(store, "s1", ""), DefaultConfig())
+	if _, err := l.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	type key struct{}
+	sess.Scoped(key{}, func() any { return closeCounter{&n} })
+	evs, _ := store.Events("s1")
+	if _, err := l.ForkTo(evs, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || sess.Scoped(key{}, nil) != nil {
+		t.Fatalf("after a fork: closed %d times, still kept %v", n, sess.Scoped(key{}, nil))
+	}
+	if sess.Scoped(key{}, func() any { return "new" }) != "new" {
+		t.Fatal("the forked conversation cannot log in again")
+	}
+}

@@ -53,3 +53,19 @@ func TestCloseScopedClosesAndForgets(t *testing.T) {
 		t.Fatalf("kept after close: %v", v)
 	}
 }
+
+// A reset closes what was kept and leaves the session open for the next
+// conversation, unlike CloseScoped, which is for a session that has ended.
+func TestResetScopedClosesAndStaysOpen(t *testing.T) {
+	s, _ := NewSession(t.TempDir())
+	n := 0
+	type key struct{}
+	s.Scoped(key{}, func() any { return closeCount{&n} })
+	s.ResetScoped()
+	if n != 1 || s.Scoped(key{}, nil) != nil {
+		t.Fatalf("closed %d times, still kept %v", n, s.Scoped(key{}, nil))
+	}
+	if v := s.Scoped(key{}, func() any { return "next" }); v != "next" {
+		t.Fatalf("the session keeps nothing after a reset: %v", v)
+	}
+}

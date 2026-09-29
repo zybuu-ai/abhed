@@ -107,6 +107,31 @@ func (s *Session) InheritScoped(from *Session) {
 	s.mu.Unlock()
 }
 
+// ResetScoped closes and forgets what the session's tools kept, and leaves the
+// session able to keep more: a CLI process that starts another conversation
+// on the same session must not carry the last one's logins into it.
+func (s *Session) ResetScoped() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	sc := s.scopedLocked()
+	s.mu.Unlock()
+	sc.mu.Lock()
+	vals := sc.m
+	sc.m = map[any]any{}
+	sc.mu.Unlock()
+	closeAll(vals)
+}
+
+func closeAll(vals map[any]any) {
+	for _, v := range vals {
+		if c, ok := v.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
+}
+
 // CloseScoped closes whatever the session's tools kept that holds a
 // connection, and forgets all of it. The session keeps nothing afterwards.
 func (s *Session) CloseScoped() {
@@ -120,11 +145,7 @@ func (s *Session) CloseScoped() {
 	vals := sc.m
 	sc.m, sc.closed = map[any]any{}, true
 	sc.mu.Unlock()
-	for _, v := range vals {
-		if c, ok := v.(io.Closer); ok {
-			_ = c.Close()
-		}
-	}
+	closeAll(vals)
 }
 
 // snapshot captures a file's current content before it is modified. Called by

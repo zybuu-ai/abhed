@@ -100,10 +100,15 @@ not be taken out. A `token` argument sent anyway is dropped, and a value in
 `token_secret` that is not a secret's name is recorded as
 `[withheld: not a secret name]`.
 
-A login belongs to the session that made it, and to that session's
-subagents. Another session on the same server, another user's included,
-keeps using the operator's kubeconfig, and a new session, or the same one
-after a server restart, logs in again. The secret itself is the operator's:
+A login belongs to the conversation that made it, and to that
+conversation's subagents. Another session on the same server, another
+user's included, keeps using the operator's kubeconfig. Log in again in a
+new session, after a server restart, and in the terminal after `/clear`,
+`/resume` or a fork: each starts a conversation with no logins and no
+connected hosts, and the last one's are closed. A resumed or forked
+conversation's `k8s_get` and `k8s_apply` that name no `cluster` fall back
+to the operator's kubeconfig until it logs in again, even where its
+history shows a login. The secret itself is the operator's:
 on `abhed serve`, users ask the operator to store one. A `secret(NAME)` rule
 decides whether sessions on this deployment may use it, not which user may:
 any session there can name a secret the rules allow. What stays per session
@@ -176,9 +181,10 @@ connect to 52.116.120.159, key is at ~/Downloads/id_rsa
 ```
 
 the agent calls `ssh_connect`, which asks for approval once, verifies the
-connection works, and registers the host **for that session only**. Nothing
-is written to `~/.ssh/config`. Another session on the same server cannot run
-on it or see its name. A name an `ssh.hosts` entry uses, in any case, cannot
+connection works, and registers the host **for that conversation only**.
+Nothing is written to `~/.ssh/config`. Another session on the same server
+cannot run on it or see its name, and in the terminal `/clear`, `/resume` and
+a fork close it; connect again there. A name an `ssh.hosts` entry uses, in any case, cannot
 be taken, and names are plain ASCII. That does not stop every look-alike:
 `pr0d` or `buiId1` still pass beside `prod` and `build1`. The approval for
 each `ssh` command names the account and address it runs on, as

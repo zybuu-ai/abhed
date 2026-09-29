@@ -920,8 +920,9 @@ type cliState struct {
 	scopes *ui.AllowList
 }
 
-// fresh forgets the last conversation's cost, transcript, undo log and allowed
-// scopes, for a new or resumed one; the workspace is left as it is.
+// fresh forgets the last conversation's cost, transcript, undo log, allowed
+// scopes, logins and connected hosts, for a new or resumed one; the workspace
+// is left as it is.
 func (c *cliState) fresh() {
 	c.total, c.transcript, c.claim, c.moved = agent.Usage{}, nil, "", nil
 	if c.scopes != nil {
@@ -930,6 +931,8 @@ func (c *cliState) fresh() {
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.sess.Checkpoint = c.undo.Record
+		// Logins and connected hosts belong to the conversation that made them.
+		c.sess.ResetScoped()
 	}
 }
 

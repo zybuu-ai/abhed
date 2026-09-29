@@ -147,9 +147,11 @@ All notable changes to Abhed are recorded here. The format follows
   keys included, as the password for a host the model named, and
   `accept_host_key` let it go to whoever answered. Affected: every release,
   0.1.0 through 1.2.1.
-  - A login and a connected host now belong to the session that made them,
-    its subagents included, and go when the session is deleted. Both tools
-    refuse when there is no session to hold them.
+  - A login and a connected host now belong to the conversation that made
+    them, its subagents included. They are closed when the session is
+    deleted, when the terminal starts another conversation with `/clear` or
+    `/resume`, and when a conversation is forked. Both tools refuse when
+    there is no session to hold them.
   - `k8s_login` takes `token_secret`, the name of a token stored with
     `abhed secret set`, instead of `token`; `ssh_connect` takes
     `password_secret` instead of `password_env`. Each name needs its own
@@ -164,7 +166,11 @@ All notable changes to Abhed are recorded here. The format follows
     nothing expects one, such as in `cluster`, `namespace`, a dropped key's
     name, or a call to a tool this deployment does not have, is still
     recorded as written, as it already stands in the model's own reply;
-    paste credentials into `abhed secret set`, not into the chat.
+    paste credentials into `abhed secret set`, not into the chat. The one
+    exception is a call to an unknown tool whose name is, ignoring case,
+    within one letter of `k8s_login`, `ssh_connect` or another tool that
+    takes secrets: its arguments are recorded as
+    `[withheld: unknown credential tool]`.
   - `k8s_login` takes `cluster`, a name from the new `k8s.clusters`, instead
     of `server`. A URL or an undeclared name is refused before the secret is
     read or any request is made. TLS is verified against the system roots
@@ -308,7 +314,8 @@ All notable changes to Abhed are recorded here. The format follows
   serve`, secrets are the operator's, so users ask the operator to store
   one, and any session on the deployment may name a secret the rules allow;
   a login made with it holds for that session only. Log in again in each
-  new session, and after a server restart.
+  new session, after `/clear`, `/resume` or a fork in the terminal, and
+  after a server restart.
 - `k8s_login` reaches only clusters declared in `k8s.clusters`, and takes
   `cluster` (a name) instead of `server`. With none declared it refuses.
   Declare each cluster people log in to, with its CA if the system roots do
