@@ -425,6 +425,7 @@ func (n *None) Command(ctx context.Context, cwd, command string) *exec.Cmd {
 // somewhere other than the folder named (CDPATH), which the tracker follows.
 // Exported functions and shell options go too: BASH_FUNC_cd%% redefines cd,
 // and SHELLOPTS or BASHOPTS change how every line is run.
+// ABHED_TRUST_WORKSPACE goes, so a command's own abhed run trusts nothing.
 func HostCommandEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
@@ -436,7 +437,7 @@ func HostCommandEnv() []string {
 }
 
 func hostDropped(kv string) bool {
-	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_"} {
+	for _, p := range []string{"BASH_ENV=", "CDPATH=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "ABHED_TRUST_WORKSPACE="} {
 		if strings.HasPrefix(kv, p) {
 			return true
 		}

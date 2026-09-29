@@ -153,3 +153,30 @@ func TestProcessSandboxShieldsConfiguredStatePaths(t *testing.T) {
 		t.Fatalf("a command replaced the users file:\n%s", out)
 	}
 }
+
+// A command cannot grant itself trust: the store in the home state directory
+// is neither writable nor replaceable from the sandbox.
+func TestProcessSandboxCannotWriteTheTrustStore(t *testing.T) {
+	requireNetNS(t)
+	home := workspace(t)
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, stateDir)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(state, "trust.json")
+	const empty = `{"version":1,"workspaces":{}}`
+	if err := os.WriteFile(store, []byte(empty), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := workspace(t)
+	s := processSandbox(t, ws, false)
+	grant := `{"version":1,"workspaces":{"` + ws + `":{"sha256":"x","decision":"trusted"}}}`
+	out, _ := runIn(t, s, ws, "echo '"+grant+"' > "+store+" 2>&1; echo '"+grant+"' > "+store+".new 2>&1 && mv "+store+".new "+store+" 2>&1; echo done")
+	if got, _ := os.ReadFile(store); string(got) != empty {
+		t.Fatalf("a command rewrote the trust store:\n%s\n%s", got, out)
+	}
+	if fileExists(store + ".new") {
+		t.Fatalf("a command planted a file beside the trust store:\n%s", out)
+	}
+}
