@@ -57,8 +57,9 @@ type Session struct {
 // scopedValues is what tools keep for one conversation, such as a credential
 // obtained during it. Fork and InheritScoped share it; nothing else does.
 type scopedValues struct {
-	mu sync.Mutex
-	m  map[any]any
+	mu     sync.Mutex
+	m      map[any]any
+	closed bool // after CloseScoped nothing is kept, so nothing outlives the session
 }
 
 func (s *Session) scopedLocked() *scopedValues {
@@ -69,8 +70,9 @@ func (s *Session) scopedLocked() *scopedValues {
 }
 
 // Scoped returns what a tool keeps under key for this session, made by mk on
-// first use; a nil mk only looks. A nil session keeps nothing and returns nil,
-// so a tool that must not share state across sessions can refuse.
+// first use; a nil mk only looks. A nil session, or one whose scoped state was
+// closed, keeps nothing and returns nil, so a tool that must not share state
+// across sessions can refuse.
 func (s *Session) Scoped(key any, mk func() any) any {
 	if s == nil {
 		return nil
@@ -80,6 +82,9 @@ func (s *Session) Scoped(key any, mk func() any) any {
 	s.mu.Unlock()
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	if sc.closed {
+		return nil
+	}
 	v, ok := sc.m[key]
 	if !ok && mk != nil {
 		v = mk()
@@ -103,20 +108,17 @@ func (s *Session) InheritScoped(from *Session) {
 }
 
 // CloseScoped closes whatever the session's tools kept that holds a
-// connection, and forgets all of it.
+// connection, and forgets all of it. The session keeps nothing afterwards.
 func (s *Session) CloseScoped() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	sc := s.scoped
+	sc := s.scopedLocked()
 	s.mu.Unlock()
-	if sc == nil {
-		return
-	}
 	sc.mu.Lock()
 	vals := sc.m
-	sc.m = map[any]any{}
+	sc.m, sc.closed = map[any]any{}, true
 	sc.mu.Unlock()
 	for _, v := range vals {
 		if c, ok := v.(io.Closer); ok {

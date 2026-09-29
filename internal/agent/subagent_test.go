@@ -703,3 +703,35 @@ func subagentRedactsAsParent(t *testing.T, stale bool) {
 		t.Fatalf("the subagent's output was not redacted by name:\n%s", all.String())
 	}
 }
+
+// scopedProbe reports what its session keeps under scopedProbeKey.
+type scopedProbe struct{ saw *any }
+
+type scopedProbeKey struct{}
+
+func (scopedProbe) Name() string            { return "probe" }
+func (scopedProbe) Description() string     { return "probe" }
+func (scopedProbe) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (scopedProbe) Mutates() bool           { return false }
+func (p scopedProbe) Run(_ context.Context, s *tools.Session, _ json.RawMessage) tools.Result {
+	*p.saw = s.Scoped(scopedProbeKey{}, nil)
+	return tools.Result{Content: "ok"}
+}
+
+// A subagent in its own worktree is still the parent's conversation: a login
+// the parent made is the child's too, and not a fresh, empty session's.
+func TestWorktreeSubagentInheritsScopedState(t *testing.T) {
+	var saw any
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("probe", map[string]string{})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Tools.Add(scopedProbe{saw: &saw})
+	f.Session.Scoped(scopedProbeKey{}, func() any { return "parent's login" })
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", Workspace: tempDir(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if saw != "parent's login" {
+		t.Fatalf("the worktree subagent saw %v, not its parent's login", saw)
+	}
+}

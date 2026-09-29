@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,5 +182,51 @@ users:
 				t.Errorf("alice's token reached the record in %s: %s", e.Type, e.Payload)
 			}
 		}
+	}
+}
+
+// countClose counts its closes.
+type countClose struct{ n *atomic.Int32 }
+
+func (c countClose) Close() error { c.n.Add(1); return nil }
+
+// Deleting a session releases what its tools kept for it: a login's
+// connections and a connected host are closed, not left for the process.
+func TestDeletingASessionClosesItsScopedState(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	st := agent.NewMemStore()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Store: st, Redact: noRedact{}})
+	h := s.Handler()
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("X-Abhed-User", "alice")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	var out struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(do("POST", "/v1/sessions", `{"prompt":"hi"}`).Body.Bytes(), &out)
+	if out.SessionID == "" {
+		t.Fatal("no session")
+	}
+	s.mu.RLock()
+	live := s.running[out.SessionID]
+	s.mu.RUnlock()
+	if live == nil {
+		t.Fatal("the session is not running")
+	}
+	var closed atomic.Int32
+	type key struct{}
+	live.Loop.Session.Scoped(key{}, func() any { return countClose{&closed} })
+
+	if w := do("DELETE", "/v1/sessions/"+out.SessionID, ""); w.Code >= 300 {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if closed.Load() != 1 {
+		t.Fatalf("the session's scoped state was closed %d times on delete, want 1", closed.Load())
 	}
 }

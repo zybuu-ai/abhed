@@ -48,4 +48,8 @@ func TestCloseScopedClosesAndForgets(t *testing.T) {
 	if v := s.Scoped(key{}, nil); v != nil {
 		t.Fatalf("still kept after close: %v", v)
 	}
+	// A call still in flight when the session went keeps nothing either.
+	if v := s.Scoped(key{}, func() any { return closeCount{&n} }); v != nil {
+		t.Fatalf("kept after close: %v", v)
+	}
 }
