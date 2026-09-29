@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -14,8 +15,27 @@ import (
 )
 
 // editorConn is an adapter whose editor answers every permission request with
-// optionID, counting the requests.
-func editorConn(t *testing.T, optionID string) (*acpConn, *atomic.Int32) {
+// the option of that kind, counting the requests. An "always" it was not
+// offered is sent anyway, bound to the request as the offered ones are.
+func editorConn(t *testing.T, kind string) (*acpConn, *atomic.Int32) {
+	return answeringConn(t, func(params json.RawMessage) map[string]any {
+		choice := chosen(params, kind)
+		if kind == "allow_always" && choice["outcome"].(map[string]any)["outcome"] == "cancelled" {
+			once := chosen(params, "allow_once")["outcome"].(map[string]any)["optionId"].(string)
+			choice = map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:" + strings.TrimPrefix(once, "once:")}}
+		}
+		return choice
+	})
+}
+
+// fixedEditorConn is an adapter whose editor answers every request with optionID.
+func fixedEditorConn(t *testing.T, optionID string) (*acpConn, *atomic.Int32) {
+	return answeringConn(t, func(json.RawMessage) map[string]any {
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}}
+	})
+}
+
+func answeringConn(t *testing.T, answer func(json.RawMessage) map[string]any) (*acpConn, *atomic.Int32) {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -31,7 +51,7 @@ func editorConn(t *testing.T, optionID string) (*acpConn, *atomic.Int32) {
 				continue
 			}
 			asked.Add(1)
-			res, _ := json.Marshal(map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}})
+			res, _ := json.Marshal(answer(m.Params))
 			b, _ := json.Marshal(rpcMessage{JSONRPC: "2.0", ID: m.ID, Result: res})
 			_, _ = inW.Write(append(b, '\n'))
 		}
@@ -42,7 +62,7 @@ func editorConn(t *testing.T, optionID string) (*acpConn, *atomic.Int32) {
 // A call a remembered "always allow" lets through is recorded as the session
 // scope that did, not as a reviewer who was never asked.
 func TestACPRememberedScopeIsRecordedAsTheSessionScope(t *testing.T) {
-	c, asked := editorConn(t, "reject")
+	c, asked := editorConn(t, "reject_once")
 	s := &acpSession{id: "s1", always: map[string]bool{"bash(mkdir *)": true}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(mkdir *)"}
@@ -57,7 +77,7 @@ func TestACPRememberedScopeIsRecordedAsTheSessionScope(t *testing.T) {
 
 // Choosing "always" is recorded on the approval that granted it.
 func TestACPAlwaysRecordsTheGrantedScope(t *testing.T) {
-	c, _ := editorConn(t, "always")
+	c, _ := editorConn(t, "allow_always")
 	s := &acpSession{id: "s1", always: map[string]bool{}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(mkdir *)"}
@@ -71,7 +91,7 @@ func TestACPAlwaysRecordsTheGrantedScope(t *testing.T) {
 
 // An ask rule asks every time, whatever the editor chose to always allow.
 func TestACPAskRuleIgnoresARememberedScope(t *testing.T) {
-	c, asked := editorConn(t, "reject")
+	c, asked := editorConn(t, "reject_once")
 	s := &acpSession{id: "s1", always: map[string]bool{"bash(git tag *)": true}}
 	for _, d := range []abhed.Decision{
 		{Decision: policy.Ask, Step: "ask", Scope: "bash(git tag *)", Reason: "matched ask rule bash(git tag*)"},
@@ -88,7 +108,7 @@ func TestACPAskRuleIgnoresARememberedScope(t *testing.T) {
 // An editor that sends "always" where it was not offered approves once and
 // widens nothing.
 func TestACPAlwaysNotOfferedApprovesOnce(t *testing.T) {
-	c, _ := editorConn(t, "always")
+	c, _ := editorConn(t, "allow_always")
 	s := &acpSession{id: "s1", always: map[string]bool{}}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	d := abhed.Decision{Decision: policy.Ask, Step: "ask", Scope: "bash(git tag *)"}

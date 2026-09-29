@@ -64,8 +64,6 @@ type acpSession struct {
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
 	always map[string]bool
-	// calls maps a call id to the tool call id the editor was told about.
-	calls map[string]string
 }
 
 type acpConn struct {
@@ -271,7 +269,7 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	if cwd == "" {
 		cwd = c.base
 	}
-	s := &acpSession{id: "s-" + acpID(), cwd: cwd, always: map[string]bool{}, calls: map[string]string{}}
+	s := &acpSession{id: "s-" + acpID(), cwd: cwd, always: map[string]bool{}}
 	opts := abhed.Options{
 		Workspace: cwd, ConfigDir: cwd, Sandbox: true,
 		OnEvent: func(ev abhed.Event) { c.forward(s, ev) },
@@ -375,15 +373,33 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
 		return true, nil
 	}
-	options := []map[string]any{{"optionId": "once", "name": "Allow once", "kind": "allow_once"}}
-	if scope != "" {
-		options = append(options, map[string]any{"optionId": "always", "name": "Always allow " + scope, "kind": "allow_always"})
+	// The request names the call its tool_call update names, and its options
+	// carry the engine's request id so an answer meant for another ask is refused.
+	callID, requestID := abhed.CallIDOf(ctx), abhed.RequestIDOf(ctx)
+	if callID == "" {
+		callID = "ask-" + acpID()
 	}
-	options = append(options, map[string]any{"optionId": "reject", "name": "Deny", "kind": "reject_once"})
+	bind := requestID
+	if bind == "" {
+		bind = callID
+	}
+	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
+	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
+	if scope != "" {
+		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + scope, "kind": "allow_always"})
+	}
+	options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
+	meta := map[string]any{"step": d.Step, "reason": d.Reason, "destructive": d.Step == "destructive"}
+	if requestID != "" {
+		meta["requestId"] = requestID
+	}
+	if scope != "" {
+		meta["scope"] = scope
+	}
 	res, err := c.call(ctx, "session/request_permission", map[string]any{
 		"sessionId": s.id,
-		"toolCall": map[string]any{"toolCallId": c.toolCallID(tool, args), "title": toolTitle(tool, args),
-			"kind": toolKind(tool), "status": "pending", "rawInput": args},
+		"toolCall": map[string]any{"toolCallId": callID, "title": toolTitle(tool, args),
+			"kind": toolKind(tool), "status": "pending", "rawInput": args, "_meta": map[string]any{"abhed": meta}},
 		"options": options,
 	})
 	if err != nil {
@@ -396,8 +412,11 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		} `json:"outcome"`
 	}
 	_ = json.Unmarshal(res, &out)
+	if out.Outcome.Outcome != "selected" {
+		return false, nil
+	}
 	switch out.Outcome.OptionID {
-	case "always":
+	case always:
 		// An editor may send an option it was not offered.
 		if scope == "" {
 			return true, nil
@@ -407,17 +426,13 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		s.mu.Unlock()
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: scope})
 		return true, nil
-	case "once":
+	case once:
 		return true, nil
+	case reject:
+		return false, nil
 	}
+	abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the editor's answer named an option not offered for this call"})
 	return false, nil
-}
-
-// toolCallID gives the editor one id per call: the record's call id when the
-// event carries it, else one derived from the arguments so the permission
-// request and the tool_call update line up.
-func (c *acpConn) toolCallID(tool string, args json.RawMessage) string {
-	return "pending-" + tool + "-" + fmt.Sprint(len(args))
 }
 
 func toolKind(tool string) string {
@@ -473,9 +488,6 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 	case agent.EvActionRequested:
 		var p agent.ActionRequested
 		_ = json.Unmarshal(ev.Payload, &p)
-		s.mu.Lock()
-		s.calls[p.CallID] = p.CallID
-		s.mu.Unlock()
 		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": toolTitle(p.Tool, p.Args),
 			"name": p.Tool, "kind": toolKind(p.Tool), "status": "pending", "rawInput": p.Args})
 	case agent.EvActionApproved:

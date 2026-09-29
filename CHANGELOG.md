@@ -6,6 +6,24 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `abhed acp`: a permission request's `toolCallId` is now the id of the
+  `tool_call` it asks about. It was derived from the tool name and argument
+  length, so it matched no tool call and two calls could share it.
+- `abhed acp`: an answer is bound to its request. Option ids carry the
+  recorded request's id, and an answer naming an option not offered for that
+  call is refused and recorded as refused by the system. An editor that sent
+  the fixed ids `once`, `always` or `reject` without reading the offered
+  options now gets a denial.
+
+### Added
+
+- `abhed acp`: a permission request's `toolCall._meta.abhed` carries the
+  policy `step`, `reason`, `destructive`, `scope` and `requestId`.
+- SDK: `CallIDOf` and `RequestIDOf` name, inside `Options.Approve`, the call
+  and the recorded request being asked about.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading

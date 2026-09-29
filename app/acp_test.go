@@ -30,11 +30,13 @@ func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, erro
 	}
 	emit(agent.EvAgentReasoning, map[string]string{"text": "I should write the file."})
 	args := json.RawMessage(`{"path":"/ws/a.txt","content":"hi"}`)
-	ok, err := a.opts.Approve(ctx, "write", args, abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "write(/ws/a.txt)", Reason: "changing a file needs approval in default mode"})
+	// As the loop does: the request is recorded, then the approver is asked about it.
+	emit(agent.EvActionRequested, agent.ActionRequested{CallID: "c1", Tool: "write", Args: args, RequiresApproval: true})
+	actx := agent.WithCallID(agent.WithRequestID(ctx, "ev-"+strconv.Itoa(len(a.ran))), "c1")
+	ok, err := a.opts.Approve(actx, "write", args, abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "write(/ws/a.txt)", Reason: "changing a file needs approval in default mode"})
 	if err != nil {
 		return "", err
 	}
-	emit(agent.EvActionRequested, agent.ActionRequested{CallID: "c1", Tool: "write", Args: args, RequiresApproval: true})
 	if !ok {
 		emit(agent.EvActionDenied, map[string]string{"call_id": "c1", "reason": "rejected"})
 		emit(agent.EvAgentDelta, map[string]string{"text": "Not written."})
@@ -55,6 +57,24 @@ func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, erro
 func (a *scriptedACPAgent) Steer(string)                {}
 func (a *scriptedACPAgent) Flush(context.Context) error { return nil } // OnEvent is called inline
 func (a *scriptedACPAgent) Close()                      {}
+
+// chosen answers a permission request with the offered option of kind, as
+// an editor's dialog would.
+func chosen(params json.RawMessage, kind string) map[string]any {
+	var p struct {
+		Options []struct {
+			OptionID string `json:"optionId"`
+			Kind     string `json:"kind"`
+		} `json:"options"`
+	}
+	_ = json.Unmarshal(params, &p)
+	for _, o := range p.Options {
+		if o.Kind == kind {
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": o.OptionID}}
+		}
+	}
+	return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+}
 
 // acpClient drives the adapter over pipes, the way an editor would.
 type acpClient struct {
@@ -112,8 +132,10 @@ func (cl *acpClient) request(id int, method string, params any) rpcMessage {
 	}
 }
 
-func (cl *acpClient) collect(id int, method string, params any) (rpcMessage, []map[string]any) {
+// prompt sends session/prompt and collects the updates until its reply.
+func (cl *acpClient) prompt(id int, params any) (rpcMessage, []map[string]any) {
 	cl.t.Helper()
+	const method = "session/prompt"
 	raw, _ := json.Marshal(params)
 	cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(itoa(id)), Method: method, Params: raw})
 	var updates []map[string]any
@@ -154,7 +176,7 @@ func TestACPTurnIsDrivenFromTheWire(t *testing.T) {
 		var p map[string]any
 		_ = json.Unmarshal(params, &p)
 		asked = append(asked, p)
-		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always"}}
+		return chosen(params, "allow_always")
 	})
 
 	init := cl.request(1, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}})
@@ -182,7 +204,7 @@ func TestACPTurnIsDrivenFromTheWire(t *testing.T) {
 		t.Fatal("session/new did not ask for the configured sandbox")
 	}
 
-	res, updates := cl.collect(3, "session/prompt", map[string]any{"sessionId": sess.SessionID,
+	res, updates := cl.prompt(3, map[string]any{"sessionId": sess.SessionID,
 		"prompt": []any{map[string]any{"type": "text", "text": "write a file"},
 			map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///ws/n.md", "text": "notes"}}}})
 	var stop struct {
@@ -213,7 +235,7 @@ func TestACPTurnIsDrivenFromTheWire(t *testing.T) {
 	}
 
 	// The editor chose "always": the same scope is not asked again.
-	_, _ = cl.collect(4, "session/prompt", map[string]any{"sessionId": sess.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "again"}}})
+	_, _ = cl.prompt(4, map[string]any{"sessionId": sess.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "again"}}})
 	if len(asked) != 1 {
 		t.Fatalf("asked again after allow_always: %d", len(asked))
 	}
@@ -227,16 +249,14 @@ func TestACPRejectionIsADenial(t *testing.T) {
 	defer func() {
 		newACPAgent = func(ctx context.Context, o abhed.Options) (acpAgent, error) { return abhed.New(ctx, o) }
 	}()
-	cl := newACPClient(t, func(string, json.RawMessage) any {
-		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "reject"}}
-	})
+	cl := newACPClient(t, func(_ string, params json.RawMessage) any { return chosen(params, "reject_once") })
 	cl.request(1, "initialize", map[string]any{"protocolVersion": 1})
 	created := cl.request(2, "session/new", map[string]any{"cwd": "/ws"})
 	var sess struct {
 		SessionID string `json:"sessionId"`
 	}
 	_ = json.Unmarshal(created.Result, &sess)
-	res, updates := cl.collect(3, "session/prompt", map[string]any{"sessionId": sess.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "x"}}})
+	res, updates := cl.prompt(3, map[string]any{"sessionId": sess.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "x"}}})
 	if !strings.Contains(string(res.Result), "end_turn") {
 		t.Fatalf("%s", res.Result)
 	}
