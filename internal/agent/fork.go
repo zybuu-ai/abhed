@@ -73,6 +73,10 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			if json.Unmarshal(ev.Payload, &a) != nil {
 				continue
 			}
+			// A pipeline step was issued by the harness; the model saw only its skill call's result.
+			if a.Via != "" {
+				continue
+			}
 			call := model.ToolCall{ID: a.CallID, Name: a.Tool, Args: a.Args}
 			pendingCalls[a.CallID] = call
 			// Attach to the assistant turn that produced it, creating one when
