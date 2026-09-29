@@ -284,6 +284,17 @@ All notable changes to Abhed are recorded here. The format follows
 - A CLI subagent's session row in Postgres did not name its parent, so it
   was listed as a session of user `agent`, and deleting the conversation
   left it behind.
+- `tasks` ran a task naming an unknown `agent_type` as the general role; it
+  now refuses the call before anything runs, as `task` does.
+- A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
+  cap is now never above its parent's.
+- The parent loop's own asks now share the one-at-a-time queue its
+  subagents use, so a person is never asked two things at once by the tree.
+- On the server, an approval that ended always set the session to
+  `running`, even when no run was live; it now restores `running`, `idle` or
+  `done` as fits. A message sent while an ask was pending and no run was
+  live was queued as steering into a loop that was not running; it now
+  starts a run.
 
 ### Added
 
@@ -333,25 +344,6 @@ All notable changes to Abhed are recorded here. The format follows
   `not started`); the serve banner names one that is not running.
 - The console and workbench say on a subagent's approval card that *Always
   allow* covers the whole session, the agent and every subagent.
-
-### Changed
-
-- The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
-  system prompt, loop settings and budget in one place, so a surface differs
-  from the CLI only where it says why. The server now applies
-  `limits.max_tokens`. `abhed eval` runs with memory files, the `todo` list
-  and subagents, and without MCP servers, extensions, rag corpora, the code
-  index, Kubernetes and SSH, so a score does not depend on what those reach.
-- `/resume` and the console refuse a subagent's session id and name the
-  session that started it, through which the subagent's work goes on.
-- A skill pipeline's input is the request its own loop is answering, and its
-  model steps run on that loop's current model. It was the last CLI prompt,
-  process-wide, and the model the CLI started with.
-
-## [Unreleased — next minor]
-
-### Added
-
 - Agent definitions: markdown files whose frontmatter names a subagent role
   (`name`, `description`, `tools`, `disallowed_tools`, `model`, `max_turns`,
   `isolation`, `permission_mode`) and whose body is its instructions. They
@@ -387,6 +379,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
+  system prompt, loop settings and budget in one place, so a surface differs
+  from the CLI only where it says why. The server now applies
+  `limits.max_tokens`. `abhed eval` runs with memory files, the `todo` list
+  and subagents, and without MCP servers, extensions, rag corpora, the code
+  index, Kubernetes and SSH, so a score does not depend on what those reach.
+- `/resume` and the console refuse a subagent's session id and name the
+  session that started it, through which the subagent's work goes on.
+- A skill pipeline's input is the request its own loop is answering, and its
+  model steps run on that loop's current model. It was the last CLI prompt,
+  process-wide, and the model the CLI started with.
 - Workspace trust covers `.abhed/agents` with a hash of its own, decided
   apart from `config.json`: the prompt, `abhed trust` and `abhed doctor` show
   each definition's name, model and tools, and declining new definitions
@@ -398,20 +401,11 @@ All notable changes to Abhed are recorded here. The format follows
   and the `task` description lists each with when to use it.
 - Skills are read by a frontmatter reader shared with agent definitions;
   they parse as before.
-
-### Fixed
-
-- `tasks` ran a task naming an unknown `agent_type` as the general role; it
-  now refuses the call before anything runs, as `task` does.
-- A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
-  cap is now never above its parent's.
-- The parent loop's own asks now share the one-at-a-time queue its
-  subagents use, so a person is never asked two things at once by the tree.
-- On the server, an approval that ended always set the session to
-  `running`, even when no run was live; it now restores `running`, `idle` or
-  `done` as fits. A message sent while an ask was pending and no run was
-  live was queued as steering into a loop that was not running; it now
-  starts a run.
+- An agent definition's key reads the same quoted or not. A key that reads
+  like an honoured one (such as `denied_tools`), or a restriction nested under
+  another key, refuses the definition. A managed definition's name stays
+  reserved even when that file does not load, and its model binds the call.
+  `disallowed_tools` removes every tool a name could mean, `recall` too.
 
 ## [1.2.1] - 2026-09-28
 
