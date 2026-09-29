@@ -348,8 +348,8 @@ public host (a redirect is followed only to that same URL or its https
 upgrade, at most five times), and nothing else: no other method, no
 connection the model holds. A port other than
 the scheme's default asks unless an allow rule names it, even for a host on
-`web_fetch.allowed_hosts`, except in bypass mode and `abhed eval`, which
-approve every ask. Both are off by default (`web_search.enabled`
+`web_fetch.allowed_hosts`, except in bypass mode (unless a managed policy
+disables it) and `abhed eval`, which approve every ask. Both are off by default (`web_search.enabled`
 and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
 enabled on its own, and neither enables shell networking. `web_fetch`
 fetches only the URL policy has judged: it refuses schemes other than
