@@ -38,6 +38,18 @@ const (
 	userAgent       = "Mozilla/5.0 (compatible; Abhed; +https://github.com/zybuu-ai/abhed)"
 )
 
+// AskReason is the policy reason a call asks when no host list is set.
+const AskReason = "web_fetch asks: no allowed_hosts configured, so any public site could receive what the URL carries"
+
+// AskReadOnly is the policy setting for a deployment's web_fetch: it asks
+// unless an allow rule matches, when no host list limits it.
+func AskReadOnly(asks bool) map[string]string {
+	if !asks {
+		return nil
+	}
+	return map[string]string{"web_fetch": AskReason}
+}
+
 // Tool fetches one URL and returns its text.
 type Tool struct {
 	// AllowedHosts, when set, is every host the tool may fetch: "example.com"

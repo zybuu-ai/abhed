@@ -299,6 +299,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	}
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.AsksByDefault())
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
 	must(pol.AddDeny(cfg.Permissions.Deny...))
@@ -1682,6 +1683,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		}
 
 		pol := policy.New(policy.ModeAuto)
+		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.AsksByDefault())
 		pol.Roots = sess.PolicyRoots
 		must(pol.AddDeny(cfg.Permissions.Deny...))
 		// The operator's own allow rules apply, so an eval run is governed the

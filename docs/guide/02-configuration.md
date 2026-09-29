@@ -163,7 +163,13 @@ metadata or reserved address, whatever the host name resolves to.
 
 `allowed_hosts`, when set, is every host the agent may fetch: a name, or
 `*.` and a domain for any host under it (not the domain itself). An entry
-with a scheme, port or path is refused at load. `max_chars` is the most text
+with a scheme, port or path is refused at load. Without it, any public site
+can be fetched, and a URL can carry whatever the model puts in it, so every
+call asks in the `default`, `accept-edits` and `auto` modes (the reason reads
+"web_fetch asks: no allowed_hosts configured") unless an allow rule such as
+`"allow": ["web_fetch(https://docs.python.org/*)"]` matches. `plan` and
+`bypass` treat it as any read-only tool. A headless run, which has no one to
+ask, needs such an allow rule or `allowed_hosts`. `max_chars` is the most text
 one call returns; unset means 20,000, and the most is 100,000. A longer page
 is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 

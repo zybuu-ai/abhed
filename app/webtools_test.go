@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
 
@@ -45,4 +46,25 @@ func names[T interface{ Name() string }](ts []T) []string {
 		out = append(out, t.Name())
 	}
 	return out
+}
+
+// With no host list web_fetch asks in default and auto modes; with one, the
+// tool itself refuses other hosts and the listed ones run unasked.
+func TestWebFetchAsksWithoutAHostList(t *testing.T) {
+	args := []byte(`{"url":"https://example.com/"}`)
+	cfg := config.Default()
+	cfg.WebFetch.Enabled = true
+	for _, mode := range []policy.Mode{policy.ModeDefault, policy.ModeAuto} {
+		pol := policy.New(mode)
+		pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.AsksByDefault())
+		if got := pol.Evaluate("web_fetch", false, args); got.Decision != policy.Ask || !strings.Contains(got.Reason, "no allowed_hosts") {
+			t.Errorf("%s: %+v", mode, got)
+		}
+	}
+	cfg.WebFetch.AllowedHosts = []string{"example.com"}
+	pol := policy.New(policy.ModeDefault)
+	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.AsksByDefault())
+	if got := pol.Evaluate("web_fetch", false, args); got.Decision != policy.Allow {
+		t.Errorf("with a host list: %+v", got)
+	}
 }

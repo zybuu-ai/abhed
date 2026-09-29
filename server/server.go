@@ -34,6 +34,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -1102,6 +1103,7 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
+	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.AsksByDefault())
 	return pol
 }
 

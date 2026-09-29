@@ -12,6 +12,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -270,6 +271,12 @@ type Engine struct {
 	// Roots returns the workspace and added directories, so a path rule
 	// written relative to one matches. Nil matches paths only as given.
 	Roots func() []string
+
+	// AskReadOnly names read-only tools that still ask in the default,
+	// accept-edits and auto modes, each with the reason given. An allow rule
+	// approves them; plan and bypass modes treat them as any read-only tool.
+	// It is for a tool whose reads can carry data out, such as web_fetch.
+	AskReadOnly map[string]string
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
@@ -511,7 +518,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode"}
 		}
 	case ModeAuto:
-		if !mutates {
+		if _, asks := e.AskReadOnly[tool]; !mutates && !asks {
 			return Result{Decision: Allow, Reason: "read-only tool in auto mode", Scope: "", Step: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
@@ -530,6 +537,9 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 6. Default: read-only tools proceed, mutations ask.
+	if why, asks := e.AskReadOnly[tool]; asks && !mutates {
+		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
+	}
 	if !mutates {
 		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
 	}
@@ -574,6 +584,13 @@ func suggestScope(tool, subject string) string {
 			return ""
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)
+	}
+	// A page's site, not the page: "always allow" for one URL would ask again
+	// for the next page there.
+	if tool == "web_fetch" {
+		if u, err := url.Parse(subject); err == nil && u.Scheme != "" && u.Host != "" {
+			return fmt.Sprintf("%s(%s://%s/*)", tool, u.Scheme, u.Host)
+		}
 	}
 	return fmt.Sprintf("%s(%s)", tool, subject)
 }

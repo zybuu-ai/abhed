@@ -278,7 +278,12 @@ All notable changes to Abhed are recorded here. The format follows
   every redirect hop), a URL holding a stored secret, and a URL not written
   in its one form, so a `web_fetch(https://host/*)` rule cannot be stepped
   around. A redirect to another host is handed back as a new call. Policy
-  rules match the URL: `url` is now a subject key.
+  rules match the URL: `url` is now a subject key. With no `allowed_hosts`,
+  each call asks in the default, accept-edits and auto modes unless an allow
+  rule such as `web_fetch(https://docs.python.org/*)` matches, since a URL
+  can carry data to any site; "always allow" is offered for the site. Plan
+  and bypass modes treat it as any read-only tool, and with `allowed_hosts`
+  set, calls to those hosts do not ask.
 
 ### Changed
 

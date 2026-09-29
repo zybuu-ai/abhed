@@ -354,8 +354,9 @@ site, and hands one to another host back to the model as a new call. It
 ignores proxy settings from the environment, refuses a URL that holds a
 stored secret, and can be held to an operator's host list
 (`web_fetch.allowed_hosts`). A URL is a channel out: whatever the model puts
-in it reaches the site, so an operator who enables `web_fetch` without a host
-list accepts that, and can add `ask` or `deny` rules on it.
+in it reaches the site, so without a host list every call asks in the
+`default`, `accept-edits` and `auto` modes unless an operator's allow rule
+names it (`Engine.AskReadOnly` in `internal/policy/policy.go`).
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic

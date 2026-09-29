@@ -39,7 +39,10 @@ returns up to `web_fetch.max_chars` characters per call, with the `start`
 to pass to read on. The result is tagged untrusted like any tool output.
 
 The request is made by Abhed, not the sandboxed shell, and every call is
-judged by policy and recorded like any other. What it refuses:
+judged by policy and recorded like any other. With no
+`web_fetch.allowed_hosts`, each call asks unless an allow rule matches; the
+approval offers "always allow" for the site (`web_fetch(https://host/*)`).
+What it refuses:
 
 - a scheme other than `http` or `https`, and a URL with a user name or
   password;
