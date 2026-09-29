@@ -46,6 +46,16 @@ func DefaultPath() (string, error) {
 
 func Open(path string) *Store { return &Store{path: path} }
 
+// Default opens the store at DefaultPath, the one the CLI uses. A path that
+// cannot be worked out names a file that never exists, so the store is empty.
+func Default() *Store {
+	path, err := DefaultPath()
+	if err != nil {
+		path = ".abhed-secrets-unavailable"
+	}
+	return Open(path)
+}
+
 // Path reports where the store lives.
 func (s *Store) Path() string { return s.path }
 

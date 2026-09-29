@@ -3264,13 +3264,7 @@ func printStoreStatus(pg *store.Postgres) {
 
 // openVault opens the secrets store. A missing file is an empty store, so a
 // deployment with no secrets pays nothing and needs no configuration.
-func openVault() *secrets.Store {
-	path, err := secrets.DefaultPath()
-	if err != nil {
-		path = ".abhed-secrets-unavailable"
-	}
-	return secrets.Open(path)
-}
+func openVault() *secrets.Store { return secrets.Default() }
 
 // vaultNames lists what the model may ask for. An unreadable store lists
 // nothing: the failure surfaces when a secret is used, with its reason.
