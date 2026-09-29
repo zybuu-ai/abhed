@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -140,5 +141,26 @@ func TestCLIPromptDeclineAgentsKeepsTrustedFile(t *testing.T) {
 	st, _ = config.InspectWorkspace(ws)
 	if !st.Trusted || st.Reason != "stored" || st.AgentsTrusted || st.AgentsReason != "declined" {
 		t.Fatalf("declining the definitions: %+v", st)
+	}
+}
+
+// Declining a changed file keeps definitions that were already trusted.
+func TestCLIPromptDeclineFileKeepsTrustedAgents(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"permissions":{"deny":["bash(curl*)"]}}`)
+	workspaceAgent(t, ws, "reviewer.md", "---\ndescription: reviews\n---\nReview.\n")
+	st, _ := config.InspectWorkspace(ws)
+	if err := config.GrantReviewed(ws, st.Reviewed()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{"permissions":{"mode":"bypass"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := startOnPty(t, []string{"-C", ws})
+	r.waitFor("Trust this file?", 1)
+	r.send("d\n")
+	r.waitFor("Type a task", 1)
+	st, _ = config.InspectWorkspace(ws)
+	if st.Trusted || st.Reason != "declined" || !st.AgentsTrusted || st.AgentsReason != "stored" {
+		t.Fatalf("declining the changed file: %+v", st)
 	}
 }

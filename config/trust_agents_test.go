@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,5 +251,51 @@ func TestRefreshAgents(t *testing.T) {
 	}
 	if st = RefreshAgents(cfg.Workspace); !st.AgentsTrusted || st.AgentsReason != "stored" {
 		t.Fatalf("a stored grant for the new content: %+v", st)
+	}
+}
+
+// A decision about the file alone keeps the stored decision about the
+// definitions, as abhed init records one.
+func TestConfigDecisionKeepsAgentsDecision(t *testing.T) {
+	_, ws := trustHome(t, "", "")
+	writeAgent(t, ws, "reviewer.md", reviewerDef)
+	st, _ := InspectWorkspace(ws)
+	if err := GrantReviewed(ws, st.Reviewed()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = InspectWorkspace(ws)
+	if !st.Trusted || !st.AgentsTrusted || st.AgentsReason != "stored" {
+		t.Fatalf("abhed init forgot the definitions' trust: %+v", st)
+	}
+	// And a decision declining the file keeps trusted definitions trusted.
+	if err := RecordDecision(ws, Reviewed{SHA256: st.SHA256, AgentsSHA256: st.AgentsSHA256}, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = InspectWorkspace(ws); st.Trusted || !st.AgentsTrusted {
+		t.Fatalf("declining the file: %+v", st)
+	}
+}
+
+// At most 64 definitions are read, and none larger than 64 KiB.
+func TestAgentFileCaps(t *testing.T) {
+	_, ws := trustHome(t, "", "")
+	for i := range maxAgentFiles + 3 {
+		writeAgent(t, ws, fmt.Sprintf("a%03d.md", i), reviewerDef)
+	}
+	st, _ := InspectWorkspace(ws)
+	if len(st.Agents) != maxAgentFiles || !strings.Contains(strings.Join(st.AgentsProblems, "\n"), "more than 64 definitions") {
+		t.Fatalf("read %d definitions, problems %v", len(st.Agents), st.AgentsProblems)
+	}
+
+	_, ws = trustHome(t, "", "")
+	writeAgent(t, ws, "big.md", reviewerDef+strings.Repeat("x", maxAgentFileBytes))
+	writeAgent(t, ws, "edge.md", reviewerDef+strings.Repeat("x", maxAgentFileBytes-len(reviewerDef)))
+	st, _ = InspectWorkspace(ws)
+	if len(st.Agents) != 1 || st.Agents[0] != ".abhed/agents/edge.md" ||
+		!strings.Contains(strings.Join(st.AgentsProblems, "\n"), "big.md: larger than 64 KiB") {
+		t.Fatalf("size cap: agents %v, problems %v", st.Agents, st.AgentsProblems)
 	}
 }

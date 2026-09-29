@@ -200,15 +200,25 @@ func RecordDecision(workspace string, r Reviewed, configTrusted, agentsTrusted b
 	if r.SHA256 == "" && r.AgentsSHA256 == "" {
 		return fmt.Errorf("no configuration file or agent definitions to decide on in %s", workspace)
 	}
-	rec := TrustRecord{SHA256: r.SHA256, Decision: decisionOf(configTrusted), At: time.Now().UTC()}
-	if r.AgentsSHA256 != "" {
-		rec.AgentsSHA256 = r.AgentsSHA256
-		if agentsTrusted != configTrusted {
-			rec.AgentsDecision = decisionOf(agentsTrusted)
-		}
-	}
 	key := canonical(workspace)
-	return updateTrust(func(m map[string]TrustRecord) { m[key] = rec })
+	return updateTrust(func(m map[string]TrustRecord) {
+		rec := TrustRecord{SHA256: r.SHA256, Decision: decisionOf(configTrusted), At: time.Now().UTC()}
+		agentsSum, agentsDecision := r.AgentsSHA256, decisionOf(agentsTrusted)
+		// A decision about the file alone keeps what was decided about the
+		// definitions: abhed init must not forget a trust it did not review.
+		if agentsSum == "" {
+			if old, ok := m[key]; ok && old.AgentsSHA256 != "" {
+				agentsSum, agentsDecision = old.AgentsSHA256, orDecision(old.AgentsDecision, old.Decision)
+			}
+		}
+		if agentsSum != "" {
+			rec.AgentsSHA256 = agentsSum
+			if agentsDecision != rec.Decision {
+				rec.AgentsDecision = agentsDecision
+			}
+		}
+		m[key] = rec
+	})
 }
 
 func decisionOf(trusted bool) string {

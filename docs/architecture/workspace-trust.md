@@ -79,7 +79,10 @@ under a trust decision too, bound to their exact content.
 - **They are decided apart from `config.json`.** A person can trust a
   configuration file and decline the definitions beside it. The stored record
   keeps `agents_sha256` and, when the two answers differ, `agents_decision`.
-  Declining new definitions at the prompt keeps a file already trusted.
+  Declining at the prompt keeps whichever part was already trusted: new
+  definitions do not cost a trusted file, nor a changed file trusted
+  definitions. A decision about the file alone (`abhed init`, `GrantTrust`)
+  keeps the stored decision about the definitions.
 - **Old records re-prompt nobody without definitions.** A record written
   before definitions were covered has no `agents_sha256`. For a workspace with
   no `.abhed/agents` nothing changes; for one with definitions, those alone are

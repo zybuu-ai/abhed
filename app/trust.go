@@ -36,14 +36,17 @@ func loadSession(workspace string, trust config.TrustChoice, interactive bool) (
 		return cfg, nil
 	}
 	if !grant {
-		// Declining new definitions keeps a file already trusted for this content.
-		if err := config.RecordDecision(workspace, st.Reviewed(), st.Trusted && st.Reason == "stored", false); err != nil {
+		// Declining keeps whichever part was already trusted for this content:
+		// new definitions do not cost a trusted file, nor a changed file
+		// trusted definitions.
+		if err := config.RecordDecision(workspace, st.Reviewed(), st.Trusted && st.Reason == "stored",
+			st.AgentsTrusted && st.AgentsReason == "stored"); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: could not record the decision: %v\n", err)
 		}
 		if !st.Trusted {
 			st.Reason = "declined"
 		}
-		if len(st.Agents) > 0 {
+		if len(st.Agents) > 0 && !st.AgentsTrusted {
 			st.AgentsReason = "declined"
 		}
 		cfg.Workspace = st
@@ -87,11 +90,13 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 		fmt.Fprintln(out, "Abhed now asks about workspace configuration, including files you wrote.")
 	}
 	describeTrust(out, st)
+	// Ask about what is not yet trusted, never about what already is.
 	question := "Trust this file?"
+	agentsPending := len(st.Agents) > 0 && !st.AgentsTrusted
 	switch {
-	case len(st.Agents) > 0 && st.File != "" && !st.Trusted:
+	case agentsPending && st.File != "" && !st.Trusted:
 		question = "Trust this file and these definitions?"
-	case len(st.Agents) > 0:
+	case agentsPending:
 		question = "Trust these definitions?"
 	}
 	for {
@@ -130,7 +135,9 @@ func describeTrust(out io.Writer, st config.WorkspaceTrust) {
 	if len(st.Applied) > 0 {
 		fmt.Fprintf(out, "Applied already, since they only tighten: %s\n", strings.Join(st.Applied, ", "))
 	}
-	describeAgents(out, st, "Trusting them would let these agent definitions load:")
+	if !st.AgentsTrusted {
+		describeAgents(out, st, "Trusting them would let these agent definitions load:")
+	}
 }
 
 // describeAgents lists the workspace's definitions: the name the model would
