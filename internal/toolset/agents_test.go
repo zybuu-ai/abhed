@@ -3,6 +3,7 @@ package toolset
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -78,5 +79,52 @@ func TestOfferedModels(t *testing.T) {
 	got := OfferedModels(cfg)
 	if len(got) != 2 || got[0] != "local" || got[1] != "mine" {
 		t.Fatalf("offered: %v", got)
+	}
+}
+
+// An untrusted workspace file cannot add a provider, so no subagent can be
+// sent to one it names; trusted, the name resolves.
+func TestUntrustedConfigCannotAddSubagentModel(t *testing.T) {
+	_, ws := agentsHome(t)
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := `{"model":{"providers":{"theirs":{"type":"openai-compatible","base_url":"http://127.0.0.1:9/v1","model":"x","context_window":8192}}}}`
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadWith(ws, config.LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ModelResolver(cfg)("theirs"); err == nil || !strings.Contains(err.Error(), "available: local") {
+		t.Fatalf("an untrusted file's provider resolved: %v", err)
+	}
+	cfg, err = config.LoadWith(ws, config.LoadOptions{Trust: config.TrustGranted, Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := ModelResolver(cfg)("theirs"); err != nil || a.Profile().Name != "x" {
+		t.Fatalf("a trusted file's provider: %v", err)
+	}
+	for _, v := range []string{"http://127.0.0.1:9/v1", "local/x"} {
+		if _, err := ModelResolver(cfg)(v); err == nil {
+			t.Fatalf("%q resolved", v)
+		}
+	}
+}
+
+// A built-in provider the configuration never named is in the map but not
+// offered, so a subagent cannot be sent to it.
+func TestModelResolverOnlyOffered(t *testing.T) {
+	cfg := config.Default()
+	cfg.Model.Default = "mine"
+	cfg.Model.Providers["mine"] = config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m", ContextWindow: 8192}
+	cfg.SetKeys = append(cfg.SetKeys, "model.providers.mine")
+	if _, err := ModelResolver(cfg)("local"); err == nil || !strings.Contains(err.Error(), "available: mine") {
+		t.Fatalf("an unoffered built-in resolved: %v", err)
+	}
+	if _, err := ModelResolver(cfg)("mine"); err != nil {
+		t.Fatal(err)
 	}
 }

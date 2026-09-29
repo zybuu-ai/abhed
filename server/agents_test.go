@@ -122,3 +122,35 @@ func TestAgentReloadReachesNewSessionsOnly(t *testing.T) {
 		t.Fatalf("a session started after the reload lacks the definition: %v", got)
 	}
 }
+
+// A subagent may run only on a provider this server offers sessions: a
+// built-in the configuration never named is refused, and so is an endpoint.
+func TestServerOfferedGatesSubagentModel(t *testing.T) {
+	isolateAgents(t)
+	cfg := config.Default()
+	cfg.Model.Default = "mine"
+	cfg.Model.Providers["mine"] = config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m", ContextWindow: 8192}
+	cfg.Model.Providers["other"] = config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "o", ContextWindow: 8192}
+	cfg.SetKeys = append(cfg.SetKeys, "model.providers.mine", "model.providers.other")
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+	if a, err := s.subagentModel("other"); err != nil || a.Profile().Name != "o" {
+		t.Fatalf("an offered provider: %v", err)
+	}
+	for _, name := range []string{"local", "nope", "http://127.0.0.1:9/v1"} {
+		_, err := s.subagentModel(name)
+		if err == nil || !strings.Contains(err.Error(), "available: mine, other") {
+			t.Fatalf("%q: %v", name, err)
+		}
+	}
+	id := startSession(t, s)
+	s.mu.Lock()
+	live := s.running[id]
+	s.mu.Unlock()
+	tk, _ := live.Loop.Tools.Get("task")
+	if got := tk.(agent.Task).Models; len(got) != 2 {
+		t.Fatalf("the session's task tool offers models %v", got)
+	}
+	if live.Loop.Provider != "mine" {
+		t.Fatalf("the session's provider is %q", live.Loop.Provider)
+	}
+}

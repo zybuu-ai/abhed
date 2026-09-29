@@ -86,6 +86,31 @@ A definition's tool list is a list of capabilities, not a risk class. A tool
 that only reads, such as a web fetch, can still carry data out, and it is
 policed as it would be for the parent.
 
+## Another model for a role
+
+`model` names a provider from your configuration's `model.providers`, the
+same names `abhed -model` and the console's model picker take. The `task` and
+`tasks` calls take a `model` too, and it wins over the definition's; `inherit`,
+or no value, is the definition's model and then the parent's.
+
+- **A name, never an endpoint.** A value holding `://`, a `/` or a space is
+  refused before anything is looked up. The key comes from the environment of
+  the process running Abhed, as the session's own does.
+- **Only what is offered.** On a server, only a provider sessions may run on
+  (the console's list); a built-in provider the configuration never named is
+  not one. An untrusted workspace file cannot add a provider, so it cannot add
+  a model for a role either.
+- **No fallback.** A model that is not configured, has no key, or cannot be
+  built refuses the start: "model fast is not available: ...; available: a,
+  b". Nothing runs, no spawn is counted, and the parent's model is never used
+  in its place. A definition naming a provider that is not configured is
+  refused when it loads.
+- **One budget.** Every model's tokens count against the session's one
+  `max_budget_tokens`. There is no weighting by price.
+
+The model property appears on the tools only when more than one provider is
+offered, so a single-model deployment pays nothing for it in the prompt.
+
 ## Where definitions come from
 
 Highest first:
@@ -144,5 +169,7 @@ score does not depend on local files.
 
 `subagent.spawned` names the role and what it ran with: `definition`,
 `definition_source` (`builtin`, `managed`, `workspace` or `operator`),
-`definition_sha256` for a loaded file, and `tools`, the tools the subagent
-had, sorted.
+`definition_sha256` for a loaded file, `tools`, the tools the subagent had,
+sorted, and `model` and `provider`, the model it ran on and the configured
+provider it came from. `subagent.returned` names `model` and `provider` too,
+and each of the subagent's `model.call` events names its model.

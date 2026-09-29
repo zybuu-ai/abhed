@@ -32,6 +32,11 @@ types on offer, and a call naming any other is refused before anything runs;
 own worktree gets one even when the call asks for no isolation, so `tasks` then
 asks as worktree isolation does.
 
+Each task may also name a `model`, a configured provider, when the
+deployment offers more than one; see [Agent
+definitions](17-agent-definitions.md#another-model-for-a-role). A model that
+is not available refuses that call, and no other model is used instead.
+
 ## Where subagents run
 
 `task` and `tasks` are part of the same agent on every surface:

@@ -286,6 +286,22 @@ func ProviderOf(events []Event) string {
 	return ""
 }
 
+// SubagentProvider is the configured provider a subagent's record says it
+// ran on: the one its own subagent.spawned names. Empty when it ran on its
+// parent's model and the parent's provider was not known.
+func SubagentProvider(events []Event) string {
+	for _, e := range events {
+		if e.Type == EvSubagentSpawned {
+			var p struct {
+				Provider string `json:"provider"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			return p.Provider
+		}
+	}
+	return ""
+}
+
 // LastModel is the model the record last names: a call's, a switch's, or the start's.
 func LastModel(events []Event) string {
 	for i := len(events) - 1; i >= 0; i-- {

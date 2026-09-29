@@ -305,9 +305,13 @@ func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *
 	if f.Definitions == nil {
 		f.Definitions = agent.BuiltinDefinitions()
 	}
-	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace})
+	var models []string
+	if f.Models != nil {
+		models = f.ModelNames
+	}
+	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models})
 	out.Add(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
-		Workspace: f.Workspace, MaxParallel: maxParallel})
+		Workspace: f.Workspace, MaxParallel: maxParallel, Models: models})
 	return out
 }
 

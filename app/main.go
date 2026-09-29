@@ -337,6 +337,8 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
 		Redact: vault.Redactor(), Definitions: set.Agents,
+		// A subagent may run on another configured model, never an endpoint.
+		Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg),
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 
@@ -413,6 +415,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	}()
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	loop.Provider = appCfg.Model.Default
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
@@ -530,6 +533,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.SetAdapter(sessionState.adapter)
+		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
 		toolset.Summarize(loop.Compactor, extHost, id)
 		sessionState.loop, sessionState.sessionID = loop, id

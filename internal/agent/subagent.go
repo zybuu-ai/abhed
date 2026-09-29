@@ -86,6 +86,9 @@ type Task struct {
 	// Workspace is the parent's root, beneath which a role that works in its
 	// own worktree gets one.
 	Workspace string
+	// Models are the provider names a call may choose. The model property is
+	// offered only when there is more than one to choose from.
+	Models []string
 }
 
 type SubagentRequest struct {
@@ -93,6 +96,9 @@ type SubagentRequest struct {
 	Description string
 	AgentType   string
 	MaxTurns    int
+	// Model names a configured provider to run on, over the definition's;
+	// empty or "inherit" takes the definition's, then the parent's model.
+	Model string
 	// Workspace, when set, roots the subagent there instead of in the
 	// parent's workspace — a git worktree, for parallel work that must not
 	// collide. The child's file and shell boundary is that directory.
@@ -123,14 +129,24 @@ func (t Task) Description() string {
 func (t Task) Schema() json.RawMessage {
 	return mustSchema(map[string]any{
 		"type": "object",
-		"properties": map[string]any{
+		"properties": withModel(map[string]any{
 			"prompt":      map[string]any{"type": "string", "description": "Complete, self-contained task description. The subagent sees none of this conversation, so include all necessary context."},
 			"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
 			"agent_type":  agentTypeSchema(t.Agents),
 			"max_turns":   map[string]any{"type": "integer", "description": "Turn cap for the subagent."},
-		},
+		}, t.Models),
 		"required": []string{"prompt", "description"},
 	})
+}
+
+// withModel adds the model property when there is a choice to make. With one
+// model configured it would only cost prompt tokens.
+func withModel(props map[string]any, models []string) map[string]any {
+	if len(models) > 1 {
+		props["model"] = map[string]any{"type": "string", "enum": models,
+			"description": "A configured model to run the subagent on. Omit to use the agent type's, or yours."}
+	}
+	return props
 }
 
 // agentTypeSchema is the agent_type property: the types this session offers.
@@ -160,6 +176,7 @@ type taskArgs struct {
 	Description string `json:"description"`
 	AgentType   string `json:"agent_type"`
 	MaxTurns    int    `json:"max_turns"`
+	Model       string `json:"model"`
 }
 
 // unknownType refuses an agent type the session does not offer, naming those it does.
@@ -198,6 +215,7 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		Description: a.Description,
 		AgentType:   agentType,
 		MaxTurns:    a.MaxTurns,
+		Model:       a.Model,
 	}
 	if def.Isolation == "worktree" {
 		return runInWorktree(ctx, t.Spawn, t.Workspace, req)
@@ -249,6 +267,13 @@ type SubagentFactory struct {
 	// Definitions are the agent types a spawn may name; nil offers the
 	// built-in roles. The task and tasks tools offer the same set.
 	Definitions *Definitions
+	// Models turns a configured provider name into an adapter, for a child
+	// run on another model than its parent's. It must look the name up among
+	// the providers offered to this session and never treat it as an
+	// endpoint. Nil offers no choice: only the parent's model.
+	Models func(name string) (model.Adapter, error)
+	// ModelNames are the names Models resolves, as the tools offer them.
+	ModelNames []string
 }
 
 // SessionCreator is implemented by durable stores that need a session row
@@ -284,9 +309,25 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	if err != nil {
 		return "", err
 	}
-	if def.Model != "" {
-		// Never run a role on another model than the one it names.
-		return "", fmt.Errorf("definition %s names model %q, and this agent offers no model choice", def.Name, def.Model)
+	// The model is resolved before a spawn is counted too, and a model that
+	// cannot be had refuses the spawn: a child never runs on another model
+	// than the one named, and the parent's is never substituted.
+	provider := ""
+	if parent != nil {
+		provider = parent.provider
+	}
+	if name := childModel(req.Model, def.Model); name != "" {
+		if err := ValidModelName(name); err != nil {
+			return "", err
+		}
+		if f.Models == nil {
+			return "", fmt.Errorf("model %q was asked for, and this agent offers no model choice; omit model to use yours", name)
+		}
+		a, err := f.Models(name)
+		if err != nil {
+			return "", fmt.Errorf("model %q is not available: %v", name, err)
+		}
+		adapter, provider = a, name
 	}
 	if f.Budget != nil {
 		if !f.Budget.AllowNested && depth > 0 {
@@ -381,6 +422,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	sub := NewLoop(adapter, registry, narrowMode(childPolicy(f.Policy, session), def.PermissionMode), approver, session, rec, cfg)
 	sub.depth = depth + 1
+	sub.Provider = provider
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.
 	sub.Budget = f.Budget
@@ -400,9 +442,13 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		"definition":        def.Name,
 		"definition_source": def.Source,
 		"tools":             effective,
+		"model":             adapter.Profile().Name,
 	}
 	if def.SHA256 != "" {
 		spawned["definition_sha256"] = def.SHA256
+	}
+	if provider != "" {
+		spawned["provider"] = provider
 	}
 	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
 	parent.record(EvSubagentSpawned, ActorAgent, spawned)
@@ -411,10 +457,15 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	usage := sub.Usage()
 
 	if err != nil {
-		parent.record(EvSubagentReturn, ActorAgent, map[string]any{
+		failed := map[string]any{
 			"description": req.Description, "session": sessionID, "reason": string(TermError),
 			"turns": usage.Turns, "tokens_in": usage.InputTokens, "tokens_out": usage.OutputTokens,
-		})
+			"model": adapter.Profile().Name,
+		}
+		if provider != "" {
+			failed["provider"] = provider
+		}
+		parent.record(EvSubagentReturn, ActorAgent, failed)
 		return "", fmt.Errorf("subagent failed: %w", err)
 	}
 
@@ -434,6 +485,10 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		"tokens_in":     usage.InputTokens,
 		"tokens_out":    usage.OutputTokens,
 		"summary_chars": len(summary),
+		"model":         adapter.Profile().Name,
+	}
+	if provider != "" {
+		returned["provider"] = provider
 	}
 	_, _ = rec.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
 	parent.record(EvSubagentReturn, ActorAgent, returned)
@@ -471,6 +526,32 @@ func childTools(parent *tools.Registry, def *Definition) (*tools.Registry, error
 		reg = reg.Without(def.DisallowedTools)
 	}
 	return reg, nil
+}
+
+// childModel is the model a child is asked to run on: the call's, else the
+// definition's. Empty, or inherit, is the parent's.
+func childModel(call, def string) string {
+	for _, m := range []string{call, def} {
+		if m != "" && m != "inherit" {
+			return m
+		}
+	}
+	return ""
+}
+
+// ValidModelName refuses a model value that is not a plain provider name. A
+// URL, a path or anything with spaces is never looked up, so no value can
+// point a subagent at an endpoint of its own.
+func ValidModelName(v string) error {
+	if v == "" || len(v) > 128 || strings.Contains(v, "://") || strings.ContainsAny(v, "/\\ \t\r\n") {
+		return fmt.Errorf("model %q is not a provider name; name a configured provider, never an endpoint", v)
+	}
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("model %q is not a provider name", v)
+		}
+	}
+	return nil
 }
 
 // childTurns is a child's turn cap: the call's, else the definition's, else
@@ -529,6 +610,7 @@ type parentLink struct {
 	depth    int           // 0 for a top-level loop, 1 for its subagents, and so on
 	fail     func(error)   // a write the parent's record refused ends the parent's run
 	adapter  model.Adapter // the parent's model now, which a switch may have changed
+	provider string        // the configured name adapter came from, when known
 	loop     *Loop         // the loop making the call, which a pipeline's steps run on
 }
 
@@ -541,7 +623,7 @@ func (l *Loop) asParent(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
-		adapter: l.Adapter, loop: l,
+		adapter: l.Adapter, provider: l.Provider, loop: l,
 	})
 }
 

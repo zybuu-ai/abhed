@@ -29,6 +29,8 @@ type Tasks struct {
 	Spawn func(ctx context.Context, req SubagentRequest) (string, error)
 	// Agents are the agent types this session offers; nil offers the built-in roles.
 	Agents *Definitions
+	// Models are the provider names a task may choose, offered when more than one.
+	Models []string
 	// Workspace is the parent's root; worktrees are created beneath it.
 	Workspace string
 	// MaxParallel bounds concurrency. Zero means all at once.
@@ -74,12 +76,12 @@ func (t Tasks) Schema() json.RawMessage {
 				"type": "array", "minItems": 1, "maxItems": 8,
 				"items": map[string]any{
 					"type": "object",
-					"properties": map[string]any{
+					"properties": withModel(map[string]any{
 						"prompt":      map[string]any{"type": "string", "description": "Complete, self-contained task. The subagent sees none of this conversation."},
 						"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
 						"agent_type":  agentTypeSchema(t.Agents),
 						"max_turns":   map[string]any{"type": "integer"},
-					},
+					}, t.Models),
 					"required": []string{"prompt", "description"},
 				},
 			},
@@ -183,7 +185,7 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			req := SubagentRequest{Prompt: tk.Prompt, Description: tk.Description,
-				AgentType: tk.AgentType, MaxTurns: tk.MaxTurns}
+				AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model}
 			wt := trees[i]
 			if wt != nil {
 				req.Workspace = wt.Dir

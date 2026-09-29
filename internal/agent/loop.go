@@ -195,7 +195,10 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
-	Adapter   model.Adapter
+	Adapter model.Adapter
+	// Provider is the configured name Adapter came from, when the surface
+	// knows it. A subagent that runs on its parent's model records it.
+	Provider  string
 	Tools     *tools.Registry
 	Policy    *policy.Engine
 	Approver  Approver
@@ -646,6 +649,7 @@ func (l *Loop) SwitchModel(provider string, a model.Adapter) error {
 		}
 	}
 	l.SetAdapter(a)
+	l.Provider = provider
 	return nil
 }
 

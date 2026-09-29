@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -13,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/skills"
@@ -107,6 +110,30 @@ func OfferedModels(cfg config.Config) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ModelResolver is a subagent factory's model choice over the configuration:
+// a name is looked up among the offered, configured providers and never
+// treated as an endpoint. Its key comes from this process's environment, as
+// the session's own does. An untrusted workspace file cannot add a provider,
+// so it cannot add a name here.
+func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
+	offered := OfferedModels(cfg)
+	return func(name string) (model.Adapter, error) {
+		avail := strings.Join(offered, ", ")
+		if !slices.Contains(offered, name) {
+			return nil, fmt.Errorf("it is not a configured provider; available: %s", avail)
+		}
+		p, err := cfg.ProviderNamed(name)
+		if err != nil {
+			return nil, fmt.Errorf("%v; available: %s", err, avail)
+		}
+		a, err := p.Adapter()
+		if err != nil {
+			return nil, fmt.Errorf("%v; available: %s", err, avail)
+		}
+		return a, nil
+	}
 }
 
 // LoadAgents loads the subagent definitions with the built-in roles: the

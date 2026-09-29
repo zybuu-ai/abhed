@@ -1177,6 +1177,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget
+	loop.Provider = live.provider
 	live.Loop = loop
 	return live, loop, nil
 }
@@ -1210,6 +1211,9 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 		Workspace: sess.Root, Redact: rec.Redact,
 		Store:       s.subagentStore(sessionID, spec, mode),
 		Definitions: s.state.agentDefs(),
+		// Only a provider this server offers sessions, by name, as the
+		// console's model picker; a subagent never falls back to another.
+		Models: s.subagentModel, ModelNames: s.providerNames(),
 	}
 	return toolset.Subagents(registry, f, s.opts.Config.Limits.MaxParallelSubagents)
 }

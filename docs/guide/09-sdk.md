@@ -71,6 +71,14 @@ carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
 `subagent.action` and `subagent.returned` stand for them, as the CLI's JSON
 output does.
 
+With `ConfiguredTools` the subagents offer the [agent
+definitions](17-agent-definitions.md) the CLI would load: the managed
+directory, `ConfigDir`'s `.abhed/agents` when that workspace is trusted, and
+`agents.dirs`. A subagent may run on another provider the configuration
+names, never on an endpoint. With `Options.Provider` set, the agent's own
+model is the only one, so no subagent chooses another: a definition naming a
+model does not load, and a call naming one is refused.
+
 ## Who settled a call
 
 Every `action.approved` and `action.denied` says who settled it in `by`.

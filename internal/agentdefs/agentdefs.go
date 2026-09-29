@@ -333,7 +333,7 @@ func modelOf(v string, models []string) (string, error) {
 	if v == "" || v == "inherit" {
 		return "", nil
 	}
-	if err := ModelName(v); err != nil {
+	if err := agent.ValidModelName(v); err != nil {
 		return "", err
 	}
 	for _, m := range models {
@@ -346,18 +346,4 @@ func modelOf(v string, models []string) (string, error) {
 		avail = strings.Join(models, ", ")
 	}
 	return "", fmt.Errorf("model %q is not a configured provider; available: %s", config.Printable(v), avail)
-}
-
-// ModelName refuses a model value that is not a plain provider name: a URL, a
-// path or anything with spaces is never looked up.
-func ModelName(v string) error {
-	if v == "" || strings.Contains(v, "://") || strings.ContainsAny(v, "/\\ \t\r\n") || len(v) > 128 {
-		return fmt.Errorf("model %q is not a provider name; name a configured provider, never an endpoint", config.Printable(v))
-	}
-	for _, r := range v {
-		if !unicode.IsPrint(r) {
-			return fmt.Errorf("model %q is not a provider name", config.Printable(v))
-		}
-	}
-	return nil
 }
