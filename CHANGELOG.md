@@ -6,6 +6,26 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A skill's pipeline ran its tool steps with no policy, approval or record.
+  Affects every release from 0.1.0 through 1.2.1, in the CLI (`abhed` and
+  `abhed -p`); the server, console and SDK never ran pipelines. A step called
+  the tool directly, so deny and ask rules, plan mode, destructive-command
+  confirmation, extension hooks, the monitor, the approver and the `secrets`
+  allow rule were all skipped. A step could run `bash`, `write` or any other
+  registered tool with arguments templated from the request and from earlier
+  steps' output. File-tool path checks and a configured sandbox still
+  applied. Nothing about the step reached the record, and a pipeline's model
+  steps were sent tool output before secret values were stripped from it.
+  Each tool step is now put through the running session as the model's own
+  call is: policy, hooks, the monitor and the approver, one ask at a time.
+  A step that needs approval in a headless run, or with no approver, is
+  refused. Each step is recorded with `via` naming the skill's pipeline,
+  which HawkEYE shows. Model steps get tool output with secrets redacted.
+  A pipeline with no running session to check its steps, or with a step
+  that calls the `skill` tool, is refused rather than run.
+
 ## [1.2.1] - 2026-09-28
 
 ### Upgrading

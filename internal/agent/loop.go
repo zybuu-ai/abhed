@@ -887,7 +887,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		// call the model made, not only those naming a real tool.
 		why := fmt.Sprintf("unknown tool %q", call.Name)
 		if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
-			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why,
+			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why, Via: viaOf(ctx),
 		}); err != nil {
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
@@ -927,6 +927,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
 		Scope:            decision.Offer(),
+		Via:              viaOf(ctx),
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -953,7 +954,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	case policy.Ask:
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequestID(ctx, asked.ID))
-		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
+		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.

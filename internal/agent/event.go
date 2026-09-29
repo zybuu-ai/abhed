@@ -179,6 +179,8 @@ type ActionRequested struct {
 	// the way the CLI's [A] option does — without it, default mode re-prompts
 	// for every mutating call with no way to stop.
 	Scope string `json:"scope,omitempty"`
+	// Via names what issued the call for the agent, such as "skill research pipeline".
+	Via string `json:"via,omitempty"`
 }
 
 type Observation struct {
