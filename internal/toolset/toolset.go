@@ -296,11 +296,17 @@ func Budget(cfg config.Config) *agent.Budget {
 // A child's calls are judged by f.Policy (with its own root added) and put to
 // the approver of the loop that spawned it; f.Approver answers only a spawn
 // with no loop and, left nil, refuses. f.Budget must be the loop's Budget.
+//
+// The tools offer f.Definitions, the session's agent types: a set's Agents,
+// or the built-in roles when nil. They are fixed for the session.
 func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *tools.Registry {
 	out := reg.Clone()
 	f.Tools = out
-	out.Add(agent.Task{Spawn: f.Spawn, Profiles: agent.Profiles})
-	out.Add(agent.Tasks{Spawn: f.Spawn, Profiles: agent.Profiles,
+	if f.Definitions == nil {
+		f.Definitions = agent.BuiltinDefinitions()
+	}
+	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace})
+	out.Add(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
 		Workspace: f.Workspace, MaxParallel: maxParallel})
 	return out
 }

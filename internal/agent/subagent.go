@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,8 +79,13 @@ type Task struct {
 	// Spawn runs a subagent and returns its summary. Injected so the tool does
 	// not have to know how a Loop is constructed.
 	Spawn func(ctx context.Context, req SubagentRequest) (string, error)
-	// Profiles limits which agent types may be requested.
-	Profiles map[string]PromptProfile
+	// Agents are the agent types this session offers; nil offers the
+	// built-in roles. They are fixed for the session, since they are part of
+	// the prompt the model was given.
+	Agents *Definitions
+	// Workspace is the parent's root, beneath which a role that works in its
+	// own worktree gets one.
+	Workspace string
 }
 
 type SubagentRequest struct {
@@ -95,30 +102,49 @@ type SubagentRequest struct {
 func (Task) Name() string  { return "task" }
 func (Task) Mutates() bool { return false } // the subagent's own tools are policed separately
 
-func (t Task) Description() string {
-	types := make([]string, 0, len(t.Profiles))
-	for name := range t.Profiles {
-		if name != "main" {
-			types = append(types, name)
-		}
+// MutatesCall is true for a role that works in its own worktree, which makes
+// a branch and a checkout on the host before the child runs.
+func (t Task) MutatesCall(raw json.RawMessage) bool {
+	var a taskArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return false
 	}
+	def, ok := t.Agents.Get(a.AgentType)
+	return ok && def.Isolation == "worktree"
+}
+
+func (t Task) Description() string {
 	return "Spawn a subagent with a fresh context to handle a self-contained subtask. " +
 		"Use when a task needs extensive exploration whose intermediate detail you do not need — " +
 		"the subagent returns only a summary. The prompt must be COMPLETE and self-contained: " +
-		"the subagent cannot see this conversation. Agent types: " + strings.Join(types, ", ") + "."
+		"the subagent cannot see this conversation. Agent types:" + t.Agents.listing()
 }
 
-func (Task) Schema() json.RawMessage {
-	return json.RawMessage(`{
-  "type":"object",
-  "properties":{
-    "prompt":{"type":"string","description":"Complete, self-contained task description. The subagent sees none of this conversation, so include all necessary context."},
-    "description":{"type":"string","description":"3-5 word label shown to the user."},
-    "agent_type":{"type":"string","description":"explore | test | review | general. Defaults to general."},
-    "max_turns":{"type":"integer","description":"Turn cap for the subagent."}
-  },
-  "required":["prompt","description"]
-}`)
+func (t Task) Schema() json.RawMessage {
+	return mustSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"prompt":      map[string]any{"type": "string", "description": "Complete, self-contained task description. The subagent sees none of this conversation, so include all necessary context."},
+			"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
+			"agent_type":  agentTypeSchema(t.Agents),
+			"max_turns":   map[string]any{"type": "integer", "description": "Turn cap for the subagent."},
+		},
+		"required": []string{"prompt", "description"},
+	})
+}
+
+// agentTypeSchema is the agent_type property: the types this session offers.
+func agentTypeSchema(d *Definitions) map[string]any {
+	return map[string]any{"type": "string", "enum": d.Names(),
+		"description": "One of the agent types listed on the task tool. Defaults to general."}
+}
+
+func mustSchema(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err) // built from fixed shapes and strings; cannot fail
+	}
+	return b
 }
 
 // hasTasks reports whether raw carries a tasks field, the tasks tool's argument.
@@ -134,6 +160,14 @@ type taskArgs struct {
 	Description string `json:"description"`
 	AgentType   string `json:"agent_type"`
 	MaxTurns    int    `json:"max_turns"`
+}
+
+// unknownType refuses an agent type the session does not offer, naming those it does.
+func unknownType(d *Definitions, what, name string) tools.Result {
+	return tools.Result{
+		Content: fmt.Sprintf("Unknown %s %q. Available: %s.", what, name, strings.Join(d.Names(), ", ")),
+		IsError: true,
+	}
 }
 
 func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
@@ -155,29 +189,44 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	if agentType == "" {
 		agentType = "general"
 	}
-	if agentType != "general" {
-		if _, found := t.Profiles[agentType]; !found {
-			known := make([]string, 0, len(t.Profiles))
-			for name := range t.Profiles {
-				known = append(known, name)
-			}
-			return tools.Result{
-				Content: fmt.Sprintf("Unknown agent_type %q. Available: %s.", agentType, strings.Join(known, ", ")),
-				IsError: true,
-			}
-		}
+	def, found := t.Agents.Get(agentType)
+	if !found {
+		return unknownType(t.Agents, "agent_type", agentType)
 	}
-
-	summary, err := t.Spawn(ctx, SubagentRequest{
+	req := SubagentRequest{
 		Prompt:      a.Prompt,
 		Description: a.Description,
 		AgentType:   agentType,
 		MaxTurns:    a.MaxTurns,
-	})
+	}
+	if def.Isolation == "worktree" {
+		return runInWorktree(ctx, t.Spawn, t.Workspace, req)
+	}
+	summary, err := t.Spawn(ctx, req)
 	if err != nil {
 		return tools.Result{Content: err.Error(), IsError: true}
 	}
 	return tools.Result{Content: summary}
+}
+
+// runInWorktree runs one subagent in a worktree of its own and says what it
+// left there, for a role whose definition works in one.
+func runInWorktree(ctx context.Context, spawn func(context.Context, SubagentRequest) (string, error), ws string, req SubagentRequest) tools.Result {
+	if err := requireGitRepo(ctx, ws); err != nil {
+		return tools.Result{Content: fmt.Sprintf("agent type %q works in its own worktree, which needs the workspace to be a git repository: %v", req.AgentType, err), IsError: true}
+	}
+	wt, err := addWorktree(ctx, ws)
+	if err != nil {
+		return tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
+	}
+	req.Workspace = wt.Dir
+	summary, err := spawn(ctx, req)
+	rel, _ := filepath.Rel(ws, wt.Dir)
+	settled := settleWorktree(ctx, ws, rel, wt)
+	if err != nil {
+		return tools.Result{Content: err.Error() + "\n\n" + settled, IsError: true}
+	}
+	return tools.Result{Content: strings.TrimSpace(summary) + "\n\n" + settled}
 }
 
 // SubagentFactory builds and runs subagents. A subagent answers to the approver
@@ -197,6 +246,9 @@ type SubagentFactory struct {
 	Redact Redactor
 	// Depth guards against runaway recursion; nested spawning is off by default.
 	Depth int
+	// Definitions are the agent types a spawn may name; nil offers the
+	// built-in roles. The task and tasks tools offer the same set.
+	Definitions *Definitions
 }
 
 // SessionCreator is implemented by durable stores that need a session row
@@ -220,6 +272,21 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		if parent.adapter != nil {
 			adapter = parent.adapter
 		}
+	}
+	// The role and its tools are settled before a spawn is counted: a type
+	// this session does not offer, or a tool list naming a tool it does not
+	// have, refuses the call with nothing spawned.
+	def, found := f.Definitions.Get(req.AgentType)
+	if !found {
+		return "", fmt.Errorf("unknown agent type %q; available: %s", req.AgentType, strings.Join(f.Definitions.Names(), ", "))
+	}
+	registry, err := childTools(f.Tools, def)
+	if err != nil {
+		return "", err
+	}
+	if def.Model != "" {
+		// Never run a role on another model than the one it names.
+		return "", fmt.Errorf("definition %s names model %q, and this agent offers no model choice", def.Name, def.Model)
 	}
 	if f.Budget != nil {
 		if !f.Budget.AllowNested && depth > 0 {
@@ -273,9 +340,13 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		rec.tap = mirrorInto(parent, sessionID, req.Description)
 	}
 
-	profile := req.AgentType
-	if _, found := Profiles[profile]; !found {
-		profile = "main"
+	profile, role := "main", ""
+	if def.Source == SourceBuiltin {
+		if def.Name != "general" {
+			profile = def.Name
+		}
+	} else {
+		role = def.Instruction
 	}
 
 	// Where the subagent works. Usually the parent's workspace and session;
@@ -284,7 +355,6 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	// reach the parent's tree.
 	workspace, session := f.Workspace, f.Session
 	if req.Workspace != "" {
-		var err error
 		if session, err = tools.NewSession(req.Workspace); err != nil {
 			return "", fmt.Errorf("subagent workspace: %w", err)
 		}
@@ -298,28 +368,18 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	// and none of the parent's turns.
 	sysPrompt := BuildSystemPrompt(BuildOptions{
 		Profile:       profile,
+		Role:          role,
 		Workspace:     workspace,
 		Model:         adapter.Profile().Name,
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
 	})
 
-	// A narrow role gets a narrow tool set: an explore subagent that can write
-	// will write, and the orchestrator will not know (docs §07).
-	registry := f.Tools
-	if p, found := Profiles[profile]; found && len(p.Tools) > 0 {
-		registry = f.Tools.Subset(p.Tools...)
-	}
-
 	cfg := f.Config
 	cfg.SystemPrompt = sysPrompt
-	if req.MaxTurns > 0 {
-		cfg.MaxTurns = req.MaxTurns
-	} else if cfg.MaxTurns > 30 {
-		cfg.MaxTurns = 30 // subagents are for bounded subtasks
-	}
+	cfg.MaxTurns = childTurns(f.Config.MaxTurns, def.MaxTurns, req.MaxTurns)
 
-	sub := NewLoop(adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
+	sub := NewLoop(adapter, registry, narrowMode(childPolicy(f.Policy, session), def.PermissionMode), approver, session, rec, cfg)
 	sub.depth = depth + 1
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.
@@ -329,12 +389,20 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	// The parent records the spawn and the return in its own log, which is
 	// what the audit relies on; the child's copy is for its own replay.
+	effective := registry.Names()
+	sort.Strings(effective)
 	spawned := map[string]any{
-		"description": req.Description,
-		"agent_type":  req.AgentType,
-		"depth":       depth,
-		"workspace":   workspace,
-		"session":     sessionID,
+		"description":       req.Description,
+		"agent_type":        req.AgentType,
+		"depth":             depth,
+		"workspace":         workspace,
+		"session":           sessionID,
+		"definition":        def.Name,
+		"definition_source": def.Source,
+		"tools":             effective,
+	}
+	if def.SHA256 != "" {
+		spawned["definition_sha256"] = def.SHA256
 	}
 	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
 	parent.record(EvSubagentSpawned, ActorAgent, spawned)
@@ -374,6 +442,80 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		return summary + fmt.Sprintf("\n\n[subagent ended early: %s]", reason), nil
 	}
 	return summary, nil
+}
+
+// childTools is the tool set a role gets, cut from the parent's registry at
+// the moment of the spawn. A narrow role gets a narrow tool set: an explore
+// subagent that can write will write, and the orchestrator will not know
+// (docs §07). A loaded definition's list may only narrow, and a tool it names
+// that the session does not have refuses the spawn rather than being dropped.
+func childTools(parent *tools.Registry, def *Definition) (*tools.Registry, error) {
+	if parent == nil {
+		parent = tools.NewRegistry()
+	}
+	if !def.strict {
+		if len(def.Tools) > 0 {
+			return parent.Subset(def.Tools...), nil
+		}
+		return parent, nil
+	}
+	reg := parent
+	if def.Tools != nil {
+		var missing []string
+		if reg, missing = parent.SubsetStrict(def.Tools); len(missing) > 0 {
+			return nil, fmt.Errorf("definition %s names tools this session does not have: %s. Use another agent type, or do the work directly",
+				def.Name, strings.Join(missing, ", "))
+		}
+	}
+	if len(def.DisallowedTools) > 0 {
+		reg = reg.Without(def.DisallowedTools)
+	}
+	return reg, nil
+}
+
+// childTurns is a child's turn cap: the call's, else the definition's, else
+// thirty, since subagents are for bounded subtasks. A definition's cap binds
+// the call, and nothing goes above the parent's cap.
+func childTurns(parent, def, call int) int {
+	limit := parent
+	if def > 0 && (limit <= 0 || def < limit) {
+		limit = def
+	}
+	turns := 30
+	switch {
+	case call > 0:
+		turns = call
+	case def > 0:
+		turns = def
+	}
+	if limit > 0 && turns > limit {
+		turns = limit
+	}
+	return turns
+}
+
+// modeRank orders the permission modes from narrowest to widest; a mode not
+// listed ranks widest, so a definition's mode always narrows it.
+var modeRank = map[policy.Mode]int{policy.ModePlan: 0, policy.ModeDefault: 1, policy.ModeAcceptEdits: 2, policy.ModeAuto: 3, policy.ModeBypass: 4}
+
+func rankOf(m policy.Mode) int {
+	if r, ok := modeRank[m]; ok {
+		return r
+	}
+	return len(modeRank)
+}
+
+// narrowMode is the child's policy with a definition's mode where it is
+// narrower than the parent's, on a copy of the engine: its deny rules, hooks
+// and managed marking come along, and the parent's engine is untouched. A
+// mode that would widen is ignored.
+func narrowMode(pol *policy.Engine, mode string) *policy.Engine {
+	if pol == nil || mode == "" || rankOf(policy.Mode(mode)) >= rankOf(pol.Mode) {
+		return pol
+	}
+	child := *pol
+	child.Mode = policy.Mode(mode)
+	return &child
 }
 
 // parentKey carries the loop running a tool, so a subagent that tool spawns

@@ -3,12 +3,17 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // isolateAgents gives the test its own home, trust store and managed
@@ -62,5 +67,58 @@ func TestAdminReloadsAgents(t *testing.T) {
 	defer g.mu.Unlock()
 	if len(g.audit) != 1 || g.audit[0].action != "agents.reloaded" {
 		t.Fatalf("audit = %+v", g.audit)
+	}
+}
+
+// offeredTypes is what a session's task tool offers.
+func offeredTypes(t *testing.T, s *Server, id string) []string {
+	t.Helper()
+	s.mu.Lock()
+	live := s.running[id]
+	s.mu.Unlock()
+	if live == nil {
+		t.Fatalf("session %s is not running here", id)
+	}
+	tk, ok := live.Loop.Tools.Get("task")
+	if !ok {
+		t.Fatal("the session has no task tool")
+	}
+	return tk.(agent.Task).Agents.Names()
+}
+
+func startSession(t *testing.T, s *Server) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/sessions", strings.NewReader(`{"prompt":"hello"}`)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	var created createResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	return created.SessionID
+}
+
+// A reload reaches the sessions started after it; a session already running
+// keeps the agent types its prompt and record say it was offered.
+func TestAgentReloadReachesNewSessionsOnly(t *testing.T) {
+	dir := isolateAgents(t)
+	cfg := config.Default()
+	cfg.Agents.Dirs = []string{dir}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{})})
+	before := startSession(t, s)
+
+	putAgent(t, dir, "auditor.md", "---\ndescription: audits\n---\nAudit.\n")
+	rec := httptest.NewRecorder()
+	s.reloadAgents(rec, httptest.NewRequest("POST", "/v1/admin/agents/reload", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload: %d %s", rec.Code, rec.Body)
+	}
+	after := startSession(t, s)
+
+	if got := offeredTypes(t, s, before); slices.Contains(got, "auditor") {
+		t.Fatalf("a running session's types changed on reload: %v", got)
+	}
+	if got := offeredTypes(t, s, after); !slices.Contains(got, "auditor") {
+		t.Fatalf("a session started after the reload lacks the definition: %v", got)
 	}
 }

@@ -132,7 +132,10 @@ var Profiles = map[string]PromptProfile{
 
 // BuildOptions assembles the four prompt layers.
 type BuildOptions struct {
-	Profile       string
+	Profile string
+	// Role, when set, is the role section in place of the profile's own: a
+	// loaded definition's instructions.
+	Role          string
 	Workspace     string
 	Model         string
 	ContextWindow int
@@ -154,9 +157,13 @@ func BuildSystemPrompt(opts BuildOptions) string {
 
 	b.WriteString(CorePrompt)
 
-	if p, found := Profiles[opts.Profile]; found && p.Instruction != "" {
+	role := opts.Role
+	if p, found := Profiles[opts.Profile]; found && role == "" {
+		role = p.Instruction
+	}
+	if role != "" {
 		b.WriteString("\n\n## Role\n")
-		b.WriteString(p.Instruction)
+		b.WriteString(role)
 	}
 
 	b.WriteString("\n\n## Environment\n")

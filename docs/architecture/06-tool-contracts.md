@@ -305,7 +305,7 @@ force-push) require confirmation **in every mode**, including the most permissiv
     "properties":{
       "prompt":     {"type":"string","description":"Complete, self-contained task. The subagent sees none of this conversation."},
       "description":{"type":"string","description":"3-5 word label."},
-      "agent_type": {"type":"string","description":"Which subagent profile: explore | test | review | general."},
+      "agent_type": {"type":"string","enum":["general","explore","test","review","<loaded definitions>"],"description":"One of the agent types listed on the task tool. Defaults to general."},
       "max_turns":  {"type":"integer"}
     },
     "required":["prompt","description"]
@@ -321,6 +321,11 @@ force-push) require confirmation **in every mode**, including the most permissiv
 - **Nested spawning disabled by default**; concurrency capped (default 20).
 - The prompt must be self-contained. Enforce this in the description — the single most common
   failure is a prompt referencing "the file we discussed."
+- `agent_type` is per session: the built-in roles plus loaded [agent
+  definitions](../guide/17-agent-definitions.md), fixed when the session starts, listed with
+  their descriptions in the tool's description. An unknown type is refused, by `task` and by
+  `tasks`. A definition's tools are cut from the parent's with `Registry.SubsetStrict`: a name
+  the session lacks refuses the spawn, and nothing is counted against `max_subagents`.
 
 ---
 

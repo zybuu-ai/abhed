@@ -336,7 +336,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
-		Redact: vault.Redactor(),
+		Redact: vault.Redactor(), Definitions: set.Agents,
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 
@@ -1574,7 +1574,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 
 		budget := toolset.Budget(cfg)
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor()}
+			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor(), Definitions: set.Agents}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 
 		loop := agent.NewLoop(adapter, registry, pol, agent.AutoApprove{Yes: true}, sess, rec, loopCfg)

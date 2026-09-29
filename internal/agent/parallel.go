@@ -26,8 +26,9 @@ import (
 
 // Tasks is the tool.
 type Tasks struct {
-	Spawn    func(ctx context.Context, req SubagentRequest) (string, error)
-	Profiles map[string]PromptProfile
+	Spawn func(ctx context.Context, req SubagentRequest) (string, error)
+	// Agents are the agent types this session offers; nil offers the built-in roles.
+	Agents *Definitions
 	// Workspace is the parent's root; worktrees are created beneath it.
 	Workspace string
 	// MaxParallel bounds concurrency. Zero means all at once.
@@ -39,11 +40,21 @@ func (Tasks) Mutates() bool { return false } // each child's tools are policed o
 
 // MutatesCall is true for worktree isolation, which makes branches and
 // checkouts on the host before any child runs: that asks, and plan mode refuses it.
-func (Tasks) MutatesCall(raw json.RawMessage) bool {
-	var a struct {
-		Isolation string `json:"isolation"`
+// A role whose definition works in its own worktree does the same.
+func (t Tasks) MutatesCall(raw json.RawMessage) bool {
+	var a tasksArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return false
 	}
-	return json.Unmarshal(raw, &a) == nil && a.Isolation == "worktree"
+	if a.Isolation == "worktree" {
+		return true
+	}
+	for _, tk := range a.Tasks {
+		if def, ok := t.Agents.Get(tk.AgentType); ok && def.Isolation == "worktree" {
+			return true
+		}
+	}
+	return false
 }
 
 func (t Tasks) Description() string {
@@ -55,27 +66,28 @@ func (t Tasks) Description() string {
 		"Returns every subagent's summary, in order."
 }
 
-func (Tasks) Schema() json.RawMessage {
-	return json.RawMessage(`{
-  "type":"object",
-  "properties":{
-    "tasks":{
-      "type":"array","minItems":1,"maxItems":8,
-      "items":{
-        "type":"object",
-        "properties":{
-          "prompt":{"type":"string","description":"Complete, self-contained task. The subagent sees none of this conversation."},
-          "description":{"type":"string","description":"3-5 word label shown to the user."},
-          "agent_type":{"type":"string","description":"explore | test | review | general. Defaults to general."},
-          "max_turns":{"type":"integer"}
-        },
-        "required":["prompt","description"]
-      }
-    },
-    "isolation":{"type":"string","enum":["none","worktree"],"description":"worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."}
-  },
-  "required":["tasks"]
-}`)
+func (t Tasks) Schema() json.RawMessage {
+	return mustSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tasks": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": 8,
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"prompt":      map[string]any{"type": "string", "description": "Complete, self-contained task. The subagent sees none of this conversation."},
+						"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
+						"agent_type":  agentTypeSchema(t.Agents),
+						"max_turns":   map[string]any{"type": "integer"},
+					},
+					"required": []string{"prompt", "description"},
+				},
+			},
+			"isolation": map[string]any{"type": "string", "enum": []string{"none", "worktree"},
+				"description": "worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."},
+		},
+		"required": []string{"tasks"},
+	})
 }
 
 type tasksArgs struct {
@@ -108,17 +120,31 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	if len(a.Tasks) > 8 {
 		return tools.Result{Content: "tasks is limited to 8 subagents at once.", IsError: true}
 	}
+	// Every task is checked before any runs: an agent type this session does
+	// not offer refuses the whole call, rather than running as another role.
+	isolate := make([]bool, len(a.Tasks))
+	anyIsolated := false
 	for i, tk := range a.Tasks {
 		if strings.TrimSpace(tk.Prompt) == "" {
 			return tools.Result{Content: fmt.Sprintf("tasks[%d].prompt is required and must be self-contained.", i), IsError: true}
 		}
+		if a.Tasks[i].AgentType == "" {
+			a.Tasks[i].AgentType = "general"
+		}
+		def, ok := t.Agents.Get(a.Tasks[i].AgentType)
+		if !ok {
+			return unknownType(t.Agents, fmt.Sprintf("tasks[%d].agent_type", i), tk.AgentType)
+		}
+		// A definition's worktree is a default the call may tighten, never loosen.
+		isolate[i] = a.Isolation == "worktree" || def.Isolation == "worktree"
+		anyIsolated = anyIsolated || isolate[i]
 	}
 
-	isolate := a.Isolation == "worktree"
-	if isolate {
+	if anyIsolated {
 		if err := requireGitRepo(ctx, t.Workspace); err != nil {
 			return tools.Result{Content: "isolation \"worktree\" needs the workspace to be a git " +
-				"repository: " + err.Error() + ". Use isolation \"none\", or initialise git first.",
+				"repository: " + err.Error() + ". Use isolation \"none\" and agent types that do not " +
+				"work in a worktree, or initialise git first.",
 				IsError: true}
 		}
 	}
@@ -126,18 +152,21 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	// Worktrees are created up front and serially: git's own locking makes
 	// concurrent `worktree add` fragile, and a failure here should stop the
 	// whole call before any subagent has spent a token.
-	var trees []*worktree
-	if isolate {
-		for range a.Tasks {
-			wt, err := addWorktree(ctx, t.Workspace)
-			if err != nil {
-				for _, done := range trees {
+	trees := make([]*worktree, len(a.Tasks))
+	for i := range a.Tasks {
+		if !isolate[i] {
+			continue
+		}
+		wt, err := addWorktree(ctx, t.Workspace)
+		if err != nil {
+			for _, done := range trees {
+				if done != nil {
 					removeWorktree(context.Background(), t.Workspace, done)
 				}
-				return tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
 			}
-			trees = append(trees, wt)
+			return tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
 		}
+		trees[i] = wt
 	}
 
 	limit := t.MaxParallel
@@ -155,9 +184,8 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 			defer func() { <-sem }()
 			req := SubagentRequest{Prompt: tk.Prompt, Description: tk.Description,
 				AgentType: tk.AgentType, MaxTurns: tk.MaxTurns}
-			var wt *worktree
-			if isolate {
-				wt = trees[i]
+			wt := trees[i]
+			if wt != nil {
 				req.Workspace = wt.Dir
 			}
 			summary, err := t.Spawn(ctx, req)
@@ -179,7 +207,7 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		}
 		if o.worktree != nil {
 			rel, _ := filepath.Rel(t.Workspace, o.worktree.Dir)
-			b.WriteString(t.settle(ctx, rel, o.worktree))
+			b.WriteString(settleWorktree(ctx, t.Workspace, rel, o.worktree))
 		}
 	}
 	if failed > 0 {
@@ -190,13 +218,13 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 
 // settle removes a worktree the subagent left as it was made, with its branch,
 // and otherwise keeps it and says what it holds and how to take it.
-func (t Tasks) settle(ctx context.Context, rel string, wt *worktree) string {
+func settleWorktree(ctx context.Context, ws, rel string, wt *worktree) string {
 	untouched, err := hostgit.Untouched(ctx, wt.Dir, wt.Start)
 	if err != nil {
 		return fmt.Sprintf("Worktree %s (branch %s): its state could not be read (%v); it is kept.\n\n", rel, wt.Branch, err)
 	}
 	if untouched {
-		removeWorktree(context.WithoutCancel(ctx), t.Workspace, wt)
+		removeWorktree(context.WithoutCancel(ctx), ws, wt)
 		return fmt.Sprintf("Worktree %s (branch %s): no changes; removed with its branch.\n\n", rel, wt.Branch)
 	}
 	discard := fmt.Sprintf("To discard: `git worktree remove --force %s && git branch -D %s`.", rel, wt.Branch)

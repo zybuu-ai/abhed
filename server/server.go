@@ -1203,10 +1203,13 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 			registry.Add(toolset.SkillTool(skillReg))
 		}
 	}
+	// The agent types are those loaded when the session starts; a reload
+	// reaches the next session, never this one mid-conversation.
 	f := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol, Session: sess, Budget: budget, Config: cfg,
 		Workspace: sess.Root, Redact: rec.Redact,
-		Store: s.subagentStore(sessionID, spec, mode),
+		Store:       s.subagentStore(sessionID, spec, mode),
+		Definitions: s.state.agentDefs(),
 	}
 	return toolset.Subagents(registry, f, s.opts.Config.Limits.MaxParallelSubagents)
 }

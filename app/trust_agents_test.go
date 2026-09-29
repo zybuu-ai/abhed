@@ -2,10 +2,14 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -70,5 +74,55 @@ func TestTrustShowsAgentDefinitions(t *testing.T) {
 	doctor, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
 	if !strings.Contains(doctor, "agents      trusted — 1 definition(s)") {
 		t.Fatalf("doctor does not report the definitions:\n%s", doctor)
+	}
+}
+
+// The command line offers the operator's agent definitions, and a trusted
+// workspace's, on the task tool; an untrusted workspace's are not offered.
+func TestCLIOffersAgentDefinitions(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	home, ws := trustWorkspace(t, `{}`)
+	user := `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` +
+		srv.URL + `","model":"m","context_window":8192}}}}`
+	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(user), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceAgent(t, home, "operators.md", "---\ndescription: the operator's role\n---\nDo it.\n")
+	workspaceAgent(t, ws, "repos.md", "---\ndescription: the repository's role\n---\nDo it.\n")
+	for _, c := range []struct {
+		args []string
+		repo bool
+	}{
+		{[]string{"-C", ws, "-p", "hi"}, false},
+		{[]string{"-C", ws, "-trust-workspace", "-p", "hi"}, true},
+	} {
+		mu.Lock()
+		bodies = nil
+		mu.Unlock()
+		cmd := mainHelper(c.args)
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("%v: %v\n%s", c.args, err, out.String())
+		}
+		mu.Lock()
+		sent := strings.Join(bodies, "\n")
+		mu.Unlock()
+		if !strings.Contains(sent, "operators — the operator's role") {
+			t.Fatalf("%v: the operator's definition is not offered", c.args)
+		}
+		if strings.Contains(sent, "repos — the repository's role") != c.repo {
+			t.Fatalf("%v: the workspace's definition offered = %v", c.args, !c.repo)
+		}
 	}
 }

@@ -144,8 +144,7 @@ func TestExploreProfileCannotWrite(t *testing.T) {
 
 func TestTaskToolRejectsEmptyPrompt(t *testing.T) {
 	tool := Task{
-		Spawn:    func(context.Context, SubagentRequest) (string, error) { return "", nil },
-		Profiles: Profiles,
+		Spawn: func(context.Context, SubagentRequest) (string, error) { return "", nil },
 	}
 	args, _ := json.Marshal(taskArgs{Description: "something"})
 	res := tool.Run(context.Background(), nil, args)
@@ -156,8 +155,7 @@ func TestTaskToolRejectsEmptyPrompt(t *testing.T) {
 
 func TestTaskToolRejectsUnknownAgentType(t *testing.T) {
 	tool := Task{
-		Spawn:    func(context.Context, SubagentRequest) (string, error) { return "ok", nil },
-		Profiles: Profiles,
+		Spawn: func(context.Context, SubagentRequest) (string, error) { return "ok", nil },
 	}
 	args, _ := json.Marshal(taskArgs{Prompt: "do it", Description: "x", AgentType: "wizard"})
 	res := tool.Run(context.Background(), nil, args)
@@ -265,8 +263,8 @@ func taskTree(t *testing.T, adapter model.Adapter, appr Approver, parentStore, c
 		Session: sess, Store: childStore, Budget: NewBudget(1_000_000, 10, nested),
 		Config: DefaultConfig(), Workspace: dir,
 	}
-	reg.Add(Task{Spawn: f.Spawn, Profiles: Profiles})
-	reg.Add(Tasks{Spawn: f.Spawn, Profiles: Profiles, Workspace: dir})
+	reg.Add(Task{Spawn: f.Spawn})
+	reg.Add(Tasks{Spawn: f.Spawn, Workspace: dir})
 	return NewLoop(adapter, reg, pol, appr, sess, NewRecorder(parentStore, "parent", ""), DefaultConfig()), dir, f
 }
 

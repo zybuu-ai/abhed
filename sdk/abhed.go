@@ -334,7 +334,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		// subagent.* events; OnEvent carries this agent's own record, as the
 		// command line's JSON output does.
 		f := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red}
+			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red, Definitions: set.Agents}
 		registry = toolset.Subagents(registry, f, cfg.Limits.MaxParallelSubagents)
 	}
 

@@ -182,7 +182,7 @@ func runWith(t *testing.T, pipelineJSON string, pol *policy.Engine, appr agent.A
 	if o.budget != nil {
 		f := &agent.SubagentFactory{Adapter: adapter, Tools: registry, Policy: pol, Session: sess,
 			Store: store, Budget: o.budget, Config: agent.DefaultConfig(), Workspace: ws, Redact: vault.Redactor()}
-		registry.Add(agent.Task{Spawn: f.Spawn, Profiles: agent.Profiles})
+		registry.Add(agent.Task{Spawn: f.Spawn})
 	}
 	rec := agent.NewRecorder(store, "s1", "")
 	rec.Redact = vault.Redactor()

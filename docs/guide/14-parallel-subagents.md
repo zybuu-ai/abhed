@@ -22,6 +22,16 @@ The budget (`limits.max_budget_tokens`) is one allowance for the session and
 all its subagents: a subagent spends from it turn by turn and stops when it
 runs out, as its parent does.
 
+## Agent types
+
+`agent_type` names the role each subagent runs in: `general` (the session's
+tools), `explore` (reads only), `test` and `review`, plus any [agent
+definitions](17-agent-definitions.md) this session loaded. The tools list the
+types on offer, and a call naming any other is refused before anything runs;
+`tasks` once ran such a task as `general`. A definition whose role works in its
+own worktree gets one even when the call asks for no isolation, so `tasks` then
+asks as worktree isolation does.
+
 ## Where subagents run
 
 `task` and `tasks` are part of the same agent on every surface:
