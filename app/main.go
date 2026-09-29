@@ -330,7 +330,8 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	}
 	toolset.Police(set.Extensions, pol, "session")
 
-	loopCfg := toolset.LoopConfig(cfg, toolset.SystemPrompt(workspace, adapter, set.SkillListing))
+	// The prompt is set once the tools are known, so it names only those there.
+	loopCfg := toolset.LoopConfig(cfg, "")
 
 	// Subagents share the parent's budget, so a fan-out cannot multiply spend
 	// invisibly. No Approver: a subagent answers to the approver of the loop
@@ -342,6 +343,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		Redact: vault.Redactor(),
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
+	loopCfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, set.SkillListing, registry.Names())
 
 	headless := prompt != ""
 	jsonOut := format == "json"
@@ -1580,7 +1582,6 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		rec.Redact = vault.Redactor()
 
 		loopCfg := agent.DefaultConfig()
-		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing)
 		if task.MaxTurns > 0 {
 			loopCfg.MaxTurns = task.MaxTurns
 		} else {
@@ -1591,6 +1592,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
 			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor()}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
+		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.Names())
 
 		loop := agent.NewLoop(adapter, registry, pol, agent.AutoApprove{Yes: true}, sess, rec, loopCfg)
 		loop.Budget = budget

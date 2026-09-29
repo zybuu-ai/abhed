@@ -261,8 +261,9 @@ func Summarize(c *agent.Compactor, h *extension.Host, sessionID string) {
 
 // SystemPrompt is the main agent's prompt, named as the adapter names itself
 // so a model switch can rewrite the line, with the workspace's ABHED.md files
-// and the skill listing.
-func SystemPrompt(workspace string, adapter model.Adapter, skillListing string) string {
+// and the skill listing. toolNames are the session's own tools, so the
+// prompt names only the web tools it has.
+func SystemPrompt(workspace string, adapter model.Adapter, skillListing string, toolNames []string) string {
 	return agent.BuildSystemPrompt(agent.BuildOptions{
 		Profile:       "main",
 		Workspace:     workspace,
@@ -270,6 +271,7 @@ func SystemPrompt(workspace string, adapter model.Adapter, skillListing string) 
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   agent.DiscoverMemoryFiles(workspace),
 		Skills:        skillListing,
+		Tools:         toolNames,
 	})
 }
 

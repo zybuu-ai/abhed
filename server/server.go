@@ -1158,9 +1158,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		model:    adapter.Profile().Name,
 	}
 
-	// The prompt, loop settings and budget as the CLI builds them.
-	cfg := toolset.LoopConfig(s.opts.Config,
-		toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg)))
+	// The prompt, loop settings and budget as the CLI builds them. The prompt
+	// is set once the session's own tools are bound, so it names only those.
+	cfg := toolset.LoopConfig(s.opts.Config, "")
 	toolset.Police(s.opts.Extensions, pol, sessionID)
 
 	var approver agent.Approver = live
@@ -1168,8 +1168,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approver = agent.AutoApprove{Yes: false}
 	}
 	budget := toolset.Budget(s.opts.Config)
-	loop := agent.NewLoop(adapter, s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec),
-		pol, approver, sess, rec, cfg)
+	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
+	cfg.SystemPrompt = toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg), own.Names())
+	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget

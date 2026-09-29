@@ -306,24 +306,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec := agent.NewRecorder(fwd, id, "")
 	rec.Redact = red
 
-	system := opts.SystemPrompt
-	switch {
-	case system != "":
-	case opts.ConfiguredTools:
-		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing)
-	default:
-		// No ABHED.md: an embedder running on repositories it does not own
-		// takes the workspace's instructions only by opting in.
-		system = agent.BuildSystemPrompt(agent.BuildOptions{
-			Profile: "main", Workspace: opts.Workspace,
-			Model: adapter.Profile().Name, ContextWindow: adapter.Profile().ContextWindow,
-		})
-	}
-	if opts.AppendSystem != "" {
-		system += "\n\n" + opts.AppendSystem
-	}
-
-	loopCfg := toolset.LoopConfig(cfg, system)
+	loopCfg := toolset.LoopConfig(cfg, "")
 	// The file's max_turns binds an embedded agent only when the organisation sets it.
 	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns
 	if (opts.MaxTurns > 0 || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
@@ -341,6 +324,26 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red}
 		registry = toolset.Subagents(registry, f, cfg.Limits.MaxParallelSubagents)
 	}
+
+	// Set once the tools are known, so the prompt names only those there.
+	system := opts.SystemPrompt
+	switch {
+	case system != "":
+	case opts.ConfiguredTools:
+		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing, registry.Names())
+	default:
+		// No ABHED.md: an embedder running on repositories it does not own
+		// takes the workspace's instructions only by opting in.
+		system = agent.BuildSystemPrompt(agent.BuildOptions{
+			Profile: "main", Workspace: opts.Workspace,
+			Model: adapter.Profile().Name, ContextWindow: adapter.Profile().ContextWindow,
+			Tools: registry.Names(),
+		})
+	}
+	if opts.AppendSystem != "" {
+		system += "\n\n" + opts.AppendSystem
+	}
+	loopCfg.SystemPrompt = system
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)

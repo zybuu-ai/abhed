@@ -57,14 +57,18 @@ By default an embedded agent has the built-in tools: `read`, `write`,
 set the CLI runs with, as the configuration enables it: subagents (`task`
 and `tasks`, which share the agent's policy, approver and budget; see
 [Parallel subagents](14-parallel-subagents.md)), MCP servers, the tools
-extensions provide, skills and their pipelines, web search, the code index,
-rag corpora, and the Kubernetes and SSH tools. It is off by default so an
+extensions provide, skills and their pipelines, web search and `web_fetch`,
+the code index, rag corpora, and the Kubernetes and SSH tools. With no
+`web_fetch.allowed_hosts`, `web_fetch` asks `Approve`, as it asks at the
+terminal, and is refused without one; it never sends a URL holding a value
+from the secrets store. It is off by default so an
 embedder decides what else its agent can reach; `abhed rpc` and `abhed acp`
 turn it on. What an untrusted `ConfigDir` file names (MCP servers,
 extensions, skill directories, corpora, clusters, hosts) is ignored either
 way. The built-in prompt then carries the `ABHED.md` memory files too; without
-`ConfiguredTools` it has none. `Close` ends the MCP connections and extension
-processes.
+`ConfiguredTools` it has none. Either way the prompt names only the web tools
+the agent has. `Close` ends the MCP connections and extension processes, and
+the cluster logins and hosts the agent's session made.
 
 A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
