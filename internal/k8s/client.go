@@ -161,30 +161,6 @@ func loadKubeconfig(cfg Config) (*kubeconfig, string, error) {
 	return kc, path, nil
 }
 
-// contextServer names the context the config selects and its cluster's
-// server, without opening a connection or running a credential helper.
-func contextServer(cfg Config) (ctxName, server string, err error) {
-	kc, path, err := loadKubeconfig(cfg)
-	if err != nil {
-		return "", "", err
-	}
-	ctxName = cfg.Context
-	if ctxName == "" {
-		ctxName = kc.CurrentContext
-	}
-	for _, c := range kc.Contexts {
-		if c.Name != ctxName {
-			continue
-		}
-		for _, cl := range kc.Clusters {
-			if cl.Name == c.Cluster {
-				return ctxName, strings.TrimSuffix(cl.Server, "/"), nil
-			}
-		}
-	}
-	return ctxName, "", fmt.Errorf("context %q not found in %s", ctxName, path)
-}
-
 func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
 	var err error
 	ctxName := cfg.Context

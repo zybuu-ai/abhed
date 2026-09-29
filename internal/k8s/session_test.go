@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -387,5 +388,66 @@ func TestApplyTargetNamesClusterServerAndCredential(t *testing.T) {
 				t.Errorf("%s: target %q does not name %q", raw, got, want)
 			}
 		}
+	}
+}
+
+// A user or password written into a kubeconfig or declared server is not
+// shown for approval or recorded.
+func TestApplyTargetLeavesOutUserinfo(t *testing.T) {
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, "https://admin:kube-pw-3e1@kube.example:6443"),
+		Clusters: []LoginCluster{{Name: "prod", Server: "https://svc:decl-pw-8a0@api.prod.example"}}})
+	for _, raw := range []string{`{"action":"delete","context":"ctx"}`, `{"action":"delete","cluster":"prod"}`} {
+		got := ApplyTool{M: mgr}.Target(newSession(t), json.RawMessage(raw))
+		if got == "" {
+			t.Fatalf("%s: no target", raw)
+		}
+		for _, secret := range []string{"kube-pw-3e1", "decl-pw-8a0", "admin", "svc:"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("%s: target %q repeats %s", raw, got, secret)
+			}
+		}
+	}
+	got := LoginTool{M: mgr}.Target(nil, json.RawMessage(`{"cluster":"prod","token_secret":"T"}`))
+	if strings.Contains(got, "decl-pw-8a0") {
+		t.Errorf("the login target repeats the server's password: %q", got)
+	}
+}
+
+// What was approved is what runs: a kubeconfig edited between the approval
+// and the call does not send the write to another server than the one named.
+func TestApplyGoesWhereItsApprovalSaid(t *testing.T) {
+	var hitA, hitB atomic.Int32
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitA.Add(1)
+		fmt.Fprint(w, `{"kind":"Status","status":"Success"}`)
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitB.Add(1)
+		fmt.Fprint(w, `{"kind":"Status","status":"Success"}`)
+	}))
+	defer b.Close()
+	kube := writeKubeconfig(t, a.URL)
+	mgr := NewManager(Config{Kubeconfig: kube})
+	apply := ApplyTool{M: mgr}
+	sess := newSession(t)
+	args := json.RawMessage(`{"action":"delete","resource":"pods","name":"web","context":"ctx"}`)
+
+	target := apply.Target(sess, args)
+	if !strings.Contains(target, a.URL) {
+		t.Fatalf("target %q does not name the server", target)
+	}
+	moved, err := os.ReadFile(writeKubeconfig(t, b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kube, moved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := apply.Run(context.Background(), sess, args); res.IsError {
+		t.Fatalf("the approved write failed: %s", res.Content)
+	}
+	if hitB.Load() != 0 || hitA.Load() != 1 {
+		t.Fatalf("approved %q, but the write reached A %d times and B %d times", target, hitA.Load(), hitB.Load())
 	}
 }

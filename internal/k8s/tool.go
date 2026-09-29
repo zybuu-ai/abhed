@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -137,6 +138,12 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 		}
 	}
 
+	return m.kubeClient(ctxName)
+}
+
+// kubeClient returns the operator's client for a kubeconfig context, opened
+// once and kept, so an approval and the call it approves name one server.
+func (m *Manager) kubeClient(ctxName string) (*Cluster, error) {
 	cfg := m.cfg
 	if ctxName != "" {
 		cfg.Context = ctxName
@@ -176,20 +183,30 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 			if l == nil || !l.has(clusterName) {
 				how = "but this session has not logged in to it, so the call will fail"
 			}
-			return fmt.Sprintf("changes cluster %s at %s %s, %s", lc.Name, lc.Server, how,
+			return fmt.Sprintf("changes cluster %s at %s %s, %s", lc.Name, displayURL(lc.Server), how,
 				lc.Verification(m.cfg.CAFile))
 		}
 		return ""
 	}
-	cfg := m.cfg
-	if ctxName != "" {
-		cfg.Context = ctxName
-	}
-	name, server, err := contextServer(cfg)
+	// The client the call will use, not a fresh read of the file, which may
+	// have changed since that client was opened.
+	c, err := m.kubeClient(ctxName)
 	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential", name, server)
+	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential",
+		c.Name, displayURL(c.Server))
+}
+
+// displayURL is a server URL fit to show and record: any user or password
+// written into it is left out.
+func displayURL(server string) string {
+	u, err := url.Parse(server)
+	if err != nil {
+		return "(a server address that is not a URL)"
+	}
+	u.User = nil
+	return u.String()
 }
 
 func (l *logins) has(name string) bool {
@@ -904,7 +921,7 @@ func (t LoginTool) Target(_ *tools.Session, raw json.RawMessage) string {
 		return ""
 	}
 	return fmt.Sprintf("sends the token in secret %s to cluster %s at %s, %s",
-		a.TokenSecret, lc.Name, lc.Server, lc.Verification(t.M.cfg.CAFile))
+		a.TokenSecret, lc.Name, displayURL(lc.Server), lc.Verification(t.M.cfg.CAFile))
 }
 
 func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -947,7 +964,7 @@ func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	// Verify before reporting success. Storing a credential that does not work
 	// would turn one clear failure into a confusing one on the next call.
 	if _, err := c.Do(ctx, "GET", "/version", nil); err != nil {
-		return errf("Could not authenticate to cluster %s at %s: %v", lc.Name, lc.Server, err)
+		return errf("Could not authenticate to cluster %s at %s: %v", lc.Name, displayURL(lc.Server), err)
 	}
 
 	if err := t.M.login(sess, sessionCred{token: token, cluster: lc, namespace: a.Namespace}); err != nil {
@@ -956,7 +973,7 @@ func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	return tools.Result{Content: fmt.Sprintf(
 		"Authenticated to cluster %s at %s (namespace %s, %s) with secret %s. The login "+
 			"holds for this session only and is not written to your kubeconfig. "+
-			"Name it as cluster %q in k8s_get and k8s_apply.", lc.Name, lc.Server, c.Namespace,
+			"Name it as cluster %q in k8s_get and k8s_apply.", lc.Name, displayURL(lc.Server), c.Namespace,
 		lc.Verification(t.M.cfg.CAFile), a.TokenSecret, lc.Name)}
 }
 

@@ -192,7 +192,9 @@ All notable changes to Abhed are recorded here. The format follows
     check: ASCII look-alikes such as `pr0d` still pass as names.
   - The approval for a `k8s_apply` write names the cluster, its server, and
     whether this session's login or a kubeconfig context's own credential
-    is used.
+    is used. A user or password written into a server URL is left out, and
+    the write goes to the server the approval named even if the kubeconfig
+    changes in between.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
 
@@ -319,8 +321,8 @@ All notable changes to Abhed are recorded here. The format follows
   until its CA is configured, or until the operator sets
   `insecure_skip_tls_verify` on it. Clusters in an untrusted workspace
   `.abhed/config.json` are ignored. A configuration whose clusters repeat a
-  name, leave one empty, or give a server that is not `https://` no longer
-  loads.
+  name, leave one empty, or give a server that is not `https://`, or that
+  carries a user or password, is refused when it loads.
 - After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
   the kubeconfig's own credential, not the login. Name the logged-in
   cluster as `cluster` instead. A session logged in to several clusters
