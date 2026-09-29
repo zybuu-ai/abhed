@@ -189,3 +189,21 @@ func TestShortIsCountedInCharacters(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// Value is what a tool that authenticates itself reads: one name, and an
+// unknown one is an error rather than an empty credential.
+func TestValueReadsOneSecretByName(t *testing.T) {
+	s := Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := s.Set("OCP_TOKEN", "sha256~with=equals"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.Value("OCP_TOKEN"); err != nil || v != "sha256~with=equals" {
+		t.Fatalf("Value = %q, %v", v, err)
+	}
+	if _, err := s.Value("MISSING"); err == nil {
+		t.Fatal("an unknown name gave a value")
+	}
+	if !ValidName("OCP_TOKEN") || ValidName("sha256~abc") {
+		t.Fatal("ValidName does not tell a name from a token")
+	}
+}

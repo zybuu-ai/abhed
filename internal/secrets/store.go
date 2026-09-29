@@ -27,6 +27,9 @@ const EnvFile = "ABHED_SECRETS_FILE"
 
 var validName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 
+// ValidName reports whether name is one a secret can be stored under.
+func ValidName(name string) bool { return validName.MatchString(name) }
+
 // Store is a file of named values, readable by its owner only.
 type Store struct {
 	path string
@@ -196,6 +199,16 @@ func (s *Store) Env(names []string) ([]string, error) {
 		out = append(out, n+"="+v)
 	}
 	return out, nil
+}
+
+// Value returns one stored secret, for a tool that uses it itself rather than
+// handing it to a command. An unknown name is an error, as in Env.
+func (s *Store) Value(name string) (string, error) {
+	env, err := s.Env([]string{name})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(env[0], name+"="), nil
 }
 
 // Redactor replaces every stored value in a JSON payload with [secret:NAME].

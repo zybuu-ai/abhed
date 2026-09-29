@@ -486,7 +486,7 @@ future hardening step but not urgent.
 | Rule | Severity | file:line | Finding | Triage |
 |---|---|---|---|---|
 | G404 | High | internal/model/retry.go:66 | `math/rand` used for retry-backoff jitter | False positive — not security-sensitive; `internal/agent/id.go` and `internal/server/upload.go` correctly use `crypto/rand` where randomness matters |
-| G402 | High | internal/k8s/client.go:290 | `InsecureSkipVerify: true` in `OpenDirect` | Accepted with reason — deliberate and documented: this path is for a runtime-supplied server+token with no CA bundle available, analogous to `oc login --insecure-skip-tls-verify`; not the default connection path (`Open` honors the kubeconfig's own CA) |
+| G402 | High | internal/k8s/client.go:321 | `InsecureSkipVerify` from a declared cluster's `insecure_skip_tls_verify` in `OpenLogin` | Fixed, then accepted with reason for the opt-out. `OpenDirect` used to set `InsecureSkipVerify: true` on every login to a model-supplied URL; it is gone. `OpenLogin` verifies against the system roots plus the configured CA, and turns verification off only for one cluster the operator declared with `insecure_skip_tls_verify` in `k8s.clusters`, never from a tool argument. That opt-out is warned about at start, in `abhed doctor`, in the `serve` banner and in the approval prompt, and carries `#nosec G402`, so gosec no longer reports it |
 | G704 | High | internal/remote/ssh.go:95 | "SSRF via taint analysis" on dialing `$SSH_AUTH_SOCK` | False positive — dials the local SSH agent socket named by an environment variable under operator control, not a request-reachable network destination |
 | G106 | Medium | internal/remote/ssh.go:143 | `ssh.InsecureIgnoreHostKey()` | Accepted with reason — gated behind an explicit, named opt-in flag (`InsecureSkipHostKeyCheck`) with a comment acknowledging the MITM tradeoff; default behavior verifies `known_hosts` |
 | G120 | Medium | internal/server/upload.go:87 | `ParseMultipartForm(8<<20)` flagged as unbounded | False positive — the handler already wraps the body in `http.MaxBytesReader(w, r.Body, maxUploadBytes+(1<<20))` two lines above |
@@ -514,7 +514,7 @@ future hardening step but not urgent.
 | Warning | internal/auth/middleware.go:71 | open-redirect | False positive — the `Location` header target is the fixed literal `/`; the request path is only appended as a `?next=` query value via `url.QueryEscape`, never used to build the redirect target itself |
 | Warning | internal/auth/middleware.go:92 | open-redirect | False positive — same pattern, fixed `/login` target with an escaped `?return=` query value |
 | Error | internal/extension/extension.go:193 | dangerous-exec-command | Same finding as gosec G204 — accepted with reason (operator extension config, argv-based) |
-| Warning | internal/k8s/client.go:289 | bypass-tls-verification | Same finding as gosec G402 — accepted with reason (documented `OpenDirect` tradeoff) |
+| Warning | internal/k8s/client.go:321 | bypass-tls-verification | Same finding as gosec G402: `OpenDirect` removed; the remaining per-cluster operator opt-out in `OpenLogin` is accepted with reason |
 | Error | internal/k8s/client.go:340 | dangerous-exec-command | Same as gosec G204 — false positive (kubeconfig exec-credential plugin, same trust as `kubectl`) |
 | Error | internal/mcp/client.go:258 | dangerous-exec-command | Same as gosec G204 — accepted with reason (configured MCP server) |
 | Warning | internal/model/retry.go:7 | math-random-used | Same as gosec G404 — false positive (retry jitter only) |

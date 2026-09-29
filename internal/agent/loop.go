@@ -954,14 +954,17 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	canon, dropped, err := tools.CanonicalArgs(tool, call.Args)
 	if err != nil {
 		c.Args = json.RawMessage(`{}`)
-		return l.refuseArgs(ctx, call, err)
+		return l.refuseArgs(ctx, tool, call, err)
 	}
+	// Before policy, approval, the record and history see it: a credential
+	// where a secret's name belongs is never kept.
+	canon = tools.WithholdSecretValues(tool, canon)
 	c.Args, call.Args = canon, canon
 
 	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
-	if refused := l.secretsRefused(call); refused != "" {
+	if refused := l.secretsRefused(tool, call); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
 
@@ -977,6 +980,15 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
 	}
 
+	// Where a credential goes is part of what is approved, so it is in the
+	// reason every approver shows and in the record.
+	var target string
+	if tg, ok := tool.(tools.Targeter); ok {
+		if target = tg.Target(l.Session, call.Args); target != "" {
+			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
+		}
+	}
+
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
 		Tool:             call.Name,
@@ -986,6 +998,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		Scope:            decision.Offer(),
 		Via:              viaOf(ctx),
 		Dropped:          dropped,
+		Target:           target,
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -1082,9 +1095,14 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 
 // refuseArgs records a call whose arguments could not be read one way only.
 // Args is {} and the arguments sent are kept as text, so no reader decodes them.
-func (l *Loop) refuseArgs(ctx context.Context, call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+func (l *Loop) refuseArgs(ctx context.Context, tool tools.Tool, call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+	raw := string(call.Args)
+	// A tool that takes credentials by name may have been sent one instead.
+	if _, ok := tool.(tools.SecretArgs); ok {
+		raw = tools.WithheldSecretArg
+	}
 	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
-		CallID: call.ID, Tool: call.Name, Args: json.RawMessage(`{}`), RawArgs: string(call.Args), Reason: why.Error(),
+		CallID: call.ID, Tool: call.Name, Args: json.RawMessage(`{}`), RawArgs: raw, Reason: why.Error(),
 		Via: viaOf(ctx),
 	}); err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -1481,13 +1499,12 @@ func (l *Loop) recordFailure() error {
 
 // secretsRefused names the first secret in the call that policy does not
 // allow outright, or "" when the call asks for none or every one is allowed.
-func (l *Loop) secretsRefused(call model.ToolCall) string {
+func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	var a struct {
 		Secrets []string `json:"secrets"`
 	}
-	if json.Unmarshal(call.Args, &a) != nil || len(a.Secrets) == 0 {
-		return ""
-	}
+	_ = json.Unmarshal(call.Args, &a)
+	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
 	// Rules only, never the mode: bypass and auto approve calls, not secrets.
 	for _, name := range a.Secrets {
 		for _, r := range l.Policy.Deny {

@@ -33,6 +33,13 @@ type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
 }
 
+// Targeter names where a call sends what it carries, such as the server a
+// credential goes to, when the arguments alone do not show it. The person
+// approving the call and the record both get it.
+type Targeter interface {
+	Target(sess *Session, args json.RawMessage) string
+}
+
 // precheckPath is the shared check for tools whose target is a "path" argument.
 func precheckPath(s *Session, raw json.RawMessage) error {
 	var a struct {

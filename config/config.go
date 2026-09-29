@@ -369,6 +369,48 @@ type K8sConfig struct {
 	// AllowWrites exposes k8s_apply. Even then every call needs approval;
 	// this decides whether the capability exists at all.
 	AllowWrites bool `json:"allow_writes,omitempty"`
+	// Clusters are the only servers k8s_login may send a stored token to. The
+	// model names one; it never supplies a URL.
+	Clusters []K8sClusterConfig `json:"clusters,omitempty"`
+	// CAFile adds a CA bundle to the system roots for a cluster that names none.
+	CAFile string `json:"ca_file,omitempty"`
+}
+
+// validateClusters refuses clusters k8s_login could not tell apart or reach
+// safely, at load rather than at the first login.
+func (k K8sConfig) validateClusters() error {
+	seen := map[string]string{}
+	for i, c := range k.Clusters {
+		if strings.TrimSpace(c.Name) == "" || c.Name != strings.TrimSpace(c.Name) {
+			return fmt.Errorf("k8s.clusters[%d]: name is required, without surrounding spaces", i)
+		}
+		if prev, dup := seen[strings.ToLower(c.Name)]; dup {
+			return fmt.Errorf("k8s.clusters: %q and %q name the same cluster", prev, c.Name)
+		}
+		seen[strings.ToLower(c.Name)] = c.Name
+		u, err := url.Parse(c.Server)
+		switch {
+		case err != nil:
+			// Not echoed: text that does not parse may still hold a credential.
+			return fmt.Errorf("k8s.clusters %q: server is not a URL", c.Name)
+		case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+			return fmt.Errorf("k8s.clusters %q: server must not carry a user, password, query "+
+				"or fragment; the token comes from k8s_login", c.Name)
+		case u.Scheme != "https" || u.Host == "":
+			return fmt.Errorf("k8s.clusters %q: server must be an https:// URL with a host, got %q", c.Name, u.String())
+		}
+	}
+	return nil
+}
+
+// K8sClusterConfig declares one cluster k8s_login may reach.
+type K8sClusterConfig struct {
+	Name   string `json:"name"`
+	Server string `json:"server"`
+	CAFile string `json:"ca_file,omitempty"`
+	// InsecureSkipTLSVerify sends the token without checking who answers.
+	// For lab clusters only; reported at startup and by doctor.
+	InsecureSkipTLSVerify bool `json:"insecure_skip_tls_verify,omitempty"`
 }
 
 // SSHConfig declares reachable machines. The agent can only name a host from
@@ -774,6 +816,9 @@ func (c Config) Validate() error {
 	}
 	if u := c.Auth.ProxyLogoutURL; u != "" && !validLogoutURL(u) {
 		return fmt.Errorf("auth.proxy_logout_url %q must be an http(s) URL or a path on this host", u)
+	}
+	if err := c.K8s.validateClusters(); err != nil {
+		return err
 	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":

@@ -62,7 +62,6 @@
  "G306 app/main.go": 1,
  "G306 cmd/abhed-bench/main.go": 1,
  "G306 internal/eval/eval.go": 1,
- "G402 internal/k8s/client.go": 1,
  "G404 internal/model/retry.go": 1,
  "G703 auth/filestore.go": 3,
  "G703 internal/k8s/client.go": 1,

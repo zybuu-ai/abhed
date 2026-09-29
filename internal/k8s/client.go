@@ -20,13 +20,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,13 +40,18 @@ type Cluster struct {
 	Namespace string
 
 	client *http.Client
-	// bearer is resolved once at construction. An exec-based credential
-	// (cloud CLIs use this) is re-run when it expires.
+	// bearer is resolved at construction, except an exec-based credential
+	// (cloud CLIs use this), which is run before the first request and again
+	// when it expires. tokMu guards both.
+	tokMu    sync.Mutex
 	bearer   string
 	execCfg  *execConfig
 	expires  time.Time
 	insecure bool
 }
+
+// Insecure reports whether the client skips TLS verification.
+func (c *Cluster) Insecure() bool { return c.insecure }
 
 // Config selects a cluster.
 type Config struct {
@@ -63,6 +71,11 @@ type Config struct {
 	// read.
 	Token   string
 	Timeout time.Duration
+
+	// Clusters are the only servers k8s_login may send a stored token to.
+	Clusters []LoginCluster
+	// CAFile adds a CA bundle for a login cluster that names none of its own.
+	CAFile string
 }
 
 // ---------------------------------------------------------------- kubeconfig
@@ -115,6 +128,15 @@ type execEnv struct{ Name, Value string }
 
 // Open connects to the cluster named by the config.
 func Open(cfg Config) (*Cluster, error) {
+	kc, path, err := loadKubeconfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return openFrom(cfg, kc, path)
+}
+
+// loadKubeconfig reads and parses the kubeconfig the config names.
+func loadKubeconfig(cfg Config) (*kubeconfig, string, error) {
 	path := cfg.Kubeconfig
 	if path == "" {
 		path = os.Getenv("KUBECONFIG")
@@ -122,7 +144,7 @@ func Open(cfg Config) (*Cluster, error) {
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("no kubeconfig configured and no home directory")
+			return nil, "", fmt.Errorf("no kubeconfig configured and no home directory")
 		}
 		path = filepath.Join(home, ".kube", "config")
 	}
@@ -135,13 +157,17 @@ func Open(cfg Config) (*Cluster, error) {
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read kubeconfig %s: %w", path, err)
+		return nil, path, fmt.Errorf("read kubeconfig %s: %w", path, err)
 	}
 	kc, err := parseKubeconfig(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, path, fmt.Errorf("parse %s: %w", path, err)
 	}
+	return kc, path, nil
+}
 
+func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
+	var err error
 	ctxName := cfg.Context
 	if ctxName == "" {
 		ctxName = kc.CurrentContext
@@ -229,13 +255,10 @@ func Open(cfg Config) (*Cluster, error) {
 			c.bearer = strings.TrimSpace(string(tok))
 		case u.Exec != nil:
 			// Cloud providers hand out short-lived tokens through a helper
-			// binary. Running it is the documented mechanism, but it is still
-			// executing a command from a config file, so it is reported at
-			// startup rather than done silently.
+			// binary. It runs when the first request is sent, not here: an
+			// approval opens the client to name its server, and a call that
+			// is then refused must run nothing.
 			c.execCfg = u.Exec
-			if err := c.refreshExecToken(); err != nil {
-				return nil, err
-			}
 		}
 		if cert, key := clientCert(u.ClientCertificateData, u.ClientCertificate,
 			u.ClientKeyData, u.ClientKey); cert != nil {
@@ -251,29 +274,43 @@ func Open(cfg Config) (*Cluster, error) {
 	}
 	c.client = &http.Client{
 		Timeout:   timeout,
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: newTransport(tlsCfg),
 	}
 	return c, nil
 }
 
-// OpenDirect connects with an explicit server and token, ignoring any
-// kubeconfig.
-//
-// This is the path for a credential supplied at runtime — `oc login` in a chat
-// message. There may be no context for that cluster at all, and requiring one
-// would mean the user editing a file before the agent could act.
-//
-// TLS verification is skipped here, deliberately and narrowly: a cluster named
-// this way has no CA bundle in any kubeconfig to verify against, and the
-// alternative is refusing to connect at all. It is the same trust the user
-// already extended by running `oc login --insecure-skip-tls-verify` or by
-// having the CA in their system store.
-func OpenDirect(server, token, namespace string) (*Cluster, error) {
-	if server == "" {
-		return nil, fmt.Errorf("server URL is required")
+// LoginCluster is a cluster the operator lets k8s_login reach. The model
+// names one; it never supplies the server a stored token is sent to.
+type LoginCluster struct {
+	Name   string
+	Server string
+	// CAFile verifies the server; empty uses Config.CAFile, then the system roots.
+	CAFile string
+	// InsecureSkipTLSVerify turns verification off. Operator config only, and
+	// warned about, since the token then goes to whoever answers.
+	InsecureSkipTLSVerify bool
+}
+
+// Verification says how the server's certificate is checked, for the person
+// approving a login and the line reporting it.
+func (lc LoginCluster) Verification(defaultCA string) string {
+	switch {
+	case lc.InsecureSkipTLSVerify:
+		return "TLS NOT VERIFIED (insecure_skip_tls_verify)"
+	case lc.CAFile != "":
+		return "TLS verified against " + lc.CAFile
+	case defaultCA != "":
+		return "TLS verified against " + defaultCA
 	}
-	if !strings.HasPrefix(server, "https://") && !strings.HasPrefix(server, "http://") {
-		return nil, fmt.Errorf("server must be an http(s) URL, got %q", server)
+	return "TLS verified against the system roots"
+}
+
+// OpenLogin connects to an operator-declared cluster with a token obtained at
+// run time. TLS is verified against the system roots plus the cluster's CA
+// bundle, or k8s.ca_file; only the cluster's own insecure flag turns it off.
+func OpenLogin(lc LoginCluster, defaultCA, token, namespace string) (*Cluster, error) {
+	if !strings.HasPrefix(lc.Server, "https://") {
+		return nil, fmt.Errorf("cluster %s: server must be an https:// URL, got %q", lc.Name, lc.Server)
 	}
 	if token == "" {
 		return nil, fmt.Errorf("token is required")
@@ -281,15 +318,42 @@ func OpenDirect(server, token, namespace string) (*Cluster, error) {
 	if namespace == "" {
 		namespace = "default"
 	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: lc.InsecureSkipTLSVerify} // #nosec G402 -- the operator's opt-out for one cluster, warned at startup
+	if !lc.InsecureSkipTLSVerify {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		ca := lc.CAFile
+		if ca == "" {
+			ca = defaultCA
+		}
+		if ca != "" {
+			pem, err := os.ReadFile(ca) // #nosec G304 -- the CA bundle the operator configured
+			if err != nil {
+				return nil, fmt.Errorf("cluster %s: read CA: %w", lc.Name, err)
+			}
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("cluster %s: CA bundle %s contains no usable certificate", lc.Name, ca)
+			}
+		}
+		tlsCfg.RootCAs = pool
+	}
 	return &Cluster{
-		Name: server, Server: strings.TrimSuffix(server, "/"),
-		Namespace: namespace, bearer: token, insecure: true,
+		Name: lc.Name, Server: strings.TrimSuffix(lc.Server, "/"),
+		Namespace: namespace, bearer: token, insecure: lc.InsecureSkipTLSVerify,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
+			Timeout:   30 * time.Second,
+			Transport: newTransport(tlsCfg),
 		},
 	}, nil
+}
+
+// newTransport keeps idle connections for a while only: a session's clients
+// outlive its last call until the session goes, and should not hold sockets.
+func newTransport(tlsCfg *tls.Config) *http.Transport {
+	return &http.Transport{TLSClientConfig: tlsCfg, IdleConnTimeout: 90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second}
 }
 
 func contextNames(kc *kubeconfig) []string {
@@ -371,14 +435,37 @@ func (c *Cluster) refreshExecToken() error {
 
 // ---------------------------------------------------------------- requests
 
+// unreachable reports a failed request by what went wrong, without the
+// request URL, whose query may carry a token the kubeconfig wrote there.
+func (c *Cluster) unreachable(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	return fmt.Errorf("cannot reach the cluster at %s: %w", displayURL(c.Server), err)
+}
+
+// credential returns the bearer to send, running the exec helper first when
+// there is none yet or it is about to expire.
+func (c *Cluster) credential() (string, error) {
+	c.tokMu.Lock()
+	defer c.tokMu.Unlock()
+	if c.execCfg != nil && (c.bearer == "" ||
+		!c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second))) {
+		if err := c.refreshExecToken(); err != nil {
+			return "", err
+		}
+	}
+	return c.bearer, nil
+}
+
 // Do issues a request against the API server.
 func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	// A short-lived token that has expired produces a 401 that looks like a
 	// permissions problem; refresh before that happens.
-	if c.execCfg != nil && !c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second)) {
-		if err := c.refreshExecToken(); err != nil {
-			return nil, err
-		}
+	bearer, err := c.credential()
+	if err != nil {
+		return nil, err
 	}
 
 	var rdr io.Reader
@@ -389,8 +476,8 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 	if err != nil {
 		return nil, err
 	}
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -399,7 +486,7 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", c.Server, err)
+		return nil, c.unreachable(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -432,24 +519,23 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 // patch semantics from that header — apply, merge, and strategic-merge are
 // three different operations behind one HTTP verb.
 func (c *Cluster) doPatch(ctx context.Context, path string, body []byte, contentType string) ([]byte, error) {
-	if c.execCfg != nil && !c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second)) {
-		if err := c.refreshExecToken(); err != nil {
-			return nil, err
-		}
+	bearer, err := c.credential()
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Server+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	if c.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearer)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", c.Server, err)
+		return nil, c.unreachable(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

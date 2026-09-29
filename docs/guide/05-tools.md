@@ -23,6 +23,28 @@ handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
 
+### Cluster and machine logins
+
+`k8s_login` and `ssh_connect` take credentials the same way: by name, from
+the store, under a `secret(NAME)` rule. `k8s_login` takes `cluster` and
+`token_secret`; `ssh_connect` takes a key path or `password_secret`. Neither
+takes a token or password, so none is recorded, shown for approval, or sent
+back to the model; one sent anyway is dropped.
+
+Where a credential goes is the operator's choice, not the model's.
+`k8s_login` sends a token only to a cluster named in `k8s.clusters`, over TLS
+verified against the system roots and the configured CA; a URL is refused
+before any request, and the approval prompt names the cluster and its server.
+`k8s_get` and `k8s_apply` then take `cluster` to use that login.
+`ssh_connect` sends a password only to a host whose key is already in
+`known_hosts`.
+
+A login or a connected host belongs to the session that made it and that
+session's subagents, and ends with it. Another session on the same server,
+another user's included, never uses it: it keeps the operator's kubeconfig,
+`ABHED_K8S_TOKEN` and `ssh.hosts`. Details in
+[Clusters and machines](../ops/infrastructure.md).
+
 ### An edit that would break the file
 
 `edit` and `write` parse the result before they write it, for Go, JSON and

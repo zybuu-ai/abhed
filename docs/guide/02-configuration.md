@@ -44,7 +44,7 @@ configuration](#trusting-the-workspace-configuration).
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | provider and result count |
 | `retrieval`, `rag` | the local index, and external corpora |
-| `k8s`, `ssh` | infrastructure tools, off by default |
+| `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 

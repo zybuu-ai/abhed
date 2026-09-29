@@ -38,16 +38,88 @@ production is not recoverable the way a file edit is.
 ### Logging in during a conversation
 
 A cluster token expires, and a stale one in a kubeconfig produces a 401 that
-reads like a permissions problem. When that happens, paste the login:
+reads like a permissions problem. `k8s_login` takes a fresh one, but only for
+a cluster the operator declared:
+
+```json
+{
+  "k8s": {
+    "enabled": true,
+    "ca_file": "/etc/abhed/cluster-ca.pem",
+    "clusters": [
+      { "name": "prod", "server": "https://api.prod.example.com:6443" },
+      { "name": "lab",  "server": "https://api.lab.example.com:6443",
+        "ca_file": "/etc/abhed/lab-ca.pem" }
+    ]
+  }
+}
+```
+
+Store the token on the machine Abhed runs on, allow it, and tell the agent
+the cluster and the secret's name:
 
 ```
-oc login --token=sha256~... --server=https://api.cluster.example.com:6443
+abhed secret set OCP_TOKEN         # paste the sha256~... token at the prompt
 ```
 
-The agent calls `k8s_login`, which asks for approval once and then holds the
-credential **in memory for that Abhed process only**. It is never written to
-your kubeconfig, the event store, or a log — a token pasted into a chat should
-not become a durable artifact of that chat.
+```json
+"allow": ["secret(OCP_TOKEN)"]
+```
+
+```
+log in to prod with OCP_TOKEN
+```
+
+The agent calls `k8s_login` with `cluster: "prod"` and
+`token_secret: "OCP_TOKEN"`. The approval prompt, and the record's
+`action.requested` (its `reason` and `target`), say where the token goes:
+cluster `prod` at its server, and how its certificate is checked. Abhed reads
+the token from the store, checks it against the cluster, and holds it
+**for that session only**. It is never written to your kubeconfig.
+
+**The token goes only to a declared cluster, over verified TLS.** The model
+names a cluster; it never supplies a URL. A name not in `k8s.clusters`, or a
+URL, is refused before the secret is read or any request is made, and with no
+clusters declared `k8s_login` reaches nothing. A server the model chose could
+be anyone's, and a person approving what reads as a login would not notice.
+
+The server's certificate is verified against the system roots plus the
+cluster's `ca_file`, or `k8s.ca_file` when it names none. The server must be
+`https://`. For a lab cluster with no usable certificate,
+`"insecure_skip_tls_verify": true` on that cluster turns verification off:
+whoever answers at that address, or in the path to it, gets the token. It is
+config only, never an argument, and Abhed names such a cluster on stderr at
+start, in `abhed doctor`, in the `abhed serve` banner, and in each approval
+prompt (`TLS NOT VERIFIED`). Clusters from a workspace's `.abhed/config.json`
+apply only once that file is trusted.
+
+The token is not an argument, and should not be pasted into the chat. An
+argument is judged, shown for approval, recorded, and sent back to the model
+on every turn; the record is append-only, so a token that reached it could
+not be taken out. A `token` argument sent anyway is dropped, and a value in
+`token_secret` that is not a secret's name is recorded as
+`[withheld: not a secret name]`.
+
+A login belongs to the session that made it, and to that session's
+subagents. Another session on the same server, another user's included,
+keeps using the operator's kubeconfig, and a new session, or the same one
+after a server restart, logs in again. The secret itself is the operator's:
+on `abhed serve`, users ask the operator to store one. A `secret(NAME)` rule
+decides whether sessions on this deployment may use it, not which user may:
+any session there can name a secret the rules allow. What stays per session
+is the login made with it.
+
+After logging in, name the cluster on each call: `k8s_get` and `k8s_apply`
+take `cluster`, a declared cluster this session logged in to. With a single
+login and no `cluster` or `context`, that login is used; with several, the
+call must name one. A kubeconfig `context` always uses the kubeconfig's own
+credential: a login token is never put on a kubeconfig client, whose TLS
+settings and exec credential are not the ones the login was approved with.
+A session's logins close their connections when it is deleted.
+
+The approval for a `k8s_apply` write names the cluster and server it changes
+and whose credential it uses: this session's login, with how TLS is checked,
+or a kubeconfig context and the kubeconfig's own credential.
 
 **Do not expect `oc login` through bash to work.** Three separate things stop
 it, and the combination produced a confusing failure in practice:
@@ -71,7 +143,9 @@ a cluster only by naming a context you already have, so the worst it can reach
 is what your own `kubectl` can. Token, tokenFile, client certificates and `exec`
 credential helpers (the cloud CLIs) all work; exec tokens are refreshed before
 they expire, because an expired token returns a 401 that reads like a
-permissions problem.
+permissions problem. An `exec` helper runs only when Abhed sends a request:
+never while a `k8s_apply` waits for approval, and never for a call that is
+denied or refused in plan mode.
 
 Abhed talks to the API directly rather than importing `client-go`, which would
 add roughly a hundred transitive dependencies to a bundle where each one is
@@ -102,8 +176,25 @@ connect to 52.116.120.159, key is at ~/Downloads/id_rsa
 ```
 
 the agent calls `ssh_connect`, which asks for approval once, verifies the
-connection works, and registers the host for the life of the process. Nothing
-is written to `~/.ssh/config`.
+connection works, and registers the host **for that session only**. Nothing
+is written to `~/.ssh/config`. Another session on the same server cannot run
+on it or see its name. A name an `ssh.hosts` entry uses, in any case, cannot
+be taken, and names are plain ASCII. That does not stop every look-alike:
+`pr0d` or `buiId1` still pass beside `prod` and `build1`. The approval for
+each `ssh` command names the account and address it runs on, as
+`runs as user@addr`, and says whether the host was declared by the operator
+or added in this session; that address, not the name, is what to check.
+
+For a host with a password rather than a key, store the password with
+`abhed secret set VM_PASSWORD`, allow `secret(VM_PASSWORD)`, and name it:
+the agent passes `password_secret: "VM_PASSWORD"`, never the password. A
+password goes only to a host whose key is already in `~/.ssh/known_hosts`:
+with `accept_host_key` the call is refused, since whoever answered at the
+address would receive it. A key file needs no pinned host, because key
+authentication signs and reveals nothing.
+`password_env` is for `ssh.hosts` only: from the model, it could name any
+variable in Abhed's environment, provider keys included, and send it to a
+host the model chose.
 
 `ssh.enabled` is all that is required — the `hosts` list is optional. Requiring
 a pre-declared host to reach the tool that declares hosts was a real bug: a user
@@ -127,8 +218,8 @@ SSH: the command runs with the remote account's full authority, outside any
 scoping, with no undo. Calling `cat` safe there would be judging the string
 rather than the consequence.
 
-The agent can only name a host from this list. It cannot introduce one, so the
-blast radius is the operator's decision.
+The agent can name a host from this list, or one the user gave `ssh_connect`
+in the same session with approval. It cannot introduce one on its own.
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment
