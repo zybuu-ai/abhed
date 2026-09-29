@@ -381,6 +381,7 @@ type parentLink struct {
 	depth    int           // 0 for a top-level loop, 1 for its subagents, and so on
 	fail     func(error)   // a write the parent's record refused ends the parent's run
 	adapter  model.Adapter // the parent's model now, which a switch may have changed
+	loop     *Loop         // the loop making the call, which a pipeline's steps run on
 }
 
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
@@ -392,7 +393,7 @@ func (l *Loop) asParent(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
-		adapter: l.Adapter,
+		adapter: l.Adapter, loop: l,
 	})
 }
 
@@ -412,6 +413,7 @@ type oneAtATime struct {
 	Approver
 	asks chan struct{}
 	who  string
+	via  string // the pipeline asking, when a pipeline step asks
 }
 
 func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
@@ -424,7 +426,13 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	return o.Approver.Approve(WithSubagent(ctx, o.who), tool, args, res)
+	if o.who != "" {
+		ctx = WithSubagent(ctx, o.who)
+	}
+	if o.via != "" {
+		ctx = context.WithValue(ctx, pipelineAskKey{}, o.via)
+	}
+	return o.Approver.Approve(ctx, tool, args, res)
 }
 
 type subagentKey struct{}

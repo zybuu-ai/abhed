@@ -246,7 +246,9 @@ type Loop struct {
 	// asks puts the asks of this loop's subagents to its approver one at a time.
 	asks     chan struct{}
 	asksOnce sync.Once
-	depth    int // how deep this loop is among subagents; 0 for a top-level loop
+	// stepRun keeps a mutating pipeline step apart from the loop's other steps.
+	stepRun sync.RWMutex
+	depth   int // how deep this loop is among subagents; 0 for a top-level loop
 
 	// dropEffort is set once a turn has spent its whole output budget on
 	// reasoning without acting; later calls ask for low effort, where the
@@ -931,7 +933,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		// call the model made, not only those naming a real tool.
 		why := fmt.Sprintf("unknown tool %q", call.Name)
 		if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
-			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why,
+			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why, Via: viaOf(ctx),
 		}); err != nil {
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
@@ -971,6 +973,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
 		Scope:            decision.Offer(),
+		Via:              viaOf(ctx),
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -997,7 +1000,7 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	case policy.Ask:
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
-		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
+		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
@@ -1269,13 +1272,6 @@ func (h *LoopHolder) Set(l *Loop) { h.loop = l }
 func (h *LoopHolder) RecordTodos(items []Todo, note string) {
 	if h != nil && h.loop != nil {
 		h.loop.RecordTodos(items, note)
-	}
-}
-
-// RecordPipelineStage forwards to the current loop.
-func (h *LoopHolder) RecordPipelineStage(skill, stage, detail string, data map[string]any) {
-	if h != nil && h.loop != nil {
-		h.loop.RecordPipelineStage(skill, stage, detail, data)
 	}
 }
 

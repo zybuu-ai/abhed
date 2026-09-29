@@ -98,6 +98,8 @@ type Call struct {
 	Reason       string `json:"reason,omitempty"`
 	// Actor is who made the call: the model ("agent") or a person ("user").
 	Actor string `json:"actor,omitempty"`
+	// Via names what issued the call for the agent, such as a skill's pipeline.
+	Via string `json:"via,omitempty"`
 
 	// Ran is set only when the record holds the call's result.
 	Ran bool `json:"ran"`

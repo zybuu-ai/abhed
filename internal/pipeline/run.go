@@ -31,6 +31,17 @@ type Runner struct {
 	Event EventFunc
 	// StepTimeout applies to a step that declares none.
 	StepTimeout time.Duration
+	// ToolTimes set: a tool step's ctx has no deadline, and Tool applies
+	// ToolTimeout(ctx) itself, so a wait for a person's approval is not counted.
+	ToolTimes bool
+}
+
+type timeoutKey struct{}
+
+// ToolTimeout is the time a tool step may run for, when the Runner leaves it to Tool.
+func ToolTimeout(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(timeoutKey{}).(time.Duration)
+	return d, ok
 }
 
 // State is what the pipeline has produced so far. It is passed to the model at
@@ -236,8 +247,13 @@ func (r *Runner) runSteps(ctx context.Context, stage Stage, state *State, res *R
 
 func (r *Runner) runStep(ctx context.Context, s Step, state *State, item any) (string, error) {
 	timeout := s.TimeoutOr(r.stepTimeout())
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	if s.Kind == "tool" && r.ToolTimes {
+		ctx = context.WithValue(ctx, timeoutKey{}, timeout)
+	} else {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	vals := state.All()
 	if item != nil {

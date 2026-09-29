@@ -392,7 +392,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		// the harness runs the stages, so the gathering cannot be skipped.
 		registry.Add(skills.Tool{
 			R:           skillReg,
-			RunPipeline: pipelineRunner(adapter, registry, sess, todos),
+			RunPipeline: pipelineRunner(adapter),
 			Input:       lastPrompt,
 		})
 	}

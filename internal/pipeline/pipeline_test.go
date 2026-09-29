@@ -277,3 +277,28 @@ func TestConditionMatchesABooleanVerdict(t *testing.T) {
 		t.Error(`satisfied=true must not satisfy "!= true"`)
 	}
 }
+
+// With ToolTimes the tool step gets its timeout to apply itself, and no deadline;
+// without it the Runner imposes the deadline as before.
+func TestToolTimesHandsTheTimeoutToTheTool(t *testing.T) {
+	p := Pipeline{Stages: []Stage{{Name: "s", Steps: []Step{{Kind: "tool", Tool: "t", TimeoutMS: 70}}}}}
+	for _, own := range []bool{true, false} {
+		var got time.Duration
+		var deadline bool
+		r := runner(func(ctx context.Context, _ string, _ json.RawMessage) (string, error) {
+			got, _ = ToolTimeout(ctx)
+			_, deadline = ctx.Deadline()
+			return "", nil
+		}, nil)
+		r.ToolTimes = own
+		if _, err := r.Run(context.Background(), p, ""); err != nil {
+			t.Fatal(err)
+		}
+		if own && (got != 70*time.Millisecond || deadline) {
+			t.Fatalf("ToolTimes: timeout %v, deadline %v", got, deadline)
+		}
+		if !own && (got != 0 || !deadline) {
+			t.Fatalf("default: timeout %v, deadline %v", got, deadline)
+		}
+	}
+}

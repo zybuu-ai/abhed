@@ -77,6 +77,29 @@ All notable changes to Abhed are recorded here. The format follows
     `ABHED_TRUST_WORKSPACE`.
   - The design and the classification of every setting are in
     `docs/architecture/workspace-trust.md`.
+- A skill's pipeline ran its tool steps with no policy, approval or record.
+  Affects every release from 0.1.0 through 1.2.1, in the CLI (`abhed` and
+  `abhed -p`); the server, console and SDK never ran pipelines. A step called
+  the tool directly, so deny and ask rules, plan mode, destructive-command
+  confirmation, extension hooks, the monitor, the approver and the `secrets`
+  allow rule were all skipped. A step could run `bash`, `write` or any other
+  registered tool with arguments templated from the request and from earlier
+  steps' output. File-tool path checks and a configured sandbox still
+  applied. Nothing about the step reached the record, and a pipeline's model
+  steps were sent tool output before secret values were stripped from it.
+  Each tool step is now put through the loop that called the skill, as that
+  loop's own call is: its policy, hooks, the monitor and the approver, one
+  ask at a time across the session, and its session, depth and record. A
+  pipeline a subagent starts is judged as that subagent, so a `task` step in
+  it is a nested spawn and `nested_subagents` still applies. A step that
+  needs approval in a headless run, or with no approver, is refused. Each
+  step is recorded with `via` naming the skill's pipeline, which HawkEYE
+  shows, and an approval prompt says which pipeline asks. A step's timeout
+  starts once it is approved. Model steps and gates get their whole prompt
+  with secrets redacted. A pipeline is refused rather than run when no
+  session's `skill` call started it, when a step calls the `skill` tool, or
+  when it would start beneath another pipeline's step, which bounds
+  skill, pipeline and subagent recursion.
 
 ### Upgrading
 
