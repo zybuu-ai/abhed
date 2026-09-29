@@ -75,7 +75,7 @@ func (s *Steps) Run(ctx context.Context, name string, args json.RawMessage, runF
 	actx := context.WithValue(context.WithValue(ctx, viaKey{}, s.via), approverKey{}, s.approver())
 
 	s.auth.Lock()
-	ok, res, term := l.authorize(actx, call)
+	ok, res, term := l.authorize(actx, &call)
 	s.auth.Unlock()
 	if term != "" {
 		return res, s.ended(term, res)

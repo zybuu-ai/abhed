@@ -516,3 +516,19 @@ func TestPipelineStepErrorEndsTheRun(t *testing.T) {
 		t.Fatalf("the run went on after a step failed to be judged: %s %v", r.term, r.err)
 	}
 }
+
+// A step whose arguments spell a key two ways is refused at step args, on
+// the record under the pipeline, and nothing runs.
+func TestPipelineStepDuplicateKeyIsRefused(t *testing.T) {
+	r := runPipeline(t, onePipeline("bash", `{"command":"echo safe","Command":"touch pwned"}`), policy.New(policy.ModeBypass), agent.AutoApprove{Yes: true})
+	if _, err := os.Stat(filepath.Join(r.ws, "pwned")); err == nil {
+		t.Fatal("a pipeline step ran the second spelling of its command")
+	}
+	req, evs := stepEvents(t, r.store)
+	if typ, d := decided(evs); typ != agent.EvActionDenied || d["step"] != "args" {
+		t.Fatalf("want a refusal at step args, got %s %v", typ, d)
+	}
+	if req.Via != "skill gather pipeline" || req.RawArgs == "" {
+		t.Fatalf("the refused step is not recorded under its pipeline with its arguments: %+v", req)
+	}
+}

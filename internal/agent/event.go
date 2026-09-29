@@ -181,6 +181,10 @@ type ActionRequested struct {
 	Scope string `json:"scope,omitempty"`
 	// Via names what issued the call for the agent, such as "skill research pipeline".
 	Via string `json:"via,omitempty"`
+	// RawArgs holds arguments refused as malformed, as sent; Args is then {}.
+	RawArgs string `json:"raw_args,omitempty"`
+	// Dropped names keys a fixed tool does not take, left out of Args before policy.
+	Dropped []string `json:"dropped_args,omitempty"`
 }
 
 type Observation struct {

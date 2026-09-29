@@ -182,7 +182,17 @@ that you are protected when you are not.
 
 Every call goes through the same steps, and the order is the design:
 
-1. **Hooks** — extensions, first, so they can veto
+0. **Arguments** — before any rule or hook, a call's arguments are decoded
+   strictly and written out once in a canonical form. A call whose
+   arguments are not one JSON object, name the same key twice in any case
+   (`command` and `Command`), spell a declared argument in another case
+   (`Content` for `content`), or give a tool a key the rules read
+   (`command`, `path`, …) that it does not take, is refused at step `args`. A
+   built-in tool drops any other key it does not declare, and the record
+   lists them in `dropped_args`; an MCP tool whose schema sets
+   `additionalProperties: false` refuses them instead. Every later step,
+   and the tool itself, reads those same canonical arguments
+1. **Hooks** — extensions, next, so they can veto
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
