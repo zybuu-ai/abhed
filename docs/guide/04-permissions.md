@@ -37,6 +37,16 @@ A rule is a tool name, optionally followed by a pattern:
 `*` matches anything, newlines included; the pattern is matched against the
 command or path.
 
+For `web_fetch` the pattern is matched against the URL. The tool only
+fetches a URL written in one form — lower-case scheme and host, no user
+name, no default port, no trailing dot on the host, a path of at least `/`,
+no needless `%` escapes and no `#fragment` — and refuses any other spelling,
+naming the one to use. So `"deny": ["web_fetch(https://example.com/*)"]`
+cannot be stepped around by writing `HTTPS://Example.COM:443`. Write a rule
+for a host with its scheme, the host and a `/`, and `*` after it; a host on
+another port needs its own rule. A redirect to another host is not followed
+but handed back, so it is judged as a call of its own.
+
 A deny or ask path pattern matches the path as the tool was given it, the
 absolute path, the path with its links resolved, and the path relative to the
 workspace and to each added directory, with or without a leading `./`. So

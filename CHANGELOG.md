@@ -269,6 +269,34 @@ All notable changes to Abhed are recorded here. The format follows
   text) and `dropped_args` (keys a built-in tool dropped); the SDK's
   `ActionRequested` gains `RawArgs` and `Dropped`. Refusals of malformed
   arguments are recorded at the new policy step `args`.
+- `web_fetch`: reads one http or https page through Abhed, not the sandboxed
+  shell, and returns its text (HTML reduced to headings, paragraphs, lists and
+  links), in parts of up to `web_fetch.max_chars` characters. Off by default
+  and enabled on its own with `web_fetch.enabled`; `web_fetch.allowed_hosts`
+  limits it to named hosts. It refuses other schemes, any loopback, private,
+  link-local, metadata or reserved address (checked where it connects, on
+  every redirect hop), a URL holding a stored secret, and a URL not written
+  in its one form, so a `web_fetch(https://host/*)` rule cannot be stepped
+  around. A redirect to another host is handed back as a new call. Policy
+  rules match the URL: `url` is now a subject key.
+
+### Changed
+
+- `bash`'s description says whether commands can reach the network. When the
+  sandbox has none and a command fails for that reason, the result ends with
+  a note saying so and pointing at `web_search` and `web_fetch`. A model that
+  ran `curl` in a sandbox with no network was given no reason for the
+  failure.
+- The system prompt names only the web tools the session has. It told the
+  model to use `web_search` when search was off. `web_search`'s description
+  pointed at a fetch tool that did not exist; it now names `web_fetch` when
+  that is on.
+- The CLI's and `eval`'s `bash` now know whether `sandbox.allow_network` is
+  set, as the server's already did.
+- `abhed serve` and `abhed doctor` report web fetch, and the console's
+  overview shows it.
+- An argument named `url` that a tool's schema does not declare is now
+  refused, as the other subject keys are.
 
 ## [1.2.1] - 2026-09-28
 

@@ -51,6 +51,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/internal/websearch"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
@@ -339,7 +340,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	vault := openVault()
 	registry := tools.NewRegistry(
 		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier())}},
+		tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
 		tools.Todo{OnUpdate: func(items []tools.TodoItem, note string) {
 			todos.RecordTodos(toAgentTodos(items), note)
 		}},
@@ -396,9 +397,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 			Input:       lastPrompt,
 		})
 	}
-	if t, err := buildWebSearch(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: web search disabled: %v\n", err)
-	} else if t != nil {
+	for _, t := range buildWebTools(cfg) {
 		registry.Add(t)
 	}
 
@@ -419,6 +418,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   agent.DiscoverMemoryFiles(workspace),
 		Skills:        skillListing,
+		Tools:         registry.Names(),
 	})
 
 	loopCfg := agent.DefaultConfig()
@@ -1407,6 +1407,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	fmt.Printf("auth        %s\n", authLabel(cfg, authMW))
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
 	if cfg.K8s.Enabled {
 		writes := "read-only"
 		if cfg.K8s.AllowWrites {
@@ -1475,9 +1476,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		// path until the server attaches a runner where it builds a session.
 		registry.Add(skills.Tool{R: skillReg})
 	}
-	if t, err := buildWebSearch(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: web search disabled: %v\n", err)
-	} else if t != nil {
+	for _, t := range buildWebTools(cfg) {
 		registry.Add(t)
 	}
 	// Kept rather than discarded: the settings surface can trigger a reindex,
@@ -1669,7 +1668,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		vault := openVault()
 		registry := tools.NewRegistry(
 			tools.Read{}, tools.Write{}, tools.Edit{},
-			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier())}},
+			tools.Glob{}, tools.Grep{}, tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault), Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
 		)
 		// Skills and web search are part of the agent under test, not extras.
 		// Without them a corpus that exercises a retrieval skill measures an
@@ -1678,7 +1677,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		if evalSkills.Len() > 0 {
 			registry.Add(skills.Tool{R: evalSkills})
 		}
-		if t, err := buildWebSearch(cfg); err == nil && t != nil {
+		for _, t := range buildWebTools(cfg) {
 			registry.Add(t)
 		}
 
@@ -1700,7 +1699,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		loopCfg.SystemPrompt = agent.BuildSystemPrompt(agent.BuildOptions{
 			Profile: "main", Workspace: ws,
 			Model: provider.Model, ContextWindow: provider.ContextWindow,
-			Skills: evalSkillListing,
+			Skills: evalSkillListing, Tools: registry.Names(),
 		})
 		if task.MaxTurns > 0 {
 			loopCfg.MaxTurns = task.MaxTurns
@@ -2546,9 +2545,31 @@ func storeConfig(cfg config.Config) store.Config {
 	return sc
 }
 
+// buildWebTools constructs the web tools the operator enabled: none by
+// default. A search tool that cannot be built is reported and left out.
+func buildWebTools(cfg config.Config) []tools.Tool {
+	var out []tools.Tool
+	var fetch *webfetch.Tool
+	if cfg.WebFetch.Enabled {
+		// Read on each call, so a secret stored while the session runs is covered.
+		fetch = &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
+			Secrets: openVault().LoadRedactor, MaxChars: cfg.WebFetch.MaxChars}
+	}
+	if s, err := buildWebSearch(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: web search disabled: %v\n", err)
+	} else if s != nil {
+		s.Fetch = fetch != nil
+		out = append(out, s)
+	}
+	if fetch != nil {
+		out = append(out, fetch)
+	}
+	return out
+}
+
 // buildWebSearch constructs the web search tool when enabled. Returns nil, nil
 // when the operator has left it off, which is the default.
-func buildWebSearch(cfg config.Config) (tools.Tool, error) {
+func buildWebSearch(cfg config.Config) (*websearch.Tool, error) {
 	if !cfg.WebSearch.Enabled {
 		return nil, nil
 	}
@@ -2577,6 +2598,16 @@ func webSearchLabel(cfg config.Config) string {
 		p = "duckduckgo"
 	}
 	return p + " (agent can reach the public internet)"
+}
+
+func webFetchLabel(cfg config.Config) string {
+	switch {
+	case !cfg.WebFetch.Enabled:
+		return "disabled"
+	case len(cfg.WebFetch.AllowedHosts) > 0:
+		return "enabled for " + strings.Join(cfg.WebFetch.AllowedHosts, ", ")
+	}
+	return "enabled (agent can read any public web page)"
 }
 
 // buildSandbox selects an execution backend meeting the configured minimum
@@ -2834,6 +2865,7 @@ func (a *App) doctor(workspace string) int {
 		}
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
 	vaultErr := vaultLoads()
 	if vaultErr != nil {
 		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)

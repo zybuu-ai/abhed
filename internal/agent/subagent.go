@@ -290,6 +290,13 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		workspace = req.Workspace
 	}
 
+	// A narrow role gets a narrow tool set: an explore subagent that can write
+	// will write, and the orchestrator will not know (docs §07).
+	registry := f.Tools
+	if p, found := Profiles[profile]; found && len(p.Tools) > 0 {
+		registry = f.Tools.Subset(p.Tools...)
+	}
+
 	// Fresh context: the subagent gets its own system prompt and memory file,
 	// and none of the parent's turns.
 	sysPrompt := BuildSystemPrompt(BuildOptions{
@@ -298,14 +305,8 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		Model:         adapter.Profile().Name,
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
+		Tools:         registry.Names(),
 	})
-
-	// A narrow role gets a narrow tool set: an explore subagent that can write
-	// will write, and the orchestrator will not know (docs §07).
-	registry := f.Tools
-	if p, found := Profiles[profile]; found && len(p.Tools) > 0 {
-		registry = f.Tools.Subset(p.Tools...)
-	}
 
 	cfg := f.Config
 	cfg.SystemPrompt = sysPrompt

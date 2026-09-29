@@ -43,6 +43,7 @@ configuration](#trusting-the-workspace-configuration).
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | provider and result count |
+| `web_fetch` | whether the agent can read a web page, and from which hosts — [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default |
 | `additional_dirs` | directories outside the workspace the agent may reach |
@@ -138,6 +139,33 @@ policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+
+With `allow_network` false, the `bash` tool's description tells the model
+that commands cannot reach the network, and a command that fails for that
+reason (a name that does not resolve, no route to a host) ends with a note
+saying so and pointing at `web_search` and `web_fetch`.
+
+## Web fetch
+
+```json
+"web_fetch": {
+  "enabled": true,
+  "allowed_hosts": ["docs.python.org", "*.github.com"],
+  "max_chars": 20000
+}
+```
+
+Off by default, and separate from `web_search`: turning search on does not
+let the agent send a request to any site, and turning this on does not give
+the shell a network. `web_fetch` reads one http or https page through Abhed
+and returns its text. It never reaches a loopback, private, link-local,
+metadata or reserved address, whatever the host name resolves to.
+
+`allowed_hosts`, when set, is every host the agent may fetch: a name, or
+`*.` and a domain for any host under it (not the domain itself). An entry
+with a scheme, port or path is refused at load. `max_chars` is the most text
+one call returns; unset means 20,000, and the most is 100,000. A longer page
+is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 
 ## Storage
 

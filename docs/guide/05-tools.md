@@ -9,7 +9,8 @@
 | `bash` | shell, sandboxed, destructive commands always confirm |
 | `todo` | the agent's task list for multi-step work |
 | `skill` | load a procedure on demand |
-| `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng |
+| `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default |
+| `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
 | `ssh`, `ssh_connect` | remote execution, off by default |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
 
@@ -22,6 +23,45 @@ and `/undo` of the new file removes them while they are empty.
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
+
+`bash` says in its description whether commands can reach the network. When
+the sandbox has none and a command fails because of it, the result ends with
+a note that says so, so the model reports the reason or uses a web tool
+instead of retrying.
+
+### Reading a web page
+
+`web_fetch` takes a `url` and returns the page's text: HTML reduced to
+headings, paragraphs, list items and links, with scripts and styles removed.
+Plain text, JSON, XML and other text types come back as they are; images,
+PDFs and other binary types are refused. It reads up to 5 MiB of a page and
+returns up to `web_fetch.max_chars` characters per call, with the `start`
+to pass to read on. The result is tagged untrusted like any tool output.
+
+The request is made by Abhed, not the sandboxed shell, and every call is
+judged by policy and recorded like any other. What it refuses:
+
+- a scheme other than `http` or `https`, and a URL with a user name or
+  password;
+- any loopback, private, link-local, cloud metadata (`169.254.169.254`,
+  `fd00:ec2::254`), carrier-grade NAT, multicast or reserved address. The
+  address is checked where the connection is made, on every hop, so a name
+  that resolves to a public address once and an internal one the next time
+  is refused;
+- a URL that holds a value from the secrets store, as written or
+  percent-encoded;
+- a host not on `web_fetch.allowed_hosts`, when that is set;
+- a URL written in any but its one form (see
+  [Permissions](04-permissions.md#rules)).
+
+It follows up to five redirects within the same site, and the upgrade from
+`http` to `https`. A redirect to another host is handed back to the model,
+which fetches it as a new call if it needs it. It ignores `HTTP_PROXY` and
+the other proxy variables, since through a proxy it could not check where
+the connection goes.
+
+`web_search`'s description points at `web_fetch` only when both are on, and
+the system prompt names only the web tools the session has.
 
 ### An edit that would break the file
 

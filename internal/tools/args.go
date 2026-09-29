@@ -12,8 +12,9 @@ import (
 )
 
 // SubjectKeys are the arguments policy reads a call's subject from, most
-// security-relevant first.
-var SubjectKeys = []string{"command", "path", "pattern", "action", "resource", "host", "namespace", "name"}
+// security-relevant first. url comes last so a tool that already had a
+// subject keeps it; web_fetch has only a url.
+var SubjectKeys = []string{"command", "path", "pattern", "action", "resource", "host", "namespace", "name", "url"}
 
 // ErrMalformedArgs marks arguments refused before any rule or tool reads them.
 var ErrMalformedArgs = errors.New("malformed arguments")

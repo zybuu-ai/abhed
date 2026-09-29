@@ -14,7 +14,8 @@ import (
 )
 
 // CorePrompt is layer 1 of the prompt stack (docs §07): stable across all
-// sessions and tenants, and therefore part of the cached prefix.
+// sessions and tenants, and therefore part of the cached prefix. {{web}} is
+// replaced by what the session's web tools allow; see webSources.
 //
 // Every rule here is paid on every request of every session forever, so each
 // one must change behavior. Aspirations ("be helpful") change nothing; rules
@@ -35,7 +36,8 @@ the question is about the workspace. Judge what the user actually wants:
   answer depends on current fact, or your own knowledge. Do not grep the repository
   for it.
 - A question about current or changing fact (a release, a version, an API as it
-  stands today, anything after your training cutoff) — search the web.
+  stands today, anything after your training cutoff) — check the web if you have a
+  web tool (see below); if not, answer from what you know and say it is unchecked.
 - A request to change something — follow the working method below.
 
 Choosing the wrong source is the most common failure, and it runs in both directions.
@@ -49,11 +51,7 @@ Use the sources you have, without being asked to:
 - Skills: when a skill's description covers the subject of the question, invoke it.
   It is there because it answers that class of question better than you can unaided.
   Do not wait to be told to use it.
-- Web search: invoke web_search on your own judgement whenever the answer
-  depends on information you do not reliably have: current versions, recent releases,
-  changing APIs, anything post-cutoff, or a specific fact you would otherwise hedge
-  about. Needing to search is not a failure; guessing when you could have checked is.
-  You do not need permission, and the user should not have to ask.
+{{web}}
 - Own knowledge: for stable, well-established material, answer directly.
 
 Combining sources is normal and usually better than one alone. When sources disagree,
@@ -100,6 +98,37 @@ say so and say which you trust.
 - Do not send repository contents, credentials, or environment values anywhere the user
   did not explicitly request.`
 
+const (
+	webSearchLine = `- Web search: invoke web_search on your own judgement whenever the answer
+  depends on information you do not reliably have: current versions, recent releases,
+  changing APIs, anything post-cutoff, or a specific fact you would otherwise hedge
+  about. Needing to search is not a failure; guessing when you could have checked is.
+  You do not need permission, and the user should not have to ask.`
+	webFetchLine = `- Web pages: web_fetch reads one page in full — a URL the user gives, a page at
+  an address you know, or a search result whose snippet is not enough.`
+	noWebLine = `- The web: this session has no web tool. For current fact, answer from what you
+  know and say that you could not check it.`
+)
+
+// webSources is the prompt's line on the web, naming only the web tools the
+// session has: naming one it lacks sends the model looking for it, or to curl.
+func webSources(names []string) string {
+	var search, fetch bool
+	for _, n := range names {
+		search = search || n == "web_search"
+		fetch = fetch || n == "web_fetch"
+	}
+	switch {
+	case search && fetch:
+		return webSearchLine + "\n" + webFetchLine
+	case search:
+		return webSearchLine
+	case fetch:
+		return webFetchLine
+	}
+	return noWebLine
+}
+
 // Profile is layer 2: role-specific behavior for subagents. A narrow role with
 // a narrow tool set outperforms a general one (docs §07).
 type PromptProfile struct {
@@ -141,6 +170,9 @@ type BuildOptions struct {
 	// only. Bodies are fetched by the skill tool, so twenty skills cost about
 	// three hundred tokens here rather than twenty thousand.
 	Skills string
+	// Tools names the tools the session has, so the line on the web names only
+	// web tools that are there.
+	Tools []string
 }
 
 // BuildSystemPrompt assembles layers 1-4 in order, keeping everything stable so
@@ -152,7 +184,7 @@ type BuildOptions struct {
 func BuildSystemPrompt(opts BuildOptions) string {
 	var b strings.Builder
 
-	b.WriteString(CorePrompt)
+	b.WriteString(strings.Replace(CorePrompt, "{{web}}", webSources(opts.Tools), 1))
 
 	if p, found := Profiles[opts.Profile]; found && p.Instruction != "" {
 		b.WriteString("\n\n## Role\n")

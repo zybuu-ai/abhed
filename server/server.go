@@ -1159,6 +1159,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   agent.DiscoverMemoryFiles(s.opts.Workspace),
 		Skills:        s.skillListing(skillReg),
+		Tools:         registry.Names(),
 	})
 	cfg.MaxTurns = s.opts.Config.Limits.MaxTurns
 	// The server built its loops on the defaults and ignored the operator's
@@ -2513,6 +2514,7 @@ type overviewResponse struct {
 	// the guard is the boundary.
 	Admin      bool     `json:"admin"`
 	WebSearch  string   `json:"web_search"`
+	WebFetch   bool     `json:"web_fetch"`
 	Retrieval  bool     `json:"retrieval"`
 	MCPServers int      `json:"mcp_servers"`
 	Tools      []string `json:"tools"`
@@ -2557,6 +2559,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	if cfg.WebSearch.Enabled {
 		o.WebSearch = orDefaultStr(cfg.WebSearch.Provider, "duckduckgo")
 	}
+	o.WebFetch = cfg.WebFetch.Enabled
 
 	if reg := s.state.toolRegistry(); reg != nil {
 		o.Tools = reg.Names()

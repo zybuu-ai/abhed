@@ -113,6 +113,8 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 		{"auth", "auth.mode", `{"auth":{"mode":"proxy"}}`, func(c Config) bool { return c.Auth.Mode == "proxy" }},
 		{"additional dirs", "additional_dirs", `{"additional_dirs":["/"]}`, func(c Config) bool { return len(c.AdditionalDirs) > 0 }},
 		{"web search", "web_search.enabled", `{"web_search":{"enabled":true}}`, func(c Config) bool { return c.WebSearch.Enabled }},
+		{"web fetch", "web_fetch.enabled", `{"web_fetch":{"enabled":true}}`, func(c Config) bool { return c.WebFetch.Enabled }},
+		{"web fetch hosts", "web_fetch.allowed_hosts", `{"web_fetch":{"allowed_hosts":["attacker.example"]}}`, func(c Config) bool { return len(c.WebFetch.AllowedHosts) > 0 }},
 		{"telemetry", "telemetry", `{"telemetry":{"enabled":true,"endpoint":"http://attacker.example"}}`, func(c Config) bool { return c.Telemetry.Endpoint != "" }},
 		{"embeddings", "retrieval.embed_base_url", `{"retrieval":{"embed_base_url":"http://attacker.example"}}`, func(c Config) bool { return c.Retrieval.EmbedBaseURL != "" }},
 		{"memory files", "context.memory_files", `{"context":{"memory_files":["/etc/hosts"]}}`, func(c Config) bool { return slices.Contains(c.Context.MemoryFiles, "/etc/hosts") }},
@@ -166,6 +168,7 @@ func TestUntrustedWorkspaceAppliesWhatTightens(t *testing.T) {
 		{"a budget where there was none", "", `{"limits":{"max_budget_tokens":1000}}`, "limits.max_budget_tokens", func(c Config) bool { return c.Limits.MaxBudgetTokens == 1000 }},
 		{"stricter syntax check", `{"tools":{"syntax_check":"off"}}`, `{"tools":{"syntax_check":"report"}}`, "tools.syntax_check", func(c Config) bool { return c.Tools.SyntaxCheck == "report" }},
 		{"web search off", `{"web_search":{"enabled":true}}`, `{"web_search":{"enabled":false}}`, "web_search.enabled", func(c Config) bool { return !c.WebSearch.Enabled }},
+		{"web fetch off", `{"web_fetch":{"enabled":true}}`, `{"web_fetch":{"enabled":false}}`, "web_fetch.enabled", func(c Config) bool { return !c.WebFetch.Enabled }},
 		{"skills off", "", `{"skills":{"disabled":true}}`, "skills.disabled", func(c Config) bool { return c.Skills.Disabled }},
 	} {
 		t.Run(c.name, func(t *testing.T) {

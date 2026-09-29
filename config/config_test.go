@@ -188,6 +188,22 @@ func TestSyntaxCheckSettingIsValidated(t *testing.T) {
 	}
 }
 
+// An allowlist entry of the wrong shape would match no host, so it is refused
+// rather than left to look like protection.
+func TestWebFetchAllowedHostsAreValidated(t *testing.T) {
+	for h, ok := range map[string]bool{
+		"docs.python.org": true, "*.github.com": true, "localhost": true,
+		"https://docs.python.org": false, "docs.python.org/3": false, "example.com:443": false,
+		"*": false, "*.": false, "a..b": false, "": false, "ex ample.com": false,
+	} {
+		c := Default()
+		c.WebFetch.AllowedHosts = []string{h}
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("%q: err %v, want accepted=%v", h, err, ok)
+		}
+	}
+}
+
 // The GitHub keys are read only by a paid edition, but a mistake in them is
 // reported here, at load, in every edition.
 func TestGitHubAuthKeysAreValidated(t *testing.T) {

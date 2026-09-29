@@ -20,18 +20,24 @@ import (
 type Tool struct {
 	Provider Provider
 	Limit    int
-	Calls    atomic.Int64
+	// Fetch says web_fetch is registered too, so results can point at it.
+	Fetch bool
+	Calls atomic.Int64
 }
 
 func (*Tool) Name() string  { return "web_search" }
 func (*Tool) Mutates() bool { return false }
 
 func (t *Tool) Description() string {
-	return "Search the public web for current information. Use for anything outside " +
+	d := "Search the public web for current information. Use for anything outside " +
 		"this codebase and beyond your training data: recent releases, current " +
-		"documentation, error messages you do not recognise. Results are summaries — " +
-		"follow a URL with fetch if you need the full page. Do not use it for " +
-		"questions you can already answer, or for anything about this repository."
+		"documentation, error messages you do not recognise. "
+	if t.Fetch {
+		d += "Results are short snippets: read a result's page in full with web_fetch when the snippet is not enough. "
+	} else {
+		d += "Results are short snippets, not whole pages. "
+	}
+	return d + "Do not use it for questions you can already answer, or for anything about this repository."
 }
 
 func (*Tool) Schema() json.RawMessage {

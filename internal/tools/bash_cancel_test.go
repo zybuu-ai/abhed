@@ -268,3 +268,49 @@ func TestBashTimeoutEndsADetachedChild(t *testing.T) {
 		})
 	}
 }
+
+// A command that failed reaching for the network in a sandbox without one is
+// told why, and pointed at the web tools; nothing else is.
+func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
+	s, dir := setup(t)
+	none := sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command
+	off := Bash{Sandbox: none, Isolation: Isolation{Tier: "process"}}
+	on := Bash{Sandbox: none, Isolation: Isolation{Tier: "process", Network: true}}
+	curl := `echo "curl: (6) Could not resolve host: weather.com" >&2; exit 6`
+	for _, tc := range []struct {
+		name    string
+		bash    Bash
+		command string
+		hint    bool
+	}{
+		{"curl, network off", off, curl, true},
+		{"python, network off", off, `echo "urlopen error [Errno 8] nodename nor servname provided, or not known"; exit 1`, true},
+		{"curl to an address, network off", off, `echo "curl: (7) Failed to connect to 1.1.1.1 port 80 after 1 ms"; exit 7`, true},
+		{"network on", on, curl, false},
+		{"on the host", Bash{}, curl, false},
+		{"undescribed sandbox", Bash{Sandbox: none}, curl, false},
+		{"succeeded", off, `echo "Could not resolve host: in a log file"`, false},
+		{"a local server not running", off, `echo "curl: (7) Failed to connect to localhost port 8080"; exit 7`, false},
+		{"an ordinary failure", off, `echo "FAIL: TestParse"; exit 1`, false},
+	} {
+		res := run(t, tc.bash, s, bashArgs{Command: tc.command, Description: "x"})
+		if got := strings.Contains(res.Content, "this sandbox has no network access"); got != tc.hint {
+			t.Errorf("%s: hint %v, want %v:\n%s", tc.name, got, tc.hint, res.Content)
+		}
+	}
+}
+
+func TestBashDescriptionSaysWhetherTheNetworkIsReachable(t *testing.T) {
+	off := Bash{Sandbox: func(context.Context, string, string) *exec.Cmd { return nil }, Isolation: Isolation{Tier: "container"}}
+	on := off
+	on.Isolation.Network = true
+	if d := off.Description(); !strings.Contains(d, "no network") || !strings.Contains(d, "web_fetch") {
+		t.Errorf("network off: %s", d)
+	}
+	if d := on.Description(); strings.Contains(d, "no network") || !strings.Contains(d, "can reach the network") {
+		t.Errorf("network on: %s", d)
+	}
+	if d := (Bash{}).Description(); strings.Contains(d, "no network") {
+		t.Errorf("on the host: %s", d)
+	}
+}

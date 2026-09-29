@@ -340,12 +340,22 @@ Programs that enumerate interfaces get an error rather than a loopback-only
 list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
 pytest are unaffected.
 
-**`web_search`, when enabled**, is the one narrow, structured exception: a Go
-tool in the server process makes the request, not the sandboxed shell, so a
-compromised session cannot turn it into an arbitrary outbound connection. It
-is off by default (`web_search.enabled: false` in
-`config/config.go`'s defaults) and is a separate capability from
-shell networking — enabling one does not enable the other.
+**`web_search` and `web_fetch`, when enabled**, are the two narrow,
+structured exceptions: a Go tool in the Abhed process makes the request, not
+the sandboxed shell, so a compromised session cannot turn either into an
+arbitrary outbound connection. Both are off by default (`web_search.enabled`
+and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
+enabled on its own, and neither enables shell networking. `web_fetch` makes
+one GET to one URL that policy has judged: it refuses schemes other than
+http and https, and any loopback, private, link-local, metadata or reserved
+address, checked on the address it connects to, on every redirect hop
+(`internal/webfetch/guard.go`). It follows a redirect only within the same
+site, and hands one to another host back to the model as a new call. It
+ignores proxy settings from the environment, refuses a URL that holds a
+stored secret, and can be held to an operator's host list
+(`web_fetch.allowed_hosts`). A URL is a channel out: whatever the model puts
+in it reaches the site, so an operator who enables `web_fetch` without a host
+list accepts that, and can add `ask` or `deny` rules on it.
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic

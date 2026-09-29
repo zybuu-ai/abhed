@@ -38,6 +38,7 @@ type Config struct {
 	MCP         MCPConfig         `json:"mcp"`
 	Retrieval   RetrievalConfig   `json:"retrieval"`
 	WebSearch   WebSearchConfig   `json:"web_search"`
+	WebFetch    WebFetchConfig    `json:"web_fetch,omitempty"`
 	Extensions  []ExtensionConfig `json:"extensions,omitempty"`
 	// CustomProviders adds model providers without a rebuild.
 	CustomProviders []CustomProviderConfig `json:"custom_providers,omitempty"`
@@ -257,6 +258,21 @@ type WebSearchConfig struct {
 	// BaseURL points at a self-hosted instance or an egress broker.
 	BaseURL    string `json:"base_url,omitempty"`
 	MaxResults int    `json:"max_results,omitempty"`
+}
+
+// WebFetchConfig controls the web_fetch tool, which reads one page through
+// Abhed rather than the sandboxed shell.
+//
+// OFF by default, and separate from web_search: turning search on does not
+// open a way to send a request to any site, which this does.
+type WebFetchConfig struct {
+	Enabled bool `json:"enabled"`
+	// AllowedHosts, when set, is every host that may be fetched:
+	// "docs.python.org" or "*.github.com". Internal addresses are refused
+	// whatever it says.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	// MaxChars caps the text returned per call; 0 means 20,000.
+	MaxChars int `json:"max_chars,omitempty"`
 }
 
 // StorageConfig selects the event store. Memory is fine for a CLI session;
@@ -781,6 +797,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown web_search.provider %q "+
 			"(want duckduckgo, brave, tavily, serper or searxng)", c.WebSearch.Provider)
 	}
+	for _, h := range c.WebFetch.AllowedHosts {
+		if !validHostPattern(h) {
+			return fmt.Errorf("web_fetch.allowed_hosts: %q is not a host name or *.domain "+
+				"(no scheme, port or path)", h)
+		}
+	}
 	switch c.Storage.Driver {
 	case "memory", "postgres", "":
 	default:
@@ -904,4 +926,26 @@ func (c ContextConfig) OffloadFraction() float64 {
 		return 0.60
 	}
 	return *c.OffloadAt
+}
+
+// validHostPattern is a host name, or *. and a domain: what web_fetch's
+// allowlist can match. A URL or a pattern of any other shape would match
+// nothing, and an operator would believe it did.
+func validHostPattern(h string) bool {
+	h = strings.TrimPrefix(h, "*.")
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for _, c := range label {
+			ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-'
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
