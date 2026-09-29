@@ -85,3 +85,45 @@ func TestServerWithAnUnloadableStoreWithholds(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// A secret stored while the server runs is redacted from the next session on:
+// the store is read again whenever a session starts.
+func TestServerReadsTheStoreForEachSession(t *testing.T) {
+	const later = "fake-added-later-4c7d"
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"FIRST_TOKEN":"fake-first-value-11aa"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(secrets.EnvFile, path)
+	for name, red := range map[string]agent.Redactor{"nil": nil, "live": secrets.Open(path).Live()} {
+		wb := shellBenchOpts(t, nil, func(o *Options) { o.Redact = red })
+		if err := secrets.Open(path).Set("LATER_TOKEN", later); err != nil {
+			t.Fatal(err)
+		}
+		wb.session = wb.openIdle("acme")
+		start := wb.startShell()
+		wb.typeLines(start.ID, enter("echo "+later, "exit")...)
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			var all strings.Builder
+			closed := false
+			for _, e := range wb.events() {
+				all.Write(e.Payload)
+				closed = closed || e.Type == agent.EvObservation
+			}
+			if strings.Contains(all.String(), later) {
+				t.Fatalf("%s: a secret stored while the server ran reached a new session's record:\n%s", name, all.String())
+			}
+			if closed && strings.Contains(all.String(), "[secret:LATER_TOKEN]") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the new session's line was not recorded redacted:\n%s", name, all.String())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if err := secrets.Open(path).Remove("LATER_TOKEN"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

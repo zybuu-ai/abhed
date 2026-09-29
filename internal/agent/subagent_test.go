@@ -636,9 +636,16 @@ func TestTaskNamesTheTasksToolForATasksList(t *testing.T) {
 	}
 }
 
-// A factory built with no redactor still keeps a stored value out of the
-// child's record: it redacts as its parent does.
+// A child redacts as its parent's session does, whether its factory has no
+// redactor or one read before the value was stored.
 func TestSubagentRedactsAsItsParentDoes(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		subagentRedactsAsParent(t, stale)
+	}
+}
+
+func subagentRedactsAsParent(t *testing.T, stale bool) {
+	t.Helper()
 	const raw = "fake-subagent-value-5d1c"
 	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
 	if err := vault.Set("FAKE_TOKEN", raw); err != nil {
@@ -656,6 +663,10 @@ func TestSubagentRedactsAsItsParentDoes(t *testing.T) {
 		t.Fatal("the factory under test must have no redactor of its own")
 	}
 	l.Recorder.Redact = vault.Redactor()
+	if stale {
+		// Built before the value was stored, as a long-lived factory is.
+		f.Redact = secrets.Open(filepath.Join(t.TempDir(), "empty.json")).Redactor()
+	}
 	if err := os.WriteFile(filepath.Join(dir, "creds.txt"), []byte("token="+raw+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

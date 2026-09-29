@@ -43,6 +43,17 @@ var newResolveRunner = func(ctx context.Context, opts abhed.Options) (forge.Runn
 	}, nil
 }
 
+// resolveEvent prints the agent's messages. A variable so a test can slow it.
+var resolveEvent = func(ev abhed.Event) {
+	if ev.Type == "agent.message" {
+		var p struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(ev.Payload, &p)
+		fmt.Fprintln(os.Stderr, strings.TrimSpace(p.Text))
+	}
+}
+
 // pushWork sends the branch to the issue's repository. A variable so the test
 // can push to a local repository instead of a forge.
 var pushWork = func(ctx context.Context, w *forge.Work, repo string, ref forge.Ref, auth, ca string) error {
@@ -160,15 +171,7 @@ func resolveCmd(workspace string, args []string) int {
 	runner, err := newResolveRunner(ctx, abhed.Options{
 		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode,
 		Allow: splitRules(*allow), Sandbox: true,
-		OnEvent: func(ev abhed.Event) {
-			if ev.Type == "agent.message" {
-				var p struct {
-					Text string `json:"text"`
-				}
-				_ = json.Unmarshal(ev.Payload, &p)
-				fmt.Fprintln(os.Stderr, strings.TrimSpace(p.Text))
-			}
-		},
+		OnEvent: func(ev abhed.Event) { resolveEvent(ev) },
 	})
 	if err != nil {
 		return fail(err)

@@ -2,12 +2,19 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
 // fakeVaultValue is a made-up value, stored under FAKE_TOKEN for these tests.
@@ -255,5 +262,103 @@ func TestEntryPointsRefuseAnUnloadableSecretsStore(t *testing.T) {
 			}
 			wantRefusal(t, "doctor", out, path)
 		})
+	}
+}
+
+// resolve prints the run's last message even when delivery lags behind it.
+func TestResolvePrintsTheLastMessageOfASlowDelivery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	repo, _ := resolveRepo(t)
+	srv := scriptedEndpoint(t, func(dir string) []string {
+		return []string{
+			toolCall("read", map[string]string{"path": filepath.Join(dir, "a.txt")}),
+			`{"choices":[{"delta":{"content":"closing-message-marker"}}]}`,
+		}
+	})
+	cfg := `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	if err := os.MkdirAll(filepath.Join(repo, ".abhed"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubForge(t, &fakeForge{})
+	old := resolveEvent
+	t.Cleanup(func() { resolveEvent = old })
+	resolveEvent = func(ev abhed.Event) { time.Sleep(40 * time.Millisecond); old(ev) }
+	_, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}) })
+	if !strings.Contains(msg, "closing-message-marker") {
+		t.Fatalf("the run's last message was not printed:\n%s", msg)
+	}
+}
+
+// TestVaultRefusalHelper is the terminal run the test below starts as its own
+// process, since a refused start exits.
+func TestVaultRefusalHelper(t *testing.T) {
+	ws := os.Getenv("ABHED_VAULT_HELPER_WS")
+	if ws == "" {
+		t.Skip("run by TestTerminalRefusesAnUnloadableSecretsStore")
+	}
+	// TestMain gave this process a home of its own; the store under test is in the parent's.
+	t.Setenv("HOME", os.Getenv("ABHED_VAULT_HELPER_HOME"))
+	os.Exit(Main([]string{"-C", ws, "-p", "read creds.txt"}))
+}
+
+// abhed -p, run as a process, refuses to start over a store it cannot load and
+// never reaches the model.
+func TestTerminalRefusesAnUnloadableSecretsStore(t *testing.T) {
+	for _, kind := range []string{"corrupt", "wrong mode"} {
+		t.Run(kind, func(t *testing.T) {
+			path := brokenVault(t, kind)
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				http.Error(w, "unused", http.StatusInternalServerError)
+			}))
+			t.Cleanup(srv.Close)
+			ws := credsWorkspace(t, `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"`+
+				srv.URL+`","model":"m","context_window":8192}}}}`)
+			cmd := exec.Command(os.Args[0], "-test.run=^TestVaultRefusalHelper$")
+			cmd.Env = append(os.Environ(), "ABHED_VAULT_HELPER_WS="+ws, "ABHED_VAULT_HELPER_HOME="+os.Getenv("HOME"))
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("abhed -p did not exit 1 (%v):\n%s", err, out)
+			}
+			wantRefusal(t, "abhed -p", string(out), path)
+			if calls.Load() != 0 {
+				t.Fatal("the refused run reached the model")
+			}
+		})
+	}
+}
+
+// abhed secret set refuses a value too short to redact without matching
+// ordinary text, and stores one long enough.
+func TestSecretSetRefusesAShortValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	t.Setenv("ABHED_SECRETS_FILE", path)
+	set := func(value string) (int, string) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.WriteString(value + "\n")
+		_ = w.Close()
+		old := os.Stdin
+		os.Stdin = r
+		defer func() { os.Stdin = old }()
+		return resolveStderr(t, func() int { return secretCmd([]string{"set", "FAKE_TOKEN"}) })
+	}
+	if code, msg := set("short"); code == 0 || !strings.Contains(msg, "at least 8") {
+		t.Fatalf("a 5-character value was stored (%d): %s", code, msg)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("the refused value reached the store")
+	}
+	if code, msg := set("long-enough"); code != 0 {
+		t.Fatalf("an 11-character value was refused (%d): %s", code, msg)
 	}
 }

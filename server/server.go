@@ -157,7 +157,7 @@ type Options struct {
 	Adapter  model.Adapter
 	Registry *tools.Registry
 	// Redact rewrites every event payload before it is written. Nil, a typed nil
-	// included, means the operator's secrets store; unloadable, it withholds all.
+	// included, means the operator's secrets store, read again for each session.
 	Redact agent.Redactor
 	// SkillListing is the rendered skill index for the system prompt. The
 	// server takes the rendered string rather than the registry, because the
@@ -315,18 +315,29 @@ type liveSession struct {
 	mu       sync.Mutex
 }
 
+// sessionRedactor is the redactor a session starts with: a store read again now
+// where Redact can do so, withholding every payload if it cannot be loaded.
+func (s *Server) sessionRedactor() agent.Redactor {
+	live, ok := s.opts.Redact.(interface {
+		Load() (*secrets.Redactor, error)
+	})
+	if !ok {
+		return s.opts.Redact
+	}
+	red, err := live.Load()
+	if err != nil {
+		s.log.Error("the session's event payloads will be withheld", "err", err)
+		return secrets.Withholding()
+	}
+	return red
+}
+
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
 	if v := reflect.ValueOf(opts.Redact); !v.IsValid() || v.Kind() == reflect.Pointer && v.IsNil() {
-		// A store that cannot be loaded gives a redactor that withholds every payload.
-		red, err := secrets.Default().LoadRedactor()
-		if err != nil {
-			opts.Logger.Error("every event payload will be withheld", "err", err)
-			red = secrets.Default().Redactor()
-		}
-		opts.Redact = red
+		opts.Redact = secrets.Default().Live()
 	}
 	st := opts.Store
 	// The tap wraps only what the loop writes through. Optional interfaces
@@ -937,7 +948,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 
 	rec := agent.NewRecorder(s.store, sessionID, "")
-	rec.Redact = s.opts.Redact
+	rec.Redact = s.sessionRedactor()
 	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
 	if err != nil {
 		return "", err
@@ -1040,7 +1051,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	sessionID := newSessionID()
 	rec := agent.NewRecorder(s.store, sessionID, "")
-	rec.Redact = s.opts.Redact
+	rec.Redact = s.sessionRedactor()
 	// Built before the row is written, so a failure leaves no empty session listed.
 	live, _, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
 	if err != nil {
@@ -1242,7 +1253,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	registry, skillReg, _ := s.state.snapshot()
 	recorder := agent.NewRecorder(s.store, id, "")
-	recorder.Redact = s.opts.Redact
+	recorder.Redact = s.sessionRedactor()
 	recorder.Advance(events[len(events)-1].Seq)
 
 	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant}

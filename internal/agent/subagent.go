@@ -259,9 +259,10 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		approver = AutoApprove{Yes: false}
 	}
 	rec := NewRecorder(f.Store, sessionID, parentID)
+	// A child redacts as its parent's session does; the factory's own is for a
+	// spawn with no parent.
 	rec.Redact = f.Redact
-	// A factory with no redactor of its own redacts as the parent does, never less.
-	if rec.redactor() == nil && parent != nil {
+	if parent != nil && parent.rec.redactor() != nil {
 		rec.Redact = parent.rec.redactor()
 	}
 	if parent != nil {

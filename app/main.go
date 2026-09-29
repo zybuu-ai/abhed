@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zybuu-ai/abhed/auth"
@@ -1470,7 +1471,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Config:       cfg,
 		Adapter:      buildAdapter(provider),
 		Registry:     registry,
-		Redact:       openVault().Redactor(),
+		Redact:       openVault().Live(),
 		SkillListing: skillListing,
 		SkillDirs:    skillDirs(cfg),
 		Store:        eventStore,
@@ -3360,6 +3361,10 @@ func secretCmd(args []string) int {
 				return fail(err)
 			}
 			value = strings.TrimRight(string(b), "\r\n")
+		}
+		// A short value would also match ordinary text and be redacted there.
+		if n := utf8.RuneCountInString(value); n > 0 && n < secrets.MinLength {
+			return fail(fmt.Errorf("the value is %d characters; a secret must be at least %d, or redaction would match ordinary text", n, secrets.MinLength))
 		}
 		if err := vault.Set(args[1], value); err != nil {
 			return fail(err)
