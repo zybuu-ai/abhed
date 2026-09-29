@@ -31,10 +31,13 @@ type pendingApproval struct {
 	// DurableID the store's row for it, when the store holds approvals.
 	RequestID string
 	DurableID string
-	Tool      string
-	Args      json.RawMessage
-	Reason    string
-	Scope     string
+	// Subagent names the subagent asking, "" for the session's own ask.
+	Subagent string
+	Since    time.Time
+	Tool     string
+	Args     json.RawMessage
+	Reason   string
+	Scope    string
 
 	state    askState
 	approved bool
@@ -243,6 +246,8 @@ func (l *liveSession) stateAfterAsk(prior string) string {
 	switch {
 	case l.ran != nil:
 		return "running"
+	case l.Loop != nil && l.Loop.Background.Live() > 0:
+		return "background"
 	case prior == "idle" || prior == "done":
 		return prior
 	}
@@ -268,6 +273,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	}
 
 	p := &pendingApproval{RequestID: agent.RequestIDOf(ctx), Tool: tool, Args: args, Reason: res.Reason, Scope: offer,
+		Subagent: agent.SubagentOf(ctx), Since: time.Now().UTC(),
 		ready: make(chan struct{}), answer: make(chan struct{}), final: make(chan struct{})}
 	l.mu.Lock()
 	prior := l.State

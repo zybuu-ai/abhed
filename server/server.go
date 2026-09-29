@@ -107,7 +107,7 @@ const nodeStale = 2 * time.Minute
 
 // nodeHeartbeat refreshes the claim well inside nodeStale, so a slow write or
 // a missed tick does not make a healthy node look dead.
-const nodeHeartbeat = 30 * time.Second
+var nodeHeartbeat = 30 * time.Second
 
 // Mount registers routes on the server's mux. It runs after the built-in
 // routes and before the middleware wraps the mux, so the handlers it
@@ -267,7 +267,7 @@ type liveSession struct {
 	Cancel  context.CancelFunc
 	Created time.Time
 	Prompt  string
-	State   string // running | waiting_approval | idle | done
+	State   string // running | waiting_approval | background | idle | done
 	// Reason is how the last run ended, which the session list shows for done.
 	Reason agent.TerminalReason
 	Turns  int // exchanges in this conversation
@@ -321,6 +321,9 @@ type liveSession struct {
 	// fallback is a resumed session's move to the default because its recorded
 	// provider no longer resolves, written by its next turn; guarded by claimMu.
 	fallback *agent.ModelSwitched
+	// beatStop ends the heartbeat that keeps this node's claim on the session
+	// fresh while a run or a background child is live; guarded by mu.
+	beatStop func()
 	mu       sync.Mutex
 }
 
@@ -408,6 +411,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/pty/{pty}/resize", s.resizePTY)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
+	mux.HandleFunc("GET /v1/sessions/{id}/tasks", s.listTasks)
+	mux.HandleFunc("POST /v1/sessions/{id}/tasks/{task}/cancel", s.cancelTask)
+	mux.HandleFunc("POST /v1/sessions/{id}/wake", s.setWake)
 	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
@@ -991,8 +997,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 	s.running[sessionID] = live
 	s.mu.Unlock()
-	s.claimNode(ctx, sessionID)
-	stopBeat := s.heartbeatNode(runCtx, sessionID)
+	s.holdNode(live)
 
 	go func() {
 		defer cancel()
@@ -1001,8 +1006,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		for live.settle(runCtx, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
-		stopBeat()
-		s.releaseNode(sessionID)
+		s.releaseNodeIfQuiet(live)
 		if spec.OnEnd != nil {
 			spec.OnEnd(string(reason), err)
 		}
@@ -1174,6 +1178,15 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	budget := toolset.Budget(s.opts.Config)
 	loop := agent.NewLoop(adapter, s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec),
 		pol, approver, sess, rec, cfg)
+	// Background children belong to the session. An unattended run has
+	// nobody to come back to it, so its children are joined: it waits for
+	// them, and its end, and OnEnd, come after theirs.
+	ceiling := agent.WakeNotify
+	if spec.Unattended {
+		ceiling = agent.WakeOff
+	}
+	agent.NewBackground(loop, toolset.BackgroundPolicy(s.opts.Config, ceiling))
+	loop.Background.SetHooks(agent.BackgroundHooks{Idle: func(ev agent.IdleEvent) { s.onIdle(live, ev) }})
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget
@@ -1208,7 +1221,7 @@ func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, ada
 	// reaches the next session, never this one mid-conversation.
 	f := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol, Session: sess, Budget: budget, Config: cfg,
-		Workspace: sess.Root, Redact: rec.Redact,
+		Workspace: sess.Root, Redact: rec.Redact, Background: true,
 		Store:       s.subagentStore(sessionID, spec, mode),
 		Definitions: s.state.agentDefs(),
 		// Only a provider this server offers sessions, by name, as the
@@ -1344,6 +1357,9 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if end, ok := agent.LastEnd(events); ok {
 		loop.CarryUsage(end)
 	}
+	// Results a background child left that the conversation never took,
+	// such as one that finished before a drain, arrive at the next boundary.
+	loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
 	live.Turns = rec.Turns
 	// Idle until the caller's prompt starts it: postMessage treats a running
 	// session as one to steer, and there is nothing running yet to steer.
@@ -1517,6 +1533,7 @@ func (s *Server) catchUp(live *liveSession, events []agent.Event) error {
 	live.Loop.Recorder.Advance(events[len(events)-1].Seq)
 	live.Loop.SetHistory(msgs, end.Turns)
 	live.Loop.CarryUsage(end)
+	live.Loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
 	live.priorEnd = priorEnd(events, store.SessionRecord{})
 	live.mu.Lock()
 	live.Turns = max(live.Turns, end.Turns)
@@ -1628,6 +1645,27 @@ type sessionSummary struct {
 	// known while the session is live here.
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	// Background counts the session's background tasks still running, and
+	// PendingAsk is an approval waiting on its owner, run or not.
+	Background int         `json:"background,omitempty"`
+	PendingAsk *pendingAsk `json:"pending_ask,omitempty"`
+}
+
+// pendingAsk is what the session list says of an approval that is waiting.
+type pendingAsk struct {
+	Tool     string    `json:"tool"`
+	Subagent string    `json:"subagent,omitempty"`
+	Since    time.Time `json:"since"`
+}
+
+// activity is a live session's background count and waiting approval, for
+// the list. The caller holds live.mu.
+func (l *liveSession) activity() (int, *pendingAsk) {
+	var ask *pendingAsk
+	if p := l.pending; p != nil {
+		ask = &pendingAsk{Tool: p.Tool, Subagent: p.Subagent, Since: p.Since}
+	}
+	return l.Loop.Background.Live(), ask
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
@@ -1655,6 +1693,8 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				if rec.EndedAt == nil {
 					state, reason = "running", ""
 				}
+				var bg int
+				var ask *pendingAsk
 				s.mu.RLock()
 				if live, found := s.running[rec.ID]; found {
 					live.mu.Lock()
@@ -1663,13 +1703,14 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 						prompt = live.Prompt
 					}
 					modelName, provider = live.model, live.provider
+					bg, ask = live.activity()
 					live.mu.Unlock()
 				}
 				s.mu.RUnlock()
 				out = append(out, sessionSummary{
 					ID: rec.ID, User: rec.User, Tenant: rec.Tenant,
 					Prompt: prompt, State: state, Reason: reason, Created: rec.StartedAt, Mode: rec.Mode,
-					Model: modelName, Provider: provider,
+					Model: modelName, Provider: provider, Background: bg, PendingAsk: ask,
 				})
 			}
 			WriteJSON(w, http.StatusOK, out)
@@ -1692,11 +1733,12 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		l.mu.Lock()
+		bg, ask := l.activity()
 		out = append(out, sessionSummary{
 			ID: l.ID, User: l.User, Tenant: l.Tenant,
 			Prompt: l.Prompt, State: l.State, Reason: listedReason(l.State, l.Reason),
 			Created: l.Created, Mode: string(l.Loop.Policy.Mode),
-			Model: l.model, Provider: l.provider,
+			Model: l.model, Provider: l.provider, Background: bg, PendingAsk: ask,
 		})
 		l.mu.Unlock()
 	}
@@ -1777,6 +1819,17 @@ func ownsSession(recTenant, recUser, tenant, user string) bool {
 
 // streamEvents serves the session's event stream over SSE, resumable via
 // Last-Event-ID so a dropped connection does not lose the session.
+// closesStream is the end after which a session makes no more events: one
+// with no background child still running. A run's end with children live
+// keeps the stream open for their results and the closing end.
+func closesStream(e agent.Event) bool {
+	if e.Type != agent.EvSessionEnded {
+		return false
+	}
+	var end agent.SessionEnded
+	return json.Unmarshal(e.Payload, &end) != nil || end.Background == 0
+}
+
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -1857,7 +1910,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			lastSeq = e.Seq
 			writeSSE(w, e)
-			ended = ended || e.Type == agent.EvSessionEnded
+			ended = ended || closesStream(e)
 		}
 		flusher.Flush()
 		return ended
@@ -2124,35 +2177,46 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 		return
 	}
-	live.takeOver()
-	live.State = "running"
 	live.Turns++
 	if live.Prompt == "" {
 		live.Prompt = req.Prompt // a workbench session is named by its first message
 	}
+	s.startRunLocked(live, "follow-up", func(ctx context.Context) (agent.TerminalReason, error) {
+		return live.Loop.RunMessage(ctx, msg)
+	})
+	started = true
+	WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
+}
+
+// startRunLocked starts a run on its own goroutine: a person's message or a
+// wake. The caller holds live.mu, has checked no run is live and the server
+// is not draining, and has the session claimed; this releases live.mu. One
+// path, so every run keeps the node's claim and settles the same way.
+func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx context.Context) (agent.TerminalReason, error)) {
+	live.takeOver()
+	live.State = "running"
 	live.ran = make(chan struct{})
 	ctx, cancelCause := context.WithCancelCause(context.Background())
 	cancel := func() { cancelCause(nil) }
 	live.cancel = cancel
 	live.cancelCause = cancelCause
 	live.mu.Unlock()
-	started = true
+	s.holdNode(live)
 
 	go func() {
 		defer cancel()
 		live.undo.BeginTurn()
-		reason, err := live.Loop.RunMessage(ctx, msg)
+		reason, err := start(ctx)
 		for live.settle(ctx, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
+		s.releaseNodeIfQuiet(live)
 		if err != nil {
-			s.log.Error("follow-up failed", "session", id, "error", err)
+			s.log.Error(what+" failed", "session", live.ID, "error", err)
 			return
 		}
-		s.log.Info("follow-up ended", "session", id, "reason", reason)
+		s.log.Info(what+" ended", "session", live.ID, "reason", reason)
 	}()
-
-	WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
 }
 
 // settle ends a run, unless a message was queued after the loop last looked
@@ -2164,6 +2228,10 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 		return true
 	}
 	l.State = "done"
+	// Children still running keep the session going, and its stream open.
+	if l.Loop.Background.Live() > 0 {
+		l.State = "background"
+	}
 	l.Reason = reason
 	if err != nil && reason == "" {
 		l.Reason = agent.TermError
@@ -2173,6 +2241,48 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 		l.ran = nil
 	}
 	return false
+}
+
+// onIdle takes what a session's background work did while no run was live:
+// once it has all ended the session is done, and this node lets it go.
+func (s *Server) onIdle(live *liveSession, ev agent.IdleEvent) {
+	if !ev.Settled {
+		return
+	}
+	live.mu.Lock()
+	if live.ran == nil && live.State == "background" {
+		live.State = "done"
+	}
+	live.mu.Unlock()
+	s.releaseNodeIfQuiet(live)
+}
+
+// holdNode keeps this node's claim on the session fresh while it has a run
+// or a background child live, so routing and answers from another node
+// find it; once for each stretch of activity.
+func (s *Server) holdNode(live *liveSession) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.beatStop != nil {
+		return
+	}
+	s.claimNode(context.Background(), live.ID)
+	live.beatStop = s.heartbeatNode(context.Background(), live.ID)
+}
+
+// releaseNodeIfQuiet gives the claim up once no run and no child is live.
+func (s *Server) releaseNodeIfQuiet(live *liveSession) {
+	live.mu.Lock()
+	stop := live.beatStop
+	quiet := stop != nil && live.ran == nil && live.Loop.Background.Live() == 0
+	if quiet {
+		live.beatStop = nil
+	}
+	live.mu.Unlock()
+	if quiet {
+		stop()
+		s.releaseNode(live.ID)
+	}
 }
 
 // notRunningHere answers for a session this process is not running: 421 with
@@ -2218,6 +2328,57 @@ func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// listTasks answers the owner with the session's background tasks.
+func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
+	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	if !ok {
+		s.notRunningHere(w, r, r.PathValue("id"))
+		return
+	}
+	tasks := live.Loop.Background.Tasks()
+	if tasks == nil {
+		tasks = []agent.TaskInfo{}
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"tasks": tasks, "wake": live.Loop.Background.Mode()})
+}
+
+// cancelTask stops one of the session's background tasks for its owner, as
+// a stop by the person.
+func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request) {
+	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	if !ok {
+		s.notRunningHere(w, r, r.PathValue("id"))
+		return
+	}
+	if !live.Loop.Background.Cancel(r.PathValue("task"), agent.TermUserInterrupt) {
+		WriteError(w, http.StatusNotFound, "no such running task in this session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setWake is the owner's switch for what a background result does while
+// the session is idle, up to what this server allows.
+func (s *Server) setWake(w http.ResponseWriter, r *http.Request) {
+	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	if !ok {
+		s.notRunningHere(w, r, r.PathValue("id"))
+		return
+	}
+	var req struct {
+		Wake string `json:"wake"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := live.Loop.Background.SetWake(agent.WakeMode(req.Wake), agent.ByUser); err != nil {
+		WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{"wake": req.Wake})
+}
+
 func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
@@ -2232,6 +2393,8 @@ func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 		c()
 	}
 	live.Cancel()
+	// Stop means stop: every background child too, running or idle.
+	live.Loop.Background.CancelAll(agent.TermUserInterrupt)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -3072,7 +3235,11 @@ const turnEndWait = 5 * time.Second
 func (s *Server) cancelRunning() {
 	s.mu.Lock()
 	var ran []chan struct{}
+	var withChildren []*liveSession
 	for _, live := range s.running {
+		if live.Loop != nil && live.Loop.Background.Live() > 0 {
+			withChildren = append(withChildren, live)
+		}
 		live.mu.Lock()
 		if live.ran != nil {
 			ran = append(ran, live.ran)
@@ -3084,6 +3251,18 @@ func (s *Server) cancelRunning() {
 		}
 	}
 	s.mu.Unlock()
+	// Children are goroutines holding model streams; they cannot move to
+	// another node. They end as shutdown, and each session records its
+	// closing end, so another node may claim it and rebuild their results.
+	var closing sync.WaitGroup
+	for _, live := range withChildren {
+		closing.Add(1)
+		go func() {
+			defer closing.Done()
+			live.Loop.Background.Close(agent.TermShutdown)
+		}()
+	}
+	defer closing.Wait()
 	deadline := time.NewTimer(turnEndWait)
 	defer deadline.Stop()
 	for _, ch := range ran {

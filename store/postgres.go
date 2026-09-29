@@ -343,12 +343,19 @@ func (p *Postgres) finalizeSession(ctx context.Context, ev agent.Event) {
 		v := int64(ended.ContextWindow)
 		ctxWindow = &v
 	}
+	// An end with background children still running is not the session's
+	// end: the row stays open, so no other node claims it while they run
+	// here. The closing end, with none left, releases it.
+	var endedAt *time.Time
+	if ended.Background == 0 {
+		endedAt = &ev.CreatedAt
+	}
 	_, _ = p.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = $2, terminal_reason = $3, turns = $4,
 		       tokens_in = $5, tokens_out = $6, tokens_cached = $7, compactions = $8,
 		       context_tokens = $9, context_window = $10
 		WHERE id = $1`,
-		ev.SessionID, ev.CreatedAt, string(ended.Reason), ended.Turns,
+		ev.SessionID, endedAt, string(ended.Reason), ended.Turns,
 		ended.TokensIn, ended.TokensOut, ended.TokensCached, ended.Compactions,
 		ctxTokens, ctxWindow)
 }

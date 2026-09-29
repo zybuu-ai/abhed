@@ -69,8 +69,11 @@ func (d *durableMem) GetSession(ctx context.Context, id string) (store.SessionRe
 }
 func (d *durableMem) Append(ev agent.Event) error {
 	if ev.Type == agent.EvSessionEnded {
+		// As Postgres: an end with background children running keeps the row open.
+		var end agent.SessionEnded
+		_ = json.Unmarshal(ev.Payload, &end)
 		d.mu.Lock()
-		d.ended[ev.SessionID] = true
+		d.ended[ev.SessionID] = end.Background == 0
 		d.mu.Unlock()
 	}
 	return d.MemStore.Append(ev)
