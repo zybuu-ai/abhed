@@ -468,7 +468,82 @@ func TestApplyTargetLeavesOutQueryAndExplainsFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = ApplyTool{M: NewManager(Config{Kubeconfig: bad})}.Target(newSession(t), json.RawMessage(`{"action":"delete","context":"ctx"}`))
-	if !strings.Contains(got, "could not be opened") || strings.Contains(got, "bad-kube-tok-33") {
+	// The model's context name is quoted, so it cannot read as Abhed's words.
+	if !strings.Contains(got, `context "ctx" could not be opened`) || strings.Contains(got, "bad-kube-tok-33") {
 		t.Fatalf("target for a broken kubeconfig: %q", got)
+	}
+}
+
+// Parallel reads share one kubeconfig client. On first use they must run the
+// exec helper once, under the lock, and each send the token it produced; run
+// with -race, this also catches an unguarded bearer.
+func TestExecCredentialFirstUseIsSerialized(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	helper := filepath.Join(dir, "helper.sh")
+	script := "#!/bin/sh\necho ran >> '" + marker + "'\nsleep 0.2\n" +
+		`echo '{"status":{"token":"exec-tok-6d4"}}'` + "\n"
+	if err := os.WriteFile(helper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var bad atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer exec-tok-6d4" {
+			bad.Add(1)
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	defer srv.Close()
+	c := &Cluster{Server: srv.URL, execCfg: &execConfig{Command: helper}, client: &http.Client{}}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Do(context.Background(), "GET", "/version", nil); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	data, _ := os.ReadFile(marker)
+	if n := strings.Count(string(data), "ran"); n != 1 {
+		t.Fatalf("the helper ran %d times for eight first requests, want once", n)
+	}
+	if bad.Load() != 0 {
+		t.Fatalf("%d requests went without the helper's token", bad.Load())
+	}
+}
+
+// A request that cannot reach the cluster is reported without the request
+// URL, whose query may hold a token the kubeconfig put in the server.
+func TestUnreachableErrorCarriesNoQuery(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // nothing listens there now
+	c := &Cluster{Server: "http://" + addr + "/?access_token=q-net-44", client: &http.Client{Timeout: 5 * time.Second}}
+	for _, call := range []func() error{
+		func() error { _, err := c.Do(context.Background(), "GET", "/version", nil); return err },
+		func() error {
+			_, err := c.doPatch(context.Background(), "/x", []byte(`{}`), "application/merge-patch+json")
+			return err
+		},
+	} {
+		err := call()
+		if err == nil || !strings.Contains(err.Error(), "cannot reach the cluster at http://"+addr) {
+			t.Fatalf("err = %v", err)
+		}
+		if strings.Contains(err.Error(), "q-net-44") {
+			t.Fatalf("the error repeats the server's query: %v", err)
+		}
 	}
 }

@@ -20,9 +20,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -433,6 +435,16 @@ func (c *Cluster) refreshExecToken() error {
 
 // ---------------------------------------------------------------- requests
 
+// unreachable reports a failed request by what went wrong, without the
+// request URL, whose query may carry a token the kubeconfig wrote there.
+func (c *Cluster) unreachable(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	return fmt.Errorf("cannot reach the cluster at %s: %w", displayURL(c.Server), err)
+}
+
 // credential returns the bearer to send, running the exec helper first when
 // there is none yet or it is about to expire.
 func (c *Cluster) credential() (string, error) {
@@ -474,7 +486,7 @@ func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]b
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", displayURL(c.Server), err)
+		return nil, c.unreachable(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -523,7 +535,7 @@ func (c *Cluster) doPatch(ctx context.Context, path string, body []byte, content
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach the cluster at %s: %w", displayURL(c.Server), err)
+		return nil, c.unreachable(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

@@ -199,7 +199,7 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 		if name == "" {
 			name = "(current)"
 		}
-		return fmt.Sprintf("kubeconfig context %s could not be opened, so the call will fail: %v", name, err)
+		return fmt.Sprintf("kubeconfig context %q could not be opened, so the call will fail: %v", name, err)
 	}
 	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential",
 		c.Name, displayURL(c.Server))
