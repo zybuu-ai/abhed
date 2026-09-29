@@ -45,7 +45,7 @@ func DecodeArgs(raw json.RawMessage) (map[string]any, error) {
 	dec.UseNumber()
 	v, err := strictValue(dec, 0)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrMalformedArgs, err)
+		return nil, fmt.Errorf("%w: %w", ErrMalformedArgs, err)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: data after the arguments object", ErrMalformedArgs)
@@ -67,47 +67,47 @@ func strictValue(dec *json.Decoder, depth int) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch d := tok.(type) {
-	case json.Delim:
-		switch d {
-		case '{':
-			m := map[string]any{}
-			folded := map[string]string{}
-			for dec.More() {
-				kt, err := dec.Token()
-				if err != nil {
-					return nil, err
-				}
-				k, _ := kt.(string)
-				if _, dup := m[k]; dup {
-					return nil, fmt.Errorf("duplicate key %q", k)
-				}
-				fk := FoldKey(k)
-				if prev, clash := folded[fk]; clash {
-					return nil, fmt.Errorf("keys %q and %q differ only in case", prev, k)
-				}
-				folded[fk] = k
-				if m[k], err = strictValue(dec, depth+1); err != nil {
-					return nil, err
-				}
-			}
-			_, err := dec.Token()
-			return m, err
-		case '[':
-			a := []any{}
-			for dec.More() {
-				v, err := strictValue(dec, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				a = append(a, v)
-			}
-			_, err := dec.Token()
-			return a, err
-		}
-		return nil, fmt.Errorf("unexpected %v", d)
+	d, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return tok, nil
 	}
-	return tok, nil
+	switch d {
+	case '{':
+		m := map[string]any{}
+		folded := map[string]string{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			k, _ := kt.(string)
+			if _, dup := m[k]; dup {
+				return nil, fmt.Errorf("duplicate key %q", k)
+			}
+			fk := FoldKey(k)
+			if prev, clash := folded[fk]; clash {
+				return nil, fmt.Errorf("keys %q and %q differ only in case", prev, k)
+			}
+			folded[fk] = k
+			if m[k], err = strictValue(dec, depth+1); err != nil {
+				return nil, err
+			}
+		}
+		_, err := dec.Token()
+		return m, err
+	case '[':
+		a := []any{}
+		for dec.More() {
+			v, err := strictValue(dec, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			a = append(a, v)
+		}
+		_, err := dec.Token()
+		return a, err
+	}
+	return nil, fmt.Errorf("unexpected %v", d)
 }
 
 // FoldKey folds a key the way encoding/json matches struct fields, so two
@@ -176,7 +176,7 @@ func CanonicalArgs(t Tool, raw json.RawMessage) (json.RawMessage, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(m); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrMalformedArgs, err)
+		return nil, fmt.Errorf("%w: %w", ErrMalformedArgs, err)
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
