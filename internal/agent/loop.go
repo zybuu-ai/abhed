@@ -936,8 +936,14 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		// Recorded like any refused call, so the record accounts for every
 		// call the model made, not only those naming a real tool.
 		why := fmt.Sprintf("unknown tool %q", call.Name)
+		args, raw := call.Args, ""
+		// A near miss for a tool that takes credentials may carry one.
+		if l.nearCredentialTool(call.Name) {
+			args, raw = json.RawMessage(`{}`), WithheldLookalikeArgs
+			c.Args = args
+		}
 		if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
-			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why, Via: viaOf(ctx),
+			CallID: call.ID, Tool: call.Name, Args: args, RawArgs: raw, Reason: why, Via: viaOf(ctx),
 		}); err != nil {
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
@@ -1091,6 +1097,55 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	}
 	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
+}
+
+// WithheldLookalikeArgs stands in for the arguments of an unknown call
+// whose name is close to a tool that takes credentials.
+const WithheldLookalikeArgs = "[withheld: unknown credential tool]"
+
+// credentialTools are the built-in tools that take credentials, matched even
+// where the deployment has not enabled them.
+var credentialTools = []string{"k8s_login", "ssh_connect"}
+
+// nearCredentialTool reports whether an unknown tool name is, ignoring case,
+// within one edit of a tool whose arguments name secrets.
+func (l *Loop) nearCredentialTool(name string) bool {
+	names := append([]string(nil), credentialTools...)
+	if l.Tools != nil {
+		for _, n := range l.Tools.Names() {
+			if t, ok := l.Tools.Get(n); ok {
+				if _, secret := t.(tools.SecretArgs); secret {
+					names = append(names, n)
+				}
+			}
+		}
+	}
+	got := []rune(tools.FoldKey(name))
+	for _, n := range names {
+		if withinOneEdit(got, []rune(tools.FoldKey(n))) {
+			return true
+		}
+	}
+	return false
+}
+
+// withinOneEdit reports whether a becomes b by at most one insertion,
+// deletion or substitution.
+func withinOneEdit(a, b []rune) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	if len(b)-len(a) > 1 {
+		return false
+	}
+	i := 0
+	for i < len(a) && a[i] == b[i] {
+		i++
+	}
+	if len(a) == len(b) {
+		return string(a[i+min(1, len(a)-i):]) == string(b[i+min(1, len(b)-i):])
+	}
+	return string(a[i:]) == string(b[i+1:])
 }
 
 // refuseArgs records a call whose arguments could not be read one way only.

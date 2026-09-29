@@ -229,6 +229,9 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
 		return 0, err
 	}
+	// A login made after the fork point would outlive the turns that made it,
+	// so a fork starts with none; the conversation logs in again.
+	l.Session.ResetScoped()
 	l.Restore(msgs)
 	return len(msgs), nil
 }
