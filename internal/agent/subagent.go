@@ -103,6 +103,12 @@ type SubagentRequest struct {
 	// parent's workspace — a git worktree, for parallel work that must not
 	// collide. The child's file and shell boundary is that directory.
 	Workspace string
+
+	// sessionID, when set, is the child's session id, chosen by the caller.
+	sessionID string
+	// settle, when set, runs once a background child has ended and returns
+	// what its notice says about the worktree it worked in.
+	settle func(context.Context) string
 }
 
 func (Task) Name() string  { return "task" }
@@ -289,6 +295,30 @@ type SessionCreator interface {
 const MaxSummaryChars = 8000
 
 func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (string, error) {
+	c, err := f.prepare(ctx, req, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	summary, _, err := c.execute(ctx)
+	return summary, err
+}
+
+// child is a subagent ready to run: its loop is built and its spawn recorded.
+type child struct {
+	sub       *Loop
+	parent    *parentLink
+	req       SubagentRequest
+	sessionID string
+	adapter   model.Adapter
+	provider  string
+	// extra goes on both its spawned and returned events, such as a
+	// background task's id.
+	extra map[string]any
+}
+
+// prepare settles everything a spawn needs and records it. reserve runs just
+// before the spawn is counted, and may refuse it.
+func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extra map[string]any, reserve func() error) (*child, error) {
 	parent, _ := ctx.Value(parentKey{}).(*parentLink)
 	depth, adapter := f.Depth, f.Adapter
 	if parent != nil {
@@ -303,11 +333,11 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	// have, refuses the call with nothing spawned.
 	def, found := f.Definitions.Get(req.AgentType)
 	if !found {
-		return "", fmt.Errorf("unknown agent type %q; available: %s", req.AgentType, strings.Join(f.Definitions.Names(), ", "))
+		return nil, fmt.Errorf("unknown agent type %q; available: %s", req.AgentType, strings.Join(f.Definitions.Names(), ", "))
 	}
 	registry, err := childTools(f.Tools, def)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	// The model is resolved before a spawn is counted too, and a model that
 	// cannot be had refuses the spawn: a child never runs on another model
@@ -318,28 +348,36 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	}
 	if name := childModel(req.Model, def.Model); name != "" {
 		if err := ValidModelName(name); err != nil {
-			return "", err
+			return nil, err
 		}
 		if f.Models == nil {
-			return "", fmt.Errorf("model %q was asked for, and this agent offers no model choice; omit model to use yours", name)
+			return nil, fmt.Errorf("model %q was asked for, and this agent offers no model choice; omit model to use yours", name)
 		}
 		a, err := f.Models(name)
 		if err != nil {
-			return "", fmt.Errorf("model %q is not available: %w", name, err)
+			return nil, fmt.Errorf("model %q is not available: %w", name, err)
 		}
 		adapter, provider = a, name
 	}
-	if f.Budget != nil {
-		if !f.Budget.AllowNested && depth > 0 {
-			return "", fmt.Errorf(
-				"nested subagents are disabled. Do this work directly rather than delegating again")
+	if f.Budget != nil && !f.Budget.AllowNested && depth > 0 {
+		return nil, fmt.Errorf(
+			"nested subagents are disabled. Do this work directly rather than delegating again")
+	}
+	if reserve != nil {
+		if err := reserve(); err != nil {
+			return nil, err
 		}
+	}
+	if f.Budget != nil {
 		if err := f.Budget.TryReserveSubagent(); err != nil {
-			return "", fmt.Errorf("cannot spawn subagent: %w. Complete the task with the context you have", err)
+			return nil, fmt.Errorf("cannot spawn subagent: %w. Complete the task with the context you have", err)
 		}
 	}
 
-	sessionID := newID()
+	sessionID := req.sessionID
+	if sessionID == "" {
+		sessionID = newID()
+	}
 	// A durable store requires the session row before any event references it.
 	// Without this a subagent's first event fails the foreign key and the whole
 	// delegation errors out — which only shows up once Postgres is configured.
@@ -349,7 +387,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 			parentSession = parent.rec.sessionID
 		}
 		if err := creator.CreateSubagentSession(ctx, sessionID, parentSession, req.Description); err != nil {
-			return "", fmt.Errorf("could not record subagent session: %w", err)
+			return nil, fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
 	// The child asks whoever the parent asks: the person at the prompt, or the
@@ -397,7 +435,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	workspace, session := f.Workspace, f.Session
 	if req.Workspace != "" {
 		if session, err = tools.NewSession(req.Workspace); err != nil {
-			return "", fmt.Errorf("subagent workspace: %w", err)
+			return nil, fmt.Errorf("subagent workspace: %w", err)
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
@@ -450,53 +488,57 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	if provider != "" {
 		spawned["provider"] = provider
 	}
+	for k, v := range extra {
+		spawned[k] = v
+	}
 	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
 	parent.record(EvSubagentSpawned, ActorAgent, spawned)
+	return &child{sub: sub, parent: parent, req: req, sessionID: sessionID,
+		adapter: adapter, provider: provider, extra: extra}, nil
+}
 
-	reason, err := sub.Run(ctx, req.Prompt)
-	usage := sub.Usage()
-
-	if err != nil {
-		failed := map[string]any{
-			"description": req.Description, "session": sessionID, "reason": string(TermError),
-			"turns": usage.Turns, "tokens_in": usage.InputTokens, "tokens_out": usage.OutputTokens,
-			"model": adapter.Profile().Name,
-		}
-		if provider != "" {
-			failed["provider"] = provider
-		}
-		parent.record(EvSubagentReturn, ActorAgent, failed)
-		return "", fmt.Errorf("subagent failed: %w", err)
+// execute runs a prepared child to its end, records its return in both
+// records, and gives back its summary as the parent should read it.
+func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
+	reason, err := c.sub.Run(ctx, c.req.Prompt)
+	usage := c.sub.Usage()
+	returned := map[string]any{
+		"description": c.req.Description,
+		"session":     c.sessionID,
+		"reason":      string(reason),
+		"turns":       usage.Turns,
+		"tokens_in":   usage.InputTokens,
+		"tokens_out":  usage.OutputTokens,
+		"model":       c.adapter.Profile().Name,
+	}
+	if c.provider != "" {
+		returned["provider"] = c.provider
+	}
+	for k, v := range c.extra {
+		returned[k] = v
 	}
 
-	summary := lastAssistantMessage(sub.Messages())
+	if err != nil {
+		returned["reason"] = string(TermError)
+		c.parent.record(EvSubagentReturn, ActorAgent, returned)
+		return "", TermError, fmt.Errorf("subagent failed: %w", err)
+	}
+
+	summary := lastAssistantMessage(c.sub.Messages())
 	if strings.TrimSpace(summary) == "" {
 		summary = fmt.Sprintf("(subagent ended with %s and produced no summary)", reason)
 	}
 	if len(summary) > MaxSummaryChars {
 		summary = summary[:MaxSummaryChars] + "\n\n[summary truncated]"
 	}
-
-	returned := map[string]any{
-		"description":   req.Description,
-		"session":       sessionID,
-		"reason":        string(reason),
-		"turns":         usage.Turns,
-		"tokens_in":     usage.InputTokens,
-		"tokens_out":    usage.OutputTokens,
-		"summary_chars": len(summary),
-		"model":         adapter.Profile().Name,
-	}
-	if provider != "" {
-		returned["provider"] = provider
-	}
-	_, _ = rec.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
-	parent.record(EvSubagentReturn, ActorAgent, returned)
+	returned["summary_chars"] = len(summary)
+	_, _ = c.sub.Recorder.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
+	c.parent.record(EvSubagentReturn, ActorAgent, returned)
 
 	if reason != TermCompleted {
-		return summary + fmt.Sprintf("\n\n[subagent ended early: %s]", reason), nil
+		return summary + fmt.Sprintf("\n\n[subagent ended early: %s]", reason), reason, nil
 	}
-	return summary, nil
+	return summary, reason, nil
 }
 
 // childTools is the tool set a role gets, cut from the parent's registry at

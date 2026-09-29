@@ -100,6 +100,16 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			// Each model call is a new assistant turn, even one whose calls were all refused.
 			lastAssistant = nil
 
+		case EvSubagentNotice:
+			// A background result: the task_status call and its result, as the
+			// live conversation received them.
+			var n Notice
+			if json.Unmarshal(ev.Payload, &n) != nil || n.CallID == "" {
+				continue
+			}
+			msgs = append(msgs, noticeMessages(n)...)
+			lastAssistant = nil
+
 		case EvObservation:
 			var o Observation
 			if json.Unmarshal(ev.Payload, &o) != nil {
@@ -222,10 +232,12 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
 		return 0, err
 	}
-	l.Restore(msgs)
+	l.messages = msgs
 	return len(msgs), nil
 }
 

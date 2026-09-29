@@ -76,6 +76,10 @@ const (
 	// into the parent's record, so the person asked sees it where they are
 	// watching; see SubagentAsk. Its answer follows as subagent.action.
 	EvSubagentAsk EventType = "subagent.ask"
+	// EvSubagentNotice is a background child's result entering the
+	// conversation, recorded before it is applied; see Notice. Fork rebuilds
+	// it as a task_status call and its result.
+	EvSubagentNotice EventType = "subagent.notice"
 )
 
 type Actor string
@@ -120,12 +124,15 @@ const (
 	// TermDeadline: the run's own time limit passed, as the eval harness sets
 	// one. Nobody stopped it and the node did not go away.
 	TermDeadline TerminalReason = "deadline"
+	// TermWakeLimit: a wake run used its turns. The session goes on, and so
+	// do its background children.
+	TermWakeLimit TerminalReason = "wake_limit"
 )
 
 // ExitCode maps a terminal reason to a process exit code for headless runs.
 func (r TerminalReason) ExitCode() int {
 	switch r {
-	case TermCompleted:
+	case TermCompleted, TermWakeLimit:
 		return 0
 	case TermMaxTurns:
 		return 2
@@ -340,6 +347,15 @@ type SessionEnded struct {
 	// without knowing which model answered. Zero when the adapter does not
 	// report one, which is also when compaction never fires.
 	ContextWindow int `json:"context_window,omitempty"`
+
+	// Background is how many background children were still running when
+	// the run ended. A session with some is not over: a closing end with
+	// Settled follows once they have all ended.
+	Background int `json:"background,omitempty"`
+	// Settled marks the closing end recorded after background work finished.
+	Settled bool `json:"settled,omitempty"`
+	// Recovered marks an end written by reconciliation after a crash.
+	Recovered bool `json:"recovered,omitempty"`
 }
 
 // Todo is one item in the agent's task list.
