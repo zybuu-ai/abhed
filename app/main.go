@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zybuu-ai/abhed/auth"
@@ -235,6 +236,9 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 
 	provider, err := cfg.Provider()
 	if err != nil {
+		fail(err)
+	}
+	if err := vaultLoads(); err != nil {
 		fail(err)
 	}
 
@@ -1309,6 +1313,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	if err := vaultLoads(); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
@@ -1463,7 +1471,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Config:       cfg,
 		Adapter:      buildAdapter(provider),
 		Registry:     registry,
-		Redact:       openVault().Redactor(),
+		Redact:       openVault().Live(),
 		SkillListing: skillListing,
 		SkillDirs:    skillDirs(cfg),
 		Store:        eventStore,
@@ -1566,6 +1574,10 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		return 1
 	}
 	if err := evalAllowed(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err := vaultLoads(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
@@ -2767,6 +2779,12 @@ func (a *App) doctor(workspace string) int {
 		}
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	vaultErr := vaultLoads()
+	if vaultErr != nil {
+		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
+	} else if names := vaultNames(openVault()); len(names) > 0 {
+		fmt.Printf("secrets     %d stored in %s\n", len(names), openVault().Path())
+	}
 	if reg, _ := buildSkills(cfg); reg.Len() > 0 {
 		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
 			strings.Join(reg.Names(), ", "))
@@ -2926,6 +2944,10 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("ok\n  ran a command under the %s tier\n", sb.Tier())
 	}
 
+	if vaultErr != nil {
+		fmt.Println("\nNot ready: the secrets store cannot be loaded (see above), so no session will start.")
+		return 1
+	}
 	return doctorVerdict(os.Stdout, unknown)
 }
 
@@ -3264,12 +3286,13 @@ func printStoreStatus(pg *store.Postgres) {
 
 // openVault opens the secrets store. A missing file is an empty store, so a
 // deployment with no secrets pays nothing and needs no configuration.
-func openVault() *secrets.Store {
-	path, err := secrets.DefaultPath()
-	if err != nil {
-		path = ".abhed-secrets-unavailable"
-	}
-	return secrets.Open(path)
+func openVault() *secrets.Store { return secrets.Default() }
+
+// vaultLoads refuses a session whose secrets store exists but cannot be loaded,
+// since its values could not be redacted.
+func vaultLoads() error {
+	_, err := openVault().LoadRedactor()
+	return err
 }
 
 // vaultNames lists what the model may ask for. An unreadable store lists
@@ -3338,6 +3361,10 @@ func secretCmd(args []string) int {
 				return fail(err)
 			}
 			value = strings.TrimRight(string(b), "\r\n")
+		}
+		// A short value would also match ordinary text and be redacted there.
+		if n := utf8.RuneCountInString(value); n > 0 && n < secrets.MinLength {
+			return fail(fmt.Errorf("the value is %d characters; a secret must be at least %d, or redaction would match ordinary text", n, secrets.MinLength))
 		}
 		if err := vault.Set(args[1], value); err != nil {
 			return fail(err)

@@ -12,12 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // EnvFile names the environment variable that overrides the store's location.
@@ -46,19 +48,51 @@ func DefaultPath() (string, error) {
 
 func Open(path string) *Store { return &Store{path: path} }
 
+// Default opens the store at DefaultPath, the one the CLI uses. A path that
+// cannot be worked out names a file that never exists, so the store is empty.
+func Default() *Store {
+	path, err := DefaultPath()
+	if err != nil {
+		path = ".abhed-secrets-unavailable"
+	}
+	return Open(path)
+}
+
 // Path reports where the store lives.
 func (s *Store) Path() string { return s.path }
 
+// MaxFileSize bounds the store: far beyond any set of credentials.
+const MaxFileSize = 1 << 20
+
 func (s *Store) load() (map[string]string, error) {
-	data, err := os.ReadFile(s.path)
+	// Judged only on the open file, so what is checked is what is read.
+	f, err := openStore(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]string{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if info, err := os.Stat(s.path); err == nil && info.Mode().Perm()&0o077 != 0 {
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	switch {
+	case err != nil:
+		return nil, err
+	case !info.Mode().IsRegular():
+		return nil, fmt.Errorf("%s is not a regular file (%s)", s.path, info.Mode().Type())
+	case info.Mode().Perm()&0o077 != 0:
 		return nil, fmt.Errorf("%s is readable by others (mode %o); run chmod 600 on it", s.path, info.Mode().Perm())
+	case info.Size() == 0:
+		return nil, fmt.Errorf("%s is empty (0 bytes); an empty store is {} or no file at all", s.path)
+	case info.Size() > MaxFileSize:
+		return nil, fmt.Errorf("%s is %d bytes, over the %d a store may hold", s.path, info.Size(), MaxFileSize)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", s.path, err)
+	}
+	if len(data) > MaxFileSize {
+		return nil, fmt.Errorf("%s grew past %d bytes while it was read", s.path, MaxFileSize)
 	}
 	var m map[string]string
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -66,6 +100,18 @@ func (s *Store) load() (map[string]string, error) {
 	}
 	if m == nil {
 		m = map[string]string{}
+	}
+	return m, nil
+}
+
+// fixHint says how to repair a store that cannot be loaded.
+const fixHint = "Fix the file (a JSON object of NAME: value, chmod 600) or remove it and add the secrets again with `abhed secret set`"
+
+// loadFixable is load with the repair named when the store cannot be loaded.
+func (s *Store) loadFixable() (map[string]string, error) {
+	m, err := s.load()
+	if err != nil {
+		return nil, fmt.Errorf("the secrets store cannot be loaded: %w. %s", err, fixHint)
 	}
 	return m, nil
 }
@@ -95,7 +141,7 @@ func (s *Store) Set(name, value string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return err
 	}
@@ -107,7 +153,7 @@ func (s *Store) Set(name, value string) error {
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return err
 	}
@@ -119,7 +165,7 @@ func (s *Store) Remove(name string) error {
 func (s *Store) Names() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +183,7 @@ func (s *Store) Names() ([]string, error) {
 func (s *Store) Env(names []string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load()
+	m, err := s.loadFixable()
 	if err != nil {
 		return nil, err
 	}
@@ -158,17 +204,57 @@ func (s *Store) Env(names []string) ([]string, error) {
 // is replaced first, so a value that contains another is replaced whole.
 type Redactor struct {
 	pairs []pair
+	// broken marks a store that could not be loaded: everything is withheld.
+	broken bool
 }
 
-type pair struct{ needle, label string }
+type pair struct {
+	needle, label string
+	// short marks a value under MinLength, which leaves JSON keys alone.
+	short bool
+}
 
-// Redactor returns a redactor for the values stored now.
+// MinLength is the fewest characters `abhed secret set` accepts. A shorter value
+// stored before is still redacted, but not in JSON keys, whose structure it could break.
+const MinLength = 8
+
+// Redactor returns a redactor for the values stored now. A store that exists
+// but cannot be loaded gives one that withholds every payload; see LoadRedactor.
 func (s *Store) Redactor() *Redactor {
+	r, err := s.LoadRedactor()
+	if err != nil {
+		return &Redactor{broken: true}
+	}
+	return r
+}
+
+// Live redacts with the values stored when it was made, and Load reads the store
+// again, for a process that starts many sessions, such as a server.
+type Live struct {
+	*Redactor
+	store *Store
+}
+
+// Live returns a Live redactor over the store.
+func (s *Store) Live() *Live { return &Live{Redactor: s.Redactor(), store: s} }
+
+// Load reads the store again, as LoadRedactor does.
+func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
+
+// Withholding returns a redactor that withholds every payload.
+func Withholding() *Redactor { return &Redactor{broken: true} }
+
+// LoadRedactor is Redactor for a session about to start: a missing store is
+// empty, and one that exists but cannot be loaded is an error that names it.
+func (s *Store) LoadRedactor() (*Redactor, error) {
 	s.mu.Lock()
 	m, err := s.load()
 	s.mu.Unlock()
-	if err != nil || len(m) == 0 {
-		return &Redactor{}
+	if err != nil {
+		return nil, fmt.Errorf("refusing to start: the secrets store cannot be loaded, so stored values could not be redacted: %w. %s", err, fixHint)
+	}
+	if len(m) == 0 {
+		return &Redactor{}, nil
 	}
 	pairs := make([]pair, 0, len(m))
 	for name, value := range m {
@@ -182,12 +268,12 @@ func (s *Store) Redactor() *Redactor {
 		for _, n := range []string{value, escaped(value, true), escaped(value, false)} {
 			if !seen[n] {
 				seen[n] = true
-				pairs = append(pairs, pair{n, label})
+				pairs = append(pairs, pair{n, label, utf8.RuneCountInString(value) < MinLength})
 			}
 		}
 	}
 	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
-	return &Redactor{pairs: pairs}
+	return &Redactor{pairs: pairs}, nil
 }
 
 func escaped(v string, html bool) string {
@@ -202,6 +288,9 @@ func escaped(v string, html bool) string {
 // Redact returns the payload with every stored value replaced. A payload that
 // is not valid JSON is scanned the same way, literal by literal.
 func (r *Redactor) Redact(b []byte) []byte {
+	if r.broken {
+		return nil // not JSON, so every caller withholds the payload
+	}
 	if len(r.pairs) == 0 {
 		return b
 	}
@@ -221,9 +310,14 @@ func (r *Redactor) Redact(b []byte) []byte {
 		if j >= len(b) {
 			break
 		}
+		k := j + 1
+		for k < len(b) && (b[k] == ' ' || b[k] == '\t' || b[k] == '\n' || b[k] == '\r') {
+			k++
+		}
+		key := k < len(b) && b[k] == ':'
 		var text string
 		if json.Unmarshal(b[i:j+1], &text) == nil {
-			if red := r.text(text); red != text {
+			if red := r.replace(text, key); red != text {
 				enc, _ := json.Marshal(red)
 				out = append(append(out, b[last:i]...), enc...)
 				last = j + 1
@@ -237,8 +331,12 @@ func (r *Redactor) Redact(b []byte) []byte {
 	return append(out, b[last:]...)
 }
 
-func (r *Redactor) text(s string) string {
+// replace redacts one string; in a key, a short value is left alone.
+func (r *Redactor) replace(s string, key bool) string {
 	for _, p := range r.pairs {
+		if key && p.short {
+			continue
+		}
 		s = strings.ReplaceAll(s, p.needle, p.label)
 	}
 	return s

@@ -405,3 +405,46 @@ that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes
 `[redacted: output withheld]`.
 
+Every way of running a session redacts with the same store: the terminal, the
+server and the console, `abhed acp`, `abhed rpc`, `abhed resolve`, `abhed eval`,
+subagents and the [SDK](09-sdk.md). There is no setting that turns it off. In
+1.2.1 and earlier the SDK, and so `acp`, `rpc` and `resolve`, did not redact;
+see the changelog.
+
+A store that exists but cannot be loaded stops sessions from starting. That
+covers a file that is empty (0 bytes), not valid JSON, readable by others,
+unreadable, larger than 1 MiB, or not a regular file (a FIFO or a device). The
+terminal, `abhed serve`, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse to
+start with an error that names the file and the fix, and `abhed doctor` reports
+it as not ready. A missing store just means no secrets.
+
+`abhed serve` checks the store when it starts. If the store breaks while the
+server runs, each new or resumed session still starts, but every event payload
+it records is withheld, and the server logs why, until the file is fixed. The
+same happens for the next conversation in a terminal that is already running.
+
+The store is read when each session starts: each terminal conversation, each
+server session (new or resumed), each SDK agent and each eval task. A subagent
+redacts as its parent does. A secret stored during a session is redacted from
+the next session on, with no restart. `abhed acp` and `abhed rpc` read it once
+per agent: each ACP session and each rpc `start`.
+
+`abhed secret set` refuses a value under 8 characters, which would also match
+ordinary text. A shorter value stored before that rule is still redacted, but
+not in JSON object keys, so a value such as `type` cannot break the structure
+of an event.
+
+What redaction does not catch. It matches the exact value, in its JSON-escaped
+and HTML-escaped forms, and nothing else:
+
+- An encoded form is not caught: base64 (as in a Basic auth header that
+  `curl -v` prints), URL-encoded, hex, or a change of case.
+- Part of a value is not caught, such as a truncated one.
+- An error returned from a run, such as a provider's error body, is not
+  redacted.
+- Files are not redacted. What the agent writes to a file stays there, and
+  `abhed resolve` pushes it and quotes the diff in the pull request's
+  description.
+- The model's own text and calls go back to the same model unredacted in the
+  conversation. They are redacted everywhere else.
+

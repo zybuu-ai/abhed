@@ -259,7 +259,12 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		approver = AutoApprove{Yes: false}
 	}
 	rec := NewRecorder(f.Store, sessionID, parentID)
+	// A child redacts as its parent's session does; the factory's own is for a
+	// spawn with no parent.
 	rec.Redact = f.Redact
+	if parent != nil && parent.rec.redactor() != nil {
+		rec.Redact = parent.rec.redactor()
+	}
 	if parent != nil {
 		rec.tap = mirrorInto(parent, sessionID)
 	}

@@ -16,6 +16,9 @@
 // is set: Options may tighten what it sets and never loosen it, and New
 // returns an error for an option that would.
 //
+// Stored secrets become [secret:NAME] as on the command line, before the record,
+// OnEvent, the model, Approve or a returned answer sees them; nothing turns it off.
+//
 // One guarantee does NOT come with it by default: this package builds no
 // sandbox unless the managed configuration sets one or Options.Sandbox asks
 // for the configured one. Otherwise bash runs with the privileges of the
@@ -25,6 +28,7 @@
 package abhed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +43,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -139,6 +144,7 @@ type Agent struct {
 	host     *extension.Host
 	id       string
 	fwd      *forwarder
+	redact   *secrets.Redactor
 }
 
 // New builds an agent.
@@ -174,6 +180,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 
 	provider, err := cfg.Provider()
+	if err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	// The CLI's redactor; a store that exists but cannot be loaded refuses the session.
+	red, err := secrets.Default().LoadRedactor()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
@@ -244,6 +255,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)
 	rec := agent.NewRecorder(fwd, id, "")
+	rec.Redact = red
 
 	system := opts.SystemPrompt
 	if system == "" {
@@ -268,11 +280,12 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		tools.Glob{}, tools.Grep{}, bash, tools.Todo{},
 	)
 
-	loop := agent.NewLoop(adapter, registry, pol, approverFor(opts.Approve),
+	loop := agent.NewLoop(adapter, registry, pol, approverFor(opts.Approve, red),
 		sess, rec, loopCfg)
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 
-	a := &Agent{loop: loop, store: store, host: host, id: id, registry: registry, fwd: fwd}
+	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
+	a := &Agent{loop: loop, store: store, host: host, id: id, registry: loop.Tools, fwd: fwd, redact: red}
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -319,16 +332,18 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 	return nil
 }
 
-// RunStructured is RunJSON without the decode: the validated JSON as sent.
+// RunStructured is RunJSON without the decode: the validated JSON, with stored
+// secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
 	if err != nil {
 		var nr agent.ErrNoResult
 		if errors.As(err, &nr) {
-			return nil, ErrNoResult{Reason: string(nr.Reason), LastMessage: nr.Last}
+			return nil, ErrNoResult{Reason: string(nr.Reason), LastMessage: redactText(a.redact, nr.Last)}
 		}
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	raw = redactJSON(a.redact, raw)
 	if reason != agent.TermCompleted {
 		return raw, fmt.Errorf("abhed: ended as %s", reason)
 	}
@@ -417,21 +432,48 @@ func (f approverFn) Approve(ctx context.Context, tool string, args json.RawMessa
 	return f(ctx, tool, args, d)
 }
 
-func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error)) agent.Approver {
+func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error), red *secrets.Redactor) agent.Approver {
 	if f == nil {
 		// No approver means nobody to ask, so anything needing approval is
 		// refused. Defaulting to yes would make an embedded agent quietly more
 		// permissive than the same policy on the command line.
 		return agent.AutoApprove{Yes: false}
 	}
-	return approverFn(f)
+	// The approver is shown the call as the record holds it, stored values redacted.
+	return approverFn(func(ctx context.Context, tool string, args json.RawMessage, d Decision) (bool, error) {
+		d.Reason, d.Scope = redactText(red, d.Reason), redactText(red, d.Scope)
+		return f(ctx, tool, redactJSON(red, args), d)
+	})
+}
+
+// withheld stands in for a payload whose redaction left invalid JSON.
+var withheld = json.RawMessage(`{"withheld":"` + agent.Withheld + `"}`)
+
+// redactJSON replaces stored values in a JSON payload. It fails closed: a
+// payload redaction broke is withheld, never returned as it was.
+func redactJSON(red *secrets.Redactor, b json.RawMessage) json.RawMessage {
+	out := red.Redact(b)
+	if !json.Valid(out) && !bytes.Equal(out, b) {
+		return withheld
+	}
+	return out
+}
+
+// redactText replaces stored values in text, withholding it if that fails.
+func redactText(red *secrets.Redactor, s string) string {
+	raw, _ := json.Marshal(s)
+	var out string
+	if json.Unmarshal(red.Redact(raw), &out) != nil {
+		return agent.Withheld
+	}
+	return out
 }
 
 func (a *Agent) lastMessage() string {
 	msgs := a.loop.Messages()
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == model.RoleAssistant && msgs[i].Content != "" {
-			return msgs[i].Content
+			return redactText(a.redact, msgs[i].Content)
 		}
 	}
 	return ""

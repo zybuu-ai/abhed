@@ -6,6 +6,53 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Sessions started through the SDK did not redact stored secrets. In 1.2.1
+  and earlier, `sdk.New` built its recorder with no redactor, so a value from
+  the secrets store (`abhed secret`) that appeared in a tool's output, or in
+  a call the model made, was kept as it was. This affected every session run
+  on the SDK: embedded agents, `abhed acp`, `abhed rpc` and `abhed resolve`.
+  The value could appear in:
+  - the event record (`Events`, `ExportHTML`, the `rpc` export);
+  - `OnEvent`, the `rpc` event lines and the `session/update` stream sent to
+    an ACP editor;
+  - ACP permission requests and the arguments passed to `Approve`;
+  - the answer from `Run` and `rpc`, `ErrNoResult.LastMessage` from
+    `RunJSON`, and the agent's messages that `resolve` prints;
+  - the tool output sent back to the model.
+
+  The terminal, the server and console, and `abhed eval` were not affected.
+  SDK sessions now redact with the same store as the CLI, and there is no
+  option to turn it off. A server built with no `Options.Redact`, or a
+  subagent factory with no `Redact`, now redacts too: the server uses the
+  secrets store, and the subagent redacts as its parent does. The `abhed`
+  binary always set both, so this only affects a program that embeds these
+  packages.
+- A secrets store that existed but could not be loaded made every path, the
+  CLI included, run with nothing to redact. That covers a store that was
+  empty (0 bytes), corrupt, readable by others or unreadable. Now the
+  terminal, the server, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse
+  to start with an error that names the file and the fix, and `abhed doctor`
+  reports the store as not ready. A missing store still means no secrets.
+  If the store breaks while `abhed serve` runs, each new session starts but
+  withholds every event payload, and the server logs why, until the file is
+  fixed; a server built with no `Options.Redact` does the same. See
+  Upgrading.
+- The store is now opened once and checked on the open file. A FIFO or
+  device at its path is refused instead of blocking or reading without end,
+  and a store over 1 MiB is refused.
+- `abhed serve` read the store once at start, so a secret added while it ran
+  was not redacted until a restart. Each server session now reads the store
+  when it starts. CLI subagents redact with their conversation's reading
+  rather than the one taken when the process started.
+- The SDK's `Approve` is now given the decision's reason and scope redacted,
+  as well as the arguments.
+- `abhed secret set` refuses a value under 8 characters. A shorter value
+  already stored still has its values redacted, but no longer has matching
+  JSON object keys rewritten, which broke decoding events for SDK and `rpc`
+  readers.
+
 ### Upgrading
 
 - ACP editors must answer a permission request with one of the option ids it
@@ -18,6 +65,31 @@ All notable changes to Abhed are recorded here. The format follows
 - An ACP editor that read the tool name from a `tool_call` update's root
   `name` field reads it from `_meta["zybuu.ai/abhed"].tool`. The spec does not
   allow custom root fields.
+- A secrets store that exists but cannot be loaded now stops sessions from
+  starting: the terminal and `-p`, `abhed serve`, `eval`, `acp`, `rpc`,
+  `resolve` and `sdk.New` all refuse. Before upgrading, run `abhed doctor`
+  from 1.2.2: it reports the store and exits 1 without starting anything.
+  The fix depends on the case:
+  - readable by others: `chmod 600` the file;
+  - empty (0 bytes), as `touch ~/.abhed/secrets.json` leaves it: write `{}`
+    to it or delete it;
+  - not valid JSON, over 1 MiB, or not a regular file: fix it, or remove it
+    and add the secrets again with `abhed secret set`.
+- An editor using `abhed acp`, and a CI job running `abhed rpc` or
+  `abhed resolve`, now fails at start over such a store where it used to
+  run. The editor's log or the job's output shows the message.
+- Embedders:
+  - `sdk.New` can return this error.
+  - `Approve` now receives the arguments, reason and scope with stored
+    values redacted.
+  - What `Run`, `RunJSON` and `RunStructured` return is redacted. A redacted
+    structured answer may no longer match a `pattern`, `enum` or length in
+    the caller's schema, and one whose redaction fails comes back as
+    `{"withheld": ...}`, which will not decode into the caller's type.
+  - A program that builds `server.Options` or an `agent.SubagentFactory`
+    without `Redact` now redacts.
+- `abhed secret set` refuses a value under 8 characters. Values already
+  stored keep working.
 
 ### Fixed
 
@@ -32,6 +104,12 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed acp`: a call the model wrote as prose, which has no call id, is
   named by its `requestId` in its `tool_call`, permission request and
   updates. Such calls all had the id `""`.
+- The SDK's `RunJSON` and `RunStructured` never delivered a result: the loop
+  runs on its own copy of the tool registry, and the `result` tool was added
+  to the original, so every run ended with `ErrNoResult`. This dates from
+  1.0.0.
+- `abhed resolve` could close its session before it printed the agent's last
+  messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
 
 ### Added
 

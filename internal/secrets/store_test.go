@@ -101,3 +101,91 @@ func TestRedactorNeverMatchesAcrossAnEscape(t *testing.T) {
 		}
 	}
 }
+
+// A store that exists but cannot be loaded refuses a session, naming the file
+// and the fix; a missing store is empty. Redactor then withholds everything.
+func TestUnloadableStoreFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	missing := Open(filepath.Join(dir, "none.json"))
+	if r, err := missing.LoadRedactor(); err != nil || r.Span() != 0 {
+		t.Fatalf("a missing store must be empty, not an error: %v", err)
+	}
+	cases := map[string]func(string) error{
+		"corrupt": func(p string) error { return os.WriteFile(p, []byte(`{"FAKE_TOKEN": `), 0o600) },
+		"wrong mode": func(p string) error {
+			if err := os.WriteFile(p, []byte(`{"FAKE_TOKEN":"fake-mode-value"}`), 0o600); err != nil {
+				return err
+			}
+			return os.Chmod(p, 0o644)
+		},
+	}
+	for name, make := range cases {
+		path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
+		if err := make(path); err != nil {
+			t.Fatal(err)
+		}
+		s := Open(path)
+		_, err := s.LoadRedactor()
+		if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "refusing to start") ||
+			!strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("%s: want a refusal naming %s and the fix, got %v", name, path, err)
+		}
+		if out := s.Redactor().Redact([]byte(`{"a":"fake-mode-value"}`)); json.Valid(out) {
+			t.Fatalf("%s: an unloadable store's redactor let a payload through: %s", name, out)
+		}
+	}
+}
+
+// An empty file, a directory and an oversized file are refused, each naming the
+// store once.
+func TestStoreShapesThatAreRefused(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(dir, "folder.json")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(dir, "big.json")
+	if err := os.WriteFile(big, make([]byte, MaxFileSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{empty: "empty (0 bytes)", folder: "not a regular file", big: "over the"} {
+		_, err := Open(path).LoadRedactor()
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Count(err.Error(), path) != 1 {
+			t.Fatalf("%s: want %q naming the file once, got %v", path, want, err)
+		}
+	}
+}
+
+// A value shorter than MinLength, stored before the minimum, is redacted in
+// values but leaves JSON keys alone; a longer one is redacted in both.
+func TestShortValuesLeaveKeysAlone(t *testing.T) {
+	s := Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := s.Set("SHORT", "type"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("LONG", "fake-long-value-99"); err != nil {
+		t.Fatal(err)
+	}
+	got := string(s.Redactor().Redact([]byte(`{"type": "a type", "fake-long-value-99":"fake-long-value-99"}`)))
+	want := `{"type": "a [secret:SHORT]", "[secret:LONG]":"[secret:LONG]"}`
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+// Short is counted in characters, as `abhed secret set` counts: a value of
+// fewer than 8 characters leaves keys alone however many bytes it takes.
+func TestShortIsCountedInCharacters(t *testing.T) {
+	s := Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := s.Set("WIDE", "ключ"); err != nil { // 4 characters, 8 bytes
+		t.Fatal(err)
+	}
+	got := string(s.Redactor().Redact([]byte(`{"ключ":"ключ"}`)))
+	if got != `{"ключ":"[secret:WIDE]"}` {
+		t.Fatalf("got %s", got)
+	}
+}

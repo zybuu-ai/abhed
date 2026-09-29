@@ -35,8 +35,23 @@ var newResolveRunner = func(ctx context.Context, opts abhed.Options) (forge.Runn
 	return func(ctx context.Context, _ string, prompt string) error {
 		defer a.Close()
 		_, err := a.Run(ctx, prompt)
+		// The run's messages are printed before Close stops their delivery.
+		flushed, cancel := context.WithTimeout(context.Background(), flushWait)
+		_ = a.Flush(flushed)
+		cancel()
 		return err
 	}, nil
+}
+
+// resolveEvent prints the agent's messages. A variable so a test can slow it.
+var resolveEvent = func(ev abhed.Event) {
+	if ev.Type == "agent.message" {
+		var p struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(ev.Payload, &p)
+		fmt.Fprintln(os.Stderr, strings.TrimSpace(p.Text))
+	}
 }
 
 // pushWork sends the branch to the issue's repository. A variable so the test
@@ -156,15 +171,7 @@ func resolveCmd(workspace string, args []string) int {
 	runner, err := newResolveRunner(ctx, abhed.Options{
 		Workspace: work.Dir, ConfigDir: workspace, Mode: *mode,
 		Allow: splitRules(*allow), Sandbox: true,
-		OnEvent: func(ev abhed.Event) {
-			if ev.Type == "agent.message" {
-				var p struct {
-					Text string `json:"text"`
-				}
-				_ = json.Unmarshal(ev.Payload, &p)
-				fmt.Fprintln(os.Stderr, strings.TrimSpace(p.Text))
-			}
-		},
+		OnEvent: func(ev abhed.Event) { resolveEvent(ev) },
 	})
 	if err != nil {
 		return fail(err)

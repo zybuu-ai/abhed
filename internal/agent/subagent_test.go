@@ -14,6 +14,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -632,5 +633,73 @@ func TestTaskNamesTheTasksToolForATasksList(t *testing.T) {
 	res = Task{}.Run(context.Background(), nil, json.RawMessage(`{"description":"x"}`))
 	if !res.IsError || strings.Contains(res.Content, "tasks tool") {
 		t.Fatalf("a call with no prompt and no tasks got %q", res.Content)
+	}
+}
+
+// A child redacts as its parent's session does, whether its factory has no
+// redactor or one read before the value was stored.
+func TestSubagentRedactsAsItsParentDoes(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		subagentRedactsAsParent(t, stale)
+	}
+}
+
+func subagentRedactsAsParent(t *testing.T, stale bool) {
+	t.Helper()
+	const raw = "fake-subagent-value-5d1c"
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("FAKE_TOKEN", raw); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "read it", "description": "read"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "creds.txt"})}},
+		{text: "the file holds " + raw},
+		{text: "done"},
+	}}
+	store := NewMemStore()
+	l, dir, f := taskTree(t, adapter, AutoApprove{Yes: true}, store, store, false)
+	if f.Redact != nil {
+		t.Fatal("the factory under test must have no redactor of its own")
+	}
+	l.Recorder.Redact = vault.Redactor()
+	if stale {
+		// Built before the value was stored, as a long-lived factory is.
+		f.Redact = secrets.Open(filepath.Join(t.TempDir(), "empty.json")).Redactor()
+	}
+	if err := os.WriteFile(filepath.Join(dir, "creds.txt"), []byte("token="+raw+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	parent, _ := store.Events("parent")
+	child := ""
+	for _, e := range parent {
+		all.Write(e.Payload)
+		if e.Type == EvSubagentSpawned {
+			var p map[string]any
+			_ = json.Unmarshal(e.Payload, &p)
+			child, _ = p["session"].(string)
+		}
+	}
+	if child == "" {
+		t.Fatalf("no subagent ran: %s", types(parent))
+	}
+	childEvs, _ := store.Events(child)
+	for _, e := range childEvs {
+		all.Write(e.Payload)
+	}
+	for _, req := range adapter.gotRequests {
+		for _, m := range req.Messages {
+			all.WriteString(m.Content)
+		}
+	}
+	if strings.Contains(all.String(), raw) {
+		t.Fatalf("the stored value reached a subagent's record or model:\n%s", all.String())
+	}
+	if !strings.Contains(all.String(), "[secret:FAKE_TOKEN]") {
+		t.Fatalf("the subagent's output was not redacted by name:\n%s", all.String())
 	}
 }
