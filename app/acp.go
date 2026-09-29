@@ -370,8 +370,9 @@ func (c *acpConn) newSession(msg rpcMessage) {
 // Choosing the model from the editor.
 //
 // Follows ACP schema v1.23.0: session config options, a "select" option of
-// category "model" set with session/set_config_option and reported with a
-// config_option_update. Editors built on the earlier unstable API (schema
+// category "model" set with session/set_config_option, whose reply carries
+// every option; config_option_update is only for a change the agent makes
+// itself, and it makes none. Editors built on the earlier unstable API (schema
 // v0.6.0: "models" in session/new and session/set_model) are answered too.
 // The value is a configured provider's name, looked up in the configuration;
 // nothing from the editor is ever used as an endpoint.
@@ -471,9 +472,7 @@ func (c *acpConn) setConfigOption(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	opts := modelConfigOptions(m.Models())
-	c.reply(msg.ID, map[string]any{"configOptions": opts}, nil)
-	c.sessionUpdate(p.SessionID, map[string]any{"sessionUpdate": "config_option_update", "configOptions": opts})
+	c.reply(msg.ID, map[string]any{"configOptions": modelConfigOptions(m.Models())}, nil)
 }
 
 // setModel answers the unstable session/set_model; its result has no fields,

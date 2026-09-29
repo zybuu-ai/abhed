@@ -436,7 +436,7 @@ All notable changes to Abhed are recorded here. The format follows
 - `abhed acp`: an editor can list the configured models and switch between
   them mid-session. `session/new` returns a `configOptions` model selector
   (category `model`), and `session/set_config_option` switches it, answering
-  with the full options and a `config_option_update`. Editors on the older
+  with the full options. Editors on the older
   unstable API get `models` in `session/new` and `session/set_model`. Each
   choice is a configured provider's name, described by its model id and
   type, never its endpoint or key. Only providers a trusted configuration

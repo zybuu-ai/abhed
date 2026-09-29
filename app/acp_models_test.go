@@ -153,26 +153,6 @@ func selectedModels(t *testing.T, opts []acpModelOption) (current string, listed
 	return opts[0].CurrentValue, listed
 }
 
-// waitUpdate reads what the editor received until an update of kind arrives.
-func waitUpdate(t *testing.T, cl *acpClient, kind string) map[string]any {
-	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case m := <-cl.lines:
-			var p struct {
-				Update map[string]any `json:"update"`
-			}
-			_ = json.Unmarshal(m.Params, &p)
-			if m.Method == "session/update" && p.Update["sessionUpdate"] == kind {
-				return p.Update
-			}
-		case <-deadline:
-			t.Fatalf("no %s update", kind)
-		}
-	}
-}
-
 func switchedTo(a *abhed.Agent) []string {
 	var out []string
 	for _, ev := range a.Events() {
@@ -221,12 +201,13 @@ func TestACPListsAndSwitchesModels(t *testing.T) {
 	if cur, _ := selectedModels(t, set.ConfigOptions); cur != "beta" {
 		t.Fatalf("the reply does not report beta as current: %s", res.Result)
 	}
-	upd := waitUpdate(t, cl, "config_option_update")
-	if !strings.Contains(fmt.Sprint(upd["configOptions"]), "currentValue:beta") {
-		t.Fatalf("config_option_update: %v", upd)
-	}
-
 	_, updates := cl.prompt(4, map[string]any{"sessionId": s.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "hi"}}})
+	// The reply carried the options; the notification is for the agent's own changes.
+	for _, u := range updates {
+		if u["sessionUpdate"] == "config_option_update" {
+			t.Fatalf("a config_option_update followed the editor's own set_config_option: %v", u)
+		}
+	}
 	if !strings.Contains(fmt.Sprint(updates), "from beta") || a1.calls.Load() != 0 {
 		t.Fatalf("beta did not answer after the switch (alpha calls %d): %v", a1.calls.Load(), updates)
 	}

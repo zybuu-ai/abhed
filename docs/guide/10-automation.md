@@ -237,8 +237,9 @@ switch, the editor sends
  "params": {"sessionId": "s-…", "configId": "model", "value": "work"}}
 ```
 
-and the reply is the full `configOptions` with the new `currentValue`,
-followed by a `config_option_update`. `models` and `session/set_model`
+and the reply is the full `configOptions` with the new `currentValue`. No
+`config_option_update` follows: the spec keeps that for a change the agent
+makes itself, and Abhed makes none. `models` and `session/set_model`
 (`{"sessionId", "modelId"}`, reply `_meta["zybuu.ai/abhed"].currentModelId`)
 are the earlier unstable form, for editors that predate config options.
 
