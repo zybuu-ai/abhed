@@ -101,7 +101,8 @@ Stored secrets are redacted as from the command line. A value in the
 operator's store (`~/.abhed/secrets.json`, or `ABHED_SECRETS_FILE`) becomes
 `[secret:NAME]` before it reaches the record, `OnEvent`, the model, the
 arguments passed to `Approve`, or the text `Run` and `RunJSON` return. The SDK
-has no option to turn this off. See [Secrets](04-permissions.md#secrets).
+has no option to turn this off, and `New` returns an error when the store
+exists but cannot be loaded. See [Secrets](04-permissions.md#secrets).
 
 Edits that would break a file's syntax are refused, as from the command line;
 see [Tools](05-tools.md#an-edit-that-would-break-the-file).

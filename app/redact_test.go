@@ -158,3 +158,102 @@ func TestResolvePrintsNoStoredSecret(t *testing.T) {
 		t.Fatalf("resolve printed the stored value:\n%s", msg)
 	}
 }
+
+// brokenVault puts an unloadable store where the default one lives: corrupt,
+// or readable by others.
+func brokenVault(t *testing.T, kind string) string {
+	t.Helper()
+	managedConfig(t, "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	dir := filepath.Join(os.Getenv("HOME"), ".abhed")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "secrets.json")
+	data, mode := `{"FAKE_TOKEN": `, os.FileMode(0o600)
+	if kind == "wrong mode" {
+		data, mode = `{"FAKE_TOKEN":"`+fakeVaultValue+`"}`, 0o644
+	}
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// wantRefusal checks out names the store and the fix, and never the value.
+func wantRefusal(t *testing.T, entry, out, path string) {
+	t.Helper()
+	if !strings.Contains(out, path) || !strings.Contains(out, "chmod 600") || strings.Contains(out, fakeVaultValue) {
+		t.Fatalf("%s did not refuse naming %s and the fix:\n%s", entry, path, out)
+	}
+}
+
+// Every entry point refuses to start over a secrets store it cannot load, and
+// the doctor reports it as not ready.
+func TestEntryPointsRefuseAnUnloadableSecretsStore(t *testing.T) {
+	for _, kind := range []string{"corrupt", "wrong mode"} {
+		t.Run(kind, func(t *testing.T) {
+			path := brokenVault(t, kind)
+			ws := credsWorkspace(t, leakingModel(t))
+
+			cl := newACPClient(t, nil)
+			cl.request(1, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}})
+			created := cl.request(2, "session/new", map[string]any{"cwd": ws, "mcpServers": []any{}})
+			if created.Error == nil {
+				t.Fatalf("acp started a session: %s", created.Result)
+			}
+			wantRefusal(t, "acp", created.Error.Message, path)
+
+			out := runRPC(t, ws, `{"id":"1","method":"start"}`, `{"id":"2","method":"quit"}`)
+			if strings.Contains(out, `"type":"ready"`) {
+				t.Fatalf("rpc started a session:\n%s", out)
+			}
+			wantRefusal(t, "rpc", out, path)
+
+			repo, _ := resolveRepo(t)
+			if err := os.MkdirAll(filepath.Join(repo, ".abhed"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".abhed", "config.json"), []byte(leakingModel(t)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stubForge(t, &fakeForge{})
+			code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}) })
+			if code == 0 {
+				t.Fatal("resolve ran")
+			}
+			wantRefusal(t, "resolve", msg, path)
+
+			code, msg = resolveStderr(t, func() int { return evalCmd(ws, t.TempDir(), "") })
+			if code == 0 {
+				t.Fatal("eval ran")
+			}
+			wantRefusal(t, "eval", msg, path)
+
+			code, msg = resolveStderr(t, func() int { return newApp().serveCmd(ws, "127.0.0.1:0") })
+			if code == 0 {
+				t.Fatal("serve started")
+			}
+			wantRefusal(t, "serve", msg, path)
+
+			if err := vaultLoads(); err == nil {
+				t.Fatal("the terminal's start-up check passed")
+			} else {
+				wantRefusal(t, "the terminal", err.Error(), path)
+			}
+
+			// The doctor's own endpoint, which never says the value.
+			dws := credsWorkspace(t, `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"`+
+				doctorEndpoint(t).URL+`","model":"m","context_window":8192}}}}`)
+			out, code = stdoutOf(t, func() int { return newApp().doctor(dws) })
+			if code == 0 || !strings.Contains(out, "secrets     UNAVAILABLE") || !strings.Contains(out, "Not ready") {
+				t.Fatalf("the doctor did not report the store (%d):\n%s", code, out)
+			}
+			wantRefusal(t, "doctor", out, path)
+		})
+	}
+}

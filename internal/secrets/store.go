@@ -168,17 +168,34 @@ func (s *Store) Env(names []string) ([]string, error) {
 // is replaced first, so a value that contains another is replaced whole.
 type Redactor struct {
 	pairs []pair
+	// broken marks a store that could not be loaded: everything is withheld.
+	broken bool
 }
 
 type pair struct{ needle, label string }
 
-// Redactor returns a redactor for the values stored now.
+// Redactor returns a redactor for the values stored now. A store that exists
+// but cannot be loaded gives one that withholds every payload; see LoadRedactor.
 func (s *Store) Redactor() *Redactor {
+	r, err := s.LoadRedactor()
+	if err != nil {
+		return &Redactor{broken: true}
+	}
+	return r
+}
+
+// LoadRedactor is Redactor for a session about to start: a missing store is
+// empty, and one that exists but cannot be loaded is an error that names it.
+func (s *Store) LoadRedactor() (*Redactor, error) {
 	s.mu.Lock()
 	m, err := s.load()
 	s.mu.Unlock()
-	if err != nil || len(m) == 0 {
-		return &Redactor{}
+	if err != nil {
+		return nil, fmt.Errorf("refusing to start: the secrets store %s cannot be loaded, so stored values could not be redacted: %w. "+
+			"Fix the file (a JSON object of NAME: value, chmod 600) or remove it and add the secrets again with `abhed secret set`", s.path, err)
+	}
+	if len(m) == 0 {
+		return &Redactor{}, nil
 	}
 	pairs := make([]pair, 0, len(m))
 	for name, value := range m {
@@ -197,7 +214,7 @@ func (s *Store) Redactor() *Redactor {
 		}
 	}
 	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
-	return &Redactor{pairs: pairs}
+	return &Redactor{pairs: pairs}, nil
 }
 
 func escaped(v string, html bool) string {
@@ -212,6 +229,9 @@ func escaped(v string, html bool) string {
 // Redact returns the payload with every stored value replaced. A payload that
 // is not valid JSON is scanned the same way, literal by literal.
 func (r *Redactor) Redact(b []byte) []byte {
+	if r.broken {
+		return nil // not JSON, so every caller withholds the payload
+	}
 	if len(r.pairs) == 0 {
 		return b
 	}

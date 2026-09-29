@@ -411,3 +411,11 @@ subagents and the [SDK](09-sdk.md). There is no setting that turns it off. In
 1.2.1 and earlier the SDK, and so `acp`, `rpc` and `resolve`, did not redact;
 see the changelog.
 
+If the store exists but cannot be loaded, because it is not valid JSON, is
+readable by others or cannot be read, no session starts. The error names the
+file and the fix, and `abhed doctor` reports it as not ready. A missing store
+just means no secrets.
+
+The values are read once when a session starts. A secret stored during a
+session is redacted from the next session on.
+

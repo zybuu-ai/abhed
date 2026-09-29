@@ -237,6 +237,9 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	if err != nil {
 		fail(err)
 	}
+	if err := vaultLoads(); err != nil {
+		fail(err)
+	}
 
 	adapter := buildAdapter(provider)
 	sess, err := tools.NewSession(workspace)
@@ -1309,6 +1312,10 @@ func (a *App) serveCmd(workspace, addr string) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
+	if err := vaultLoads(); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
 
 	sb, err := buildSandbox(cfg, workspace)
 	if err != nil {
@@ -1566,6 +1573,10 @@ func evalCmd(workspace, corpusDir, jsonPath string) int {
 		return 1
 	}
 	if err := evalAllowed(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err := vaultLoads(); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
@@ -2767,6 +2778,12 @@ func (a *App) doctor(workspace string) int {
 		}
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	vaultErr := vaultLoads()
+	if vaultErr != nil {
+		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
+	} else if names := vaultNames(openVault()); len(names) > 0 {
+		fmt.Printf("secrets     %d stored in %s\n", len(names), openVault().Path())
+	}
 	if reg, _ := buildSkills(cfg); reg.Len() > 0 {
 		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
 			strings.Join(reg.Names(), ", "))
@@ -2926,6 +2943,10 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("ok\n  ran a command under the %s tier\n", sb.Tier())
 	}
 
+	if vaultErr != nil {
+		fmt.Println("\nNot ready: the secrets store cannot be loaded (see above), so no session will start.")
+		return 1
+	}
 	return doctorVerdict(os.Stdout, unknown)
 }
 
@@ -3265,6 +3286,13 @@ func printStoreStatus(pg *store.Postgres) {
 // openVault opens the secrets store. A missing file is an empty store, so a
 // deployment with no secrets pays nothing and needs no configuration.
 func openVault() *secrets.Store { return secrets.Default() }
+
+// vaultLoads refuses a session whose secrets store exists but cannot be loaded,
+// since its values could not be redacted.
+func vaultLoads() error {
+	_, err := openVault().LoadRedactor()
+	return err
+}
 
 // vaultNames lists what the model may ask for. An unreadable store lists
 // nothing: the failure surfaces when a secret is used, with its reason.

@@ -156,8 +156,8 @@ type Options struct {
 	Config   config.Config
 	Adapter  model.Adapter
 	Registry *tools.Registry
-	// Redact rewrites every event payload before it is written. Nil, a typed
-	// nil included, means the operator's secrets store, as the CLI uses.
+	// Redact rewrites every event payload before it is written. Nil, a typed nil
+	// included, means the operator's secrets store; unloadable, it withholds all.
 	Redact agent.Redactor
 	// SkillListing is the rendered skill index for the system prompt. The
 	// server takes the rendered string rather than the registry, because the
@@ -320,7 +320,13 @@ func New(opts Options) *Server {
 		opts.Logger = slog.Default()
 	}
 	if v := reflect.ValueOf(opts.Redact); !v.IsValid() || v.Kind() == reflect.Pointer && v.IsNil() {
-		opts.Redact = secrets.Default().Redactor()
+		// A store that cannot be loaded gives a redactor that withholds every payload.
+		red, err := secrets.Default().LoadRedactor()
+		if err != nil {
+			opts.Logger.Error("every event payload will be withheld", "err", err)
+			red = secrets.Default().Redactor()
+		}
+		opts.Redact = red
 	}
 	st := opts.Store
 	// The tap wraps only what the loop writes through. Optional interfaces

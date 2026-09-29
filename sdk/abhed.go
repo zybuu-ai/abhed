@@ -183,6 +183,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// The CLI's redactor; a store that exists but cannot be loaded refuses the session.
+	red, err := secrets.Default().LoadRedactor()
+	if err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
 	adapter, err := provider.Adapter()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -250,8 +255,6 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)
 	rec := agent.NewRecorder(fwd, id, "")
-	// The CLI's redactor, so a stored value never leaves the session as it is.
-	red := secrets.Default().Redactor()
 	rec.Redact = red
 
 	system := opts.SystemPrompt

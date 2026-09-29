@@ -29,6 +29,13 @@ All notable changes to Abhed are recorded here. The format follows
   secrets store, and the subagent redacts as its parent does. The `abhed`
   binary always set both, so this only affects a program that embeds these
   packages.
+- A secrets store that existed but could not be loaded (corrupt, readable by
+  others, or unreadable) made every path, the CLI included, run with nothing
+  to redact. Now the terminal, the server, `eval`, `acp`, `rpc`, `resolve`
+  and the SDK refuse to start with an error that names the file and the fix,
+  and `abhed doctor` reports the store as not ready. A server built with no
+  `Options.Redact` withholds every payload instead. A missing store still
+  means no secrets.
 
 ## [1.2.1] - 2026-09-28
 

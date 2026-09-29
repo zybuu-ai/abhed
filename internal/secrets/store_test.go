@@ -101,3 +101,37 @@ func TestRedactorNeverMatchesAcrossAnEscape(t *testing.T) {
 		}
 	}
 }
+
+// A store that exists but cannot be loaded refuses a session, naming the file
+// and the fix; a missing store is empty. Redactor then withholds everything.
+func TestUnloadableStoreFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	missing := Open(filepath.Join(dir, "none.json"))
+	if r, err := missing.LoadRedactor(); err != nil || r.Span() != 0 {
+		t.Fatalf("a missing store must be empty, not an error: %v", err)
+	}
+	cases := map[string]func(string) error{
+		"corrupt": func(p string) error { return os.WriteFile(p, []byte(`{"FAKE_TOKEN": `), 0o600) },
+		"wrong mode": func(p string) error {
+			if err := os.WriteFile(p, []byte(`{"FAKE_TOKEN":"fake-mode-value"}`), 0o600); err != nil {
+				return err
+			}
+			return os.Chmod(p, 0o644)
+		},
+	}
+	for name, make := range cases {
+		path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
+		if err := make(path); err != nil {
+			t.Fatal(err)
+		}
+		s := Open(path)
+		_, err := s.LoadRedactor()
+		if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "refusing to start") ||
+			!strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("%s: want a refusal naming %s and the fix, got %v", name, path, err)
+		}
+		if out := s.Redactor().Redact([]byte(`{"a":"fake-mode-value"}`)); json.Valid(out) {
+			t.Fatalf("%s: an unloadable store's redactor let a payload through: %s", name, out)
+		}
+	}
+}

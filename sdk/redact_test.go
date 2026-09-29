@@ -129,3 +129,47 @@ func TestSDKRedactsStoredSecrets(t *testing.T) {
 		t.Fatalf("the stored value left the session unredacted:\n%s", whole)
 	}
 }
+
+// A secrets store that exists but cannot be loaded refuses the session rather
+// than running with nothing to redact; a missing one is no secrets at all.
+func TestSDKRefusesAnUnloadableSecretsStore(t *testing.T) {
+	for name, body := range map[string]struct {
+		data string
+		mode os.FileMode
+	}{
+		"corrupt":    {`{"FAKE_TOKEN": `, 0o600},
+		"wrong mode": {`{"FAKE_TOKEN":"` + fakeSecret + `"}`, 0o644},
+		"missing":    {"", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			path := filepath.Join(t.TempDir(), "secrets.json")
+			t.Setenv("ABHED_SECRETS_FILE", path)
+			if body.data != "" {
+				if err := os.WriteFile(path, []byte(body.data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, body.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(),
+				Provider: &abhed.Provider{Type: "ollama", BaseURL: "http://127.0.0.1:1", Model: "m"}})
+			if body.data == "" {
+				if err != nil {
+					t.Fatalf("a missing store refused the session: %v", err)
+				}
+				a.Close()
+				return
+			}
+			if err == nil {
+				a.Close()
+				t.Fatal("a session started over a secrets store it could not load")
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "chmod 600") || strings.Contains(err.Error(), fakeSecret) {
+				t.Fatalf("the refusal does not name the file and the fix, or leaks the value: %v", err)
+			}
+		})
+	}
+}
