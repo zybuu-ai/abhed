@@ -359,3 +359,33 @@ func waitFor(t *testing.T, ok func() bool, why string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// The approval for a write says which cluster it changes, at which server,
+// and with whose credential.
+func TestApplyTargetNamesClusterServerAndCredential(t *testing.T) {
+	srv, ca, _ := authLog(t, "tok")
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, "https://kube.example:6443"),
+		Clusters: []LoginCluster{{Name: "prod", Server: srv.URL, CAFile: ca}}})
+	apply := ApplyTool{M: mgr}
+	sess := newSession(t)
+
+	if got := apply.Target(sess, json.RawMessage(`{"action":"delete","context":"ctx"}`)); !strings.Contains(got, "context ctx at https://kube.example:6443") ||
+		!strings.Contains(got, "kubeconfig's own credential") {
+		t.Errorf("a kubeconfig write does not say where and with what: %q", got)
+	}
+	if got := apply.Target(sess, json.RawMessage(`{"action":"delete","cluster":"prod"}`)); !strings.Contains(got, "not logged in") {
+		t.Errorf("a write to a cluster not logged in to does not say so: %q", got)
+	}
+	args, _ := json.Marshal(map[string]string{"cluster": "prod", "token_secret": "T"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}).Run(context.Background(), sess, args); res.IsError {
+		t.Fatal(res.Content)
+	}
+	for _, raw := range []string{`{"action":"delete","cluster":"prod"}`, `{"action":"delete"}`} {
+		got := apply.Target(sess, json.RawMessage(raw))
+		for _, want := range []string{"cluster prod at " + srv.URL, "this session's login", "TLS verified"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: target %q does not name %q", raw, got, want)
+			}
+		}
+	}
+}

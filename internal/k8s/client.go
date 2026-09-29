@@ -123,6 +123,15 @@ type execEnv struct{ Name, Value string }
 
 // Open connects to the cluster named by the config.
 func Open(cfg Config) (*Cluster, error) {
+	kc, path, err := loadKubeconfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return openFrom(cfg, kc, path)
+}
+
+// loadKubeconfig reads and parses the kubeconfig the config names.
+func loadKubeconfig(cfg Config) (*kubeconfig, string, error) {
 	path := cfg.Kubeconfig
 	if path == "" {
 		path = os.Getenv("KUBECONFIG")
@@ -130,7 +139,7 @@ func Open(cfg Config) (*Cluster, error) {
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("no kubeconfig configured and no home directory")
+			return nil, "", fmt.Errorf("no kubeconfig configured and no home directory")
 		}
 		path = filepath.Join(home, ".kube", "config")
 	}
@@ -143,13 +152,41 @@ func Open(cfg Config) (*Cluster, error) {
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read kubeconfig %s: %w", path, err)
+		return nil, path, fmt.Errorf("read kubeconfig %s: %w", path, err)
 	}
 	kc, err := parseKubeconfig(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, path, fmt.Errorf("parse %s: %w", path, err)
 	}
+	return kc, path, nil
+}
 
+// contextServer names the context the config selects and its cluster's
+// server, without opening a connection or running a credential helper.
+func contextServer(cfg Config) (ctxName, server string, err error) {
+	kc, path, err := loadKubeconfig(cfg)
+	if err != nil {
+		return "", "", err
+	}
+	ctxName = cfg.Context
+	if ctxName == "" {
+		ctxName = kc.CurrentContext
+	}
+	for _, c := range kc.Contexts {
+		if c.Name != ctxName {
+			continue
+		}
+		for _, cl := range kc.Clusters {
+			if cl.Name == c.Cluster {
+				return ctxName, strings.TrimSuffix(cl.Server, "/"), nil
+			}
+		}
+	}
+	return ctxName, "", fmt.Errorf("context %q not found in %s", ctxName, path)
+}
+
+func openFrom(cfg Config, kc *kubeconfig, path string) (*Cluster, error) {
+	var err error
 	ctxName := cfg.Context
 	if ctxName == "" {
 		ctxName = kc.CurrentContext

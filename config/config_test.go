@@ -334,6 +334,21 @@ func TestK8sClustersAreValidatedAtLoad(t *testing.T) {
 			t.Errorf("%s: accepted %v", name, clusters)
 		}
 	}
+	// The error names the problem, not the credential written into the URL.
+	for _, server := range []string{"https://admin:s3cr3t-pw@x.example", "https://tok-9f2e@x.example",
+		"http://admin:s3cr3t-pw@x.example", "https://admin:s3cr3t-pw@x.example:bad%zz"} {
+		c := Default()
+		c.K8s.Clusters = []K8sClusterConfig{{Name: "a", Server: server}}
+		err := c.Validate()
+		if err == nil {
+			t.Fatalf("accepted %s", server)
+		}
+		for _, secret := range []string{"s3cr3t-pw", "tok-9f2e", "admin"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("the error for %s repeats %s: %v", server, secret, err)
+			}
+		}
+	}
 	c := Default()
 	c.K8s.Clusters = []K8sClusterConfig{good, {Name: "lab", Server: "https://lab.example"}}
 	if err := c.Validate(); err != nil {

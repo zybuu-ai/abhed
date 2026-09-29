@@ -188,7 +188,11 @@ All notable changes to Abhed are recorded here. The format follows
     already in `known_hosts`, and refuses one with `accept_host_key`.
   - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses, in
     any case, and a name that is not plain ASCII. The approval for an `ssh`
-    command names the account and address it runs on.
+    command names the account and address it runs on, which is what to
+    check: ASCII look-alikes such as `pr0d` still pass as names.
+  - The approval for a `k8s_apply` write names the cluster, its server, and
+    whether this session's login or a kubeconfig context's own credential
+    is used.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
 

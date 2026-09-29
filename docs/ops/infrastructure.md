@@ -117,6 +117,10 @@ credential: a login token is never put on a kubeconfig client, whose TLS
 settings and exec credential are not the ones the login was approved with.
 A session's logins close their connections when it is deleted.
 
+The approval for a `k8s_apply` write names the cluster and server it changes
+and whose credential it uses: this session's login, with how TLS is checked,
+or a kubeconfig context and the kubeconfig's own credential.
+
 **Do not expect `oc login` through bash to work.** Three separate things stop
 it, and the combination produced a confusing failure in practice:
 
@@ -173,8 +177,11 @@ the agent calls `ssh_connect`, which asks for approval once, verifies the
 connection works, and registers the host **for that session only**. Nothing
 is written to `~/.ssh/config`. Another session on the same server cannot run
 on it or see its name. A name an `ssh.hosts` entry uses, in any case, cannot
-be taken, and names are plain ASCII so one cannot pass for another. The
-approval for each `ssh` command names the account and address it runs on.
+be taken, and names are plain ASCII. That does not stop every look-alike:
+`pr0d` or `buiId1` still pass beside `prod` and `build1`. The approval for
+each `ssh` command names the account and address it runs on, as
+`runs as user@addr`, and says whether the host was declared by the operator
+or added in this session; that address, not the name, is what to check.
 
 For a host with a password rather than a key, store the password with
 `abhed secret set VM_PASSWORD`, allow `secret(VM_PASSWORD)`, and name it:

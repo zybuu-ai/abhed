@@ -154,6 +154,51 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 	return c, nil
 }
 
+// where describes the client cluster() would pick, without opening one.
+func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string {
+	if clusterName != "" && ctxName != "" {
+		return "names both a cluster and a context, so the call will be refused"
+	}
+	l := m.logins(sess, false)
+	if clusterName == "" && ctxName == "" && l != nil {
+		if name, n := l.only(); n == 1 {
+			clusterName = name
+		} else if n > 1 {
+			return "names no cluster while this session is logged in to several, so the call will be refused"
+		}
+	}
+	if clusterName != "" && ctxName == "" {
+		for _, lc := range m.cfg.Clusters {
+			if lc.Name != clusterName {
+				continue
+			}
+			how := "with this session's login"
+			if l == nil || !l.has(clusterName) {
+				how = "but this session has not logged in to it, so the call will fail"
+			}
+			return fmt.Sprintf("changes cluster %s at %s %s, %s", lc.Name, lc.Server, how,
+				lc.Verification(m.cfg.CAFile))
+		}
+		return ""
+	}
+	cfg := m.cfg
+	if ctxName != "" {
+		cfg.Context = ctxName
+	}
+	name, server, err := contextServer(cfg)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential", name, server)
+}
+
+func (l *logins) has(name string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.creds[name]
+	return ok
+}
+
 func (l *logins) only() (string, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -337,6 +382,17 @@ type applyArgs struct {
 	Namespace string `json:"namespace"`
 	Context   string `json:"context"`
 	Replicas  *int   `json:"replicas"`
+}
+
+// Target tells the person approving a write which cluster it changes, at
+// which server, and with whose credential: this session's login or the
+// operator's kubeconfig.
+func (t ApplyTool) Target(sess *tools.Session, raw json.RawMessage) string {
+	var a applyArgs
+	if json.Unmarshal(raw, &a) != nil || t.M == nil {
+		return ""
+	}
+	return t.M.where(sess, a.Cluster, a.Context)
 }
 
 func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
