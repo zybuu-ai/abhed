@@ -491,3 +491,50 @@ func TestResumeChecksTheOwnerBeforeTheSubagent(t *testing.T) {
 		t.Fatalf("a subagent record with no parent named was resumed: %v", err)
 	}
 }
+
+// A CLI subagent's row is recorded as store.SubagentUser. /resume of the
+// person's own subagent names the session that started it, through a nested
+// subagent too; another user's subagent is refused as theirs, its parent unnamed.
+func TestResumeOfOwnSubagentNamesItsParent(t *testing.T) {
+	st, rs, _, sess := resumeRig(t, "me", "default")
+	ended := time.Now()
+	rs.rows["s-top"] = store.SessionRecord{ID: "s-top", User: "me", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-kid"] = store.SessionRecord{ID: "s-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-top", EndedAt: &ended}
+	rs.rows["s-grandkid"] = store.SessionRecord{ID: "s-grandkid", User: store.SubagentUser, Tenant: "default", ParentID: "s-kid", EndedAt: &ended}
+	rs.rows["s-their-top"] = store.SessionRecord{ID: "s-their-top", User: "mallory", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-their-kid"] = store.SessionRecord{ID: "s-their-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-their-top", EndedAt: &ended}
+	rs.rows["s-orphan"] = store.SessionRecord{ID: "s-orphan", User: store.SubagentUser, Tenant: "default", ParentID: "s-gone", EndedAt: &ended}
+	msg, _ := json.Marshal(agent.Message{Text: "child work OKAPI-3"})
+	for id, parent := range map[string]string{"s-kid": "s-top", "s-grandkid": "s-kid", "s-their-kid": "s-their-top", "s-orphan": "s-gone"} {
+		_ = rs.Append(agent.Event{ID: id + "-1", SessionID: id, ParentID: parent, Seq: 1, Type: agent.EvUserMessage, Payload: msg})
+	}
+	resume := func(id string) string {
+		var shown bytes.Buffer
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stdout
+		os.Stdout = w
+		handleCommand(context.Background(), "/resume "+id, ui.NewRenderer(&shown, false), policy.New(policy.ModeDefault), sess, st)
+		os.Stdout = old
+		_ = w.Close()
+		said, _ := io.ReadAll(r)
+		if st.loop != nil || st.claim != "" || rs.claims != 0 {
+			t.Fatalf("%s was resumed on its own", id)
+		}
+		return shown.String() + string(said)
+	}
+	for id, parent := range map[string]string{"s-kid": "s-top", "s-grandkid": "s-kid"} {
+		if got := resume(id); strings.Contains(got, "another user") || !strings.Contains(got, "is a subagent's; resume "+parent) {
+			t.Errorf("/resume of my own subagent %s:\n%s", id, got)
+		}
+	}
+	for _, id := range []string{"s-their-kid", "s-orphan"} {
+		got := resume(id)
+		if !strings.Contains(got, "belongs to another user") || strings.Contains(got, "s-their-top") ||
+			strings.Contains(got, "s-gone") || strings.Contains(got, "OKAPI-3") {
+			t.Errorf("/resume of %s, not mine, said more than whose it is:\n%s", id, got)
+		}
+	}
+}

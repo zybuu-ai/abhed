@@ -260,11 +260,15 @@ func (p *Postgres) CreateSubSession(ctx context.Context, id, description string)
 	return p.CreateSubagentSession(ctx, id, "", description)
 }
 
+// SubagentUser is the user a CLI subagent's row is recorded as; the session
+// named by its ParentID says whose it is.
+const SubagentUser = "agent"
+
 // CreateSubagentSession is CreateSubSession with the spawning session's id,
 // so the row is listed and deleted with its parent.
 func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
-		ID: id, Tenant: p.tenant, User: "agent",
+		ID: id, Tenant: p.tenant, User: SubagentUser,
 		Workspace: description, Model: "subagent", Mode: "auto",
 		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})

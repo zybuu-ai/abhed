@@ -2155,13 +2155,24 @@ func storedSession(ctx context.Context, st *cliState, id string) (store.SessionR
 	return rec, err == nil, err
 }
 
-// ownedHere refuses a session recorded for another user or tenant.
+// ownedHere refuses a session recorded for another user or tenant. A CLI
+// subagent's row is recorded as store.SubagentUser, and is owned by whoever
+// owns the session that started it; a parent that cannot be found owns nothing.
 func ownedHere(ctx context.Context, st *cliState, id string) error {
 	rec, ok, err := storedSession(ctx, st, id)
 	if err != nil || !ok {
 		return err
 	}
-	if rec.User != cliUser() || rec.Tenant != cliTenant(st.appCfg) {
+	tenant := cliTenant(st.appCfg)
+	owner := rec
+	for hops := 0; owner.User == store.SubagentUser && owner.ParentID != "" && owner.Tenant == tenant && hops < 16; hops++ {
+		parent, found, err := storedSession(ctx, st, owner.ParentID)
+		if err != nil || !found {
+			break
+		}
+		owner = parent
+	}
+	if owner.User != cliUser() || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
