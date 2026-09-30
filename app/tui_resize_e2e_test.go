@@ -77,7 +77,6 @@ func TestTUIResizeDuringAStream(t *testing.T) {
 	}
 }
 
-
 // At 40 columns everything is usable: the banner keeps its shape, the
 // footer fits, a dialog's choices are whole.
 func TestTUIFortyColumns(t *testing.T) {
