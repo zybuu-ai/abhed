@@ -132,7 +132,9 @@ func TestFirstRunEndpointNeverStoresAKey(t *testing.T) {
 	h.Type(h.Stub().URL() + "\r")
 	h.WaitText("Name of the environment variable")
 	h.Type("sk-live-0123456789abcdef\r")
-	h.WaitOutput("That is not a variable name")
+	h.WaitOutput("looks like a key")
+	h.Type("hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\r")
+	h.WaitScreen(func(Screen) bool { return strings.Count(Strip(h.Output()), "looks like a key") == 2 }, DefaultTimeout)
 	h.Type("MY_KEY\r")
 	h.WaitText("Model name [stub-model]")
 	h.Type("\r")
@@ -145,7 +147,7 @@ func TestFirstRunEndpointNeverStoresAKey(t *testing.T) {
 	h.Exit(0)
 	data, _ := os.ReadFile(filepath.Join(h.Home(), ".abhed", "config.json"))
 	s := string(data)
-	if !strings.Contains(s, `"api_key_env": "MY_KEY"`) || strings.Contains(s, "sk-live") || strings.Contains(s, CanaryPrefix) || !strings.Contains(s, `"auto": true`) {
+	if !strings.Contains(s, `"api_key_env": "MY_KEY"`) || strings.Contains(s, "sk-live") || strings.Contains(s, "hf_") || strings.Contains(s, CanaryPrefix) || !strings.Contains(s, `"auto": true`) {
 		t.Fatalf("config:\n%s", s)
 	}
 	reqs := h.Requests()

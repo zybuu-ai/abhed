@@ -31,7 +31,11 @@ anywhere, it offers to set one up:
   its models.
 - Or it takes an OpenAI-compatible endpoint: its base URL, and the **name**
   of the environment variable that holds its key. A key itself is never
-  written; paste one and it is refused.
+  written: an answer that looks like a key (a known prefix such as `sk-`,
+  `hf_`, `gsk_` or `AIza`, or a long run of mixed letters and digits) is
+  refused and not echoed, and a name that is not set in your shell is taken
+  only if you answer yes. Before a key goes to another machine over plain
+  `http://`, it asks, defaulting to no.
 - It checks that the model can call a tool, since a model that cannot will
   do little as an agent.
 - It asks once whether the agent may keep memory notes of its own between

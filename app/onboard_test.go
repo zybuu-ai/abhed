@@ -122,3 +122,72 @@ func TestOllamaBase(t *testing.T) {
 		}
 	}
 }
+
+// endpointWith runs the endpoint questions on the given answers, against a
+// closed port, and returns what they chose and what they printed.
+func endpointWith(t *testing.T, answers string) (config.ProviderConfig, string) {
+	t.Helper()
+	var out strings.Builder
+	o := onboarding{in: strings.NewReader(answers), out: &out, ctx: context.Background()}
+	_, p, err := o.endpoint()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	return p, out.String()
+}
+
+// A pasted key is never taken as a variable name, whatever its shape.
+func TestEndpointRefusesAPastedKey(t *testing.T) {
+	t.Setenv("ABHED_TEST_UNSET_VAR", "")
+	for _, key := range []string{
+		"hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		"gsk_1234567890abcdefghijklmnopqrstuvwxyz",
+		"AIzaSyA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUvW",
+		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+		"github_pat_11ABCDEFG0123456789_abcdefghij",
+		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+		"Zx81kPq2Lm9Rt4Vb7Nc3Hd6Jf0Gs5Wa1",
+	} {
+		t.Run(key[:4], func(t *testing.T) {
+			p, out := endpointWith(t, "http://127.0.0.1:9/v1\n"+key+"\n\nm\n")
+			if p.APIKeyEnv != "" || strings.Contains(out, key) {
+				t.Fatalf("the key was taken: %q\n%s", p.APIKeyEnv, out)
+			}
+			if !strings.Contains(out, "looks like a key") {
+				t.Fatalf("no refusal:\n%s", out)
+			}
+		})
+	}
+}
+
+// A variable that is not set is taken only on a yes; no answer is a no.
+func TestEndpointAsksAboutAnUnsetVariable(t *testing.T) {
+	t.Setenv("ABHED_TEST_UNSET_VAR", "")
+	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_UNSET_VAR\n\n\nm\n"); p.APIKeyEnv != "" {
+		t.Fatalf("taken without a yes:\n%s", out)
+	}
+	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_UNSET_VAR\ny\nm\n"); p.APIKeyEnv != "ABHED_TEST_UNSET_VAR" {
+		t.Fatalf("not taken after a yes:\n%s", out)
+	}
+	t.Setenv("ABHED_TEST_SET_VAR", "value")
+	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_SET_VAR\nm\n"); p.APIKeyEnv != "ABHED_TEST_SET_VAR" {
+		t.Fatalf("a set variable was not taken:\n%s", out)
+	}
+}
+
+// A key is not sent in the clear to another machine without a yes.
+func TestEndpointWarnsBeforeAKeyGoesOverHTTP(t *testing.T) {
+	t.Setenv("ABHED_TEST_SET_VAR", "value")
+	p, out := endpointWith(t, "http://192.0.2.1:9/v1\nABHED_TEST_SET_VAR\n\nhttp://127.0.0.1:9/v1\nABHED_TEST_SET_VAR\nm\n")
+	if !strings.Contains(out, "unencrypted") || p.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("%+v\n%s", p, out)
+	}
+}
+
+func TestLooksLikeKey(t *testing.T) {
+	for _, name := range []string{"OPENAI_API_KEY", "MY_ENDPOINT_KEY", "ABHED_COMPANY_INTERNAL_GATEWAY_API_KEY", "K", "token"} {
+		if looksLikeKey(name) {
+			t.Errorf("%s was taken for a key", name)
+		}
+	}
+}

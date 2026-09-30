@@ -435,7 +435,7 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 			break
 		}
 		choices = append(choices, m)
-		fmt.Fprintf(out, "  %d) Ollama: %s\n", i+1, m)
+		fmt.Fprintf(out, "  %d) Ollama: %s\n", i+1, config.Printable(m))
 	}
 	fmt.Fprintln(out, "  e) an OpenAI-compatible endpoint: its URL, and the name of the variable holding its key")
 	fmt.Fprintln(out, "  s) skip: start with the defaults and write nothing")
@@ -470,7 +470,7 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 
-	fmt.Fprintf(out, "\nChecking that %s can call tools (a model that is loading can take a while) … ", p.Model)
+	fmt.Fprintf(out, "\nChecking that %s can call tools (a model that is loading can take a while) … ", config.Printable(p.Model))
 	pk := p
 	if pk.APIKeyEnv != "" {
 		pk.APIKey = os.Getenv(pk.APIKeyEnv)
@@ -522,32 +522,31 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 			continue
 		}
 		p.BaseURL = strings.TrimRight(u, "/")
-		break
-	}
-	for {
-		v, err := o.ask("Name of the environment variable holding its key (blank for none)", "")
+		if p.APIKeyEnv, err = o.keyName(); err != nil {
+			return "", p, err
+		}
+		if p.APIKeyEnv == "" || os.Getenv(p.APIKeyEnv) == "" || pu.Scheme != "http" || hostedLabel(p.BaseURL) == "local" {
+			break
+		}
+		// Plain http to another machine would carry the key readable on the way.
+		ok, err := o.confirm(fmt.Sprintf("  %s is plain http on another machine, so the key would be sent unencrypted. Send it anyway? (y/N)", config.PrintableURL(p.BaseURL)))
 		if err != nil {
 			return "", p, err
 		}
-		if v == "" {
+		if ok {
 			break
 		}
-		if !envName.MatchString(v) {
-			// A pasted key is refused: only the variable's name is written.
-			fmt.Fprintln(o.out, "  That is not a variable name. Enter the NAME of the variable, such as MY_ENDPOINT_KEY; the key itself is never written.")
-			continue
-		}
-		p.APIKeyEnv = v
-		if os.Getenv(v) == "" {
-			fmt.Fprintf(o.out, "  $%s is not set in this shell; set it before starting Abhed.\n", v)
-		}
-		break
+		fmt.Fprintln(o.out, "  Enter an https:// URL, or one on this machine.")
 	}
 	models, err := listModels(o.ctx, p.BaseURL, os.Getenv(p.APIKeyEnv))
 	if err != nil {
 		fmt.Fprintf(o.out, "  Could not list its models: %s\n", friendlyModelError(err, "endpoint", p))
 	} else if len(models) > 0 {
-		fmt.Fprintf(o.out, "  It offers: %s\n", strings.Join(models[:min(len(models), 12)], ", "))
+		shown := make([]string, 0, 12)
+		for _, m := range models[:min(len(models), 12)] {
+			shown = append(shown, config.Printable(m))
+		}
+		fmt.Fprintf(o.out, "  It offers: %s\n", strings.Join(shown, ", "))
 	}
 	def := ""
 	if len(models) == 1 {
@@ -561,6 +560,83 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 		p.Model = m
 	}
 	return "endpoint", p, nil
+}
+
+// keyName asks for the name of the variable holding the key. What looks
+// like a key is refused and never echoed, and a name that is not set in
+// this shell is taken only on a yes.
+func (o onboarding) keyName() (string, error) {
+	for {
+		v, err := o.ask("Name of the environment variable holding its key (blank for none)", "")
+		if err != nil || v == "" {
+			return "", err
+		}
+		if looksLikeKey(v) {
+			fmt.Fprintln(o.out, "  That looks like a key, not a variable name, so it was not kept. Put the key in a variable, such as MY_ENDPOINT_KEY, and enter that NAME; the key itself is never written.")
+			continue
+		}
+		if !envName.MatchString(v) {
+			fmt.Fprintln(o.out, "  That is not a variable name. Enter the NAME of the variable, such as MY_ENDPOINT_KEY; the key itself is never written.")
+			continue
+		}
+		if os.Getenv(v) != "" {
+			return v, nil
+		}
+		ok, err := o.confirm(fmt.Sprintf("  $%s is not set in this shell. Use that name anyway, and set it before starting Abhed? (y/N)", v))
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return v, nil
+		}
+	}
+}
+
+// confirm asks a yes-or-no question whose default is no.
+func (o onboarding) confirm(q string) (bool, error) {
+	ans, err := o.ask(q, "n")
+	if err != nil {
+		return false, err
+	}
+	return strings.HasPrefix(strings.ToLower(ans), "y"), nil
+}
+
+// keyPrefixes start the keys of well-known services; no variable name does.
+var keyPrefixes = []string{"sk-", "sk_", "hf_", "gsk_", "AIza", "xai-", "pplx-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+	"github_pat_", "glpat-", "xoxb-", "xoxp-", "AKIA", "ASIA", "r8_", "nvapi-", "pk_live_", "sk_live_", "rk_live_", "Bearer "}
+
+// looksLikeKey reports whether an answer to "which variable" is more likely
+// a pasted key: a known key prefix, or a long run of mixed characters
+// unlike an UPPER_SNAKE name.
+func looksLikeKey(v string) bool {
+	for _, p := range keyPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	var lower, upper, digit, under int
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower++
+		case r >= 'A' && r <= 'Z':
+			upper++
+		case r >= '0' && r <= '9':
+			digit++
+		case r == '_':
+			under++
+		}
+	}
+	n := len(v)
+	switch {
+	case n >= 20 && lower > 0 && upper > 0 && digit > 0:
+		return true
+	case n >= 24 && under == 0 && digit >= 4:
+		return true
+	case n >= 32 && under == 0:
+		return true
+	}
+	return false
 }
 
 // writeUserConfig writes the person's own configuration, which must not
