@@ -367,6 +367,9 @@ func trustCommands(ctx context.Context, st *cliState, sf ui.Surface) error {
 		Why: "workspace commands · " + cs.wsReason,
 	})
 	if err != nil {
+		if !errors.Is(err, ui.ErrNoAnswer) {
+			return err
+		}
 		// No answer decides nothing: it is asked again next time.
 		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "not trusted: no answer"})
 		return nil
