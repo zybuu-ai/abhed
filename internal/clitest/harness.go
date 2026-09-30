@@ -360,9 +360,11 @@ func (h *run) cleanup() {
 	if h.tty != nil {
 		_ = h.tty.Close()
 	}
-	if out := Strip(h.Output()); strings.Contains(out, "WARNING: DATA RACE") && !knownRace(out) {
+	if out := Strip(h.Output()); !knownRace(out) {
 		// A race in the binary under test is reported whole.
-		h.t.Errorf("clitest: the binary reported a data race:\n%s", out[strings.Index(out, "WARNING: DATA RACE"):])
+		if _, report, found := strings.Cut(out, "WARNING: DATA RACE"); found {
+			h.t.Errorf("clitest: the binary reported a data race:\nWARNING: DATA RACE%s", report)
+		}
 	}
 	if h.t.Failed() {
 		h.t.Logf("clitest: screen at the end:\n%s\n--- output tail ---\n%s", h.Screen().Text(), tail(Strip(h.Output()), 3000))
