@@ -359,10 +359,43 @@ All notable changes to Abhed are recorded here. The format follows
   A session the CLI recorded under an OS user name that is also an account's
   name moves to that account. The event record is append-only and keeps the
   approver names it was written with.
+- Workspace configuration files are untrusted after the upgrade, including
+  ones you wrote yourself. Until you trust a workspace's
+  `.abhed/config.json`, only its tightening settings apply, and a warning
+  names every setting that was ignored. The first interactive `abhed` in each
+  such workspace asks once, lists what the file would change, and offers to
+  trust it, not trust it, or show it. Elsewhere:
+  - Run `abhed trust` in the workspace to see the file and what it would
+    change, then `abhed trust grant` to trust it.
+  - A deployment or CI job that keeps its settings (storage, auth, providers,
+    MCP servers, extensions) in the workspace file must either run `abhed
+    trust grant` once as the user it runs as, or start with
+    `-trust-workspace` (before the subcommand, or as the first argument
+    after it) or
+    `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
+    `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
+    migrate` refuse to start and say how to go on, rather than run with no
+    sign-in or an in-memory record. Every other command goes on without
+    the ignored settings, with a warning on stderr: a headless run (`-p`,
+    `rpc`, `acp`, `resolve`) uses the built-in or user default model and
+    endpoint instead of the file's, without its MCP servers and extensions,
+    and in the default mode instead of the file's. A CI job can therefore
+    run a different model with fewer tools and still exit 0. A failed run
+    repeats that the file's model settings were ignored.
+  - Grants are stored in `~/.abhed/trust.json` of the user who runs Abhed.
+    In a container or CI runner whose home directory does not persist, a
+    grant is lost with it: use `-trust-workspace` or
+    `ABHED_TRUST_WORKSPACE=1` for that step, or move the settings to the
+    managed file. Set the variable for a single step, not in a shell
+    profile.
+    Settings kept in `~/.abhed/config.json` or the managed
+    `/etc/abhed/config.json` are unaffected.
+  - Editors on ACP: `session/new` now reports the decision in
+    `_meta.abhed.workspaceTrust`.
 - The same migration lowercases every session owner that is a plain email
   (an `@` and no `:`), in every tenant, because an owner email is now
   compared in lower case: a single sign-on or proxy identity whose provider
-  sent `Yuvraj@Example.COM` keeps the sessions stored under that spelling.
+  sent `Alice@Example.COM` keeps the sessions stored under that spelling.
   Rows under several spellings of one address become one owner, and the
   migration logs each such address with the spellings it merged. Namespaced
   owners (`local:`, `unclaimed:`, `oidc:`, `github:`) and non-address owners
@@ -440,39 +473,6 @@ All notable changes to Abhed are recorded here. The format follows
     without `Redact` now redacts.
 - `abhed secret set` refuses a value under 8 characters. Values already
   stored keep working.
-- Workspace configuration files are untrusted after the upgrade, including
-  ones you wrote yourself. Until you trust a workspace's
-  `.abhed/config.json`, only its tightening settings apply, and a warning
-  names every setting that was ignored. The first interactive `abhed` in each
-  such workspace asks once, lists what the file would change, and offers to
-  trust it, not trust it, or show it. Elsewhere:
-  - Run `abhed trust` in the workspace to see the file and what it would
-    change, then `abhed trust grant` to trust it.
-  - A deployment or CI job that keeps its settings (storage, auth, providers,
-    MCP servers, extensions) in the workspace file must either run `abhed
-    trust grant` once as the user it runs as, or start with
-    `-trust-workspace` (before the subcommand, or as the first argument
-    after it) or
-    `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
-    `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
-    migrate` refuse to start and say how to go on, rather than run with no
-    sign-in or an in-memory record. Every other command goes on without
-    the ignored settings, with a warning on stderr: a headless run (`-p`,
-    `rpc`, `acp`, `resolve`) uses the built-in or user default model and
-    endpoint instead of the file's, without its MCP servers and extensions,
-    and in the default mode instead of the file's. A CI job can therefore
-    run a different model with fewer tools and still exit 0. A failed run
-    repeats that the file's model settings were ignored.
-  - Grants are stored in `~/.abhed/trust.json` of the user who runs Abhed.
-    In a container or CI runner whose home directory does not persist, a
-    grant is lost with it: use `-trust-workspace` or
-    `ABHED_TRUST_WORKSPACE=1` for that step, or move the settings to the
-    managed file. Set the variable for a single step, not in a shell
-    profile.
-    Settings kept in `~/.abhed/config.json` or the managed
-    `/etc/abhed/config.json` are unaffected.
-  - Editors on ACP: `session/new` now reports the decision in
-    `_meta.abhed.workspaceTrust`.
 - SDK: a `ConfigDir` file is untrusted in the same way, so an embedding
   program that keeps its providers, MCP servers or extensions there loses
   them, with a line on stderr (or, for the model, an error from `New`),

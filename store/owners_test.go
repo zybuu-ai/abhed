@@ -115,9 +115,9 @@ func TestOwnerMigrationLowercasesEmailOwners(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows := []struct{ tenant, owner, want string }{
-		{"default", "Yuvraj" + x + "@Example.COM", "yuvraj" + x + "@example.com"},
-		{"default", "yuvraj" + x + "@example.com", "yuvraj" + x + "@example.com"},
-		{"other" + x, "YUVRAJ" + x + "@EXAMPLE.COM", "yuvraj" + x + "@example.com"},
+		{"default", "Alice" + x + "@Example.COM", "alice" + x + "@example.com"},
+		{"default", "alice" + x + "@example.com", "alice" + x + "@example.com"},
+		{"other" + x, "ALICE" + x + "@EXAMPLE.COM", "alice" + x + "@example.com"},
 		{"default", "Solo" + x + "@Example.com", "solo" + x + "@example.com"},
 		{"default", "oidc:Sub" + x + "@X", "oidc:Sub" + x + "@X"},
 		{"default", "unclaimed:Bob" + x + "@X.com", "unclaimed:Bob" + x + "@X.com"},
@@ -158,7 +158,7 @@ func TestOwnerMigrationLowercasesEmailOwners(t *testing.T) {
 	for _, f := range folds {
 		byOwner[f.To] = f
 	}
-	merged := byOwner["yuvraj"+x+"@example.com"]
+	merged := byOwner["alice"+x+"@example.com"]
 	if len(merged.Variants) != 3 || merged.Sessions != 2 {
 		t.Errorf("merged fold %+v, want 3 variants and 2 rows moved", merged)
 	}
