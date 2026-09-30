@@ -147,7 +147,7 @@ func (s *Steps) Stage(skill, stage, detail string, data map[string]any) {
 // and, in a subagent, with that subagent too.
 func (s *Steps) approver() Approver {
 	inner, who := s.loop.approverFor(context.Background()), ""
-	var asking func(context.Context)
+	var asking func(context.Context) error
 	if o, nested := inner.(oneAtATime); nested {
 		inner, who, asking = o.Approver, o.who, o.asking
 	}
