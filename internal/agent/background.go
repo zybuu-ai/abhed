@@ -226,7 +226,9 @@ func (b *Background) SetMode(m WakeMode) {
 }
 
 // SetWake is the session's own switch: it records session.wake_set and
-// changes the mode, never above the surface's ceiling.
+// changes the mode, never above the surface's ceiling. by is who set it:
+// ByUser for a person, recorded as theirs; anything else (a surface
+// narrowing it) is recorded as the system's.
 func (b *Background) SetWake(m WakeMode, by string) error {
 	if b == nil {
 		return errors.New("this session runs no background tasks")
@@ -241,7 +243,12 @@ func (b *Background) SetWake(m WakeMode, by string) error {
 		return fmt.Errorf("wake mode %s is not allowed here; the most this session may use is %s", m, ceiling)
 	}
 	if b.loop != nil {
-		if _, err := b.loop.Recorder.Record(EvWakeSet, ActorUser, Trusted, WakeSet{Wake: m, By: by, Ceiling: ceiling}); err != nil {
+		// A person's switch is theirs; a surface narrowing it is the system's.
+		actor := ActorSystem
+		if by == ByUser {
+			actor = ActorUser
+		}
+		if _, err := b.loop.Recorder.Record(EvWakeSet, actor, Trusted, WakeSet{Wake: m, By: by, Ceiling: ceiling}); err != nil {
 			return err
 		}
 	}
