@@ -220,7 +220,9 @@ func (f *footer) runStatusLine() {
 		err := cmd.Run()
 		line := ""
 		if sc := bufio.NewScanner(&out); sc.Scan() {
-			line = strings.TrimSpace(sc.Text())
+			// Kept: text and colour. Dropped: anything that could move the
+			// cursor, write the clipboard or retitle the window.
+			line = strings.TrimSpace(ui.CleanText(sc.Text(), true))
 		}
 		f.mu.Lock()
 		f.running = false

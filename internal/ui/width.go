@@ -442,3 +442,8 @@ func safeSGR(tok string) bool {
 	}
 	return true
 }
+
+// CleanText is sanitize for callers outside the package: text, and SGR
+// styling when keepSGR is set, with every control, format character and
+// other escape removed.
+func CleanText(s string, keepSGR bool) string { return sanitize(s, keepSGR) }

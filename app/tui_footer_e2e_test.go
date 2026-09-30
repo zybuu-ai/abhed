@@ -93,3 +93,23 @@ func TestTUIShiftTabDuringATurn(t *testing.T) {
 	r.waitText("word59")
 	r.waitFor("the mode to apply", false, func(s string) bool { return strings.Contains(s, "⏵⏵ accept edits") })
 }
+
+// A status line command's output keeps its text and colour, and nothing
+// that could write the clipboard or retitle the window reaches the terminal.
+func TestTUIStatusLineIsSanitized(t *testing.T) {
+	stub, ws := tuiWorkspace(t, `,"statusline":{"command":"cat >/dev/null; printf '\\033]52;c;U1BPT0Y=\\007\\033]0;title\\007\\033[2J\\033[32mok\\033[0m line'"}`)
+	r := startTUI(t, stub, ws, 100, 30)
+	r.waitFor("the status line", false, func(s string) bool { return strings.Contains(s, "ok line") })
+	r.mu.Lock()
+	// The CLI's own background-colour query is the one OSC it sends.
+	wire := strings.ReplaceAll(string(r.raw), "\x1b]11;?\a", "")
+	r.mu.Unlock()
+	for _, f := range []string{"\x1b]52", "\x1b]0;title", "\x1b[2J", "\a"} {
+		if strings.Contains(wire, f) {
+			t.Fatalf("%q from the status line reached the terminal", f)
+		}
+	}
+	if !strings.Contains(wire, "32mok") {
+		t.Fatalf("the status line's colour was lost")
+	}
+}
