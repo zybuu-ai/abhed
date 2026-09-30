@@ -94,6 +94,10 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 		}
 	}
 
+	if _, err := migrateOwners(ctx, pool); err != nil {
+		return err
+	}
+
 	role := pgx.Identifier{cfg.RuntimeRole}.Sanitize()
 	// Sequences too: an edition's serial column is useless to a role that
 	// may insert but cannot draw the next id.

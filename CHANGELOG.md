@@ -12,6 +12,30 @@ All notable changes to Abhed are recorded here. The format follows
   spelled long (`rm --recursive --force dir`), was not treated as a command
   with no undo, so bypass mode ran it without asking. Those flags now count
   wherever they appear before `--`.
+- A local account could take over another account's sessions by giving
+  itself that person's email, or their username, as its own email. The
+  server owned a session by the caller's email whenever one was set, and a
+  local account's email was neither checked nor unique: the person typed it
+  at invite or open sign-up, and an administrator could give two accounts
+  the same one. Such an account listed and replayed the other's sessions,
+  their subagent records and secrets-bearing transcripts, interrupted them,
+  and answered their pending approvals, which ran and were recorded as the
+  victim's. Affects every release up to and including 1.2.1 with local
+  accounts. Session ownership now comes from one function,
+  `auth.Identity.Owner`, for the session list and every per-session route,
+  approvals and the approver in the record, subagent rows, stream rechecks
+  and audit lines:
+  - A local account owns its sessions as `local:<username>`; its email plays
+    no part.
+  - A single sign-on identity owns them by its email only when the provider
+    verified it (OIDC `email_verified: true`, GitHub's verified primary
+    email), as before; otherwise by `<provider>:<subject>`.
+  - A trusted proxy keeps `X-Abhed-Email` when set, else `X-Abhed-User`.
+  - A local account's email must be a plain address that no other account
+    holds or is named, compared without regard to case, at `user add`,
+    invite and open sign-up, and an administrator's account creation.
+  Existing session rows move to their account's new owner once, by `abhed
+  migrate`; see Upgrading.
 - A person signed out, removed, taken out of `auth.require_group` or refused
   by an access check kept receiving every event of a session on a
   `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
@@ -307,6 +331,38 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- Run `abhed migrate` as the owner before starting this release on Postgres:
+  `serve` and `user` running as the runtime role refuse to start until the session
+  owner migration (schema version 4) has run, and a `storage.single_role`
+  server runs it at start. For each owner key on existing session rows it
+  looks up the local accounts whose username or email is that key, without
+  regard to case:
+  - exactly one account: the rows move to that account (`local:<username>`),
+    so a person keeps the sessions made under their email or their name;
+  - more than one (an account whose email was another's name or email): the
+    rows become `unclaimed:<old key>`, which no one can open through the
+    API. The migration logs each such key with the accounts it matched. An
+    operator who knows the owner moves them with
+    `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:<old key>'`
+    as the owning role (run `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`
+    first and `FORCE` after, or it sees one tenant only);
+  - no account: left alone. These are single sign-on, proxy, CLI and
+    schedule rows, whose owner is unchanged, except that an OIDC identity
+    whose provider does not send `email_verified: true` is now owned by
+    `oidc:<subject>`, so its sessions from before stay under its email.
+  - rows owned by `anonymous` and the CLI's subagent rows (`agent`) never
+    move, even to an account of that name.
+  A session the CLI recorded under an OS user name that is also an account's
+  name moves to that account. The event record is append-only and keeps the
+  approver names it was written with.
+- The approver in the record, the `by` of administrative audit lines and the
+  `user` of a session in `GET /v1/sessions` are now the owner above, such as
+  `local:alice`, not the email. `/v1/whoami` returns it as `owner`.
+- `auth.Identity` has `Provider` and `EmailVerified`. An embedding
+  application's own `auth.Provider` that does not set them is owned by the
+  identity's subject, never its email.
+- Existing local accounts keep whatever email they have, even an invalid or
+  duplicate one; it no longer grants anything.
 - `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
   asks in default mode, is refused in plan mode, and is refused where nobody
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule

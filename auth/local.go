@@ -36,6 +36,8 @@ var (
 	ErrBadCredentials = errors.New("incorrect username or password")
 	ErrUserExists     = errors.New("that username is already taken")
 	ErrWeakPassword   = errors.New("password must be at least 10 characters")
+	ErrBadEmail       = errors.New("email must be a plain address, such as name@example.com")
+	ErrEmailTaken     = errors.New("that email belongs to another account")
 	ErrNoSuchUser     = errors.New("no such user")
 	// ErrSamePassword stops a temporary password being re-entered to clear
 	// the must-change flag.
@@ -176,6 +178,8 @@ type LocalAuth struct {
 
 	changeMu sync.Mutex
 	onChange []func(username string)
+
+	createMu sync.Mutex
 }
 
 // OnChange registers fn to be told when a user's sessions here were ended or
@@ -242,9 +246,40 @@ func (l *LocalAuth) CheckNewUser(ctx context.Context, username, password string)
 	return nil
 }
 
+// CheckEmail reports why email cannot be given to the account username: it
+// must be a plain address that no other account holds or is named.
+func (l *LocalAuth) CheckEmail(ctx context.Context, username, email string) error {
+	if email == "" {
+		return nil
+	}
+	if err := ValidEmail(email); err != nil {
+		return err
+	}
+	users, err := l.Store.List(ctx)
+	if err != nil {
+		return fmt.Errorf("check email: %w", err)
+	}
+	for _, u := range users {
+		if strings.EqualFold(u.Username, username) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(u.Email), email) || strings.EqualFold(u.Username, email) {
+			return ErrEmailTaken
+		}
+	}
+	return nil
+}
+
 // CreateUser adds an account.
 func (l *LocalAuth) CreateUser(ctx context.Context, u User, password string) error {
+	// One at a time, so two sign-ups cannot both pass the email check.
+	l.createMu.Lock()
+	defer l.createMu.Unlock()
 	if err := l.CheckNewUser(ctx, u.Username, password); err != nil {
+		return err
+	}
+	u.Email = strings.TrimSpace(u.Email)
+	if err := l.CheckEmail(ctx, u.Username, u.Email); err != nil {
 		return err
 	}
 
@@ -358,7 +393,7 @@ func (l *LocalAuth) issue(w http.ResponseWriter, u *User) {
 	s := &browserSession{
 		Identity: &Identity{
 			Subject: u.Username, Email: u.Email, Name: u.Name,
-			Tenant: u.Tenant, Groups: u.Groups,
+			Tenant: u.Tenant, Groups: u.Groups, Provider: ProviderLocal,
 			IssuedAt: now.Unix(), Expires: now.Add(l.SessionTTL).Unix(),
 		},
 		Created: now,
@@ -471,7 +506,7 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 	}
 	id := &Identity{
 		Subject: u.Username, Email: u.Email, Name: u.Name,
-		Tenant: u.Tenant, Groups: slices.Clone(u.Groups),
+		Tenant: u.Tenant, Groups: slices.Clone(u.Groups), Provider: ProviderLocal,
 		IssuedAt: old.IssuedAt, Expires: old.Expires,
 	}
 	l.mu.Lock()
