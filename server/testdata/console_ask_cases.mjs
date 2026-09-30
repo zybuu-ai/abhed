@@ -43,6 +43,10 @@ render({seq:35, type:'agent.message', payload:{text:'THE-ANSWER'}});
   const before = cards().length;
   render({seq:40, type:'subagent.ask', payload:{session:'child', subagent:'x', call_id:'c40', tool:'bash', args:{command:'touch nid'}}});
   check('an ask with no request id draws no answerable card', cards().length === before && tx.textContent.includes('no request id'));
+  // The card itself refuses to be drawn without the id its answer must name.
+  approval({call_id:'c41', tool:'bash', args:{command:'touch direct'}}, undefined);
+  approval({call_id:'c42', tool:'bash', args:{command:'touch empty'}}, '');
+  check('the approval card is never drawn without a request id', cards().length === before && !approvals.has('c41') && !approvals.has('c42'));
 }
 
 // A pipeline step's ask names the pipeline asking.
