@@ -10,7 +10,6 @@ import "fmt"
 // and its test that the setting takes effect replaces the warning.
 var notYetInEffect = []string{
 	"cli.mode_cycle",        // Shift-Tab and the ModeController (governance)
-	"commands.dirs",         // custom commands (input and memory)
 	"statusline",            // the statusline command (status)
 	"memory.auto",           // auto memory (input and memory)
 	"record.dir",            // the local record (record and sessions)

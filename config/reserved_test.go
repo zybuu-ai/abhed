@@ -18,7 +18,6 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 		{"mode cycle", "cli.mode_cycle", `{"cli":{"mode_cycle":["plan"]}}`},
 		{"auto memory", "memory.auto", `{"memory":{"auto":false}}`},
 		{"statusline", "statusline", `{"statusline":{"command":"s.sh"}}`},
-		{"commands", "commands.dirs", `{"commands":{"dirs":["c"]}}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var out bytes.Buffer

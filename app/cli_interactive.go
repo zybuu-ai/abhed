@@ -282,6 +282,18 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 	prompted := false
 	for {
+		// A turn a command asked for runs before the next line (input track).
+		if t := sessionState.takeTurn(); t != nil && sessionState.loop != nil {
+			prompted = false
+			code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				return loop.RunMessage(ctx, t.msg)
+			})
+			t.done()
+			if quit {
+				return code
+			}
+			continue
+		}
 		// End of piped input waits for the background work, and for the
 		// wakes its results start, before the session ends.
 		if eof && sessionState.backgroundIdle() {

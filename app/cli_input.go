@@ -51,6 +51,38 @@ func (plainInput) Expand(_ context.Context, _ *agent.Loop, raw string) (agent.Me
 type inputState struct {
 	// memoryFor is the conversation memory.loaded was last recorded in.
 	memoryFor *agent.Loop
+	// custom are the session's custom commands, once loaded.
+	custom *customState
+	// turn is a message a command asked to send, run once the command returns.
+	turn *commandTurn
+}
+
+// commandTurn is a message a slash command sends as the person's next turn,
+// such as a custom command's text or /init's request.
+type commandTurn struct {
+	msg agent.Message
+	// after runs once the turn has ended, however it ended.
+	after func()
+}
+
+// sendTurn asks the driver to run msg as the next turn once the command
+// returns; after, if set, runs when that turn ends.
+func (st *cliState) sendTurn(msg agent.Message, after func()) {
+	st.input.turn = &commandTurn{msg: msg, after: after}
+}
+
+// takeTurn is the turn a command asked for, if any, and forgets it.
+func (st *cliState) takeTurn() *commandTurn {
+	t := st.input.turn
+	st.input.turn = nil
+	return t
+}
+
+// done runs what the turn's command asked to run after it.
+func (t *commandTurn) done() {
+	if t.after != nil {
+		t.after()
+	}
 }
 
 // isCommandLine reports whether a typed line is for the CLI rather than a
@@ -71,6 +103,7 @@ func dispatchLine(ctx context.Context, line string, r *ui.Renderer,
 		addNote(ctx, st, r, strings.TrimSpace(line[1:]))
 		return false
 	}
+	ensureCustomCommands(st, r)
 	return handleCommand(ctx, line, r, pol, sess, st)
 }
 
