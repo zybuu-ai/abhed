@@ -211,3 +211,20 @@ func TestDecisionKeysOnly(t *testing.T) {
 		t.Fatal("a waiting approval did not take its answer")
 	}
 }
+
+// An answer says which ask it answered: the tool, what it acts on, and the
+// subagent that asked. A piped key answers by position, so this is the line
+// that shows what it approved.
+func TestAnswerNamesTheAsk(t *testing.T) {
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("y\n")
+	ctx := agent.WithSubagent(context.Background(), "scan logs")
+	ok, err := a.Approve(ctx, "bash", json.RawMessage(`{"command":"touch made.txt"}`), policy.Result{Decision: policy.Ask})
+	if err != nil || !ok {
+		t.Fatalf("approve: %v %v", ok, err)
+	}
+	if got := out.String(); !strings.Contains(got, "accepted: bash") || !strings.Contains(got, "touch made.txt") || !strings.Contains(got, "(subagent scan logs)") {
+		t.Fatalf("the answer does not name its ask:\n%s", got)
+	}
+}
