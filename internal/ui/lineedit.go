@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -126,6 +127,7 @@ func NewLineReader(prompt string) *LineReader {
 		return w, h
 	}
 	d.extEdit = func(text string) (string, error) { return externalEdit(fd, state, text) }
+	go cleanDrafts()
 	l := &LineReader{d: d, fd: fd, state: state, raw: true, done: make(chan struct{})}
 	d.scr.raw(modesOn)
 	l.start()
@@ -455,22 +457,17 @@ func externalEdit(fd int, raw *term.State, text string) (string, error) {
 	if editor == "" {
 		editor = "vi"
 	}
-	f, err := os.CreateTemp("", "abhed-prompt-*.md")
+	name, err := newDraft(text)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = os.Remove(f.Name()) }()
-	if _, err := f.WriteString(text); err != nil {
-		f.Close()
-		return "", err
-	}
-	f.Close()
+	defer func() { _ = os.Remove(name) }()
 	if raw != nil {
 		_ = term.Restore(fd, raw)
 	}
 	_, _ = os.Stdout.WriteString(modesOff)
 	fields := strings.Fields(editor)
-	cmd := exec.Command(fields[0], append(fields[1:], f.Name())...) // #nosec G204 G702 -- the person's own editor, on their own file
+	cmd := exec.Command(fields[0], append(fields[1:], name)...) // #nosec G204 G702 -- the person's own editor, on their own file
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	runErr := cmd.Run()
 	if _, err := term.MakeRaw(fd); err != nil {
@@ -480,8 +477,71 @@ func externalEdit(fd int, raw *term.State, text string) (string, error) {
 	if runErr != nil {
 		return "", runErr
 	}
-	data, err := os.ReadFile(f.Name())
+	return readDraft(name)
+}
+
+// draftMax bounds what is read back from the editor.
+const draftMax = 8 << 20
+
+// draftDir is where a prompt is written for the person's editor: under
+// ~/.abhed, in a folder only they can open, which the sandbox keeps the
+// agent out of. The shared temporary folder is one a sandboxed command can
+// write, where a running task could read the draft, change it, or swap it
+// for a link to a file it cannot read.
+func draftDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", errors.New("no home folder for the draft")
+	}
+	dir := filepath.Join(home, ".abhed", "drafts")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, os.Chmod(dir, 0o700)
+}
+
+// newDraft writes text to a new file of its own in draftDir.
+func newDraft(text string) (string, error) {
+	dir, err := draftDir()
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, "prompt-*.md") // created exclusively, 0600
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(text); err != nil {
+		f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), f.Close()
+}
+
+// readDraft reads the draft back, never through a link.
+func readDraft(name string) (string, error) {
+	f, err := os.OpenFile(name, os.O_RDONLY|noFollow, 0) // #nosec G304 -- the draft this process made
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, draftMax))
 	return string(data), err
+}
+
+// cleanDrafts removes drafts a crash left behind: those a day old, since
+// another session may have one open in an editor now.
+func cleanDrafts() {
+	dir, err := draftDir()
+	if err != nil {
+		return
+	}
+	names, _ := filepath.Glob(filepath.Join(dir, "prompt-*.md"))
+	for _, n := range names {
+		if info, err := os.Lstat(n); err == nil && time.Since(info.ModTime()) > 24*time.Hour {
+			_ = os.Remove(n)
+		}
+	}
 }
 
 // Capture redirects the process's standard output and error into the dock,

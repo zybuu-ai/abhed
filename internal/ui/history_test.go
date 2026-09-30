@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // What is written is redacted: a secret in a prompt never reaches the file.
@@ -86,5 +87,52 @@ func TestHistoryFileSafety(t *testing.T) {
 	LoadHistory(wide).Add("x", true)
 	if info, _ := os.Stat(wide); info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", info.Mode().Perm())
+	}
+}
+
+// The editor's draft lives in a folder only its owner can open, under the
+// home folder rather than the shared temporary one; it is never read back
+// through a link; and drafts a crash left behind are removed.
+func TestDraftFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	name, err := newDraft("my prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(name)
+	if dir != filepath.Join(home, ".abhed", "drafts") {
+		t.Fatalf("draft in %s", dir)
+	}
+	if info, _ := os.Stat(dir); info.Mode().Perm() != 0o700 {
+		t.Fatalf("draft folder mode %v", info.Mode().Perm())
+	}
+	if info, _ := os.Stat(name); info.Mode().Perm() != 0o600 {
+		t.Fatalf("draft mode %v", info.Mode().Perm())
+	}
+	if got, _ := readDraft(name); got != "my prompt" {
+		t.Fatalf("read %q", got)
+	}
+	secret := filepath.Join(t.TempDir(), "secret")
+	_ = os.WriteFile(secret, []byte("not for the prompt"), 0o600)
+	_ = os.Remove(name)
+	if err := os.Symlink(secret, name); err != nil {
+		t.Skip(err)
+	}
+	if got, err := readDraft(name); err == nil {
+		t.Fatalf("a draft swapped for a link was read: %q", got)
+	}
+	fresh, _ := newDraft("another session's, open now")
+	old := time.Now().Add(-48 * time.Hour)
+	_ = os.Chtimes(name, old, old)
+	_ = os.Remove(name)
+	stale, _ := newDraft("left by a crash")
+	_ = os.Chtimes(stale, old, old)
+	cleanDrafts()
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("a stale draft was left")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatal("a draft in use was removed")
 	}
 }
