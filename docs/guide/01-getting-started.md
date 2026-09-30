@@ -24,7 +24,23 @@ ollama serve
 ollama pull qwen3-coder:30b
 ```
 
-Then, in the directory you want the agent to work in:
+The first time you run `abhed` on a terminal with no configuration
+anywhere, it offers to set one up:
+
+- It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
+  its models.
+- Or it takes an OpenAI-compatible endpoint: its base URL, and the **name**
+  of the environment variable that holds its key. A key itself is never
+  written; paste one and it is refused.
+- It checks that the model can call a tool, since a model that cannot will
+  do little as an agent.
+- It asks once whether the agent may keep memory notes of its own between
+  sessions. The answer defaults to No: a note the agent writes is a way for
+  text planted in a file to persist.
+- It writes only your own `~/.abhed/config.json` (mode 0600), and only after
+  you confirm. `s` skips it and writes nothing.
+
+Or, in the directory you want the agent to work in:
 
 ```bash
 abhed init      # writes .abhed/config.json
@@ -49,6 +65,12 @@ Ready.
 ```bash
 abhed
 ```
+
+The session opens at once: a check for a container runtime, and for the
+model endpoint, run behind the prompt. The banner says `process or stronger
+(checking)` until the sandbox is chosen, and commands wait for that choice.
+An endpoint that is down is named with what to do about it, and a task
+then fails at once rather than after the retries.
 
 Type a task. Abhed reads code, runs commands, edits files, and asks before
 anything it is not permitted to do unattended. A quoted task on the command

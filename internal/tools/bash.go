@@ -52,6 +52,9 @@ type Bash struct {
 	Shell func(ctx context.Context, cwd string) *exec.Cmd
 	// Isolation says what contains the commands, for a person to read.
 	Isolation Isolation
+	// RanUnder, when set, is the tier a command ran under, for a sandbox
+	// chosen after start-up; Isolation.Tier is then the weakest it can be.
+	RanUnder func() string
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -203,6 +206,9 @@ func IsDestructive(command string) (string, bool) {
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	res := b.run(ctx, s, raw)
 	res.Tier = b.tier()
+	if b.Sandbox != nil && b.RanUnder != nil {
+		res.Tier = b.RanUnder()
+	}
 	return res
 }
 

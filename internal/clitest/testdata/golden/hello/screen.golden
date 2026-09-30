@@ -4,7 +4,7 @@
       ▗█▛▜█▖
      ▗█▛  ▜█▖      model    stub-model
     ▗█▛▀▀▀▀▜█▖     work     ‹ws›
-   ▗█▛      ▜█▖    sandbox  process · no network
+   ▗█▛      ▜█▖    sandbox  ‹tier› · no network
   ▗██▖      ▗██▖   storage  memory (sessions do not survive restart)
 
 Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits.

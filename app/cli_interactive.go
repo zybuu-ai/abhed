@@ -24,16 +24,20 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	budget *agent.Budget, extHost *extension.Host, start interactiveStart) int {
 
 	s := r.Style()
-	sandboxLabel := "none"
-	if sb, err := buildSandbox(appCfg, workspace); err == nil {
-		sandboxLabel = string(sb.Tier())
-		if !appCfg.Sandbox.AllowNetwork {
-			sandboxLabel += " · no network"
-		}
+	sandboxLabel := start.sandbox.Label()
+	if !appCfg.Sandbox.AllowNetwork {
+		sandboxLabel += " · no network"
 	}
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
 		sandboxLabel, storageLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits."))
+	// The endpoint check started with the session; a server that is down is
+	// named as soon as it is known, not at the first task.
+	go func() {
+		if err := start.probe.run(ctx); err != nil {
+			fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
+		}
+	}()
 
 	// Input is read on its own goroutine so a line typed while the agent is
 	// working can steer it. Reading inline meant the prompt was simply not
@@ -258,7 +262,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.accumulate(spent)
 
 		if runErr != nil {
-			fmt.Printf("%s %s\n", s.Red("error:"), runErr)
+			fmt.Printf("%s %s\n", s.Red("error:"), friendlyModelError(runErr, sessionState.appCfg.Model.Default, sessionState.provider))
 		}
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
@@ -391,8 +395,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 // interactiveStart is what the command line gives an interactive session:
 // a first task, and what session.started records.
 type interactiveStart struct {
-	first  string
-	record map[string]any
+	first   string
+	record  map[string]any
+	sandbox *lazySandbox
+	probe   *endpointProbe
 }
 
 // turnOutcome is how a turn's run ended.

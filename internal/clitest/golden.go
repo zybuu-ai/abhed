@@ -34,6 +34,8 @@ var (
 	reSHA    = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
 	reID     = regexp.MustCompile(`\bs-[0-9a-f]{24}\b`)
 	reSpin   = regexp.MustCompile(`[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]`)
+	// The banner's tier depends on whether the sandbox was chosen by then.
+	reTier = regexp.MustCompile(`(sandbox +)(process or stronger \(checking\)|(process|container|vm|none)\b)`)
 )
 
 // Normalize makes text stable across runs: the run's directories, times,
@@ -51,6 +53,7 @@ func NormalizeText(text string) string {
 	text = reID.ReplaceAllString(text, "‹id›")
 	text = reDur.ReplaceAllString(text, "‹dur›")
 	text = reTokens.ReplaceAllString(text, "‹n›$1")
+	text = reTier.ReplaceAllString(text, "${1}‹tier›")
 	return reSpin.ReplaceAllString(text, "‹spin›")
 }
 

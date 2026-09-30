@@ -11,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -39,6 +40,11 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return 2
 	}
 
+	if !headless && firstRunNeeded(workspace) {
+		if err := firstRun(ctx, os.Stdin, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: setup ended (%v); starting with the defaults\n", err)
+		}
+	}
 	cfg, err := loadSession(workspace, a.trust, !headless)
 	if err != nil {
 		fail(err)
@@ -74,7 +80,14 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fail(err)
 	}
 
-	adapter := buildAdapter(provider)
+	// Checked off the start-up path; a model call fails at once while the
+	// endpoint is known to be down.
+	// The interactive session runs the check itself, to say what it found.
+	probe := newEndpointProbe(provider)
+	if headless {
+		go func() { _ = probe.run(ctx) }()
+	}
+	var adapter model.Adapter = gatedAdapter{Adapter: buildAdapter(provider), probe: probe}
 	sess, err := tools.NewSession(workspace)
 	if err != nil {
 		fail(err)
@@ -91,12 +104,17 @@ func run(a *App, workspace string, f *cliFlags) int {
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 
-	sb, err := buildSandbox(cfg, workspace)
+	sb, err := startSandbox(cfg, workspace)
 	if err != nil {
 		fail(err)
 	}
-	if sb.Tier() == sandbox.TierNone {
+	// With a floor the answer is at least the process tier, never none.
+	if sb.floor == "" && sb.Tier() == sandbox.TierNone {
 		fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", sb.Describe())
+	}
+	tier := string(sb.floor)
+	if tier == "" {
+		tier = string(sb.Tier())
 	}
 
 	// Custom providers are registered before any provider is resolved, so a
@@ -110,7 +128,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
 		Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
-			Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
+			Isolation: tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork},
+			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts: toolset.All,
 		Vault: vault,
 		Warn:  warnf,
@@ -180,7 +199,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 
 	if headless {
-		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start}
+		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start,
+			providerName: cfg.Model.Default, provider: provider}
 		prompt := f.task()
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
@@ -198,7 +218,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
 	}
 	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions,
-		interactiveStart{first: f.task(), record: start})
+		interactiveStart{first: f.task(), record: start, sandbox: sb, probe: probe})
 }
 
 func webSearchLabel(cfg config.Config) string {

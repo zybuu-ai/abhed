@@ -35,6 +35,9 @@ type headlessOpts struct {
 	// stream-json; nil for a single task.
 	inputs <-chan string
 	start  map[string]any
+	// provider names the model, for an error that says what to do.
+	providerName string
+	provider     config.ProviderConfig
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
@@ -396,7 +399,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			res.Subtype = string(agent.TermError)
 		}
 		if err != nil {
-			res.Error = err.Error()
+			res.Error = friendlyModelError(err, o.providerName, o.provider)
 		}
 		b, _ := json.Marshal(res)
 		fmt.Println(string(b))
@@ -408,7 +411,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		printUsage(r, u)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: %s\n", err)
+		fmt.Fprintf(os.Stderr, "abhed: %s\n", friendlyModelError(err, o.providerName, o.provider))
 	}
 	if code != 0 {
 		noteIgnoredModel(appCfg)

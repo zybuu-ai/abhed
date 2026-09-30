@@ -69,7 +69,11 @@ func Binary(t testing.TB) string {
 		cmd.Env = withoutGOROOT(os.Environ())
 		if out, err := cmd.CombinedOutput(); err != nil {
 			build.err = fmt.Errorf("go build: %v\n%s", err, out)
+			return
 		}
+		// The first exec of a new binary pays for the system's checks of it,
+		// which no start-up budget is about.
+		_ = exec.Command(build.bin, "-version").Run()
 	})
 	if build.err != nil {
 		t.Fatalf("clitest: %v", build.err)
@@ -418,8 +422,10 @@ func (h *run) env() []string {
 		"LANG=en_US.UTF-8",
 		"TMPDIR=" + filepath.Join(h.root, "tmp"),
 		"XDG_CONFIG_HOME=" + filepath.Join(h.home, ".config"),
-		// Anything that tries to leave the machine meets a closed port.
+		// Anything that tries to leave the machine meets a closed port, and
+		// a first run looks for Ollama there, never at the real one.
 		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=127.0.0.1,localhost",
+		"OLLAMA_HOST=127.0.0.1:9",
 	}
 	switch h.o.Theme {
 	case "light":

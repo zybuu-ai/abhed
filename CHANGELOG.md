@@ -465,6 +465,11 @@ All notable changes to Abhed are recorded here. The format follows
   only turn `memory.auto` off, trusted or not, and auto memory is off unless
   turned on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace
   need trust.
+- A first run on a terminal with no configuration offers to set one up: a
+  local Ollama model, or an OpenAI-compatible endpoint by URL and the name
+  of the variable holding its key (a pasted key is refused). It checks the
+  model can call a tool, asks once about auto memory (No by default), and
+  writes only `~/.abhed/config.json`, after confirming.
 - Headless runs read stdin. `cat build.log | abhed -p "why did this fail?"`
   sends the log below the task; with no task, stdin is the task. Flags may
   follow the task, and `-p` alone takes the task from stdin.
@@ -647,6 +652,14 @@ All notable changes to Abhed are recorded here. The format follows
   `RecordDecision` and `RefreshAgents`.
 
 ### Changed
+
+- The interactive CLI starts in about 50 ms whatever container runtime is
+  installed: the sandbox is chosen behind the prompt when the process tier
+  meets the configured minimum, and commands wait for the choice. It took
+  2.6 s with a podman machine that was not running.
+- A model endpoint that is down is named at start-up with what to do, and a
+  task fails at once with the same advice. Model errors no longer print a Go
+  dial error or the endpoint's response body.
 
 - `abhed -p` exits with 128 plus the stop signal's number (143 for SIGTERM,
   129 for a hang-up) instead of 130 for every signal, as `rpc`, `acp`,
