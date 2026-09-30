@@ -638,6 +638,16 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					r.StartThinking()
 				}
 			case o := <-finished:
+				// A steer that arrived after the run last looked is not left
+				// waiting: a run that completed, or a wake stopped at its cap,
+				// goes on for it, as the server's does.
+				if runsOnFor(taskCtx, o, len(loop.Queued())) {
+					go func() {
+						reason, err := loop.RunQueued(taskCtx)
+						finished <- turnOutcome{reason, err}
+					}()
+					continue
+				}
 				// The turn is over however it ended; the indicator goes with it.
 				r.StopThinking()
 				runErr, runReason = o.err, o.reason
@@ -3346,4 +3356,12 @@ func runErrorLine(err error, woken bool) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// runsOnFor reports whether a turn that just ended has a person's message
+// waiting that it should run on for: it ended cleanly, completed or at a
+// wake's cap, and something is queued.
+func runsOnFor(ctx context.Context, o turnOutcome, queued int) bool {
+	return o.err == nil && ctx.Err() == nil &&
+		(o.reason == agent.TermCompleted || o.reason == agent.TermWakeLimit) && queued > 0
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -314,5 +315,33 @@ func TestWakeWithNothingToDoIsSilent(t *testing.T) {
 	}
 	if runErrorLine(nil, false) != "" {
 		t.Fatal("no error printed a line")
+	}
+}
+
+// A turn that completed, or a wake stopped at its cap, runs on for a steer
+// that arrived after its last look; an interrupted or failed one does not,
+// nor one with nothing queued.
+func TestTurnRunsOnForAQueuedSteer(t *testing.T) {
+	ctx := context.Background()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, c := range []struct {
+		name   string
+		ctx    context.Context
+		o      turnOutcome
+		queued int
+		want   bool
+	}{
+		{"completed", ctx, turnOutcome{reason: agent.TermCompleted}, 1, true},
+		{"wake limit", ctx, turnOutcome{reason: agent.TermWakeLimit}, 1, true},
+		{"nothing queued", ctx, turnOutcome{reason: agent.TermCompleted}, 0, false},
+		{"interrupted", ctx, turnOutcome{reason: agent.TermUserInterrupt}, 1, false},
+		{"max turns", ctx, turnOutcome{reason: agent.TermMaxTurns}, 1, false},
+		{"error", ctx, turnOutcome{reason: agent.TermCompleted, err: errors.New("x")}, 1, false},
+		{"cancelled", cancelled, turnOutcome{reason: agent.TermCompleted}, 1, false},
+	} {
+		if got := runsOnFor(c.ctx, c.o, c.queued); got != c.want {
+			t.Errorf("%s: runs on %v, want %v", c.name, got, c.want)
+		}
 	}
 }
