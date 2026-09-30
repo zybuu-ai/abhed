@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
@@ -235,13 +236,22 @@ func (c recordCtx) verify(args []string) int {
 		}
 		return 0
 	}
-	bad := false
+	// A session is checked against heads the index keeps, so the index is
+	// checked first.
+	idx, err := c.rec.VerifyIndex()
+	if err != nil {
+		return c.fail("%v", err)
+	}
+	bad := printReport(c.out, "index", idx)
 	for _, a := range args {
 		var rep local.Report
 		var err error
-		if _, statErr := os.Stat(a); statErr == nil && !c.inRecord(a) {
+		switch _, statErr := os.Stat(a); {
+		case statErr == nil && c.inRecordFolder(a) && !c.inRecord(a):
+			rep = local.Report{ID: a, Reason: "the file is in the records folder, but the index has no such session"}
+		case statErr == nil && !c.inRecord(a):
 			rep, err = local.VerifyFile(a) // an export, or a file from elsewhere
-		} else {
+		default:
 			var e local.Entry
 			if e, err = c.resolve(a); err == nil {
 				rep, err = c.rec.Verify(e.ID)
@@ -263,6 +273,12 @@ func (c recordCtx) verify(args []string) int {
 
 // verifyScope says what a passing verify does and does not show.
 const verifyScope = "A passing check shows the record was not edited, reordered or cut short by the agent or by accident. It is not proof against the machine's owner, who can rewrite and re-chain it."
+
+// inRecordFolder reports whether path is in this records directory at all.
+func (c recordCtx) inRecordFolder(path string) bool {
+	rel, err := filepath.Rel(c.rec.Dir(), tools.RealPath(path))
+	return err == nil && filepath.IsLocal(rel)
+}
 
 // inRecord reports whether path is a session file in this records directory.
 func (c recordCtx) inRecord(path string) bool {

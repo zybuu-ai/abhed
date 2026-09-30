@@ -235,3 +235,24 @@ func TestManagedRetentionPrunes(t *testing.T) {
 		t.Fatalf("the pruned session left no tombstone: %v", err)
 	}
 }
+
+// Verifying one session checks the index first, and a file in the records
+// folder that the index does not know is not taken for an export.
+func TestRecordVerifyOneChecksTheIndex(t *testing.T) {
+	ws := t.TempDir()
+	ids := recordHome(t, ws, "one", "two")
+	dir, _ := local.DefaultDir()
+	tenant := filepath.Join(dir, "default")
+	data, _ := os.ReadFile(filepath.Join(tenant, ids[0]+".jsonl"))
+	stray := filepath.Join(tenant, "s-unlisted.jsonl")
+	_ = os.WriteFile(stray, data, 0o600)
+	if code, out, _ := runRecord(t, ws, "verify", stray); code != 1 || !strings.Contains(out, "index has no such session") {
+		t.Fatalf("an unlisted record file: %d %s", code, out)
+	}
+	idx := filepath.Join(tenant, "index.jsonl")
+	data, _ = os.ReadFile(idx)
+	_ = os.WriteFile(idx, bytes.Replace(data, []byte(`"op":"title"`), []byte(`"op":"TITLE"`), 1), 0o600)
+	if code, out, _ := runRecord(t, ws, "verify", ids[1]); code != 1 || !strings.Contains(out, "FAILED  index") {
+		t.Fatalf("one session over a damaged index: %d %s", code, out)
+	}
+}
