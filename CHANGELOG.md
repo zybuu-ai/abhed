@@ -302,7 +302,11 @@ All notable changes to Abhed are recorded here. The format follows
   `lost`). Every process holds its sessions under a liveness identity (its
   node id, or an id of its own when none is set) and heartbeats them,
   workbench holds included; the takeover is one conditional update that
-  writes the new holder, so of two processes exactly one wins. A hold that
+  writes the new holder, so of two processes exactly one wins. The
+  heartbeat is fenced: it renews only a claim that is still this process's,
+  and a process that finds its claim taken, or cannot renew it for the
+  stale window, stops its run and tasks as `lease_lost` and writes nothing
+  more to the session. A claim is never taken from another live holder. A hold that
   cannot be recorded now fails the start, message or wake (503 for a
   message) instead of running unseen. `abhed serve` also sweeps at startup,
   reconciling every open session whose holder's heartbeat is stale.

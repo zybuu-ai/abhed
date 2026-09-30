@@ -633,21 +633,45 @@ func (p *Postgres) ApprovalAnsweredBy(ctx context.Context, id string) (string, e
 	return *by, nil
 }
 
+// HolderStale is how long a holder's claim on a session lasts without a
+// heartbeat. A claim fresher than this belongs to a live process.
+const HolderStale = 2 * time.Minute
+
+// ErrHeldElsewhere refuses a claim on a session another live process holds.
+var ErrHeldElsewhere = errors.New("the session is held by another process")
+
 // ClaimNode records that this node holds the session's turn in flight, so a
 // request about that session can be routed back to the process that has it.
 //
-// Claiming is unconditional by design: the caller has already decided to run
-// the turn here, and the node that ran it last is the one whose memory the
-// live session is in. A stale claim from a node that died is handled by the
-// staleness window in NodeFor, not by refusing the claim.
+// It never takes a session from another live holder: the row must hold no
+// one, this node, or a holder whose claim is older than HolderStale (a
+// process that went away). Otherwise it answers ErrHeldElsewhere.
 func (p *Postgres) ClaimNode(ctx context.Context, sessionID, nodeID string) error {
-	_, err := p.pool.Exec(ctx, `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND deleted_at IS NULL`, sessionID, nodeID)
+		WHERE id = $1 AND deleted_at IS NULL
+		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String())
 	if err != nil {
 		return fmt.Errorf("claim node for %s: %w", sessionID, err)
 	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("claim node for %s: %w", sessionID, ErrHeldElsewhere)
+	}
 	return nil
+}
+
+// RenewNode is a holder's heartbeat: it refreshes the claim only while the
+// row is still this holder's. false means another process has taken the
+// session, and this one must stop acting on it.
+func (p *Postgres) RenewNode(ctx context.Context, sessionID, nodeID string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_seen_at = now()
+		WHERE id = $1 AND node_id = $2 AND deleted_at IS NULL`, sessionID, nodeID)
+	if err != nil {
+		return false, fmt.Errorf("renew node for %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // ReleaseNode clears the claim when a turn finishes, so the session is free

@@ -87,6 +87,16 @@ type SessionRouter interface {
 	NodeFor(ctx context.Context, sessionID string, stale time.Duration) (string, error)
 }
 
+// LeaseRenewer is implemented by stores whose heartbeat is fenced: a renewal
+// succeeds only while the session is still this holder's, and false says
+// another process has taken it over.
+type LeaseRenewer interface {
+	RenewNode(ctx context.Context, sessionID, holder string) (bool, error)
+}
+
+// errLeaseLost refuses every write for a session this process no longer holds.
+var errLeaseLost = errors.New("this process no longer holds the session: another has taken it over")
+
 // ApprovalStore is implemented by stores that can hold a pending approval
 // durably, so a reviewer's answer reaches the waiting turn from any node.
 //
@@ -110,8 +120,8 @@ const approvalPoll = 2 * time.Second
 
 // nodeStale is how long a claim survives without being refreshed. Longer than
 // any turn boundary, short enough that a node which died does not strand its
-// sessions for long.
-const nodeStale = 2 * time.Minute
+// sessions for long. The store's own claims use the same window.
+var nodeStale = store.HolderStale
 
 // nodeHeartbeat refreshes the claim well inside nodeStale, so a slow write or
 // a missed tick does not make a healthy node look dead.
@@ -330,11 +340,14 @@ type liveSession struct {
 	// ownerGone is set when the last check before an idle delivery found the
 	// owner no longer active.
 	ownerGone atomic.Bool
-	claimMu   sync.Mutex
-	holdMu    sync.Mutex // guards held and release; a write takes it under claimMu
-	held      bool
-	release   *time.Timer
-	priorEnd  json.RawMessage
+	// fenced is set once another process has taken the session over: nothing
+	// more is written for it here.
+	fenced   atomic.Bool
+	claimMu  sync.Mutex
+	holdMu   sync.Mutex // guards held and release; a write takes it under claimMu
+	held     bool
+	release  *time.Timer
+	priorEnd json.RawMessage
 	// provider and model are what the session runs on now; a switch changes them under mu.
 	provider string
 	model    string
@@ -1195,6 +1208,14 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
 		model:    adapter.Profile().Name,
 	}
+	// Once another process has taken the session over, nothing more is
+	// written to its record from here.
+	rec.Gate = func() error {
+		if live.fenced.Load() {
+			return errLeaseLost
+		}
+		return nil
+	}
 
 	// The prompt, loop settings and budget as the CLI builds them.
 	cfg := toolset.LoopConfig(s.opts.Config,
@@ -1441,7 +1462,12 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if durable {
 		// Claimed or not: a claim given back unused leaves the session to be claimed again.
 		live.unclaimed.Store(!claim)
-		recorder.Gate = func() error { return s.claimForWrite(id, live) }
+		recorder.Gate = func() error {
+			if live.fenced.Load() {
+				return errLeaseLost
+			}
+			return s.claimForWrite(id, live)
+		}
 	}
 
 	s.mu.Lock()
@@ -2505,8 +2531,37 @@ func (s *Server) holdNode(live *liveSession) error {
 	if err := s.claimNode(context.Background(), live.ID); err != nil {
 		return err
 	}
-	live.beatStop = s.heartbeatNode(context.Background(), live.ID)
+	live.beatStop = s.heartbeatNode(context.Background(), live.ID, func() { s.fence(live) })
 	return nil
+}
+
+// fence stops everything this process runs for a session whose claim it has
+// lost: nothing more is written to the session's record, the run and the
+// background tasks end as lease_lost (recorded in their own records), and
+// the session leaves this process. The claim is not released: it is
+// another's now.
+func (s *Server) fence(live *liveSession) {
+	if !live.fenced.CompareAndSwap(false, true) {
+		return
+	}
+	s.log.Error("lost the claim on a session to another process; stopping it here", "session", live.ID)
+	live.mu.Lock()
+	stop, cancelCause := live.beatStop, live.cancelCause
+	live.beatStop = nil
+	live.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	s.mu.Lock()
+	if s.running[live.ID] == live {
+		delete(s.running, live.ID)
+	}
+	s.mu.Unlock()
+	if cancelCause != nil {
+		cancelCause(agent.StopCause{Reason: agent.TermLeaseLost})
+	}
+	live.closeTerminals()
+	live.Loop.Background.Close(agent.TermLeaseLost)
 }
 
 // releaseNodeNow ends the hold whatever is live, for a session going away
@@ -3165,11 +3220,15 @@ func holderID(nodeID string) string {
 // ones — are exactly the ones whose approvals get misrouted.
 //
 // The returned function stops the heartbeat; it is safe to call more than once.
-func (s *Server) heartbeatNode(ctx context.Context, sessionID string) func() {
-	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat)
+func (s *Server) heartbeatNode(ctx context.Context, sessionID string, lost func()) func() {
+	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat, lost)
 }
 
-func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every time.Duration) func() {
+// heartbeatNodeEvery refreshes the claim every interval. A renewal the store
+// refuses (another process holds the session now), or failures lasting
+// until the claim would read as stale to others, mean the lease is lost:
+// lost runs, once, and the heartbeat ends.
+func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every time.Duration, lost func()) func() {
 	if _, ok := s.liveness(); !ok {
 		return func() {}
 	}
@@ -3177,6 +3236,7 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 	go func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
+		lastOK := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
@@ -3185,12 +3245,42 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 				// Its own context: the run's may be seconds from cancellation,
 				// and a refresh that fails then would look like a dead node.
 				beat, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = s.claimNode(beat, sessionID) // logged; the next beat tries again
+				held, err := s.renewNode(beat, sessionID)
 				cancel()
+				switch {
+				case err == nil && held:
+					lastOK = time.Now()
+					continue
+				case err != nil && time.Since(lastOK) < nodeStale-every:
+					continue // logged; the next beat tries again while the claim still reads as live
+				}
+				if ctx.Err() == nil && lost != nil {
+					lost()
+				}
+				return
 			}
 		}
 	}()
 	return stop
+}
+
+// renewNode refreshes this process's claim: fenced where the store can
+// fence it, and otherwise by claiming again.
+func (s *Server) renewNode(ctx context.Context, sessionID string) (bool, error) {
+	if r, ok := s.store.(LeaseRenewer); ok {
+		held, err := r.RenewNode(ctx, sessionID, s.holder)
+		if err != nil {
+			s.log.Warn("could not renew the claim on a session", "session", sessionID, "err", err)
+		}
+		return held, err
+	}
+	if err := s.claimNode(ctx, sessionID); err != nil {
+		if errors.Is(err, store.ErrHeldElsewhere) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // releaseNode clears the claim when a turn finishes. It uses its own context:

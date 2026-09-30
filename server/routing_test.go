@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -348,7 +349,7 @@ func TestHeartbeatRefreshesTheClaim(t *testing.T) {
 	// identical.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := s.heartbeatNodeEvery(ctx, "s-beat", 20*time.Millisecond)
+	stop := s.heartbeatNodeEvery(ctx, "s-beat", 20*time.Millisecond, nil)
 	defer stop()
 
 	// Wait for refreshes rather than for a duration: under -race the build is
@@ -382,7 +383,7 @@ func TestHeartbeatStopIsIdempotent(t *testing.T) {
 		running: map[string]*liveSession{},
 		opts:    Options{NodeID: "node-a"},
 	}
-	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Hour)
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Hour, nil)
 	stop()
 	stop()
 }
@@ -395,7 +396,64 @@ func TestHeartbeatIsInertWithoutARouter(t *testing.T) {
 		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		running: map[string]*liveSession{},
 	}
-	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Millisecond)
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Millisecond, nil)
 	time.Sleep(20 * time.Millisecond)
 	stop()
+}
+
+// fencingRouter is a store whose renewals report whether the row is still
+// the holder's, or fail.
+type fencingRouter struct {
+	countingRouter
+	held atomic.Bool
+	fail atomic.Bool
+}
+
+func (f *fencingRouter) RenewNode(context.Context, string, string) (bool, error) {
+	if f.fail.Load() {
+		return false, errors.New("store unavailable")
+	}
+	return f.held.Load(), nil
+}
+
+// A heartbeat the store refuses (another process took the session) loses
+// the lease at once; failing beats lose it only once the claim would read
+// as stale to others. Either way it is lost once, and the beating ends.
+func TestHeartbeatLosesTheLease(t *testing.T) {
+	oldStale := nodeStale
+	nodeStale = 300 * time.Millisecond
+	defer func() { nodeStale = oldStale }()
+	s := &Server{log: discardLogger(), running: map[string]*liveSession{}, holder: "me"}
+
+	f := &fencingRouter{}
+	s.store = f
+	lost := make(chan time.Time, 4)
+	start := time.Now()
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", 20*time.Millisecond, func() { lost <- time.Now() })
+	defer stop()
+	select {
+	case <-lost:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a refused renewal did not lose the lease")
+	}
+
+	g := &fencingRouter{}
+	g.held.Store(true)
+	g.fail.Store(true)
+	s.store = g
+	start = time.Now()
+	stop2 := s.heartbeatNodeEvery(context.Background(), "s-2", 20*time.Millisecond, func() { lost <- time.Now() })
+	defer stop2()
+	select {
+	case at := <-lost:
+		if at.Sub(start) < nodeStale-40*time.Millisecond {
+			t.Fatalf("lost after %v of failures, before the claim could read as stale", at.Sub(start))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("failing renewals never lost the lease")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(lost) != 0 {
+		t.Fatal("the lease was lost more than once")
+	}
 }

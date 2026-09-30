@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -113,5 +114,40 @@ func TestClaimOrphan(t *testing.T) {
 	}
 	if ok, _ := p.ClaimOrphan(ctx, id, "instance-x", 2*time.Minute); ok {
 		t.Fatal("an ended session was taken as an orphan")
+	}
+}
+
+// A displaced holder cannot take the session back: its claim is refused
+// while the new holder is live, and its fenced heartbeat reports the loss.
+// A holder that went stale can be replaced.
+func TestClaimNodeNeverTakesALiveHolder(t *testing.T) {
+	p := openStore(t, "t-fence")
+	ctx := context.Background()
+	id := testID(t, "sess-fence-")
+	newSession(t, p, id, "t-fence")
+	if err := p.ClaimNode(ctx, id, "instance-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-c", HolderStale); !ok {
+		t.Fatal("the stale holder's session was not taken")
+	}
+	if err := p.ClaimNode(ctx, id, "instance-a"); !errors.Is(err, ErrHeldElsewhere) {
+		t.Fatalf("the displaced holder's claim: %v", err)
+	}
+	if held, err := p.RenewNode(ctx, id, "instance-a"); err != nil || held {
+		t.Fatalf("the displaced holder's heartbeat: held %v, %v", held, err)
+	}
+	if held, err := p.RenewNode(ctx, id, "instance-c"); err != nil || !held {
+		t.Fatalf("the holder's heartbeat: held %v, %v", held, err)
+	}
+	var holder string
+	if err := p.pool.QueryRow(ctx, `SELECT node_id FROM sessions WHERE id = $1`, id).Scan(&holder); err != nil || holder != "instance-c" {
+		t.Fatalf("holder %q, %v", holder, err)
+	}
+	if err := p.ClaimNode(ctx, id, "instance-c"); err != nil {
+		t.Fatalf("the holder claiming again: %v", err)
 	}
 }

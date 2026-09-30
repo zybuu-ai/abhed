@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -812,4 +813,37 @@ func TestStartupSweepRecoversOrphans(t *testing.T) {
 	}
 	a.ad.release("one")
 	a.ad.release("two")
+}
+
+// A fenced session writes nothing more to its record, and leaves the process
+// with its tasks stopped as lease_lost.
+func TestFencedSessionWritesNothing(t *testing.T) {
+	for _, resumed := range []bool{false, true} {
+		st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+		b := newBGServer(t, st, "one")
+		id := b.start("bg:one", false)
+		<-b.ended
+		live := b.live(id)
+		if resumed {
+			b.ad.release("one")
+			waitUntil(t, "the closing end", func() bool { e, _ := agent.LastEnd(b.events(id)); return e.Settled })
+			b.s.mu.Lock()
+			delete(b.s.running, id)
+			b.s.mu.Unlock()
+			var err error
+			if live, err = b.s.resumeSession(context.Background(), id, "", "alice", "acme", true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		b.s.fence(live)
+		if _, err := live.Loop.Recorder.Record(agent.EvAgentMessage, agent.ActorAgent, agent.Trusted, agent.Message{Text: "late"}); !errors.Is(err, errLeaseLost) {
+			t.Fatalf("resumed %v: a fenced session's write: %v", resumed, err)
+		}
+		if b.live(id) != nil || live.Loop.Background.Live() != 0 {
+			t.Fatalf("resumed %v: still here after the fence", resumed)
+		}
+		if !resumed {
+			b.ad.release("one")
+		}
+	}
 }

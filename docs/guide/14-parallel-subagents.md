@@ -276,7 +276,12 @@ Each server process holds the sessions it runs under a liveness identity (its
 seconds while a run, a background task or a workbench hold is live. Another
 process takes a session over only once that heartbeat is two minutes stale,
 so a live task on one server is never mistaken for a crashed one by another
-sharing the database. A server also sweeps at startup: every open session
+sharing the database. A heartbeat renews the claim only while it is still
+that process's: a process whose heartbeat is refused (another has taken the
+session over), or has failed for as long as the claim takes to go stale,
+stops at once. Its run and background tasks end as `lease_lost`, recorded in
+the tasks' own records, it writes nothing more to the session, and it drops
+the session; its claim is never taken back. A server also sweeps at startup: every open session
 whose holder's heartbeat is stale is reconciled then (its lost tasks recorded
 as `lost`, its ends written), so the session list shows it ended and ready to
 continue rather than running.

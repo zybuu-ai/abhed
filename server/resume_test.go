@@ -46,8 +46,26 @@ func (d *durableMem) ClaimNode(_ context.Context, id, holder string) error {
 	if d.holders == nil {
 		d.holders, d.seen = map[string]string{}, map[string]time.Time{}
 	}
+	// As Postgres: never taken from another live holder.
+	if h := d.holders[id]; h != "" && h != holder && time.Since(d.seen[id]) < nodeStale {
+		return store.ErrHeldElsewhere
+	}
 	d.holders[id], d.seen[id] = holder, time.Now()
 	return nil
+}
+
+// RenewNode is the fenced heartbeat: only while the row is still holder's.
+func (d *durableMem) RenewNode(_ context.Context, id, holder string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failHold {
+		return false, errors.New("store unavailable")
+	}
+	if d.holders[id] != holder {
+		return false, nil
+	}
+	d.seen[id] = time.Now()
+	return true, nil
 }
 
 func (d *durableMem) ReleaseNode(_ context.Context, id, holder string) error {

@@ -66,6 +66,9 @@ const (
 	TermSessionClosed     TerminalReason = "session_closed"
 	TermOwnerInactive     TerminalReason = "owner_inactive"
 	TermLost              TerminalReason = "lost"
+	// TermLeaseLost ends what a process ran for a session another process
+	// has since taken over: this one's claim lapsed, and it stops.
+	TermLeaseLost TerminalReason = "lease_lost"
 )
 
 // StopCause is the cause a context is cancelled with to end what runs on it
@@ -526,7 +529,7 @@ func noticeStatus(r TerminalReason) string {
 	case TermError, TermRetryExhausted:
 		return "failed"
 	case TermUserInterrupt, TermCancelledByParent, TermSessionDeleted, TermSessionClosed,
-		TermOwnerInactive, TermShutdown, TermLost:
+		TermOwnerInactive, TermShutdown, TermLost, TermLeaseLost:
 		return "cancelled"
 	}
 	return string(r)
