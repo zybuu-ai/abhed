@@ -151,6 +151,31 @@ type Background struct {
 	lastReason TerminalReason
 	lastEnd    SessionEnded
 	owed       bool
+	// epoch counts stops (CancelAll, Close), and stopReason is the last
+	// one's reason: a spawn that began before a stop does not start after it.
+	epoch      int
+	stopReason TerminalReason
+}
+
+// ErrStopped refuses a background spawn that began before a stop.
+var ErrStopped = errors.New("stopped before this background task started")
+
+// stopEpoch is the stop count now, for a spawn to check it did not change.
+func (b *Background) stopEpoch() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.epoch
+}
+
+// markStop counts a stop.
+func (b *Background) markStop(reason TerminalReason) {
+	b.mu.Lock()
+	b.epoch++
+	b.stopReason = reason
+	b.mu.Unlock()
 }
 
 // BackgroundHooks are how a surface takes part in idle delivery.
@@ -455,6 +480,10 @@ func (b *Background) Cancel(id string, reason TerminalReason) bool {
 // CancelAll stops every running child with reason and waits a bounded time
 // for each to record its end. Later spawns still work.
 func (b *Background) CancelAll(reason TerminalReason) int {
+	if b == nil {
+		return 0
+	}
+	b.markStop(reason)
 	return b.cancelWhere(reason, func(*bgTask) bool { return true })
 }
 
@@ -504,6 +533,8 @@ func (b *Background) Close(reason TerminalReason) {
 		return
 	}
 	b.closed = true
+	b.epoch++
+	b.stopReason = reason
 	var hit []*bgTask
 	for _, t := range b.tasks {
 		if !t.ended {
@@ -528,6 +559,10 @@ func (b *Background) Close(reason TerminalReason) {
 		b.idle(IdleEvent{Settled: true})
 	}
 }
+
+// testHookSpawnCounted, when set by a test, runs once a background spawn
+// is counted and recorded, before the child is registered.
+var testHookSpawnCounted func()
 
 // testHookChildEnded, when set by a test, runs as a child has ended.
 var testHookChildEnded func(*Background)
@@ -864,8 +899,17 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 	req.sessionID = id
 	joined := mgr.Mode() == WakeOff
 	extra := map[string]any{"background": true, "task_id": id}
+	// A stop between here and the child's start refuses it: resolving a model
+	// or making a worktree can take a while, and Stop means stop.
+	epoch := req.epoch
+	if !req.epochSet {
+		epoch = mgr.stopEpoch()
+	}
 	held := false
 	c, err := f.prepare(ctx, req, extra, func() error {
+		if ctx.Err() != nil || mgr.stopEpoch() != epoch {
+			return ErrStopped
+		}
 		if err := mgr.reserve(); err != nil {
 			return err
 		}
@@ -877,6 +921,9 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 	}
 	if err != nil {
 		return "", err
+	}
+	if testHookSpawnCounted != nil {
+		testHookSpawnCounted()
 	}
 
 	// The child's context comes from the session, not the call: the call's
@@ -892,7 +939,16 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		mgr.order = append(mgr.order, id)
 	}
 	mgr.tasks[id] = t
+	// A stop since the spawn was counted still takes it: its spawn is
+	// recorded, so it starts only to end at once with the stop's reason.
+	stoppedBy := TerminalReason("")
+	if mgr.epoch != epoch {
+		stoppedBy = mgr.stopReason
+	}
 	mgr.mu.Unlock()
+	if stoppedBy != "" {
+		cancel(StopCause{stoppedBy})
+	}
 	settle := req.settle
 	if c.settle != nil {
 		settle = c.settle

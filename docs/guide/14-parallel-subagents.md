@@ -223,7 +223,11 @@ answer their asks.
 
 **Stop means stop.** An explicit stop cancels every background task: Stop or
 `/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),
-`session/cancel`, `CancelTask`. "Send now" redirects the run and keeps them.
+`session/cancel`, `CancelTask`. It also stops a `task` or `tasks` call that
+is still starting its tasks: none starts after the stop ("stopped before this
+background task started"), and a task whose start was already recorded ends
+at once with the stop's reason. "Send now" redirects the run and keeps the
+tasks already running.
 A run that ends in `error`, `max_turns` or `max_budget` takes them with it.
 Ending the conversation (`/exit`, `/clear`, `/resume`, SDK `Close`, rpc `quit`)
 ends them as `session_closed`; deleting a session, as `session_deleted`; a

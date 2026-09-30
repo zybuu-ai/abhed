@@ -134,6 +134,10 @@ type SubagentRequest struct {
 	// settle, when set, runs once a background child has ended and returns
 	// what its notice says about the worktree it worked in.
 	settle func(context.Context) string
+	// epoch, when epochSet, is the manager's stop count when the call that
+	// asked for this background task began.
+	epoch    int
+	epochSet bool
 }
 
 func (Task) Name() string  { return "task" }
@@ -285,12 +289,19 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		if t.Background == nil {
 			return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
 		}
+		// Counted from before the worktree: a stop while it is made refuses the task.
+		if b, _ := managerOf(ctx); b != nil {
+			req.epoch, req.epochSet = b.stopEpoch(), true
+		}
 		if def.Isolation == "worktree" {
 			wt, res := makeWorktree(ctx, t.Workspace, req.AgentType)
 			if wt == nil {
 				return res
 			}
 			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
+		}
+		if testHookBeforeBackground != nil {
+			testHookBeforeBackground()
 		}
 		id, err := t.Background(ctx, req)
 		if err != nil {
@@ -310,6 +321,10 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	}
 	return tools.Result{Content: summary}
 }
+
+// testHookBeforeBackground, when set by a test, runs as task or tasks has
+// made the background tasks' worktrees and is about to start them.
+var testHookBeforeBackground func()
 
 // makeWorktree makes a worktree for a role that works in one, or says why not.
 func makeWorktree(ctx context.Context, ws, agentType string) (*worktree, tools.Result) {
