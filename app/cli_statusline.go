@@ -71,18 +71,13 @@ func statuslineScript(command, workspace string, state []string) (sandbox.Readab
 		rest = " " + rest
 	}
 	path := first
-	home, homeErr := os.UserHomeDir()
-	if tail, ok := strings.CutPrefix(path, "~/"); ok {
-		if homeErr != nil {
-			return sandbox.ReadableFile{}, "", nil
-		}
+	home, _ := os.UserHomeDir()
+	if tail, ok := strings.CutPrefix(path, "~/"); ok && home != "" {
 		path = filepath.Join(home, tail)
 	}
-	if !filepath.IsAbs(path) {
-		return sandbox.ReadableFile{}, "", nil
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+	// Anything else runs as written: an inline command, or a path that is
+	// not an executable file, which fails in the sandbox on its own.
+	if !filepath.IsAbs(path) || !executableFile(path) {
 		return sandbox.ReadableFile{}, "", nil
 	}
 	pin, err := sandbox.PinReadable(path)
@@ -90,7 +85,7 @@ func statuslineScript(command, workspace string, state []string) (sandbox.Readab
 		return pin, "", fmt.Errorf("not run: %w", err)
 	}
 	stateDirs := append([]string{filepath.Join(workspace, tools.StateDir)}, state...)
-	if homeErr == nil {
+	if home != "" {
 		stateDirs = append(stateDirs, filepath.Join(home, tools.StateDir))
 	}
 	writable := append([]string{workspace}, sandbox.WritableAreas()...)
@@ -103,6 +98,12 @@ func statuslineScript(command, workspace string, state []string) (sandbox.Readab
 		}
 	}
 	return pin, rest, nil
+}
+
+// executableFile reports whether path is a regular file with an exec bit.
+func executableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 // under reports whether p is one of dirs or inside one, by its own
