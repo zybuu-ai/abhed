@@ -166,15 +166,9 @@ func rewindCode(ctx context.Context, st *cliState, sess *tools.Session, since in
 			}
 			return nil
 		}
-		if err := sess.RestoreFile(path, data); err != nil {
-			return err
-		}
-		// The file's own mode comes back with its content; RestoreFile
-		// writes it owner-only, and an executable would lose its x.
-		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && mode != 0 {
-			return os.Chmod(path, mode.Perm())
-		}
-		return nil
+		// The file's own mode comes back with its content, set inside the
+		// session's confined write, so no link is followed.
+		return sess.RestoreFileMode(path, data, mode)
 	}
 	var blobs agent.BlobPutter
 	if rec, ok := st.store.(*local.Store); ok {
