@@ -21,7 +21,7 @@ import (
 // typed, so an account could take another's sessions by claiming its email or
 // name. A local account now owns its sessions as "local:<username>". This
 // moves the rows written under the old keys, once, where the account they
-// belonged to is certain.
+// belonged to is certain, and lowercases owners that are plain emails.
 const ownerSchemaVersion = 4
 
 // UnclaimedPrefix marks a session whose old owner key more than one account
@@ -77,6 +77,10 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool) ([]OwnerRemap, error
 	if err != nil {
 		return nil, err
 	}
+	folds, err := foldEmailOwners(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT DO NOTHING`,
 		ownerSchemaVersion); err != nil {
 		return nil, fmt.Errorf("owner migration: %w", err)
@@ -85,6 +89,7 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool) ([]OwnerRemap, error
 		return nil, fmt.Errorf("owner migration: %w", err)
 	}
 	logRemaps(remaps)
+	logFolds(folds)
 	return remaps, nil
 }
 
@@ -187,6 +192,68 @@ func remapOwners(ctx context.Context, tx pgx.Tx, accounts []*auth.User) ([]Owner
 		return nil, fmt.Errorf("owner migration: %w", err)
 	}
 	return out, nil
+}
+
+// EmailFold is one plain-email owner the migration lowercased, with every
+// case variant the rows had.
+type EmailFold struct {
+	To       string
+	Variants []string
+	Sessions int64
+}
+
+// foldEmailOwners lowercases every session owner that is a plain email, as
+// auth.FoldEmailOwner does for a caller, in every tenant. Namespaced owners
+// (local:, unclaimed:, oidc:) hold a ":" and are never touched.
+func foldEmailOwners(ctx context.Context, tx pgx.Tx) ([]EmailFold, error) {
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`); err != nil {
+		return nil, fmt.Errorf("owner migration: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT lower(user_id), array_agg(DISTINCT user_id ORDER BY user_id)
+		  FROM sessions
+		 WHERE strpos(user_id, '@') > 0 AND strpos(user_id, ':') = 0
+		 GROUP BY lower(user_id)
+		HAVING bool_or(user_id <> lower(user_id))`)
+	if err != nil {
+		return nil, fmt.Errorf("owner migration: read email owners: %w", err)
+	}
+	var out []EmailFold
+	for rows.Next() {
+		var f EmailFold
+		if err := rows.Scan(&f.To, &f.Variants); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, f := range out {
+		tag, err := tx.Exec(ctx, `UPDATE sessions SET user_id = $1
+			WHERE lower(user_id) = $1 AND user_id <> $1 AND strpos(user_id, ':') = 0`, f.To)
+		if err != nil {
+			return nil, fmt.Errorf("owner migration: lowercase %q: %w", f.To, err)
+		}
+		out[i].Sessions = tag.RowsAffected()
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions FORCE ROW LEVEL SECURITY`); err != nil {
+		return nil, fmt.Errorf("owner migration: %w", err)
+	}
+	return out, nil
+}
+
+func logFolds(folds []EmailFold) {
+	for _, f := range folds {
+		if len(f.Variants) > 1 {
+			slog.Warn("sessions under case variants of one email now share one owner",
+				"owner", f.To, "variants", strings.Join(f.Variants, ","), "sessions", f.Sessions)
+			continue
+		}
+		slog.Info("session owner email lowercased", "owner", f.To, "sessions", f.Sessions)
+	}
 }
 
 func logRemaps(remaps []OwnerRemap) {

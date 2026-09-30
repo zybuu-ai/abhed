@@ -58,14 +58,23 @@ func (id *Identity) Owner() string {
 		return LocalOwner(id.Subject)
 	case "", ProviderProxy:
 		if id.Provider == ProviderProxy && id.EmailVerified && ownerEmail(id.Email) {
-			return id.Email
+			return strings.ToLower(id.Email)
 		}
-		return id.Subject
+		return FoldEmailOwner(id.Subject)
 	}
 	if id.EmailVerified && ownerEmail(id.Email) {
-		return id.Email
+		return strings.ToLower(id.Email)
 	}
 	return id.Provider + ":" + id.Subject
+}
+
+// FoldEmailOwner lowercases an owner that is a plain email (an "@" and no
+// ":"), so one address owns its sessions whatever case a provider sends.
+func FoldEmailOwner(owner string) string {
+	if strings.Contains(owner, "@") && !strings.Contains(owner, ":") {
+		return strings.ToLower(owner)
+	}
+	return owner
 }
 
 // LocalOwner is the owner of a local account's sessions.

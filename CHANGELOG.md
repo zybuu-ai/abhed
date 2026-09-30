@@ -33,6 +33,8 @@ All notable changes to Abhed are recorded here. The format follows
     verified it (OIDC `email_verified: true`, GitHub's verified primary
     email), as before; otherwise by `<provider>:<subject>`.
   - A trusted proxy keeps `X-Abhed-Email` when set, else `X-Abhed-User`.
+  - An owner that is an email address is lowercased, so a provider that
+    changes the case of an address keeps one owner.
   - A local account's email must be a plain address that no other account
     holds or is named, compared without regard to case, at `user add`,
     invite and open sign-up, and an administrator's account creation.
@@ -357,6 +359,14 @@ All notable changes to Abhed are recorded here. The format follows
   A session the CLI recorded under an OS user name that is also an account's
   name moves to that account. The event record is append-only and keeps the
   approver names it was written with.
+- The same migration lowercases every session owner that is a plain email
+  (an `@` and no `:`), in every tenant, because an owner email is now
+  compared in lower case: a single sign-on or proxy identity whose provider
+  sent `Yuvraj@Example.COM` keeps the sessions stored under that spelling.
+  Rows under several spellings of one address become one owner, and the
+  migration logs each such address with the spellings it merged. Namespaced
+  owners (`local:`, `unclaimed:`, `oidc:`, `github:`) and non-address owners
+  are left as they are.
 - The approver in the record, the `by` of administrative audit lines and the
   `user` of a session in `GET /v1/sessions` are now the owner above, such as
   `local:alice`, not the email. `/v1/whoami` returns it as `owner`.
