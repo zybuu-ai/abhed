@@ -54,8 +54,7 @@ func (a *App) doctor(workspace string) int {
 	for _, w := range agentdefs.ManagedCaseWarnings(managed.AgentsDir) {
 		fmt.Printf("agents      ⚠ %s\n", w)
 	}
-	unknown := printUnknown(os.Stdout, cfg)
-	unknown = printNotInEffect(os.Stdout, cfg) || unknown
+	findings := configFindings(os.Stdout, cfg)
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
 		label := string(sb.Tier())
 		if sb.Tier() == sandbox.TierNone {
@@ -268,7 +267,7 @@ func (a *App) doctor(workspace string) int {
 		fmt.Println("\nNot ready: the secrets store cannot be loaded (see above), so no session will start.")
 		return 1
 	}
-	return doctorVerdict(os.Stdout, unknown)
+	return doctorVerdict(os.Stdout, findings)
 }
 
 // limitWarnings names the configured limits the tier in force does not apply:
@@ -292,15 +291,36 @@ func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 // runningAsRoot is replaced in tests.
 var runningAsRoot = func() bool { return os.Getuid() == 0 }
 
+// configCheck is what the doctor found in the configuration's keys.
+type configCheck struct {
+	// unknown is a key nothing reads; notInEffect a key this version reads
+	// but does not act on yet.
+	unknown, notInEffect bool
+}
+
+// configFindings lists both kinds of key and reports which there were.
+func configFindings(w io.Writer, cfg config.Config) configCheck {
+	unknown := printUnknown(w, cfg)
+	return configCheck{unknown: unknown, notInEffect: printNotInEffect(w, cfg)}
+}
+
 // doctorVerdict ends a doctor run whose checks all passed: ready, unless the
-// configuration has keys nothing reads, or acts on yet.
-func doctorVerdict(w io.Writer, unknown bool) int {
-	if unknown {
-		fmt.Fprintln(w, "\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
-		return 1
+// configuration has keys nothing reads, or keys this version does not act
+// on yet. Each is said as what it is.
+func doctorVerdict(w io.Writer, f configCheck) int {
+	if !f.unknown && !f.notInEffect {
+		fmt.Fprintln(w, "\nReady.")
+		return 0
 	}
-	fmt.Fprintln(w, "\nReady.")
-	return 0
+	fmt.Fprintln(w)
+	if f.unknown {
+		fmt.Fprintln(w, "Not ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
+	}
+	if f.notInEffect {
+		fmt.Fprintln(w, "Not ready: the configuration sets keys this version does not act on yet (listed above), "+
+			"so the controls they name are not in force. Remove them, or run a version that acts on them.")
+	}
+	return 1
 }
 
 // printNotInEffect lists the settings the files made that this version does
