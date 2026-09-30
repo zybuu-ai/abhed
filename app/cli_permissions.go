@@ -343,7 +343,8 @@ func canonicalDir(dir string) (string, error) {
 }
 
 // refusedDir adds the CLI's own refusals to the session's: anything inside
-// ~/.abhed, and the record directory.
+// ~/.abhed, and the record directory. The workspace's .abhed is refused as
+// already reachable.
 func refusedDir(cfg config.Config, dir string) error {
 	if home, err := os.UserHomeDir(); err == nil {
 		if p := tools.RealPath(filepath.Join(home, tools.StateDir)); within(dir, p) {

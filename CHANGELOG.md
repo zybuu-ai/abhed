@@ -14,7 +14,9 @@ All notable changes to Abhed are recorded here. The format follows
   so its veto silently stopped applying.
 - `-add-dir`, `additional_dirs` and `/add-dir` refuse a credential folder such
   as `~/.ssh`, a folder that holds the home directory, and one that holds
-  Abhed's state; before, only `/` and the home directory itself were refused.
+  `~/.abhed` or a configured state file; before, only `/` and the home
+  directory itself were refused. A folder that holds the workspace, as a
+  monorepo's root does, is still allowed.
   `/add-dir` adds only the folder it checked and showed, so a path swapped for
   a link while the person answers is refused.
 - An extension that answered `ask` about a call a deny rule or plan mode

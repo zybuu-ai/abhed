@@ -51,3 +51,30 @@ func TestAddRootRefusesStateAndCredentials(t *testing.T) {
 		t.Fatalf("%q %v", got, err)
 	}
 }
+
+// A folder that holds the workspace, as a monorepo's root does, may be added,
+// whether or not the workspace has a .abhed of its own.
+func TestAddRootAllowsAFolderHoldingTheWorkspace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mono, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(mono, "pkg")
+	if err := os.MkdirAll(filepath.Join(pkg, StateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, StateDir, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSession(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddRoot(mono); err != nil {
+		t.Fatalf("the monorepo root was refused: %v", err)
+	}
+	if _, err := s.Resolve(filepath.Join(pkg, StateDir, "config.json")); err == nil {
+		t.Fatal("the workspace's .abhed became reachable through the added root")
+	}
+}

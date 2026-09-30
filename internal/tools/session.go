@@ -230,8 +230,8 @@ func (s *Session) AddRootAs(dir, want string) (string, error) {
 var credentialDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", filepath.Join(".config", "gcloud")}
 
 // CheckRoot resolves dir and says why it may not be a root: it is /, it
-// holds the home directory, it is inside a credential folder, or a state
-// directory or state file is in it.
+// holds the home directory, it is inside a credential folder, or the home
+// directory's state or a registered state file is in it.
 func (s *Session) CheckRoot(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -275,7 +275,8 @@ func (s *Session) CheckRoot(dir string) (string, error) {
 		}
 		stateDirs = append(stateDirs, filepath.Join(home, StateDir))
 	}
-	stateDirs = append(stateDirs, filepath.Join(s.Root, StateDir))
+	// The workspace's own .abhed is not counted: Resolve guards it under every
+	// root, and a folder holding the workspace, as in a monorepo, is fine.
 	var state []string
 	for _, d := range stateDirs {
 		state = append(state, RealPath(d))

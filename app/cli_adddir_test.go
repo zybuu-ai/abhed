@@ -284,3 +284,16 @@ func TestNewConversationRecordsWhatItInherits(t *testing.T) {
 		t.Fatalf("directories %+v", dirs)
 	}
 }
+
+// /add-dir refuses the workspace's own .abhed, which only the person edits.
+func TestAddDirRefusesTheWorkspaceState(t *testing.T) {
+	t.Setenv("HOME", realDir(t))
+	env, surface, _ := permEnv(t, config.Default(), accessRead)
+	state := filepath.Join(env.st.workspace, ".abhed", "hooks")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := slashAddDir(context.Background(), env, []string{state}); err == nil || len(surface.asked) != 0 {
+		t.Fatalf("the workspace's state was added (%v) or asked about", err)
+	}
+}

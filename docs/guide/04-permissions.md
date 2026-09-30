@@ -116,7 +116,9 @@ your home directory are refused, judged by where a link leads. The folder
 added is the one checked and shown: if the path leads somewhere else by the
 time you answer, nothing is added. The `-add-dir` flag and `additional_dirs`
 refuse the same folders, except that a folder inside `~/.abhed` that holds
-none of its state, such as a skill's, may be added there. Each added
+none of its state, such as a skill's, may be added there. A folder that holds
+the workspace, such as a monorepo's root, may be added either way; the
+workspace's `.abhed` stays out of reach through it. Each added
 directory is recorded as `workspace.dir_added` with its access.
 
 ### Turn limit
