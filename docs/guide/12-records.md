@@ -130,7 +130,9 @@ abhed -c -p "and the tests"  continue headless
   find.
 - `-r path/to/file.jsonl` takes a record from elsewhere, such as an export. The
   file is verified first, then copied into a new session here; the file itself
-  is not changed.
+  is not changed. The copy passes this machine's secrets redaction, and its
+  events are marked `untrusted`, as are copies from a record that failed
+  verification: anyone can write a file with a valid chain.
 
 Inside a session:
 
