@@ -8,6 +8,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The interactive approval can no longer be answered by a key pressed as it
+  appears. No key, arrows and Enter included, counts for the first 300 ms the
+  question is on screen; a number counts only with 300 ms of quiet on either
+  side, so typing or a key held down never answers; Enter needs 300 ms since
+  the last arrow; and nothing is selected at first, so Enter alone answers
+  nothing. Only the answers offered can be chosen. A destructive command
+  needs a second Yes, whose default is No.
+- Text from the model, from tools and from a status line command is drawn
+  with its control sequences removed, keeping only colour: none of it can
+  move the cursor over the input, set the clipboard or retitle the window.
+
 - In every release up to and including 1.2.1, a repository could ship a
   `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
   `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
@@ -453,11 +464,40 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
-  `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
-  `memory.import_depth`, `record.dir`, `record.retention_days` and
-  `hooks.disabled`. They are accepted so a file that sets them stays valid,
-  but this version does not act on them yet: setting one prints "set but not
+- The interactive CLI is rebuilt around an input box that stays on screen
+  while the agent works ([The terminal](docs/guide/18-terminal.md)):
+  - Replies stream as they are written, formatted as they arrive: headings,
+    lists, emphasis, tables, and highlighted code blocks that stay blocks
+    when they arrive in pieces. Prose wraps between words.
+  - Multi-line messages (Shift+Enter, Alt+Enter, Ctrl-J, `\` then Enter);
+    a large paste is one placeholder and one message; history is kept per
+    workspace, with Ctrl-R search; shell editing keys, undo, `$EDITOR` with
+    Ctrl-G, and optional vim editing (`/vim`).
+  - Accented letters, CJK, emoji and flags are typed, measured and deleted
+    as the characters they are.
+  - Tool calls show the first and last lines of their output, and edits and
+    writes a diff with line numbers and context, in every mode; Ctrl-O shows
+    the whole transcript with everything in full. Paths are relative to the
+    workspace.
+  - Approvals are a numbered dialog that shows the change, why it is asked,
+    the policy step, and who asked; it stays in the transcript with the
+    answer.
+  - A footer shows the permission mode, the model, how full the context
+    is, the session's tokens, background tasks and the git branch;
+    `statusline.command` replaces its second row with a command's output.
+  - Shift-Tab steps through default, accept-edits and plan, never auto or
+    bypass.
+  - Dark, light, high-contrast and colour-blind themes, chosen from the
+    terminal's background or with `/theme`.
+  - The Surface the slash commands draw and ask through is the terminal:
+    blocks, guarded dialogs, pickers and full-screen panels.
+
+- Configuration keys for the interactive CLI: `statusline.command`, which
+  the footer runs, and, reserved, `cli.mode_cycle`, `commands.dirs`,
+  `rules.dirs`, `memory.auto`, `memory.import_depth`, `record.dir`,
+  `record.retention_days` and `hooks.disabled`. The reserved ones are
+  accepted so a file that sets them stays valid, but this version does not
+  act on them yet: setting one prints "set but not
   yet in effect in this version", and `abhed doctor` reports it and does not
   call the configuration ready. Who may set each is already enforced.
   `cli.mode_cycle`, `record.*` and `hooks.disabled` are managed only: the
@@ -623,6 +663,18 @@ All notable changes to Abhed are recorded here. The format follows
   `RecordDecision` and `RefreshAgents`.
 
 ### Changed
+
+- The interactive CLI:
+  - Esc stops a running turn and never swallows the next key; Ctrl-C clears
+    the line, then stops a turn, and at an empty prompt pressed twice exits.
+  - On a terminal the per-reply usage line and the "steering" notices are
+    gone: the footer and the input box carry them. Piped sessions print
+    them as before.
+  - Redraws send only what changed: typing at the end of the line is one
+    byte a key where the whole prompt was redrawn before, and a resize
+    redraws the screen at the new width rather than leaving the old one's
+    rows behind.
+  - The startup banner keeps each fact on one row at narrow widths.
 
 - The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
   system prompt, loop settings and budget in one place, so a surface differs
