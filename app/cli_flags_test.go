@@ -177,3 +177,17 @@ func TestSkipPermissionsTakesEffectAfterYes(t *testing.T) {
 		t.Fatalf("%v", s)
 	}
 }
+
+// A comma inside a rule's parentheses stays in the rule, through the join
+// and the split, in either spelling.
+func TestRulesKeepCommasInParentheses(t *testing.T) {
+	got, err := applyFlags(config.Default(), "", 0, joinRules("bash(echo x,y)", "Bash(git push origin a,b),Read"), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bash(echo x,y)", "bash(git push origin a,b)", "read"} {
+		if !slices.Contains(got.Permissions.Allow, want) {
+			t.Errorf("no %q in %q", want, got.Permissions.Allow)
+		}
+	}
+}

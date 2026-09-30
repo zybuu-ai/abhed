@@ -47,7 +47,7 @@ func (a *App) usage(fs *flag.FlagSet) {
 	fmt.Fprint(w, exitCodesHelp)
 }
 
-// exitCodesHelp is the exit-code table, as docs/guide/headless.md has it.
+// exitCodesHelp is the exit-code table, as docs/guide/10-automation.md has it.
 const exitCodesHelp = `
 Exit codes: 0 done, 1 error, 2 bad invocation or turn limit, 3 token budget,
 4 refused by policy, 5 model retries exhausted, 6 shutdown, 7 deadline,
@@ -391,7 +391,7 @@ func validMode(m string) bool {
 func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDirs string) (config.Config, error) {
 	return cfg.Apply(config.Overrides{
 		Mode: mode, MaxTurns: maxTurns,
-		Allow: splitRules(allow), Deny: splitRules(deny), AdditionalDirs: splitRules(addDirs),
+		Allow: splitTop(allow), Deny: splitTop(deny), AdditionalDirs: splitRules(addDirs),
 	})
 }
 
@@ -400,10 +400,20 @@ func applyFlags(cfg config.Config, mode string, maxTurns int, allow, deny, addDi
 // outside parentheses; a rule already in Abhed's form comes out unchanged.
 func toolRules(list string) []string {
 	var out []string
+	for _, r := range splitTop(list) {
+		out = append(out, toolRule(r))
+	}
+	return out
+}
+
+// splitTop splits a rule list at commas outside parentheses, so a comma in
+// a rule's pattern stays in it.
+func splitTop(list string) []string {
+	var out []string
 	depth, start := 0, 0
 	emit := func(s string) {
 		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, toolRule(s))
+			out = append(out, s)
 		}
 	}
 	for i, r := range list {
@@ -447,7 +457,7 @@ func toolRule(s string) string {
 
 // joinRules adds rules in the familiar form to rules in Abhed's.
 func joinRules(abhed, familiar string) string {
-	return strings.Join(append(splitRules(abhed), toolRules(familiar)...), ",")
+	return strings.Join(append(splitTop(abhed), toolRules(familiar)...), ",")
 }
 
 // budgetFlag applies -max-budget-tokens. Under a managed budget it may only
