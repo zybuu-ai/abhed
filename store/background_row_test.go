@@ -179,3 +179,21 @@ func TestCreateSessionWritesTheHolder(t *testing.T) {
 		t.Fatalf("holder %q, %v", node, err)
 	}
 }
+
+// A node takes back a session held under its own id at once; another node
+// waits for the claim to go stale.
+func TestClaimOrphanOwnHolder(t *testing.T) {
+	p := openStore(t, "t-own")
+	ctx := context.Background()
+	id := testID(t, "sess-own-")
+	newSession(t, p, id, "t-own")
+	if err := p.ClaimNode(ctx, id, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := p.ClaimOrphan(ctx, id, "node-b", HolderStale); ok {
+		t.Fatal("another node took a fresh claim")
+	}
+	if ok, _ := p.ClaimOrphan(ctx, id, "node-a", HolderStale); !ok {
+		t.Fatal("a node could not take back its own session")
+	}
+}

@@ -881,3 +881,45 @@ func TestIdleStoreErrorDoesNotHoldTheSession(t *testing.T) {
 		t.Fatalf("the result is not owed in the record: %+v", pend)
 	}
 }
+
+// A node restarted with the same node id takes back the sessions it held
+// before at once, without waiting out its own old heartbeat.
+func TestSameNodeReclaimsItsCrashedSessions(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	nodeA := func(_ *config.Config, o *Options) { o.NodeID = "node-a" }
+	a := newBGServerWith(t, st, nodeA, "one")
+	id := a.start("bg:one", false)
+	<-a.ended // node-a "crashes" here, its heartbeat still fresh
+	restarted := newBGServerWith(t, st, nodeA)
+	other := newBGServerWith(t, st, func(_ *config.Config, o *Options) { o.NodeID = "node-b" })
+	if rec := other.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("another node took a freshly held session: %d", rec.Code)
+	}
+	if rec := restarted.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("the restarted node could not take back its own session: %d %s", rec.Code, rec.Body)
+	}
+	a.ad.release("one")
+}
+
+// The sweep runs again every interval: a session whose holder goes stale
+// after the first sweep is recovered by a later one.
+func TestSweepRunsAgain(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one")
+	id := a.start("bg:one", false)
+	<-a.ended
+	b := newBGServer(t, st)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.s.sweepOrphans(ctx, 50*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	st.mu.Lock()
+	swept := st.ended[id]
+	st.mu.Unlock()
+	if swept {
+		t.Fatal("a live session was swept")
+	}
+	st.crash(id)
+	waitUntil(t, "a later sweep", func() bool { st.mu.Lock(); defer st.mu.Unlock(); return st.ended[id] })
+	a.ad.release("one")
+}

@@ -2454,6 +2454,21 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 	return n
 }
 
+// sweepOrphans runs RecoverOrphans now and then every interval until ctx
+// ends: a session whose holder goes stale later is recovered too.
+func (s *Server) sweepOrphans(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		s.RecoverOrphans(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // canWake says whether this server may start a wake run for the session now.
 // An owner who is no longer active cannot answer its asks, so their
 // session's children are cancelled rather than left to wait.
@@ -3471,9 +3486,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		MaxHeaderBytes: 1 << 20,
 		// No write timeout: SSE streams are long-lived by design.
 	}
-	// Sessions a crashed process left open are reconciled now, not only
-	// when someone next writes to them.
-	go s.RecoverOrphans(ctx)
+	// Sessions a crashed process left open are reconciled now, and again
+	// every stale window, not only when someone next writes to them.
+	go s.sweepOrphans(ctx, nodeStale)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)

@@ -173,8 +173,8 @@ func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale t
 	if _, ok := d.rows[id]; !ok || d.ended[id] {
 		return false, nil
 	}
-	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
-		return false, nil // its holder is alive
+	if at, ok := d.seen[id]; ok && time.Since(at) < stale && d.holders[id] != holder {
+		return false, nil // its holder is alive, and another
 	}
 	if _, ok := d.seen[id]; !ok {
 		// No holder: an orphan only once nothing has been written for stale.

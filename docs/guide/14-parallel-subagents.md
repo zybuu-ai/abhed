@@ -285,10 +285,14 @@ that process's: a process whose heartbeat is refused (another has taken the
 session over), or has failed for as long as the claim takes to go stale,
 stops at once. Its run and background tasks end as `lease_lost`, recorded in
 the tasks' own records, it writes nothing more to the session, and it drops
-the session; its claim is never taken back. A server also sweeps at startup: every open session
-whose holder's heartbeat is stale is reconciled then (its lost tasks recorded
-as `lost`, its ends written), so the session list shows it ended and ready to
-continue rather than running.
+the session; its claim is never taken back. A node restarted with the same
+`node_id` takes back the sessions it held at once, so two running nodes must
+never share a `node_id`.
+
+A server also sweeps at startup, and again every two minutes: every open
+session whose holder's heartbeat is stale is reconciled then (its lost tasks
+recorded as `lost`, its ends written), so the session list shows it ended and
+ready to continue rather than running.
 
 ## Resuming a finished subagent
 
