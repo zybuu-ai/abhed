@@ -112,7 +112,11 @@ approve changes there unless you granted write; commands run by `bash` are
 asked about as they are anywhere. Abhed's own state (`~/.abhed`, a
 workspace's `.abhed`, the record directory, a configured state file),
 credential folders such as `~/.ssh` and `~/.aws`, and any folder that holds
-your home directory are refused, judged by where a link leads. Each added
+your home directory are refused, judged by where a link leads. The folder
+added is the one checked and shown: if the path leads somewhere else by the
+time you answer, nothing is added. The `-add-dir` flag and `additional_dirs`
+refuse the same folders, except that a folder inside `~/.abhed` that holds
+none of its state, such as a skill's, may be added there. Each added
 directory is recorded as `workspace.dir_added` with its access.
 
 ### Turn limit

@@ -14,7 +14,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
-	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -241,10 +240,6 @@ const (
 	accessReadWrite = "read-write"
 )
 
-// credentialDirs are folders under the home directory that hold keys and
-// tokens; no session is given one.
-var credentialDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", filepath.Join(".config", "gcloud")}
-
 // slashAddDir is /add-dir. It is bound by the managed configuration as the
 // -add-dir flag is, shows the directory with its links resolved, and asks
 // whether the agent may only read there or also change files. Read-only is
@@ -263,7 +258,10 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := refusedDir(e.st.appCfg, e.st.workspace, canonical); err != nil {
+	if _, err := e.sess.CheckRoot(canonical); err != nil {
+		return false, err
+	}
+	if err := refusedDir(e.st.appCfg, canonical); err != nil {
 		return false, err
 	}
 	for _, root := range e.sess.PolicyRoots() {
@@ -302,7 +300,9 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 			return false, err
 		}
 	}
-	if err := e.sess.AddRoot(canonical); err != nil {
+	// What was checked and shown is what is added: a path that now leads
+	// elsewhere is refused.
+	if _, err := e.sess.AddRootAs(canonical, canonical); err != nil {
 		return false, err
 	}
 	e.st.appCfg = applied
@@ -340,32 +340,16 @@ func canonicalDir(dir string) (string, error) {
 	return real, nil
 }
 
-// refusedDir says why a directory may not be added: it is Abhed's state or
-// the record, it holds credentials, it holds the home directory, or a state
-// file the configuration names is inside it.
-func refusedDir(cfg config.Config, workspace, dir string) error {
-	home, err := os.UserHomeDir()
-	if err == nil {
-		home = tools.RealPath(home)
-		if within(home, dir) {
-			return fmt.Errorf("refusing %s: it holds your home directory, and with it your keys and Abhed's own state", dir)
+// refusedDir adds the CLI's own refusals to the session's: anything inside
+// ~/.abhed, and the record directory.
+func refusedDir(cfg config.Config, dir string) error {
+	if home, err := os.UserHomeDir(); err == nil {
+		if p := tools.RealPath(filepath.Join(home, tools.StateDir)); within(dir, p) {
+			return fmt.Errorf("refusing %s: it is inside %s, Abhed's own state", dir, p)
 		}
-		for _, d := range append([]string{tools.StateDir}, credentialDirs...) {
-			if p := tools.RealPath(filepath.Join(home, d)); within(dir, p) {
-				return fmt.Errorf("refusing %s: it is inside %s, which holds credentials or Abhed's own state", dir, p)
-			}
-		}
-	}
-	if within(dir, tools.RealPath(filepath.Join(workspace, tools.StateDir))) {
-		return fmt.Errorf("refusing %s: it is inside the workspace's %s, Abhed's own state", dir, tools.StateDir)
 	}
 	if cfg.Record.Dir != "" && within(dir, tools.RealPath(cfg.Record.Dir)) {
 		return fmt.Errorf("refusing %s: it is inside the record directory", dir)
-	}
-	for _, p := range sandboxconfig.StatePaths(cfg, workspace) {
-		if within(tools.RealPath(p), dir) {
-			return fmt.Errorf("refusing %s: Abhed's state file %s is inside it", dir, p)
-		}
 	}
 	return nil
 }

@@ -12,6 +12,11 @@ All notable changes to Abhed are recorded here. The format follows
   now fails closed: the call it failed on is refused, and while it is not
   running every call it would have screened is asked. It was skipped before,
   so its veto silently stopped applying.
+- `-add-dir`, `additional_dirs` and `/add-dir` refuse a credential folder such
+  as `~/.ssh`, a folder that holds the home directory, and one that holds
+  Abhed's state; before, only `/` and the home directory itself were refused.
+  `/add-dir` adds only the folder it checked and showed, so a path swapped for
+  a link while the person answers is refused.
 - An extension that answered `ask` about a call a deny rule or plan mode
   refuses turned the refusal into a question, which a person could then
   approve: hooks were evaluated first, and their ask ended the evaluation.

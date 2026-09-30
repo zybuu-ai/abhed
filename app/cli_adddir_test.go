@@ -153,3 +153,67 @@ func TestCLIAddDirIsRecorded(t *testing.T) {
 		t.Fatalf("recorded %+v", added)
 	}
 }
+
+// A directory swapped for a link to ~/.ssh while the person answers is not
+// added: what is added must be what was checked and shown.
+func TestAddDirRefusesADirectorySwappedMidDialog(t *testing.T) {
+	home := realDir(t)
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_rsa"), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env, surface, events := permEnv(t, config.Default(), accessReadWrite)
+	proj := filepath.Join(realDir(t), "proj")
+	if err := os.Mkdir(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	surface.during = func() {
+		if err := os.Remove(proj); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(home, ".ssh"), proj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := slashAddDir(context.Background(), env, []string{proj}); err == nil {
+		t.Fatal("the swapped directory was added")
+	}
+	if _, err := env.sess.Resolve(filepath.Join(home, ".ssh", "id_rsa")); err == nil {
+		t.Fatal("~/.ssh became reachable")
+	}
+	if len(events()) != 0 {
+		t.Fatalf("recorded %d events for a refused directory", len(events()))
+	}
+}
+
+// Swapped for a link to an ordinary folder, the directory is still refused:
+// the record and the read-only rules would name one folder and the root
+// would be another.
+func TestAddDirRefusesAnyDirectoryChangedMidDialog(t *testing.T) {
+	t.Setenv("HOME", realDir(t))
+	env, surface, events := permEnv(t, config.Default(), accessRead)
+	base := realDir(t)
+	proj, elsewhere := filepath.Join(base, "proj"), filepath.Join(base, "elsewhere")
+	for _, d := range []string{proj, elsewhere} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	surface.during = func() {
+		if err := os.Remove(proj); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, proj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := slashAddDir(context.Background(), env, []string{proj}); err == nil {
+		t.Fatal("a directory changed mid-dialog was added")
+	}
+	if _, err := env.sess.Resolve(filepath.Join(elsewhere, "a")); err == nil || len(events()) != 0 {
+		t.Fatalf("the other folder became reachable (%v) or was recorded", err)
+	}
+}

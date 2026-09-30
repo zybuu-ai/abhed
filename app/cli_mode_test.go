@@ -116,6 +116,8 @@ type scriptedSurface struct {
 	answers []string
 	asked   []ui.DialogSpec
 	shown   []ui.Block
+	// during runs while a dialog waits, as another process might act then.
+	during func()
 }
 
 var _ ui.Surface = (*scriptedSurface)(nil)
@@ -127,6 +129,9 @@ func (f *scriptedSurface) Dialog(_ context.Context, d ui.DialogSpec) (string, er
 		return "", err
 	}
 	f.asked = append(f.asked, n)
+	if f.during != nil {
+		f.during()
+	}
 	if len(f.answers) == 0 {
 		return "", ui.ErrNoAnswer
 	}
