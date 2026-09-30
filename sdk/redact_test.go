@@ -306,3 +306,49 @@ func TestSDKBashUsesAStoredSecretByName(t *testing.T) {
 		})
 	}
 }
+
+// A secret stored after the session started, and allowed by rule, is redacted
+// from then on: bash reads the store at each call, and so does redaction.
+func TestSDKRedactsASecretAddedDuringTheSession(t *testing.T) {
+	vaultWith(t)
+	const late = "late-added-secret-6d0e2a"
+	args, _ := json.Marshal(map[string]any{"command": `echo "v=$LATE_TOKEN"`, "description": "probe", "secrets": []string{"LATE_TOKEN"}})
+	call, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+		"tool_calls": []any{map[string]any{"index": 0, "id": "c-bash", "type": "function",
+			"function": map[string]any{"name": "bash", "arguments": string(args)}}}}}}})
+	srv, bodies := scripted(t, string(call))
+	var mu sync.Mutex
+	var stream strings.Builder
+	a, err := abhed.New(context.Background(), abhed.Options{
+		Workspace: t.TempDir(), Mode: "default", Allow: []string{"bash", "secret(LATE_TOKEN)"},
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
+		OnEvent:  func(ev abhed.Event) { mu.Lock(); stream.Write(ev.Payload); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN":"`+fakeSecret+`","LATE_TOKEN":"`+late+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := a.Run(context.Background(), "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var record strings.Builder
+	for _, ev := range a.Events() {
+		record.Write(ev.Payload)
+	}
+	mu.Lock()
+	whole := stream.String() + record.String() + strings.Join(bodies(), "") + answer
+	mu.Unlock()
+	if !strings.Contains(record.String(), "v=[secret:LATE_TOKEN]") {
+		t.Fatalf("bash did not run with the late secret, redacted:\n%s", record.String())
+	}
+	if strings.Contains(whole, late) {
+		t.Fatalf("a secret added during the session left it unredacted:\n%s", whole)
+	}
+}

@@ -207,3 +207,30 @@ func TestValueReadsOneSecretByName(t *testing.T) {
 		t.Fatal("ValidName does not tell a name from a token")
 	}
 }
+
+// Fresh follows the store: a value added is redacted from then on, and a store
+// that stops loading withholds every payload until it loads again.
+func TestFreshFollowsTheStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	s := Open(path)
+	first, err := s.LoadRedactor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.Fresh(first)
+	if got := string(f.Redact([]byte(`"fresh-value-123"`))); got != `"fresh-value-123"` {
+		t.Fatalf("an empty store redacted: %s", got)
+	}
+	if err := s.Set("LATE", "fresh-value-123"); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(f.Redact([]byte(`"fresh-value-123"`))); got != `"[secret:LATE]"` {
+		t.Fatalf("a value added later was not redacted: %s", got)
+	}
+	if err := os.WriteFile(path, []byte(`{"LATE": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Redact([]byte(`"fresh-value-123"`)); got != nil {
+		t.Fatalf("a store that stopped loading did not withhold: %s", got)
+	}
+}

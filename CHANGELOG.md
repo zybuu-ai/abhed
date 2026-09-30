@@ -125,6 +125,12 @@ All notable changes to Abhed are recorded here. The format follows
   was not redacted until a restart. Each server session now reads the store
   when it starts. CLI subagents redact with their conversation's reading
   rather than the one taken when the process started.
+- An SDK session, and so an `abhed rpc` or `abhed acp` session, redacted
+  with the values stored when it started, while `bash` reads the store at
+  each call. A secret stored during a long session and allowed by a rule
+  reached the record, the stream and the model unredacted. SDK redaction
+  now reads the store again whenever the file changes, and withholds every
+  payload while it cannot be loaded.
 - The SDK's `Approve` is now given the decision's reason and scope redacted,
   as well as the arguments.
 - `abhed secret set` refuses a value under 8 characters. A shorter value

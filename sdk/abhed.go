@@ -181,7 +181,7 @@ type Agent struct {
 	set      *toolset.Set
 	id       string
 	fwd      *forwarder
-	redact   *secrets.Redactor
+	redact   *secrets.Fresh
 	trust    config.WorkspaceTrust
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
@@ -234,10 +234,13 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	// The CLI's redactor; a store that exists but cannot be loaded refuses the session.
-	red, err := secrets.Default().LoadRedactor()
+	first, err := secrets.Default().LoadRedactor()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// Read again as the store changes: bash reads it by name at each call,
+	// so a secret added during the session is redacted from then on.
+	red := secrets.Default().Fresh(first)
 	adapter, err := provider.Adapter()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -543,7 +546,7 @@ func (f approverFn) Approve(ctx context.Context, tool string, args json.RawMessa
 	return f(ctx, tool, args, d)
 }
 
-func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error), red *secrets.Redactor) agent.Approver {
+func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error), red *secrets.Fresh) agent.Approver {
 	if f == nil {
 		// No approver means nobody to ask, so anything needing approval is
 		// refused. Defaulting to yes would make an embedded agent quietly more
@@ -562,7 +565,7 @@ var withheld = json.RawMessage(`{"withheld":"` + agent.Withheld + `"}`)
 
 // redactJSON replaces stored values in a JSON payload. It fails closed: a
 // payload redaction broke is withheld, never returned as it was.
-func redactJSON(red *secrets.Redactor, b json.RawMessage) json.RawMessage {
+func redactJSON(red *secrets.Fresh, b json.RawMessage) json.RawMessage {
 	out := red.Redact(b)
 	if !json.Valid(out) && !bytes.Equal(out, b) {
 		return withheld
@@ -571,7 +574,7 @@ func redactJSON(red *secrets.Redactor, b json.RawMessage) json.RawMessage {
 }
 
 // redactText replaces stored values in text, withholding it if that fails.
-func redactText(red *secrets.Redactor, s string) string {
+func redactText(red *secrets.Fresh, s string) string {
 	raw, _ := json.Marshal(s)
 	var out string
 	if json.Unmarshal(red.Redact(raw), &out) != nil {

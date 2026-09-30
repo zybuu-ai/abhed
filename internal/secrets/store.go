@@ -254,6 +254,65 @@ func (s *Store) Live() *Live { return &Live{Redactor: s.Redactor(), store: s} }
 // Load reads the store again, as LoadRedactor does.
 func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
 
+// Fresh redacts with the values stored at each call, reading the store again
+// whenever the file has changed, for a session that runs while secrets are
+// added: a value bash can be given must be redacted from that moment on. A
+// store that stops loading withholds every payload until it loads again.
+type Fresh struct {
+	store *Store
+	mu    sync.Mutex
+	stamp freshStamp
+	red   *Redactor
+}
+
+type freshStamp struct {
+	ok      bool
+	missing bool
+	mod     int64
+	size    int64
+}
+
+// Fresh returns a redactor over the store that starts from first, the
+// reading a session was admitted with.
+func (s *Store) Fresh(first *Redactor) *Fresh {
+	f := &Fresh{store: s, red: first}
+	f.stamp = f.stat()
+	return f
+}
+
+func (f *Fresh) stat() freshStamp {
+	fi, err := os.Stat(f.store.path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return freshStamp{ok: true, missing: true}
+	case err != nil:
+		return freshStamp{}
+	}
+	return freshStamp{ok: true, mod: fi.ModTime().UnixNano(), size: fi.Size()}
+}
+
+// Current is the redactor for the values stored now.
+func (f *Fresh) Current() *Redactor {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.stat()
+	if st.ok && st == f.stamp && f.red != nil {
+		return f.red
+	}
+	r, err := f.store.LoadRedactor()
+	if err != nil || !st.ok {
+		r = Withholding()
+	}
+	f.red, f.stamp = r, st
+	return r
+}
+
+// Redact is Current().Redact.
+func (f *Fresh) Redact(b []byte) []byte { return f.Current().Redact(b) }
+
+// Span is Current().Span.
+func (f *Fresh) Span() int { return f.Current().Span() }
+
 // Withholding returns a redactor that withholds every payload.
 func Withholding() *Redactor { return &Redactor{broken: true} }
 

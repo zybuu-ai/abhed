@@ -136,8 +136,9 @@ operator's store (`~/.abhed/secrets.json`, or `ABHED_SECRETS_FILE`) becomes
 `[secret:NAME]` before it reaches the record, `OnEvent`, the model, the
 arguments and decision passed to `Approve`, or what `Run` and `RunJSON` return.
 The SDK has no option to turn this off, and `New` returns an error when the
-store exists but cannot be loaded. The store is read once, when `New` is
-called. A structured answer is redacted after it is validated, so a redacted
+store exists but cannot be loaded. The store is read when `New` is
+called and again whenever the file changes, so a secret added during the
+session is redacted from then on. A structured answer is redacted after it is validated, so a redacted
 answer may no longer match the caller's schema, for example a `pattern`, an
 `enum` or a length bound. One whose redaction fails comes back as
 `{"withheld": ...}`, which will not decode into the caller's type. `bash` can
