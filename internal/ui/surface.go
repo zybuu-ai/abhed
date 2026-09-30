@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Surface is how a command or the session shows something to the person and
@@ -132,6 +133,14 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 	for i, c := range d.Choices {
 		if c.ID == "" || ids[c.ID] {
 			return d, fmt.Errorf("dialog choice %d has an empty or repeated id %q", i+1, c.ID)
+		}
+		// A typed number is the choice's place in the list; a key or an id
+		// that is a number too would pick a different choice by the same answer.
+		if _, err := strconv.Atoi(c.ID); err == nil {
+			return d, fmt.Errorf("dialog choice id %q is a number, which reads as a place in the list", c.ID)
+		}
+		if unicode.IsDigit(c.Key) {
+			return d, fmt.Errorf("dialog key %q is a digit, which reads as a place in the list", c.Key)
 		}
 		ids[c.ID] = true
 		if c.Key != 0 {

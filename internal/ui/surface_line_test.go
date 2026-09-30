@@ -119,6 +119,9 @@ func TestDialogSpecRefusesUnsafeDefaults(t *testing.T) {
 		{Kind: DialogChoice, Choices: []Choice{{ID: "a"}, {ID: "a"}}},
 		{Kind: DialogChoice, Choices: []Choice{{ID: "a", Key: 'x'}, {ID: "b", Key: 'x'}}},
 		{Kind: DialogConfirm, Choices: []Choice{{ID: ChoiceYes, Widening: true}, {ID: ChoiceNo}}, Default: ChoiceYes},
+		// A digit key or a numeric id would answer for another choice's place.
+		{Kind: DialogChoice, Choices: []Choice{{ID: "a", Key: '2'}, {ID: "b", Key: '1'}}},
+		{Kind: DialogChoice, Choices: []Choice{{ID: "2"}, {ID: "1"}}},
 		// A bare Enter must never say yes.
 		{Kind: DialogConfirm, Title: "Switch to auto?", Default: ChoiceYes},
 		{Kind: DialogConfirm, Choices: []Choice{{ID: "ok"}, {ID: ChoiceNo}}, Default: "ok"},
