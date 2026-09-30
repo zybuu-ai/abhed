@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
 
 // Findings are rules over the record, not judgements by a model: the same
@@ -19,10 +20,8 @@ var (
 	// narrow: a finding that fires on every dotted word is one nobody reads.
 	hostRE = regexp.MustCompile(`(?i)\b(?:https?|ftp|ssh)://([a-z0-9][a-z0-9.-]*[a-z0-9])|\b((?:\d{1,3}\.){3}\d{1,3})\b`)
 
-	sensitive = []string{
-		"/.ssh/", "/.aws/", "/.kube/", "/.gnupg/", "/.docker/config.json", "/.netrc",
-		"/.env", "id_rsa", "id_ed25519", "/etc/shadow", "credentials.json", ".pem",
-	}
+	// sensitive are paths beyond the shared list of key and credential files.
+	sensitive = []string{"/etc/shadow"}
 
 	abnormal = map[string]string{
 		"error": "the run failed", "stalled": "the model stopped making progress",
@@ -85,17 +84,20 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 	failures := map[string]int{}
 	for _, c := range r.Calls {
 		low := strings.ToLower(c.Subject + " " + c.Args)
-		for _, s := range sensitive {
-			if strings.Contains(low, s) {
-				verb := "was allowed to reach"
-				sev := Warn
-				if c.Decision == "denied" {
-					verb, sev = "was stopped from reaching", Info
-				}
-				add(sev, "sensitive-path", "A call "+verb+" a credential path",
-					fmt.Sprintf("%s %s — matched %q. Decision: %s at step %q.", c.Tool, clip(c.Subject, 160), s, c.Decision, c.Step), c.Seq)
-				break
+		matched := secretfiles.InText(low)
+		for _, p := range sensitive {
+			if matched == "" && strings.Contains(low, p) {
+				matched = p
 			}
+		}
+		if matched != "" {
+			verb := "was allowed to reach"
+			sev := Warn
+			if c.Decision == "denied" {
+				verb, sev = "was stopped from reaching", Info
+			}
+			add(sev, "sensitive-path", "A call "+verb+" a credential path",
+				fmt.Sprintf("%s %s — matched %q. Decision: %s at step %q.", c.Tool, clip(c.Subject, 160), matched, c.Decision, c.Step), c.Seq)
 		}
 		if c.Decision == "denied" {
 			add(Info, "denied", "Denied: "+c.Tool,

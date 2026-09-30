@@ -13,6 +13,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -234,15 +235,6 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 	}
 }
 
-// secretNames are files and folders that hold keys and credentials, matched
-// without case; a checkpoint does not copy them into the record.
-var secretNames = []string{
-	".env", ".env.*", "*.env", ".envrc", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx",
-	"id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".htpasswd",
-	".git-credentials", "credentials", "credentials.json", "*.tfvars", "*.tfstate", ".vault-token", ".s3cfg", ".boto",
-	".ssh", ".aws", ".azure", "gcloud", ".gnupg", ".kube", ".docker",
-}
-
 // noCheckpoint says why a file's content is not kept before an edit, "" when
 // it is: policy keeps it from being read, or its name says it holds keys.
 func noCheckpoint(loop *agent.Loop, path string) string {
@@ -252,17 +244,10 @@ func noCheckpoint(loop *agent.Loop, path string) string {
 			return "policy denies reading it: " + d.Reason
 		}
 	}
-	for dir := path; ; dir = filepath.Dir(dir) {
-		name := strings.ToLower(filepath.Base(dir))
-		for _, pat := range secretNames {
-			if ok, _ := filepath.Match(pat, name); ok {
-				return "it looks like a file of keys or credentials"
-			}
-		}
-		if filepath.Dir(dir) == dir {
-			return ""
-		}
+	if secretfiles.Match(path) != "" {
+		return "it looks like a file of keys or credentials"
 	}
+	return ""
 }
 
 // rebuildUndo makes the undo log the one session events recorded.
