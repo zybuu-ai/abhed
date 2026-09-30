@@ -387,9 +387,7 @@ func TestIdleDeliveryRetriedAfterAStoreError(t *testing.T) {
 // A store that stays down does not hold the session owing: after the
 // retries the work owed is settled, and the result arrives at the next run.
 func TestIdleDeliveryGivesUpAndSettles(t *testing.T) {
-	old := IdleRetries
-	IdleRetries = 2
-	t.Cleanup(func() { IdleRetries = old })
+	t.Cleanup(SetIdleRetries(2))
 	st := &noticeRefuser{}
 	st.refuse.Store(true)
 	r := rigWithRefuser(t, st)

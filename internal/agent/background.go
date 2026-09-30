@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -170,10 +171,19 @@ type Background struct {
 	wakeEpoch int
 }
 
-// IdleRetries is how many times an idle delivery the record refused is
+// idleRetries is how many times an idle delivery the record refused is
 // tried again, each after twice the wait of the last, before the results
 // are left to the record.
-var IdleRetries = 5
+var idleRetries atomic.Int32
+
+func init() { idleRetries.Store(5) }
+
+// SetIdleRetries changes how many times a refused idle delivery is tried
+// again, and returns a func that puts it back; for tests.
+func SetIdleRetries(n int) (restore func()) {
+	old := idleRetries.Swap(int32(n)) // #nosec G115 -- a small test setting
+	return func() { idleRetries.Store(old) }
+}
 
 // ErrStopped refuses a background spawn that began before a stop.
 var ErrStopped = errors.New("stopped before this background task started")
@@ -760,7 +770,7 @@ func (b *Background) deliverIdle() {
 		b.mu.Lock()
 		b.idleFailures++
 		tries := b.idleFailures
-		if tries > IdleRetries {
+		if tries > int(idleRetries.Load()) {
 			// Given up while idle: the work owed is settled, so the session
 			// is not held for a store that stays down. The results wait for
 			// the next run here, and each return is in the record, from
@@ -769,7 +779,7 @@ func (b *Background) deliverIdle() {
 			b.notices, b.idleFailures = nil, 0
 		}
 		b.mu.Unlock()
-		if tries <= IdleRetries {
+		if tries <= int(idleRetries.Load()) {
 			l.runMu.Unlock()
 			time.AfterFunc(b.settle()<<tries, b.deliverIdle)
 			return

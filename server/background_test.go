@@ -869,9 +869,7 @@ func TestStartedSessionRowCarriesItsHolder(t *testing.T) {
 // held: once the retries are spent the work owed is settled, the session is
 // done here and its claim released; the result is rebuilt from the record.
 func TestIdleStoreErrorDoesNotHoldTheSession(t *testing.T) {
-	old := agent.IdleRetries
-	agent.IdleRetries = 0
-	t.Cleanup(func() { agent.IdleRetries = old })
+	t.Cleanup(agent.SetIdleRetries(0))
 	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	st.refuseNotices.Store(true)
 	b := newBGServer(t, st, "one")
