@@ -22,13 +22,25 @@ an organisation's managed configuration sets `record.retention_days`.
 ```
 
 - The tenant is `storage.tenant`, `default` if unset.
-- Directories are `0700` and files `0600`. A records directory that another user
-  owns is refused, and a wider one is made private again when it is opened.
+- Directories are `0700` and files `0600`. A directory or file found wider is
+  made private again when it is opened. On macOS and Linux, a records directory
+  that another user owns is refused; Windows has no such owner check and relies
+  on the profile folder's access list.
+- The record's files are opened without following a link, and a session file
+  with a second name (a hard link) is refused. `~/.abhed/records` may itself be
+  a link: it is then used, and protected, by where it really is, or refused if
+  that is somewhere the agent's commands can write, such as a temp folder.
 - Only the managed configuration can move the record (`record.dir`). The
   setting is ignored in your own `~/.abhed/config.json` and in a workspace's.
-- The records directory is Abhed's state. The agent's tools cannot read or
-  write it by any path, symlink or case spelling, and every sandbox tier
-  denies it. This holds for `~/.abhed/records` and for a managed `record.dir`.
+- The records directory is Abhed's state. The agent's file tools refuse it, and
+  the sandbox tiers deny it to the agent's commands. This covers
+  `~/.abhed/records`, a managed `record.dir`, the real path of a linked records
+  directory, and a record handed to an SDK agent, which is refused if it is
+  inside the workspace or any other folder the agent can write. A command run
+  with no sandbox at all can reach whatever your own account can.
+- One writer per session relies on `flock` (on Windows, `LockFileEx`), so the
+  record belongs on a local disk. On a network filesystem the lock may be
+  refused, or not hold between two stores in one process.
 
 ## What a line holds
 
@@ -50,18 +62,27 @@ order:
   becomes `[secret:NAME]` in every payload, the index and every export.
 - Checkpoint blobs are the one exception: they hold your file's content
   unredacted, since a redacted copy could not restore the file. They sit in the
-  same private, agent-proof directory and go when their session is pruned.
+  same private directory and go when their session is pruned. A file that a
+  read deny rule covers, or whose name says it holds keys (`.env`, `*.pem`,
+  `id_rsa`, anything under `.ssh/` and the like), is not copied at all: its
+  checkpoint records why, and undo and rewind cannot restore it.
 
-A line is written in a single `write` call. The file is synced, and the head
-moved to the new line, at each turn boundary: a prompt, the end of a round trip
-to the model, the end of a run, and each fork, restore, rename or branch.
+A line is written in a single `write` call. A write that fails part way, as on
+a full disk, is undone, so the file never holds half a line in its middle. The
+file is synced, and the head moved to the new line, on a session's first line
+and at each turn boundary: a prompt, the end of a round trip to the model, the
+end of a run, and each fork, restore, rename or branch. On macOS a sync is
+`fsync`, as SQLite uses by default, not the slower full flush of the drive's
+cache.
 
 - If the process dies, nothing it wrote is lost.
-- If the machine loses power, at most the events since the last boundary are
-  lost.
+- If the machine crashes or loses power, the events since the last boundary
+  can be lost; after a power cut, so can what the drive itself had cached.
 - An unfinished last line left by a crash is cut off when the session is next
-  opened for writing. The cut is recorded as a `record.repaired` event that
-  says how many bytes went.
+  opened for writing, but only when the head does not count it. The cut is
+  recorded as a `record.repaired` event that says how many bytes went. A whole
+  last line that lost only its newline is completed, not cut. Reading a
+  session never changes it.
 
 ## One writer per session
 
@@ -119,8 +140,9 @@ point.
 
 ## Rewind and checkpoints
 
-Before the agent changes a file, its content goes into the record's blobs. A
-`checkpoint.saved` event records the file's path and hash.
+Before the agent changes a file, its content and permission bits go into the
+record's blobs. A `checkpoint.saved` event records the file's path and hash,
+or, for a file that is not copied, why not.
 
 ```
 /rewind          pick a prompt, then choose what to take back
@@ -137,10 +159,13 @@ prompt you pick:
   leave the conversation.
 - **Rewinding to the first prompt is a fork at step 0 in the same session.** You
   get an empty conversation; the session is not dropped or replaced.
-- **Each file put back is your own write.** It goes through policy first, so a
-  path a deny rule protects is left alone and the refusal is recorded. Each
-  file restored is recorded as `file.restored` with the SHA-256 of its content
-  before and after.
+- **Each file put back is your own write.** It is recorded as your action: the
+  request, the policy's decision and the result, so a path a deny rule protects
+  is left alone and the refusal is recorded. Each file restored is then
+  recorded as `file.restored` with the SHA-256 of its content before and after,
+  and gets its permission bits back.
+- A branch keeps the undo history: `/undo` and `/rewind` in a branch offer the
+  same checkpoints the source would.
 
 Checkpoints outlive the process. After `abhed -c`, `/undo` and `/rewind` still
 work, reading the content from the blobs and checking each blob's hash as it is
@@ -157,23 +182,35 @@ abhed record verify <session>    one session
 abhed record verify file.jsonl   an export, or a copy from elsewhere
 ```
 
-`verify` fails, naming the step, the line and the event, when:
+`verify <session>` checks the index first, then the session. It fails, naming
+the step, the line and the event where it can, when:
 
 - a line was edited, even by one byte or one space;
-- a line was removed, added or moved;
-- lines were cut from the end;
-- the head file names a line the record does not hold;
-- a session the index lists is missing with no prune recorded;
-- the index itself was edited, reordered or cut.
+- a line was removed, added or moved, or a step appears twice;
+- lines the head counts were cut from the end, whole or part way;
+- the head file is missing, malformed, or names a line the record does not hold;
+- a line the index recorded at the end of a run is gone or different, which
+  still shows after the head file was rewritten to match a cut;
+- a session the index lists is missing with no prune recorded, or a file in
+  the records folder is not in the index;
+- the index was edited, reordered or cut, or its head no longer matches it.
 
-The heads the index records at each run's end are checked too. A record cut
-back and given a matching head file still fails.
+A record that fails is never written to again. Reading it, verifying it,
+exporting it or opening it for writing leaves every byte as found. Going on
+from it is a fork into a new session, after you confirm, and the fork's
+`session.branched` names the source and why it failed.
 
-**What this proves, and what it does not.** The record is tamper-evident
-against the agent and against accidental or partial edits, and it can be
-verified offline. It is not proof against the machine's owner: whoever controls
-the disk can rewrite a file and compute a new chain. Anchoring the chain
-outside the machine is not part of the Community edition.
+What `verify` cannot show:
+
+- **Lines after the last sync.** The head moves at turn boundaries, so lines
+  written since then (streamed reply fragments, a tool's events mid-turn) can
+  be cut from the end without a trace, and a crash can lose them.
+- **An owner who rewrites the evidence.** Verification is only as strong as
+  the head and index files, and the same owner can rewrite those as well as
+  the lines, or compute a whole new chain. The record is tamper-evident against
+  the agent and against accidental or partial edits, and it can be verified
+  offline. It is not proof against the machine's owner. Anchoring the chain
+  outside the machine is not part of the Community edition.
 
 ## Exporting
 
@@ -188,11 +225,21 @@ Exports go to `~/.abhed/exports` unless you give a path, never into the
 workspace, where they would end up in the repository.
 
 A `.jsonl` export is the session's lines exactly as recorded, followed by one
-trailer line holding the head. `abhed record verify` on another machine checks
-it with nothing else. An export whose trailer was removed is checked line by
-line, with a note that lines cut from its end would not show. HTML and text
-exports are for reading, not for verification. Every export is redacted,
-because the record it comes from is.
+trailer line holding the head the record stored and whether it verified.
+`abhed record verify` on another machine checks it with nothing else, as far
+as the record could be checked here: lines after the stored head are noted,
+not proved. An export whose trailer was removed is checked line by line, with a
+note that lines cut from its end would not show.
+
+A record that fails verification is not exported unless you pass
+`-unverified`; the export is then marked, in the trailer or at the top of an
+HTML or text export, and verifying the copy fails.
+
+An export never writes through a link, never over a file with a second name,
+and never into Abhed's state other than `~/.abhed/exports`. A relative
+`/export` path is taken from the workspace, and a path outside it asks first.
+HTML and text exports are for reading, not for verification. Every export is
+redacted, because the record it comes from is.
 
 ## Pruning
 
@@ -202,13 +249,15 @@ abhed record prune -older-than 90d
 ```
 
 Pruning removes a session and the subagent sessions it started. Before
-anything is removed, a tombstone goes into the index with the session's id,
-its last line's seq and hash, the time and who pruned it. Checkpoint blobs that
-no remaining session names go with it.
+anything is removed, a tombstone goes into the index for each, with its id,
+its head as stored (or as the index last recorded it, if the head is gone),
+the time, who pruned it and why, whether its file was already missing, and
+whether it verified. A damaged record can be pruned; its tombstone says so.
+Checkpoint blobs that no remaining session names go with it.
 
-- A session another process has open is not pruned.
+- A session open in any Abhed process, this one included, is not pruned.
 - Pruning is the only way anything leaves the record, and the tombstone keeps
   that visible.
 - When the managed configuration sets `record.retention_days`, sessions last
-  used longer ago than that are pruned when the record is opened, each with a
-  tombstone.
+  used longer ago than that are pruned when the record is opened. Each gets a
+  tombstone, and each is also named on the terminal.

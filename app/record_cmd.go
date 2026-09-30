@@ -272,7 +272,7 @@ func (c recordCtx) verify(args []string) int {
 }
 
 // verifyScope says what a passing verify does and does not show.
-const verifyScope = "A passing check shows the record was not edited, reordered or cut short by the agent or by accident. It is not proof against the machine's owner, who can rewrite and re-chain it."
+const verifyScope = "A passing check shows no line was edited, added, moved or removed, and none the head counts was cut, by the agent or by accident. Lines after the last sync are not covered, and the head and index files can be rewritten by the machine's owner, who can also re-chain the record: it is not proof against them."
 
 // inRecordFolder reports whether path is in this records directory at all.
 func (c recordCtx) inRecordFolder(path string) bool {
