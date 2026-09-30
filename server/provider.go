@@ -160,6 +160,9 @@ func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errBusySession):
 		WriteError(w, http.StatusConflict, "session is being continued elsewhere")
 		return
+	case errors.Is(err, errHoldFailed):
+		writeHoldFailed(w)
+		return
 	case err != nil:
 		s.log.Error("claim failed", "session", id, "error", err)
 		WriteError(w, http.StatusInternalServerError, "could not switch the session's model")

@@ -766,6 +766,28 @@ func TestWorkbenchHoldKeptWhileResultOwed(t *testing.T) {
 	second.drain()
 }
 
+// A workbench write whose claim cannot be held answers 503 with Retry-After.
+func TestWorkbenchFailedHoldAnswers503(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+	wb.h = New(opts).Handler()
+	st.mu.Lock()
+	st.failHold = true
+	st.mu.Unlock()
+	rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo x"})
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a workbench write with no hold: %d %s", rec.Code, rec.Body)
+	}
+}
+
 // The terminal's environment starts from the host's when the command left it
 // unset; appending TERM to nothing gave the container CLI no PATH at all.
 func TestTerminalEnvironmentKeepsTheHost(t *testing.T) {

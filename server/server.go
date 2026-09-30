@@ -94,6 +94,16 @@ type LeaseRenewer interface {
 	RenewNode(ctx context.Context, sessionID, holder string) (bool, error)
 }
 
+// errHoldFailed is a hold on a session this process could not record; every
+// path answers it 503 with Retry-After, as a store that is briefly away.
+var errHoldFailed = errors.New("could not hold the session")
+
+// writeHoldFailed answers a request whose session could not be held.
+func writeHoldFailed(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	WriteError(w, http.StatusServiceUnavailable, "could not hold the session; retry")
+}
+
 // errLeaseLost refuses every write for a session this process no longer holds.
 var errLeaseLost = errors.New("this process no longer holds the session: another has taken it over")
 
@@ -950,6 +960,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errDraining):
 			w.Header().Set("Retry-After", "5")
 			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
+		case errors.Is(err, errHoldFailed):
+			writeHoldFailed(w)
 		case errors.Is(err, errBadMode):
 			WriteError(w, http.StatusForbidden, err.Error())
 		case strings.HasPrefix(err.Error(), "provider:"):
@@ -1039,7 +1051,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		s.mu.Unlock()
 		cancel()
 		s.forgetUnstarted(sessionID)
-		return "", fmt.Errorf("hold session: %w", err)
+		return "", fmt.Errorf("%w: %w", errHoldFailed, err)
 	}
 
 	go func() {
@@ -1621,7 +1633,7 @@ func (s *Server) claimLocked(ctx context.Context, id string, live *liveSession) 
 	// claim that cannot record it is given back rather than kept unseen.
 	if err := s.holdNode(live); err != nil {
 		s.giveBack(id, live)
-		return false, fmt.Errorf("hold session: %w", err)
+		return false, fmt.Errorf("%w: %w", errHoldFailed, err)
 	}
 	events, err := s.store.Events(id)
 	if err == nil && len(events) > 0 && events[len(events)-1].Seq != live.Loop.Recorder.LastAppended() {
@@ -2218,6 +2230,9 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errBusySession):
 		WriteError(w, http.StatusConflict, "session is being continued elsewhere")
 		return
+	case errors.Is(err, errHoldFailed):
+		writeHoldFailed(w)
+		return
 	case err != nil:
 		s.log.Error("claim failed", "session", id, "error", err)
 		WriteError(w, http.StatusInternalServerError, "could not continue the session")
@@ -2238,8 +2253,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	// cannot record that it holds the session does not run it. A message
 	// that only steers a live run gives nothing up.
 	if err := s.holdNode(live); err != nil {
-		w.Header().Set("Retry-After", "5")
-		WriteError(w, http.StatusServiceUnavailable, "could not hold the session; retry")
+		writeHoldFailed(w)
 		return
 	}
 	defer func() {

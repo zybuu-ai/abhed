@@ -546,7 +546,7 @@ func TestHolderIdentityAndFailedHold(t *testing.T) {
 	st.failHold = true
 	st.mu.Unlock()
 	rec := a.do("alice", "POST", "/v1/sessions", `{"prompt":"hello"}`)
-	if rec.Code < 500 {
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("a session started with no recorded holder: %d %s", rec.Code, rec.Body)
 	}
 	if a.s.runningCount() != 0 {
@@ -922,4 +922,30 @@ func TestSweepRunsAgain(t *testing.T) {
 	st.crash(id)
 	waitUntil(t, "a later sweep", func() bool { st.mu.Lock(); defer st.mu.Unlock(); return st.ended[id] })
 	a.ad.release("one")
+}
+
+// A hold that cannot be recorded answers 503 with Retry-After on every path:
+// a message to a session idle here, and one to a session opened to view.
+func TestFailedHoldAnswers503(t *testing.T) {
+	setFail := func(st *durableMem, on bool) { st.mu.Lock(); st.failHold = on; st.mu.Unlock() }
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st)
+	id := a.start("hello", false)
+	<-a.ended
+	setFail(st, true)
+	rec := a.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a message to a session here: %d %s", rec.Code, rec.Body)
+	}
+	setFail(st, false)
+
+	b := newBGServer(t, st)
+	if _, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false); err != nil {
+		t.Fatal(err)
+	}
+	setFail(st, true)
+	rec = b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a message to a session opened to view: %d %s", rec.Code, rec.Body)
+	}
 }
