@@ -353,9 +353,10 @@ type SessionEnded struct {
 	// report one, which is also when compaction never fires.
 	ContextWindow int `json:"context_window,omitempty"`
 
-	// Background is how many background children were still running when
-	// the run ended. A session with some is not over: a closing end with
-	// Settled follows once they have all ended.
+	// Background is what the session still owed when the run ended:
+	// background children running, results not yet delivered, and a wake
+	// being started. A session owing any is not over: a closing end with
+	// Settled follows once it is all done.
 	Background int `json:"background,omitempty"`
 	// Settled marks the closing end recorded after background work finished.
 	Settled bool `json:"settled,omitempty"`

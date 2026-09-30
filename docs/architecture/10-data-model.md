@@ -49,7 +49,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `subagent.ask` | a subagent's call put to the approver, in the parent's record before the approver is asked: `session`, `subagent` (its description), `request_id` (the id an answer names), `call_id`, `tool`, `args`, `subject`, `reason`, `scope`, `via`. Its answer follows as `subagent.action` with the same `request_id` | agent |
 | `compaction.started` / `.completed` | before/after tokens, summary | context mgr |
 | `plan.updated` / `todo.updated` | items | agent |
-| `session.ended` | terminal reason, totals; `background`, the background tasks still running at a run's end (the session is not over while there are some: in Postgres its row stays open); `settled`, the closing end once they have all ended; `recovered`, written by reconciliation after a crash. Terminal reason `wake_limit` ends a wake run (exit code 0) | system |
+| `session.ended` | terminal reason, totals; `background`, what the session still owes at a run's end: background tasks running, results not yet delivered and a wake starting (the session is not over while it owes any: in Postgres its row stays open and the event stream stays open); `settled`, the closing end once it is all done; `recovered`, written by reconciliation after a crash. Terminal reason `wake_limit` ends a wake run (exit code 0) | system |
 | `conversation.forked` | `through_seq`; the conversation goes on from that step, and the steps between it and the marker are abandoned: kept in the record for audit, left out of every rebuild (`/fork`, `/tree`, `/resume`, a continued session) | user |
 
 **Who settled a call** is in `by` on every `action.approved` and `action.denied`:

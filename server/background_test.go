@@ -591,3 +591,26 @@ func TestSubSessionOfChecksOwnerAndParent(t *testing.T) {
 		}
 	}
 }
+
+// A run that ends while a result is owed but undelivered leaves the session
+// in background, not done: the drain waits for it and the claim is kept.
+func TestSettleCountsOwedResults(t *testing.T) {
+	b := newBGServer(t, nil)
+	id := b.start("hello", false)
+	<-b.ended
+	live := b.live(id)
+	live.Loop.QueueNotices([]agent.Notice{{TaskID: "t-1", Session: "t-1", CallID: "bgn_t1", Content: "done"}})
+	live.mu.Lock()
+	live.ran = make(chan struct{})
+	live.mu.Unlock()
+	live.settle(context.Background(), agent.TermMaxTurns, nil)
+	if got := b.state(id); got != "background" {
+		t.Fatalf("state after an end with a result owed: %q, want background", got)
+	}
+	live.mu.Lock()
+	state := live.stateAfterAsk("done")
+	live.mu.Unlock()
+	if state != "background" {
+		t.Fatalf("state after an ask with a result owed: %q", state)
+	}
+}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -30,6 +31,9 @@ type bgModel struct {
 	workOnNotice bool
 	// inCall counts children that have reached their model call.
 	inCall int
+	// hold, when set, keeps a "slow" or "fail" turn until closed; a "fail"
+	// turn then fails its model call.
+	hold chan struct{}
 }
 
 // childrenInCall is how many children have reached their model call.
@@ -90,9 +94,16 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 		} else {
 			ch <- model.Chunk{Type: model.ChunkText, Text: "noted"}
 		}
+	case last.Role == model.RoleUser && last.Content == "fail":
+		<-m.hold
+		return nil, errors.New("the provider is down")
 	default:
 		if last.Role == model.RoleUser && last.Content == "slow" {
-			time.Sleep(200 * time.Millisecond) // a turn long enough for a result to land in it
+			if m.hold != nil {
+				<-m.hold
+			} else {
+				time.Sleep(200 * time.Millisecond) // a turn long enough for a result to land in it
+			}
 		}
 		m.parentAnswers.Add(1)
 		ch <- model.Chunk{Type: model.ChunkText, Text: "parent done"}
@@ -476,4 +487,110 @@ func (s refusing) Append(ev Event) error {
 		return context.Canceled
 	}
 	return s.Store.Append(ev)
+}
+
+// noNoticeAfterClosingEnd holds the owed-work invariant: once a run's end
+// says nothing is owed (no background), no result follows it until another
+// run starts, since that end released the session and closed its stream.
+func noNoticeAfterClosingEnd(t *testing.T, events []Event) {
+	t.Helper()
+	closed := false
+	for _, e := range events {
+		switch e.Type {
+		case EvUserMessage, EvSessionWoken:
+			closed = false
+		case EvSessionEnded:
+			var end SessionEnded
+			_ = json.Unmarshal(e.Payload, &end)
+			closed = end.Background == 0
+		case EvSubagentNotice:
+			if closed {
+				t.Fatalf("a result (seq %d) followed an end that said nothing was owed", e.Seq)
+			}
+		}
+	}
+}
+
+// A run that ends as max_turns, max_budget or error while a finished child's
+// result waits undelivered counts it as owed: the end keeps the session open,
+// the result is delivered, and the closing end follows it.
+func TestRunEndCountsOwedResults(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		prompt string
+		reason TerminalReason
+		arm    func(r *bgRig)
+		during func(r *bgRig)
+	}{
+		{"max_turns", "slow", TermMaxTurns, func(r *bgRig) { r.l.Config.MaxTurns = r.l.turns + 1 }, nil},
+		{"max_budget", "slow", TermMaxBudget, nil, func(r *bgRig) { r.l.Budget.Spend(10_000_000) }},
+		{"error", "fail", TermError, nil, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newBGRig(t, WakeNotify, "one")
+			r.m.hold = make(chan struct{})
+			if reason, err := r.l.Run(context.Background(), "go"); err != nil || reason != TermCompleted {
+				t.Fatalf("first run: %s %v", reason, err)
+			}
+			if c.arm != nil {
+				c.arm(r)
+			}
+			calls := r.m.calls.Load()
+			done := make(chan TerminalReason, 1)
+			go func() {
+				reason, _ := r.l.Run(context.Background(), c.prompt)
+				done <- reason
+			}()
+			waitFor(t, "the turn to start", func() bool { return r.m.calls.Load() > calls })
+			r.m.release("one")
+			waitFor(t, "the result to wait", func() bool { return r.l.Background.Pending() == 1 })
+			if c.during != nil {
+				c.during(r)
+			}
+			close(r.m.hold)
+			if got := <-done; got != c.reason {
+				t.Fatalf("ended %s, want %s", got, c.reason)
+			}
+			var ended SessionEnded
+			for _, e := range r.events(t) {
+				if e.Type == EvSessionEnded {
+					_ = json.Unmarshal(e.Payload, &ended)
+				}
+				if e.Type == EvSessionEnded && ended.Reason == c.reason {
+					break
+				}
+			}
+			if ended.Reason != c.reason || ended.Background != 1 {
+				t.Fatalf("the %s end: %+v, want background 1 for the owed result", c.reason, ended)
+			}
+			waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+			if n := len(payloads[map[string]any](r.events(t), EvSubagentNotice)); n != 1 {
+				t.Fatalf("%d notices, want 1", n)
+			}
+			noNoticeAfterClosingEnd(t, r.events(t))
+		})
+	}
+}
+
+// A child's end and its result are one step: at no moment is it neither
+// running nor owed, so a run ending just then still counts it.
+func TestChildEndAndNoticeAreAtomic(t *testing.T) {
+	seen := make(chan int, 1)
+	testHookChildEnded = func(b *Background) { seen <- b.Owed() }
+	t.Cleanup(func() { testHookChildEnded = nil })
+	r := newBGRig(t, WakeNotify, "one")
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release("one")
+	select {
+	case owed := <-seen:
+		if owed != 1 {
+			t.Fatalf("owed %d as the child ended, want 1: its result was not yet counted", owed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never ended")
+	}
+	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+	noNoticeAfterClosingEnd(t, r.events(t))
 }

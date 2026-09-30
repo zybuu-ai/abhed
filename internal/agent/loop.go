@@ -1285,7 +1285,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		Compactions:   l.usage.Compactions,
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
-		Background:    l.Background.Live(),
+		Background:    l.Background.Owed(),
 	}
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)

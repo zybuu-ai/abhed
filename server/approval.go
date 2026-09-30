@@ -246,7 +246,7 @@ func (l *liveSession) stateAfterAsk(prior string) string {
 	switch {
 	case l.ran != nil:
 		return "running"
-	case l.Loop != nil && l.Loop.Background.Live() > 0:
+	case l.Loop != nil && l.Loop.Background.Owed() > 0:
 		return "background"
 	case prior == "idle" || prior == "done":
 		return prior

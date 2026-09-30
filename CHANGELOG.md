@@ -334,8 +334,9 @@ All notable changes to Abhed are recorded here. The format follows
   /v1/sessions/{id}/wake`, owner only; the session list's `background` and
   `pending_ask`; `Options.OwnerActive`. The console and workbench draw
   background results, wakes and the closing end, and list background counts
-  and waiting approvals. `session.ended` gains `background`, `settled` and
-  `recovered`; in Postgres a session with background tasks running keeps its
+  and waiting approvals. `session.ended` gains `background` (what is still owed:
+  tasks running, results not yet delivered, a wake starting), `settled`
+  and `recovered`; in Postgres a session with background tasks running keeps its
   row open until the closing end, and a store may implement `ClaimOrphan`.
 - CLI: results drawn at the prompt, `/tasks`, `/wake`; Ctrl-C twice at the
   prompt cancels background tasks. rpc: `start.wake`, `tasks`,

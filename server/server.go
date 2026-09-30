@@ -2312,8 +2312,9 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 		return true
 	}
 	l.State = "done"
-	// Children still running keep the session going, and its stream open.
-	if l.Loop.Background.Live() > 0 {
+	// Children still running, or a result still owed, keep the session
+	// going and its stream open.
+	if l.Loop.Background.Owed() > 0 {
 		l.State = "background"
 	}
 	l.Reason = reason
@@ -2458,7 +2459,7 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 	live.holdMu.Unlock()
 	live.mu.Lock()
 	stop := live.beatStop
-	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Live() == 0
+	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Owed() == 0
 	if quiet {
 		live.beatStop = nil
 	}
@@ -3439,7 +3440,7 @@ func (s *Server) cancelRunning() {
 	var ran []chan struct{}
 	var withChildren []*liveSession
 	for _, live := range s.running {
-		if live.Loop != nil && live.Loop.Background.Live() > 0 {
+		if live.Loop != nil && live.Loop.Background.Owed() > 0 {
 			withChildren = append(withChildren, live)
 		}
 		live.mu.Lock()

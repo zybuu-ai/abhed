@@ -518,6 +518,25 @@ func (b *Background) Close(reason TerminalReason) {
 	b.loop.runMu.Unlock()
 }
 
+// testHookChildEnded, when set by a test, runs as a child has ended.
+var testHookChildEnded func(*Background)
+
+// Owed is what the session still owes its conversation: children running,
+// results not yet delivered, and a wake being started. A run's end with any
+// owed keeps the session open; its closing end comes once it is all done.
+func (b *Background) Owed() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := b.liveLocked() + len(b.notices)
+	if b.waking {
+		n++
+	}
+	return n
+}
+
 // push takes a finished child's notice for the next delivery: at a run's
 // boundary if one is live, or while idle after the settle window.
 func (b *Background) push(n Notice) {
@@ -875,11 +894,18 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 			Reason: string(reason), Turns: usage.Turns, TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens,
 			Provider: c.provider, Model: c.adapter.Profile().Name, CallID: "bgn_" + newID(),
 			Content: parentRedacted(parent, summary)}
+		// Ended and owed in one step: a run ending in between would count
+		// neither, and close the stream on a result still to come.
 		mgr.mu.Lock()
 		t.ended, t.reason, t.summary, t.turns = true, reason, n.Content, usage.Turns
+		mgr.notices = append(mgr.notices, n)
 		mgr.mu.Unlock()
+		if testHookChildEnded != nil {
+			testHookChildEnded(mgr)
+		}
 		cancel(nil)
-		mgr.push(n)
+		mgr.poke()
+		mgr.kick()
 	}()
 	return id, nil
 }
