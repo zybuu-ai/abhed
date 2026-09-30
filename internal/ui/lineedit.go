@@ -158,7 +158,10 @@ func NewLineReader(prompt string) *LineReader {
 		}
 		return w, h
 	}
-	d.extEdit = func(text string) (string, error) { return externalEdit(fd, state, text) }
+	// The terminal is kept now: Capture later swaps os.Stdout and os.Stderr
+	// for pipes, and the editor needs the terminal on all three fds.
+	ttyIn, ttyOut := os.Stdin, os.Stdout
+	d.extEdit = func(text string) (string, error) { return externalEdit(fd, state, ttyIn, ttyOut, text) }
 	go cleanDrafts()
 	l := &LineReader{d: d, fd: fd, state: state, raw: true, done: make(chan struct{}), tty: os.Stdout}
 	activeReader.Store(l)
@@ -483,8 +486,9 @@ func (l *LineReader) Close() {
 }
 
 // externalEdit opens text in $VISUAL or $EDITOR with the terminal in its
-// ordinary mode, and returns what was saved.
-func externalEdit(fd int, raw *term.State, text string) (string, error) {
+// ordinary mode, and returns what was saved. in and out are the terminal,
+// never the capture pipes.
+func externalEdit(fd int, raw *term.State, in, out *os.File, text string) (string, error) {
 	editor := os.Getenv("VISUAL")
 	if editor == "" {
 		editor = os.Getenv("EDITOR")
@@ -500,15 +504,15 @@ func externalEdit(fd int, raw *term.State, text string) (string, error) {
 	if raw != nil {
 		_ = term.Restore(fd, raw)
 	}
-	_, _ = os.Stdout.WriteString(modesOff)
+	_, _ = out.WriteString(modesOff)
 	fields := strings.Fields(editor)
 	cmd := exec.Command(fields[0], append(fields[1:], name)...) // #nosec G204 G702 -- the person's own editor, on their own file
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, out
 	runErr := cmd.Run()
 	if _, err := term.MakeRaw(fd); err != nil {
 		return "", err
 	}
-	_, _ = os.Stdout.WriteString(modesOn)
+	_, _ = out.WriteString(modesOn)
 	if runErr != nil {
 		return "", runErr
 	}
