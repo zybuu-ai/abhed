@@ -52,7 +52,12 @@ type indexLine struct {
 	HeadLines int64  `json:"head_lines,omitempty"`
 	HeadSeq   int64  `json:"head_seq,omitempty"`
 	HeadHash  string `json:"head_hash,omitempty"`
-	Prev      string `json:"prev"`
+	// A tombstone says whether the file was already gone, and whether the
+	// record verified when it was pruned.
+	Missing    bool   `json:"missing,omitempty"`
+	Verified   *bool  `json:"verified,omitempty"`
+	Unverified string `json:"unverified,omitempty"`
+	Prev       string `json:"prev"`
 	Hash      string `json:"hash,omitempty"`
 }
 

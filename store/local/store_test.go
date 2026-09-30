@@ -570,7 +570,9 @@ func TestPruneWritesATombstone(t *testing.T) {
 	rec2 := record(t, s, "s-2", "two")
 	_, _ = rec2.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted, agent.CheckpointSaved{Path: "b", SHA256: shared})
 	_ = s.CreateSubagentSession(context.Background(), "child1", "s-1", "sub")
-	head := mustVerify(t, s, "s-1").Head
+	mustVerify(t, s, "s-1")
+	_ = s.Sync("s-1")
+	head, _ := s.readHead("s-1")
 
 	if _, err := s.Prune("s-1", "user", "by hand"); err == nil {
 		t.Fatal("a session open in this process was pruned")

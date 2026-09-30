@@ -567,7 +567,12 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 	}
 	if days := cfg.Record.RetentionDays; days > 0 && cfg.ManagedSets("record.retention_days") {
 		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-		if _, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days)); err != nil {
+		pruned, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days))
+		// Each has a tombstone in the index; the person is told as well.
+		for _, p := range pruned {
+			fmt.Fprintf(os.Stderr, "abhed: pruned session %s under record.retention_days (%d days); a tombstone keeps its head\n", p.ID, days)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: the record's retention could not be applied: %v\n", err)
 		}
 	}

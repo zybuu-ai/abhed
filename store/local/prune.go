@@ -12,18 +12,25 @@ import (
 // Pruned is what a prune removed.
 type Pruned struct {
 	ID string
-	// Head is the removed session's last line, kept in its tombstone.
+	// Head is the removed session's head as the record stored it, or as
+	// the index last recorded it when the file or its head was gone.
 	Head Head
 	// Blobs is how many checkpoint contents went with it.
 	Blobs int
+	// Missing is set when the file was already gone, and Verified when the
+	// record verified as it was pruned.
+	Missing  bool
+	Verified bool
 }
 
-// Prune removes session id and the subagent sessions it started: a
-// tombstone with each one's head goes into the index first, then the files
-// and the checkpoints nothing else names. It is refused while another
-// process holds the session. This is the only way anything leaves the
-// record, and it is never automatic unless the managed configuration sets
-// record.retention_days.
+// Prune removes session id and the subagent sessions it started. For each,
+// a tombstone goes into the index first: its head as stored, whether its
+// file was already missing, and whether it verified. Then the files go, and
+// the checkpoints nothing else names. It is refused while any of them is
+// open in a process, this one included. Nothing is created or repaired on
+// the way: a record already damaged or gone is pruned as found, and says
+// so. This is the only way anything leaves the record, and it is never
+// automatic unless the managed configuration sets record.retention_days.
 func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 	e, ok := s.index.get(id)
 	if !ok || e.Pruned {
@@ -34,6 +41,10 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 	if err != nil {
 		return nil, err
 	}
+	byID := map[string]Entry{}
+	for _, c := range all {
+		byID[c.ID] = c
+	}
 	for i := 0; i < len(ids); i++ {
 		for _, c := range all {
 			if c.Subagent && c.Parent == ids[i] && !c.Pruned {
@@ -41,45 +52,77 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 			}
 		}
 	}
+	// Every one is locked first, so a session another process holds stops
+	// the prune before anything is removed. Only the lock is taken: the
+	// record itself is not opened for writing.
+	locks := map[string]*os.File{}
+	release := func() {
+		for _, lk := range locks {
+			_ = unlock(lk)
+			_ = lk.Close()
+		}
+	}
 	for _, sid := range ids {
 		if s.Held(sid) {
+			release()
 			return nil, fmt.Errorf("session %s is open in this process; close it first", sid)
 		}
-	}
-	// Every one is taken first, so a session another process holds stops
-	// the prune before anything is removed.
-	var taken []*session
-	for _, sid := range ids {
-		h, err := s.acquire(sid, false, nil)
+		lk, err := os.OpenFile(s.lockPath(sid), os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- an id checked to be a plain name
 		if err != nil {
-			for _, t := range taken {
-				_ = s.Release(t.id)
-			}
+			release()
 			return nil, err
 		}
-		taken = append(taken, h)
+		if got, err := tryLock(lk); err != nil || !got {
+			_ = lk.Close()
+			release()
+			return nil, fmt.Errorf("session %s: %w", sid, ErrHeldElsewhere)
+		}
+		locks[sid] = lk
 	}
+	defer release()
 	gone := map[string]bool{}
 	var refs []string
+	keepAll := false
 	var out []Pruned
-	for _, h := range taken {
-		h.mu.Lock()
-		_ = h.sync(s)
-		head := h.last
-		refs = append(refs, agent.BlobRefs(h.events)...)
-		h.mu.Unlock()
-		if err := s.index.append(indexLine{Op: opPrune, ID: h.id, By: by, Reason: reason,
-			HeadLines: head.Lines, HeadSeq: head.Seq, HeadHash: head.Hash}); err != nil {
+	for _, sid := range ids {
+		p := Pruned{ID: sid}
+		if _, err := os.Lstat(s.Path(sid)); errors.Is(err, os.ErrNotExist) {
+			p.Missing = true
+		}
+		rep, verr := s.Verify(sid)
+		p.Verified = verr == nil && rep.OK
+		if head, ok := s.readHead(sid); ok {
+			p.Head = head
+		} else {
+			p.Head = byID[sid].Head // the index's last recorded end
+		}
+		if evs, _, err := s.readEvents(sid); err == nil {
+			refs = append(refs, agent.BlobRefs(evs)...)
+		} else {
+			keepAll = true // what it named cannot be read: keep every blob
+		}
+		tomb := indexLine{Op: opPrune, ID: sid, By: by, Reason: reason,
+			HeadLines: p.Head.Lines, HeadSeq: p.Head.Seq, HeadHash: p.Head.Hash,
+			Missing: p.Missing, Verified: boolPtr(p.Verified)}
+		if !p.Verified {
+			tomb.Unverified = rep.Reason
+			if verr != nil {
+				tomb.Unverified = verr.Error()
+			}
+		}
+		if err := s.index.append(tomb); err != nil {
 			return out, err
 		}
-		_ = s.Release(h.id)
-		for _, p := range []string{s.Path(h.id), s.headPath(h.id), s.lockPath(h.id)} {
-			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		for _, f := range []string{s.Path(sid), s.headPath(sid), s.lockPath(sid)} {
+			if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return out, err
 			}
 		}
-		gone[h.id] = true
-		out = append(out, Pruned{ID: h.id, Head: head})
+		gone[sid] = true
+		out = append(out, p)
+	}
+	if keepAll {
+		return out, nil
 	}
 	n, err := s.collect(refs, gone)
 	if len(out) > 0 {

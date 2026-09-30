@@ -210,3 +210,44 @@ func TestInvalidHeadsFail(t *testing.T) {
 		})
 	}
 }
+
+// The review's probe: a session file deleted, then pruned. The prune does
+// not make an empty file to prune; its tombstone says the file was missing
+// and keeps the head the index recorded, not a clean zero.
+func TestPruneOfAMissingSessionSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	rec := record(t, s, "s-1", "one", "two")
+	_, _ = rec.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	_ = os.Remove(s2.Path("s-1"))
+	_ = os.Remove(s2.headPath("s-1"))
+	p, err := s2.Prune("s-1", "managed", "retention")
+	if err != nil || len(p) != 1 || !p[0].Missing || p[0].Verified || p[0].Head.Lines != 3 {
+		t.Fatalf("prune: %+v %v", p, err)
+	}
+	if _, err := os.Stat(s2.Path("s-1")); err == nil {
+		t.Fatal("the prune made a file")
+	}
+	ls, _ := s2.index.lines()
+	last := ls[len(ls)-1]
+	if last.Op != opPrune || !last.Missing || last.Verified == nil || *last.Verified || last.HeadLines != 3 || last.Unverified == "" {
+		t.Fatalf("tombstone: %+v", last)
+	}
+}
+
+// A damaged record can still be pruned, as found; the tombstone says it
+// did not verify.
+func TestPruneOfAnUnverifiedSession(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one", "two", "three")
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	cutLines(t, s2.Path("s-1"), 1, "")
+	p, err := s2.Prune("s-1", "user", "by hand")
+	if err != nil || len(p) != 1 || p[0].Verified || p[0].Missing || p[0].Head.Lines != 3 {
+		t.Fatalf("prune: %+v %v", p, err)
+	}
+}
