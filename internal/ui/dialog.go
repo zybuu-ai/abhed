@@ -257,7 +257,17 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 			tail = append(tail, bar+s.Bold(l))
 		}
 	}
-	for i, c := range st.spec.Choices {
+	// A long list shows a window of choices around the selected one.
+	first, last := 0, len(st.spec.Choices)
+	if window := max(maxRows-len(head)-4, 3); last > window {
+		first = min(max(0, st.sel-window/2), last-window)
+		last = first + window
+	}
+	if first > 0 {
+		tail = append(tail, bar+s.Dim(fmt.Sprintf("  ↑ %d more", first)))
+	}
+	for i := first; i < last; i++ {
+		c := st.spec.Choices[i]
 		num := strconv.Itoa(i+1) + ". "
 		label := c.Label
 		mark := "  "
@@ -278,6 +288,9 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 			}
 			tail = append(tail, bar+lead+l)
 		}
+	}
+	if last < len(st.spec.Choices) {
+		tail = append(tail, bar+s.Dim(fmt.Sprintf("  ↓ %d more", len(st.spec.Choices)-last)))
 	}
 	hint := "number or ↑↓ then enter · esc to decline"
 	if st.note != "" {

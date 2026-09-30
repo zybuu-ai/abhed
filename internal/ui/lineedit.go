@@ -2,7 +2,6 @@ package ui
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"io"
 	"os"
@@ -250,8 +249,9 @@ func (l *LineReader) Stops() <-chan struct{} {
 	return l.d.stops
 }
 
-// SetStatus supplies what the footer shows; it is asked on every draw.
-func (l *LineReader) SetStatus(f func() StatusModel) {
+// SetStatusFunc supplies what the footer shows; it is asked on every draw,
+// so a change such as /model shows at once.
+func (l *LineReader) SetStatusFunc(f func() StatusModel) {
 	if l.raw {
 		l.d.mu.Lock()
 		l.d.status = f
@@ -326,15 +326,6 @@ func (l *LineReader) Flash(s string) {
 		l.d.draw()
 		l.d.mu.Unlock()
 	}
-}
-
-// Dialog shows a guarded numbered dialog in the dock and returns the chosen
-// choice's ID. It needs a terminal; PipeDialog asks over piped input.
-func (l *LineReader) Dialog(ctx context.Context, spec DialogSpec) (string, error) {
-	if !l.raw {
-		return "", errNoTerminal
-	}
-	return l.d.ask(ctx, spec)
 }
 
 // Write prints through the terminal so output does not collide with the

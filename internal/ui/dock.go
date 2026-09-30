@@ -66,16 +66,18 @@ type dock struct {
 	// takes them or the turn ends.
 	queued []string
 
-	dlg     *dialogState
-	help    bool
-	hint    string
-	hintAt  time.Time
-	status  func() StatusModel
-	vim     *vimState
-	pager   *pager
-	missed  []block // committed while the transcript view was open
-	tr      transcript
-	stopped bool // the dock no longer draws: the program is exiting
+	dlg    *dialogState
+	help   bool
+	hint   string
+	hintAt time.Time
+	status func() StatusModel
+	// statusSet is the model last given to SetStatus.
+	statusSet StatusModel
+	vim       *vimState
+	pager     *pager
+	missed    []block // committed while the transcript view was open
+	tr        transcript
+	stopped   bool // the dock no longer draws: the program is exiting
 
 	lastEsc   time.Time
 	lastCtrlC time.Time

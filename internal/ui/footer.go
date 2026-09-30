@@ -8,9 +8,13 @@ import (
 
 func (d *dock) statusModel() StatusModel {
 	if d.status == nil {
-		return StatusModel{}
+		return d.statusSet
 	}
-	return d.status()
+	m := d.status()
+	if m.Line == "" {
+		m.Line = d.statusSet.Line
+	}
+	return m
 }
 
 // footerRows are the two rows under the input: the permission mode, always

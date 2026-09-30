@@ -9,8 +9,11 @@ import (
 // tool's output and every reasoning block in full, on the terminal's
 // alternate screen so closing it puts the session back exactly as it was.
 type pager struct {
-	rows []string
-	top  int
+	rows  []string
+	top   int
+	title string
+	// done is closed when the view is closed, for a Panel waiting on it.
+	done chan struct{}
 }
 
 func (d *dock) openPager() {
@@ -30,6 +33,9 @@ func (d *dock) openPager() {
 }
 
 func (d *dock) closePager() {
+	if d.pager.done != nil {
+		close(d.pager.done)
+	}
 	d.pager = nil
 	d.scr.raw("\x1b[?25h\x1b[?1049l")
 	if d.dlg != nil {
@@ -54,7 +60,11 @@ func (d *dock) drawPager() {
 	var b strings.Builder
 	b.WriteString("\x1b[H\x1b[2J")
 	end := min(len(p.rows), p.top+d.pageRows())
-	title := fmt.Sprintf(" Transcript · %d–%d of %d ", p.top+1, end, len(p.rows))
+	name := "Transcript"
+	if p.title != "" {
+		name = p.title
+	}
+	title := fmt.Sprintf(" %s · %d–%d of %d ", name, p.top+1, end, len(p.rows))
 	b.WriteString(d.st.Reverse(truncateWidth(title, d.contentWidth())) + "\r\n")
 	for _, r := range p.rows[p.top:end] {
 		b.WriteString(truncateWidth(r, d.contentWidth()) + "\x1b[0m\r\n")

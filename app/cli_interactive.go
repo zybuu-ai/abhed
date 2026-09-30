@@ -93,6 +93,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
+	// Commands show and ask through the terminal, or a line at a time.
+	sessionState.surface = ui.NewSurface(editor, prompter)
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
