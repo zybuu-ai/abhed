@@ -176,7 +176,7 @@ func TestManagedRecordDirTakesEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := es.(*local.Store)
-	if rec.Dir() != dir {
+	if real, _ := filepath.EvalSymlinks(dir); rec.Dir() != real {
 		t.Fatalf("the record opened at %s", rec.Dir())
 	}
 	_ = rec.CreateSession(context.Background(), store.SessionRecord{ID: "s-org", Workspace: ws})
