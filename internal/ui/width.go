@@ -592,9 +592,10 @@ func applyColours(fg, bg *string, params string) {
 			*bg = ""
 		case n == 38 || n == 48 || n == 58:
 			c, used := extended(ps[i+1:])
-			if n == 38 {
+			switch n {
+			case 38:
 				*fg = c
-			} else if n == 48 {
+			case 48:
 				*bg = c
 			}
 			i += used
