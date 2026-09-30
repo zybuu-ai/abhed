@@ -267,7 +267,14 @@ func (s *Store) take(id string, create bool, entry *indexLine) (*session, error)
 		_ = lk.Close()
 		return nil, fmt.Errorf("session %s was pruned; its tombstone is all that remains", id)
 	}
-	h, err := s.load(id, lk, create)
+	if create && found {
+		_ = unlock(lk)
+		_ = lk.Close()
+		return nil, store.ErrSessionExists
+	}
+	// A file is made only for a new session: by CreateSession, or by a
+	// first append to an id the index has never listed.
+	h, err := s.load(id, lk, create, !found)
 	if err != nil {
 		_ = unlock(lk)
 		_ = lk.Close()
@@ -298,16 +305,24 @@ func (s *Store) take(id string, create bool, entry *indexLine) (*session, error)
 }
 
 // load opens a session's file for appending and reads what it holds.
-func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
+func (s *Store) load(id string, lk *os.File, create, unlisted bool) (*session, error) {
 	path := s.Path(id)
-	flags := os.O_RDWR | os.O_APPEND | os.O_CREATE
-	if create {
-		flags |= os.O_EXCL
+	flags := os.O_RDWR | os.O_APPEND
+	switch {
+	case create:
+		flags |= os.O_CREATE | os.O_EXCL
+	case unlisted:
+		flags |= os.O_CREATE
 	}
 	f, err := openOwn(path, flags)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil, store.ErrSessionExists
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			// A listed session's file is gone: that is evidence, and nothing
+			// is made in its place.
+			return nil, &UnverifiedError{Report: Report{ID: id, Reason: "the session's file is missing, and no prune was recorded"}}
 		}
 		return nil, fmt.Errorf("open session %s: %w", id, err)
 	}

@@ -251,3 +251,37 @@ func TestPruneOfAnUnverifiedSession(t *testing.T) {
 		t.Fatalf("prune: %+v %v", p, err)
 	}
 }
+
+// The review's probes A and B: a listed session's file deleted, with or
+// without its head. Opening it for writing refuses and makes no file, so
+// verify keeps reporting it missing.
+func TestDeletedSessionFileIsNotRecreated(t *testing.T) {
+	for _, withHead := range []bool{false, true} {
+		dir := t.TempDir()
+		s := openTest(t, dir)
+		record(t, s, "s-1", "one", "two")
+		_ = s.Close()
+		s2 := openTest(t, dir)
+		_ = os.Remove(s2.Path("s-1"))
+		if !withHead {
+			_ = os.Remove(s2.headPath("s-1"))
+		}
+		if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
+			t.Fatalf("head kept %v: Acquire: %v", withHead, err)
+		}
+		if _, err := s2.ClaimResume(t.Context(), "s-1"); !errors.Is(err, ErrUnverified) {
+			t.Fatalf("head kept %v: ClaimResume: %v", withHead, err)
+		}
+		rec := agent.NewRecorder(s2, "s-1", "")
+		if _, err := rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "x"}); err == nil {
+			t.Fatalf("head kept %v: an append made the session again", withHead)
+		}
+		if _, err := os.Stat(s2.Path("s-1")); err == nil {
+			t.Fatalf("head kept %v: a file was made", withHead)
+		}
+		mustFail(t, s2, "after open")
+		if err := s2.CreateSession(t.Context(), store.SessionRecord{ID: "s-1"}); err == nil {
+			t.Fatal("a listed id was created again")
+		}
+	}
+}
