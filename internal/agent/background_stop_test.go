@@ -237,3 +237,24 @@ func TestSlotsHoldWhatTheyReserve(t *testing.T) {
 		t.Fatal("a hold of one gave out two slots")
 	}
 }
+
+// A fork is refused while background tasks run, naming them: a task could
+// otherwise go on acting on what the fork resets. Nothing is cancelled.
+func TestForkRefusedWhileTasksRun(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "one")
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.l.ForkTo(r.events(t), 0)
+	if err == nil || !strings.Contains(err.Error(), "background tasks are still running: one (") {
+		t.Fatalf("fork with a task running: %v", err)
+	}
+	if r.l.Background.Live() != 1 || len(payloads[map[string]any](r.events(t), EvForked)) != 0 {
+		t.Fatal("the refused fork cancelled the task or was recorded")
+	}
+	r.m.release("one")
+	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+	if _, err := r.l.ForkTo(r.events(t), 0); err != nil {
+		t.Fatalf("fork once the tasks ended: %v", err)
+	}
+}

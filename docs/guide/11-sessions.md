@@ -55,7 +55,9 @@ random id, so two CLIs started in the same second never share one. After `/fork`
 next task continues from the rebuilt conversation, and its events extend
 that session's record. A fork is recorded as a `conversation.forked` event:
 the steps it abandoned stay in the record for audit, but no later `/fork`,
-`/tree` or `/resume` brings them back. `/resume` continues only a session that is not
+`/tree` or `/resume` brings them back. A fork is refused while background
+tasks are running, naming them: wait for them or cancel them (`/tasks cancel`),
+then fork. It never cancels them itself. `/resume` continues only a session that is not
 running elsewhere, and on Postgres only one recorded as yours, in your
 tenant; another user's session is not replayed either. A subagent's session
 id is refused, in the CLI and in the console: it is shown, but continues only

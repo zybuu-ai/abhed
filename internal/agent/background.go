@@ -457,6 +457,22 @@ func (b *Background) Tasks() []TaskInfo {
 	return out
 }
 
+// running names the children still running, as "description (task id)".
+func (b *Background) running() []string {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, id := range b.order {
+		if t := b.tasks[id]; !t.ended {
+			out = append(out, fmt.Sprintf("%s (%s)", t.Description, id))
+		}
+	}
+	return out
+}
+
 // TaskInfo is what task_status and the surfaces say about one child.
 type TaskInfo struct {
 	ID          string    `json:"task_id"`

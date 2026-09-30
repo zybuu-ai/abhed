@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -234,6 +235,14 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	}
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
+	// A task still running would go on writing into the conversation the fork
+	// leaves, and act on what the fork resets. Refused rather than cancelled:
+	// a fork does not silently end work. Checked under the run lock, which
+	// every spawn is made under.
+	if running := l.Background.running(); len(running) > 0 {
+		return 0, fmt.Errorf("background tasks are still running: %s; wait for them to finish or cancel them, then fork",
+			strings.Join(running, ", "))
+	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
 		return 0, err
 	}
