@@ -149,3 +149,17 @@ func TestCLIPlanExit(t *testing.T) {
 		t.Fatalf("events out of order: %v", types)
 	}
 }
+
+// An acceptance the mode change then refuses is recorded as keep-planning,
+// never as an accepted plan whose mode did not change.
+func TestPlanAcceptedIntoARefusedModeKeepsPlanning(t *testing.T) {
+	cfg := config.Default()
+	cfg.Managed, cfg.ManagedKeys, cfg.Permissions.Mode = true, []string{"permissions.mode"}, "default"
+	env, surface, events := planEnv(t, cfg, planAcceptEdits)
+	if next := decidePlan(context.Background(), env.st, env.pol, surface); next != "" || env.pol.Mode != policy.ModePlan {
+		t.Fatalf("went on with %q in mode %s", next, env.pol.Mode)
+	}
+	if got := planDecisions(t, events()); !slices.Equal(got, []string{"keep-planning>"}) {
+		t.Fatalf("recorded %v", got)
+	}
+}

@@ -339,11 +339,12 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "still in plan mode; say what to change"})
 		return ""
 	}
-	st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)})
 	if err := modes.Set(ctx, to, agent.ViaPlanExit); err != nil {
-		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode was not changed: " + err.Error()})
+		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode was not changed, so planning goes on: " + err.Error()})
 		return ""
 	}
+	st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)})
 	surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
 	return fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 }
