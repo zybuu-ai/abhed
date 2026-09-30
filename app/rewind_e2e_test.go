@@ -191,3 +191,20 @@ func TestNoCheckpointOfSecretOrDeniedFiles(t *testing.T) {
 		t.Fatalf("%d skipped checkpoints, want 2 (the second edit of each file)", skipped)
 	}
 }
+
+// The names that hold keys are matched without case, in the file's name or
+// any folder above it.
+func TestNoCheckpointNames(t *testing.T) {
+	for _, p := range []string{"/w/.ENV", "/w/prod.env", "/w/.envrc", "/w/.git-credentials", "/w/.pgpass",
+		"/w/app/credentials.json", "/w/main.tfvars", "/h/.azure/token", "/h/.aws/config", "/h/.kube/config",
+		"/h/.npmrc", "/h/.pypirc", "/h/.netrc", "/w/c.P12", "/w/c.pfx", "/w/server.key"} {
+		if noCheckpoint(nil, p) == "" {
+			t.Errorf("%s is checkpointed", p)
+		}
+	}
+	for _, p := range []string{"/w/main.go", "/w/README.md", "/w/environment.go"} {
+		if why := noCheckpoint(nil, p); why != "" {
+			t.Errorf("%s is skipped: %s", p, why)
+		}
+	}
+}

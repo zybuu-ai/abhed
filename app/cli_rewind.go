@@ -234,10 +234,14 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 	}
 }
 
-// secretNames are files and folders that hold keys and credentials; a
-// checkpoint does not copy them into the record.
-var secretNames = []string{".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ecdsa*", "id_ed25519*",
-	".netrc", ".npmrc", ".pypirc", "credentials", ".ssh", ".aws", ".gnupg", ".kube", ".docker"}
+// secretNames are files and folders that hold keys and credentials, matched
+// without case; a checkpoint does not copy them into the record.
+var secretNames = []string{
+	".env", ".env.*", "*.env", ".envrc", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx",
+	"id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".htpasswd",
+	".git-credentials", "credentials", "credentials.json", "*.tfvars", "*.tfstate", ".vault-token", ".s3cfg", ".boto",
+	".ssh", ".aws", ".azure", "gcloud", ".gnupg", ".kube", ".docker",
+}
 
 // noCheckpoint says why a file's content is not kept before an edit, "" when
 // it is: policy keeps it from being read, or its name says it holds keys.
@@ -249,8 +253,9 @@ func noCheckpoint(loop *agent.Loop, path string) string {
 		}
 	}
 	for dir := path; ; dir = filepath.Dir(dir) {
+		name := strings.ToLower(filepath.Base(dir))
 		for _, pat := range secretNames {
-			if ok, _ := filepath.Match(pat, filepath.Base(dir)); ok {
+			if ok, _ := filepath.Match(pat, name); ok {
 				return "it looks like a file of keys or credentials"
 			}
 		}
