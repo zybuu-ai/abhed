@@ -558,3 +558,25 @@ func TestInsertRefusesPasteCharacters(t *testing.T) {
 		t.Fatalf("line %q", got)
 	}
 }
+
+// A recalled history entry is filtered as a paste is: a history file on disk
+// is not trusted text, so no escape, bidi override or paste placeholder
+// comes back onto the line or into what is sent.
+func TestHistoryRecallIsFiltered(t *testing.T) {
+	g := newRig(t, 80, 24)
+	h := &History{}
+	h.Add("say \x1b]52;c;aGk=\x07hi \u202eevil\u202c \U0010FF00end\u009b2J", false)
+	g.lr.SetHistory(h)
+	g.keys("\x1b[A")
+	g.settle()
+	g.keys("\r")
+	got, _ := g.line()
+	for _, r := range got {
+		if hiddenRune(r) || isPasteRune(r) {
+			t.Fatalf("recall kept %U: %q", r, got)
+		}
+	}
+	if !strings.Contains(got, "say") || !strings.Contains(got, "end") {
+		t.Fatalf("recall lost the text: %q", got)
+	}
+}

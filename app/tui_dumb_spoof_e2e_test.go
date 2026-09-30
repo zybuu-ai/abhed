@@ -105,3 +105,51 @@ func TestDumbTerminalPathEscapes(t *testing.T) {
 		t.Fatalf("an escape reached a dumb terminal: …%q…", got[max(0, i-20):min(len(got), i+30)])
 	}
 }
+
+// In the line mode, what a command prints goes through the same filter: its
+// escapes never reach the terminal, and its text does.
+func TestDumbTerminalCommandOutputEscapes(t *testing.T) {
+	_, ws := tuiWorkspace(t, "")
+	d := startDumb(t, ws)
+	d.send("please print\r")
+	d.wait("answer 1-")
+	d.send("1\r")
+	d.wait("Done")
+	time.Sleep(300 * time.Millisecond)
+	got := d.text()
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\a") {
+		i := strings.IndexAny(got, "\x1b\a")
+		t.Fatalf("an escape reached a dumb terminal: …%q…", got[max(0, i-20):min(len(got), i+30)])
+	}
+	if !strings.Contains(got, "TITLE") {
+		t.Fatalf("the command's output is missing:\n%q", got)
+	}
+}
+
+// In the line mode, text the program prints itself (here /model listing a
+// provider named with escapes in the config) goes through the output filter
+// too: nothing drawn carries an escape.
+func TestDumbTerminalPrintedTextIsFiltered(t *testing.T) {
+	_, ws := tuiWorkspace(t, "")
+	cfgPath := filepath.Join(os.Getenv("HOME"), ".abhed", "config.json")
+	cfg, err := os.ReadFile(cfgPath) // #nosec G304 -- the test's own config
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostile := strings.Replace(string(cfg), `"stub2":`, `"stub2\u001b]0;TITLE\u0007\u001b[2Jx":`, 1)
+	if err := os.WriteFile(cfgPath, []byte(hostile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := startDumb(t, ws)
+	d.send("/model\r")
+	d.wait("configured providers")
+	time.Sleep(300 * time.Millisecond)
+	got := d.text()
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\a") {
+		i := strings.IndexAny(got, "\x1b\a")
+		t.Fatalf("an escape reached a dumb terminal: …%q…", got[max(0, i-20):min(len(got), i+30)])
+	}
+	if !strings.Contains(got, "stub2x") {
+		t.Fatalf("the provider list is missing:\n%q", got)
+	}
+}

@@ -519,6 +519,20 @@ func TestDialogGuardStartsWhenVisible(t *testing.T) {
 		t.Fatalf("a 1 straight after the editor answered %q", id)
 	case <-time.After(100 * time.Millisecond):
 	}
+	// The guard did start: once it has run, a deliberate 1 answers.
+	clock.advance(time.Second)
+	g.keys("1")
+	g.settle()
+	clock.advance(time.Second)
+	tm.advance(time.Second)
+	select {
+	case id := <-answer:
+		if id != "yes" {
+			t.Fatalf("a deliberate 1 after the guard answered %q", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the guard never started after the editor: a deliberate 1 answered nothing")
+	}
 }
 
 // Approvals are numbers only: a lone letter or Enter, however deliberate,
