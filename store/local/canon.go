@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"unicode/utf8"
 )
 
 // canonical returns a JSON value in the form the chain hashes: object keys
@@ -15,6 +16,11 @@ import (
 func canonical(data []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return []byte("null"), nil
+	}
+	// Decoding would put U+FFFD in place of invalid bytes, and two keys that
+	// differed only there would become one: refused rather than lost.
+	if !utf8.Valid(data) {
+		return nil, errors.New("the JSON is not valid UTF-8")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()

@@ -57,3 +57,13 @@ func FuzzCanonical(f *testing.F) {
 		}
 	})
 }
+
+// The review's probe: two keys that differ only in invalid bytes would
+// collapse into one; such JSON is refused.
+func TestCanonicalRefusesInvalidUTF8(t *testing.T) {
+	for _, in := range []string{"{\"\xff\":1,\"\xfe\":2}", "{\"t\":\"\xff\xfe\"}"} {
+		if _, err := canonical([]byte(in)); err == nil {
+			t.Errorf("canonical(%q) accepted", in)
+		}
+	}
+}
