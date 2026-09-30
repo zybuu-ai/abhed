@@ -41,7 +41,9 @@ func openExport(path string, roots ...string) (*os.File, error) {
 	if !inExports(abs) && tools.IsState(abs, roots...) {
 		return nil, fmt.Errorf("%s is Abhed's own state; an export is never written there", abs)
 	}
-	flags := os.O_WRONLY | os.O_CREATE | oNoFollow
+	// Never truncated at open: the file is checked first. O_NONBLOCK keeps a
+	// pipe swapped in from stalling the open.
+	flags := os.O_WRONLY | os.O_CREATE | oNoFollow | oNonBlock
 	info, err := os.Lstat(abs)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -52,8 +54,6 @@ func openExport(path string, roots ...string) (*os.File, error) {
 		return nil, fmt.Errorf("%s is not a plain file (a link or a folder); an export does not write through it", abs)
 	case nlink.Of(info) > 1:
 		return nil, fmt.Errorf("%s has another name (a hard link); an export does not write over it", abs)
-	default:
-		flags |= os.O_TRUNC
 	}
 	f, err := os.OpenFile(abs, flags, 0o600) // #nosec G304 -- checked above, and opened without following a link
 	if err != nil {
@@ -63,6 +63,10 @@ func openExport(path string, roots ...string) (*os.File, error) {
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() || nlink.Of(st) > 1 || (info != nil && !os.SameFile(info, st)) {
 		_ = f.Close()
 		return nil, fmt.Errorf("%s changed while it was opened; not written", abs)
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
+		return nil, err
 	}
 	return f, nil
 }
