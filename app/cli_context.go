@@ -21,6 +21,7 @@ import (
 
 func init() {
 	registerSlash(slashCmd{Name: "/compact", Args: "[hint]", Help: "compact the context now", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
+	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
 	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <project|local|user> <note>]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
 
@@ -326,4 +327,38 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// initPrompt is what /init asks the agent to do. It names no other product
+// or its files: ABHED.md is written from what this repository shows.
+const initPrompt = `Write ABHED.md at the root of this workspace: the project memory Abhed reads at the start of every session. Base it on what the repository itself shows; do not guess.
+
+First read the README, the build and package files, and the CI configuration. Then write ABHED.md, short (under about 150 lines) and specific to this repository:
+
+1. What the project is, in two or three sentences.
+2. How to build, test, lint and run it: the exact commands, including how to run a single test.
+3. The layout: the main directories and what each holds, only where a newcomer would not guess it.
+4. Conventions a newcomer would get wrong: style, naming, error handling, and the commit and review rules the repository states.
+
+If ABHED.md already exists, improve it: keep what is still true, fix what is not, and remove what the code no longer supports. Do not copy text from configuration files written for other tools; state only what this repository's code and documents show.`
+
+// slashInit is /init: the agent studies the repository and writes
+// ABHED.md, through the write tool, so the change is shown and approved as
+// any other write is. The record shows /init, as command.invoked.
+func slashInit(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
+	st := e.st
+	if err := ensureConversation(ctx, st); err != nil {
+		return false, err
+	}
+	recordMemoryLoaded(st)
+	if _, err := st.loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+		agent.CommandInvoked{Name: "/init", Source: sourceBuiltin, Args: strings.Join(args, " ")}); err != nil {
+		return false, err
+	}
+	text := initPrompt
+	if extra := strings.TrimSpace(strings.Join(args, " ")); extra != "" {
+		text += "\n\nThe person adds: " + extra
+	}
+	st.sendTurn(agent.Message{Text: text}, nil)
+	return false, nil
 }
