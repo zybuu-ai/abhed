@@ -87,11 +87,14 @@ func (a *DialogApprover) rel(p string) string {
 }
 
 func (a *DialogApprover) header(tool string, args json.RawMessage) string {
-	sum := sanitize(summarizeArgsRel(tool, args, a.rel), false)
+	sum := reveal(summarizeArgsRel(tool, args, a.rel))
 	if tool == "bash" {
-		sum = firstLine(sanitize(str(args, "command"), false))
+		cmd := reveal(str(args, "command"))
+		sum = firstLine(cmd)
 		if len([]rune(sum)) > 80 {
 			sum = string([]rune(sum)[:79]) + "…"
+		} else if sum != cmd {
+			sum += " …" // more lines follow, shown in full below
 		}
 	}
 	if sum == "" {
@@ -144,7 +147,7 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 	question := fmt.Sprintf("Allow %s?", toolTitle(tool))
 	switch tool {
 	case "bash":
-		body = append(body, viewBlock(&commandBlock{command: sanitize(str(args, "command"), false)}))
+		body = append(body, viewBlock(&commandBlock{command: reveal(str(args, "command"))}))
 		question = "Run this command?"
 	case "edit", "write":
 		path := str(args, "path")
@@ -161,7 +164,7 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 		}
 	default:
 		if raw := strings.TrimSpace(string(args)); raw != "" && raw != "{}" {
-			body = append(body, viewBlock(&commandBlock{command: sanitize(raw, false), plain: true}))
+			body = append(body, viewBlock(&commandBlock{command: reveal(raw), plain: true}))
 		}
 	}
 
@@ -198,7 +201,7 @@ func (a *DialogApprover) confirm(ctx context.Context, args json.RawMessage, res 
 		Kind:  DialogConfirm,
 		Title: "This cannot be undone",
 		Why:   sanitize(res.Reason, false),
-		Body:  []Block{viewBlock(&commandBlock{command: sanitize(str(args, "command"), false)})},
+		Body:  []Block{viewBlock(&commandBlock{command: reveal(str(args, "command"))})},
 		Ask:   "Really run it?",
 		Choices: []Choice{
 			{ID: "no", Label: "No, don't run it", Key: 'n'},

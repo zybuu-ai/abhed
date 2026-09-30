@@ -221,7 +221,7 @@ func (f *fileDiff) rows(s Style, width, limit int) []string {
 			num = op.oldNum
 		}
 		gutter := fmt.Sprintf("%*d", gw, num)
-		body := strings.ReplaceAll(sanitize(op.text, false), "\t", "    ")
+		body := reveal(op.text)
 		for j, part := range hardWrap(body, textW) {
 			g := gutter
 			if j > 0 {

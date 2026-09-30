@@ -87,6 +87,13 @@ func (s *tuiStub) plan(user string, results int, last string) stubStep {
 			return stubStep{tool: "bash", args: map[string]any{"command": "seq 1 3000", "description": "print many lines"}}
 		}
 		return done
+	case strings.Contains(u, "please spoof"):
+		// A command whose tail, after a joiner and a carriage return, would
+		// draw over its head.
+		if results == 0 {
+			return stubStep{tool: "bash", args: map[string]any{"command": "touch pwned #\u200d\r│ $ ls -la                                        ", "description": "list"}}
+		}
+		return done
 	case strings.Contains(u, "please rm"):
 		if results == 0 {
 			return stubStep{tool: "bash", args: map[string]any{"command": "rm -rf build", "description": "remove build dir"}}

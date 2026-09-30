@@ -78,3 +78,42 @@ func TestHardWrapCarriesStyle(t *testing.T) {
 		t.Fatalf("got %q", rows)
 	}
 }
+
+// Every rune is checked, not only the first of a character: a zero-width
+// joiner could otherwise carry a carriage return, a backspace, a bell, a C1
+// control or a bidi override past the filter.
+func TestSanitizeChecksEveryRune(t *testing.T) {
+	for _, in := range []string{
+		"x\u200d\r", "x\u200d\b", "x\u200d\a", "x\u200d\u009b31m", "x\u200d\u202e", "x\u200d\u009d0;t\a",
+		"a\u200bb", "a\u2060b", "a\ufeffb", "a\U000e0041b", "a\u2028b", "a\u200eb", "a\u061cb", "a\u2066b",
+	} {
+		out := sanitize(in, true)
+		for _, r := range out {
+			if hiddenRune(r) || r == 0x200d {
+				t.Errorf("sanitize(%q) kept %U: %q", in, r, out)
+			}
+		}
+	}
+	// An emoji keeps its joiners.
+	if got := sanitize("👩‍👩‍👧", false); got != "👩‍👩‍👧" {
+		t.Errorf("emoji changed: %q", got)
+	}
+}
+
+// What a person approves shows what is hidden, as marked escapes.
+func TestRevealShowsHiddenRunes(t *testing.T) {
+	got := reveal("touch pwned #\u200d\r│ $ ls -la\u200b\x1b]52;c;x\a")
+	for _, want := range []string{"touch pwned #", `⟨U+200D⟩`, `⟨\r⟩`, "│ $ ls -la", `⟨U+200B⟩`, `⟨\e⟩]52;c;x⟨\a⟩`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reveal lacks %q: %q", want, got)
+		}
+	}
+	for _, r := range got {
+		if hiddenRune(r) {
+			t.Fatalf("reveal left %U in %q", r, got)
+		}
+	}
+	if got := reveal("👩‍👧 ok\nnext"); got != "👩‍👧 ok\nnext" {
+		t.Errorf("reveal changed plain text: %q", got)
+	}
+}

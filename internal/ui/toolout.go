@@ -207,7 +207,7 @@ func summarizeArgsRel(tool string, raw json.RawMessage, rel func(string) string)
 // toolHeader is a call's one line: ● Edit(src/main.go).
 func (r *Renderer) toolHeader(tool string, args json.RawMessage) string {
 	s := r.s
-	sum := sanitize(summarizeArgsRel(tool, args, r.rel), false)
+	sum := reveal(summarizeArgsRel(tool, args, r.rel))
 	if sum == "" {
 		return s.Accent("● ") + s.Bold(toolTitle(tool))
 	}

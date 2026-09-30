@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -79,8 +80,11 @@ func clusterEnd(rs []rune, i int) int {
 	for j < len(rs) {
 		switch {
 		case joins(rs[j]):
-			if rs[j] == 0x200d && j+1 < len(rs) {
-				j += 2 // the joiner and what it joins
+			// The joiner takes the next character into the cluster only when
+			// it is a visible, non-ASCII one: an emoji. A control after it
+			// is a character of its own, and sanitize judges it.
+			if rs[j] == 0x200d && j+1 < len(rs) && rs[j+1] >= 0x80 && !hiddenRune(rs[j+1]) {
+				j += 2
 				continue
 			}
 			j++
@@ -338,10 +342,35 @@ func isSGR(tok string) bool { return len(tok) >= 3 && tok[1] == '[' && tok[len(t
 
 func isReset(tok string) bool { return tok == "\x1b[0m" || tok == "\x1b[m" }
 
-// sanitize removes control characters that would move the cursor or change
-// the terminal's mode, keeping SGR styling when keepSGR is set. Text from a
-// model, a tool or a status command is drawn through it, so it cannot draw
-// over the dock or retitle the window.
+// hiddenRune reports a rune that draws nothing a person can read, or that
+// changes what is drawn around it: C0 and C1 controls (CR, BS, BEL, the C1
+// CSI and OSC), the line and paragraph separators, and every format
+// character — bidi overrides, isolates and marks, zero-width spaces and
+// joiners, the word joiner, the byte-order mark, tag characters. The emoji
+// joiner is judged by its neighbours, in keepJoiner.
+func hiddenRune(r rune) bool {
+	switch {
+	case r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0:
+		return true
+	case r == 0x2028 || r == 0x2029:
+		return true
+	}
+	return unicode.Is(unicode.Cf, r)
+}
+
+// keepJoiner reports whether the zero-width joiner at rs[i] joins two
+// pictographs, as in a family emoji. Anywhere else it only hides what
+// follows it, so it goes.
+func keepJoiner(rs []rune, i int) bool {
+	pict := func(r rune) bool { return r >= 0x2000 && unicode.IsGraphic(r) && !hiddenRune(r) }
+	return i > 0 && i+1 < len(rs) && pict(rs[i-1]) && pict(rs[i+1])
+}
+
+// sanitize removes everything that could move the cursor, change the
+// terminal's state, reorder the text or hide part of it, keeping SGR styling
+// when keepSGR is set. Every rune is checked, not only the first of each
+// character. Text from a model, a tool or a status command is drawn through
+// it, so it cannot draw over the dock, set the clipboard or retitle the window.
 func sanitize(s string, keepSGR bool) string {
 	var b strings.Builder
 	forEachToken(s, func(tok string, esc bool) {
@@ -351,19 +380,56 @@ func sanitize(s string, keepSGR bool) string {
 			}
 			return
 		}
-		r, _ := utf8.DecodeRuneInString(tok)
-		switch {
-		case r == '\t':
-			b.WriteString("    ")
-		case r == '\n':
-			b.WriteByte('\n')
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0):
-		case r == 0x202e || r == 0x202d || r == 0x2066 || r == 0x2067 || r == 0x2068 || r == 0x2069 || r == 0x202a || r == 0x202b || r == 0x202c:
-			// Bidi overrides reorder what is shown against what is there.
-		default:
-			b.WriteString(tok)
+		rs := []rune(tok)
+		for i, r := range rs {
+			switch {
+			case r == '\t':
+				b.WriteString("    ")
+			case r == '\n':
+				b.WriteByte('\n')
+			case r == 0x200d:
+				if keepJoiner(rs, i) {
+					b.WriteRune(r)
+				}
+			case hiddenRune(r):
+			default:
+				b.WriteRune(r)
+			}
 		}
 	})
+	return b.String()
+}
+
+// reveal is sanitize for text a person approves: a command, a diff, a path.
+// Nothing is dropped; what would be hidden is shown as a marked escape — \r,
+// \e, ⟨U+200B⟩ — so what is on screen is exactly what will run.
+func reveal(s string) string {
+	var b strings.Builder
+	rs := []rune(s)
+	for i, r := range rs {
+		switch {
+		case r == '\n':
+			b.WriteByte('\n')
+		case r == '\t':
+			b.WriteString("    ")
+		case r == 0x200d && keepJoiner(rs, i):
+			b.WriteRune(r)
+		case r == '\r':
+			b.WriteString("⟨\\r⟩")
+		case r == '\b':
+			b.WriteString("⟨\\b⟩")
+		case r == 0x07:
+			b.WriteString("⟨\\a⟩")
+		case r == 0x1b:
+			b.WriteString("⟨\\e⟩")
+		case r == 0:
+			b.WriteString("⟨\\0⟩")
+		case hiddenRune(r) || r == 0x200d:
+			fmt.Fprintf(&b, "⟨U+%04X⟩", r)
+		default:
+			b.WriteRune(r)
+		}
+	}
 	return b.String()
 }
 
