@@ -9,213 +9,444 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
+	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
-// ANSI codes, disabled when not writing to a terminal or when NO_COLOR is set.
-type Style struct{ enabled bool }
-
-func NewStyle(w io.Writer) Style {
-	if os.Getenv("NO_COLOR") != "" {
-		return Style{false}
-	}
-	// A writer that stands in for the terminal answers for itself. Without
-	// this, wrapping os.Stdout in anything at all silently turned colour off,
-	// because the check could only recognise an *os.File.
-	if t, ok := w.(interface{ IsTerminal() bool }); ok {
-		return Style{t.IsTerminal()}
-	}
-	f, isFile := w.(*os.File)
-	if !isFile {
-		return Style{false}
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return Style{false}
-	}
-	return Style{(info.Mode() & os.ModeCharDevice) != 0}
-}
-
-func (s Style) wrap(code, text string) string {
-	if !s.enabled {
-		return text
-	}
-	return "\x1b[" + code + "m" + text + "\x1b[0m"
-}
-
-func (s Style) Dim(t string) string    { return s.wrap("2", t) }
-func (s Style) Bold(t string) string   { return s.wrap("1", t) }
-func (s Style) Red(t string) string    { return s.wrap("31", t) }
-func (s Style) Green(t string) string  { return s.wrap("32", t) }
-func (s Style) Yellow(t string) string { return s.wrap("33", t) }
-func (s Style) Blue(t string) string   { return s.wrap("34", t) }
-
-// Accent is the brand orange: 256-colour 202 (#FF5F00) is the nearest to it
-// and reads on dark terminals and, more faintly, on white.
-func (s Style) Accent(t string) string { return s.wrap("38;5;202", t) }
-
-// Reverse swaps foreground and background, which is how a selected row in a
-// list reads as selected on every terminal theme — a colour chosen for a dark
-// background disappears on a light one.
-func (s Style) Reverse(t string) string { return s.wrap("7", t) }
-
+// Renderer draws the session's events. Attached to the input dock it streams
+// replies a fragment at a time and keeps a transcript; otherwise — piped
+// output, -p — it writes finished lines to w.
 type Renderer struct {
 	w     io.Writer
 	s     Style
 	quiet bool
 
-	// streaming marks a reply in progress; pending holds the partial line the
-	// deltas have not finished, and table collects rows until their block ends.
+	// dock, when attached, is where everything is drawn.
+	dock *dock
+
+	mu sync.Mutex
+
+	// Line mode: the partial line the deltas have not finished.
 	streaming bool
 	pending   strings.Builder
-	table     []string
+	lineSt    mdState
 
-	// think animates while the model works. Every write path stops it first
-	// and the turn restarts it, so a frame can never land mid-line and leave
-	// a spinner character stranded in the transcript.
-	think *Thinking
+	// Dock mode: the reply streaming now, its transcript block, how many
+	// of its rows are committed, and finished rows held in the dock until
+	// there are enough to commit together.
+	ms    *mdStream
+	sb    *streamBlock
+	shown int
+	held  []string
 
 	// lastReasoning is the most recent reasoning block, kept so /think can
-	// print the one the user just saw collapsed. Toggling a flag that only
-	// affects the NEXT turn is not what someone means when they ask to see the
-	// reasoning in front of them.
+	// print the one the user just saw collapsed.
 	lastReasoning string
 
 	// Reasoning is shown in full when true. Off by default: on a model that
-	// reasons at length it buries the answer, and it is the answer the user
-	// asked for. /think toggles it, and a summary line always appears so the
-	// reasoning is known to exist rather than silently dropped.
+	// reasons at length it buries the answer. /think toggles it, and a
+	// summary line always appears so the reasoning is known to exist.
 	Reasoning bool
+
+	// tools tracks the calls in flight, so a result is drawn under its
+	// request and a diff is shown once.
+	tools toolState
+
+	// usage is what the footer shows about the model and the session.
+	usage Usage
 }
 
-// flushLines renders every complete line held in the buffer.
-//
-// A table is the one construct that cannot be formatted a line at a time — its
-// columns are only measurable once the widest row has arrived — so a run of
-// table rows is held until the block ends and then rendered together.
-func (r *Renderer) flushLines(final bool) {
-	buf := r.pending.String()
-	for {
-		i := strings.IndexByte(buf, '\n')
-		if i < 0 {
-			break
-		}
-		r.emit(buf[:i])
-		buf = buf[i+1:]
-	}
-	r.pending.Reset()
-	r.pending.WriteString(buf)
-	if final && buf != "" {
-		r.emit(buf)
-		r.pending.Reset()
-	}
-	if final {
-		r.flushTable()
-	}
+// Usage is what the renderer has seen of the model's accounting.
+type Usage struct {
+	Model         string
+	ContextTokens int
+	ContextWindow int
+	TokensIn      int
+	TokensOut     int
+	TokensCached  int
 }
 
-// emit renders one finished line, buffering table rows until the block ends.
-func (r *Renderer) emit(line string) {
-	if isTableRow(line) || (len(r.table) > 0 && isTableDivider(line)) {
-		r.table = append(r.table, line)
-		return
+// ContextPct is how full the window was at the last call, or -1.
+func (u Usage) ContextPct() int {
+	if u.ContextWindow <= 0 || u.ContextTokens <= 0 {
+		return -1
 	}
-	r.flushTable()
-	fmt.Fprintln(r.w, Markdown(r.s, line))
-}
-
-func (r *Renderer) flushTable() {
-	if len(r.table) == 0 {
-		return
-	}
-	fmt.Fprint(r.w, Markdown(r.s, strings.Join(r.table, "\n"))+"\n")
-	r.table = nil
-}
-
-func (r *Renderer) endStream() {
-	r.streaming = false
-	r.pending.Reset()
-	r.table = nil
+	return min(100, u.ContextTokens*100/u.ContextWindow)
 }
 
 func NewRenderer(w io.Writer, quiet bool) *Renderer {
-	r := &Renderer{w: w, s: NewStyle(w), quiet: quiet}
-	r.think = NewThinking(w, r.s)
-	return r
+	return &Renderer{w: w, s: NewStyle(w), quiet: quiet}
 }
 
-// StartThinking begins the indicator for a turn. The renderer stops it before
-// any output, so a caller only has to start it once per turn.
+// Attach draws through the dock of l, when l has one: replies stream into
+// it and everything becomes part of its transcript.
+func (r *Renderer) Attach(l *LineReader) {
+	if l != nil && l.raw && !r.quiet {
+		r.mu.Lock()
+		r.dock = l.d
+		r.s = l.d.st
+		r.mu.Unlock()
+	}
+}
+
+// Usage returns what the renderer has seen of the model's accounting.
+func (r *Renderer) Usage() Usage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.usage
+}
+
+// StartThinking shows the activity line for a turn.
 func (r *Renderer) StartThinking() {
-	if !r.quiet {
-		r.think.Start()
+	if d := r.dock; d != nil {
+		d.mu.Lock()
+		if !d.act.on {
+			d.act = activity{on: true, since: d.now(), verb: int(d.now().Unix()) % len(thinkingVerbs)}
+		}
+		d.draw()
+		d.mu.Unlock()
 	}
 }
 
 // StopThinking ends it, at the end of a turn or on interrupt.
-func (r *Renderer) StopThinking() { r.think.Stop() }
+func (r *Renderer) StopThinking() {
+	if d := r.dock; d != nil {
+		d.mu.Lock()
+		d.act = activity{}
+		d.draw()
+		d.mu.Unlock()
+	}
+}
+
+// PauseThinking reports whether the activity line is on. It never has to be
+// paused for output: it lives in the dock, not on the line being written.
+func (r *Renderer) PauseThinking() bool {
+	if d := r.dock; d != nil {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.act.on
+	}
+	return false
+}
 
 // ShowLastReasoning prints the most recent reasoning block in full, and
-// reports whether there was one. This is what /think shows immediately,
-// rather than only affecting turns that have not happened yet.
+// reports whether there was one.
 func (r *Renderer) ShowLastReasoning() bool {
-	if strings.TrimSpace(r.lastReasoning) == "" {
+	r.mu.Lock()
+	text := r.lastReasoning
+	r.mu.Unlock()
+	if strings.TrimSpace(text) == "" {
 		return false
 	}
+	if d := r.dock; d != nil {
+		d.mu.Lock()
+		d.commitItem(&reasoningBlock{text: text, open: true})
+		d.mu.Unlock()
+		return true
+	}
 	fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
-	for _, line := range strings.Split(r.lastReasoning, "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(line))
 	}
 	return true
 }
 
-// PauseThinking clears the indicator so a caller can write a line, reporting
-// whether it was running so the caller can restart it.
-func (r *Renderer) PauseThinking() bool { return r.pause() }
-
-// pause clears the indicator before writing. Returns whether it was running,
-// so a caller that wants it back can restart it.
-func (r *Renderer) pause() bool {
-	if r.think.Active() {
-		r.think.Stop()
-		return true
-	}
-	return false
-}
-
 func (r *Renderer) Style() Style { return r.s }
 
-// Event renders one event. Tool calls get a single line; failures expand.
+// Event renders one event.
 func (r *Renderer) Event(ev agent.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch ev.Type {
+	case agent.EvModelCall:
+		var c agent.ModelCall
+		if json.Unmarshal(ev.Payload, &c) == nil && c.Error == "" {
+			if c.Model != "" {
+				r.usage.Model = c.Model
+			}
+			r.usage.ContextTokens = c.TokensIn
+			if c.ContextWindow > 0 {
+				r.usage.ContextWindow = c.ContextWindow
+			}
+			r.usage.TokensIn += c.TokensIn
+			r.usage.TokensOut += c.TokensOut
+			r.usage.TokensCached += c.TokensCached
+		}
+		return
+	case agent.EvSessionEnded:
+		var e agent.SessionEnded
+		if json.Unmarshal(ev.Payload, &e) == nil && e.ContextTokens > 0 {
+			r.usage.ContextTokens = e.ContextTokens
+			if e.ContextWindow > 0 {
+				r.usage.ContextWindow = e.ContextWindow
+			}
+		}
+	}
+	if r.dock != nil {
+		r.dockEvent(ev)
+		return
+	}
+	r.lineEvent(ev)
+}
+
+// dockEvent draws an event through the dock. r.mu is held.
+func (r *Renderer) dockEvent(ev agent.Event) {
+	d := r.dock
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s := r.s
 	switch ev.Type {
 	case agent.EvAgentDelta:
-		// Stream the reply as it arrives. A cold local model can take thirty
-		// seconds to its first token; text that appears as it is written makes
-		// the same wall time feel responsive, and silence until the end feels
-		// like a hang.
-		//
-		// Formatting is applied a line at a time, as each line completes. The
-		// alternative — printing raw and reprinting formatted at the end —
-		// needs to erase what it wrote, which stops working the moment the
-		// answer is longer than the window and the draft scrolls out of reach.
-		// A line is the largest unit that can be formatted without waiting for
-		// what comes after it.
+		var dl agent.Delta
+		if json.Unmarshal(ev.Payload, &dl) != nil || dl.Text == "" {
+			return
+		}
+		r.feed(d, sanitize(dl.Text, false))
+
+	case agent.EvAgentMessage:
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) != nil {
+			r.endReply(d, "")
+			return
+		}
+		r.endReply(d, sanitize(m.Text, false))
+
+	case agent.EvAgentReasoningDelta:
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) == nil {
+			d.act.label = "Thinking"
+			d.act.tokens += estimateTokens(m.Text)
+			d.draw()
+		}
+
+	case agent.EvAgentReasoning:
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) != nil || strings.TrimSpace(m.Text) == "" {
+			return
+		}
+		r.endReply(d, "")
+		text := sanitize(strings.TrimSpace(m.Text), false)
+		r.lastReasoning = text
+		d.act.label = ""
+		d.commitItem(&reasoningBlock{text: text, open: r.Reasoning})
+
+	case agent.EvUserMessage:
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) != nil || m.QueueID == "" {
+			return // the prompt itself was drawn where it was typed
+		}
+		// A message typed during the turn, now taken by the agent: it leaves
+		// the queue and joins the transcript where it applies.
+		r.endReply(d, "")
+		d.dequeue(m.Text)
+		d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.prompt})
+
+	case agent.EvActionRequested:
+		var a agent.ActionRequested
+		if json.Unmarshal(ev.Payload, &a) != nil {
+			return
+		}
+		r.endReply(d, "")
+		r.toolRequested(d, a)
+
+	case agent.EvObservation:
+		var o agent.Observation
+		if json.Unmarshal(ev.Payload, &o) != nil {
+			return
+		}
+		r.toolObserved(d, o)
+
+	case agent.EvActionDenied:
+		var m map[string]string
+		if json.Unmarshal(ev.Payload, &m) == nil {
+			r.toolDenied(d, m)
+		}
+
+	case agent.EvForked:
+		var f agent.Forked
+		if json.Unmarshal(ev.Payload, &f) == nil {
+			r.endReply(d, "")
+			d.commitItem(&rawBlock{text: s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq))})
+		}
+
+	case agent.EvSubagentNotice:
+		var n agent.Notice
+		if json.Unmarshal(ev.Payload, &n) != nil {
+			return
+		}
+		r.endReply(d, "")
+		d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim(noticeText(n))})
+
+	case agent.EvSessionWoken:
+		d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("woke to act on background results")})
+
+	case agent.EvSessionEnded:
+		var e agent.SessionEnded
+		if json.Unmarshal(ev.Payload, &e) != nil {
+			return
+		}
+		r.endReply(d, "")
+		if e.Settled {
+			d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("background work finished")})
+			return
+		}
+		if e.Background > 0 {
+			d.commit(&rawBlock{text: "  " + s.Dim(fmt.Sprintf("%d background task(s) still running; /tasks lists them", e.Background))})
+		}
+		if why := endedText(e.Reason); why != "" {
+			d.commit(&rawBlock{text: "  " + s.Yellow("⎿ ") + why})
+		}
+	}
+}
+
+// feed streams a fragment of the reply.
+func (r *Renderer) feed(d *dock, text string) {
+	if r.ms == nil {
+		r.ms = &mdStream{}
+		r.sb = &streamBlock{}
+		r.shown = 0
+		d.streaming = true
+		d.act.label = ""
+		d.separate()
+	}
+	d.act.tokens += estimateTokens(text)
+	final, live := r.ms.feed(r.s, text, d.streamWidth())
+	// Finished rows wait in the dock, where drawing one more is a few bytes,
+	// and are committed a batch at a time: each commit redraws the dock
+	// under them, so committing row by row cost more than the text.
+	r.held = append(r.held, final...)
+	var commit []string
+	if len(r.held)+len(live) > d.liveRows() {
+		commit, r.held = r.held, nil
+	}
+	d.streamRows(r.sb, r.leadFrom(commit, r.shown), r.leadFrom(append(append([]string(nil), r.held...), live...), r.shown+len(commit)))
+	r.shown += len(commit)
+}
+
+// endReply finishes the reply streaming now, if any: its last rows are
+// committed, and its transcript block keeps the source so a resize can lay
+// it out again. With no stream, text is the whole reply, drawn at once.
+func (r *Renderer) endReply(d *dock, text string) {
+	if r.ms == nil {
+		if strings.TrimSpace(text) != "" {
+			d.commitItem(&mdBlock{src: text, lead: r.s.Accent("● ")})
+		}
+		return
+	}
+	rest := append(r.held, r.ms.end(r.s, d.streamWidth())...)
+	r.held = nil
+	d.streamRows(r.sb, r.leadFrom(rest, r.shown), nil)
+	src := text
+	if src == "" {
+		src = r.ms.text()
+	}
+	d.tr.replace(r.sb, &mdBlock{src: src, lead: r.s.Accent("● ")})
+	r.ms, r.sb, r.shown, r.held = nil, nil, 0, nil
+	d.streaming = false
+}
+
+// leadFrom indents rows of the reply, the reply's first row marked.
+func (r *Renderer) leadFrom(rows []string, first int) []string {
+	out := make([]string, len(rows))
+	for i, row := range rows {
+		switch {
+		case first+i == 0:
+			out[i] = r.s.Accent("● ") + row
+		case row == "":
+			out[i] = ""
+		default:
+			out[i] = "  " + row
+		}
+	}
+	return out
+}
+
+// estimateTokens is the activity line's running count: about four
+// characters a token, and at least one a fragment.
+func estimateTokens(s string) int { return max(1, len(s)/4) }
+
+func noticeText(n agent.Notice) string {
+	turns := ""
+	if n.Turns > 0 {
+		turns = fmt.Sprintf(", %d turn%s", n.Turns, map[bool]string{true: "", false: "s"}[n.Turns == 1])
+	}
+	return fmt.Sprintf("background: %s finished (%s%s); result added to the conversation",
+		orStr(n.Description, n.TaskID), n.Status, turns)
+}
+
+// endedText says, in words, why a turn ended when it was not by finishing.
+func endedText(reason agent.TerminalReason) string {
+	switch reason {
+	case agent.TermCompleted, agent.TermWakeLimit, "":
+		return ""
+	case agent.TermUserInterrupt:
+		return "Interrupted · tell Abhed what to do instead"
+	case agent.TermMaxTurns:
+		return "Stopped at the turn limit (max_turns)"
+	case agent.TermMaxBudget:
+		return "Stopped at the token budget (max_budget)"
+	case agent.TermRetryExhausted:
+		return "The model kept failing; gave up after retrying (retry_exhausted)"
+	case agent.TermStalled:
+		return "The model produced nothing, repeatedly (stalled)"
+	}
+	return "ended: " + string(reason)
+}
+
+// reasoningBlock is the model's thinking: one line, or the whole of it when
+// opened with /think or in the Ctrl-O view.
+type reasoningBlock struct {
+	text string
+	open bool
+}
+
+func (b *reasoningBlock) lines(width int, s Style, expanded bool) []string {
+	n := len(strings.Fields(b.text))
+	if !b.open && !expanded {
+		return []string{s.Dim(fmt.Sprintf("✻ Thought · %d words · ctrl+o to expand", n))}
+	}
+	out := []string{s.Dim("✻ Thinking")}
+	for _, l := range strings.Split(b.text, "\n") {
+		for _, row := range wrapWords(l, max(width-4, 10)) {
+			out = append(out, "  "+s.Dim(s.Italic(row)))
+		}
+	}
+	return out
+}
+
+// streamBlock is a reply's rows while it streams; the finished reply
+// replaces it in the transcript with its source.
+type streamBlock struct{ rows []string }
+
+func (b *streamBlock) lines(width int, _ Style, _ bool) []string {
+	var out []string
+	for _, r := range b.rows {
+		out = append(out, hardWrap(r, width)...)
+	}
+	return out
+}
+
+// lineEvent is the event drawn as plain lines, for output that is not the
+// dock.
+func (r *Renderer) lineEvent(ev agent.Event) {
+	s := r.s
+	switch ev.Type {
+	case agent.EvAgentDelta:
 		if r.quiet {
 			return
 		}
-		var d agent.Delta
-		if json.Unmarshal(ev.Payload, &d) != nil || d.Text == "" {
+		var dl agent.Delta
+		if json.Unmarshal(ev.Payload, &dl) != nil || dl.Text == "" {
 			return
 		}
 		if !r.streaming {
-			r.pause() // the answer has started; the indicator has done its job
 			fmt.Fprint(r.w, "\n")
 			r.streaming = true
+			r.lineSt = mdState{}
 		}
-		r.pending.WriteString(d.Text)
+		r.pending.WriteString(dl.Text)
 		r.flushLines(false)
 
 	case agent.EvAgentMessage:
@@ -225,8 +456,6 @@ func (r *Renderer) Event(ev agent.Event) {
 			return
 		}
 		if r.streaming {
-			// The deltas already showed this. Flush whatever is left of the
-			// final line and stop, rather than printing the whole answer twice.
 			r.flushLines(true)
 			fmt.Fprint(r.w, "\n")
 			r.endStream()
@@ -237,13 +466,6 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 
 	case agent.EvAgentReasoning:
-		// The model's thinking. The CLI dropped this entirely while the console
-		// showed it, so the same session looked like it reasoned in one place
-		// and not the other.
-		//
-		// Collapsed to a word count by default and expanded by /think: on a
-		// model that reasons at length, printing it in full buries the answer
-		// the user actually asked for.
 		if r.quiet {
 			return
 		}
@@ -251,18 +473,16 @@ func (r *Renderer) Event(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &m) != nil || strings.TrimSpace(m.Text) == "" {
 			return
 		}
-		r.pause()
 		text := strings.TrimSpace(m.Text)
 		r.lastReasoning = text
 		if !r.Reasoning {
-			fmt.Fprintf(r.w, "%s %s\n",
-				r.s.Dim("▸"),
-				r.s.Dim(fmt.Sprintf("reasoning · %d words · type /think to expand", len(strings.Fields(text)))))
+			fmt.Fprintf(r.w, "%s %s\n", s.Dim("▸"),
+				s.Dim(fmt.Sprintf("reasoning · %d words · type /think to expand", len(strings.Fields(text)))))
 			return
 		}
-		fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
+		fmt.Fprintf(r.w, "%s %s\n", s.Dim("▾"), s.Dim("reasoning"))
 		for _, line := range strings.Split(text, "\n") {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(line))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Dim("│"), s.Dim(line))
 		}
 
 	case agent.EvActionRequested:
@@ -273,21 +493,16 @@ func (r *Renderer) Event(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &a) != nil {
 			return
 		}
-		r.pause()
-		fmt.Fprintf(r.w, "%s %s %s\n",
-			r.s.Accent("●"), r.s.Bold(a.Tool), r.s.Dim(summarizeArgs(a.Tool, a.Args)))
+		fmt.Fprintf(r.w, "%s %s %s\n", s.Accent("●"), s.Bold(a.Tool), s.Dim(summarizeArgs(a.Tool, a.Args)))
 
 	case agent.EvObservation:
 		var o agent.Observation
 		if json.Unmarshal(ev.Payload, &o) != nil {
 			return
 		}
-		r.pause()
-		// Errors always show; successful output stays collapsed unless it is
-		// the kind of result the user needs to see.
 		if o.IsError {
 			for _, line := range firstLines(o.Content, 8) {
-				fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("│"), line)
+				fmt.Fprintf(r.w, "  %s %s\n", s.Red("│"), line)
 			}
 			return
 		}
@@ -296,25 +511,24 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 		if o.ExitCode != nil && *o.ExitCode != 0 {
 			for _, line := range firstLines(o.Content, 12) {
-				fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("│"), line)
+				fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("│"), line)
 			}
 			return
 		}
 		if summary := observationSummary(o); summary != "" {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("└"), r.s.Dim(summary))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Dim("└"), s.Dim(summary))
 		}
 
 	case agent.EvActionDenied:
-		r.pause()
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(m["reason"]))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Red("✕"), s.Dim(m["reason"]))
 		}
 
 	case agent.EvForked:
 		var f agent.Forked
 		if json.Unmarshal(ev.Payload, &f) == nil && !r.quiet {
-			fmt.Fprintf(r.w, "\n%s\n", r.s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq)))
+			fmt.Fprintf(r.w, "\n%s\n", s.Dim(fmt.Sprintf("── forked at step %d; the steps after it, above, were abandoned ──", f.ThroughSeq)))
 		}
 
 	case agent.EvSubagentNotice:
@@ -322,36 +536,64 @@ func (r *Renderer) Event(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &n) != nil || r.quiet {
 			return
 		}
-		r.pause()
-		turns := ""
-		if n.Turns > 0 {
-			turns = fmt.Sprintf(", %d turn%s", n.Turns, map[bool]string{true: "", false: "s"}[n.Turns == 1])
-		}
-		fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("◆"), r.s.Dim(fmt.Sprintf("background: %s finished (%s%s); result added to the conversation",
-			orStr(n.Description, n.TaskID), n.Status, turns)))
+		fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("◆"), s.Dim(noticeText(n)))
 
 	case agent.EvSessionWoken:
 		if !r.quiet {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("◆"), r.s.Dim("woke to act on background results"))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("◆"), s.Dim("woke to act on background results"))
 		}
 
 	case agent.EvSessionEnded:
-		r.StopThinking()
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) != nil || r.quiet {
 			return
 		}
 		if e.Settled {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("◆"), r.s.Dim("background work finished"))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("◆"), s.Dim("background work finished"))
 			return
 		}
 		if e.Background > 0 {
-			fmt.Fprintf(r.w, "  %s\n", r.s.Dim(fmt.Sprintf("%d background task(s) still running; /tasks lists them", e.Background)))
+			fmt.Fprintf(r.w, "  %s\n", s.Dim(fmt.Sprintf("%d background task(s) still running; /tasks lists them", e.Background)))
 		}
 		if e.Reason != agent.TermCompleted {
-			fmt.Fprintf(r.w, "\n%s %s\n", r.s.Yellow("!"), r.s.Dim("ended: "+string(e.Reason)))
+			fmt.Fprintf(r.w, "\n%s %s\n", s.Yellow("!"), s.Dim("ended: "+string(e.Reason)))
 		}
 	}
+}
+
+// flushLines renders every complete line held in the buffer, with the
+// markdown state carried from line to line so a fence stays a fence.
+func (r *Renderer) flushLines(final bool) {
+	buf := r.pending.String()
+	for {
+		i := strings.IndexByte(buf, '\n')
+		if i < 0 {
+			break
+		}
+		r.emitRows(r.lineSt.line(r.s, buf[:i], 0))
+		buf = buf[i+1:]
+	}
+	r.pending.Reset()
+	r.pending.WriteString(buf)
+	if final {
+		if buf != "" {
+			r.emitRows(r.lineSt.line(r.s, buf, 0))
+			r.pending.Reset()
+		}
+		r.emitRows(r.lineSt.flush(r.s, 0))
+	}
+}
+
+func (r *Renderer) emitRows(rows []string) {
+	for _, row := range rows {
+		fmt.Fprintln(r.w, row)
+	}
+}
+
+func (r *Renderer) endStream() {
+	r.streaming = false
+	r.pending.Reset()
+	r.lineSt = mdState{}
 }
 
 func orStr(a, b string) string {
@@ -359,62 +601,6 @@ func orStr(a, b string) string {
 		return a
 	}
 	return b
-}
-
-// summarizeArgs renders the one useful detail per tool, so the line stays
-// scannable. Verbosity is the default failure mode of agent CLIs.
-func summarizeArgs(tool string, raw json.RawMessage) string {
-	var m map[string]any
-	if json.Unmarshal(raw, &m) != nil {
-		return ""
-	}
-	str := func(k string) string {
-		if v, found := m[k]; found {
-			if s, isStr := v.(string); isStr {
-				return s
-			}
-		}
-		return ""
-	}
-	switch tool {
-	case "read", "write", "edit":
-		return str("path")
-	case "glob":
-		return str("pattern")
-	case "grep":
-		if p := str("path"); p != "" {
-			return fmt.Sprintf("%q in %s", str("pattern"), p)
-		}
-		return fmt.Sprintf("%q", str("pattern"))
-	case "bash":
-		if d := str("description"); d != "" {
-			return d
-		}
-		return truncate(str("command"), 60)
-	case "task":
-		return str("description")
-	}
-	return ""
-}
-
-func observationSummary(o agent.Observation) string {
-	switch o.Tool {
-	case "glob", "grep":
-		n := strings.Count(strings.TrimSpace(o.Content), "\n") + 1
-		if strings.HasPrefix(o.Content, "[no files") || strings.HasPrefix(o.Content, "No matches") {
-			return "no results"
-		}
-		return fmt.Sprintf("%d line(s)", n)
-	case "read":
-		return fmt.Sprintf("%d line(s)", strings.Count(o.Content, "\n"))
-	case "edit", "write":
-		return firstLine(o.Content)
-	case "bash":
-		if o.ExitCode != nil {
-			return fmt.Sprintf("exit %d", *o.ExitCode)
-		}
-	}
-	return ""
 }
 
 func firstLine(s string) string {

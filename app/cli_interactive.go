@@ -46,7 +46,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// stdin is not a terminal, since raw mode on a pipe corrupts the input.
 	editor := ui.NewLineReader(ui.Prompt(s))
 	defer editor.Close()
-	setupTerminal(editor, workspace)
+	setupTerminal(editor, r, workspace)
 	// Raw mode turns off the terminal's own newline translation, so every
 	// print in the program would otherwise staircase down the screen.
 	restoreStreams := editor.Capture()

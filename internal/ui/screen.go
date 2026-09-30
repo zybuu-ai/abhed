@@ -125,6 +125,7 @@ func (s *screen) draw(rows []string, cr, cc int) {
 		return
 	}
 
+	s.shift(rows)
 	n := max(len(rows), len(s.rows))
 	for i := 0; i < n; i++ {
 		switch {
@@ -152,6 +153,49 @@ func (s *screen) draw(rows []string, cr, cc int) {
 	}
 	s.rows = append(s.rows[:0], rows...)
 	s.moveTo(cr, cc)
+}
+
+// shift moves the rows the region keeps when it grows or shrinks in the
+// middle: a streaming reply gains a row above the input, or the activity
+// line goes. The terminal moves them with insert-line or delete-line, rather
+// than every row below the change being written again — the rule, input and
+// footer are most of a region's bytes.
+func (s *screen) shift(rows []string) {
+	old := s.rows
+	if len(rows) == len(old) || len(old) == 0 {
+		return
+	}
+	// The rows both frames end with.
+	k := 0
+	for k < len(old) && k < len(rows) && old[len(old)-1-k] == rows[len(rows)-1-k] {
+		k++
+	}
+	if k == 0 {
+		return
+	}
+	if n := len(rows) - len(old); n > 0 {
+		p := len(old) - k // where the new rows go
+		// Make n rows of room below the region first: at the bottom of the
+		// screen the newlines scroll it up, and insert-line would push rows
+		// off the bottom instead.
+		s.moveTo(len(rows)-1, 0)
+		s.moveTo(p, 0)
+		s.csi(n, 'L')
+		s.cc = 0
+		shifted := append(append(append([]string(nil), old[:p]...), make([]string, n)...), old[p:]...)
+		s.rows = append(s.rows[:0], shifted...)
+		return
+	}
+	n := len(old) - len(rows)
+	p := len(old) - k - n // the first row that goes
+	if p < 0 {
+		return
+	}
+	s.moveTo(p, 0)
+	s.csi(n, 'M')
+	s.cc = 0
+	shifted := append(append([]string(nil), old[:p]...), old[p+n:]...)
+	s.rows = append(s.rows[:0], shifted...)
 }
 
 // rowDiff rewrites row i from the first cell where old and new differ. When
@@ -255,17 +299,22 @@ func widthOf(ts []token) int {
 // commit writes lines above the region as finished transcript, then draws
 // the region again beneath them. Committed lines scroll away with the
 // terminal and are never touched again.
+//
+// The lines are written over the region's old rows, each clearing the rest
+// of its row, and the region is drawn after them in the same write, with the
+// screen below cleared last. Nothing is erased before it is replaced, so a
+// terminal without synchronized output (Terminal.app) has no blank frame to
+// show between the two.
 func (s *screen) commit(lines []string, rows []string, cr, cc int) {
 	s.buf.WriteString("\x1b[?2026h")
 	if s.drawn {
 		s.moveTo(0, 0)
-		s.buf.WriteString("\x1b[J")
 	} else {
 		s.buf.WriteString("\r")
 	}
 	for _, l := range lines {
 		s.buf.WriteString(l)
-		s.buf.WriteString("\x1b[0m\r\n")
+		s.buf.WriteString("\x1b[0m\x1b[K\r\n")
 	}
 	s.drawn = false
 	s.rows = s.rows[:0]

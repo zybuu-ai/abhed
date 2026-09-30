@@ -50,6 +50,12 @@ type dock struct {
 	busy bool
 	act  activity
 	spin int
+	// streaming is set while a reply streams: the activity line gives way
+	// to the reply itself.
+	streaming bool
+	// lastBlank is whether the last committed row was blank, so items are
+	// separated by exactly one.
+	lastBlank bool
 
 	// rawTail is output that has not ended its line yet; live is a streamed
 	// reply's rows that may still change.
@@ -129,18 +135,19 @@ type activity struct {
 
 func newDock(in io.Reader, out io.Writer, st Style) *dock {
 	d := &dock{
-		scr:     newScreen(out),
-		st:      st,
-		size:    func() (int, int) { return 80, 24 },
-		now:     time.Now,
-		after:   func(dur time.Duration, f func()) { time.AfterFunc(dur, f) },
-		hist:    &History{},
-		menuSel: -1,
-		prompt:  Prompt(st),
-		results: make(chan readResult, 64),
-		stops:   make(chan struct{}, 1),
-		askSlot: make(chan struct{}, 1),
-		hotkeys: map[string]func(){},
+		scr:       newScreen(out),
+		st:        st,
+		size:      func() (int, int) { return 80, 24 },
+		now:       time.Now,
+		after:     func(dur time.Duration, f func()) { time.AfterFunc(dur, f) },
+		hist:      &History{},
+		menuSel:   -1,
+		prompt:    Prompt(st),
+		results:   make(chan readResult, 64),
+		stops:     make(chan struct{}, 1),
+		askSlot:   make(chan struct{}, 1),
+		hotkeys:   map[string]func(){},
+		lastBlank: true,
 	}
 	d.commands = commandList
 	d.kr = newKeyReader(newBufReader(in))
@@ -532,7 +539,7 @@ func (d *dock) pasting() bool {
 
 // echo commits a submitted prompt to the transcript, where it was typed.
 func (d *dock) echo(shown string) {
-	d.commit(&promptBlock{text: shown, prompt: d.prompt})
+	d.commitItem(&promptBlock{text: shown, prompt: d.prompt})
 }
 
 func (d *dock) startBurst() {
@@ -858,6 +865,73 @@ func (d *dock) editExternally() func() {
 
 // Output.
 
+// liveRows is how many rows of a streaming reply the dock holds before
+// they are committed: a third of the screen.
+func (d *dock) liveRows() int { return max(3, d.height/3) }
+
+// streamWidth is the width a reply is laid out at, inside its indent.
+func (d *dock) streamWidth() int { return max(d.contentWidth()-2, 10) }
+
+// streamRows commits rows of a streaming reply, adding them to its block,
+// and shows live as the rows still changing.
+func (d *dock) streamRows(b *streamBlock, commit, live []string) {
+	d.live = live
+	if len(commit) == 0 {
+		d.draw()
+		return
+	}
+	if len(b.rows) == 0 {
+		d.tr.add(b)
+	}
+	b.rows = append(b.rows, commit...)
+	d.commitLines(commit)
+}
+
+// commitLines writes finished rows above the region.
+func (d *dock) commitLines(lines []string) {
+	if d.stopped {
+		return
+	}
+	if d.pager != nil {
+		d.missed = append(d.missed, &rowsBlock{rows: lines})
+		return
+	}
+	d.measure()
+	d.flushTail(&lines)
+	if len(lines) > 0 {
+		d.lastBlank = stripANSI(lines[len(lines)-1]) == ""
+	}
+	rows, cr, cc := d.frame()
+	d.scr.commit(lines, rows, cr, cc)
+}
+
+// separate puts one blank row before a new item, unless there is one.
+func (d *dock) separate() {
+	if !d.lastBlank {
+		d.commit(&rawBlock{text: ""})
+	}
+}
+
+// commitItem commits b as a new item of the transcript: a reply, a tool
+// call, a prompt, a dialog's record.
+func (d *dock) commitItem(b block) {
+	d.separate()
+	d.commit(b)
+}
+
+// dequeue drops a queued message the agent has now taken.
+func (d *dock) dequeue(text string) {
+	for i, q := range d.queued {
+		if q == text || strings.TrimSpace(q) == strings.TrimSpace(text) {
+			d.queued = append(d.queued[:i], d.queued[i+1:]...)
+			return
+		}
+	}
+	if len(d.queued) > 0 {
+		d.queued = d.queued[1:] // it was expanded or edited on its way: the oldest went
+	}
+}
+
 // flushLive commits a streamed reply's rows as they stand.
 func (d *dock) flushLive() {
 	if len(d.live) == 0 {
@@ -882,6 +956,9 @@ func (d *dock) commit(b block) {
 	d.measure()
 	lines := b.lines(d.contentWidth(), d.st, false)
 	d.flushTail(&lines)
+	if len(lines) > 0 {
+		d.lastBlank = stripANSI(lines[len(lines)-1]) == ""
+	}
 	rows, cr, cc := d.frame()
 	d.scr.commit(lines, rows, cr, cc)
 }
@@ -955,7 +1032,7 @@ func (d *dock) frame() (rows []string, cr, cc int) {
 		top = append(top, hardWrap(d.rawTail, w)...)
 	}
 	top = append(top, d.live...)
-	if d.act.on && len(d.live) == 0 {
+	if d.act.on && !d.streaming && d.dlg == nil {
 		top = append(top, d.activityRow(w))
 	}
 

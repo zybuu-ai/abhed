@@ -14,12 +14,9 @@ func TestTUIUnicodeReachesTheModelIntact(t *testing.T) {
 	r := startTUI(t, stub, ws, 100, 30)
 	want := "héllo wörld 你好 — “quotes” 🙂"
 	r.send(want + "\r")
-	r.waitText("Hello from the stub")
+	r.waitText("You said: " + want)
 	if got := stub.prompt(); got != want {
 		t.Fatalf("the model got %q, want %q", got, want)
-	}
-	if !strings.Contains(r.term.All(), "You said: "+want) {
-		t.Fatalf("the reply does not show the text intact:\n%s", r.term.All())
 	}
 }
 

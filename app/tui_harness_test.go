@@ -33,6 +33,53 @@ type tuiRun struct {
 	raw    []byte
 	change time.Time // when the screen last changed
 	mark   int
+	// chunks records when each read arrived and where it ends in raw.
+	chunks []chunk
+}
+
+type chunk struct {
+	at  time.Time
+	end int
+}
+
+// seenAfterMark is when the output first contained s after the mark, or
+// the zero time.
+func (r *tuiRun) seenAfterMark(s string) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	i := strings.Index(string(r.raw[r.mark:]), s)
+	if i < 0 {
+		return time.Time{}
+	}
+	i += r.mark
+	for _, c := range r.chunks {
+		if c.end >= i+len(s) {
+			return c.at
+		}
+	}
+	return time.Time{}
+}
+
+// nthSeen is when the output first contained s for the nth time, or the
+// zero time.
+func (r *tuiRun) nthSeen(s string, n int) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	raw := string(r.raw)
+	i := -1
+	for k := 0; k < n; k++ {
+		j := strings.Index(raw[i+1:], s)
+		if j < 0 {
+			return time.Time{}
+		}
+		i += 1 + j
+	}
+	for _, c := range r.chunks {
+		if c.end >= i+len(s) {
+			return c.at
+		}
+	}
+	return time.Time{}
 }
 
 // tuiWorkspace writes a home config naming a stub model and a workspace with
@@ -78,9 +125,11 @@ func startTUI(t *testing.T, stub *tuiStub, ws string, cols, rows int, args ...st
 		for {
 			n, err := tty.Read(buf)
 			if n > 0 {
+				now := time.Now()
 				r.mu.Lock()
 				r.raw = append(r.raw, buf[:n]...)
-				r.change = time.Now()
+				r.change = now
+				r.chunks = append(r.chunks, chunk{now, len(r.raw)})
 				r.mu.Unlock()
 				_, _ = r.term.Write(buf[:n])
 			}

@@ -61,3 +61,51 @@ func TestScreenCommitScrolls(t *testing.T) {
 		t.Fatalf("region not at the bottom:\n%s", term.Dump())
 	}
 }
+
+// Random frames that grow, shrink and change in the middle, as a streaming
+// reply above a fixed input box does: whatever the differ sends, the screen
+// always ends up showing the frame.
+func TestScreenDiffRandomFrames(t *testing.T) {
+	seed := uint64(1)
+	rnd := func(n int) int {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return int((seed >> 33) % uint64(n))
+	}
+	pieces := []string{"", "a", "word", "\x1b[2m────────\x1b[0m", "\x1b[31mred\x1b[0m", "你好", "🙂 x", "input ▲", "footer"}
+	for _, bottom := range []bool{false, true} {
+		term := vt.New(30, 14)
+		if bottom {
+			// Start at the bottom of the screen, where growing scrolls.
+			term.Write([]byte(strings.Repeat("filler\r\n", 13)))
+		}
+		s := newScreen(term)
+		tail := []string{"── rule", "input ▲", "── rule", "footer"}
+		for i := 0; i < 400; i++ {
+			var f []string
+			for j := rnd(6); j > 0; j-- {
+				f = append(f, pieces[rnd(len(pieces))])
+			}
+			if rnd(3) > 0 {
+				f = append(f, tail...)
+			}
+			s.render(f, max(len(f)-3, 0), rnd(5))
+			lines := term.Lines()
+			x, y := term.Cursor()
+			_ = x
+			top := y - max(len(f)-3, 0)
+			if len(f) == 0 {
+				top = y
+			}
+			for j, row := range f {
+				if got := lines[top+j]; got != stripANSI(row) {
+					t.Fatalf("bottom=%v frame %d row %d: screen %q, want %q\n%s", bottom, i, j, got, stripANSI(row), term.Dump())
+				}
+			}
+			for j := top + len(f); j < len(lines); j++ {
+				if lines[j] != "" {
+					t.Fatalf("bottom=%v frame %d: stale row %d %q\n%s", bottom, i, j, lines[j], term.Dump())
+				}
+			}
+		}
+	}
+}
