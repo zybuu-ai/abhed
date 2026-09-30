@@ -368,16 +368,6 @@ func (b *Background) joinedLive() int {
 	return n
 }
 
-// Free is how many more children may start now.
-func (b *Background) Free() int {
-	if b == nil {
-		return 0
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.policy.maxLive() - b.liveLocked() - b.reserved
-}
-
 // reserve holds one of the live slots for a spawn being prepared.
 func (b *Background) reserve() error {
 	b.mu.Lock()
@@ -390,6 +380,55 @@ func (b *Background) reserve() error {
 	}
 	b.reserved++
 	return nil
+}
+
+// slots holds live slots for one tasks call, all taken at once before any
+// worktree is made: each of its spawns takes one, and the rest are given
+// back. So a call that fits starts all its tasks, whatever runs beside it.
+type slots struct {
+	b    *Background
+	left int
+}
+
+// reserveN holds n slots, or none: it fails when fewer than n are free.
+func (b *Background) reserveN(n int) (*slots, error) {
+	if b == nil {
+		return nil, errors.New("this agent runs no background tasks")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil, errors.New("the session is closing; no background task can start")
+	}
+	if free := b.policy.maxLive() - b.liveLocked() - b.reserved; free < n {
+		return nil, fmt.Errorf("background task limit: %d more may run now, and this call asks for %d. "+
+			"Start fewer, or run them in the foreground", max(free, 0), n)
+	}
+	b.reserved += n
+	return &slots{b: b, left: n}, nil
+}
+
+// take hands one held slot to a spawn, whose own unreserve gives it back
+// once its child is counted as live.
+func (s *slots) take() error {
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	if s.left == 0 {
+		return errors.New("no reserved background slot is left for this task")
+	}
+	s.left--
+	return nil
+}
+
+// release gives back the slots no spawn took.
+func (s *slots) release() {
+	if s == nil {
+		return
+	}
+	s.b.mu.Lock()
+	s.b.reserved -= s.left
+	s.left = 0
+	s.b.mu.Unlock()
 }
 
 func (b *Background) unreserve() {
@@ -917,7 +956,11 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		if ctx.Err() != nil || mgr.stopEpoch() != epoch {
 			return ErrStopped
 		}
-		if err := mgr.reserve(); err != nil {
+		take := mgr.reserve
+		if req.slots != nil {
+			take = req.slots.take
+		}
+		if err := take(); err != nil {
 			return err
 		}
 		held = true

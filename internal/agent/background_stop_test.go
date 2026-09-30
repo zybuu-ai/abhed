@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -163,5 +165,75 @@ func TestStopWhileIdleBlocksWakeUntilPrompted(t *testing.T) {
 	}
 	if ok, why := r.l.Background.canWake(); !ok && why == "stopped" {
 		t.Fatal("a prompted run did not lift the stop's hold on wakes")
+	}
+}
+
+// Two background tasks calls in one turn run at once: each starts all its
+// tasks or none, never part, since each holds all its slots before it starts.
+func TestConcurrentTasksCallsStartAllOrNone(t *testing.T) {
+	for round := range 20 {
+		r := newBGRig(t, WakeNotify, "a", "b", "c", "d", "e", "f")
+		tk := Tasks{Spawn: r.f.Spawn, Background: r.f.SpawnBackground, Workspace: r.f.Workspace}
+		var wg sync.WaitGroup
+		outs := make([]string, 2)
+		for j, set := range []string{`[{"prompt":"a","description":"a"},{"prompt":"b","description":"b"},{"prompt":"c","description":"c"}]`,
+			`[{"prompt":"d","description":"d"},{"prompt":"e","description":"e"},{"prompt":"f","description":"f"}]`} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				outs[j] = tk.Run(r.l.asParent(context.Background()), nil, json.RawMessage(`{"background":true,"tasks":`+set+`}`)).Content
+			}()
+		}
+		wg.Wait()
+		for _, o := range outs {
+			if strings.Contains(o, "Started in background") && strings.Contains(o, "FAILED") {
+				t.Fatalf("round %d: a call started part of its tasks:\n%s", round, o)
+			}
+		}
+		if live := r.l.Background.Live(); live != 3 {
+			t.Fatalf("round %d: %d running, want one call's 3:\n%s\n----\n%s", round, live, outs[0], outs[1])
+		}
+		for _, c := range []string{"a", "b", "c", "d", "e", "f"} {
+			r.m.release(c)
+		}
+	}
+}
+
+// The slots a tasks call held and did not use are given back.
+func TestTasksCallGivesBackUnusedSlots(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "a")
+	r.f.ModelNames = []string{"gone"}
+	r.f.Models = func(string) (model.Adapter, error) { return nil, errors.New("no such provider") }
+	tk := Tasks{Spawn: r.f.Spawn, Background: r.f.SpawnBackground, Workspace: r.f.Workspace, Models: r.f.ModelNames}
+	res := tk.Run(r.l.asParent(context.Background()), nil, json.RawMessage(`{"background":true,"tasks":[{"prompt":"a","description":"a"},{"prompt":"x","description":"x","model":"gone"}]}`))
+	if !strings.Contains(res.Content, "Started in background") || !strings.Contains(res.Content, "FAILED") {
+		t.Fatalf("precondition: one started, one failed:\n%s", res.Content)
+	}
+	r.l.Background.mu.Lock()
+	reserved := r.l.Background.reserved
+	r.l.Background.mu.Unlock()
+	if reserved != 0 {
+		t.Fatalf("%d slot(s) still held after the call", reserved)
+	}
+	r.m.release("a")
+}
+
+// A hold gives out only the slots it holds, and a hold the limit cannot
+// cover is not taken at all.
+func TestSlotsHoldWhatTheyReserve(t *testing.T) {
+	r := newBGRig(t, WakeNotify)
+	b := r.l.Background
+	if _, err := b.reserveN(5); err == nil {
+		t.Fatal("a hold past the limit of 4 was taken")
+	}
+	s, err := b.reserveN(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.take(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.take(); err == nil {
+		t.Fatal("a hold of one gave out two slots")
 	}
 }

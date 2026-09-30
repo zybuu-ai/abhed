@@ -138,6 +138,9 @@ type SubagentRequest struct {
 	// asked for this background task began.
 	epoch    int
 	epochSet bool
+	// slots, when set, holds the live slot this background task takes,
+	// reserved with its siblings' before the call made any worktree.
+	slots *slots
 }
 
 func (Task) Name() string  { return "task" }

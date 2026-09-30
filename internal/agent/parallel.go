@@ -151,16 +151,18 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	// limit is refused as a whole, before any worktree or child. A stop from
 	// here on refuses what has not started.
 	epoch := 0
+	var held *slots
 	if a.Background {
 		if t.Background == nil {
 			return tools.Result{Content: "this agent runs no background tasks; call tasks without background.", IsError: true}
 		}
 		b, _ := managerOf(ctx)
 		epoch = b.stopEpoch()
-		if free := b.Free(); free < len(a.Tasks) {
-			return tools.Result{Content: fmt.Sprintf("background task limit: %d more may run now, and this call asks for %d. "+
-				"Start fewer, or run them in the foreground.", max(free, 0), len(a.Tasks)), IsError: true}
+		var err error
+		if held, err = b.reserveN(len(a.Tasks)); err != nil {
+			return tools.Result{Content: err.Error() + ".", IsError: true}
 		}
+		defer held.release()
 	}
 
 	if anyIsolated {
@@ -193,7 +195,7 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	}
 
 	if a.Background {
-		return t.startAll(ctx, a, trees, epoch)
+		return t.startAll(ctx, a, trees, epoch, held)
 	}
 
 	limit := t.MaxParallel
@@ -245,7 +247,7 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 
 // startAll starts every task in the background, each settling its own
 // worktree when it ends.
-func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree, epoch int) tools.Result {
+func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree, epoch int, held *slots) tools.Result {
 	if testHookBeforeBackground != nil {
 		testHookBeforeBackground()
 	}
@@ -254,7 +256,7 @@ func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree, epo
 	stopped := false
 	for i, tk := range a.Tasks {
 		req := SubagentRequest{Prompt: tk.Prompt, Description: tk.Description,
-			AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model, epoch: epoch, epochSet: true}
+			AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model, epoch: epoch, epochSet: true, slots: held}
 		if wt := trees[i]; wt != nil {
 			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
 		}
