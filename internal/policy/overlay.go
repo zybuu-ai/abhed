@@ -15,14 +15,9 @@ const (
 	ListDeny  = "deny"
 )
 
-// Overlay holds the rules a person adds while a session runs, apart from the
-// configured ones, so they end with the session. Its rules are evaluated in
-// the same order as the configured ones: a session allow sits with the allow
-// rules, after deny rules, destructive commands, ask rules and the mode, so
-// it can only approve what would otherwise ask.
-//
-// Pinned deny rules are kept when the session's rules are cleared; they
-// narrow what a directory added part way through a session allows.
+// Overlay holds the rules a person adds for a session, each evaluated after
+// the configured rules of its list, so a session allow only approves what
+// would otherwise ask. Pinned deny rules (read-only folders) survive Clear.
 type Overlay struct {
 	mu                sync.RWMutex
 	deny, ask, allow  []Rule

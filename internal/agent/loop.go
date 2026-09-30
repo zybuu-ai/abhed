@@ -1968,12 +1968,9 @@ type turnCalls struct {
 	index int
 }
 
-// readFirst says why, before anyone is asked, an edit or write the tool would
-// refuse for want of a read is refused: an existing file not read this
-// session, one changed on disk since, or an edit of a file that is not there.
-// Approving such a call only wastes the person's answer. A turn whose other
-// calls name the same file, or run a command first, may change that by the
-// time this call runs, so the check is left to the tool. "" lets it be asked.
+// readFirst is why an edit or write the tool would refuse for want of a read
+// is refused before anyone is asked, or "". When another call in the turn
+// names the file, or a command runs first, the tool decides.
 func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCall) string {
 	_, isEdit := tool.(tools.Edit)
 	if _, isWrite := tool.(tools.Write); !isEdit && !isWrite {

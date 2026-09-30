@@ -87,9 +87,9 @@ type droppedSlash struct {
 
 // cmdEnv is what a command runs against.
 type cmdEnv struct {
-	// ui is where a command shows and asks things. Until the terminal UI
-	// sets cliState.surface it is a line surface with no answers, so any
-	// question is refused rather than hanging the prompt.
+	// ui is where a command shows and asks things: cliState.surface, which
+	// the interactive CLI answers from typed lines until the terminal UI
+	// replaces it; with none, a line surface that answers nothing.
 	ui   ui.Surface
 	r    *ui.Renderer
 	st   *cliState

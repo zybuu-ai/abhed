@@ -240,11 +240,9 @@ const (
 	accessReadWrite = "read-write"
 )
 
-// slashAddDir is /add-dir. It is bound by the managed configuration as the
-// -add-dir flag is, shows the directory with its links resolved, and asks
-// whether the agent may only read there or also change files. Read-only is
-// held by deny rules on edit and write that /clear keeps; either way the
-// directory is recorded as workspace.dir_added.
+// slashAddDir is /add-dir: bound by the managed configuration as -add-dir
+// is, it shows the resolved folder and asks for read-only or read-write
+// access, and adds only the folder it checked.
 func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, errors.New("usage: /add-dir <dir>")

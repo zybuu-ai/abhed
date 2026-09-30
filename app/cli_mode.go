@@ -297,11 +297,9 @@ const (
 	planKeep        = "keep-planning"
 )
 
-// decidePlan puts a plan the agent proposed with exit_plan to the person,
-// at the turn boundary, and returns what the conversation goes on with: the
-// approval of the plan, or "" to wait for the person. The default keeps
-// planning; accepting moves to accept-edits or default mode through the
-// ModeController, within the managed configuration, and never to auto.
+// decidePlan puts a proposed plan to the person at the turn boundary and
+// returns the message the conversation goes on with, or "". Accepting moves
+// to accept-edits or default through the ModeController, never to auto.
 func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface ui.Surface) string {
 	if st.loop == nil {
 		return ""
@@ -353,10 +351,8 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 // record, a mode chosen in an earlier conversation of the session.
 const viaCarried = "carried"
 
-// carryState replaces what is held for the next conversation with the state
-// it inherits: the mode, if not the configured one, and each added
-// directory, whose access also says whether it is read-only. Changes made
-// after this are held on top, so the record says each once.
+// carryState holds, for the next conversation, the mode and added folders it
+// inherits, in place of the changes that made them, so its record says each once.
 func (c *cliState) carryState() {
 	c.pending = slices.DeleteFunc(c.pending, func(p pendingEvent) bool {
 		return p.typ == agent.EvModeChanged || p.typ == agent.EvWorkspaceDirAdded
