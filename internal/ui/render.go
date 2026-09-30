@@ -387,7 +387,7 @@ func noticeText(n agent.Notice) string {
 		turns = fmt.Sprintf(", %d turn%s", n.Turns, map[bool]string{true: "", false: "s"}[n.Turns == 1])
 	}
 	return fmt.Sprintf("background: %s finished (%s%s); result added to the conversation",
-		orStr(n.Description, n.TaskID), n.Status, turns)
+		sanitize(orStr(n.Description, n.TaskID), false), sanitize(n.Status, false), turns)
 }
 
 // endedText says, in words, why a turn ended when it was not by finishing.

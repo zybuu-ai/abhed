@@ -108,13 +108,13 @@ func (a *DialogApprover) header(tool string, args json.RawMessage) string {
 func (a *DialogApprover) showScope(scope string) string {
 	open, close := strings.IndexByte(scope, '('), strings.LastIndexByte(scope, ')')
 	if open < 0 || close < open {
-		return scope
+		return reveal(scope)
 	}
 	inner := scope[open+1 : close]
 	if filepath.IsAbs(inner) {
 		inner = a.rel(inner)
 	}
-	return scope[:open+1] + inner + scope[close:]
+	return reveal(scope[:open+1] + inner + scope[close:])
 }
 
 func str(args json.RawMessage, key string) string {
@@ -156,11 +156,11 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 		}
 		switch {
 		case tool == "write" && a.missing(path):
-			question = "Create " + a.rel(path) + "?"
+			question = "Create " + reveal(a.rel(path)) + "?"
 		case tool == "write":
-			question = "Overwrite " + a.rel(path) + "?"
+			question = "Overwrite " + reveal(a.rel(path)) + "?"
 		default:
-			question = "Make this edit to " + a.rel(path) + "?"
+			question = "Make this edit to " + reveal(a.rel(path)) + "?"
 		}
 	default:
 		if raw := strings.TrimSpace(string(args)); raw != "" && raw != "{}" {

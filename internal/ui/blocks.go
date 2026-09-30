@@ -95,10 +95,11 @@ type promptBlock struct {
 }
 
 func (b *promptBlock) lines(width int, s Style, _ bool) []string {
+	text := sanitize(b.text, false)
 	pw := displayWidth(b.prompt)
 	indent := strings.Repeat(" ", pw)
 	var out []string
-	for i, l := range strings.Split(b.text, "\n") {
+	for i, l := range strings.Split(text, "\n") {
 		lead := indent
 		if i == 0 {
 			lead = b.prompt
@@ -236,7 +237,13 @@ func (sb *surfaceBlock) lines(width int, s Style, expanded bool) []string {
 		out = append(out, renderMarkdown(s, text, width)...)
 	case BlockTable:
 		if len(b.Rows) > 0 {
-			out = append(out, renderTable(s, b.Rows, width)...)
+			rows := make([][]string, len(b.Rows))
+			for i, r := range b.Rows {
+				for _, c := range r {
+					rows[i] = append(rows[i], sanitize(c, false))
+				}
+			}
+			out = append(out, renderTable(s, rows, width)...)
 		}
 	case BlockDiff:
 		for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {

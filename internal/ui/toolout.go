@@ -135,6 +135,7 @@ func relPath(root, p string) string {
 
 // toolTitle is the name a tool is shown by.
 func toolTitle(tool string) string {
+	tool = sanitize(tool, false)
 	switch tool {
 	case "bash":
 		return "Bash"
@@ -331,7 +332,7 @@ type resultBlock struct {
 func (b *resultBlock) lines(width int, s Style, expanded bool) []string {
 	var out []string
 	if b.head != "" {
-		for i, row := range wrapWords(b.head, max(width-5, 10)) {
+		for i, row := range wrapWords(sanitize(b.head, true), max(width-5, 10)) {
 			lead := "     "
 			if i == 0 {
 				lead = "  " + s.Dim("⎿") + "  "

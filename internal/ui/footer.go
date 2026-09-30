@@ -23,6 +23,12 @@ func (d *dock) statusModel() StatusModel {
 func (d *dock) footerRows(w int) []string {
 	s := d.st
 	m := d.statusModel()
+	// What the session reports comes from providers, git and a command:
+	// only text is drawn, and a status line's colours only where colour is on.
+	m.Model, m.Provider = sanitize(m.Model, false), sanitize(m.Provider, false)
+	m.GitBranch, m.Cwd = sanitize(m.GitBranch, false), sanitize(m.Cwd, false)
+	m.Mode, m.PendingMode = sanitize(m.Mode, false), sanitize(m.PendingMode, false)
+	m.Line = sanitize(m.Line, s.enabled)
 
 	left := modeLabel(s, m)
 	right := ""

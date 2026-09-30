@@ -65,9 +65,9 @@ func (d *dock) drawPager() {
 		name = p.title
 	}
 	title := fmt.Sprintf(" %s · %d–%d of %d ", name, p.top+1, end, len(p.rows))
-	b.WriteString(d.st.Reverse(truncateWidth(title, d.contentWidth())) + "\r\n")
+	b.WriteString(d.st.Reverse(truncateWidth(sanitize(title, false), d.contentWidth())) + "\r\n")
 	for _, r := range p.rows[p.top:end] {
-		b.WriteString(truncateWidth(r, d.contentWidth()) + "\x1b[0m\r\n")
+		b.WriteString(truncateWidth(sanitize(r, true), d.contentWidth()) + "\x1b[0m\r\n")
 	}
 	b.WriteString(d.st.Dim(truncateWidth("↑↓ pgup pgdn g G to move · q, esc or ctrl+o to close", d.contentWidth())))
 	d.scr.raw(b.String())

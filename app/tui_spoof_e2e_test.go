@@ -32,3 +32,35 @@ func TestTUIApprovalShowsTheRealCommand(t *testing.T) {
 		t.Fatal("the command ran")
 	}
 }
+
+// A model-chosen path cannot write a clipboard, set the title or erase the
+// screen through the dialog, its question, its "always" label or the result.
+func TestTUIPathEscapesNeverReachTheTerminal(t *testing.T) {
+	for _, mode := range []string{"default", "accept-edits"} {
+		t.Run(mode, func(t *testing.T) {
+			stub, ws := tuiWorkspace(t, "")
+			r := startTUI(t, stub, ws, 100, 30, "-mode", mode)
+			r.markBytes()
+			r.send("please escape\r")
+			if mode == "default" {
+				r.waitScreen("?")
+				r.waitFor("the dialog", false, func(s string) bool { return strings.Contains(s, "Create ") })
+				time.Sleep(400 * time.Millisecond)
+				r.send("\x1b")
+				r.waitText("✕ Declined")
+			} else {
+				r.waitText("Done.")
+			}
+			r.quiet(200 * time.Millisecond)
+			wire := r.rawSinceMark()
+			for _, f := range []string{"\x1b]52", "\x1b]0;TITLE", "\x1b[2J", "\a"} {
+				if strings.Contains(wire, f) {
+					t.Fatalf("%q reached the terminal", f)
+				}
+			}
+			if !strings.Contains(r.term.All(), "⟨\\e⟩]52") && mode == "default" {
+				t.Fatalf("the hidden escape is not shown in the dialog:\n%s", r.term.All())
+			}
+		})
+	}
+}

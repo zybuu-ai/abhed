@@ -98,8 +98,19 @@ func (s *screen) moveTo(r, c int) {
 // render draws rows with the cursor at (cr, cc), sending only the difference
 // from what is on screen.
 func (s *screen) render(rows []string, cr, cc int) {
-	s.draw(rows, cr, cc)
+	s.draw(clean(rows), cr, cc)
 	s.flush()
+}
+
+// clean is the render boundary: a row holds text and SGR styling and nothing
+// else, whoever composed it, so no string that slipped past its own
+// sanitizing can move the cursor, set the clipboard or retitle the window.
+func clean(rows []string) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = sanitize(r, true)
+	}
+	return out
 }
 
 func (s *screen) draw(rows []string, cr, cc int) {
@@ -312,14 +323,14 @@ func (s *screen) commit(lines []string, rows []string, cr, cc int) {
 	} else {
 		s.buf.WriteString("\r")
 	}
-	for _, l := range lines {
+	for _, l := range clean(lines) {
 		s.buf.WriteString(l)
 		s.buf.WriteString("\x1b[0m\x1b[K\r\n")
 	}
 	s.drawn = false
 	s.rows = s.rows[:0]
 	s.cr, s.cc, s.extent = 0, 0, 0
-	s.draw(rows, cr, cc)
+	s.draw(clean(rows), cr, cc)
 	s.buf.WriteString("\x1b[?2026l")
 	s.flush()
 }

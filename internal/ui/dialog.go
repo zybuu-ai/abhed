@@ -242,14 +242,14 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	inner := max(w-2, 10)
 	var head, body, tail []string
 
-	for i, l := range wrapWords(st.spec.Title, w-4) {
+	for i, l := range wrapWords(sanitize(st.spec.Title, true), w-4) {
 		lead := s.Accent("╭─ ")
 		if i > 0 {
 			lead = bar + " "
 		}
 		head = append(head, lead+s.Bold(l))
 	}
-	for _, l := range whyRows(st.spec.Why, inner) {
+	for _, l := range whyRows(sanitize(st.spec.Why, true), inner) {
 		head = append(head, bar+s.Dim(l))
 	}
 	for _, b := range st.spec.Body {
@@ -259,7 +259,7 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	}
 
 	if st.spec.Ask != "" {
-		for _, l := range wrapWords(st.spec.Ask, inner) {
+		for _, l := range wrapWords(sanitize(st.spec.Ask, true), inner) {
 			tail = append(tail, bar+s.Bold(l))
 		}
 	}
@@ -275,7 +275,7 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	for i := first; i < last; i++ {
 		c := st.spec.Choices[i]
 		num := strconv.Itoa(i+1) + ". "
-		label := c.Label
+		label := sanitize(c.Label, true)
 		mark := "  "
 		if i == st.sel {
 			mark = s.Accent("❯ ")
@@ -327,14 +327,14 @@ type dialogRecord struct {
 func (r *dialogRecord) lines(width int, s Style, expanded bool) []string {
 	c := r.spec.Choices[r.chosen]
 	var out []string
-	for i, l := range wrapWords(r.spec.Title, width-2) {
+	for i, l := range wrapWords(sanitize(r.spec.Title, true), width-2) {
 		lead := s.Accent("● ")
 		if i > 0 {
 			lead = "  "
 		}
 		out = append(out, lead+s.Bold(l))
 	}
-	for _, l := range whyRows(r.spec.Why, width-2) {
+	for _, l := range whyRows(sanitize(r.spec.Why, true), width-2) {
 		out = append(out, "  "+s.Dim(l))
 	}
 	for _, b := range r.spec.Body {
@@ -350,7 +350,7 @@ func (r *dialogRecord) lines(width int, s Style, expanded bool) []string {
 	if c.ID == "no" || c.ID == r.spec.Cancel {
 		mark = s.Red("✕ ")
 	}
-	for i, l := range wrapWords(outcome, width-4) {
+	for i, l := range wrapWords(sanitize(outcome, true), width-4) {
 		lead := "  ⎿ " + mark
 		if i > 0 {
 			lead = "      "

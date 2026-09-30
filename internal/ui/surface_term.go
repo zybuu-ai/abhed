@@ -63,9 +63,9 @@ func (l *LineReader) Pick(ctx context.Context, p PickSpec) (string, error) {
 	}
 	spec := DialogSpec{Kind: DialogChoice, Title: p.Title, Default: def, NoRecord: true, Cancel: "\x00cancel"}
 	for _, it := range p.Items {
-		label := it.Label
+		label := sanitize(it.Label, false)
 		if it.Detail != "" {
-			label += "  " + l.d.st.Dim(it.Detail)
+			label += "  " + l.d.st.Dim(sanitize(it.Detail, false))
 		}
 		spec.Choices = append(spec.Choices, Choice{ID: it.ID, Label: label})
 	}

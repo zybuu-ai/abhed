@@ -147,7 +147,7 @@ type fileDiff struct {
 }
 
 func newFileDiff(path, before, after string, created bool) *fileDiff {
-	f := &fileDiff{path: path, ops: lineDiff(splitLines(before), splitLines(after)), created: created}
+	f := &fileDiff{path: reveal(path), ops: lineDiff(splitLines(before), splitLines(after)), created: created}
 	for _, op := range f.ops {
 		switch op.kind {
 		case '+':
