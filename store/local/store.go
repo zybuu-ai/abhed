@@ -390,7 +390,7 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 	h.size = info.Size()
 	// The head only ever moves forward, to lines the chain holds.
 	h.synced = head
-	if !have || h.last.Lines > head.Lines {
+	if h.last.Lines > 0 && (!have || h.last.Lines > head.Lines) {
 		if err := s.writeHead(id, h.last); err != nil {
 			return fail(err)
 		}
@@ -557,7 +557,9 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 	h.seqs[ev.Seq] = ev.ID
 	h.events = insertEvent(h.events, ev)
 	var syncErr error
-	if boundary(ev.Type) {
+	// The first line is always synced, so a record with lines never stands
+	// without a head that counts them.
+	if boundary(ev.Type) || h.synced.Lines == 0 {
 		syncErr = h.sync(s)
 	}
 	ended := s.track(h, ev)
@@ -821,8 +823,25 @@ func readHeadFile(path string) (Head, bool) {
 	if err != nil {
 		return Head{}, false
 	}
+	return parseHead(data)
+}
+
+// parseHead reads a head exactly as the store writes it: the three keys,
+// spelled as written, a positive line count and a hash. Anything else is no
+// head at all, which verify reports.
+func parseHead(data []byte) (Head, bool) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(data, &keys) != nil || len(keys) != 3 {
+		return Head{}, false
+	}
+	for _, k := range []string{"lines", "seq", "hash"} {
+		if _, ok := keys[k]; !ok {
+			return Head{}, false
+		}
+	}
 	var h Head
-	if json.Unmarshal(data, &h) != nil {
+	dec := jsonStrict(data)
+	if dec.Decode(&h) != nil || h.Lines <= 0 || !isHash(h.Hash) {
 		return Head{}, false
 	}
 	return h, true

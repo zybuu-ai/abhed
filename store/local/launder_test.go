@@ -184,3 +184,29 @@ func TestExportOfTamperedDoesNotVerify(t *testing.T) {
 		t.Fatalf("the stored head did not show the cut: %+v", er)
 	}
 }
+
+// The review's probe: a head saying zero lines, with lines cut, passed with
+// a note. A head that is not exactly as written is no head, and fails.
+func TestInvalidHeadsFail(t *testing.T) {
+	for name, head := range map[string]string{
+		"zero":      `{"lines":0,"seq":0,"hash":""}`,
+		"negative":  `{"lines":-2,"seq":1,"hash":"` + Genesis + `"}`,
+		"uppercase": `{"LINES":1,"seq":1,"hash":"` + Genesis + `"}`,
+		"extra":     `{"lines":1,"seq":1,"hash":"` + Genesis + `","x":1}`,
+		"bad hash":  `{"lines":1,"seq":1,"hash":"nothex"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := openTest(t, dir)
+			record(t, s, "s-1", "one", "two", "three")
+			_ = s.Close()
+			s2 := openTest(t, dir)
+			cutLines(t, s2.Path("s-1"), 1, "")
+			_ = os.WriteFile(s2.headPath("s-1"), []byte(head), 0o600)
+			mustFail(t, s2, "s-1", name)
+			if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
+				t.Fatalf("opened with a %s head: %v", name, err)
+			}
+		})
+	}
+}
