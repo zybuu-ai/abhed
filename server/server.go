@@ -3422,11 +3422,14 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 				// Its own context: the run's may be seconds from cancellation,
 				// and a refresh that fails then would look like a dead node.
 				beat, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// The claim is fresh from when the renewal was sent, not when
+				// it was answered: a slow answer does not stretch the budget.
+				sent := time.Now()
 				held, err := s.renewNode(beat, sessionID)
 				cancel()
 				switch {
 				case err == nil && held:
-					lastOK = time.Now()
+					lastOK = sent
 					continue
 				case err != nil && time.Since(lastOK) < nodeStale-every:
 					continue // logged; the next beat tries again while the claim still reads as live
