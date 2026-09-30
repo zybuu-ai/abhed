@@ -55,6 +55,8 @@ type inputState struct {
 	custom *customState
 	// turn is a message a command asked to send, run once the command returns.
 	turn *commandTurn
+	// style is the output style the person chose, nil for none.
+	style *outputStyle
 }
 
 // commandTurn is a message a slash command sends as the person's next turn,
@@ -127,6 +129,7 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 		st.open(id)
 	}
 	bindAutoMemory(st)
+	applyStyle(st)
 	return nil
 }
 

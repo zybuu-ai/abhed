@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -23,6 +25,7 @@ import (
 func init() {
 	registerSlash(slashCmd{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
 	registerSlash(slashCmd{Name: "/context", Help: "what fills the context window, in tokens and percent", Group: "context", Order: 45, ReadOnly: true, Run: slashContext})
+	registerSlash(slashCmd{Name: "/output-style", Args: "[name|off]", Help: "list output styles, or choose how the agent writes", Group: "context", Order: 96, Run: slashOutputStyle})
 	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
 	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
@@ -607,4 +610,114 @@ func memoryAuto(e *cmdEnv, args []string) error {
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "auto memory turned " + args[0] + " in ~/.abhed/config.json; it takes effect in the next session" +
 		map[bool]string{true: " (a workspace may still turn it off)", false: ""}[on]})
 	return nil
+}
+
+// Output styles are markdown files that tell the agent how to write its
+// answers (terse, explanatory, teaching). They come from the organisation's
+// /etc/abhed/styles and the person's ~/.abhed/styles; a workspace's are not
+// read, since a style is instructions to the agent. The chosen style is
+// appended to the system prompt of this and each later conversation of the
+// session.
+
+// managedStyleDir is the organisation's styles; a variable for tests.
+var managedStyleDir = filepath.Join("/etc", "abhed", "styles")
+
+// styleMark begins the style section of the system prompt.
+const styleMark = "\n\n## Output style ("
+
+// outputStyle is one style file.
+type outputStyle struct {
+	name, description, body, source string
+}
+
+// loadStyles reads the styles; the organisation's win a name.
+func loadStyles() []outputStyle {
+	var out []outputStyle
+	seen := map[string]bool{}
+	dirs := [][2]string{{managedStyleDir, "managed"}}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, [2]string{filepath.Join(home, ".abhed", "styles"), "user"})
+	}
+	for _, d := range dirs {
+		files, _ := customcmd.ReadDir(d[0])
+		for _, f := range files {
+			if strings.Contains(f.Rel, "/") {
+				continue
+			}
+			name := strings.TrimSuffix(f.Rel, ".md")
+			if seen[name] {
+				continue
+			}
+			c, err := customcmd.Parse(f, d[1], nil)
+			if err != nil {
+				continue
+			}
+			seen[name] = true
+			out = append(out, outputStyle{name: name, description: c.Description, body: c.Body, source: d[1]})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
+// applyStyle puts the session's style into the conversation's prompt, in
+// place of any earlier one. It runs between turns.
+func applyStyle(st *cliState) {
+	if st.loop == nil {
+		return
+	}
+	p := st.loop.Config.SystemPrompt
+	if i := strings.Index(p, styleMark); i >= 0 {
+		p = p[:i]
+	}
+	if s := st.input.style; s != nil {
+		p += styleMark + s.name + ", chosen by the person)\n" + s.body + "\n"
+	}
+	st.loop.Config.SystemPrompt = p
+}
+
+// slashOutputStyle is /output-style [name|off].
+func slashOutputStyle(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
+	st, sf := e.st, e.ui
+	styles := loadStyles()
+	if len(args) == 0 {
+		cur := "none"
+		if st.input.style != nil {
+			cur = st.input.style.name
+		}
+		rows := [][]string{{"style", "source", "description"}}
+		for _, s := range styles {
+			rows = append(rows, []string{s.name, s.source, s.description})
+		}
+		sf.Append(ui.Block{Kind: ui.BlockTable, Rows: rows})
+		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "current: " + cur + ". A style is a markdown file in ~/.abhed/styles; /output-style <name> uses it, off stops."})
+		return false, nil
+	}
+	var chosen *outputStyle
+	if args[0] != "off" {
+		for i := range styles {
+			if styles[i].name == args[0] {
+				chosen = &styles[i]
+			}
+		}
+		if chosen == nil {
+			return false, fmt.Errorf("no output style %q; /output-style lists them", args[0])
+		}
+	}
+	st.input.style = chosen
+	if st.loop != nil {
+		release, err := claimForWrite(ctx, st)
+		if err != nil {
+			return false, err
+		}
+		applyStyle(st)
+		_, err = st.loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+			agent.CommandInvoked{Name: "/output-style", Source: sourceBuiltin, Args: args[0]})
+		release()
+		if err != nil {
+			return false, err
+		}
+	}
+	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "output style: " + args[0] + " (the next turn re-reads the prompt)"})
+	return false, nil
 }
