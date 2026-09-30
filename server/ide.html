@@ -1587,9 +1587,14 @@ function render(ev){
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
-  case 'subagent.ask': { const id = 'subagent-' + p.request_id;
+  // Its row stays in the chat, so a reopened session shows what was decided.
+  case 'subagent.ask': { const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
     asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
-  case 'subagent.action': if(p.request_id) settleAsk('subagent-' + p.request_id, p.decision === 'allowed' ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break;
+  case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
+    if(!ok){ c.node.classList.add('denied'); } c.res.textContent = ok ? 'allowed' : 'denied';
+    c.node.appendChild(el('div', 'why', (ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
+      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')));
+    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break; }
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
@@ -1620,6 +1625,17 @@ async function recheck(id){
   setLive(running);
   if(running || read){ if(!es) connect(id); if(running) return; }
   for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
+}
+// subagentRow is the chat's row for a subagent's call put to an approver or
+// refused, made the first time the record names it.
+function subagentRow(id, p, at){
+  let c = calls.get(id); if(c) return c;
+  endThinking(at); streaming = null; streamBody = null;
+  const d = el('details', 'call'), s = el('summary'), subj = subjectOf(p.tool, p.args), res = el('span', 'res', '…');
+  s.appendChild(el('span', 'tool', p.tool + ' (subagent ' + (p.subagent || '') + ')')); s.appendChild(el('span', 'subj', subj || p.subject || '')); s.appendChild(res);
+  d.appendChild(s); c = {node:d, res, tool:p.tool, subject:subj, args:p.args || {}, out:null, drawn:0};
+  d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
+  add(d); calls.set(id, c); return c;
 }
 function fillCall(c){
   if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', JSON.stringify(c.args, null, 2)), c.node.firstChild.nextSibling); }

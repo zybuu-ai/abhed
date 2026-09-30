@@ -43,14 +43,15 @@ sets = {
     # From ide.html: sending, the run's live state and the approval prompt.
     'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
-          'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){'],
+          'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
+          'function subagentRow(id, p, at){'],
     'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
           'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
     # From ide.html: the explorer's tree and its name input.
     'ide-tree': ['const el = (tag, cls, text) => {','const clear = ','const parentOf = ','const joinPath = ','const dirs = ','const heldLoads = ',
           'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
           'async function newEntry(folder){'],
-    'ide-render': ['const el = (tag, cls, text) => {','function render(ev){'],
+    'ide-render': ['const el = (tag, cls, text) => {','function render(ev){','function subagentRow(id, p, at){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
     'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',

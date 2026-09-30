@@ -244,6 +244,21 @@ check('its answer names the subagent\'s request', __posted.length === 1 && __pos
 render(ev(4, 'subagent.action', {session:'child', call_id:'w1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev7'}));
 check('and the subagent.action settles it', open().length === 0 && !asks.has('subagent-cev7'));
 
+// A reopened session shows what was decided on a subagent's calls: a row for
+// each, allowed or denied, with no card to answer.
+fresh('s20', false);
+render(ev(1, 'subagent.ask', {session:'child', subagent:'probe', request_id:'r1', call_id:'k1', tool:'bash', args:{command:'echo hi'}}));
+render(ev(2, 'subagent.action', {session:'child', call_id:'k1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'r1'}));
+render(ev(3, 'subagent.ask', {session:'child', subagent:'probe', request_id:'r2', call_id:'k2', tool:'bash', args:{command:'date -u'}}));
+render(ev(4, 'subagent.action', {session:'child', call_id:'k2', tool:'bash', decision:'denied', by:'reviewer', reason:'rejected', request_id:'r2'}));
+render(ev(5, 'subagent.action', {session:'child', call_id:'k3', tool:'bash', subject:'reboot', decision:'denied', by:'policy', step:'deny', reason:'denied by rule', request_id:'r3'}));
+{
+  const rows = __root.childNodes.filter(n => n.className === 'call' || n.className === 'call denied'), t = __root.textContent;
+  check('a replayed subagent call is drawn with its outcome', rows.length === 3 && t.includes('subagent probe') && t.includes('echo hi') && t.includes('allowed'));
+  check('a denied one says so, with the reason', rows.filter(r => r.className.includes('denied')).length === 2 && t.includes('rejected') && t.includes('reboot'));
+  check('and none is offered as an open card', open().length === 0 && asks.size === 0);
+}
+
 // A pipeline step's ask names the pipeline asking.
 fresh('s19', true);
 render(ev(1, 'action.requested', {call_id:'step_1', tool:'bash', args:{command:'date -u > stamp.txt'}, requires_approval:true, via:'skill tide-audit pipeline'}));
