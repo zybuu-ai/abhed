@@ -60,6 +60,23 @@ func TestFallbackOnlyToOfferedModels(t *testing.T) {
 	}
 }
 
+// -model is refused under a managed model.default, naming the run's own
+// managed file by its absolute path; a -fallback-model is ignored when the
+// managed file names the fallbacks.
+func TestManagedModelBindsTheFlags(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{UserConfig: twoModels, Managed: `{"model":{"default":"a"}}`, Args: []string{"-p", "hi", "-model", "b"}})
+	want := filepath.Join(h.root, "etc", "abhed", "config.json")
+	if code := h.Wait(time.Second); code != 2 || !strings.Contains(h.Stderr(), "refused") || !strings.Contains(h.Stderr(), want) {
+		t.Fatalf("exit %d, want the refusal naming %s:\n%s", code, want, h.Stderr())
+	}
+	m := piped(t, Opts{UserConfig: twoModels, Managed: `{"model":{"default":"a","fallback":[]}}`,
+		Args: []string{"-p", "hi", "-fallback-model", "b"}, Script: `error 403`})
+	if code := m.Wait(time.Second); code != 1 || !strings.Contains(m.Stderr(), "-fallback-model is ignored") || len(m.Requests()) != 1 {
+		t.Fatalf("exit %d, %d requests:\n%s", code, len(m.Requests()), m.Stderr())
+	}
+}
+
 // /model lists the configured models with what they are, and switches by
 // name; /status and /usage show the session.
 func TestModelStatusUsageOnPty(t *testing.T) {

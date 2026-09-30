@@ -2,7 +2,10 @@ package clitest
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/clitest/vt"
@@ -47,5 +50,37 @@ func TestCleanupMarksTheKnownRacePending(t *testing.T) {
 	}
 	if rec := cleanupAfter(t, "no race here"); rec.skipped != "" || rec.errored != "" {
 		t.Fatalf("no race: skipped %q, errored %q", rec.skipped, rec.errored)
+	}
+}
+
+func (r *recordingTB) Fatalf(f string, a ...any) { r.errored = fmt.Sprintf(f, a...) }
+
+// A run's environment keeps it off the developer's own services and browser.
+func TestRunEnvironmentIsIsolated(t *testing.T) {
+	root := t.TempDir()
+	h := &run{t: t, root: root, home: filepath.Join(root, "home"), ws: filepath.Join(root, "ws"), stub: NewStub(t, "")}
+	h.writeFiles()
+	env := strings.Join(h.env(), "\n")
+	if strings.Contains(env, "localhost") || !strings.Contains(env, managedEnv+"="+filepath.Join(root, "etc", "abhed")) {
+		t.Fatalf("env:\n%s", env)
+	}
+	for _, opener := range []string{"open", "xdg-open"} {
+		if _, err := os.Stat(filepath.Join(root, "bin", opener)); err != nil {
+			t.Errorf("no %s stub: %v", opener, err)
+		}
+	}
+	for _, s := range []string{"http://localhost:11434/v1", "127.0.0.1:4000", "http://[::1]:4000"} {
+		rec := &recordingTB{TB: t}
+		h.t = rec
+		h.refuseRealServices([]string{"-p", s}, nil)
+		if rec.errored == "" {
+			t.Errorf("%s was not refused", s)
+		}
+	}
+	rec := &recordingTB{TB: t}
+	h.t = rec
+	h.refuseRealServices([]string{"-p", h.stub.URL()}, h.env())
+	if rec.errored != "" {
+		t.Errorf("the stub was refused: %s", rec.errored)
 	}
 }

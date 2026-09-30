@@ -25,12 +25,10 @@ import (
 // DefaultTimeout is how long WaitText waits.
 var DefaultTimeout = 20 * time.Second
 
-// The test build reads its managed configuration relative to its working
-// directory, which the harness makes <run>/ws, so each run has its own.
-const (
-	managedFile = "../etc/abhed/config.json"
-	managedDir  = "../etc/abhed/agents"
-)
+// managedEnv names, in the test build only, the absolute directory holding
+// a run's managed files, so each run has its own. Without it the build's
+// managed paths are under its own directory, where nothing is written.
+const managedEnv = "ABHED_CLITEST_MANAGED_DIR"
 
 var build struct {
 	once sync.Once
@@ -58,8 +56,10 @@ func Binary(t testing.TB) string {
 			build.bin += ".exe"
 		}
 		pkg := "github.com/zybuu-ai/abhed/internal/managed"
+		none := filepath.Join(build.dir, "no-managed")
 		args := []string{"build", "-o", build.bin, "-ldflags",
-			"-X " + pkg + ".ConfigFile=" + managedFile + " -X " + pkg + ".AgentsDir=" + managedDir}
+			"-X " + pkg + ".ConfigFile=" + filepath.Join(none, "config.json") + " -X " + pkg + ".AgentsDir=" + filepath.Join(none, "agents") +
+				" -X " + pkg + ".testDirEnv=" + managedEnv}
 		if raceEnabled {
 			args = append(args, "-race")
 		}
@@ -234,6 +234,7 @@ func start(t testing.TB, o Opts) *run {
 	h.cmd = exec.Command(bin, args...) // #nosec G204 -- the binary this test process built, with the test's arguments
 	h.cmd.Dir = h.ws
 	h.cmd.Env = h.env()
+	h.refuseRealServices(args, h.cmd.Env)
 	h.term = vt.New(o.Cols, o.Rows, h.reply)
 	h.term.NoSync = o.NoSyncOutput
 	if o.Theme == "light" {
@@ -417,6 +418,32 @@ func (h *run) writeFiles() {
 		podman = "exit 1"
 	}
 	write(filepath.Join(h.root, "bin", "podman"), "#!/bin/sh\n"+podman+"\n", 0o755)
+	// A browser opener only notes what it was asked to open, so a test can
+	// never start the developer's browser.
+	for _, opener := range []string{"open", "xdg-open"} {
+		write(filepath.Join(h.root, "bin", opener), "#!/bin/sh\necho \"$@\" >> \"$HOME/opened\"\n", 0o755)
+	}
+}
+
+// realService matches a loopback address on a port a developer's own model
+// services use; a test reaching one would talk to a real model.
+var realService = regexp.MustCompile(`(?i)(localhost|127(\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0):(4000|11434)\b`)
+
+// refuseRealServices fails a run whose configuration, arguments or
+// environment name such an address, before the binary starts.
+func (h *run) refuseRealServices(args, env []string) {
+	texts := append(append([]string{}, args...), env...)
+	for _, f := range []string{filepath.Join(h.home, ".abhed", "config.json"), filepath.Join(h.ws, ".abhed", "config.json"),
+		filepath.Join(h.root, "etc", "abhed", "config.json")} {
+		if data, err := os.ReadFile(f); err == nil { // #nosec G304 -- a file this run wrote
+			texts = append(texts, string(data))
+		}
+	}
+	for _, s := range texts {
+		if m := realService.FindString(s); m != "" {
+			h.t.Fatalf("clitest: the run names %s, a real local model service; tests use the stub", m)
+		}
+	}
 }
 
 func (h *run) env() []string {
@@ -434,8 +461,10 @@ func (h *run) env() []string {
 		"XDG_CONFIG_HOME=" + filepath.Join(h.home, ".config"),
 		// Anything that tries to leave the machine meets a closed port, and
 		// a first run looks for Ollama there, never at the real one.
-		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=127.0.0.1,localhost",
+		// Only the stub's own address goes direct; localhost goes to the closed port.
+		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=127.0.0.1",
 		"OLLAMA_HOST=127.0.0.1:9",
+		managedEnv + "=" + filepath.Join(h.root, "etc", "abhed"),
 	}
 	switch h.o.Theme {
 	case "light":
