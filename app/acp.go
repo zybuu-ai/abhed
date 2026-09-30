@@ -329,6 +329,8 @@ func (c *acpConn) newSession(msg rpcMessage) {
 		Workspace: cwd, ConfigDir: cwd, Sandbox: true, WorkspaceTrust: trust, AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
+		// The configuration's turn limit binds, as it does from the terminal.
+		ConfiguredLimits: true,
 		// Stdout is the protocol; what the tool set skipped goes to stderr.
 		Warn:    warnf,
 		OnEvent: func(ev abhed.Event) { c.forward(s, ev) },

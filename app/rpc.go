@@ -49,17 +49,81 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		}
 	}
 
-	for in.Scan() {
-		line := in.Bytes()
-		if len(line) == 0 {
+	// Input is read on its own goroutine so a steer reaches the run in
+	// progress; every other request waits its turn, in the order sent.
+	var (
+		mu      sync.Mutex
+		pending []rpcRequest
+		eof     bool
+		readErr error
+	)
+	wake := make(chan struct{}, 1)
+	push := func(req rpcRequest) {
+		mu.Lock()
+		pending = append(pending, req)
+		mu.Unlock()
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+	// cur is the agent a steer goes to; start replaces it.
+	var cur *abhed.Agent
+	go func() {
+		for in.Scan() {
+			line := in.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			var req rpcRequest
+			if err := json.Unmarshal(line, &req); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error",
+					Error: "request is not JSON: " + err.Error()})
+				continue
+			}
+			if req.Method != "steer" {
+				push(req)
+				continue
+			}
+			mu.Lock()
+			sa := cur
+			mu.Unlock()
+			if sa == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			// Steering is why this is a persistent process: it joins the run in
+			// progress at its next turn, or leads the next prompt when idle.
+			sa.Steer(req.Prompt)
+			emit(rpcResponse{ID: req.ID, Type: "steered"})
+		}
+		mu.Lock()
+		eof, readErr = true, in.Err()
+		mu.Unlock()
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}()
+
+	for {
+		mu.Lock()
+		if len(pending) == 0 {
+			done, err := eof, readErr
+			mu.Unlock()
+			if done {
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "abhed: rpc read failed: %v\n", err)
+					return 1
+				}
+				return 0
+			}
+			<-wake
 			continue
 		}
-		var req rpcRequest
-		if err := json.Unmarshal(line, &req); err != nil {
-			emit(rpcResponse{ID: req.ID, Type: "error",
-				Error: "request is not JSON: " + err.Error()})
-			continue
-		}
+		req := pending[0]
+		pending = pending[1:]
+		mu.Unlock()
 
 		switch req.Method {
 		case "start":
@@ -77,6 +141,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
 				ConfiguredTools: true,
+				// The configuration's turn limit binds, as it does from the terminal.
+				ConfiguredLimits: true,
 				// Stdout is the protocol; what the tool set skipped goes to stderr.
 				Warn: warnf,
 				// Events are forwarded as they happen so a caller can render
@@ -87,6 +153,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			}
 			var err error
 			a, err = abhed.New(ctx, opts)
+			mu.Lock()
+			cur = a
+			mu.Unlock()
 			if err != nil {
 				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error()})
 				continue
@@ -114,16 +183,6 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer})
 			}
 			done()
-
-		case "steer":
-			if a == nil {
-				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
-				continue
-			}
-			// Steering is why this is a persistent process rather than a
-			// request per run: a caller can redirect work already underway.
-			a.Steer(req.Prompt)
-			emit(rpcResponse{ID: req.ID, Type: "steered"})
 
 		case "usage":
 			if a == nil {
@@ -153,11 +212,6 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					"usage, export, providers or quit", req.Method)})
 		}
 	}
-	if err := in.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "abhed: rpc read failed: %v\n", err)
-		return 1
-	}
-	return 0
 }
 
 type rpcRequest struct {
