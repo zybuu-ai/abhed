@@ -483,7 +483,7 @@ func TestOrphanReconciledOnClaim(t *testing.T) {
 	if st.ended[id] {
 		t.Fatal("precondition: the row is open")
 	}
-	time.Sleep(10 * time.Millisecond)
+	st.crash(id) // and its heartbeat stops
 	b := newBGServer(t, st)
 	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"still there?"}`); rec.Code != http.StatusAccepted {
 		t.Fatalf("continue: %d %s", rec.Code, rec.Body)
@@ -502,18 +502,55 @@ func TestOrphanReconciledOnClaim(t *testing.T) {
 	a.ad.release("one")
 }
 
-// A session whose record is still being written since this server started
-// is not an orphan: it is running elsewhere.
+// A session whose holder is alive is not an orphan, whichever process
+// started first and however long since its record was written: a live
+// child on one server is never reconciled by another on the same store.
 func TestLiveSessionIsNotAnOrphan(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
-	b := newBGServer(t, st)
-	a := newBGServer(t, st, "one")
-	id := a.start("bg:one", false)
-	<-a.ended
-	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
-		t.Fatalf("a session active since this server started was taken over: %d", rec.Code)
+	for _, bFirst := range []bool{true, false} {
+		st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+		var b *bgServer
+		if bFirst {
+			b = newBGServer(t, st)
+		}
+		a := newBGServer(t, st, "one")
+		id := a.start("bg:one", false)
+		<-a.ended
+		if !bFirst {
+			time.Sleep(20 * time.Millisecond)
+			b = newBGServer(t, st) // started after A's last write, as a restarted peer is
+		}
+		if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
+			t.Fatalf("b first %v: a session with a live holder was taken over: %d", bFirst, rec.Code)
+		}
+		if n := countType(b.events(id), agent.EvSubagentReturn); n != 0 {
+			t.Fatalf("b first %v: the live child was reconciled (%d returns)", bFirst, n)
+		}
+		if st.holderOf(id) != a.s.holder {
+			t.Fatalf("b first %v: holder %q, want A's %q", bFirst, st.holderOf(id), a.s.holder)
+		}
+		a.ad.release("one")
+		waitUntil(t, "the closing end", func() bool { e, _ := agent.LastEnd(a.events(id)); return e.Settled })
 	}
-	a.ad.release("one")
+}
+
+// Every process has its own liveness identity, and a claim that cannot be
+// recorded fails the hold: the session does not run unseen.
+func TestHolderIdentityAndFailedHold(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a, b := newBGServer(t, st), newBGServer(t, st)
+	if a.s.holder == "" || a.s.holder == b.s.holder {
+		t.Fatalf("holders %q and %q", a.s.holder, b.s.holder)
+	}
+	st.mu.Lock()
+	st.failHold = true
+	st.mu.Unlock()
+	rec := a.do("alice", "POST", "/v1/sessions", `{"prompt":"hello"}`)
+	if rec.Code < 500 {
+		t.Fatalf("a session started with no recorded holder: %d %s", rec.Code, rec.Body)
+	}
+	if a.s.runningCount() != 0 {
+		t.Fatal("the refused session is still running")
+	}
 }
 
 // Continuing a session elsewhere does not reset its allowance.

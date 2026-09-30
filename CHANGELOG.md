@@ -297,8 +297,14 @@ All notable changes to Abhed are recorded here. The format follows
   starts a run.
 - A server process that died mid-run left its session's row open, and no
   node could ever continue it. The next message to such a session now takes
-  it over, when no live node holds it, and records the ends the crashed
-  process never wrote (`recovered`; lost background tasks as `lost`).
+  it over, when its holder's heartbeat has gone stale, and records the ends
+  the crashed process never wrote (`recovered`; lost background tasks as
+  `lost`). Every process holds its sessions under a liveness identity (its
+  node id, or an id of its own when none is set) and heartbeats them,
+  workbench holds included; the takeover is one conditional update that
+  writes the new holder, so of two processes exactly one wins. A hold that
+  cannot be recorded now fails the start, message or wake (503 for a
+  message) instead of running unseen.
 - Continuing a session elsewhere reset its token and spawn allowance; the
   budget now goes on from what its record says it spent.
 - A server turn continued by a message never refreshed or released this

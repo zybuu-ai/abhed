@@ -64,12 +64,11 @@ type SessionResumer interface {
 }
 
 // OrphanClaimer is implemented by stores that can take over a session a
-// crashed process left open: still open, and held by no live node. nodeID
-// is this node's, "" on a single server; openedBefore is when this process
-// started, for a single server, which may only take sessions left open
-// before it did. The claim is atomic, so two nodes cannot both take one.
+// crashed process left open: still open, and its holder's liveness older
+// than stale (or never written). The claim writes holder as the session's
+// holder in the same conditional update, so two processes cannot both take one.
 type OrphanClaimer interface {
-	ClaimOrphan(ctx context.Context, sessionID, nodeID string, stale time.Duration, openedBefore time.Time) (bool, error)
+	ClaimOrphan(ctx context.Context, sessionID, holder string, stale time.Duration) (bool, error)
 }
 
 // SessionRouter is implemented by stores that can record which node holds a
@@ -254,8 +253,10 @@ type Server struct {
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
-	// started is when this process started serving, for orphan recovery.
-	started time.Time
+	// holder is this process's liveness identity: NodeID when set, otherwise
+	// an id of its own for its lifetime. Every session it holds is claimed
+	// and heartbeated under it, so "no heartbeat" never reads as "dead".
+	holder string
 
 	// Throttles for the endpoints reachable before authentication succeeds.
 	signinLimiter  *limiter
@@ -384,7 +385,7 @@ func New(opts Options) *Server {
 		store:   tapped,
 		log:     opts.Logger,
 		running: make(map[string]*liveSession),
-		started: time.Now(),
+		holder:  holderID(opts.NodeID),
 		// Ten sign-in attempts a minute is far beyond what a person typing a
 		// password needs, and far below what makes guessing viable.
 		signinLimiter:  newLimiter(10, time.Minute),
@@ -1014,7 +1015,16 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 	s.running[sessionID] = live
 	s.mu.Unlock()
-	s.holdNode(live)
+	// Held, with its liveness, before it runs: a process that cannot say it
+	// holds the session must not run it, or another could take it as orphaned.
+	if err := s.holdNode(live); err != nil {
+		s.mu.Lock()
+		delete(s.running, sessionID)
+		s.mu.Unlock()
+		cancel()
+		s.forgetUnstarted(sessionID)
+		return "", fmt.Errorf("hold session: %w", err)
+	}
 
 	go func() {
 		defer cancel()
@@ -1563,6 +1573,13 @@ func (s *Server) claimLocked(ctx context.Context, id string, live *liveSession) 
 	if !claimed {
 		return false, errBusySession
 	}
+	// Every claim is held with this process's liveness, a workbench hold's
+	// included, so no other process takes the session for a crashed one; a
+	// claim that cannot record it is given back rather than kept unseen.
+	if err := s.holdNode(live); err != nil {
+		s.giveBack(id, live)
+		return false, fmt.Errorf("hold session: %w", err)
+	}
 	events, err := s.store.Events(id)
 	if err == nil && len(events) > 0 && events[len(events)-1].Seq != live.Loop.Recorder.LastAppended() {
 		err = s.catchUp(live, events)
@@ -1600,6 +1617,7 @@ func (s *Server) giveBack(id string, live *liveSession) {
 	live.unclaimed.Store(false) // the end below is this claim's own write
 	s.endAsBefore(id, live)
 	live.unclaimed.Store(true)
+	s.releaseNodeIfQuiet(live)
 }
 
 // endAsBefore records the session's prior end again, so the row is released
@@ -1642,6 +1660,7 @@ func (s *Server) releaseHeld(id string, live *liveSession, now bool) {
 	live.holdMu.Unlock()
 	s.endAsBefore(id, live)
 	live.unclaimed.Store(true)
+	s.releaseNodeIfQuiet(live)
 }
 
 // takeOver ends a workbench hold when a message claims the session for a
@@ -2167,6 +2186,19 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		live.fallback = nil
 	}
 
+	// The hold, with its liveness, comes before the run: a process that
+	// cannot record that it holds the session does not run it. A message
+	// that only steers a live run gives nothing up.
+	if err := s.holdNode(live); err != nil {
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, http.StatusServiceUnavailable, "could not hold the session; retry")
+		return
+	}
+	defer func() {
+		if !started {
+			s.releaseNodeIfQuiet(live)
+		}
+	}()
 	live.mu.Lock()
 	// While draining, nothing is started, steered or interrupted: a steering
 	// message could be dropped, and Send now would stop the turn the drain
@@ -2254,7 +2286,6 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 	live.cancel = cancel
 	live.cancelCause = cancelCause
 	live.mu.Unlock()
-	s.holdNode(live)
 
 	go func() {
 		defer cancel()
@@ -2317,7 +2348,7 @@ func (s *Server) recoverOrphan(ctx context.Context, id string, events []agent.Ev
 	if !ok || !agent.Orphaned(events) {
 		return false
 	}
-	claimed, err := oc.ClaimOrphan(ctx, id, s.opts.NodeID, nodeStale, s.started)
+	claimed, err := oc.ClaimOrphan(ctx, id, s.holder, nodeStale)
 	if err != nil || !claimed {
 		return false
 	}
@@ -2375,9 +2406,13 @@ func (s *Server) ownerActive(live *liveSession) bool {
 func (s *Server) wake(live *liveSession, ids []string) bool {
 	live.claimMu.Lock()
 	defer live.claimMu.Unlock()
+	if err := s.holdNode(live); err != nil {
+		return false
+	}
 	live.mu.Lock()
 	if live.ran != nil || s.draining.Load() || live.unclaimed.Load() {
 		live.mu.Unlock()
+		s.releaseNodeIfQuiet(live)
 		return false
 	}
 	s.startRunLocked(live, "wake", func(ctx context.Context) (agent.TerminalReason, error) {
@@ -2389,21 +2424,41 @@ func (s *Server) wake(live *liveSession, ids []string) bool {
 // holdNode keeps this node's claim on the session fresh while it has a run
 // or a background child live, so routing and answers from another node
 // find it; once for each stretch of activity.
-func (s *Server) holdNode(live *liveSession) {
+func (s *Server) holdNode(live *liveSession) error {
 	live.mu.Lock()
 	defer live.mu.Unlock()
 	if live.beatStop != nil {
-		return
+		return nil
 	}
-	s.claimNode(context.Background(), live.ID)
+	if err := s.claimNode(context.Background(), live.ID); err != nil {
+		return err
+	}
 	live.beatStop = s.heartbeatNode(context.Background(), live.ID)
+	return nil
 }
 
-// releaseNodeIfQuiet gives the claim up once no run and no child is live.
-func (s *Server) releaseNodeIfQuiet(live *liveSession) {
+// releaseNodeNow ends the hold whatever is live, for a session going away
+// (deleted, or the process draining).
+func (s *Server) releaseNodeNow(live *liveSession) {
 	live.mu.Lock()
 	stop := live.beatStop
-	quiet := stop != nil && live.ran == nil && live.Loop.Background.Live() == 0
+	live.beatStop = nil
+	live.mu.Unlock()
+	if stop != nil {
+		stop()
+		s.releaseNode(live.ID)
+	}
+}
+
+// releaseNodeIfQuiet gives the claim up once no run, no child and no
+// workbench hold is live.
+func (s *Server) releaseNodeIfQuiet(live *liveSession) {
+	live.holdMu.Lock()
+	held := live.held
+	live.holdMu.Unlock()
+	live.mu.Lock()
+	stop := live.beatStop
+	quiet := stop != nil && !held && live.ran == nil && live.Loop.Background.Live() == 0
 	if quiet {
 		live.beatStop = nil
 	}
@@ -3010,18 +3065,36 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 //
 // A caller who is not the owner gets the same "not found" as a caller who
 // invented the ID, so the lookup does not confirm that a session exists.
-// claimNode records that this process holds the session, when the deployment
-// is configured for several. A failure is logged and ignored: routing is an
-// optimisation, and refusing to start a turn because a bookkeeping write
-// failed would be a worse outcome than a misrouted request.
-func (s *Server) claimNode(ctx context.Context, sessionID string) {
-	r, ok := s.router()
+// claimNode records that this process holds the session, under its liveness
+// identity, wherever the store keeps holders, with or without a NodeID. A
+// failure is returned: it is also the liveness another process reads to
+// decide whether the session was left behind by a crash.
+func (s *Server) claimNode(ctx context.Context, sessionID string) error {
+	r, ok := s.liveness()
 	if !ok {
-		return
+		return nil
 	}
-	if err := r.ClaimNode(ctx, sessionID, s.opts.NodeID); err != nil {
-		s.log.Warn("could not claim session for this node", "session", sessionID, "err", err)
+	if err := r.ClaimNode(ctx, sessionID, s.holder); err != nil {
+		s.log.Warn("could not claim session for this process", "session", sessionID, "err", err)
+		return err
 	}
+	return nil
+}
+
+// liveness is the store's holder bookkeeping, used whether or not routing by
+// node is configured.
+func (s *Server) liveness() (SessionRouter, bool) {
+	r, ok := s.store.(SessionRouter)
+	return r, ok
+}
+
+// holderID is the process's liveness identity: the node id when configured,
+// otherwise one of its own.
+func holderID(nodeID string) string {
+	if nodeID != "" {
+		return nodeID
+	}
+	return "instance-" + newSessionID()
 }
 
 // heartbeatNode keeps this node's claim on the session fresh while the turn
@@ -3035,7 +3108,7 @@ func (s *Server) heartbeatNode(ctx context.Context, sessionID string) func() {
 }
 
 func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every time.Duration) func() {
-	if _, ok := s.router(); !ok {
+	if _, ok := s.liveness(); !ok {
 		return func() {}
 	}
 	ctx, stop := context.WithCancel(ctx)
@@ -3050,7 +3123,7 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 				// Its own context: the run's may be seconds from cancellation,
 				// and a refresh that fails then would look like a dead node.
 				beat, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				s.claimNode(beat, sessionID)
+				_ = s.claimNode(beat, sessionID) // logged; the next beat tries again
 				cancel()
 			}
 		}
@@ -3061,13 +3134,13 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 // releaseNode clears the claim when a turn finishes. It uses its own context:
 // the run's context is cancelled by the time this is reached.
 func (s *Server) releaseNode(sessionID string) {
-	r, ok := s.router()
+	r, ok := s.liveness()
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.ReleaseNode(ctx, sessionID, s.opts.NodeID); err != nil {
+	if err := r.ReleaseNode(ctx, sessionID, s.holder); err != nil {
 		s.log.Warn("could not release session claim", "session", sessionID, "err", err)
 	}
 }

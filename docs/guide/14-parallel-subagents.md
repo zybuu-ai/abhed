@@ -248,6 +248,13 @@ their results; the closing end (`settled`) releases it. A result that finished
 before a restart, and a task a crashed process lost (ended `lost`), are
 delivered on the session's next run.
 
+Each server process holds the sessions it runs under a liveness identity (its
+`node_id`, or an id of its own when none is set) and refreshes it every 30
+seconds while a run, a background task or a workbench hold is live. Another
+process takes a session over only once that heartbeat is two minutes stale,
+so a live task on one server is never mistaken for a crashed one by another
+sharing the database.
+
 ## Resuming a finished subagent
 
 `task` takes `"resume": "<task_id>"` to continue a finished subagent with a

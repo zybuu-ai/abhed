@@ -30,6 +30,60 @@ type durableMem struct {
 	orphaned map[string]bool
 	// onClaim, when set, runs after a claim is taken.
 	onClaim func()
+	// holders and seen are each row's holder and its last heartbeat, as the
+	// node_id and node_seen_at columns; failHold makes ClaimNode fail.
+	holders  map[string]string
+	seen     map[string]time.Time
+	failHold bool
+}
+
+func (d *durableMem) ClaimNode(_ context.Context, id, holder string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failHold {
+		return errors.New("store unavailable")
+	}
+	if d.holders == nil {
+		d.holders, d.seen = map[string]string{}, map[string]time.Time{}
+	}
+	d.holders[id], d.seen[id] = holder, time.Now()
+	return nil
+}
+
+func (d *durableMem) ReleaseNode(_ context.Context, id, holder string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.holders[id] == holder {
+		delete(d.holders, id)
+		delete(d.seen, id)
+	}
+	return nil
+}
+
+func (d *durableMem) NodeFor(_ context.Context, id string, stale time.Duration) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
+		return d.holders[id], nil
+	}
+	return "", nil
+}
+
+// crash makes a row's holder look dead, as a process that stopped
+// heartbeating does once the staleness window passes.
+func (d *durableMem) crash(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.seen[id]; ok {
+		d.seen[id] = time.Now().Add(-time.Hour)
+	}
+}
+
+// holderOf is the row's holder, "" when none.
+func (d *durableMem) holderOf(id string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.holders[id]
 }
 
 func (d *durableMem) CreateSession(ctx context.Context, r store.SessionRecord) error {
@@ -81,17 +135,21 @@ func (d *durableMem) Append(ev agent.Event) error {
 	return d.MemStore.Append(ev)
 }
 
-// ClaimOrphan takes an open row as Postgres does: here no node ever holds
-// one, so a single server takes rows opened before orphanAfter.
-func (d *durableMem) ClaimOrphan(ctx context.Context, id, nodeID string, _ time.Duration, openedBefore time.Time) (bool, error) {
+// ClaimOrphan takes an open row as Postgres does: only when its holder's
+// heartbeat is stale or was never written, writing the claimer as holder.
+func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale time.Duration) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.rows[id]; !ok || d.ended[id] || d.orphaned[id] {
+	if _, ok := d.rows[id]; !ok || d.ended[id] {
 		return false, nil
 	}
-	if evs, _ := d.Events(id); nodeID == "" && len(evs) > 0 && !evs[len(evs)-1].CreatedAt.Before(openedBefore) {
-		return false, nil // active since this server started: not left by a crash
+	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
+		return false, nil // its holder is alive
 	}
+	if d.holders == nil {
+		d.holders, d.seen = map[string]string{}, map[string]time.Time{}
+	}
+	d.holders[id], d.seen[id] = holder, time.Now()
 	d.orphaned[id] = true
 	return true, nil
 }

@@ -485,19 +485,19 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 }
 
 // ClaimOrphan takes over a session a crashed process left open: its row is
-// still open, and no node holds a fresh claim on it. With a node id, the
-// claim is this node's; a single server (no node id) may only take a session
-// whose last event is older than openedBefore, when it started. One update,
-// so two nodes cannot both take it.
-func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, nodeID string, stale time.Duration, openedBefore time.Time) (bool, error) {
+// still open, and its holder's liveness is older than stale or was never
+// written. Every process heartbeats what it holds, so that is the only sign
+// of a crash. The update writes holder as the new holder and tests the same
+// column, so of two processes claiming at once exactly one wins.
+func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, stale time.Duration) (bool, error) {
+	if holder == "" {
+		return false, errors.New("claim orphaned session: no holder")
+	}
 	tag, err := p.pool.Exec(ctx, `
-		UPDATE sessions SET node_id = NULLIF($2, ''),
-		       node_seen_at = CASE WHEN $2 = '' THEN NULL ELSE now() END
+		UPDATE sessions SET node_id = $2, node_seen_at = now()
 		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
-		  AND (node_seen_at IS NULL OR node_seen_at <= now() - $3::interval)
-		  AND ($2 <> '' OR COALESCE(
-		        (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) < $4)`,
-		sessionID, nodeID, stale.String(), openedBefore)
+		  AND (node_seen_at IS NULL OR node_seen_at <= now() - $3::interval)`,
+		sessionID, holder, stale.String())
 	if err != nil {
 		return false, fmt.Errorf("claim orphaned session %s: %w", sessionID, err)
 	}

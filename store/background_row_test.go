@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,8 +45,9 @@ func TestRowStaysOpenWhileChildrenRun(t *testing.T) {
 	}
 }
 
-// An open row no live node holds is taken over once; a fresh claim by
-// another node, or activity since this single server started, keeps it.
+// An open row is taken over only when its holder's heartbeat is stale or was
+// never written, and the claim writes the new holder, so it is exclusive: of
+// many processes claiming at once, exactly one wins.
 func TestClaimOrphan(t *testing.T) {
 	p := openStore(t, "t-orphan")
 	ctx := context.Background()
@@ -52,27 +56,53 @@ func TestClaimOrphan(t *testing.T) {
 	if err := p.Append(ev(id, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "go"})); err != nil {
 		t.Fatal(err)
 	}
-	// A single server that started before the last event: still active.
-	if ok, _ := p.ClaimOrphan(ctx, id, "", 2*time.Minute, time.Now().Add(-time.Hour)); ok {
-		t.Fatal("a session active since this server started was taken")
-	}
-	// Another node holds it freshly.
-	if err := p.ClaimNode(ctx, id, "node-b"); err != nil {
+	// A live holder, a single server's own instance id included: never taken.
+	if err := p.ClaimNode(ctx, id, "instance-a"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := p.ClaimOrphan(ctx, id, "node-a", 2*time.Minute, time.Now()); ok {
-		t.Fatal("a session another node holds was taken")
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-b", 2*time.Minute); ok {
+		t.Fatal("a session with a live holder was taken")
 	}
-	// Its claim goes stale: one node takes it, once.
+	if _, err := p.ClaimOrphan(ctx, id, "", 2*time.Minute); err == nil {
+		t.Fatal("a claim with no holder was accepted")
+	}
+	// Its holder stops heartbeating: many claim at once, one wins.
 	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	first, err := p.ClaimOrphan(ctx, id, "node-a", 2*time.Minute, time.Now())
-	if err != nil || !first {
-		t.Fatalf("first: %v %v", first, err)
+	const claimers = 8
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range claimers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			ok, err := p.ClaimOrphan(ctx, id, fmt.Sprintf("instance-%d", i), 2*time.Minute)
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				wins.Add(1)
+			}
+		}()
 	}
-	if second, _ := p.ClaimOrphan(ctx, id, "node-c", 2*time.Minute, time.Now()); second {
-		t.Fatal("two nodes took the same orphan")
+	close(start)
+	wg.Wait()
+	if n := wins.Load(); n != 1 {
+		t.Fatalf("%d claimers took the same orphan, want exactly one", n)
+	}
+	// The winner is now the live holder: a later claim fails too.
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-z", 2*time.Minute); ok {
+		t.Fatal("an orphan was taken again from its new holder")
+	}
+	// A row whose holder never wrote a heartbeat is an orphan.
+	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET node_id = NULL, node_seen_at = NULL WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-y", 2*time.Minute); !ok {
+		t.Fatal("an open row with no holder was not taken")
 	}
 	// An ended row is not an orphan.
 	if err := p.Append(ev(id, 2, agent.EvSessionEnded, agent.Trusted, agent.SessionEnded{Reason: agent.TermShutdown})); err != nil {
@@ -81,7 +111,7 @@ func TestClaimOrphan(t *testing.T) {
 	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET node_id = NULL, node_seen_at = NULL WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := p.ClaimOrphan(ctx, id, "", 2*time.Minute, time.Now().Add(time.Hour)); ok {
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-x", 2*time.Minute); ok {
 		t.Fatal("an ended session was taken as an orphan")
 	}
 }

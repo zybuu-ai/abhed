@@ -45,7 +45,7 @@ func (f *fakeRouter) NodeFor(_ context.Context, sessionID string, _ time.Duratio
 func TestRoutingIsOffWithoutANodeID(t *testing.T) {
 	s := &Server{store: &fakeRouter{}, opts: Options{}}
 	if _, ok := s.router(); ok {
-		t.Fatal("routing engaged with no NodeID; a single-node deployment would start claiming")
+		t.Fatal("routing engaged with no NodeID; a single-node deployment would answer 421s")
 	}
 	if got := s.elsewhere(context.Background(), "s-1"); got != "" {
 		t.Fatalf("elsewhere = %q with routing off, want empty", got)
@@ -98,15 +98,22 @@ func TestElsewhereEmptyWhenNoNodeHoldsIt(t *testing.T) {
 	}
 }
 
-// A claim that cannot be written is logged and ignored — refusing to start a
-// turn because bookkeeping failed is worse than a misrouted request.
-func TestClaimFailureDoesNotStopTheTurn(t *testing.T) {
+// A claim that cannot be written fails the hold: the claim is also the
+// liveness another process reads, and a session held with none could be
+// taken over as a crashed one while it runs here.
+func TestClaimFailureFailsTheHold(t *testing.T) {
 	f := &fakeRouter{err: errors.New("write failed")}
-	s := &Server{store: f, opts: Options{NodeID: "node-a"}, log: discardLogger()}
-	s.claimNode(context.Background(), "s-1") // must not panic
-	s.releaseNode("s-1")                     // must not panic
-	if len(f.claimed) != 1 || len(f.released) != 1 {
-		t.Fatalf("claimed %v released %v, want one of each attempted", f.claimed, f.released)
+	s := &Server{store: f, opts: Options{NodeID: "node-a"}, holder: "node-a", log: discardLogger()}
+	if err := s.claimNode(context.Background(), "s-1"); err == nil {
+		t.Fatal("a failed claim was reported as held")
+	}
+	live := &liveSession{ID: "s-1"}
+	if err := s.holdNode(live); err == nil || live.beatStop != nil {
+		t.Fatalf("hold with a failed claim: err %v, heartbeat started %v", err, live.beatStop != nil)
+	}
+	s.releaseNode("s-1") // logged, not fatal
+	if len(f.claimed) != 2 || len(f.released) != 1 {
+		t.Fatalf("claimed %v released %v", f.claimed, f.released)
 	}
 }
 

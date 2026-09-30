@@ -671,6 +671,38 @@ func TestWorkbenchSessionReopensAfterRestart(t *testing.T) {
 	}
 }
 
+// A workbench hold is a holder like a run: its claim carries this process's
+// liveness while it is held, so another process cannot take the session for
+// a crashed one, and gives it up with the hold.
+func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+
+	second := New(opts)
+	wb.h = second.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	if got := st.holderOf(wb.session); got != second.holder {
+		t.Fatalf("holder during a workbench hold: %q, want %q", got, second.holder)
+	}
+	if ok, _ := st.ClaimOrphan(context.Background(), wb.session, "another", nodeStale); ok {
+		t.Fatal("a held session was taken as an orphan")
+	}
+	second.drain()
+	if got := st.holderOf(wb.session); got != "" {
+		t.Fatalf("holder after the hold ended: %q", got)
+	}
+}
+
 // The terminal's environment starts from the host's when the command left it
 // unset; appending TERM to nothing gave the container CLI no PATH at all.
 func TestTerminalEnvironmentKeepsTheHost(t *testing.T) {
