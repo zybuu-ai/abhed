@@ -1617,6 +1617,8 @@ function approval(p, rid){
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
     {className: 'scope-note', textContent: 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'}));
+  // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
+  if(p.via) card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Asked by ' + p.via + '.'}));
 
   const pre = document.createElement('pre');
   try{

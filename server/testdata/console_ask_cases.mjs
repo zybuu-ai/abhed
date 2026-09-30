@@ -25,6 +25,12 @@ render({seq:3, type:'subagent.ask', payload:{session:'child', subagent:'clean up
 render({seq:4, type:'subagent.action', payload:{session:'child', call_id:'c1', tool:'bash', decision:'denied', by:'system', request_id:'cev9'}});
 check('a subagent.action settles its card', !cards().some(c => c.isConnected && c.textContent.includes('touch b')));
 
+// A pipeline step's ask names the pipeline asking.
+render({seq:4, type:'subagent.ask', payload:{session:'child', subagent:'runner', request_id:'cev10', call_id:'c4',
+  tool:'bash', args:{command:'date -u > stamp.txt'}, via:'skill tide-audit pipeline'}});
+check('a pipeline step\'s ask names the pipeline',
+  cards().some(c => c.isConnected && c.textContent.includes('Asked by skill tide-audit pipeline')));
+
 // While the run goes on, a 409 keeps the card answerable for the record to
 // settle; after the run it retires the card.
 globalThis.__reject = null;

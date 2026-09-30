@@ -1660,6 +1660,8 @@ function askApproval(p, rid){
         a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'));
+  // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
+  if(p.via) a.appendChild(el('p', 'scope-note', 'Asked by ' + p.via + '.'));
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon();
   // A pending question is never left half off screen, wherever the reader had scrolled to.

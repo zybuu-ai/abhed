@@ -244,4 +244,11 @@ check('its answer names the subagent\'s request', __posted.length === 1 && __pos
 render(ev(4, 'subagent.action', {session:'child', call_id:'w1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev7'}));
 check('and the subagent.action settles it', open().length === 0 && !asks.has('subagent-cev7'));
 
+// A pipeline step's ask names the pipeline asking.
+fresh('s19', true);
+render(ev(1, 'action.requested', {call_id:'step_1', tool:'bash', args:{command:'date -u > stamp.txt'}, requires_approval:true, via:'skill tide-audit pipeline'}));
+check('a pipeline step\'s ask names the pipeline', open().length === 1 && open()[0].textContent.includes('Asked by skill tide-audit pipeline'));
+render(ev(2, 'subagent.ask', {session:'child', subagent:'runner', request_id:'cev21', call_id:'step_2', tool:'bash', args:{command:'ls'}, via:'skill p pipeline'}));
+check('and so does one a subagent\'s pipeline puts', open().some(a => a.textContent.includes('Asked by skill p pipeline') && a.textContent.includes('subagent runner')));
+
 if(!ok) process.exit(1);
