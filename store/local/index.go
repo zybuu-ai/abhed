@@ -22,6 +22,7 @@ const (
 	opOpen   = "open"   // a process claimed it to go on
 	opPrune  = "prune"  // the tombstone: the file was removed, its head kept
 	opRepair = "repair" // an unfinished last index line was cut off
+	opBranch = "branch" // the session began as a copy of another
 )
 
 // kindSubagent marks a subagent's own session.
@@ -243,6 +244,8 @@ func (x *index) entries() ([]Entry, error) {
 			e.Head = Head{Lines: l.HeadLines, Seq: l.HeadSeq, Hash: l.HeadHash}
 		case opOpen:
 			e.Ended = ""
+		case opBranch:
+			e.Parent, e.ForkSeq = l.Parent, l.ForkSeq
 		case opPrune:
 			e.Pruned = true
 			e.Head = Head{Lines: l.HeadLines, Seq: l.HeadSeq, Hash: l.HeadHash}

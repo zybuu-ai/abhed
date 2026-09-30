@@ -22,10 +22,12 @@ import (
 )
 
 func init() {
-	registerSlash(slashCmd{Name: "/clear", Help: "start a new conversation and session, keep the workspace", Group: "session", Order: 60, Run: legacy("/clear", slashClear)})
+	registerSlash(slashCmd{Name: "/clear", Args: "[name]", Help: "end this session and start a new one; nothing is deleted", Group: "session", Order: 60, Run: legacy("/clear", slashClear)})
+	registerSlash(slashCmd{Name: "/rename", Args: "<name>", Help: "name this session, for /resume and -r", Group: "session", Order: 115, Run: legacy("/rename", slashRename)})
+	registerSlash(slashCmd{Name: "/branch", Args: "[name]", Help: "go on in a copy of this session; the original stays as it is", Group: "session", Order: 125, Run: legacy("/branch", slashBranch)})
 	registerSlash(slashCmd{Name: "/sessions", Help: "list this workspace's recorded sessions", Group: "session", Order: 110, ReadOnly: true, Run: legacy("/sessions", slashSessions)})
-	registerSlash(slashCmd{Name: "/resume", Args: "<id>", Help: "replay a past session and continue its conversation", Group: "session", Order: 120, Run: legacy("/resume", slashResume)})
-	registerSlash(slashCmd{Name: "/export", Args: "[path]", Help: "write the transcript (.html by default, .json for events)", Group: "session", Order: 150, Run: legacy("/export", slashExport)})
+	registerSlash(slashCmd{Name: "/resume", Args: "[id|name]", Help: "replay a past session and continue its conversation; alone, pick one", Group: "session", Order: 120, Run: legacy("/resume", slashResume)})
+	registerSlash(slashCmd{Name: "/export", Args: "[path]", Help: "write the transcript to ~/.abhed/exports (.html; .jsonl verifiable, .json, .txt)", Group: "session", Order: 150, Run: legacy("/export", slashExport)})
 }
 
 // slashSessions is /sessions.
@@ -81,84 +83,157 @@ func slashSessions(ctx context.Context, fields []string, r *ui.Renderer,
 // slashResume is /resume.
 func slashResume(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
-	if len(fields) < 2 {
-		fmt.Println(s.Dim("  usage: /resume <session-id>   (see /sessions)"))
-		return false
+	f := sessionFlags{Pick: len(fields) < 2}
+	if len(fields) >= 2 {
+		f.Resume = fields[1]
 	}
-	events, err := st.store.Events(fields[1])
+	say := func(format string, args ...any) { fmt.Printf("  %s\n", s.Dim(fmt.Sprintf(format, args...))) }
+	id, events, copied, err := chooseSession(ctx, st, f, say)
 	if err != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), err)
 		return false
 	}
-	if len(events) == 0 {
-		fmt.Printf("  %s no events for session %s\n", s.Red("✕"), fields[1])
+	if id == "" {
+		return false
+	}
+	if copied {
+		if err := adoptBranch(st, id); err != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), err)
+		}
 		return false
 	}
 	// Another user's session is not shown here, let alone continued.
-	if err := ownedHere(ctx, st, fields[1]); err != nil {
+	if err := ownedHere(ctx, st, id); err != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), err)
 		return false
 	}
-	fmt.Printf("%s\n", s.Dim(fmt.Sprintf("  replaying %d events from %s", len(events), fields[1])))
-	for _, ev := range events {
-		r.Event(ev)
-	}
-	if err := resumeConversation(ctx, st, fields[1], events); err != nil {
-		fmt.Printf("  %s replayed, not continued: %v\n", s.Red("✕"), err)
-		return false
-	}
-	fmt.Printf("  %s\n", s.Dim("resumed — the next thing you type continues this conversation"))
-	// It continues on the model selected here, which may not be the one it last ran on.
-	last, model := agent.ProviderOf(events), agent.LastModel(events)
-	if p, ok := st.appCfg.Model.Providers[last]; ok && p.Model != "" {
-		model = p.Model // the provider the record names, over a call it may predate
-	}
-	if last != st.appCfg.Model.Default && (last != "" || model != "" && model != st.adapter.Profile().Name) {
-		fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("it last ran on %s and continues on %s; /model %s goes back",
-			orDefault(model, last), st.adapter.Profile().Name, orDefault(last, "<provider>"))))
-		st.moved = &agent.ModelSwitched{Provider: st.appCfg.Model.Default, Model: st.adapter.Profile().Name, From: model}
-	}
+	fmt.Printf("%s\n", s.Dim(fmt.Sprintf("  replaying %d events from %s", len(events), id)))
+	continueSession(ctx, st, r, id, events)
 	return false
 }
 
-// slashClear is /clear.
+// slashRename is /rename: the name is recorded in the session, and the
+// index lists it, so /resume and -r find the session by it.
+func slashRename(ctx context.Context, fields []string, r *ui.Renderer,
+	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
+	name := strings.TrimSpace(strings.Join(fields[1:], " "))
+	if name == "" {
+		fmt.Println(s.Dim("  usage: /rename <name>"))
+		return false
+	}
+	st.pendingName = name
+	if st.loop == nil {
+		fmt.Println(s.Dim("  the session is named " + name + " when it starts"))
+		return false
+	}
+	release, err := claimForWrite(ctx, st)
+	if err != nil {
+		fmt.Printf("  %s not renamed: %v\n", s.Red("✕"), err)
+		return false
+	}
+	afterOpen(st)
+	release()
+	if st.pendingName != "" {
+		fmt.Printf("  %s not renamed\n", s.Red("✕"))
+		return false
+	}
+	fmt.Println(s.Dim("  named " + name))
+	return false
+}
+
+// slashBranch is /branch: the conversation goes on in a new session that
+// starts as a copy of this one; this one is left as it is.
+func slashBranch(ctx context.Context, fields []string, r *ui.Renderer,
+	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
+	if st.loop == nil || st.sessionID == "" {
+		fmt.Println(s.Dim("  nothing to branch yet"))
+		return false
+	}
+	from := st.sessionID
+	events, err := st.store.Events(from)
+	if err != nil || len(events) == 0 {
+		fmt.Println(s.Dim("  nothing to branch yet"))
+		return false
+	}
+	id, err := branchInto(ctx, st, from, events, 0)
+	if err != nil {
+		fmt.Printf("  %s %v\n", s.Red("✕"), err)
+		return false
+	}
+	if len(fields) > 1 {
+		st.pendingName = strings.Join(fields[1:], " ")
+		afterOpen(st)
+	}
+	fmt.Println(s.Dim(fmt.Sprintf("  branched: now in %s; %s is left as it was (/resume %s goes back)", id, from, from)))
+	return false
+}
+
+// slashClear is /clear: this session ends, recorded, and the next task
+// starts a new one. Nothing is deleted; /resume goes back.
 func slashClear(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
-	// The next task starts a new conversation, and with it a new session.
 	st.endBackground()
+	if st.loop != nil && st.claim == "" {
+		endIfOpen(st, agent.TermCompleted)
+	}
 	releaseConversation(st)
 	st.loop, st.sessionID = nil, ""
 	st.fresh()
+	st.pendingName = strings.TrimSpace(strings.Join(fields[1:], " "))
 	fmt.Println(s.Dim("  context cleared; the workspace is untouched"))
 	return false
 }
 
-// slashExport is /export.
+// slashExport is /export. It writes to ~/.abhed/exports unless given a
+// path, never into the workspace, where it would join the repository. The
+// record is redacted before it is written, so the export is too.
 func slashExport(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
-	// HTML by default, because a transcript that needs a parser before a
-	// colleague can read it usually does not get read. `/export x.json`
-	// still writes the raw events for a program.
-	path := filepath.Join(sess.Root, fmt.Sprintf("abhed-session-%s.html", st.sessionID))
-	if len(fields) > 1 {
-		path = fields[1]
-	}
 	events, err := st.store.Events(st.sessionID)
-	if err != nil || len(events) == 0 {
+	if st.sessionID == "" || err != nil || len(events) == 0 {
 		fmt.Println(s.Dim("  no transcript to export yet"))
 		return false
 	}
-	var data []byte
-	if strings.HasSuffix(path, ".json") {
-		data, err = json.MarshalIndent(events, "", "  ")
-	} else {
-		data = []byte(agent.ExportHTML(st.sessionID, events))
+	path := ""
+	if len(fields) > 1 {
+		path = fields[1]
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(st.workspace, path) // named from where the session works
+		}
+	}
+	format := "html"
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json":
+		format = "json"
+	case ".jsonl":
+		format = "jsonl"
+	case ".txt":
+		format = "txt"
+	}
+	if path == "" {
+		if path, err = exportPath("", st.sessionID, format); err != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), err)
+			return false
+		}
+	}
+	rec, onLocal := st.store.(*local.Store)
+	switch {
+	case format == "json":
+		var data []byte
+		if data, err = json.MarshalIndent(events, "", "  "); err == nil {
+			err = os.WriteFile(path, append(data, '\n'), 0o600)
+		}
+	case onLocal:
+		var e local.Entry
+		if e, err = rec.Index().Get(st.sessionID); err == nil {
+			_, err = exportSession(rec, e, format, path, os.Stdout)
+		}
+	case format == "html":
+		err = os.WriteFile(path, []byte(agent.ExportHTML(st.sessionID, events)+"\n"), 0o600)
+	default:
+		err = fmt.Errorf("%s export needs the local record; use .html or .json", format)
 	}
 	if err != nil {
-		fmt.Printf("  %s %v\n", s.Red("✕"), err)
-		return false
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), err)
 		return false
 	}
@@ -190,7 +265,7 @@ func recordSession(ctx context.Context, st server.EventStore, id string, cfg con
 	tenant := cliTenant(cfg)
 	if err := rec.CreateSession(ctx, store.SessionRecord{
 		ID: id, Tenant: tenant, User: user,
-		Workspace: mustCwd(), Model: provider.Model,
+		Workspace: orDefault(sessionWorkspace, mustCwd()), Model: provider.Model,
 		Mode:      orDefault(cfg.Permissions.Mode, "default"),
 		StartedAt: time.Now().UTC(),
 	}); err != nil {
@@ -199,6 +274,10 @@ func recordSession(ctx context.Context, st server.EventStore, id string, cfg con
 	}
 	return nil
 }
+
+// sessionWorkspace is the workspace this process's sessions are recorded
+// in, which -C makes other than the directory it started in.
+var sessionWorkspace string
 
 // cliTenant is the tenant the CLI records a session in.
 func cliTenant(cfg config.Config) string {
@@ -346,7 +425,13 @@ func claimForWrite(ctx context.Context, st *cliState) (release func(), err error
 	}
 	return func() {
 		if claimed && st.loop != nil {
-			endAsBefore(st)
+			// The local record's claim is this process's lock, not a row to
+			// release with another end; the claim is only handed back.
+			if rec, ok := st.store.(*local.Store); ok {
+				rec.Unclaim(st.sessionID)
+			} else {
+				endAsBefore(st)
+			}
 			holdUntilNextWrite(st)
 		}
 	}, nil

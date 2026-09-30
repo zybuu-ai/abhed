@@ -47,6 +47,12 @@ type cliState struct {
 	dynamic []slashSource
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
+	// pendingName is a name given before the conversation exists.
+	pendingName string
+	// fromFile is the session a record file from elsewhere was copied into,
+	// with the file's events.
+	fromFile       string
+	fromFileEvents []agent.Event
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

@@ -22,8 +22,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
 	appCfg config.Config, prompt string, budget *agent.Budget, extHost *extension.Host) int {
 
-	sessionID := newConversationID()
-	if err := recordSession(ctx, store, sessionID, appCfg); err != nil {
+	// A new session, or with -c or -r the recorded one it goes on with.
+	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1 // a run with no session row would write into another's record
 	}
 	rec := agent.NewRecorder(store, sessionID, "")
@@ -47,6 +49,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	loop.Provider = appCfg.Model.Default
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
+	seed(loop)
+	if startFlags.Name != "" {
+		_, _ = loop.Recorder.Record(agent.EvSessionNamed, agent.ActorUser, agent.Trusted, agent.SessionNamed{Name: startFlags.Name})
+	}
 	// Nobody comes back to a -p run, so its background tasks are joined: the
 	// run, and the exit code, wait for them.
 	agent.NewBackground(loop, toolset.BackgroundPolicy(appCfg, agent.WakeOff))

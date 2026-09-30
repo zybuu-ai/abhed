@@ -508,6 +508,11 @@ func (s *Store) track(h *session, ev agent.Event) (ended bool) {
 			h.titled = true
 			_ = s.index.append(indexLine{Op: opTitle, ID: h.id, Title: Title(m.Text)})
 		}
+	case agent.EvSessionBranched:
+		var b agent.SessionBranched
+		if json.Unmarshal(ev.Payload, &b) == nil {
+			_ = s.index.append(indexLine{Op: opBranch, ID: h.id, Parent: b.From, ForkSeq: b.ThroughSeq})
+		}
 	case agent.EvSessionNamed:
 		var n agent.SessionNamed
 		if json.Unmarshal(ev.Payload, &n) == nil {
@@ -829,6 +834,19 @@ func (s *Store) ClaimResume(_ context.Context, sessionID string) (bool, error) {
 	h.running = true
 	_ = s.index.append(indexLine{Op: opOpen, ID: sessionID})
 	return true, nil
+}
+
+// Unclaim hands back a claim that wrote nothing that ends a run, such as a
+// fork or a rename between tasks: the session is at rest again, still held.
+func (s *Store) Unclaim(sessionID string) {
+	s.mu.Lock()
+	h := s.held[sessionID]
+	s.mu.Unlock()
+	if h != nil {
+		h.mu.Lock()
+		h.running = false
+		h.mu.Unlock()
+	}
 }
 
 // ListSessions lists recent top-level sessions as session rows, for the
