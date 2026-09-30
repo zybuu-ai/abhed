@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -147,16 +148,21 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	}
 
 	// Background is all or nothing: a call that would pass the session's
-	// limit is refused as a whole, before any worktree or child.
+	// limit is refused as a whole, before any worktree or child. A stop from
+	// here on refuses what has not started.
+	epoch := 0
+	var held *slots
 	if a.Background {
 		if t.Background == nil {
 			return tools.Result{Content: "this agent runs no background tasks; call tasks without background.", IsError: true}
 		}
 		b, _ := managerOf(ctx)
-		if free := b.Free(); free < len(a.Tasks) {
-			return tools.Result{Content: fmt.Sprintf("background task limit: %d more may run now, and this call asks for %d. "+
-				"Start fewer, or run them in the foreground.", max(free, 0), len(a.Tasks)), IsError: true}
+		epoch = b.stopEpoch()
+		var err error
+		if held, err = b.reserveN(len(a.Tasks)); err != nil {
+			return tools.Result{Content: err.Error() + ".", IsError: true}
 		}
+		defer held.release()
 	}
 
 	if anyIsolated {
@@ -189,7 +195,7 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	}
 
 	if a.Background {
-		return t.startAll(ctx, a, trees)
+		return t.startAll(ctx, a, trees, epoch, held)
 	}
 
 	limit := t.MaxParallel
@@ -241,17 +247,27 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 
 // startAll starts every task in the background, each settling its own
 // worktree when it ends.
-func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree) tools.Result {
+func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree, epoch int, held *slots) tools.Result {
+	if testHookBeforeBackground != nil {
+		testHookBeforeBackground()
+	}
 	var b strings.Builder
 	failed := 0
+	stopped := false
 	for i, tk := range a.Tasks {
 		req := SubagentRequest{Prompt: tk.Prompt, Description: tk.Description,
-			AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model}
+			AgentType: tk.AgentType, MaxTurns: tk.MaxTurns, Model: tk.Model, epoch: epoch, epochSet: true, slots: held}
 		if wt := trees[i]; wt != nil {
 			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
 		}
 		fmt.Fprintf(&b, "## Task %d — %s\n", i+1, tk.Description)
-		id, err := t.Background(ctx, req)
+		// After a stop, none of the rest starts.
+		var id string
+		err := ErrStopped
+		if !stopped {
+			id, err = t.Background(ctx, req)
+		}
+		stopped = stopped || errors.Is(err, ErrStopped)
 		if err != nil {
 			failed++
 			if req.settle != nil {

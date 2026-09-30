@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,12 +32,110 @@ type durableMem struct {
 	orphaned map[string]bool
 	// onClaim, when set, runs after a claim is taken.
 	onClaim func()
+	// holders and seen are each row's holder and its last heartbeat, as the
+	// node_id and node_seen_at columns; failHold makes ClaimNode fail.
+	holders  map[string]string
+	seen     map[string]time.Time
+	failHold bool
+	// refuseNotices makes every subagent.notice append fail.
+	refuseNotices atomic.Bool
+	// afterStart, when set, runs once a session.started is appended, and
+	// onReclaim when ReclaimOwn is asked.
+	afterStart func()
+	onReclaim  func()
+}
+
+// ReclaimOwn takes back an open row held under holder's own id.
+func (d *durableMem) ReclaimOwn(_ context.Context, id, holder string) (bool, error) {
+	if d.onReclaim != nil {
+		d.onReclaim()
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.rows[id]; !ok || d.ended[id] || d.holders[id] != holder {
+		return false, nil
+	}
+	d.seen[id] = time.Now()
+	return true, nil
+}
+
+func (d *durableMem) ClaimNode(_ context.Context, id, holder string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failHold {
+		return errors.New("store unavailable")
+	}
+	if d.holders == nil {
+		d.holders, d.seen = map[string]string{}, map[string]time.Time{}
+	}
+	// As Postgres: never taken from another live holder.
+	if h := d.holders[id]; h != "" && h != holder && time.Since(d.seen[id]) < nodeStale {
+		return store.ErrHeldElsewhere
+	}
+	d.holders[id], d.seen[id] = holder, time.Now()
+	return nil
+}
+
+// RenewNode is the fenced heartbeat: only while the row is still holder's.
+func (d *durableMem) RenewNode(_ context.Context, id, holder string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failHold {
+		return false, errors.New("store unavailable")
+	}
+	if d.holders[id] != holder {
+		return false, nil
+	}
+	d.seen[id] = time.Now()
+	return true, nil
+}
+
+func (d *durableMem) ReleaseNode(_ context.Context, id, holder string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.holders[id] == holder {
+		delete(d.holders, id)
+		delete(d.seen, id)
+	}
+	return nil
+}
+
+func (d *durableMem) NodeFor(_ context.Context, id string, stale time.Duration) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
+		return d.holders[id], nil
+	}
+	return "", nil
+}
+
+// crash makes a row's holder look dead, as a process that stopped
+// heartbeating does once the staleness window passes.
+func (d *durableMem) crash(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.seen[id]; ok {
+		d.seen[id] = time.Now().Add(-time.Hour)
+	}
+}
+
+// holderOf is the row's holder, "" when none.
+func (d *durableMem) holderOf(id string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.holders[id]
 }
 
 func (d *durableMem) CreateSession(ctx context.Context, r store.SessionRecord) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.rows[r.ID] = r
+	if r.Holder != "" { // written with the row, as Postgres does
+		if d.holders == nil {
+			d.holders, d.seen = map[string]string{}, map[string]time.Time{}
+		}
+		d.holders[r.ID], d.seen[r.ID] = r.Holder, time.Now()
+	}
 	return nil
 }
 func (d *durableMem) ListSessions(ctx context.Context, limit int) ([]store.SessionRecord, error) {
@@ -70,6 +170,12 @@ func (d *durableMem) GetSession(ctx context.Context, id string) (store.SessionRe
 	return r, nil
 }
 func (d *durableMem) Append(ev agent.Event) error {
+	if ev.Type == agent.EvSubagentNotice && d.refuseNotices.Load() {
+		return errors.New("store unavailable")
+	}
+	if ev.Type == agent.EvSessionStarted && ev.ParentID == "" && d.afterStart != nil {
+		defer d.afterStart()
+	}
 	if ev.Type == agent.EvSessionEnded {
 		// As Postgres: an end with background children running keeps the row open.
 		var end agent.SessionEnded
@@ -81,17 +187,27 @@ func (d *durableMem) Append(ev agent.Event) error {
 	return d.MemStore.Append(ev)
 }
 
-// ClaimOrphan takes an open row as Postgres does: here no node ever holds
-// one, so a single server takes rows opened before orphanAfter.
-func (d *durableMem) ClaimOrphan(ctx context.Context, id, nodeID string, _ time.Duration, openedBefore time.Time) (bool, error) {
+// ClaimOrphan takes an open row as Postgres does: only when its holder's
+// heartbeat is stale or was never written, writing the claimer as holder.
+func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale time.Duration) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.rows[id]; !ok || d.ended[id] || d.orphaned[id] {
+	if _, ok := d.rows[id]; !ok || d.ended[id] {
 		return false, nil
 	}
-	if evs, _ := d.Events(id); nodeID == "" && len(evs) > 0 && !evs[len(evs)-1].CreatedAt.Before(openedBefore) {
-		return false, nil // active since this server started: not left by a crash
+	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
+		return false, nil // its holder is alive
 	}
+	if _, ok := d.seen[id]; !ok {
+		// No holder: an orphan only once nothing has been written for stale.
+		if evs, _ := d.Events(id); len(evs) > 0 && time.Since(evs[len(evs)-1].CreatedAt) < stale {
+			return false, nil
+		}
+	}
+	if d.holders == nil {
+		d.holders, d.seen = map[string]string{}, map[string]time.Time{}
+	}
+	d.holders[id], d.seen[id] = holder, time.Now()
 	d.orphaned[id] = true
 	return true, nil
 }
@@ -509,4 +625,21 @@ func TestServerResumeCarriesTokenTotals(t *testing.T) {
 	if got := v.live().Loop.Usage().InputTokens; got != 10 {
 		t.Fatalf("resumed with %d tokens in, want the recorded 10", got)
 	}
+}
+
+// OpenSessions pages through the open top-level rows in id order.
+func (d *durableMem) OpenSessions(_ context.Context, after string, limit int) ([]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var ids []string
+	for id, r := range d.rows {
+		if !d.ended[id] && r.ParentID == "" && id > after {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
 }

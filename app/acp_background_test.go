@@ -175,3 +175,71 @@ func TestACPPromptReleasesHeldAsk(t *testing.T) {
 		t.Fatal("the prompt did not release the held ask")
 	}
 }
+
+// A held ask from a background task says it is waiting on that task's own
+// card, which the editor already has.
+func TestACPHeldAskWaitsOnTheTaskCard(t *testing.T) {
+	cl := newACPClient(t, nil)
+	s := &acpSession{id: "s1", always: map[string]bool{}}
+	ctx, cancel := context.WithCancel(agent.WithBackgroundTask(agent.WithSubagent(agent.WithRequestID(context.Background(), "ev-9"), "scan"), "t9"))
+	defer cancel()
+	go func() {
+		_, _ = cl.conn.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), abhed.Decision{Decision: policy.Ask, Step: "default"})
+	}()
+	for deadline := time.After(5 * time.Second); ; {
+		select {
+		case m := <-cl.lines:
+			var p struct {
+				Update map[string]any `json:"update"`
+			}
+			_ = json.Unmarshal(m.Params, &p)
+			if p.Update["sessionUpdate"] != "tool_call_update" || p.Update["status"] != "pending" {
+				continue
+			}
+			if p.Update["toolCallId"] != "bg-t9" {
+				t.Fatalf("the waiting note names %v, not the task's card bg-t9", p.Update["toolCallId"])
+			}
+			return
+		case <-deadline:
+			t.Fatal("no waiting note")
+		}
+	}
+}
+
+// An ask put to the editor is bound to the turn it is put in: when that turn
+// ends unanswered, the ask is refused, not left open.
+func TestACPAskBoundToItsTurn(t *testing.T) {
+	cl := newACPClient(t, nil) // the editor never answers
+	turn, endTurn := context.WithCancel(context.Background())
+	s := &acpSession{id: "s1", always: map[string]bool{}, cancel: endTurn, turn: turn}
+	ctx, answer := agent.ExpectAnswer(agent.WithBackgroundTask(context.Background(), "t9"))
+	type result struct {
+		ok  bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ok, err := cl.conn.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), abhed.Decision{Decision: policy.Ask, Step: "default"})
+		done <- result{ok, err}
+	}()
+	for deadline := time.After(5 * time.Second); ; {
+		m := rpcMessage{}
+		select {
+		case m = <-cl.lines:
+		case <-deadline:
+			t.Fatal("the editor was never asked")
+		}
+		if m.Method == "session/request_permission" {
+			break
+		}
+	}
+	endTurn()
+	select {
+	case r := <-done:
+		if r.ok || r.err != nil || answer.By != agent.BySystem || !strings.Contains(answer.Reason, "turn ended") {
+			t.Fatalf("ok %v err %v answer %+v", r.ok, r.err, answer)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ask outlived the turn that put it")
+	}
+}

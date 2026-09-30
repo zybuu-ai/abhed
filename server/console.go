@@ -1147,7 +1147,13 @@ function render(ev){
   const tx = $('tx');
   const p = ev.payload || {};
   // The closing end after background work is not a second end of the run.
-  if(ev.type === 'session.ended' && p.settled){ bgLive = false; tx.appendChild(node('note', 'background work finished')); return; }
+  // A subagent's ask left unanswered when its work ended is answerable no more.
+  if(ev.type === 'session.ended' && p.settled){
+    bgLive = false;
+    approvals.forEach((_, id) => resolveApproval(id, 'not answered'));
+    tx.appendChild(node('note', 'background work finished'));
+    return;
+  }
 
   switch(ev.type){
     case 'user.message': {
@@ -1392,10 +1398,12 @@ function render(ev){
       hideThinking();
       live = false;
       bgLive = (p.background || 0) > 0;
-      // The session is over, so every remaining card is unanswerable. Leaving
+      // The run is over, so its own remaining cards are unanswerable. Leaving
       // them clickable is what made a reopened session show a dead approval
-      // prompt that swallowed every click.
-      approvals.forEach((_, id) => resolveApproval(id, 'not answered'));
+      // prompt that swallowed every click. A background subagent's ask
+      // outlives the run while background work is owed: only its own
+      // outcome, or the closing end, settles it.
+      approvals.forEach((_, id) => { if(!(bgLive && id.startsWith('subagent-'))) resolveApproval(id, 'not answered'); });
       $('stop').hidden = true;
       stats.reason = p.reason;
       paintOpenPill();

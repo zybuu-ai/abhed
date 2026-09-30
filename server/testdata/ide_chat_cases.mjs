@@ -231,4 +231,23 @@ check('its answer names the subagent\'s request', __posted.length === 1 && __pos
 render(ev(4, 'subagent.action', {session:'child', call_id:'w1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev7'}));
 check('and the subagent.action settles it', open().length === 0 && !asks.has('subagent-cev7'));
 
+// A background subagent's ask outlives the run while background work is
+// owed; the run's own ask ends with it. Its outcome or the closing end
+// settles it, and an ask made after the run is offered too.
+fresh('s19', true);
+render(write(1));
+render(ev(2, 'subagent.ask', {session:'child', subagent:'clean up', request_id:'cev21', call_id:'x1', tool:'bash', args:{command:'touch a'}, reason:'ask rule'}));
+render(ev(3, 'session.ended', {reason:'max_turns', turns:3, background:1}));
+check('after the run ends with background owed, the subagent\'s ask stays open',
+  open().length === 1 && open()[0].dataset.call === 'subagent-cev21' && asks.has('subagent-cev21'));
+check('and the run\'s own ask is settled', !asks.has('w1'));
+render(ev(4, 'subagent.ask', {session:'child', subagent:'clean up', request_id:'cev22', call_id:'x2', tool:'bash', args:{command:'touch b'}, reason:'ask rule'}));
+check('an ask made after the run is offered while background work is owed', open().some(a => a.dataset.call === 'subagent-cev22'));
+__posted.length = 0; open().find(a => a.dataset.call === 'subagent-cev22').querySelector('.btns').firstChild.on.click(); await tick();
+check('and answered by its request id', __posted.length === 1 && __posted[0].body.request_id === 'cev22');
+render(ev(5, 'subagent.action', {session:'child', call_id:'x2', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev22'}));
+check('its outcome settles it alone', !open().some(a => a.dataset.call === 'subagent-cev22') && open().some(a => a.dataset.call === 'subagent-cev21'));
+render(ev(6, 'session.ended', {reason:'max_turns', turns:3, settled:true}));
+check('the closing end settles what is left', open().length === 0 && asks.size === 0);
+
 if(!ok) process.exit(1);

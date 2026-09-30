@@ -168,3 +168,28 @@ func TestBackgroundToolsOnlyWithBackground(t *testing.T) {
 		}
 	}
 }
+
+// A managed model.default pins a subagent's model as it pins the session's:
+// no definition or call can send a child to another provider, and only the
+// pinned one is offered.
+func TestManagedDefaultPinsSubagentModels(t *testing.T) {
+	cfg := config.Default()
+	for _, name := range []string{"main", "other"} {
+		cfg.Model.Providers[name] = config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: name, ContextWindow: 8192}
+		cfg.SetKeys = append(cfg.SetKeys, "model.providers."+name)
+	}
+	cfg.Model.Default = "main"
+	if got := OfferedModels(cfg); len(got) != 2 {
+		t.Fatalf("precondition, unmanaged: %v", got)
+	}
+	cfg.Managed, cfg.ManagedKeys = true, []string{"model.default"}
+	if got := OfferedModels(cfg); len(got) != 1 || got[0] != "main" {
+		t.Fatalf("offered under a managed pin: %v", got)
+	}
+	if _, err := ModelResolver(cfg)("other"); err == nil || !strings.Contains(err.Error(), "pins the model to main") {
+		t.Fatalf("a child sent to another provider: %v", err)
+	}
+	if a, err := ModelResolver(cfg)("main"); err != nil || a.Profile().Name != "main" {
+		t.Fatalf("the pinned model: %v", err)
+	}
+}

@@ -207,11 +207,13 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 	}
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO sessions (id, tenant_id, user_id, workspace, model,
-		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)`,
+		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt,
+		                      node_id, node_seen_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,
+		        NULLIF($12,''), CASE WHEN $12 = '' THEN NULL ELSE now() END)`,
 		s.ID, s.Tenant, s.User, s.Workspace, s.Model,
 		s.PromptHash, s.HarnessVersion, s.Mode, s.ParentID, s.StartedAt,
-		truncatePrompt(s.Prompt))
+		truncatePrompt(s.Prompt), s.Holder)
 	if err != nil {
 		// An id already taken is another session's record; writing into it would merge the two.
 		var pgErr *pgconn.PgError
@@ -237,6 +239,9 @@ type SessionRecord struct {
 	Prompt    string
 	ParentID  string
 	StartedAt time.Time
+	// Holder, when set, is written with the row as the process holding it,
+	// so no other process can take it for an orphan before its first beat.
+	Holder string
 
 	EndedAt        *time.Time
 	TerminalReason string
@@ -274,17 +279,76 @@ func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, desc
 //
 // Replaying the same event is success, so an append retried after a crash is
 // safe; a different event at a taken (session_id, seq) is refused, not dropped.
-func (p *Postgres) Append(ev agent.Event) error {
+func (p *Postgres) Append(ev agent.Event) error { return p.appendAs(ev, "") }
+
+// ErrNotHolder refuses an append from a process that does not hold the
+// session: another has taken it over, or it ended and was let go.
+var ErrNotHolder = errors.New("this process does not hold the session")
+
+// Held is the store as one holder writes through it: every append is fenced
+// on that holder's lease, checked in the same statement as the insert.
+type Held struct {
+	*Postgres
+	holder  string
+	refused func(sessionID string)
+}
+
+// HeldBy returns the store fenced for holder. refused, when set, is told the
+// session whose lease refused an append (a subagent's parent, for its events).
+func (p *Postgres) HeldBy(holder string, refused func(sessionID string)) *Held {
+	return &Held{Postgres: p, holder: holder, refused: refused}
+}
+
+// Append inserts only while holder holds the session, or while nobody does
+// and it is still open; a subagent's events are held by its parent's lease.
+// Otherwise it answers ErrNotHolder and takes no seq.
+func (h *Held) Append(ev agent.Event) error {
+	err := h.appendAs(ev, h.holder)
+	if errors.Is(err, ErrNotHolder) && h.refused != nil {
+		h.refused(leaseSession(ev))
+	}
+	return err
+}
+
+// leaseSession is the session whose lease covers an event: its own, or its
+// parent's for a subagent. A grandchild's parent is a subagent, whose row has
+// no holder and stays open while it runs; that is enough, since the grandchild
+// writes only its own record, and losing the top-level lease fences the
+// session, which closes its whole tree of subagents.
+func leaseSession(ev agent.Event) string {
+	if ev.ParentID != "" {
+		return ev.ParentID
+	}
+	return ev.SessionID
+}
+
+func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tag, err := p.pool.Exec(ctx, `
-		INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
-		                    payload, actor, trust, created_at)
-		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (session_id, seq) DO NOTHING`,
-		ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
-		[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt)
+	var tag pgconn.CommandTag
+	var err error
+	if holder == "" {
+		tag, err = p.pool.Exec(ctx, `
+			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
+			                    payload, actor, trust, created_at)
+			VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
+			ON CONFLICT (session_id, seq) DO NOTHING`,
+			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
+			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt)
+	} else {
+		tag, err = p.pool.Exec(ctx, `
+			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
+			                    payload, actor, trust, created_at)
+			SELECT $1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10
+			WHERE EXISTS (SELECT 1 FROM sessions s
+			              WHERE s.id = $11 AND s.deleted_at IS NULL
+			                AND (s.node_id = $12 OR (s.node_id IS NULL AND s.ended_at IS NULL)))
+			ON CONFLICT (session_id, seq) DO NOTHING`,
+			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
+			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt,
+			leaseSession(ev), holder)
+	}
 	if err != nil {
 		// A missing session FK is the common misuse; say so plainly.
 		var pgErr *pgconn.PgError
@@ -294,6 +358,18 @@ func (p *Postgres) Append(ev agent.Event) error {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	if tag.RowsAffected() == 0 {
+		if holder != "" {
+			var mine bool
+			if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions s
+				WHERE s.id = $1 AND s.deleted_at IS NULL
+				  AND (s.node_id = $2 OR (s.node_id IS NULL AND s.ended_at IS NULL)))`,
+				leaseSession(ev), holder).Scan(&mine); err != nil {
+				return fmt.Errorf("append event %s/%d: check the lease: %w", ev.SessionID, ev.Seq, err)
+			}
+			if !mine {
+				return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, ErrNotHolder)
+			}
+		}
 		// A replay of this event is success; another event at its seq is another writer's.
 		var held string
 		if err := p.pool.QueryRow(ctx, `SELECT id FROM events WHERE session_id = $1 AND seq = $2`,
@@ -484,20 +560,51 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 	return tag.RowsAffected() == 1, nil
 }
 
-// ClaimOrphan takes over a session a crashed process left open: its row is
-// still open, and no node holds a fresh claim on it. With a node id, the
-// claim is this node's; a single server (no node id) may only take a session
-// whose last event is older than openedBefore, when it started. One update,
-// so two nodes cannot both take it.
-func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, nodeID string, stale time.Duration, openedBefore time.Time) (bool, error) {
+// ClaimResume is Postgres.ClaimResume that also writes the holder in the
+// same update, so a claimed session is never open with no holder, when a
+// stale writer's fenced append would pass.
+func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) {
+	tag, err := h.pool.Exec(ctx, `
+		UPDATE sessions SET ended_at = NULL, terminal_reason = NULL, node_id = $2, node_seen_at = now()
+		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL
+		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String())
+	if err != nil {
+		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ReclaimOwn takes back an open session held under holder's own id, however
+// fresh its heartbeat: for a node restarted with the same node id, before it
+// serves anything, when no session it holds can be running in it.
+func (p *Postgres) ReclaimOwn(ctx context.Context, sessionID, holder string) (bool, error) {
 	tag, err := p.pool.Exec(ctx, `
-		UPDATE sessions SET node_id = NULLIF($2, ''),
-		       node_seen_at = CASE WHEN $2 = '' THEN NULL ELSE now() END
+		UPDATE sessions SET node_seen_at = now()
+		WHERE id = $1 AND node_id = $2 AND ended_at IS NULL AND deleted_at IS NULL`, sessionID, holder)
+	if err != nil {
+		return false, fmt.Errorf("reclaim session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClaimOrphan takes over a session a crashed process left open: its row is
+// still open, and its holder's heartbeat is older than stale. A row with no
+// holder (written by an older release, which kept none) is an orphan only
+// once its last event is older than stale too, compared on the database's
+// clock. The update writes holder as the new holder and tests the same
+// columns, so of two processes claiming at once exactly one wins.
+func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, stale time.Duration) (bool, error) {
+	if holder == "" {
+		return false, errors.New("claim orphaned session: no holder")
+	}
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_id = $2, node_seen_at = now()
 		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
-		  AND (node_seen_at IS NULL OR node_seen_at <= now() - $3::interval)
-		  AND ($2 <> '' OR COALESCE(
-		        (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) < $4)`,
-		sessionID, nodeID, stale.String(), openedBefore)
+		  AND ((node_seen_at IS NOT NULL AND node_seen_at <= now() - $3::interval)
+		    OR (node_seen_at IS NULL AND COALESCE(
+		          (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) <= now() - $3::interval))`,
+		sessionID, holder, stale.String())
 	if err != nil {
 		return false, fmt.Errorf("claim orphaned session %s: %w", sessionID, err)
 	}
@@ -633,21 +740,68 @@ func (p *Postgres) ApprovalAnsweredBy(ctx context.Context, id string) (string, e
 	return *by, nil
 }
 
+// OpenSessions pages through the ids of sessions not yet ended, not deleted
+// and not a subagent's, in id order after the given one: what a sweep for
+// orphans has to look at, however old.
+func (p *Postgres) OpenSessions(ctx context.Context, after string, limit int) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id FROM sessions
+		WHERE ended_at IS NULL AND deleted_at IS NULL AND parent_id IS NULL AND id > $1
+		ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list open sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("list open sessions: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// HolderStale is how long a holder's claim on a session lasts without a
+// heartbeat. A claim fresher than this belongs to a live process.
+const HolderStale = 2 * time.Minute
+
+// ErrHeldElsewhere refuses a claim on a session another live process holds.
+var ErrHeldElsewhere = errors.New("the session is held by another process")
+
 // ClaimNode records that this node holds the session's turn in flight, so a
 // request about that session can be routed back to the process that has it.
 //
-// Claiming is unconditional by design: the caller has already decided to run
-// the turn here, and the node that ran it last is the one whose memory the
-// live session is in. A stale claim from a node that died is handled by the
-// staleness window in NodeFor, not by refusing the claim.
+// It never takes a session from another live holder: the row must hold no
+// one, this node, or a holder whose claim is older than HolderStale (a
+// process that went away). Otherwise it answers ErrHeldElsewhere.
 func (p *Postgres) ClaimNode(ctx context.Context, sessionID, nodeID string) error {
-	_, err := p.pool.Exec(ctx, `
+	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
-		WHERE id = $1 AND deleted_at IS NULL`, sessionID, nodeID)
+		WHERE id = $1 AND deleted_at IS NULL
+		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, nodeID, HolderStale.String())
 	if err != nil {
 		return fmt.Errorf("claim node for %s: %w", sessionID, err)
 	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("claim node for %s: %w", sessionID, ErrHeldElsewhere)
+	}
 	return nil
+}
+
+// RenewNode is a holder's heartbeat: it refreshes the claim only while the
+// row is still this holder's. false means another process has taken the
+// session, and this one must stop acting on it.
+func (p *Postgres) RenewNode(ctx context.Context, sessionID, nodeID string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_seen_at = now()
+		WHERE id = $1 AND node_id = $2 AND deleted_at IS NULL`, sessionID, nodeID)
+	if err != nil {
+		return false, fmt.Errorf("renew node for %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // ReleaseNode clears the claim when a turn finishes, so the session is free

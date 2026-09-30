@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -66,6 +67,9 @@ const (
 	TermSessionClosed     TerminalReason = "session_closed"
 	TermOwnerInactive     TerminalReason = "owner_inactive"
 	TermLost              TerminalReason = "lost"
+	// TermLeaseLost ends what a process ran for a session another process
+	// has since taken over: this one's claim lapsed, and it stops.
+	TermLeaseLost TerminalReason = "lease_lost"
 )
 
 // StopCause is the cause a context is cancelled with to end what runs on it
@@ -150,6 +154,57 @@ type Background struct {
 	lastReason TerminalReason
 	lastEnd    SessionEnded
 	owed       bool
+	// epoch counts stops (CancelAll, Close), and stopReason is the last
+	// one's reason: a spawn that began before a stop does not start after it.
+	epoch      int
+	stopReason TerminalReason
+	// stopped is set by an explicit stop and cleared by the next prompted
+	// run: until then no result wakes the session.
+	stopped bool
+	// idleFailures counts idle deliveries in a row the record refused, and
+	// deferred holds the results given up on while idle, for the next run.
+	idleFailures int
+	deferred     []Notice
+	// wakeEpoch is the stop count when the last wake was decided: a stop
+	// after the decision and before the wake run takes the conversation
+	// refuses the run.
+	wakeEpoch int
+}
+
+// idleRetries is how many times an idle delivery the record refused is
+// tried again, each after twice the wait of the last, before the results
+// are left to the record.
+var idleRetries atomic.Int32
+
+func init() { idleRetries.Store(5) }
+
+// SetIdleRetries changes how many times a refused idle delivery is tried
+// again, and returns a func that puts it back; for tests.
+func SetIdleRetries(n int) (restore func()) {
+	old := idleRetries.Swap(int32(n)) // #nosec G115 -- a small test setting
+	return func() { idleRetries.Store(old) }
+}
+
+// ErrStopped refuses a background spawn that began before a stop.
+var ErrStopped = errors.New("stopped before this background task started")
+
+// stopEpoch is the stop count now, for a spawn to check it did not change.
+func (b *Background) stopEpoch() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.epoch
+}
+
+// markStop counts a stop.
+func (b *Background) markStop(reason TerminalReason) {
+	b.mu.Lock()
+	b.epoch++
+	b.stopReason = reason
+	b.stopped = true
+	b.mu.Unlock()
 }
 
 // BackgroundHooks are how a surface takes part in idle delivery.
@@ -161,6 +216,10 @@ type BackgroundHooks struct {
 	Wake func(taskIDs []string) bool
 	// Idle is told of notices delivered while no run was live.
 	Idle func(IdleEvent)
+	// BeforeIdle runs before an idle delivery takes the run lock, in every
+	// wake mode: a check that may be slow (is the owner still active?) is
+	// made here, never while the conversation is locked.
+	BeforeIdle func()
 }
 
 // IdleEvent is what an idle delivery did.
@@ -193,7 +252,9 @@ func (b *Background) SetMode(m WakeMode) {
 }
 
 // SetWake is the session's own switch: it records session.wake_set and
-// changes the mode, never above the surface's ceiling.
+// changes the mode, never above the surface's ceiling. by is who set it:
+// ByUser for a person, recorded as theirs; anything else (a surface
+// narrowing it) is recorded as the system's.
 func (b *Background) SetWake(m WakeMode, by string) error {
 	if b == nil {
 		return errors.New("this session runs no background tasks")
@@ -208,7 +269,12 @@ func (b *Background) SetWake(m WakeMode, by string) error {
 		return fmt.Errorf("wake mode %s is not allowed here; the most this session may use is %s", m, ceiling)
 	}
 	if b.loop != nil {
-		if _, err := b.loop.Recorder.Record(EvWakeSet, ActorUser, Trusted, WakeSet{Wake: m, By: by, Ceiling: ceiling}); err != nil {
+		// A person's switch is theirs; a surface narrowing it is the system's.
+		actor := ActorSystem
+		if by == ByUser {
+			actor = ActorUser
+		}
+		if _, err := b.loop.Recorder.Record(EvWakeSet, actor, Trusted, WakeSet{Wake: m, By: by, Ceiling: ceiling}); err != nil {
 			return err
 		}
 	}
@@ -334,16 +400,6 @@ func (b *Background) joinedLive() int {
 	return n
 }
 
-// Free is how many more children may start now.
-func (b *Background) Free() int {
-	if b == nil {
-		return 0
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.policy.maxLive() - b.liveLocked() - b.reserved
-}
-
 // reserve holds one of the live slots for a spawn being prepared.
 func (b *Background) reserve() error {
 	b.mu.Lock()
@@ -356,6 +412,58 @@ func (b *Background) reserve() error {
 	}
 	b.reserved++
 	return nil
+}
+
+// slots holds live slots for one tasks call, all taken at once before any
+// worktree is made: each of its spawns takes one, and the rest are given
+// back. So a call that fits starts all its tasks, whatever runs beside it.
+type slots struct {
+	b    *Background
+	left int
+}
+
+// reserveN holds n slots, or none: it fails when fewer than n are free.
+func (b *Background) reserveN(n int) (*slots, error) {
+	if b == nil {
+		return nil, errors.New("this agent runs no background tasks")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil, errors.New("the session is closing; no background task can start")
+	}
+	if free := b.policy.maxLive() - b.liveLocked() - b.reserved; free < n {
+		return nil, fmt.Errorf("background task limit: %d more may run now, and this call asks for %d. "+
+			"Start fewer, or run them in the foreground", max(free, 0), n)
+	}
+	b.reserved += n
+	return &slots{b: b, left: n}, nil
+}
+
+// take hands one held slot to a spawn, whose own unreserve gives it back
+// once its child is counted as live.
+func (s *slots) take() error {
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	if s.b.closed {
+		return errors.New("the session is closing; no background task can start")
+	}
+	if s.left == 0 {
+		return errors.New("no reserved background slot is left for this task")
+	}
+	s.left--
+	return nil
+}
+
+// release gives back the slots no spawn took.
+func (s *slots) release() {
+	if s == nil {
+		return
+	}
+	s.b.mu.Lock()
+	s.b.reserved -= s.left
+	s.left = 0
+	s.b.mu.Unlock()
 }
 
 func (b *Background) unreserve() {
@@ -374,6 +482,22 @@ func (b *Background) Tasks() []TaskInfo {
 	out := make([]TaskInfo, 0, len(b.order))
 	for _, id := range b.order {
 		out = append(out, b.tasks[id].info())
+	}
+	return out
+}
+
+// running names the children still running, as "description (task id)".
+func (b *Background) running() []string {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, id := range b.order {
+		if t := b.tasks[id]; !t.ended {
+			out = append(out, fmt.Sprintf("%s (%s)", t.Description, id))
+		}
 	}
 	return out
 }
@@ -424,7 +548,7 @@ func noticeStatus(r TerminalReason) string {
 	case TermError, TermRetryExhausted:
 		return "failed"
 	case TermUserInterrupt, TermCancelledByParent, TermSessionDeleted, TermSessionClosed,
-		TermOwnerInactive, TermShutdown, TermLost:
+		TermOwnerInactive, TermShutdown, TermLost, TermLeaseLost:
 		return "cancelled"
 	}
 	return string(r)
@@ -450,6 +574,10 @@ func (b *Background) Cancel(id string, reason TerminalReason) bool {
 // CancelAll stops every running child with reason and waits a bounded time
 // for each to record its end. Later spawns still work.
 func (b *Background) CancelAll(reason TerminalReason) int {
+	if b == nil {
+		return 0
+	}
+	b.markStop(reason)
 	return b.cancelWhere(reason, func(*bgTask) bool { return true })
 }
 
@@ -486,8 +614,9 @@ func waitDone(ts []*bgTask) {
 
 // Close ends the session's background work: no child starts after it, every
 // running one is cancelled with reason, and it waits a bounded time for them.
-// A closing end owed by the last run is recorded; the results not yet
-// delivered stay in the record, where PendingNotices finds them.
+// A closing end owed by the last run is recorded, and the Idle hook told of
+// it; the results not yet delivered stay in the record, where
+// PendingNotices finds them.
 func (b *Background) Close(reason TerminalReason) {
 	if b == nil {
 		return
@@ -498,6 +627,8 @@ func (b *Background) Close(reason TerminalReason) {
 		return
 	}
 	b.closed = true
+	b.epoch++
+	b.stopReason = reason
 	var hit []*bgTask
 	for _, t := range b.tasks {
 		if !t.ended {
@@ -514,8 +645,36 @@ func (b *Background) Close(reason TerminalReason) {
 	b.mu.Lock()
 	b.notices, b.waking = nil, false
 	b.mu.Unlock()
-	b.settleIfDue()
+	settled := b.settleIfDue()
 	b.loop.runMu.Unlock()
+	// The host hears of the closing end as of any other, and lets go of
+	// what it held for the background work.
+	if settled {
+		b.idle(IdleEvent{Settled: true})
+	}
+}
+
+// testHookSpawnCounted, when set by a test, runs once a background spawn
+// is counted and recorded, before the child is registered.
+var testHookSpawnCounted func()
+
+// testHookChildEnded, when set by a test, runs as a child has ended.
+var testHookChildEnded func(*Background)
+
+// Owed is what the session still owes its conversation: children running,
+// results not yet delivered, and a wake being started. A run's end with any
+// owed keeps the session open; its closing end comes once it is all done.
+func (b *Background) Owed() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := b.liveLocked() + len(b.notices)
+	if b.waking {
+		n++
+	}
+	return n
 }
 
 // push takes a finished child's notice for the next delivery: at a run's
@@ -559,6 +718,12 @@ func (b *Background) deliverIdle() {
 	if closed || l == nil {
 		return
 	}
+	b.mu.Lock()
+	before := b.hooks.BeforeIdle
+	b.mu.Unlock()
+	if before != nil {
+		before()
+	}
 	l.runMu.Lock()
 	b.mu.Lock()
 	pending, waking := len(b.notices), b.waking
@@ -582,6 +747,7 @@ func (b *Background) deliverIdle() {
 		} else {
 			b.mu.Lock()
 			b.waking = true
+			b.wakeEpoch = b.epoch
 			start := b.hooks.Wake
 			b.mu.Unlock()
 			l.runMu.Unlock()
@@ -596,16 +762,38 @@ func (b *Background) deliverIdle() {
 			wake = "skipped:host"
 		}
 	}
-	before := b.Pending()
+	pendingNow := b.Pending()
 	delivered := b.peekNotices()
 	if err := l.deliverNotices("idle", wake); err != nil {
-		// The next run ends at once; the record still has each return.
-		l.noteRecordErr(err)
+		// Nothing refused was applied, so the conversation still matches the
+		// record, and the session's runs go on; the delivery is tried again.
+		b.mu.Lock()
+		b.idleFailures++
+		tries := b.idleFailures
+		if tries > int(idleRetries.Load()) {
+			// Given up while idle: the work owed is settled, so the session
+			// is not held for a store that stays down. The results wait for
+			// the next run here, and each return is in the record, from
+			// which another process's claim rebuilds its notice.
+			b.deferred = append(b.deferred, b.notices...)
+			b.notices, b.idleFailures = nil, 0
+		}
+		b.mu.Unlock()
+		if tries <= int(idleRetries.Load()) {
+			l.runMu.Unlock()
+			time.AfterFunc(b.settle()<<tries, b.deliverIdle)
+			return
+		}
+		settled := b.settleIfDue()
 		l.runMu.Unlock()
+		b.idle(IdleEvent{Settled: settled})
 		return
 	}
 	b.mu.Lock()
-	b.unacted += before
+	b.idleFailures = 0
+	b.mu.Unlock()
+	b.mu.Lock()
+	b.unacted += pendingNow
 	b.mu.Unlock()
 	settled := b.settleIfDue()
 	l.runMu.Unlock()
@@ -638,8 +826,11 @@ func (b *Background) canWake() (bool, string) {
 	last, can := b.lastReason, b.hooks.CanWake
 	most := b.policy.MaxWakesPerHour
 	recent := b.recentWakesLocked()
+	stopped := b.stopped
 	b.mu.Unlock()
 	switch {
+	case stopped:
+		return false, "stopped"
 	case last != TermCompleted && last != TermWakeLimit:
 		return false, "last_run_" + orNone(string(last))
 	case l.Budget.Exhausted():
@@ -738,6 +929,12 @@ func (l *Loop) RunWoken(ctx context.Context, w Wake) (TerminalReason, error) {
 	}
 	b.mu.Lock()
 	b.waking = false
+	// A stop between the wake's decision and now refuses it: the results
+	// wait, and the next idle delivery hands them over as skipped:stopped.
+	if w.By == "policy" && (b.stopped || b.epoch != b.wakeEpoch) {
+		b.mu.Unlock()
+		return "", ErrNothingToWake
+	}
 	if len(b.notices) == 0 && b.unacted == 0 {
 		b.mu.Unlock()
 		return "", ErrNothingToWake
@@ -789,7 +986,9 @@ func (b *Background) requeue(ns []Notice) {
 }
 
 // QueueNotices adds notices rebuilt from the record, such as a result that
-// arrived before a restart, for the next delivery.
+// arrived before a restart, for the next delivery. ns is everything the
+// record owes, in order; what already waits here is its first part, and is
+// not queued twice (a resumed task may owe more than one).
 func (l *Loop) QueueNotices(ns []Notice) {
 	if len(ns) == 0 {
 		return
@@ -797,8 +996,19 @@ func (l *Loop) QueueNotices(ns []Notice) {
 	if l.Background == nil {
 		NewBackground(l, BackgroundPolicy{Wake: WakeOff})
 	}
+	b := l.Background
+	b.mu.Lock()
+	waiting := map[string]int{}
+	for _, q := range b.notices {
+		waiting[q.TaskID]++
+	}
+	b.mu.Unlock()
 	for _, n := range ns {
-		l.Background.push(n)
+		if waiting[n.TaskID] > 0 {
+			waiting[n.TaskID]--
+			continue
+		}
+		b.push(n)
 	}
 }
 
@@ -821,9 +1031,22 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 	req.sessionID = id
 	joined := mgr.Mode() == WakeOff
 	extra := map[string]any{"background": true, "task_id": id}
+	// A stop between here and the child's start refuses it: resolving a model
+	// or making a worktree can take a while, and Stop means stop.
+	epoch := req.epoch
+	if !req.epochSet {
+		epoch = mgr.stopEpoch()
+	}
 	held := false
 	c, err := f.prepare(ctx, req, extra, func() error {
-		if err := mgr.reserve(); err != nil {
+		if ctx.Err() != nil || mgr.stopEpoch() != epoch {
+			return ErrStopped
+		}
+		take := mgr.reserve
+		if req.slots != nil {
+			take = req.slots.take
+		}
+		if err := take(); err != nil {
 			return err
 		}
 		held = true
@@ -834,6 +1057,9 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 	}
 	if err != nil {
 		return "", err
+	}
+	if testHookSpawnCounted != nil {
+		testHookSpawnCounted()
 	}
 
 	// The child's context comes from the session, not the call: the call's
@@ -849,7 +1075,16 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		mgr.order = append(mgr.order, id)
 	}
 	mgr.tasks[id] = t
+	// A stop since the spawn was counted still takes it: its spawn is
+	// recorded, so it starts only to end at once with the stop's reason.
+	stoppedBy := TerminalReason("")
+	if mgr.epoch != epoch {
+		stoppedBy = mgr.stopReason
+	}
 	mgr.mu.Unlock()
+	if stoppedBy != "" {
+		cancel(StopCause{stoppedBy})
+	}
 	settle := req.settle
 	if c.settle != nil {
 		settle = c.settle
@@ -875,11 +1110,18 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 			Reason: string(reason), Turns: usage.Turns, TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens,
 			Provider: c.provider, Model: c.adapter.Profile().Name, CallID: "bgn_" + newID(),
 			Content: parentRedacted(parent, summary)}
+		// Ended and owed in one step: a run ending in between would count
+		// neither, and close the stream on a result still to come.
 		mgr.mu.Lock()
 		t.ended, t.reason, t.summary, t.turns = true, reason, n.Content, usage.Turns
+		mgr.notices = append(mgr.notices, n)
 		mgr.mu.Unlock()
+		if testHookChildEnded != nil {
+			testHookChildEnded(mgr)
+		}
 		cancel(nil)
-		mgr.push(n)
+		mgr.poke()
+		mgr.kick()
 	}()
 	return id, nil
 }
@@ -976,21 +1218,29 @@ func (b *Background) onRunEnd(reason TerminalReason) {
 // reads a child's own record, for its last answer.
 func PendingNotices(events []Event, child func(id string) ([]Event, error)) []Notice {
 	events = Live(events)
-	delivered := map[string]bool{}
+	// A resumed task returns once per run under one id: the n-th return is
+	// paired with the n-th notice, so a later run's result is still owed
+	// after an earlier one was delivered.
+	delivered := map[string]int{}
 	for _, e := range events {
 		if e.Type == EvSubagentNotice {
 			var n Notice
 			if json.Unmarshal(e.Payload, &n) == nil {
-				delivered[n.TaskID] = true
+				delivered[n.TaskID]++
 			}
 		}
 	}
+	returned := map[string]int{}
+	// runs counts every return of a child's session, foreground ones
+	// included: an old record's answer is found by its run's place.
+	runs := map[string]int{}
 	var out []Notice
 	for _, e := range events {
 		if e.Type != EvSubagentReturn {
 			continue
 		}
 		var r struct {
+			EndSeq      int64  `json:"end_seq"`
 			Background  bool   `json:"background"`
 			TaskID      string `json:"task_id"`
 			Session     string `json:"session"`
@@ -1002,22 +1252,33 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 			Provider    string `json:"provider"`
 			Model       string `json:"model"`
 		}
-		if json.Unmarshal(e.Payload, &r) != nil || !r.Background || r.TaskID == "" || delivered[r.TaskID] {
+		if json.Unmarshal(e.Payload, &r) != nil {
 			continue
 		}
-		delivered[r.TaskID] = true
+		if r.Session != "" {
+			runs[r.Session]++
+		}
+		if !r.Background || r.TaskID == "" {
+			continue
+		}
+		returned[r.TaskID]++
+		if returned[r.TaskID] <= delivered[r.TaskID] {
+			continue
+		}
 		content := ""
 		if child != nil {
 			if evs, err := child(r.Session); err == nil {
-				content = lastAgentMessage(evs)
+				if r.EndSeq > 0 {
+					content = answerThrough(evs, r.EndSeq)
+				} else {
+					content = answerOfRun(evs, runs[r.Session]) // recorded before end_seq was
+				}
 			}
 		}
 		if strings.TrimSpace(content) == "" {
 			content = fmt.Sprintf("(subagent ended with %s and produced no summary)", r.Reason)
 		}
-		if len(content) > MaxSummaryChars {
-			content = content[:MaxSummaryChars] + "\n\n[summary truncated]"
-		}
+		content = truncateSummary(content)
 		if r.Reason != string(TermCompleted) {
 			content += fmt.Sprintf("\n\n[subagent ended early: %s]", r.Reason)
 		}
@@ -1027,6 +1288,48 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 			CallID: "bgn_" + newID(), Content: content})
 	}
 	return out
+}
+
+// answerThrough is a child's last non-empty answer in the run that ends at
+// seq: after that run's spawn and at or before its end. A run that gave none
+// has none, rather than an earlier run's.
+func answerThrough(evs []Event, seq int64) string {
+	last := ""
+	for _, e := range evs {
+		if e.Seq > seq {
+			break
+		}
+		if e.Type == EvSubagentSpawned {
+			last = ""
+		}
+		if e.Type == EvAgentMessage {
+			var m Message
+			if json.Unmarshal(e.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+				last = m.Text
+			}
+		}
+	}
+	return last
+}
+
+// answerOfRun is a child's last non-empty answer before the end of its n-th
+// run, or its last answer when the record has fewer ends.
+func answerOfRun(evs []Event, n int) string {
+	last, ends := "", 0
+	for _, e := range evs {
+		switch e.Type {
+		case EvAgentMessage:
+			var m Message
+			if json.Unmarshal(e.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+				last = m.Text
+			}
+		case EvSessionEnded:
+			if ends++; ends == n {
+				return last
+			}
+		}
+	}
+	return lastAgentMessage(evs)
 }
 
 // lastAgentMessage is the last non-empty answer in a record.

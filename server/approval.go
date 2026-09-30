@@ -106,8 +106,14 @@ func (l *liveSession) pendingFor(ctx context.Context, requestID string) (*pendin
 	for {
 		l.mu.Lock()
 		p, ended := l.pending, l.ended[requestID]
+		// A subagent's ask is answered only by its request id: an approve
+		// naming none was meant for the run's own ask, and must not land on
+		// a subagent's that happens to be waiting first.
+		byIDOnly := p != nil && p.Subagent != ""
 		l.mu.Unlock()
 		switch {
+		case p != nil && requestID == "" && byIDOnly:
+			return nil, "this approval is answered only by its request_id"
 		case p != nil && (requestID == "" || p.RequestID == requestID):
 			return p, ""
 		case p != nil || ended:
@@ -246,7 +252,7 @@ func (l *liveSession) stateAfterAsk(prior string) string {
 	switch {
 	case l.ran != nil:
 		return "running"
-	case l.Loop != nil && l.Loop.Background.Live() > 0:
+	case l.Loop != nil && l.Loop.Background.Owed() > 0:
 		return "background"
 	case prior == "idle" || prior == "done":
 		return prior

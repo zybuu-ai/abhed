@@ -3,6 +3,7 @@
 #
 #   extract.py console.go             render() and its helpers
 #   extract.py console.go workbench   what draws a file and a diff
+#   extract.py console.go conn        the event stream and its reconnect
 #   extract.py ide.html ide-md        the workbench's markdown renderer
 #   extract.py ide.html ide-render    the workbench's chat render()
 #   extract.py ide.html ide-chat      sending, live state and approvals
@@ -34,6 +35,8 @@ sets = {
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){','function noticeCard(p){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
+    # The console's event stream and its reconnect.
+    'conn': ['function connect(id){'],
     'state': ['function shownState(s){','function paintOpenPill(){','function listBadges(s){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],

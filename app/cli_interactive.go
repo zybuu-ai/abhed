@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -163,6 +164,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 	// runTurn drives one run: the prompt's own, or a wake. It returns an exit
 	// code and true when the session should end.
+	// woken marks the turn runTurn is running as a wake the session started
+	// itself, whose "nothing to wake for" is not the person's error.
+	woken := false
 	runTurn := func(start func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error)) (int, bool) {
 		loop := sessionState.loop
 		// Each task gets its own cancellable context so Ctrl-C interrupts the
@@ -215,6 +219,16 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					r.StartThinking()
 				}
 			case o := <-finished:
+				// A steer that arrived after the run last looked is not left
+				// waiting: a run that completed, or a wake stopped at its cap,
+				// goes on for it, as the server's does.
+				if runsOnFor(taskCtx, o, len(loop.Queued())) {
+					go func() {
+						reason, err := loop.RunQueued(taskCtx)
+						finished <- turnOutcome{reason, err}
+					}()
+					continue
+				}
 				// The turn is over however it ended; the indicator goes with it.
 				r.StopThinking()
 				runErr, runReason = o.err, o.reason
@@ -230,11 +244,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				// waiting and refuse rather than hang the turn forever.
 				prompter.Close()
 			case msg := <-lines:
-				// A line typed while an approval is waiting is the answer to it,
-				// not a steering message. Deliver it there first.
-				if prompter.Deliver(msg) {
+				// A decision key typed while an approval is waiting is the
+				// answer to it; any other line steers, and says the approval
+				// still waits, so a line meant for the agent is never taken
+				// as an answer by where it falls.
+				if ui.Decision(msg) && prompter.Deliver(msg) {
 					continue
 				}
+				noteStillWaiting(prompter, msg, "it steers the run")
 				if msg == "" {
 					continue
 				}
@@ -267,9 +284,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		spent := usageSince(before, loop.Usage())
 		sessionState.accumulate(spent)
 
-		if runErr != nil {
-			fmt.Printf("%s %s\n", s.Red("error:"), runErr)
+		if line := runErrorLine(runErr, woken); line != "" {
+			fmt.Printf("%s %s\n", s.Red("error:"), line)
 		}
+		woken = false
 		if runErr == nil {
 			releaseRefused(sessionState, runReason)
 		}
@@ -353,6 +371,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				continue
 			}
 			prompted = false
+			woken = true
 			if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
 				return loop.RunWoken(ctx, agent.Wake{By: "policy", TaskIDs: ids})
 			}); quit {
@@ -362,11 +381,13 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		case line = <-lines:
 			prompted = false
 		}
-		// An approval a background task is waiting on takes the line, when
-		// input is piped and so arrives as lines.
-		if prompter.Deliver(line) {
+		// An approval a background task is waiting on takes a line that is
+		// exactly a decision key, when input arrives as lines. Any other line
+		// is a prompt, with a note that the approval still waits.
+		if ui.Decision(line) && prompter.Deliver(line) {
 			continue
 		}
+		noteStillWaiting(prompter, line, "it was sent as a prompt")
 		if line == "" {
 			continue
 		}
@@ -467,4 +488,31 @@ func readInput(in lineSource, lines chan<- string, interrupts chan<- struct{}, r
 		}
 		lines <- strings.TrimSpace(line)
 	}
+}
+
+// noteStillWaiting says, for a line that did not answer a waiting approval,
+// that the approval still waits and what became of the line.
+func noteStillWaiting(p *ui.Prompter, line, became string) {
+	if !p.Waiting() || strings.TrimSpace(line) == "" {
+		return
+	}
+	fmt.Printf("  an approval is still waiting (a accepts, r rejects, A always allows); %s\n", became)
+}
+
+// runErrorLine is what a turn's error prints, "" for none. A wake the
+// session started for results a prompted run has since taken finds nothing
+// to do; that is not an error to show.
+func runErrorLine(err error, woken bool) string {
+	if err == nil || woken && errors.Is(err, agent.ErrNothingToWake) {
+		return ""
+	}
+	return err.Error()
+}
+
+// runsOnFor reports whether a turn that just ended has a person's message
+// waiting that it should run on for: it ended cleanly, completed or at a
+// wake's cap, and something is queued.
+func runsOnFor(ctx context.Context, o turnOutcome, queued int) bool {
+	return o.err == nil && ctx.Err() == nil &&
+		(o.reason == agent.TermCompleted || o.reason == agent.TermWakeLimit) && queued > 0
 }

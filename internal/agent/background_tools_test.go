@@ -143,3 +143,24 @@ func TestSetWakeRecordedWithinCeiling(t *testing.T) {
 		t.Fatalf("wake_set: %+v", w)
 	}
 }
+
+// A person's wake switch is recorded as theirs, a surface's clamp as the
+// system's.
+func TestSetWakeActorFollowsWhoSetIt(t *testing.T) {
+	r := newBGRig(t, WakeAuto)
+	if err := r.l.Background.SetWake(WakeNotify, BySystem); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.l.Background.SetWake(WakeOff, ByUser); err != nil {
+		t.Fatal(err)
+	}
+	var actors []Actor
+	for _, e := range r.events(t) {
+		if e.Type == EvWakeSet {
+			actors = append(actors, e.Actor)
+		}
+	}
+	if len(actors) != 2 || actors[0] != ActorSystem || actors[1] != ActorUser {
+		t.Fatalf("wake_set actors %v, want system then user", actors)
+	}
+}

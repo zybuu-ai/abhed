@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -30,6 +32,11 @@ type bgModel struct {
 	workOnNotice bool
 	// inCall counts children that have reached their model call.
 	inCall int
+	// hold, when set, keeps a "slow" or "fail" turn until closed; a "fail"
+	// turn then fails its model call.
+	hold chan struct{}
+	// noticeHold, when set, keeps the parent's answer to a result until closed.
+	noticeHold chan struct{}
 }
 
 // childrenInCall is how many children have reached their model call.
@@ -62,6 +69,9 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 	gate, isChild := m.gates[first]
 	m.mu.Unlock()
 	switch {
+	case isChild && first == "asker" && last.Role == model.RoleUser:
+		c := model.ToolCall{ID: "ask1", Name: "touchy", Args: json.RawMessage(`{}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
 	case isChild:
 		m.mu.Lock()
 		m.inCall++
@@ -80,6 +90,9 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 			i++
 		}
 	case last.Role == model.RoleTool && strings.HasPrefix(last.ToolCallID, "bgn_"):
+		if m.noticeHold != nil {
+			<-m.noticeHold
+		}
 		m.mu.Lock()
 		m.saw = append(m.saw, last.Content)
 		more := m.workOnNotice
@@ -90,9 +103,19 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 		} else {
 			ch <- model.Chunk{Type: model.ChunkText, Text: "noted"}
 		}
+	case last.Role == model.RoleUser && last.Content == "work":
+		c := model.ToolCall{ID: "w" + newID(), Name: "read", Args: json.RawMessage(`{"path":"nothing.txt"}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case last.Role == model.RoleUser && last.Content == "fail":
+		<-m.hold
+		return nil, errors.New("the provider is down")
 	default:
 		if last.Role == model.RoleUser && last.Content == "slow" {
-			time.Sleep(200 * time.Millisecond) // a turn long enough for a result to land in it
+			if m.hold != nil {
+				<-m.hold
+			} else {
+				time.Sleep(200 * time.Millisecond) // a turn long enough for a result to land in it
+			}
 		}
 		m.parentAnswers.Add(1)
 		ch <- model.Chunk{Type: model.ChunkText, Text: "parent done"}
@@ -476,4 +499,228 @@ func (s refusing) Append(ev Event) error {
 		return context.Canceled
 	}
 	return s.Store.Append(ev)
+}
+
+// noNoticeAfterClosingEnd holds the owed-work invariant: once a run's end
+// says nothing is owed (no background), no result follows it until another
+// run starts, since that end released the session and closed its stream.
+func noNoticeAfterClosingEnd(t *testing.T, events []Event) {
+	t.Helper()
+	closed := false
+	for _, e := range events {
+		switch e.Type {
+		case EvUserMessage, EvSessionWoken:
+			closed = false
+		case EvSessionEnded:
+			var end SessionEnded
+			_ = json.Unmarshal(e.Payload, &end)
+			closed = end.Background == 0
+		case EvSubagentNotice:
+			if closed {
+				t.Fatalf("a result (seq %d) followed an end that said nothing was owed", e.Seq)
+			}
+		}
+	}
+}
+
+// A run that ends as max_turns, max_budget or error while a finished child's
+// result waits undelivered counts it as owed: the end keeps the session open,
+// the result is delivered, and the closing end follows it.
+func TestRunEndCountsOwedResults(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		prompt string
+		reason TerminalReason
+		arm    func(r *bgRig)
+		during func(r *bgRig)
+	}{
+		{"max_turns", "slow", TermMaxTurns, func(r *bgRig) { r.l.Config.MaxTurns = r.l.turns + 1 }, nil},
+		{"max_budget", "slow", TermMaxBudget, nil, func(r *bgRig) { r.l.Budget.Spend(10_000_000) }},
+		{"error", "fail", TermError, nil, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newBGRig(t, WakeNotify, "one")
+			r.m.hold = make(chan struct{})
+			if reason, err := r.l.Run(context.Background(), "go"); err != nil || reason != TermCompleted {
+				t.Fatalf("first run: %s %v", reason, err)
+			}
+			if c.arm != nil {
+				c.arm(r)
+			}
+			calls := r.m.calls.Load()
+			done := make(chan TerminalReason, 1)
+			go func() {
+				reason, _ := r.l.Run(context.Background(), c.prompt)
+				done <- reason
+			}()
+			waitFor(t, "the turn to start", func() bool { return r.m.calls.Load() > calls })
+			r.m.release("one")
+			waitFor(t, "the result to wait", func() bool { return r.l.Background.Pending() == 1 })
+			if c.during != nil {
+				c.during(r)
+			}
+			close(r.m.hold)
+			if got := <-done; got != c.reason {
+				t.Fatalf("ended %s, want %s", got, c.reason)
+			}
+			var ended SessionEnded
+			for _, e := range r.events(t) {
+				if e.Type == EvSessionEnded {
+					_ = json.Unmarshal(e.Payload, &ended)
+				}
+				if e.Type == EvSessionEnded && ended.Reason == c.reason {
+					break
+				}
+			}
+			if ended.Reason != c.reason || ended.Background != 1 {
+				t.Fatalf("the %s end: %+v, want background 1 for the owed result", c.reason, ended)
+			}
+			waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+			if n := len(payloads[map[string]any](r.events(t), EvSubagentNotice)); n != 1 {
+				t.Fatalf("%d notices, want 1", n)
+			}
+			noNoticeAfterClosingEnd(t, r.events(t))
+		})
+	}
+}
+
+// A child's end and its result are one step: at no moment is it neither
+// running nor owed, so a run ending just then still counts it.
+func TestChildEndAndNoticeAreAtomic(t *testing.T) {
+	seen := make(chan int, 1)
+	testHookChildEnded = func(b *Background) { seen <- b.Owed() }
+	t.Cleanup(func() { testHookChildEnded = nil })
+	r := newBGRig(t, WakeNotify, "one")
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release("one")
+	select {
+	case owed := <-seen:
+		if owed != 1 {
+			t.Fatalf("owed %d as the child ended, want 1: its result was not yet counted", owed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never ended")
+	}
+	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+	noNoticeAfterClosingEnd(t, r.events(t))
+}
+
+// A task's result rebuilt from the record twice is queued once; a resumed
+// task owing two results has both queued.
+func TestQueueNoticesOncePerTask(t *testing.T) {
+	r := newBGRig(t, WakeOff)
+	n := Notice{TaskID: "t-1", Session: "t-1", CallID: "bgn_1", Content: "x"}
+	r.l.QueueNotices([]Notice{n})
+	r.l.QueueNotices([]Notice{n, {TaskID: "t-2", Session: "t-2", CallID: "bgn_2"}})
+	if got := r.l.Background.Pending(); got != 2 {
+		t.Fatalf("pending %d, want 2", got)
+	}
+	r.l.QueueNotices([]Notice{n, {TaskID: "t-1", Session: "t-1", CallID: "bgn_3", Content: "y"}})
+	if got := r.l.Background.Pending(); got != 3 {
+		t.Fatalf("pending %d, want 3: the resumed task's second result was dropped", got)
+	}
+}
+
+// Close records the closing end and tells the host, as an idle settle does.
+func TestCloseFiresIdle(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "one")
+	settled := make(chan bool, 4)
+	r.l.Background.SetHooks(BackgroundHooks{Idle: func(ev IdleEvent) { settled <- ev.Settled }})
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.l.Background.Close(TermSessionDeleted)
+	select {
+	case s := <-settled:
+		if !s {
+			t.Fatal("Idle fired without the closing end")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close recorded the closing end and never told the host")
+	}
+	if e, _ := LastEnd(r.events(t)); !e.Settled {
+		t.Fatalf("last end %+v", e)
+	}
+}
+
+// touchy is a tool that changes things, so the default mode asks for it.
+type touchy struct{}
+
+func (touchy) Name() string            { return "touchy" }
+func (touchy) Description() string     { return "changes something" }
+func (touchy) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (touchy) Mutates() bool           { return true }
+func (touchy) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	return tools.Result{Content: "changed"}
+}
+
+// taskApprover records the background task each ask names.
+type taskApprover struct {
+	mu    sync.Mutex
+	tasks []string
+}
+
+func (a *taskApprover) Approve(ctx context.Context, _ string, _ json.RawMessage, _ policy.Result) (bool, error) {
+	a.mu.Lock()
+	a.tasks = append(a.tasks, BackgroundTaskOf(ctx))
+	a.mu.Unlock()
+	return false, nil
+}
+
+// A background task's ask carries its task id, so a surface can say which
+// task is waiting.
+func TestBackgroundAskNamesItsTask(t *testing.T) {
+	r := newBGRig(t, WakeOff, "asker")
+	appr := &taskApprover{}
+	r.l.Approver = appr
+	r.f.Tools.Add(touchy{})
+	done := make(chan struct{})
+	go func() {
+		_, _ = r.l.Run(context.Background(), "go")
+		close(done)
+	}()
+	waitFor(t, "the ask", func() bool { appr.mu.Lock(); defer appr.mu.Unlock(); return len(appr.tasks) == 1 })
+	r.m.release("asker")
+	<-done
+	spawned := payloads[map[string]any](r.events(t), EvSubagentSpawned)
+	if len(spawned) != 1 || appr.tasks[0] == "" || appr.tasks[0] != spawned[0]["task_id"] {
+		t.Fatalf("the ask named task %q; spawned %v", appr.tasks[0], spawned)
+	}
+}
+
+// A long summary is cut on a rune boundary: the record keeps the text the
+// conversation has, so Fork rebuilds it exactly.
+func TestSummaryCutOnARuneBoundary(t *testing.T) {
+	prompt := "x" + strings.Repeat("é", 5000)
+	r := newBGRig(t, WakeNotify, prompt)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release(prompt)
+	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+	n := payloads[Notice](r.events(t), EvSubagentNotice)
+	if len(n) != 1 || !utf8.ValidString(n[0].Content) || !strings.Contains(n[0].Content, "[summary truncated]") {
+		t.Fatalf("notice: %d, valid %v", len(n), len(n) == 1 && utf8.ValidString(n[0].Content))
+	}
+	messagesEqualFork(t, r)
+	if got := truncateSummary(strings.Repeat("é", MaxSummaryChars)); !utf8.ValidString(got) {
+		t.Fatal("truncateSummary cut a rune")
+	}
+}
+
+// A result rebuilt from the record is cut on a rune boundary too.
+func TestPendingNoticeCutOnARuneBoundary(t *testing.T) {
+	store := NewMemStore()
+	child := NewRecorder(store, "c1", "p")
+	_, _ = child.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "x" + strings.Repeat("é", MaxSummaryChars)})
+	_, _ = child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Turns: 1})
+	parent := NewRecorder(store, "p", "")
+	_, _ = parent.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"background": true, "task_id": "c1", "session": "c1", "reason": "completed"})
+	evs, _ := store.Events("p")
+	pend := PendingNotices(evs, store.Events)
+	if len(pend) != 1 || !utf8.ValidString(pend[0].Content) || !strings.Contains(pend[0].Content, "[summary truncated]") {
+		t.Fatalf("owed: %d, valid %v", len(pend), len(pend) == 1 && utf8.ValidString(pend[0].Content))
+	}
 }

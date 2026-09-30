@@ -226,6 +226,26 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+Two changes need action before upgrading:
+
+- **`request_id` is now required on subagent approvals.** An answer to a
+  subagent's ask that names no `request_id` is refused with 409.
+- **Stop every older node before starting a new one on a shared Postgres.**
+  New nodes reconcile open sessions that older nodes, which keep no holder,
+  may still be running.
+
+- API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
+  must name its `request_id`, from the `subagent.ask` event: an answer
+  naming none is refused with 409, with or without a run live. The console,
+  workbench, CLI and ACP already send it.
+
+- Servers sharing one Postgres: stop every node of an older release before
+  starting a node of this one. Older nodes keep no holder on the sessions
+  they run, and a new node's startup sweep reconciles an open session with
+  no holder once nothing has been written to it for two minutes; a long
+  tool call on an old node can look like that. New nodes write the holder
+  with the session's row and heartbeat it.
+
 - A `tool_call` extension that has stopped (crashed, hung or was closed)
   now makes each call it would have screened ask, where it was skipped
   before; in a headless run, which cannot ask, those calls are refused.
@@ -487,13 +507,38 @@ All notable changes to Abhed are recorded here. The format follows
   starts a run.
 - A server process that died mid-run left its session's row open, and no
   node could ever continue it. The next message to such a session now takes
-  it over, when no live node holds it, and records the ends the crashed
-  process never wrote (`recovered`; lost background tasks as `lost`).
+  it over, when its holder's heartbeat has gone stale, and records the ends
+  the crashed process never wrote (`recovered`; lost background tasks as
+  `lost`). Every process holds its sessions under a liveness identity (its
+  node id, or an id of its own when none is set) and heartbeats them,
+  workbench holds included; the takeover is one conditional update that
+  writes the new holder, so of two processes exactly one wins. The
+  heartbeat is fenced: it renews only a claim that is still this process's,
+  and a process that finds its claim taken, or cannot renew it for the
+  stale window, stops its run and tasks as `lease_lost` and writes nothing
+  more to the session. On Postgres each append is also fenced in the store,
+  in the insert itself, so a process that lost a session cannot add to its
+  record even before its next heartbeat. A claim is never taken from
+  another live holder. A
+  started session's row is written with its holder, and a row with none is
+  an orphan only once its last event is two minutes old, on the database's
+  clock. A hold that
+  cannot be recorded now fails the start, message or wake (503 for a
+  message) instead of running unseen. `abhed serve` also sweeps at startup,
+  reconciling every open session whose holder's heartbeat is stale.
 - Continuing a session elsewhere reset its token and spawn allowance; the
   budget now goes on from what its record says it spent.
+- With an event tap set (as telemetry sets one), the server looked for the
+  store's durable approvals, session deletion, holders and routing on the
+  tap and found none, so they were off. They are now looked for on the store
+  under the tap, and switch on behind a tap as without one.
 - A server turn continued by a message never refreshed or released this
   node's claim on the session; every run now holds it, with its heartbeat,
   while it or a background task is live.
+- With input piped in as lines, the line after an approval prompt was taken
+  as its answer whatever it said. Only a line that is exactly `a`, `y`, `r`,
+  `n` or `A` answers now; any other line steers the run (or, with no run
+  live, is a prompt), with a note that the approval still waits.
 
 ### Added
 
@@ -680,18 +725,23 @@ All notable changes to Abhed are recorded here. The format follows
   tasks; editors, rpc and the SDK never wake on their own. New limits
   `limits.max_background_subagents` (4) and `limits.background_max_minutes`
   (60, at most 480). New tools `task_status` and `task_cancel`. An explicit
-  stop cancels every background task; "send now" keeps them.
+  stop cancels every background task, stops a `task` or `tasks` call still
+  starting its tasks, and holds wakes until the next prompted run; "send
+  now" keeps them. A `tasks` call starts all its background tasks or none.
+  A fork is refused while background tasks run.
 - Resuming a finished subagent: `task` takes `resume`, a task id of this
   session's, and continues that subagent's own conversation with a new
   prompt, on the model it ran on, in its worktree, under its role as it is
-  now.
+  now. It never falls back to the main tree, and a managed role's current
+  model pin binds it. A managed `model.default` pins every subagent's model.
 - Server: the session state `background`; `GET /v1/sessions/{id}/tasks`,
   `POST /v1/sessions/{id}/tasks/{task}/cancel` and `POST
   /v1/sessions/{id}/wake`, owner only; the session list's `background` and
   `pending_ask`; `Options.OwnerActive`. The console and workbench draw
   background results, wakes and the closing end, and list background counts
-  and waiting approvals. `session.ended` gains `background`, `settled` and
-  `recovered`; in Postgres a session with background tasks running keeps its
+  and waiting approvals. `session.ended` gains `background` (what is still owed:
+  tasks running, results not yet delivered, a wake starting), `settled`
+  and `recovered`; in Postgres a session with background tasks running keeps its
   row open until the closing end, and a store may implement `ClaimOrphan`.
 - CLI: results drawn at the prompt, `/tasks`, `/wake`; Ctrl-C twice at the
   prompt cancels background tasks. rpc: `start.wake`, `tasks`,

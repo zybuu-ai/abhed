@@ -62,6 +62,9 @@ func shellBenchOpts(t *testing.T, edit func(*config.Config), opt func(*Options))
 	return wb
 }
 
+// openIdle opens a workbench session with no prompt, in tenant.
+//
+//nolint:unparam // the tenant is what a cross-tenant test would vary
 func (wb *workbench) openIdle(tenant string) string {
 	wb.t.Helper()
 	rec := httptest.NewRecorder()
@@ -668,6 +671,120 @@ func TestWorkbenchSessionReopensAfterRestart(t *testing.T) {
 	}
 	if rec := wb.send("mallory", "POST", "exec", execRequest{Command: "echo x"}); rec.Code == http.StatusOK {
 		t.Fatal("another tenant reopened the session")
+	}
+}
+
+// A workbench hold is a holder like a run: its claim carries this process's
+// liveness while it is held, so another process cannot take the session for
+// a crashed one, and gives it up with the hold.
+func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+
+	second := New(opts)
+	wb.h = second.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	if got := st.holderOf(wb.session); got != second.holder {
+		t.Fatalf("holder during a workbench hold: %q, want %q", got, second.holder)
+	}
+	if ok, _ := st.ClaimOrphan(context.Background(), wb.session, "another", nodeStale); ok {
+		t.Fatal("a held session was taken as an orphan")
+	}
+	second.drain()
+	if got := st.holderOf(wb.session); got != "" {
+		t.Fatalf("holder after the hold ended: %q", got)
+	}
+
+	// Deleted while held: the hold's liveness goes with it, and its timer
+	// writes nothing into the deleted record.
+	hold := manualHold
+	manualHold = 300 * time.Millisecond
+	t.Cleanup(func() { manualHold = hold })
+	third := New(opts)
+	wb.h = third.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	if got := st.holderOf(wb.session); got != third.holder {
+		t.Fatalf("holder: %q", got)
+	}
+	del := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/v1/sessions/"+wb.session, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	wb.h.ServeHTTP(del, req)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", del.Code, del.Body)
+	}
+	if got := st.holderOf(wb.session); got != "" {
+		t.Fatalf("a deleted session is still held by %q", got)
+	}
+	time.Sleep(3 * manualHold)
+	if evs, _ := st.Events(wb.session); len(evs) != 0 {
+		t.Fatalf("the hold wrote %d events after the delete", len(evs))
+	}
+}
+
+// A workbench hold is not given back while a result is owed: given back, its
+// delivery would write to a session nobody holds.
+func TestWorkbenchHoldKeptWhileResultOwed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+	second := New(opts)
+	wb.h = second.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	second.mu.RLock()
+	live := second.running[wb.session]
+	second.mu.RUnlock()
+	live.Loop.QueueNotices([]agent.Notice{{TaskID: "t-1", Session: "t-1", CallID: "bgn_t1", Content: "done"}})
+	second.releaseHeld(wb.session, live, false)
+	live.holdMu.Lock()
+	held := live.held
+	live.holdMu.Unlock()
+	if !held || live.unclaimed.Load() {
+		t.Fatalf("the hold was given back with a result owed: held %v, unclaimed %v", held, live.unclaimed.Load())
+	}
+	second.drain()
+}
+
+// A workbench write whose claim cannot be held answers 503 with Retry-After.
+func TestWorkbenchFailedHoldAnswers503(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+	wb.h = New(opts).Handler()
+	st.mu.Lock()
+	st.failHold = true
+	st.mu.Unlock()
+	rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo x"})
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a workbench write with no hold: %d %s", rec.Code, rec.Body)
 	}
 }
 

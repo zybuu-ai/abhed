@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -134,6 +135,13 @@ type SubagentRequest struct {
 	// settle, when set, runs once a background child has ended and returns
 	// what its notice says about the worktree it worked in.
 	settle func(context.Context) string
+	// epoch, when epochSet, is the manager's stop count when the call that
+	// asked for this background task began.
+	epoch    int
+	epochSet bool
+	// slots, when set, holds the live slot this background task takes,
+	// reserved with its siblings' before the call made any worktree.
+	slots *slots
 }
 
 func (Task) Name() string  { return "task" }
@@ -285,12 +293,19 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		if t.Background == nil {
 			return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
 		}
+		// Counted from before the worktree: a stop while it is made refuses the task.
+		if b, _ := managerOf(ctx); b != nil {
+			req.epoch, req.epochSet = b.stopEpoch(), true
+		}
 		if def.Isolation == "worktree" {
 			wt, res := makeWorktree(ctx, t.Workspace, req.AgentType)
 			if wt == nil {
 				return res
 			}
 			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
+		}
+		if testHookBeforeBackground != nil {
+			testHookBeforeBackground()
 		}
 		id, err := t.Background(ctx, req)
 		if err != nil {
@@ -310,6 +325,10 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 	}
 	return tools.Result{Content: summary}
 }
+
+// testHookBeforeBackground, when set by a test, runs as task or tasks has
+// made the background tasks' worktrees and is about to start them.
+var testHookBeforeBackground func()
 
 // makeWorktree makes a worktree for a role that works in one, or says why not.
 func makeWorktree(ctx context.Context, ws, agentType string) (*worktree, tools.Result) {
@@ -393,6 +412,19 @@ type SessionCreator interface {
 // return value defeats the mechanism.
 const MaxSummaryChars = 8000
 
+// truncateSummary cuts a summary longer than MaxSummaryChars bytes on a rune
+// boundary, so the record's JSON keeps the same text the conversation has.
+func truncateSummary(s string) string {
+	if len(s) <= MaxSummaryChars {
+		return s
+	}
+	cut := MaxSummaryChars
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n\n[summary truncated]"
+}
+
 func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (string, error) {
 	c, err := f.prepare(ctx, req, nil, nil)
 	if err != nil {
@@ -427,6 +459,9 @@ type child struct {
 	// it has ended; release lets the task be resumed again.
 	settle  func(context.Context) string
 	release func()
+	// before is how many messages the conversation held before this run: a
+	// resumed run's answer is only one it gives itself.
+	before int
 }
 
 // prepare settles everything a spawn needs and records it. reserve runs just
@@ -547,7 +582,7 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		if o, nested := inner.(oneAtATime); nested {
 			inner = o.Approver // one queue for the whole tree, never taken twice
 		}
-		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description}
+		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description, task: req.sessionID}
 		if parent.rec == nil {
 			parent = nil
 		} else {
@@ -678,6 +713,9 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		"tokens_in":   usage.InputTokens,
 		"tokens_out":  usage.OutputTokens,
 		"model":       c.adapter.Profile().Name,
+		// The child's last event of this run, its end: the answer this
+		// return carries is the last one before it, whatever runs follow.
+		"end_seq": c.sub.Recorder.LastAppended(),
 	}
 	if c.provider != "" {
 		returned["provider"] = c.provider
@@ -692,12 +730,12 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		return "", TermError, fmt.Errorf("subagent failed: %w", err)
 	}
 
-	summary := lastAssistantMessage(c.sub.Messages())
+	summary := lastAssistantMessage(c.sub.Messages()[min(c.before, len(c.sub.Messages())):])
 	if strings.TrimSpace(summary) == "" {
 		summary = fmt.Sprintf("(subagent ended with %s and produced no summary)", reason)
 	}
 	if len(summary) > MaxSummaryChars {
-		summary = summary[:MaxSummaryChars] + "\n\n[summary truncated]"
+		summary = truncateSummary(summary)
 	}
 	returned["summary_chars"] = len(summary)
 	_, _ = c.sub.Recorder.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
@@ -869,6 +907,7 @@ type oneAtATime struct {
 	asks chan struct{}
 	who  string
 	via  string // the pipeline asking, when a pipeline step asks
+	task string // the background task asking, when one does
 }
 
 func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
@@ -887,7 +926,24 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if o.via != "" {
 		ctx = context.WithValue(ctx, pipelineAskKey{}, o.via)
 	}
+	if o.task != "" {
+		ctx = WithBackgroundTask(ctx, o.task)
+	}
 	return o.Approver.Approve(ctx, tool, args, res)
+}
+
+type backgroundTaskKey struct{}
+
+// WithBackgroundTask names the background task an ask comes from.
+func WithBackgroundTask(ctx context.Context, taskID string) context.Context {
+	return context.WithValue(ctx, backgroundTaskKey{}, taskID)
+}
+
+// BackgroundTaskOf is the id of the background task an ask comes from, or ""
+// when the loop or a foreground subagent asks.
+func BackgroundTaskOf(ctx context.Context) string {
+	s, _ := ctx.Value(backgroundTaskKey{}).(string)
+	return s
 }
 
 type subagentKey struct{}

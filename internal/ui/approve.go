@@ -116,20 +116,25 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 			fmt.Fprintln(a.Out)
 			return false, nil
 		}
+		// Each answer names the ask it answered: a piped key answers by
+		// position, and the line should say what it approved.
+		answered := func(how string) {
+			fmt.Fprintf(a.Out, "\n  %s\n", s.Dim(how+": "+askedWhat(ctx, tool, args)))
+		}
 		switch strings.TrimSpace(line) {
 		case "a", "y":
 			// Only an explicit key accepts. Enter alone used to, so a line of
 			// typing that ended in Enter approved whatever was on screen.
-			fmt.Fprintln(a.Out)
+			answered("accepted")
 			return true, nil
 		case "r", "n":
-			fmt.Fprintln(a.Out)
+			answered("rejected")
 			return false, nil
 		case "A":
 			if scope != "" {
 				a.Session.Add(scope)
 				agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
-				fmt.Fprintln(a.Out)
+				answered("always allowed " + scope)
 				return true, nil
 			}
 			fmt.Fprintf(a.Out, "\n  no scope available; [a]ccept or [r]eject: ")
@@ -207,4 +212,14 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		return fmt.Sprintf("  %s", s.Dim("$ "+str("command")))
 	}
 	return ""
+}
+
+// askedWhat names an ask for the line that records its answer: the tool, what
+// it acts on, and the subagent that asked, if one did.
+func askedWhat(ctx context.Context, tool string, args json.RawMessage) string {
+	what := strings.TrimSpace(tool + " " + summarizeArgs(tool, args))
+	if who := agent.SubagentOf(ctx); who != "" {
+		what += " (subagent " + who + ")"
+	}
+	return what
 }

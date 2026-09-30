@@ -4,10 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -483,7 +487,7 @@ func TestOrphanReconciledOnClaim(t *testing.T) {
 	if st.ended[id] {
 		t.Fatal("precondition: the row is open")
 	}
-	time.Sleep(10 * time.Millisecond)
+	st.crash(id) // and its heartbeat stops
 	b := newBGServer(t, st)
 	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"still there?"}`); rec.Code != http.StatusAccepted {
 		t.Fatalf("continue: %d %s", rec.Code, rec.Body)
@@ -502,18 +506,55 @@ func TestOrphanReconciledOnClaim(t *testing.T) {
 	a.ad.release("one")
 }
 
-// A session whose record is still being written since this server started
-// is not an orphan: it is running elsewhere.
+// A session whose holder is alive is not an orphan, whichever process
+// started first and however long since its record was written: a live
+// child on one server is never reconciled by another on the same store.
 func TestLiveSessionIsNotAnOrphan(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
-	b := newBGServer(t, st)
-	a := newBGServer(t, st, "one")
-	id := a.start("bg:one", false)
-	<-a.ended
-	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
-		t.Fatalf("a session active since this server started was taken over: %d", rec.Code)
+	for _, bFirst := range []bool{true, false} {
+		st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+		var b *bgServer
+		if bFirst {
+			b = newBGServer(t, st)
+		}
+		a := newBGServer(t, st, "one")
+		id := a.start("bg:one", false)
+		<-a.ended
+		if !bFirst {
+			time.Sleep(20 * time.Millisecond)
+			b = newBGServer(t, st) // started after A's last write, as a restarted peer is
+		}
+		if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
+			t.Fatalf("b first %v: a session with a live holder was taken over: %d", bFirst, rec.Code)
+		}
+		if n := countType(b.events(id), agent.EvSubagentReturn); n != 0 {
+			t.Fatalf("b first %v: the live child was reconciled (%d returns)", bFirst, n)
+		}
+		if st.holderOf(id) != a.s.holder {
+			t.Fatalf("b first %v: holder %q, want A's %q", bFirst, st.holderOf(id), a.s.holder)
+		}
+		a.ad.release("one")
+		waitUntil(t, "the closing end", func() bool { e, _ := agent.LastEnd(a.events(id)); return e.Settled })
 	}
-	a.ad.release("one")
+}
+
+// Every process has its own liveness identity, and a claim that cannot be
+// recorded fails the hold: the session does not run unseen.
+func TestHolderIdentityAndFailedHold(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a, b := newBGServer(t, st), newBGServer(t, st)
+	if a.s.holder == "" || a.s.holder == b.s.holder {
+		t.Fatalf("holders %q and %q", a.s.holder, b.s.holder)
+	}
+	st.mu.Lock()
+	st.failHold = true
+	st.mu.Unlock()
+	rec := a.do("alice", "POST", "/v1/sessions", `{"prompt":"hello"}`)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a session started with no recorded holder: %d %s", rec.Code, rec.Body)
+	}
+	if a.s.runningCount() != 0 {
+		t.Fatal("the refused session is still running")
+	}
 }
 
 // Continuing a session elsewhere does not reset its allowance.
@@ -552,5 +593,475 @@ func TestSubSessionOfChecksOwnerAndParent(t *testing.T) {
 		if ok, _ := c(); ok {
 			t.Fatalf("%s: allowed", name)
 		}
+	}
+}
+
+// A run that ends while a result is owed but undelivered leaves the session
+// in background, not done: the drain waits for it and the claim is kept.
+func TestSettleCountsOwedResults(t *testing.T) {
+	b := newBGServer(t, nil)
+	id := b.start("hello", false)
+	<-b.ended
+	live := b.live(id)
+	live.Loop.QueueNotices([]agent.Notice{{TaskID: "t-1", Session: "t-1", CallID: "bgn_t1", Content: "done"}})
+	live.mu.Lock()
+	live.ran = make(chan struct{})
+	live.mu.Unlock()
+	live.settle(context.Background(), agent.TermMaxTurns, nil)
+	if got := b.state(id); got != "background" {
+		t.Fatalf("state after an end with a result owed: %q, want background", got)
+	}
+	live.mu.Lock()
+	state := live.stateAfterAsk("done")
+	live.mu.Unlock()
+	if state != "background" {
+		t.Fatalf("state after an ask with a result owed: %q", state)
+	}
+}
+
+// drainedWithResultOwed is a session whose child a drain ended: its return
+// is recorded, its notice is not, and its row is released.
+func drainedWithResultOwed(t *testing.T) (*durableMem, string) {
+	t.Helper()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one")
+	a.s.opts.DrainTimeout = 50 * time.Millisecond
+	id := a.start("bg:one", false)
+	<-a.ended
+	a.s.drain()
+	if evs, _ := st.Events(id); len(agent.PendingNotices(evs, st.Events)) != 1 {
+		t.Fatal("precondition: one result owed")
+	}
+	return st, id
+}
+
+// Viewing a session never claims or writes it, even one owing a result: the
+// result is queued once a message claims it, not when it is opened.
+func TestViewingWritesNothing(t *testing.T) {
+	st, id := drainedWithResultOwed(t)
+	b := newBGServer(t, st)
+	before, _ := st.Events(id)
+	claims := st.claims
+	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2500 * time.Millisecond) // past the idle settle window
+	after, _ := st.Events(id)
+	st.mu.Lock()
+	claimed := st.claims != claims
+	st.mu.Unlock()
+	if len(after) != len(before) || claimed || !live.unclaimed.Load() || live.Loop.Background.Pending() != 0 {
+		t.Fatalf("viewing wrote %d events, claimed %v, unclaimed %v, pending %d",
+			len(after)-len(before), claimed, live.unclaimed.Load(), live.Loop.Background.Pending())
+	}
+	// A message claims it, and the owed result is delivered then, once.
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"what happened?"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("continue: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "the notice", func() bool { return countType(b.events(id), agent.EvSubagentNotice) == 1 })
+	time.Sleep(2500 * time.Millisecond)
+	if n := countType(b.events(id), agent.EvSubagentNotice); n != 1 {
+		t.Fatalf("%d notices, want 1", n)
+	}
+}
+
+// Lock order: a write under the run lock never claims, so a claim in
+// progress (holding claimMu) can always take the run lock. Before, an idle
+// delivery on a viewed session held the run lock waiting for claimMu while
+// the claim waited for the run lock.
+func TestClaimAndIdleDeliveryDoNotDeadlock(t *testing.T) {
+	st, id := drainedWithResultOwed(t)
+	b := newBGServer(t, st)
+	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.claimMu.Lock() // a message's claim under way
+	time.Sleep(2500 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		live.Loop.SetHistory(nil, 0) // what catchUp does under claimMu
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: the run lock is held by a write waiting to claim")
+	}
+	live.claimMu.Unlock()
+}
+
+// Deleting or draining a session with a child running stops its heartbeat
+// and releases its claim: nothing refreshes a session that is gone.
+func TestDeleteAndDrainStopTheHeartbeat(t *testing.T) {
+	old := nodeHeartbeat
+	nodeHeartbeat = 20 * time.Millisecond
+	defer func() { nodeHeartbeat = old }()
+	for _, how := range []string{"delete", "drain"} {
+		rm := &routingMem{MemStore: agent.NewMemStore()}
+		b := newBGServer(t, rm, "one")
+		b.s.opts.DrainTimeout = 50 * time.Millisecond
+		id := b.start("bg:one", false)
+		<-b.ended
+		n, _ := rm.snapshot()
+		waitUntil(t, "refreshes", func() bool { m, _ := rm.snapshot(); return m >= n+2 })
+		if how == "delete" {
+			if rec := b.do("alice", "DELETE", "/v1/sessions/"+id, ""); rec.Code != http.StatusNoContent {
+				t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+			}
+		} else {
+			b.s.drain()
+		}
+		time.Sleep(60 * time.Millisecond) // a beat already under way lands
+		n, rel := rm.snapshot()
+		time.Sleep(200 * time.Millisecond)
+		if m, _ := rm.snapshot(); m != n || !rel {
+			t.Fatalf("%s: %d refreshes after it, released %v", how, m-n, rel)
+		}
+		b.ad.release("one")
+	}
+}
+
+// A subagent's ask, with or without a run live, is answered only by a
+// request naming its request_id; an approve naming none is refused and the
+// ask keeps waiting.
+func TestIdleSubagentAskNeedsItsRequestID(t *testing.T) {
+	b := newBGServer(t, nil, "one")
+	id := b.start("bg:one", false)
+	<-b.ended
+	live := b.live(id)
+	got := make(chan bool, 1)
+	go func() {
+		ctx := agent.WithRequestID(agent.WithSubagent(context.Background(), "one"), "ev-child-1")
+		ok, _ := live.Approve(ctx, "bash", json.RawMessage(`{"command":"x"}`), policyAsk())
+		got <- ok
+	}()
+	waitUntil(t, "the ask", func() bool { return b.state(id) == "waiting_approval" })
+	rid := "ev-child-1"
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusConflict {
+		t.Fatalf("an approve naming no request answered an idle subagent's ask: %d %s", rec.Code, rec.Body)
+	}
+	select {
+	case <-got:
+		t.Fatal("the ask was answered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true,"request_id":"`+rid+`"}`); rec.Code >= 300 {
+		t.Fatalf("its own request id: %d %s", rec.Code, rec.Body)
+	}
+	if !<-got {
+		t.Fatal("the answer by request id was not applied")
+	}
+
+	// With a run live too, an approve naming no request does not answer a
+	// subagent's ask; one naming it does.
+	live.mu.Lock()
+	live.ran = make(chan struct{})
+	live.mu.Unlock()
+	go func() {
+		ctx := agent.WithRequestID(agent.WithSubagent(context.Background(), "one"), "ev-child-2")
+		ok, _ := live.Approve(ctx, "bash", json.RawMessage(`{"command":"y"}`), policyAsk())
+		got <- ok
+	}()
+	waitUntil(t, "the second ask", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusConflict {
+		t.Fatalf("an approve naming no request answered a subagent's ask during a run: %d %s", rec.Code, rec.Body)
+	}
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true,"request_id":"ev-child-2"}`); rec.Code >= 300 {
+		t.Fatalf("its own request id during a run: %d %s", rec.Code, rec.Body)
+	}
+	if !<-got {
+		t.Fatal("the answer was not applied")
+	}
+	live.mu.Lock()
+	live.ran = nil
+	live.mu.Unlock()
+	b.ad.release("one")
+}
+
+// At startup, a session a crashed process left open is reconciled once its
+// holder's heartbeat is stale; one whose holder is alive is left alone.
+func TestStartupSweepRecoversOrphans(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one", "two")
+	crashed := a.start("bg:one", false)
+	<-a.ended
+	alive := a.start("bg:two", false)
+	<-a.ended
+	st.crash(crashed) // its process stopped heartbeating
+	if n := a.s.RecoverOrphans(context.Background()); n != 0 {
+		t.Fatalf("a process reconciled %d session(s) it is running itself", n)
+	}
+
+	b := newBGServer(t, st)
+	if n := b.s.RecoverOrphans(context.Background()); n != 1 {
+		t.Fatalf("recovered %d, want 1", n)
+	}
+	st.mu.Lock()
+	crashedEnded, aliveEnded := st.ended[crashed], st.ended[alive]
+	st.mu.Unlock()
+	if !crashedEnded || aliveEnded {
+		t.Fatalf("crashed ended %v, alive ended %v", crashedEnded, aliveEnded)
+	}
+	var lost bool
+	for _, r := range payloadsOf(b.events(crashed), agent.EvSubagentReturn) {
+		lost = lost || r["reason"] == string(agent.TermLost)
+	}
+	if !lost || countType(b.events(alive), agent.EvSubagentReturn) != 0 {
+		t.Fatal("the crashed session's task was not recorded lost, or the live one's was touched")
+	}
+	if st.holderOf(crashed) != "" {
+		t.Fatalf("the sweep kept holding a session it ended: %q", st.holderOf(crashed))
+	}
+	if b.s.RecoverOrphans(context.Background()) != 0 {
+		t.Fatal("a second sweep recovered again")
+	}
+	a.ad.release("one")
+	a.ad.release("two")
+}
+
+// A fenced session writes nothing more to its record, and leaves the process
+// with its tasks stopped as lease_lost.
+func TestFencedSessionWritesNothing(t *testing.T) {
+	for _, resumed := range []bool{false, true} {
+		st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+		b := newBGServer(t, st, "one")
+		id := b.start("bg:one", false)
+		<-b.ended
+		live := b.live(id)
+		if resumed {
+			b.ad.release("one")
+			waitUntil(t, "the closing end", func() bool { e, _ := agent.LastEnd(b.events(id)); return e.Settled })
+			b.s.mu.Lock()
+			delete(b.s.running, id)
+			b.s.mu.Unlock()
+			var err error
+			if live, err = b.s.resumeSession(context.Background(), id, "", "alice", "acme", true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		b.s.fence(live)
+		if _, err := live.Loop.Recorder.Record(agent.EvAgentMessage, agent.ActorAgent, agent.Trusted, agent.Message{Text: "late"}); !errors.Is(err, errLeaseLost) {
+			t.Fatalf("resumed %v: a fenced session's write: %v", resumed, err)
+		}
+		if b.live(id) != nil || live.Loop.Background.Live() != 0 {
+			t.Fatalf("resumed %v: still here after the fence", resumed)
+		}
+		if !resumed {
+			b.ad.release("one")
+		}
+	}
+}
+
+// A started session's row carries its holder from the moment it is written.
+func TestStartedSessionRowCarriesItsHolder(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServer(t, st)
+	id := b.start("hello", false)
+	<-b.ended
+	st.mu.Lock()
+	holder := st.rows[id].Holder
+	st.mu.Unlock()
+	if holder != b.s.holder {
+		t.Fatalf("the row was written with holder %q, want %q", holder, b.s.holder)
+	}
+}
+
+// A store that keeps refusing a result while idle does not leave the session
+// held: once the retries are spent the work owed is settled, the session is
+// done here and its claim released; the result is rebuilt from the record.
+func TestIdleStoreErrorDoesNotHoldTheSession(t *testing.T) {
+	t.Cleanup(agent.SetIdleRetries(0))
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	st.refuseNotices.Store(true)
+	b := newBGServer(t, st, "one")
+	id := b.start("bg:one", false)
+	<-b.ended
+	b.ad.release("one")
+	waitUntil(t, "the session done", func() bool { return b.state(id) == "done" })
+	waitUntil(t, "the claim released", func() bool { return st.holderOf(id) == "" })
+	if pend := agent.PendingNotices(b.events(id), st.Events); len(pend) != 1 {
+		t.Fatalf("the result is not owed in the record: %+v", pend)
+	}
+}
+
+// A node restarted with the same node id takes back the sessions it held
+// before, at once, in its startup sweep; a message to one before the old
+// heartbeat is stale does not, nor does another node.
+func TestSameNodeReclaimsItsCrashedSessionsAtStart(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	nodeA := func(_ *config.Config, o *Options) { o.NodeID = "node-a" }
+	a := newBGServerWith(t, st, nodeA, "one")
+	id := a.start("bg:one", false)
+	<-a.ended // node-a "crashes" here, its heartbeat still fresh
+	restarted := newBGServerWith(t, st, nodeA)
+	if rec := restarted.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("a message took a freshly held session: %d", rec.Code)
+	}
+	other := newBGServerWith(t, st, func(_ *config.Config, o *Options) { o.NodeID = "node-b" })
+	if n := other.s.RecoverOwnAtStart(context.Background()); n != 0 {
+		t.Fatal("another node's startup sweep took a freshly held session")
+	}
+	if n := restarted.s.RecoverOwnAtStart(context.Background()); n != 1 {
+		t.Fatalf("the restarted node's startup sweep took back %d, want 1", n)
+	}
+	if rec := restarted.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("continue after the startup sweep: %d %s", rec.Code, rec.Body)
+	}
+	a.ad.release("one")
+}
+
+// A process's own periodic sweep never reconciles a session it is starting,
+// though the row is held under its own id before the session is running.
+func TestSweepSparesASessionItIsStarting(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServerWith(t, st, func(_ *config.Config, o *Options) { o.NodeID = "node-a" })
+	swept := 0
+	st.afterStart = func() { swept += b.s.RecoverOrphans(context.Background()) }
+	id := b.start("hello", false)
+	<-b.ended
+	for _, e := range payloadsOf(b.events(id), agent.EvSessionEnded) {
+		if e["recovered"] == true {
+			t.Fatal("the process's own sweep reconciled a session it was starting")
+		}
+	}
+	if swept != 0 {
+		t.Fatalf("swept %d", swept)
+	}
+}
+
+// The sweep runs again every interval: a session whose holder goes stale
+// after the first sweep is recovered by a later one.
+func TestSweepRunsAgain(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one")
+	id := a.start("bg:one", false)
+	<-a.ended
+	b := newBGServer(t, st)
+	ctx, cancel := context.WithCancel(context.Background())
+	swept := make(chan struct{})
+	go func() { b.s.sweepOrphans(ctx, 50*time.Millisecond); close(swept) }()
+	defer func() { cancel(); <-swept }()
+	time.Sleep(100 * time.Millisecond)
+	st.mu.Lock()
+	early := st.ended[id]
+	st.mu.Unlock()
+	if early {
+		t.Fatal("a live session was swept")
+	}
+	st.crash(id)
+	waitUntil(t, "a later sweep", func() bool { st.mu.Lock(); defer st.mu.Unlock(); return st.ended[id] })
+	a.ad.release("one")
+}
+
+// A hold that cannot be recorded answers 503 with Retry-After on every path:
+// a message to a session idle here, and one to a session opened to view.
+func TestFailedHoldAnswers503(t *testing.T) {
+	setFail := func(st *durableMem, on bool) { st.mu.Lock(); st.failHold = on; st.mu.Unlock() }
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st)
+	id := a.start("hello", false)
+	<-a.ended
+	setFail(st, true)
+	rec := a.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a message to a session here: %d %s", rec.Code, rec.Body)
+	}
+	setFail(st, false)
+
+	b := newBGServer(t, st)
+	if _, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false); err != nil {
+		t.Fatal(err)
+	}
+	setFail(st, true)
+	rec = b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a message to a session opened to view: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The sweep reaches every open session, page after page, not only the
+// newest few.
+func TestSweepPagesThroughEveryOpenSession(t *testing.T) {
+	old := sweepPage
+	sweepPage = 2
+	t.Cleanup(func() { sweepPage = old })
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	names := []string{"a", "b", "c", "d", "e"}
+	a := newBGServer(t, st, names...)
+	var ids []string
+	for _, n := range names {
+		id := a.start("bg:"+n, false)
+		<-a.ended
+		st.crash(id)
+		ids = append(ids, id)
+	}
+	b := newBGServer(t, st)
+	if n := b.s.RecoverOrphans(context.Background()); n != len(ids) {
+		t.Fatalf("recovered %d of %d", n, len(ids))
+	}
+	for _, n := range names {
+		a.ad.release(n)
+	}
+}
+
+// The startup sweep, which takes back sessions held under the node's own id,
+// finishes before the server accepts a connection: a session this process
+// starts could otherwise be taken for one of its own from before.
+func TestStartupSweepRunsBeforeServing(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	nodeA := func(_ *config.Config, o *Options) { o.NodeID = "node-a" }
+	a := newBGServerWith(t, st, nodeA, "one")
+	a.start("bg:one", false)
+	<-a.ended // node-a stops here, its session open
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	var reclaimed, acceptedFirst atomic.Bool
+	st.onReclaim = func() {
+		reclaimed.Store(true)
+		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+			_ = c.Close()
+			acceptedFirst.Store(true)
+		}
+	}
+	b := newBGServerWith(t, st, func(c *config.Config, o *Options) { nodeA(c, o); o.Addr = addr })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.s.ListenAndServe(ctx) }()
+	waitUntil(t, "the server to accept", func() bool {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err == nil
+	})
+	cancel()
+	<-done
+	if !reclaimed.Load() || acceptedFirst.Load() {
+		t.Fatalf("reclaimed %v, port accepting during the startup sweep %v", reclaimed.Load(), acceptedFirst.Load())
+	}
+	a.ad.release("one")
+}
+
+// A durable store other than Postgres is used unfenced, and the server says
+// so when it starts.
+func TestUnfencedDurableStoreWarns(t *testing.T) {
+	var logged strings.Builder
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, Store: st,
+		Logger: slog.New(slog.NewTextHandler(&logged, nil))})
+	if !strings.Contains(logged.String(), "does not fence appends") {
+		t.Fatalf("no warning for an unfenced store:\n%s", logged.String())
+	}
+	logged.Reset()
+	New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, Store: agent.NewMemStore(),
+		Logger: slog.New(slog.NewTextHandler(&logged, nil))})
+	if strings.Contains(logged.String(), "does not fence appends") {
+		t.Fatal("a memory store was warned about")
 	}
 }

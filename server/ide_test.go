@@ -91,6 +91,7 @@ globalThis.__added = []; globalThis.__logged = 0; globalThis.__changes = 0; glob
 let live = true, bgLive = false, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
 const calls = new Map(), mineCalls = new Set();
 const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
+const tx = () => __root;
 const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}, askApproval = () => {};
 const hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => { __changes++; };
 const fillCall = () => {}, drawPlan = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';

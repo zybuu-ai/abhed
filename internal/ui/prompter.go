@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
 
@@ -58,6 +59,23 @@ func (p *Prompter) Deliver(line string) bool {
 	default:
 		return false
 	}
+}
+
+// Waiting reports whether an approval is waiting for a line.
+func (p *Prompter) Waiting() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waiting != nil
+}
+
+// Decision reports whether a line is exactly one of an approval's keys, and
+// so may answer one. Any other line is never taken as an answer by position.
+func Decision(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "a", "y", "r", "n", "A":
+		return true
+	}
+	return false
 }
 
 // Close reports that input has ended, so any current or future Await refuses

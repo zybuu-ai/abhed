@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -182,5 +183,48 @@ func TestApproveNamesTheSubagent(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "asked by subagent: audit pkg/auth") {
 		t.Fatalf("the prompt does not name the subagent: %q", out.String())
+	}
+}
+
+// Only a line that is exactly a decision key may answer an approval.
+func TestDecisionKeysOnly(t *testing.T) {
+	for _, l := range []string{"a", "y", "r", "n", "A", " a \n"} {
+		if !Decision(l) {
+			t.Errorf("%q is a decision key", l)
+		}
+	}
+	for _, l := range []string{"", "yes", "ok", "no", "approve", "a please", "R"} {
+		if Decision(l) {
+			t.Errorf("%q was taken as a decision", l)
+		}
+	}
+	p := NewPrompter()
+	if p.Waiting() {
+		t.Fatal("waiting with no approval")
+	}
+	got := make(chan string, 1)
+	go func() { s, _ := p.Await(context.Background()); got <- s }()
+	for !p.Waiting() {
+		time.Sleep(time.Millisecond)
+	}
+	if !p.Deliver("a") || <-got != "a" || p.Waiting() {
+		t.Fatal("a waiting approval did not take its answer")
+	}
+}
+
+// An answer says which ask it answered: the tool, what it acts on, and the
+// subagent that asked. A piped key answers by position, so this is the line
+// that shows what it approved.
+func TestAnswerNamesTheAsk(t *testing.T) {
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("y\n")
+	ctx := agent.WithSubagent(context.Background(), "scan logs")
+	ok, err := a.Approve(ctx, "bash", json.RawMessage(`{"command":"touch made.txt"}`), policy.Result{Decision: policy.Ask})
+	if err != nil || !ok {
+		t.Fatalf("approve: %v %v", ok, err)
+	}
+	if got := out.String(); !strings.Contains(got, "accepted: bash") || !strings.Contains(got, "touch made.txt") || !strings.Contains(got, "(subagent scan logs)") {
+		t.Fatalf("the answer does not name its ask:\n%s", got)
 	}
 }

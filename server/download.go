@@ -281,12 +281,21 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		if live.Loop != nil {
 			live.Loop.Session.CloseScoped()
 		}
+		// No hold, and no heartbeat, outlives the session: a hold's timer
+		// would record its end again into rows about to go.
+		live.holdMu.Lock()
+		if live.release != nil {
+			live.release.Stop()
+		}
+		live.held = false
+		live.holdMu.Unlock()
+		s.releaseNodeNow(live)
 		s.mu.Lock()
 		delete(s.running, id)
 		s.mu.Unlock()
 	}
 
-	del, ok := s.store.(agent.SessionDeleter)
+	del, ok := s.under().(agent.SessionDeleter)
 	if !ok {
 		WriteError(w, http.StatusNotImplemented,
 			"this deployment's store is append-only; sessions cannot be deleted")

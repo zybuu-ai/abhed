@@ -182,6 +182,10 @@ func writeUnrecorded(w http.ResponseWriter, err error, msg string) {
 		WriteError(w, http.StatusConflict, "the session is being continued elsewhere; "+msg)
 		return
 	}
+	if errors.Is(err, errHoldFailed) {
+		writeHoldFailed(w)
+		return
+	}
 	WriteError(w, http.StatusInternalServerError, msg)
 }
 

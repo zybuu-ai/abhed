@@ -110,6 +110,12 @@ func (f *SubagentFactory) prepareResume(ctx context.Context, req SubagentRequest
 	if !found {
 		return nil, fmt.Errorf("task %s ran as agent type %s, which this session no longer offers; start a new task", id, orStr(rec.Definition, rec.AgentType))
 	}
+	// The organisation's pin on a managed role binds as it is now: a task
+	// that ran on another model does not go on against it.
+	if def.Source == SourceManaged && def.Model != "" && def.Model != rec.Provider {
+		return nil, fmt.Errorf("agent type %s now runs on model %q, set by the organisation, and task %s ran on %s; start a new task",
+			def.Name, def.Model, id, orStr(rec.Provider, rec.Model))
+	}
 	registry, err := childTools(f.Tools, def)
 	if err != nil {
 		return nil, err
@@ -147,6 +153,7 @@ func (f *SubagentFactory) prepareResume(ctx context.Context, req SubagentRequest
 	}
 	c.sub.Recorder.Advance(events[len(events)-1].Seq)
 	c.sub.SetHistory(msgs, end.Turns)
+	c.before = len(msgs)
 	c.sub.CarryUsage(end)
 
 	spawned["resume"] = true
@@ -195,13 +202,18 @@ func (f *SubagentFactory) recordedModel(parent *parentLink, rec spawnedRecord) (
 }
 
 // recordedWorktree is the checkout a worktree child worked in, if it is still
-// there, inside this workspace's worktrees and on the recorded branch. A
-// child that worked in the workspace itself goes on there.
+// there, inside this workspace's worktrees and on the recorded branch. Only a
+// child that worked in the workspace itself goes on there; one recorded
+// anywhere else without a branch to verify is refused, never moved to the
+// main tree.
 func (f *SubagentFactory) recordedWorktree(ctx context.Context, rec spawnedRecord) (string, *worktree, error) {
-	if rec.Branch == "" || rec.Workspace == "" || rec.Workspace == f.Workspace {
+	if rec.Workspace == "" || rec.Workspace == f.Workspace || realDir(rec.Workspace) == realDir(f.Workspace) {
 		return f.Workspace, nil, nil
 	}
 	removed := errors.New("its worktree was removed; start a new task")
+	if rec.Branch == "" {
+		return "", nil, removed
+	}
 	root, err := hostgit.New(ctx, f.Workspace).Worktrees(ctx)
 	if err != nil {
 		return "", nil, removed

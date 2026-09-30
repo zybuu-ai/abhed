@@ -156,6 +156,11 @@ func (g *Gemini) buildRequest(req Request) geminiRequest {
 	sp := g.Defaults.Merge(req.Sampling())
 
 	var contents []geminiContent
+	// A functionResponse names the function it answers, looked up from the
+	// call by its id: Gemini's own ids ("read-1"), another provider's after a
+	// model switch, and a background result's task_status call all name the
+	// call, not the function. An id with no call before it is sent as is.
+	callName := map[string]string{}
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleTool:
@@ -165,10 +170,14 @@ func (g *Gemini) buildRequest(req Request) geminiRequest {
 			if err != nil {
 				payload = []byte(`{"result":""}`)
 			}
+			name := m.ToolCallID
+			if n, ok := callName[m.ToolCallID]; ok {
+				name = n
+			}
 			contents = append(contents, geminiContent{
 				Role: "user",
 				Parts: []geminiPart{{FunctionResponse: &geminiResponse{
-					Name: m.ToolCallID, Response: payload,
+					Name: name, Response: payload,
 				}}},
 			})
 		case RoleAssistant:
@@ -177,6 +186,7 @@ func (g *Gemini) buildRequest(req Request) geminiRequest {
 				parts = append(parts, geminiPart{Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
+				callName[tc.ID] = tc.Name
 				args := tc.Args
 				if len(args) == 0 {
 					args = json.RawMessage("{}")
