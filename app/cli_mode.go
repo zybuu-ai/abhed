@@ -46,13 +46,13 @@ func slashMode(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		if err := switchMode(e.st.appCfg, policy.New(e.pol.Mode), string(mode)); err != nil {
 			return false, err
 		}
-		answer, err := e.ui.Dialog(ctx, ui.DialogSpec{
+		answer := answered(e.ui.Dialog(ctx, ui.DialogSpec{
 			Kind:  ui.DialogConfirm,
 			Title: "Switch to auto mode?",
 			Body:  []ui.Block{{Kind: ui.BlockNotice, Text: autoExplained}},
 			Why:   "asked by /mode auto",
-		})
-		if err != nil || answer != ui.ChoiceYes {
+		}))
+		if answer != ui.ChoiceYes {
 			e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode stays " + string(e.pol.Mode)})
 			return false, nil
 		}
@@ -62,6 +62,15 @@ func slashMode(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	}
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(e.pol.Mode)})
 	return false, nil
+}
+
+// answered is a dialog's answer, or "" when there was none: a question that
+// ended unanswered is taken as no.
+func answered(answer string, err error) string {
+	if err != nil {
+		return ""
+	}
+	return answer
 }
 
 // autoExplained is what auto mode approves on its own and what still asks.

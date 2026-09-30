@@ -1143,7 +1143,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		doomed = pc.Precheck(l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
-		doomed = l.readFirst(ctx, tool, call)
+		if why := l.readFirst(ctx, tool, call); why != "" {
+			doomed = errors.New(why)
+		}
 	}
 	if doomed != nil {
 		decision.Reason = "refused before approval: the call could not succeed"
@@ -1953,27 +1955,28 @@ type turnCalls struct {
 	index int
 }
 
-// readFirst refuses, before anyone is asked, an edit or write the tool would
-// refuse for want of a read: an existing file not read this session, one
-// changed on disk since, or an edit of a file that is not there. Approving
-// such a call only wastes the person's answer. A turn whose other calls name
-// the same file, or run a command first, may change that by the time this
-// call runs, so the check is left to the tool.
-func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCall) error {
+// readFirst says why, before anyone is asked, an edit or write the tool would
+// refuse for want of a read is refused: an existing file not read this
+// session, one changed on disk since, or an edit of a file that is not there.
+// Approving such a call only wastes the person's answer. A turn whose other
+// calls name the same file, or run a command first, may change that by the
+// time this call runs, so the check is left to the tool. "" lets it be asked.
+func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCall) string {
 	_, isEdit := tool.(tools.Edit)
 	if _, isWrite := tool.(tools.Write); !isEdit && !isWrite {
-		return nil
+		return ""
 	}
 	var a struct {
 		Path      string  `json:"path"`
 		OldString *string `json:"old_string"`
 	}
 	if l.Session == nil || json.Unmarshal(call.Args, &a) != nil {
-		return nil
+		return ""
 	}
-	path, err := l.Session.Resolve(a.Path)
-	if err != nil {
-		return nil //nolint:nilerr // the tool's own precheck reports a path it cannot use
+	// A path the session cannot use is the tool's own precheck to report.
+	path, resolveErr := l.Session.Resolve(a.Path)
+	if resolveErr != nil {
+		return ""
 	}
 	if turn, ok := ctx.Value(turnCallsKey{}).(turnCalls); ok {
 		for i, other := range turn.calls {
@@ -1981,31 +1984,29 @@ func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCa
 				continue
 			}
 			if i < turn.index && other.Name == "bash" {
-				return nil
+				return ""
 			}
 			var o struct {
 				Path string `json:"path"`
 			}
 			if json.Unmarshal(other.Args, &o) == nil && o.Path != "" {
 				if p, err := l.Session.Resolve(o.Path); err == nil && p == path {
-					return nil
+					return ""
 				}
 			}
 		}
 	}
-	info, err := os.Stat(path)
+	info, statErr := os.Stat(path)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
+	case errors.Is(statErr, fs.ErrNotExist):
 		if isEdit && a.OldString != nil && *a.OldString != "" {
-			return fmt.Errorf("File not found: %s. Use glob to locate it, or write() to create it", a.Path)
+			return fmt.Sprintf("File not found: %s. Use glob to locate it, or write() to create it", a.Path)
 		}
-		return nil
-	case err != nil || info.IsDir():
-		return nil
+	case statErr != nil || info.IsDir():
 	case !l.Session.WasRead(path):
-		return fmt.Errorf("Refusing to %s %s: it has not been read this session. Call read(%q) first, then %s it", call.Name, a.Path, a.Path, call.Name)
+		return fmt.Sprintf("Refusing to %s %s: it has not been read this session. Call read(%q) first, then %s it", call.Name, a.Path, a.Path, call.Name)
 	case isEdit && l.Session.ChangedSinceRead(path):
-		return fmt.Errorf("%s changed on disk since you read it. Re-read it before editing", a.Path)
+		return fmt.Sprintf("%s changed on disk since you read it. Re-read it before editing", a.Path)
 	}
-	return nil
+	return ""
 }

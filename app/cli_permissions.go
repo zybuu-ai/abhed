@@ -278,7 +278,7 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if canonical == typed {
 		body = canonical
 	}
-	answer, err := e.ui.Dialog(ctx, ui.DialogSpec{
+	answer := answered(e.ui.Dialog(ctx, ui.DialogSpec{
 		Kind:  ui.DialogChoice,
 		Title: "Let this session reach " + canonical + "?",
 		Body: []ui.Block{{Kind: ui.BlockNotice, Text: body + "\nRead-only keeps edit and write out of it; " +
@@ -290,8 +290,8 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		},
 		Default: ui.ChoiceNo,
 		Why:     "asked by /add-dir",
-	})
-	if err != nil || (answer != accessRead && answer != accessReadWrite) {
+	}))
+	if answer != accessRead && answer != accessReadWrite {
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "not added"})
 		return false, nil
 	}
