@@ -21,9 +21,14 @@
 //
 // # Chain
 //
-// Each line is canonical JSON carrying seq, prev (the sha256 of the previous
-// line) and hash. Verify walks the chain. The record is tamper-evident
-// against the agent, not against the machine's owner.
+// Each line is canonical JSON carrying seq, prev (the hash of the previous
+// line; 64 zeros for the first) and hash (the sha256 of the line's own bytes
+// with hash left out). Verify walks the chain and checks the head file and
+// the heads the index kept at each run's end. The record is tamper-evident
+// against the agent and against accidental or partial edits, and verifiable
+// offline. It is not proof against the machine's owner, who can rewrite a
+// file and compute a new chain. Options.Anchor is where a witness outside the
+// machine can be given each head; this edition does not provide one.
 //
 // # Writes
 //

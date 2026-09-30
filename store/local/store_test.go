@@ -673,3 +673,20 @@ func TestNoDeletePath(t *testing.T) {
 		t.Fatal("the local record can delete a session")
 	}
 }
+
+// The anchor hook sees every head a sync moves, a session's and the index's.
+func TestAnchorSeesEachHead(t *testing.T) {
+	var got []string
+	s, err := Open(Options{Dir: t.TempDir(), Anchor: func(tenant, session string, h Head) {
+		got = append(got, fmt.Sprintf("%s/%s/%d", tenant, session, h.Lines))
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	record(t, s, "s-1", "one", "two")
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "default/s-1/1") || !strings.Contains(joined, "default/s-1/2") || !strings.Contains(joined, "default/index/") {
+		t.Fatalf("anchored: %v", got)
+	}
+}

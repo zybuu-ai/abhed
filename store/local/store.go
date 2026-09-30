@@ -34,6 +34,12 @@ type Options struct {
 	Redact agent.Redactor
 	// Clock is the time written on index lines; nil is the wall clock.
 	Clock func() time.Time
+	// Anchor, when set, is given each head as it is synced: a session's, or
+	// the index's under the id "index". It is where a witness outside this
+	// machine can take the chain, which makes the record evident against the
+	// machine's owner too; the record does not depend on it, and an error it
+	// has is its own to report.
+	Anchor func(tenant, session string, head Head)
 }
 
 // DefaultDir is ~/.abhed/records.
@@ -53,6 +59,7 @@ type Store struct {
 	root, dir    string
 	tenant, user string
 	redact       agent.Redactor
+	anchor       func(tenant, session string, head Head)
 
 	mu     sync.Mutex
 	held   map[string]*session
@@ -124,16 +131,20 @@ func Open(opts Options) (*Store, error) {
 			return nil, err
 		}
 	}
+	anchor := opts.Anchor
 	red := opts.Redact
 	if v := reflect.ValueOf(red); red != nil && v.Kind() == reflect.Pointer && v.IsNil() {
 		red = nil // a typed nil redacts nothing, and must not be called
 	}
 	s := &Store{
-		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red,
+		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor,
 		held: map[string]*session{}, subs: map[string][]chan agent.Event{},
 	}
 	s.blobs = &blobStore{dir: filepath.Join(dir, "blobs", "sha256")}
 	s.index = &index{dir: dir, clock: opts.Clock}
+	if anchor != nil {
+		s.index.onHead = func(h Head) { anchor(tenant, "index", h) }
+	}
 	return s, nil
 }
 
@@ -465,6 +476,9 @@ func (h *session) sync(s *Store) error {
 		return err
 	}
 	h.synced = h.last
+	if s.anchor != nil {
+		s.anchor(s.tenant, h.id, h.last)
+	}
 	return nil
 }
 

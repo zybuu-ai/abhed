@@ -71,6 +71,8 @@ type index struct {
 	dir string
 	// clock is the time written on each line; nil is the wall clock.
 	clock func() time.Time
+	// onHead is given each new head, for an anchor.
+	onHead func(Head)
 }
 
 func (x *index) path() string     { return filepath.Join(x.dir, "index.jsonl") }
@@ -142,7 +144,14 @@ func (x *index) append(l indexLine) error {
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	return writeHeadFile(x.headPath(), Head{Lines: l.N, Hash: l.Hash})
+	head := Head{Lines: l.N, Hash: l.Hash}
+	if err := writeHeadFile(x.headPath(), head); err != nil {
+		return err
+	}
+	if x.onHead != nil {
+		x.onHead(head)
+	}
+	return nil
 }
 
 // lastLine returns the index's last complete line, the length of an
