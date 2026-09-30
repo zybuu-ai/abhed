@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -157,4 +158,65 @@ func TestRevokeReachesOtherServersOverPostgres(t *testing.T) {
 	}
 	signIn(lb, lou)
 	signIn(la, lou)
+}
+
+// Removing an account hands its sessions in its tenant to no one, as the
+// runtime role, so an account made later under the same name starts empty.
+func TestRemoveUserUnclaimsItsSessions(t *testing.T) {
+	p := runtimeStore(t, "t-rm")
+	other := runtimeStore(t, "t-rm-other")
+	ctx := context.Background()
+	name := strings.ToLower(testID(t, "bob"))
+	if err := p.Put(ctx, &auth.User{Username: name, Tenant: "t-rm", Hash: "x"}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	mk := func(s *Postgres, tenant, user string) string {
+		id := testID(t, "sess-rm-")
+		if err := s.CreateSession(ctx, SessionRecord{ID: id, Tenant: tenant, User: user,
+			Workspace: "/w", Model: "m", Mode: "default", StartedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return id
+	}
+	owner := auth.LocalOwner(name)
+	mine1, mine2 := mk(p, "t-rm", owner), mk(p, "t-rm", owner)
+	elsewhere := mk(other, "t-rm-other", owner)
+	carol := mk(p, "t-rm", "local:carol")
+
+	moved, err := p.RemoveUser(ctx, name)
+	if err != nil || moved != 2 {
+		t.Fatalf("remove: moved %d, %v", moved, err)
+	}
+	if _, err := p.Get(ctx, name); !errors.Is(err, auth.ErrNoSuchUser) {
+		t.Fatalf("account still there: %v", err)
+	}
+	want := map[string]string{mine1: auth.UnclaimedOwner(owner), mine2: auth.UnclaimedOwner(owner), carol: "local:carol"}
+	for id, w := range want {
+		if rec, err := p.GetSession(ctx, id); err != nil || rec.User != w {
+			t.Errorf("session %s: owner %q, %v; want %q", id, rec.User, err, w)
+		}
+	}
+	if rec, err := other.GetSession(ctx, elsewhere); err != nil || rec.User != owner {
+		t.Errorf("another tenant's row moved: %q, %v", rec.User, err)
+	}
+
+	// The same name again owns none of the old rows.
+	if err := p.Put(ctx, &auth.User{Username: name, Tenant: "t-rm", Hash: "y"}); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	list, err := p.ListSessions(ctx, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range list {
+		if rec.User == owner {
+			t.Errorf("recreated %s owns %s", name, rec.ID)
+		}
+	}
+	if _, err := p.RemoveUser(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.RemoveUser(ctx, name); !errors.Is(err, auth.ErrNoSuchUser) {
+		t.Errorf("removing a missing account: %v", err)
+	}
 }

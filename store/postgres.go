@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
@@ -275,7 +276,7 @@ func (p *Postgres) CreateSubSession(ctx context.Context, id, description string)
 
 // SubagentUser is the user a CLI subagent's row is recorded as; the session
 // named by its ParentID says whose it is.
-const SubagentUser = "agent"
+const SubagentUser = auth.Subagent
 
 // CreateSubagentSession is CreateSubSession with the spawning session's id,
 // so the row is listed and deleted with its parent.

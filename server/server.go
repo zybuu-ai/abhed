@@ -718,6 +718,14 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
+		// A caller who names no one could create sessions it can never open again.
+		if auth.OwnsNothing(user) && strings.HasPrefix(r.URL.Path, "/v1/") {
+			WriteError(rec, http.StatusUnauthorized, "the request names no user")
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+				"user", user, "tenant", tenant, "duration", time.Since(start))
+			return
+		}
+
 		// A panicking handler would otherwise drop the connection with no
 		// status and no audit line — the request simply vanishes from the log,
 		// which is the worst possible outcome for something internet-facing.
@@ -1802,7 +1810,7 @@ func ownsSession(recTenant, recUser, tenant, user string) bool {
 	if recTenant != tenant || auth.OwnsNothing(user) {
 		return false
 	}
-	if user == "" || user == "anonymous" {
+	if user == "" || user == auth.Anonymous {
 		return true
 	}
 	return recUser == user
@@ -2918,6 +2926,24 @@ func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
 		return nil, false
 	}
 	return live, true
+}
+
+// ReleaseSessions moves the sessions this process holds for owner in tenant
+// to auth.UnclaimedOwner, as a removed account's rows are, and returns how many.
+func (s *Server) ReleaseSessions(tenant, owner string) int {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, live := range s.running {
+		if live.Tenant == tenant && live.User == owner {
+			live.User = auth.UnclaimedOwner(owner)
+			n++
+		}
+	}
+	return n
 }
 
 // elsewhere reports the node holding a session that this process does not,

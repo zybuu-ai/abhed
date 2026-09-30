@@ -1841,7 +1841,8 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			fmt.Fprintln(os.Stderr, "usage: abhed user remove <username>")
 			return 2
 		}
-		if err := us.Delete(ctx, args[1]); err != nil {
+		moved, err := auth.RemoveUser(ctx, us, args[1])
+		if err != nil {
 			if errors.Is(err, auth.ErrNoSuchUser) {
 				fmt.Fprintf(os.Stderr, "abhed: no such user: %s\n", args[1])
 			} else {
@@ -1850,6 +1851,10 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			return 1
 		}
 		fmt.Printf("removed %s\n", args[1])
+		if moved > 0 {
+			fmt.Printf("  %d session(s) now owned by %s\n", moved,
+				auth.UnclaimedOwner(auth.LocalOwner(args[1])))
+		}
 
 	case "import":
 		// Switching storage.driver from memory/file to postgres leaves every

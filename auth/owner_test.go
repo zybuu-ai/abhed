@@ -36,8 +36,17 @@ func TestOwner(t *testing.T) {
 		{"proxy subject in any namespace case", &Identity{Provider: ProviderProxy, Subject: "Unclaimed:bob"}, "proxy:Unclaimed:bob"},
 		{"unnamed subject in the oidc namespace", &Identity{Subject: "oidc:u1"}, "subject:oidc:u1"},
 		{"unnamed subject in the github namespace", &Identity{Subject: "github:42"}, "subject:github:42"},
-		{"proxy email only", &Identity{Provider: ProviderProxy, Subject: "anonymous", Email: "Pat@Example.test", EmailVerified: true}, "pat@example.test"},
-		{"proxy email only, not an address", &Identity{Provider: ProviderProxy, Subject: "anonymous", Email: "pat", EmailVerified: true}, "nobody:proxy"},
+		{"proxy email only", &Identity{Provider: ProviderProxy, Email: "Pat@Example.test", EmailVerified: true}, "pat@example.test"},
+		{"proxy email only, not an address", &Identity{Provider: ProviderProxy, Email: "pat", EmailVerified: true}, "nobody:proxy"},
+		{"proxy user named anonymous", &Identity{Provider: ProviderProxy, Subject: "anonymous"}, "proxy:anonymous"},
+		{"proxy user named ANONYMOUS", &Identity{Provider: ProviderProxy, Subject: "ANONYMOUS"}, "proxy:ANONYMOUS"},
+		{"proxy user named agent", &Identity{Provider: ProviderProxy, Subject: "agent"}, "proxy:agent"},
+		{"proxy user named Agent with an email that cannot own", &Identity{Provider: ProviderProxy, Subject: "Agent", Email: "x", EmailVerified: true}, "proxy:Agent"},
+		{"proxy with neither", &Identity{Provider: ProviderProxy}, "nobody:proxy"},
+		{"unnamed subject Anonymous", &Identity{Subject: "Anonymous"}, "subject:Anonymous"},
+		{"unnamed subject agent", &Identity{Subject: "agent"}, "subject:agent"},
+		{"local account named anonymous", &Identity{Provider: ProviderLocal, Subject: "anonymous"}, "local:anonymous"},
+		{"local account named agent", &Identity{Provider: ProviderLocal, Subject: "Agent"}, "local:agent"},
 		{"provider with no subject", &Identity{Provider: "oidc", Email: "a@x.test", EmailVerified: true}, "nobody:oidc"},
 		{"local with no subject", &Identity{Provider: ProviderLocal}, "nobody:local"},
 	} {
@@ -123,6 +132,11 @@ func TestProxyHeadersOwner(t *testing.T) {
 		{"pat", "", "pat"},
 		{"", "", "anonymous"},
 		{"local:bob", "", "proxy:local:bob"},
+		{"anonymous", "", "proxy:anonymous"},
+		{"ANONYMOUS", "", "proxy:ANONYMOUS"},
+		{"agent", "", "proxy:agent"},
+		{"anonymous", "not-an-address", "proxy:anonymous"},
+		{"", "not-an-address", "nobody:proxy"},
 	} {
 		r := httptest.NewRequest("GET", "/", nil)
 		if tc.user != "" {
