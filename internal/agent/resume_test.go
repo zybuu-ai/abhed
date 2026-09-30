@@ -403,3 +403,47 @@ func TestResumeWhileResumedRefused(t *testing.T) {
 		t.Fatalf("once ended it may be resumed again: %v", err)
 	}
 }
+
+// recordOldChild writes a finished child's record as an older build did: its
+// spawn names a workspace and no branch.
+func recordOldChild(t *testing.T, r *resumeRig, id, workspace string) {
+	t.Helper()
+	rec := NewRecorder(r.store, id, "parent")
+	spawned := map[string]any{"description": "old", "agent_type": "general", "definition": "general", "depth": 0,
+		"workspace": workspace, "session": id, "model": "rm"}
+	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
+	_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "work"})
+	_, _ = rec.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "first answer"})
+	_, _ = rec.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Turns: 1})
+	prec := NewRecorder(r.store, "parent", "")
+	prec.Advance(lastSeq(r.events(t)))
+	_, _ = prec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
+	_, _ = prec.Record(EvSubagentReturn, ActorSystem, Trusted, map[string]any{"session": id, "task_id": id, "reason": "completed"})
+}
+
+func lastSeq(evs []Event) int64 {
+	if len(evs) == 0 {
+		return 0
+	}
+	return evs[len(evs)-1].Seq
+}
+
+// A child recorded in another directory with no branch to verify is refused,
+// never resumed in the main tree; one recorded in the workspace itself,
+// under any path that resolves to it, goes on there.
+func TestResumeNeverFallsBackToTheMainTree(t *testing.T) {
+	r := newResumeRig(t, "")
+	recordOldChild(t, r, "OLDCHILD1", tempDir(t))
+	_, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: "OLDCHILD1"})
+	if err == nil || !strings.Contains(err.Error(), "its worktree was removed") {
+		t.Fatalf("a branchless child from elsewhere: %v", err)
+	}
+	link := filepath.Join(tempDir(t), "ws-link")
+	if err := os.Symlink(r.ws, link); err != nil {
+		t.Fatal(err)
+	}
+	recordOldChild(t, r, "OLDCHILD2", link)
+	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: "OLDCHILD2"}); err != nil {
+		t.Fatalf("a child recorded in the workspace, by another path to it: %v", err)
+	}
+}

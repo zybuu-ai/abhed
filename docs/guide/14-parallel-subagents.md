@@ -288,7 +288,10 @@ model is a new task. It may run in the background too.
   role this session no longer offers is refused.
 - It runs on the model it ran on, or not at all.
 - A worktree subagent resumes in its worktree, which must still exist on its
-  branch, and is settled again after; one whose worktree is gone is refused.
+  branch, and is settled again after; one whose worktree is gone, or whose
+  record names a directory other than the workspace with no branch to
+  check (as records from before branches were recorded do), is refused. A
+  resume never moves a subagent into the main tree.
 - Each resume counts as a spawn and gets a fresh allowance of turns on top of
   those already spent. A conversation filling more than 80% of the model's
   window is refused: start a new task with what it found.

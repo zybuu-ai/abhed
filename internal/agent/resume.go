@@ -195,13 +195,18 @@ func (f *SubagentFactory) recordedModel(parent *parentLink, rec spawnedRecord) (
 }
 
 // recordedWorktree is the checkout a worktree child worked in, if it is still
-// there, inside this workspace's worktrees and on the recorded branch. A
-// child that worked in the workspace itself goes on there.
+// there, inside this workspace's worktrees and on the recorded branch. Only a
+// child that worked in the workspace itself goes on there; one recorded
+// anywhere else without a branch to verify is refused, never moved to the
+// main tree.
 func (f *SubagentFactory) recordedWorktree(ctx context.Context, rec spawnedRecord) (string, *worktree, error) {
-	if rec.Branch == "" || rec.Workspace == "" || rec.Workspace == f.Workspace {
+	if rec.Workspace == "" || rec.Workspace == f.Workspace || realDir(rec.Workspace) == realDir(f.Workspace) {
 		return f.Workspace, nil, nil
 	}
 	removed := errors.New("its worktree was removed; start a new task")
+	if rec.Branch == "" {
+		return "", nil, removed
+	}
 	root, err := hostgit.New(ctx, f.Workspace).Worktrees(ctx)
 	if err != nil {
 		return "", nil, removed
