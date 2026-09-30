@@ -262,4 +262,15 @@ func TestOnePostgresWithATapEveryMessageRuns(t *testing.T) {
 	if l := a.live(id); l == nil || l.fenced.Load() || seen.Load() == 0 {
 		t.Fatalf("the session was fenced, or the tap saw nothing (%d)", seen.Load())
 	}
+	// Let go after its run, as without a tap.
+	waitUntil(t, "the session let go", func() bool { return a.live(id).unclaimed.Load() })
+
+	// A session with a task running holds its row under this process's id.
+	b := newBGServerWith(t, openSharedPG(t), func(_ *config.Config, o *Options) { o.EventTap = func(agent.Event) {} }, "one")
+	bid := b.start("bg:one", false)
+	<-b.ended
+	if h := pgHolder(t, bid); h != b.s.holder {
+		t.Fatalf("behind a tap the holder is %q, want %q", h, b.s.holder)
+	}
+	b.ad.release("one")
 }
