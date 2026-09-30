@@ -174,6 +174,8 @@ type run struct {
 	chunks  []chunk
 	mark    int
 	readers sync.WaitGroup
+	// pipes are a piped run's read ends of stdout and stderr.
+	pipes []*os.File
 
 	done     chan struct{}
 	exitCode int
@@ -255,7 +257,7 @@ func start(t testing.TB, o Opts) *run {
 	}
 	go func() {
 		err := h.cmd.Wait()
-		h.readers.Wait()
+		h.drainWait()
 		h.exitErr = err
 		h.exitCode = 0
 		var ee *exec.ExitError
@@ -285,14 +287,19 @@ func (h *run) startPiped() {
 			h.t.Fatal(err)
 		}
 	}
-	outR, err := h.cmd.StdoutPipe()
+	// Pipes of our own, not StdoutPipe: Wait closes those while a read may
+	// still be under way, and output was lost. The readers here end at EOF,
+	// once the binary and anything it started have closed their ends.
+	outR, outW, err := os.Pipe()
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	errR, err := h.cmd.StderrPipe()
+	errR, errW, err := os.Pipe()
 	if err != nil {
 		h.t.Fatal(err)
 	}
+	h.cmd.Stdout, h.cmd.Stderr = outW, errW
+	h.pipes = []*os.File{outR, errR}
 	h.stdin = in
 	// Written as a shell pipe would be, then closed unless the test keeps
 	// it open to write more.
@@ -310,8 +317,32 @@ func (h *run) startPiped() {
 	h.readers.Add(2)
 	go h.read(outR, &h.stdout)
 	go h.read(errR, &h.stderr)
-	if err := h.cmd.Start(); err != nil {
+	err = h.cmd.Start()
+	// The child has its copies; ours would keep the readers from ever ending.
+	_, _ = outW.Close(), errW.Close()
+	if err != nil {
 		h.t.Fatal(err)
+	}
+}
+
+// drainWait waits for the readers after the binary has exited. A process it
+// left behind can hold the pipes open, so after a bound they are closed.
+func (h *run) drainWait() {
+	drained := make(chan struct{})
+	go func() {
+		h.readers.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		for _, p := range h.pipes {
+			_ = p.Close()
+		}
+		<-drained
+	}
+	for _, p := range h.pipes {
+		_ = p.Close()
 	}
 }
 
