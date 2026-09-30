@@ -547,7 +547,7 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		if o, nested := inner.(oneAtATime); nested {
 			inner = o.Approver // one queue for the whole tree, never taken twice
 		}
-		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description}
+		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description, task: req.sessionID}
 		if parent.rec == nil {
 			parent = nil
 		} else {
@@ -844,6 +844,7 @@ type oneAtATime struct {
 	asks chan struct{}
 	who  string
 	via  string // the pipeline asking, when a pipeline step asks
+	task string // the background task asking, when one does
 }
 
 func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
@@ -862,7 +863,24 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if o.via != "" {
 		ctx = context.WithValue(ctx, pipelineAskKey{}, o.via)
 	}
+	if o.task != "" {
+		ctx = WithBackgroundTask(ctx, o.task)
+	}
 	return o.Approver.Approve(ctx, tool, args, res)
+}
+
+type backgroundTaskKey struct{}
+
+// WithBackgroundTask names the background task an ask comes from.
+func WithBackgroundTask(ctx context.Context, taskID string) context.Context {
+	return context.WithValue(ctx, backgroundTaskKey{}, taskID)
+}
+
+// BackgroundTaskOf is the id of the background task an ask comes from, or ""
+// when the loop or a foreground subagent asks.
+func BackgroundTaskOf(ctx context.Context) string {
+	s, _ := ctx.Value(backgroundTaskKey{}).(string)
+	return s
 }
 
 type subagentKey struct{}

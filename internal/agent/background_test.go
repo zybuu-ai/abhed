@@ -66,6 +66,9 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 	gate, isChild := m.gates[first]
 	m.mu.Unlock()
 	switch {
+	case isChild && first == "asker" && last.Role == model.RoleUser:
+		c := model.ToolCall{ID: "ask1", Name: "touchy", Args: json.RawMessage(`{}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
 	case isChild:
 		m.mu.Lock()
 		m.inCall++
@@ -625,5 +628,50 @@ func TestCloseFiresIdle(t *testing.T) {
 	}
 	if e, _ := LastEnd(r.events(t)); !e.Settled {
 		t.Fatalf("last end %+v", e)
+	}
+}
+
+// touchy is a tool that changes things, so the default mode asks for it.
+type touchy struct{}
+
+func (touchy) Name() string            { return "touchy" }
+func (touchy) Description() string     { return "changes something" }
+func (touchy) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (touchy) Mutates() bool           { return true }
+func (touchy) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	return tools.Result{Content: "changed"}
+}
+
+// taskApprover records the background task each ask names.
+type taskApprover struct {
+	mu    sync.Mutex
+	tasks []string
+}
+
+func (a *taskApprover) Approve(ctx context.Context, _ string, _ json.RawMessage, _ policy.Result) (bool, error) {
+	a.mu.Lock()
+	a.tasks = append(a.tasks, BackgroundTaskOf(ctx))
+	a.mu.Unlock()
+	return false, nil
+}
+
+// A background task's ask carries its task id, so a surface can say which
+// task is waiting.
+func TestBackgroundAskNamesItsTask(t *testing.T) {
+	r := newBGRig(t, WakeOff, "asker")
+	appr := &taskApprover{}
+	r.l.Approver = appr
+	r.f.Tools.Add(touchy{})
+	done := make(chan struct{})
+	go func() {
+		_, _ = r.l.Run(context.Background(), "go")
+		close(done)
+	}()
+	waitFor(t, "the ask", func() bool { appr.mu.Lock(); defer appr.mu.Unlock(); return len(appr.tasks) == 1 })
+	r.m.release("asker")
+	<-done
+	spawned := payloads[map[string]any](r.events(t), EvSubagentSpawned)
+	if len(spawned) != 1 || appr.tasks[0] == "" || appr.tasks[0] != spawned[0]["task_id"] {
+		t.Fatalf("the ask named task %q; spawned %v", appr.tasks[0], spawned)
 	}
 }

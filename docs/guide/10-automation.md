@@ -224,9 +224,10 @@ trust](../architecture/workspace-trust.md).
 Background tasks run in `notify` mode. Each gets a `tool_call` card named
 `bg-<task id>`, open while it runs and completed (or failed) by its result,
 whether or not a prompt turn is open. A background task's ask needs an open
-prompt turn, since that is when an editor can be asked: between turns its
-card says it is waiting, and the ask goes out, first, when your next prompt
-opens; it is refused after 30 minutes. `session/cancel` stops every
+prompt turn, since that is when an editor can be asked: between turns the
+task's own `bg-<task id>` card says it is waiting, and the ask goes out,
+first, when your next prompt opens, bound to that turn: it is refused if the
+turn ends before you answer, or if no turn opens within 30 minutes. `session/cancel` stops every
 background task too, with or without a prompt open.
 
 Not yet supported: `session/load` (resuming an editor session from the

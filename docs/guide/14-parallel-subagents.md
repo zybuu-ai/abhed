@@ -244,7 +244,8 @@ until its own outcome or the closing end); the
 terminal, where only a line that is exactly a decision key (`a`, `y`, `r`,
 `n`, `A`) answers it, and any other line is a prompt, with a note that the
 approval still waits; in an editor, held until your next prompt opens, then asked first,
-and refused after 30 minutes; and refused where nobody can be asked.
+and refused after 30 minutes, or if that turn ends before you answer; and
+refused where nobody can be asked.
 
 `task_status` reports this session's tasks, or one with its summary once
 done; `task_cancel` stops one, as `cancelled_by_parent`. A session's tasks are

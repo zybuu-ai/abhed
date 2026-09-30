@@ -93,6 +93,9 @@ type acpSession struct {
 	// ends: an ask made between turns waits on it, since the editor can only
 	// be asked inside a turn.
 	turnOpen chan struct{}
+	// turn is the open prompt turn's context: an ask put to the editor is
+	// bound to it, so none is left open once the turn that showed it ends.
+	turn context.Context
 }
 
 // gate returns nil while a prompt turn is open, and otherwise the channel
@@ -420,6 +423,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	ctx, cancel := context.WithCancel(c.root())
 	s.mu.Lock()
 	s.cancel = cancel
+	s.turn = ctx
 	s.ranIdless = nil // a result the last turn never recorded will not come
 	// An ask held since the last turn goes out now, inside this one.
 	if s.turnOpen != nil {
@@ -430,7 +434,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	defer func() {
 		cancel()
 		s.mu.Lock()
-		s.cancel = nil
+		s.cancel, s.turn = nil, nil
 		s.mu.Unlock()
 	}()
 
@@ -487,8 +491,14 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	gate := s.gate()
 	s.mu.Unlock()
 	if gate != nil {
+		// Said on the background task's own card, which the editor has; the
+		// ask's own card is drawn only when it is put.
+		waitingOn := callID
+		if task := agent.BackgroundTaskOf(ctx); task != "" {
+			waitingOn = "bg-" + task
+		}
 		c.notification("session/update", map[string]any{"sessionId": s.id, "update": map[string]any{
-			"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "pending",
+			"sessionUpdate": "tool_call_update", "toolCallId": waitingOn, "status": "pending",
 			"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text",
 				"text": "Waiting for your approval; send a message to review it."}}}}})
 		held := time.NewTimer(heldAskWait)
@@ -501,6 +511,19 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "no prompt turn opened to ask"})
 			return false, nil
 		}
+	}
+	// Bound to the turn it is put in: the editor may be asked only inside a
+	// turn, so an ask still open when the turn ends is refused, not left
+	// waiting on a request the editor has closed.
+	s.mu.Lock()
+	turn := s.turn
+	s.mu.Unlock()
+	askCtx := ctx
+	if turn != nil {
+		bound, stop := context.WithCancel(ctx)
+		defer stop()
+		defer context.AfterFunc(turn, stop)()
+		askCtx = bound
 	}
 	// The tool_call goes out first, so the editor has the card this asks about.
 	if s.agent != nil {
@@ -540,12 +563,16 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if scope != "" && shownScope != "" {
 		meta["scope"] = shownScope
 	}
-	res, err := c.call(ctx, "session/request_permission", map[string]any{
+	res, err := c.call(askCtx, "session/request_permission", map[string]any{
 		"sessionId": s.id,
 		"toolCall": map[string]any{"toolCallId": callID, "title": title,
 			"kind": toolKind(tool), "status": "pending", "rawInput": shown, "_meta": map[string]any{acpMetaKey: meta}},
 		"options": options,
 	})
+	if err != nil && ctx.Err() == nil && turn != nil && turn.Err() != nil {
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySystem, Reason: "the prompt turn ended before it was answered"})
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
