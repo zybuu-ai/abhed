@@ -8,6 +8,7 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- An extension hook's `ask` no longer comes before deny rules and plan mode, where it could turn a refusal into a question a person might accept; a hook's `allow` is no opinion. A hook can now only tighten a decision.
 - Approval prompts now show hidden and control characters instead of letting
   them rewrite what is displayed. A tool call's own text could carry a
   carriage return, escape sequence, backspace or zero-width or bidi character
