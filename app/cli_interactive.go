@@ -106,10 +106,6 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// provides its own surface.
 	sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines: lines, ended: readErr})
 	sessionState.fresh()
-	// Until the terminal UI provides one, questions are asked as lines.
-	if sessionState.surface == nil {
-		sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines, readErr})
-	}
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
 	// One conversation per session: every task continues the same loop and

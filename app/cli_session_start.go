@@ -79,24 +79,6 @@ func bareResume(args []string) ([]string, bool) {
 	return args, false
 }
 
-// lineAnswers reads a Surface's answers from the lines the prompt reads,
-// while a command runs at the prompt and nothing else is reading them.
-type lineAnswers struct {
-	lines   <-chan string
-	readErr <-chan struct{}
-}
-
-func (a lineAnswers) Await(ctx context.Context) (string, bool) {
-	select {
-	case l := <-a.lines:
-		return l, true
-	case <-a.readErr:
-		return "", false
-	case <-ctx.Done():
-		return "", false
-	}
-}
-
 // startSession applies -c, -r and --fork-session as the interactive session
 // opens: the conversation to go on with, or a new one when there is none.
 func startSession(ctx context.Context, st *cliState, r *ui.Renderer) {
