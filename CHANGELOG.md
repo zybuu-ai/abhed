@@ -8,6 +8,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
+  spelled long (`rm --recursive --force dir`), was not treated as a command
+  with no undo, so bypass mode ran it without asking. Those flags now count
+  wherever they appear before `--`.
 - A person signed out, removed, taken out of `auth.require_group` or refused
   by an access check kept receiving every event of a session on a
   `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
@@ -502,6 +506,23 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed rpc` and `abhed acp` ignored `limits.max_turns` from the user's and
+  a trusted workspace's configuration, which bind the CLI and the server: a
+  limit of 2 ran 16 turns. They now take it as the CLI does. An untrusted
+  workspace can still only lower it, and a managed value stays the ceiling.
+- `abhed rpc`: a `steer` sent while a prompt ran was read only after the run
+  ended, so it never redirected it. Input is now read while a prompt runs: a
+  `steer` joins that run at its next turn and is answered `steered` at once.
+  Any other request, a second `prompt` included, waits its turn and is
+  answered in the order sent. A `steer` when no prompt runs leads the next one.
+- `bash`: the note that the sandbox has no network was left off when a
+  pipeline ended in success, as `curl … | head` does; it now follows the
+  network failure whatever the exit code.
+- A context over `compact_at` with nothing older than the kept turns recorded
+  `compaction.started` with no `compaction.completed`. `started` is now
+  recorded only when a summary is about to be written.
+- Docs: `compact_at` below about 0.3 compacts on almost every turn
+  (docs/guide/02-configuration.md).
 - `abhed acp`: a permission request's `toolCallId` is now the id of the
   `tool_call` it asks about, and that `tool_call` is sent first. The id was
   derived from the tool name and argument length, so it matched no tool call
@@ -551,6 +572,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- SDK: `Options.ConfiguredLimits` takes `limits.max_turns` from the
+  configuration, as the CLI does; `rpc` and `acp` set it. Embedders that leave
+  it off keep today's behaviour: only a managed value binds, and a nonzero
+  `Options.MaxTurns` wins over the files, below the managed ceiling.
 - `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
   carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
   `requestId`. `destructive` is true for any command with no undo, whichever

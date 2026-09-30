@@ -166,6 +166,7 @@ returns `abhed.ErrUntrustedModel` rather than run on a different model; set
 | `Mode` | replaces `permissions.mode` | `bypass` is refused; if the file sets `permissions.mode`, only that mode or `plan` |
 | `SyntaxCheck` | replaces `tools.syntax_check` (`refuse`, `report`, `off`) | if the file sets it, only as strict or stricter (`off` < `report` < `refuse`) |
 | `MaxTurns` | replaces the default turn limit | if the file sets `limits.max_turns`, at most that; zero uses it |
+| `ConfiguredLimits` | when `MaxTurns` is zero, the files' `limits.max_turns` binds, as for the CLI; off, it does not | the same, the managed value still the ceiling |
 | `Allow` | added to `permissions.allow` | refused if the file sets `permissions.allow` |
 | `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
 | `Extensions` | added to the configured ones | added; an extension can only veto |

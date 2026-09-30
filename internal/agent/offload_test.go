@@ -376,3 +376,33 @@ func TestRunOffloadsThenRecallsWithoutCompacting(t *testing.T) {
 		t.Fatalf("the window (%d chars) is no smaller than what was read (%d)", inWindow, recorded)
 	}
 }
+
+// Over the threshold with nothing older than the kept turns, no compaction is
+// recorded as started; it once left a started with no completion.
+func TestCompactionStartedOnlyWithSomethingToSummarise(t *testing.T) {
+	sess, err := tools.NewSession(tempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemStore()
+	adapter := &sizedAdapter{scriptedAdapter: &scriptedAdapter{turns: []scriptedTurn{{text: "done"}}}, window: 200}
+	l := NewLoop(adapter, tools.NewRegistry(tools.Read{}), policy.New(policy.ModeDefault),
+		AutoApprove{Yes: true}, sess, NewRecorder(store, "sess1", ""), DefaultConfig())
+	l.Compactor = NewCompactor(adapter, 0.30)
+	if _, err := l.Run(context.Background(), strings.Repeat("a long prompt ", 200)); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	started, done := 0, 0
+	for _, e := range evs {
+		switch e.Type {
+		case EvCompactStarted:
+			started++
+		case EvCompactDone:
+			done++
+		}
+	}
+	if started != done {
+		t.Fatalf("compaction.started %d times, completed %d", started, done)
+	}
+}

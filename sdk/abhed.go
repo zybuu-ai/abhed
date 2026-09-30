@@ -122,8 +122,13 @@ type Options struct {
 	OnEvent func(Event)
 
 	// MaxTurns bounds one conversation. Zero uses the default, or the managed
-	// limits.max_turns, which it may not exceed.
+	// limits.max_turns, which it may not exceed. Set, it wins over the
+	// ConfigDir and user files, below the managed ceiling.
 	MaxTurns int
+
+	// ConfiguredLimits takes limits.max_turns from the configuration, as the
+	// CLI does, when MaxTurns is zero. Off, only a managed value binds.
+	ConfiguredLimits bool
 
 	// SystemPrompt replaces the built-in prompt entirely. Most callers want
 	// AppendSystem instead.
@@ -321,9 +326,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec.Redact = red
 
 	loopCfg := toolset.LoopConfig(cfg, "")
-	// The file's max_turns binds an embedded agent only when the organisation sets it.
+	// The file's max_turns binds an embedded agent when the organisation sets
+	// it, or when the caller asks for the configured limits.
 	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns
-	if (opts.MaxTurns > 0 || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
+	if (opts.MaxTurns > 0 || opts.ConfiguredLimits || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
 		loopCfg.MaxTurns = cfg.Limits.MaxTurns
 	}
 

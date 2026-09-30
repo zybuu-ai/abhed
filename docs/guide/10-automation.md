@@ -55,7 +55,13 @@ send(method="prompt", prompt="fix the failing tests")
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
-per run.
+per run: sent while a prompt runs, it is answered `steered` at once and joins
+that run at its next turn; sent when none runs, it leads the next prompt. Every
+other request, a second `prompt` included, waits for the running prompt and is
+answered in the order sent.
+
+`limits.max_turns` binds as it does for the CLI, from the user's file or a
+trusted workspace's; an untrusted workspace can only lower it.
 
 The session has the CLI's tool set, subagents, MCP servers, skills and the
 other tools the configuration enables included. There is no approver, so a
