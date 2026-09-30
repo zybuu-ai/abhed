@@ -21,6 +21,7 @@ import (
 type scriptedACPAgent struct {
 	opts abhed.Options
 	ran  []string
+	args json.RawMessage // the write's arguments; a plain write when nil
 }
 
 func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, error) {
@@ -31,6 +32,9 @@ func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, erro
 	}
 	emit(agent.EvAgentReasoning, map[string]string{"text": "I should write the file."})
 	args := json.RawMessage(`{"path":"/ws/a.txt","content":"hi"}`)
+	if a.args != nil {
+		args = a.args
+	}
 	// As the loop does: the request is recorded, then the approver is asked about it.
 	emit(agent.EvActionRequested, agent.ActionRequested{CallID: "c1", Tool: "write", Args: args, RequiresApproval: true})
 	actx := agent.WithCallID(agent.WithRequestID(ctx, "ev-"+strconv.Itoa(len(a.ran))), "c1")

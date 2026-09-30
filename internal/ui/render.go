@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
@@ -124,14 +125,14 @@ func (r *Renderer) emit(line string) {
 		return
 	}
 	r.flushTable()
-	fmt.Fprintln(r.w, Markdown(r.s, line))
+	fmt.Fprintln(r.w, Markdown(r.s, VisibleLine(line)))
 }
 
 func (r *Renderer) flushTable() {
 	if len(r.table) == 0 {
 		return
 	}
-	fmt.Fprint(r.w, Markdown(r.s, strings.Join(r.table, "\n"))+"\n")
+	fmt.Fprint(r.w, Markdown(r.s, Visible(strings.Join(r.table, "\n")))+"\n")
 	r.table = nil
 }
 
@@ -167,7 +168,7 @@ func (r *Renderer) ShowLastReasoning() bool {
 	}
 	fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
 	for _, line := range strings.Split(r.lastReasoning, "\n") {
-		fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(line))
+		fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(VisibleLine(line)))
 	}
 	return true
 }
@@ -233,7 +234,7 @@ func (r *Renderer) Event(ev agent.Event) {
 			return
 		}
 		if strings.TrimSpace(m.Text) != "" {
-			fmt.Fprintf(r.w, "\n%s\n", Markdown(r.s, m.Text))
+			fmt.Fprintf(r.w, "\n%s\n", Markdown(r.s, Visible(m.Text)))
 		}
 
 	case agent.EvAgentReasoning:
@@ -262,7 +263,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 		fmt.Fprintf(r.w, "%s %s\n", r.s.Dim("▾"), r.s.Dim("reasoning"))
 		for _, line := range strings.Split(text, "\n") {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(line))
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("│"), r.s.Dim(VisibleLine(line)))
 		}
 
 	case agent.EvActionRequested:
@@ -275,7 +276,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 		r.pause()
 		fmt.Fprintf(r.w, "%s %s %s\n",
-			r.s.Accent("●"), r.s.Bold(a.Tool), r.s.Dim(summarizeArgs(a.Tool, a.Args)))
+			r.s.Accent("●"), r.s.Bold(VisibleLine(a.Tool)), r.s.Dim(VisibleLine(summarizeArgs(a.Tool, a.Args))))
 
 	case agent.EvObservation:
 		var o agent.Observation
@@ -287,7 +288,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		// the kind of result the user needs to see.
 		if o.IsError {
 			for _, line := range firstLines(o.Content, 8) {
-				fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("│"), line)
+				fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("│"), VisibleLine(line))
 			}
 			return
 		}
@@ -296,19 +297,19 @@ func (r *Renderer) Event(ev agent.Event) {
 		}
 		if o.ExitCode != nil && *o.ExitCode != 0 {
 			for _, line := range firstLines(o.Content, 12) {
-				fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("│"), line)
+				fmt.Fprintf(r.w, "  %s %s\n", r.s.Yellow("│"), VisibleLine(line))
 			}
 			return
 		}
 		if summary := observationSummary(o); summary != "" {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("└"), r.s.Dim(summary))
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Dim("└"), r.s.Dim(VisibleLine(summary)))
 		}
 
 	case agent.EvActionDenied:
 		r.pause()
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(m["reason"]))
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(VisibleLine(m["reason"])))
 		}
 
 	case agent.EvForked:
@@ -400,10 +401,11 @@ func firstLines(s string, n int) []string {
 	return lines
 }
 
+// truncate counts runes, so a cut never splits a character into stray bytes.
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string([]rune(s)[:n]) + "..."
 }

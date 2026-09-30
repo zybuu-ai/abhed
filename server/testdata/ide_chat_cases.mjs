@@ -287,4 +287,23 @@ check('a pipeline step\'s ask names the pipeline', open().length === 1 && open()
 render(ev(2, 'subagent.ask', {session:'child', subagent:'runner', request_id:'cev21', call_id:'step_2', tool:'bash', args:{command:'ls'}, via:'skill p pipeline'}));
 check('and so does one a subagent\'s pipeline puts', open().some(a => a.textContent.includes('Asked by skill p pipeline') && a.textContent.includes('subagent runner')));
 
+// A call's own text cannot hide what allowing runs: control and format
+// characters are written out, and the prompt warns that they were there.
+fresh('s30', true);
+{
+  const payload = 'touch pwned #\u200d\r\u001b[2K\u202e\u007f\u009b  $ ls -la';
+  render(ev(1, 'action.requested', {call_id:'x1', tool:'bash', args:{command: payload}, requires_approval:true,
+    reason:'why\r' + payload, scope:'bash(' + payload + ')', via:'via\u200b'}));
+  const ask = open()[0];
+  const shown = ask ? ask.textContent : '';
+  const raw = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+  check('the prompt shows hidden characters instead of obeying them',
+    !!ask && !raw.test(shown) && shown.includes('touch pwned') && shown.includes('⟨U+200D⟩') && shown.includes('⟨U+000D⟩'));
+  check('the prompt warns that the call carries hidden characters', shown.includes('hidden or control characters'));
+  const row = calls.get('x1').node.querySelector('.subj').textContent;
+  check('the call row shows them too', row.includes('⟨U+202E⟩') && !raw.test(row));
+  render(ev(2, 'action.requested', {call_id:'x2', tool:'bash', args:{command:'printf "a\tb"'}, requires_approval:true}));
+  check('a plain call draws no warning', open().length === 2 && !open()[1].textContent.includes('hidden or control characters'));
+}
+
 if(!ok) process.exit(1);

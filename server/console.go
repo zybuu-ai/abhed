@@ -457,6 +457,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   border-radius:8px;padding:13px 15px;margin:12px 0}
 .approve h4{margin:0 0 4px;font-family:var(--mono);font-size:11.5px;color:var(--waiting)}
 .approve p{margin:0 0 9px;font-size:12px;color:var(--ink-2)}
+.approve p.hidden-warn{color:var(--danger);font-weight:600}
 .approve pre{font-family:var(--mono);font-size:11px;background:var(--sunken);
   border-radius:5px;padding:9px;overflow-x:auto;margin:0 0 10px;color:var(--ink-2)}
 .approve .row{display:flex;gap:8px}
@@ -1274,8 +1275,8 @@ function render(ev){
       const wrap = node('call');
       const hdr = node('hdr');
       const caret = node('caret', '\u25be');
-      const tool = node('tool', p.tool);
-      const arg = node('arg', summarize(p.tool, p.args));
+      const tool = node('tool', visible(p.tool));
+      const arg = node('arg', visible(summarize(p.tool, p.args)));
       const peek = node('peek');   // one-line result, shown only when collapsed
       hdr.append(caret, tool, arg, peek);
       wrap.appendChild(hdr);
@@ -1446,6 +1447,15 @@ function kv(k, v){
   return s;
 }
 
+// visible writes out control and format characters (CR, ESC, zero-width, bidi)
+// as ⟨U+XXXX⟩, so a call's own text cannot reorder or hide part of it on the page.
+function visible(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
+    : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+
+function hasHidden(s){ return /[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(String(s)); }
+
 function summarize(tool, args){
   if(!args) return '';
   let a = args;
@@ -1615,20 +1625,24 @@ function approval(p, rid){
   if(!rid) return;
   const card = node('approve');
   const h = document.createElement('h4');
-  h.textContent = 'Approval required — ' + p.tool;
+  h.textContent = 'Approval required — ' + visible(p.tool);
   card.appendChild(h);
-  if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: p.reason}));
+  // Every field is made visible: the card must show exactly what approving runs.
+  let args;
+  try{
+    args = JSON.stringify(typeof p.args === 'string' ? JSON.parse(p.args) : p.args, null, 2);
+  }catch{ args = String(p.args); }
+  if([p.tool, p.reason, p.subagent, p.via, p.scope, args].some(v => v && hasHidden(v)))
+    card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this call contains hidden or control characters'}));
+  if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: visible(p.reason)}));
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
-    {className: 'scope-note', textContent: 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'}));
+    {className: 'scope-note', textContent: 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'}));
   // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
-  if(p.via) card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Asked by ' + p.via + '.'}));
+  if(p.via) card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Asked by ' + visible(p.via) + '.'}));
 
   const pre = document.createElement('pre');
-  try{
-    pre.textContent = JSON.stringify(
-      typeof p.args === 'string' ? JSON.parse(p.args) : p.args, null, 2);
-  }catch{ pre.textContent = String(p.args); }
+  pre.textContent = visible(args, true);
   card.appendChild(pre);
 
   const row = node('row');
@@ -1640,7 +1654,7 @@ function approval(p, rid){
   // scope narrow enough to be safe to remember.
   const always = p.scope
     ? Object.assign(document.createElement('button'),
-        {className:'no', textContent: p.subagent ? 'Always allow in this session' : 'Always allow', title: p.scope})
+        {className:'no', textContent: p.subagent ? 'Always allow in this session' : 'Always allow', title: visible(p.scope)})
     : null;
   const buttons = always ? [yes, no, always] : [yes, no];
   const decide = (ok, scope) => async () => {

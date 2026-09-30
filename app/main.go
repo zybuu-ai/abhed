@@ -2876,7 +2876,7 @@ func forkPoints(r *ui.Renderer, events []agent.Event) {
 		default:
 			continue
 		}
-		fmt.Printf("    %s  %s\n", s.Dim(fmt.Sprintf("%4d", ev.Seq)), label)
+		fmt.Printf("    %s  %s\n", s.Dim(fmt.Sprintf("%4d", ev.Seq)), ui.VisibleLine(label))
 		shown++
 		if shown >= 30 {
 			fmt.Println(s.Dim("    …"))

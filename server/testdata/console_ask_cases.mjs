@@ -75,4 +75,23 @@ live = false; __reject = 'that approval is no longer pending';
 lateCard.querySelector('.yes').onclick(); await tick();
 check('a 409 after the run retires the card', !lateCard.isConnected);
 
+// A call's own text cannot hide what approving runs: control and format
+// characters are written out, and the card warns that they were there.
+{
+  const payload = 'touch pwned #\u200d\r\u001b[2K\u202e\u007f\u009b  $ ls -la';
+  render({seq:50, id:'ev50', type:'action.requested', payload:{call_id:'c50', tool:'bash', requires_approval:true,
+    args:{command: payload, description:'x\r\u001b[2Kls'}, reason:'why\r' + payload, scope:'bash(' + payload + ')', via:'via\u200b'}});
+  const card = cards().find(c => c.isConnected && c.textContent.includes('touch pwned'));
+  const shown = card ? card.textContent + card.querySelectorAll('.no').map(b => b.title || '').join('') : '';
+  const row = card ? card.parentNode.querySelector('.arg').textContent : '';
+  const raw = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+  check('the approval card shows hidden characters instead of obeying them',
+    !!card && !raw.test(shown) && shown.includes('⟨U+200D⟩') && shown.includes('⟨U+202E⟩') && shown.includes('⟨U+000D⟩'));
+  check('the card warns that the call carries hidden characters', shown.includes('hidden or control characters'));
+  check('the tool row shows them too', row.includes('⟨U+000D⟩') && !raw.test(row));
+  render({seq:51, id:'ev51', type:'action.requested', payload:{call_id:'c51', tool:'bash', requires_approval:true, args:{command:'printf "a\tb\n"'}}});
+  const plain = cards().find(c => c.isConnected && c.textContent.includes('printf'));
+  check('a plain call draws no warning', !!plain && !plain.textContent.includes('hidden or control characters'));
+}
+
 if(!ok) process.exit(1);

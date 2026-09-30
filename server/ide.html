@@ -285,6 +285,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .call .why{padding:5px 10px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
 .ask{border:1px solid var(--warn);background:var(--warn-bg);border-radius:6px;padding:9px 10px;flex:none}
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.ask p.hidden-warn{color:var(--bad);font-weight:600}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -1344,6 +1345,13 @@ function trim(){
 }
 // An absolute path is mostly prefix. The end of it is what a person reads.
 function tail(p){ const parts = p.split('/').filter(Boolean); return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : p; }
+// visible writes out control and format characters (CR, ESC, zero-width, bidi)
+// as ⟨U+XXXX⟩, so a call's own text cannot reorder or hide part of it on the page.
+function visible(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
+    : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+function hasHidden(s){ return /[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(String(s)); }
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
@@ -1561,7 +1569,7 @@ function render(ev){
     if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
     endThinking(at); streaming = null; streamBody = null;
     const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
-    s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
+    s.appendChild(el('span', 'tool', visible(p.tool))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
     const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
     // Arguments and output are drawn when the call is opened, so a session of
@@ -1643,13 +1651,13 @@ function subagentRow(id, p, at){
   let c = calls.get(id); if(c) return c;
   endThinking(at); streaming = null; streamBody = null;
   const d = el('details', 'call'), s = el('summary'), subj = subjectOf(p.tool, p.args), res = el('span', 'res', '…');
-  s.appendChild(el('span', 'tool', p.tool + ' (subagent ' + (p.subagent || '') + ')')); s.appendChild(el('span', 'subj', subj || p.subject || '')); s.appendChild(res);
+  s.appendChild(el('span', 'tool', visible(p.tool + ' (subagent ' + (p.subagent || '') + ')'))); s.appendChild(el('span', 'subj', visible(subj || p.subject || ''))); s.appendChild(res);
   d.appendChild(s); c = {node:d, res, tool:p.tool, subject:subj, args:p.args || {}, out:null, drawn:0};
   d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
   add(d); calls.set(id, c); return c;
 }
 function fillCall(c){
-  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', JSON.stringify(c.args, null, 2)), c.node.firstChild.nextSibling); }
+  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', visible(JSON.stringify(c.args, null, 2), true)), c.node.firstChild.nextSibling); }
   if(c.out != null && c.drawn < 2){ c.drawn = 2; c.node.appendChild(clip(c.out)); }
 }
 // Long output shows its head until asked for the rest.
@@ -1670,7 +1678,11 @@ function askApproval(p, rid){
   // An answer names its request; without one the server would apply it to whatever is pending.
   if(!rid) return;
   const a = el('div', 'ask'); a.dataset.call = p.call_id;
-  a.appendChild(el('b', '', 'Allow ' + p.tool + '?')); a.appendChild(el('p', '', (subjectOf(p.tool, p.args) || '') + (p.reason ? '  —  ' + p.reason : '')));
+  // Every field is made visible: the prompt must show exactly what allowing runs.
+  const subj = subjectOf(p.tool, p.args) || '';
+  a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, JSON.stringify(p.args || {})].some(v => v && hasHidden(v)))
+    a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
   const btns = el('div', 'btns');
   const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';
     b.addEventListener('click', async () => { const q = asks.get(p.call_id); if(!q || q.rid !== rid) return; btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
@@ -1688,10 +1700,10 @@ function askApproval(p, rid){
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
         a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
-  if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'));
+  if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'));
   // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
-  if(p.via) a.appendChild(el('p', 'scope-note', 'Asked by ' + p.via + '.'));
-  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
+  if(p.via) a.appendChild(el('p', 'scope-note', 'Asked by ' + visible(p.via) + '.'));
+  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon();
   // A pending question is never left half off screen, wherever the reader had scrolled to.
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
@@ -2060,7 +2072,8 @@ function logTerminal(cmd, p, who){
   if(who === 'you') return; // the person's own commands are already on their terminal
   if(!agentTerm){ const keep = activeTerm; agentTerm = makeTerm('agent', 'agent'); agentTerm.term.write('\x1b[2mCommands the agent ran, with their output. Read only.\x1b[0m\r\n'); if(keep) selectTerm(keep); }
   const out = (p.content || '').slice(0, 8000);
-  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + cmd + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
+  // The command is the model's text: escapes in it must print, not drive the terminal.
+  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }
 function logEvent(ev, p){

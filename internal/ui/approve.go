@@ -135,25 +135,36 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 		defer cleanup()
 	}
 
+	// Every model- or tool-supplied field is made visible before it is styled,
+	// so a carriage return or escape in the arguments cannot redraw the prompt.
 	s := a.Style
-	fmt.Fprintf(a.Out, "\n%s %s %s\n", s.Yellow("●"), s.Bold(tool), s.Dim(summarizeArgs(tool, args)))
+	var v visibleTracker
+	header := fmt.Sprintf("\n%s %s %s\n", s.Yellow("●"), s.Bold(v.line(tool)), s.Dim(v.line(summarizeArgs(tool, args))))
+	var asked []string
 	if via := agent.PipelineOf(ctx); via != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by "+via))
+		asked = append(asked, "asked by "+v.line(via))
 	}
 	if who := agent.SubagentOf(ctx); who != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by subagent: "+who))
+		asked = append(asked, "asked by subagent: "+v.line(who))
 	}
 	if res.Reason != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim(res.Reason))
+		asked = append(asked, v.line(res.Reason))
 	}
-
-	if preview := a.preview(tool, args); preview != "" {
-		fmt.Fprintln(a.Out, preview)
-	}
-
+	preview := a.preview(&v, tool, args)
 	options := "[a]ccept  [r]eject"
 	if scope != "" {
-		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(scope))
+		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(v.line(scope)))
+	}
+
+	fmt.Fprint(a.Out, header)
+	if v.hidden {
+		fmt.Fprintf(a.Out, "  %s\n", s.Red(hiddenWarning))
+	}
+	for _, line := range asked {
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim(line))
+	}
+	if preview != "" {
+		fmt.Fprintln(a.Out, preview)
 	}
 	fmt.Fprintf(a.Out, "  %s ", options)
 
@@ -220,7 +231,7 @@ func (a *Approver) readAnswer() (string, bool) {
 }
 
 // preview renders what the action will actually do.
-func (a *Approver) preview(tool string, raw json.RawMessage) string {
+func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) string {
 	s := a.Style
 	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
@@ -240,10 +251,10 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		old, updated := str("old_string"), str("new_string")
 		var b strings.Builder
 		for _, line := range strings.Split(strings.TrimRight(old, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Red("- "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Red("- "+v.line(line)))
 		}
 		for _, line := range strings.Split(strings.TrimRight(updated, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+v.line(line)))
 		}
 		return strings.TrimRight(b.String(), "\n")
 
@@ -256,7 +267,7 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 			shown = lines[:15]
 		}
 		for _, line := range shown {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+v.line(line)))
 		}
 		if len(lines) > 15 {
 			fmt.Fprintf(&b, "  %s\n", s.Dim(fmt.Sprintf("... %d more lines", len(lines)-15)))
@@ -264,7 +275,7 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		return strings.TrimRight(b.String(), "\n")
 
 	case "bash":
-		return fmt.Sprintf("  %s", s.Dim("$ "+str("command")))
+		return fmt.Sprintf("  %s", s.Dim("$ "+v.line(str("command"))))
 	}
 	return ""
 }

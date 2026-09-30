@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Approval prompts now show hidden and control characters instead of letting
+  them rewrite what is displayed. A tool call's own text could carry a
+  carriage return, escape sequence, backspace or zero-width or bidi character
+  that redrew the prompt, so `touch pwned #…` read as `$ ls -la` and a write's
+  preview hid the line it added. The CLI prompt and tool lines, the console
+  and IDE approval cards and the `acp` permission title now print such
+  characters as escapes (`\r`, `\x1b`, `⟨U+200D⟩`) and say the call contains
+  them.
 - In every release up to and including 1.2.1, a repository could ship a
   `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
   `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
