@@ -288,3 +288,18 @@ func TestListRowsShowBackgroundBadges(t *testing.T) {
 		t.Fatal("the workbench's list rows do not show the background and approval badges")
 	}
 }
+
+// The console reopens a dropped event stream while a run is live or
+// background work is owed, and not for a finished session.
+func TestConsoleReconnectsWhileBackgroundOwed(t *testing.T) {
+	harness := `
+globalThis.__streams = [];
+globalThis.EventSource = class { constructor(url){ this.url = url; __streams.push(this); } close(){} };
+globalThis.setTimeout = f => f();
+let es = null, lastSeq = 0, live = false, bgLive = false, current = null;
+const render = () => {}, workbenchSaw = () => {};
+`
+	if out, err := runConsoleCases(t, "conn", harness, "console_conn_cases.mjs"); err != nil {
+		t.Fatalf("the console's reconnect failed:\n%s", out)
+	}
+}

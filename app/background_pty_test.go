@@ -72,3 +72,21 @@ func TestCLIAutoWake(t *testing.T) {
 		t.Fatalf("woke more than once:\n%s", r.text())
 	}
 }
+
+// With wake auto, a result that arrives while something is typed at the
+// prompt does not wake: the message being typed will carry it.
+func TestCLINoWakeWhileTyping(t *testing.T) {
+	m := &bgModelServer{childDelay: 1500 * time.Millisecond}
+	ws := bgWorkspace(t, m.start(t), `,"subagents":{"wake":"auto"}`)
+	r := startOnPty(t, []string{"-C", ws})
+	r.waitFor("Type a task", 1)
+	r.send("go\r")
+	r.waitFor("still running", 1)
+	time.Sleep(300 * time.Millisecond)
+	r.send("half a thought")
+	r.waitFor("background: child finished (completed", 1)
+	time.Sleep(3 * time.Second) // past the settle window, when a wake would start
+	if strings.Contains(r.text(), "woke to act") {
+		t.Fatalf("woke while a message was being typed:\n%s", r.text())
+	}
+}
