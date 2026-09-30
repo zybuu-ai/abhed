@@ -32,9 +32,6 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			sandboxLabel += " · no network"
 		}
 	}
-	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
-		sandboxLabel, storageLabel(appCfg)))
-	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 
 	// Input is read on its own goroutine so a line typed while the agent is
 	// working can steer it. Reading inline meant the prompt was simply not
@@ -52,6 +49,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// print in the program would otherwise staircase down the screen.
 	restoreStreams := editor.Capture()
 	defer restoreStreams()
+	// The banner is drawn once the terminal has said what its background
+	// is, in the theme that suits it, and joins the transcript.
+	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
+		sandboxLabel, storageLabel(appCfg)))
+	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 
 	// Approval input rides the one stdin reader the editor owns. Without this
 	// the approver opened a second reader on stdin, racing the editor for each

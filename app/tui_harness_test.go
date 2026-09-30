@@ -118,6 +118,13 @@ func tuiWorkspace(t *testing.T, extra string) (*tuiStub, string) {
 
 func startTUI(t *testing.T, stub *tuiStub, ws string, cols, rows int, args ...string) *tuiRun {
 	t.Helper()
+	return startTUIWith(t, stub, ws, cols, rows, "", args...)
+}
+
+// startTUIWith starts the CLI on a terminal that answers a background-colour
+// query with background ("" answers nothing, as many terminals do).
+func startTUIWith(t *testing.T, stub *tuiStub, ws string, cols, rows int, background string, args ...string) *tuiRun {
+	t.Helper()
 	cmd := mainHelper(append([]string{"-C", ws}, args...))
 	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
@@ -137,6 +144,9 @@ func startTUI(t *testing.T, stub *tuiStub, ws string, cols, rows int, args ...st
 				r.chunks = append(r.chunks, chunk{now, len(r.raw)})
 				r.mu.Unlock()
 				_, _ = r.term.Write(buf[:n])
+				if background != "" && strings.Contains(string(buf[:n]), "\x1b]11;?") {
+					_, _ = io.WriteString(tty, "\x1b]11;rgb:"+background+"\x07\x1b[?62;22c")
+				}
 			}
 			if err != nil {
 				return

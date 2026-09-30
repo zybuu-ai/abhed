@@ -255,7 +255,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 		// the queue and joins the transcript where it applies.
 		r.endReply(d, "")
 		d.dequeue(m.Text)
-		d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.prompt})
+		d.commitItem(&promptBlock{text: sanitize(m.Text, false), prompt: d.promptText()})
 
 	case agent.EvActionRequested:
 		var a agent.ActionRequested

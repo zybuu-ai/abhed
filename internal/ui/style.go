@@ -40,23 +40,23 @@ func (s Style) wrap(code, text string) string {
 	return "\x1b[" + code + "m" + text + "\x1b[0m"
 }
 
-func (s Style) Dim(t string) string     { return s.wrap("2", t) }
+func (s Style) Dim(t string) string     { return s.wrap(active().dim, t) }
 func (s Style) Bold(t string) string    { return s.wrap("1", t) }
 func (s Style) Italic(t string) string  { return s.wrap("3", t) }
 func (s Style) Strike(t string) string  { return s.wrap("9", t) }
-func (s Style) Red(t string) string     { return s.wrap("31", t) }
-func (s Style) Green(t string) string   { return s.wrap("32", t) }
-func (s Style) Yellow(t string) string  { return s.wrap("33", t) }
-func (s Style) Blue(t string) string    { return s.wrap("34", t) }
-func (s Style) Magenta(t string) string { return s.wrap("35", t) }
-func (s Style) Cyan(t string) string    { return s.wrap("36", t) }
+func (s Style) Red(t string) string     { return s.wrap(active().red, t) }
+func (s Style) Green(t string) string   { return s.wrap(active().green, t) }
+func (s Style) Yellow(t string) string  { return s.wrap(active().yellow, t) }
+func (s Style) Blue(t string) string    { return s.wrap(active().blue, t) }
+func (s Style) Magenta(t string) string { return s.wrap(active().magenta, t) }
+func (s Style) Cyan(t string) string    { return s.wrap(active().cyan, t) }
 
 // Code is inline code in prose.
-func (s Style) Code(t string) string { return s.wrap("38;5;208", t) }
+func (s Style) Code(t string) string { return s.wrap(active().code, t) }
 
-// Accent is the brand orange: 256-colour 202 (#FF5F00) is the nearest to it
-// and reads on dark terminals and, more faintly, on white.
-func (s Style) Accent(t string) string { return s.wrap("38;5;202", t) }
+// Accent is the brand orange: 256-colour 202 (#FF5F00) on a dark
+// background, a deeper orange on a light one.
+func (s Style) Accent(t string) string { return s.wrap(active().accent, t) }
 
 // Reverse swaps foreground and background, which is how a selected row in a
 // list reads as selected on every terminal theme — a colour chosen for a dark
@@ -64,5 +64,5 @@ func (s Style) Accent(t string) string { return s.wrap("38;5;202", t) }
 func (s Style) Reverse(t string) string { return s.wrap("7", t) }
 
 // DiffAdd and DiffDel colour a diff's added and removed lines.
-func (s Style) DiffAdd(t string) string { return s.wrap("32", t) }
-func (s Style) DiffDel(t string) string { return s.wrap("31", t) }
+func (s Style) DiffAdd(t string) string { return s.wrap(active().diffAdd, t) }
+func (s Style) DiffDel(t string) string { return s.wrap(active().diffDel, t) }

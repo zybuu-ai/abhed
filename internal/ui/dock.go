@@ -535,9 +535,18 @@ func (d *dock) pasting() bool {
 	return d.kr.ready != nil && d.kr.ready(5*time.Millisecond)
 }
 
+// promptText is the prompt as drawn: the standard one in the current
+// theme's colours, so a theme chosen after it was set still applies.
+func (d *dock) promptText() string {
+	if stripANSI(d.prompt) == Glyph+" " {
+		return Prompt(d.st)
+	}
+	return d.prompt
+}
+
 // echo commits a submitted prompt to the transcript, where it was typed.
 func (d *dock) echo(shown string) {
-	d.commitItem(&promptBlock{text: shown, prompt: d.prompt})
+	d.commitItem(&promptBlock{text: shown, prompt: d.promptText()})
 }
 
 func (d *dock) startBurst() {
@@ -1087,7 +1096,7 @@ func (d *dock) frame() (rows []string, cr, cc int) {
 // layout breaks the line into screen rows at width w, and says where the
 // cursor falls.
 func (d *dock) layout(w int) (rows []string, curRow, curCol int) {
-	prompt := d.prompt
+	prompt := d.promptText()
 	if d.searching {
 		prompt = d.st.Dim("search: ") + string(d.sq) + d.st.Dim(" ▸ ")
 	} else if d.vim != nil && !d.vim.insert {

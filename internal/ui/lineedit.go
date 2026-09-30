@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -63,8 +64,29 @@ func NewLineReader(prompt string) *LineReader {
 	if err != nil {
 		return &LineReader{fallbck: bufio.NewReader(os.Stdin)}
 	}
-	d := newDock(os.Stdin, os.Stdout, NewStyle(LazyStdout{}))
+	// The theme: the one saved with /theme, else what the environment says,
+	// else what the terminal says its background is.
+	saved, vim := LoadPrefs()
+	theme := saved
+	if theme == "" || theme == "auto" {
+		theme = ThemeFromEnv()
+	}
+	var typed []byte
+	if theme == "" {
+		theme, typed = probeBackground(os.Stdin, os.Stdout)
+	}
+	if SetTheme(theme) != nil {
+		_ = SetTheme("dark")
+	}
+	var in io.Reader = os.Stdin
+	if len(typed) > 0 {
+		in = io.MultiReader(bytes.NewReader(typed), os.Stdin)
+	}
+	d := newDock(in, os.Stdout, NewStyle(LazyStdout{}))
 	d.prompt = prompt
+	if vim {
+		d.setVim(true)
+	}
 	d.kr.ready = readyFunc(os.Stdin)
 	d.size = func() (int, int) {
 		w, h, err := term.GetSize(outFd)
@@ -325,6 +347,14 @@ func (l *LineReader) Flash(s string) {
 		l.d.flash(s)
 		l.d.draw()
 		l.d.mu.Unlock()
+	}
+}
+
+// Repaint draws the screen again from the transcript, as a resize does:
+// after a theme change, so what is on screen is in the new colours.
+func (l *LineReader) Repaint() {
+	if l.raw {
+		l.d.resized()
 	}
 }
 
