@@ -130,3 +130,19 @@ func TestStreamFilterAcrossReads(t *testing.T) {
 		}
 	}
 }
+
+// A joiner is kept only inside an emoji; between letters it would make two
+// strings that look the same, so reveal shows it.
+func TestRevealMarksAJoinerOutsideEmoji(t *testing.T) {
+	if got := reveal("中‍文"); !strings.Contains(got, "⟨U+200D⟩") {
+		t.Fatalf("a joiner between letters was hidden: %q", got)
+	}
+	if got := sanitize("a‍b", false); strings.ContainsRune(got, 0x200d) {
+		t.Fatalf("sanitize kept a joiner between letters: %q", got)
+	}
+	for _, emoji := range []string{"👩‍👩‍👧", "👨🏽‍🦰", "❤️‍🔥", "🏳️‍🌈"} {
+		if got := reveal(emoji); got != emoji {
+			t.Errorf("reveal changed %q to %q", emoji, got)
+		}
+	}
+}

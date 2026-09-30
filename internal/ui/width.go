@@ -362,8 +362,31 @@ func hiddenRune(r rune) bool {
 // pictographs, as in a family emoji. Anywhere else it only hides what
 // follows it, so it goes.
 func keepJoiner(rs []rune, i int) bool {
-	pict := func(r rune) bool { return r >= 0x2000 && unicode.IsGraphic(r) && !hiddenRune(r) }
-	return i > 0 && i+1 < len(rs) && pict(rs[i-1]) && pict(rs[i+1])
+	if i == 0 || i+1 >= len(rs) {
+		return false
+	}
+	left := rs[i-1]
+	// An emoji's presentation selector or skin tone sits between it and
+	// the joiner.
+	for j := i - 1; j > 0 && (left == 0xfe0f || left >= 0x1f3fb && left <= 0x1f3ff); j-- {
+		left = rs[j-1]
+	}
+	return pictograph(left) && pictograph(rs[i+1])
+}
+
+// pictograph reports an emoji's base: only between two of these does a
+// joiner make one picture. Between letters — 中‍文 — it makes two strings
+// that look the same, so it is shown or dropped.
+func pictograph(r rune) bool {
+	switch {
+	case r >= 0x1f000 && r <= 0x1faff:
+		return true
+	case r >= 0x2600 && r <= 0x27bf, r >= 0x2300 && r <= 0x23ff, r >= 0x2b00 && r <= 0x2bff:
+		return true
+	case r == 0x00a9, r == 0x00ae, r == 0x203c, r == 0x2049, r == 0x2122, r == 0x2139:
+		return true
+	}
+	return false
 }
 
 // sanitize removes everything that could move the cursor, change the
