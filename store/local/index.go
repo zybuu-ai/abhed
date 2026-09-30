@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -65,10 +66,20 @@ func (l *indexLine) seal() ([]byte, error) {
 	return encode(l)
 }
 
+// ErrIndexDamaged is an index that no longer matches its head or its own
+// chain. Nothing is added to it until it is looked at: abhed record verify
+// names the line.
+var ErrIndexDamaged = errors.New("the record's index fails verification")
+
 // index is a tenant's index.jsonl, its head and the lock every process
 // takes to append to it.
 type index struct {
-	dir string
+	// ok is how much of the file has been checked, and the hash of each
+	// line checked, so an append checks only what was added since.
+	mu     sync.Mutex
+	ok     int64
+	hashes []string
+	dir    string
 	// clock is the time written on each line; nil is the wall clock.
 	clock func() time.Time
 	// onHead is given each new head, for an anchor.
@@ -104,20 +115,18 @@ func (x *index) append(l indexLine) error {
 		return fmt.Errorf("open the index: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	last, torn, size, err := lastLine(f)
+	// The index is checked against its head before anything is added: an
+	// append onto a cut or broken index would make the damage look sound.
+	n, prev, torn, err := x.check(f)
 	if err != nil {
 		return err
 	}
-	prev, n := Genesis, int64(0)
-	if last != nil {
-		if pl, err := parseIndexLine(last); err == nil {
-			prev, n = pl.Hash, pl.N
-		} else {
-			prev = hashBytes(last)
-		}
-	}
 	if torn > 0 {
-		if err := f.Truncate(size - torn); err != nil {
+		info, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		if err := f.Truncate(info.Size() - torn); err != nil {
 			return fmt.Errorf("repair the index: %w", err)
 		}
 		rep := indexLine{N: n + 1, Op: opRepair, ID: "-", At: x.now().Format(timeFormat), Reason: fmt.Sprintf("an unfinished last line of %d bytes was cut off", torn), Prev: prev}
@@ -129,6 +138,7 @@ func (x *index) append(l indexLine) error {
 			return err
 		}
 		prev, n = rep.Hash, rep.N
+		x.remember(rep.Hash, int64(len(raw)+1))
 	}
 	l.N, l.Prev = n+1, prev
 	if l.At == "" {
@@ -139,9 +149,11 @@ func (x *index) append(l indexLine) error {
 		return err
 	}
 	if _, err := f.Write(append(raw, '\n')); err != nil {
+		x.forget()
 		return fmt.Errorf("write the index: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	x.remember(l.Hash, int64(len(raw)+1))
+	if err := syncFile(f); err != nil {
 		return err
 	}
 	head := Head{Lines: l.N, Hash: l.Hash}
@@ -152,6 +164,81 @@ func (x *index) append(l indexLine) error {
 		x.onHead(head)
 	}
 	return nil
+}
+
+// check verifies what was added to the index since the last check, and the
+// head against it, and returns the line count, the last hash and the size of
+// an unfinished last line. The caller holds the index lock.
+func (x *index) check(f *os.File) (int64, string, int64, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, "", 0, err
+	}
+	size := info.Size()
+	if size < x.ok {
+		x.ok, x.hashes = 0, nil // shrank: check it all again
+	}
+	data := make([]byte, size-x.ok)
+	if _, err := f.ReadAt(data, x.ok); err != nil && !errors.Is(err, io.EOF) {
+		return 0, "", 0, err
+	}
+	sc := scan(data)
+	damaged := func(line int64, why string) (int64, string, int64, error) {
+		x.ok, x.hashes = 0, nil
+		return 0, "", 0, fmt.Errorf("%w: line %d: %s; see abhed record verify", ErrIndexDamaged, line, why)
+	}
+	prev := Genesis
+	if n := len(x.hashes); n > 0 {
+		prev = x.hashes[n-1]
+	}
+	checked := x.ok
+	for _, raw := range sc.raws {
+		n := int64(len(x.hashes)) + 1
+		l, err := parseIndexLine(raw)
+		if err != nil {
+			return damaged(n, "the line is not an index entry")
+		}
+		again := l
+		sealed, err := again.seal()
+		switch {
+		case err != nil || again.Hash != l.Hash || !bytes.Equal(sealed, raw):
+			return damaged(n, "its hash does not match its content")
+		case l.N != n || l.Prev != prev:
+			return damaged(n, "it does not follow the line before it")
+		}
+		prev = l.Hash
+		x.hashes = append(x.hashes, l.Hash)
+		checked += int64(len(raw)) + 1
+	}
+	x.ok = checked
+	n := int64(len(x.hashes))
+	head, have := readHeadFile(x.headPath())
+	switch {
+	case !have && n > 0:
+		return damaged(n, "the index head is missing")
+	case have && head.Lines > n:
+		return damaged(n+1, fmt.Sprintf("lines are missing: its head says it held %d, it holds %d", head.Lines, n))
+	case have && head.Lines > 0 && x.hashes[head.Lines-1] != head.Hash:
+		return damaged(head.Lines, "the line is not the one its head recorded")
+	}
+	return n, prev, int64(len(sc.tail)), nil
+}
+
+// remember adds a line this process wrote to what has been checked.
+func (x *index) remember(hash string, size int64) {
+	x.mu.Lock()
+	x.hashes = append(x.hashes, hash)
+	x.ok += size
+	x.mu.Unlock()
+}
+
+// forget drops what was checked, after a write that may have been partial.
+func (x *index) forget() {
+	x.mu.Lock()
+	x.ok, x.hashes = 0, nil
+	x.mu.Unlock()
 }
 
 // lastLine returns the index's last complete line, the length of an

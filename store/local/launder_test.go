@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // cutLines keeps the first keep lines of a file and adds extra, as the
@@ -96,4 +99,51 @@ func TestMissingNewlineOnACountedLine(t *testing.T) {
 		t.Fatalf("events: %d %s", len(evs), evs[len(evs)-1].Payload)
 	}
 	mustVerify(t, s2, "s-1")
+}
+
+// The index's last line cut: the next append refuses instead of chaining
+// onto the cut and moving the head over it, and verify still fails.
+func TestIndexTruncateIsNotLaundered(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	rec := record(t, s, "s-1", "one", "two")
+	_, _ = rec.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	data, _ := os.ReadFile(s2.index.path())
+	cutLines(t, s2.index.path(), bytes.Count(data, []byte("\n"))-1, "") // drop the end line
+	head, _ := os.ReadFile(s2.index.headPath())
+	if err := s2.CreateSession(t.Context(), store.SessionRecord{ID: "s-2"}); !errors.Is(err, ErrIndexDamaged) {
+		t.Fatalf("an append onto a cut index: %v", err)
+	}
+	if rep, _ := s2.VerifyIndex(); rep.OK {
+		t.Fatal("LAUNDERED: the cut index verifies")
+	}
+	if now, _ := os.ReadFile(s2.index.headPath()); !bytes.Equal(now, head) {
+		t.Fatal("the index head was rewritten")
+	}
+}
+
+// A broken chain in the middle of the index, or a missing head, stops
+// appends too.
+func TestIndexDamageStopsAppends(t *testing.T) {
+	for name, damage := range map[string]func(s *Store){
+		"edited line": func(s *Store) {
+			data, _ := os.ReadFile(s.index.path())
+			_ = os.WriteFile(s.index.path(), bytes.Replace(data, []byte("tester"), []byte("someone"), 1), 0o600)
+		},
+		"missing head": func(s *Store) { _ = os.Remove(s.index.headPath()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := openTest(t, dir)
+			record(t, s, "s-1", "one")
+			_ = s.Close()
+			s2 := openTest(t, dir)
+			damage(s2)
+			if err := s2.CreateSession(t.Context(), store.SessionRecord{ID: "s-2"}); !errors.Is(err, ErrIndexDamaged) {
+				t.Fatalf("append onto a damaged index: %v", err)
+			}
+		})
+	}
 }
