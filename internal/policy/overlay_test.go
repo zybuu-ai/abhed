@@ -184,3 +184,28 @@ func TestOverlayIsSafeUnderConcurrentEvaluation(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A hook's allow is no opinion: it approves nothing that would ask and lifts
+// nothing that is denied. Its ask waits for the deny rules and plan mode.
+func TestHookAllowIsNoOpinionAndAskWaitsForDeny(t *testing.T) {
+	allow := func(string, json.RawMessage) *Result { return &Result{Decision: Allow, Reason: "a hook says yes"} }
+	ask := func(string, json.RawMessage) *Result { return &Result{Decision: Ask, Reason: "a hook asks"} }
+	e := New(ModeDefault)
+	if err := e.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	e.Hooks = []Hook{allow}
+	if got := e.Evaluate("bash", true, cmd("curl x")); got.Decision != Deny {
+		t.Fatalf("a hook's allow lifted a deny: %+v", got)
+	}
+	if got := e.Evaluate("bash", true, cmd("make")); got.Decision != Ask {
+		t.Fatalf("a hook's allow approved a call that asks: %+v", got)
+	}
+	e.Hooks = []Hook{allow, ask}
+	if got := e.Evaluate("bash", true, cmd("curl x")); got.Decision != Deny {
+		t.Fatalf("a hook's ask turned a deny into a question: %+v", got)
+	}
+	if got := e.Evaluate("bash", true, cmd("ls")); got.Decision != Ask || got.Step != "hook" {
+		t.Fatalf("a hook's ask was lost behind an allow: %+v", got)
+	}
+}

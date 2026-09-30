@@ -262,9 +262,9 @@ const (
 	LayerFlag      = "flag"
 )
 
-// noteRuleLayer credits the permission rules not yet credited to layer. The
-// managed layer takes every rule in a list it sets, since it replaced that
-// list; the others take only rules new to the list.
+// noteRuleLayer credits the permission rules and extensions not yet
+// credited to layer. The managed layer takes every entry of a list it sets,
+// since it replaced that list; the others take only entries new to it.
 func (c *Config) noteRuleLayer(layer string) {
 	if c.ruleLayers == nil {
 		c.ruleLayers = map[string]string{}
@@ -280,6 +280,22 @@ func (c *Config) noteRuleLayer(layer string) {
 			}
 		}
 	}
+	replaced := layer == LayerManaged && c.ManagedSets("extensions")
+	for _, e := range c.Extensions {
+		k := "extension\x00" + e.Name
+		if _, have := c.ruleLayers[k]; !have || replaced {
+			c.ruleLayers[k] = layer
+		}
+	}
+}
+
+// ExtensionLayer names where a configured extension came from, as
+// RuleLayer does for a rule.
+func (c Config) ExtensionLayer(name string) string {
+	if l, ok := c.ruleLayers["extension\x00"+name]; ok {
+		return l
+	}
+	return "config"
 }
 
 // RuleLayer names where a configured permission rule in list (allow, ask or

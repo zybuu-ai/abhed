@@ -6,6 +6,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -57,6 +58,10 @@ type cliState struct {
 	// turnLimit is the loop's configured turn limit: per message, or for the
 	// whole conversation under a managed one; see turnsPerMessage.
 	turnLimit int
+	// hooks are the session's extensions; hookRecorder is the record of the
+	// open conversation, where a hook that fires is recorded.
+	hooks        *extension.Host
+	hookRecorder atomic.Pointer[agent.Recorder]
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

@@ -12,7 +12,6 @@ import (
 // not believe hooks are off or retention is enforced when neither is.
 func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 	for _, c := range []struct{ name, key, body string }{
-		{"hooks", "hooks.disabled", `{"hooks":{"disabled":true}}`},
 		{"retention", "record.retention_days", `{"record":{"retention_days":90}}`},
 		{"record dir", "record.dir", `{"record":{"dir":"/srv/records"}}`},
 		{"auto memory", "memory.auto", `{"memory":{"auto":false}}`},
@@ -44,8 +43,8 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 	var out bytes.Buffer
 	warnOut = &out
 	// Wired settings are no longer warned about: the Shift-Tab cycle takes
-	// effect through the ModeController.
-	withManaged(t, `{"permissions":{"mode":"default"},"cli":{"mode_cycle":["plan","default"]}}`)
+	// effect through the ModeController, and hooks.disabled in ExtensionSpecs.
+	withManaged(t, `{"permissions":{"mode":"default"},"cli":{"mode_cycle":["plan","default"]},"hooks":{"disabled":true}}`)
 	if cfg, _ := Load(t.TempDir()); len(cfg.NotYetInEffect()) != 0 || strings.Contains(out.String(), "not yet in effect") {
 		t.Fatalf("a file with none of them was warned: %v %q", cfg.NotYetInEffect(), out.String())
 	}

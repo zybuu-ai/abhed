@@ -319,6 +319,10 @@ type ExtensionConfig struct {
 	Events    []string          `json:"events,omitempty"`
 	TimeoutMS int               `json:"timeout_ms,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
+	// Match narrows tool events to the calls a rule matches, e.g. bash(git *).
+	Match []string `json:"match,omitempty"`
+	// Async sends the events that only observe without waiting.
+	Async bool `json:"async,omitempty"`
 }
 
 // CustomProviderConfig adds a model provider from configuration.

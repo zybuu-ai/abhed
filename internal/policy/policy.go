@@ -268,7 +268,9 @@ func (r Rule) named() string {
 	return "rule " + r.raw
 }
 
-// Hook runs before rule evaluation and can short-circuit the decision.
+// Hook runs before rule evaluation. A Deny from it is final; an Ask applies
+// once the deny rules and plan mode have had their say; an Allow, or nil, is
+// no opinion. A hook can tighten a decision and never loosen one.
 type Hook func(tool string, args json.RawMessage) *Result
 
 type Engine struct {
@@ -470,13 +472,23 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		subjects, allowSubjects = e.pathSubjects(subject)
 	}
 
-	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
+	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
+	// hook's refusal is final; its ask waits for the deny rules and plan mode
+	// below, so a hook can never turn a refusal into a question.
+	var hookAsk *Result
 	for _, h := range e.Hooks {
-		if res := h(tool, args); res != nil {
-			if res.Step == "" {
-				res.Step = "hook"
-			}
+		res := h(tool, args)
+		if res == nil || res.Decision == Allow {
+			continue
+		}
+		if res.Step == "" {
+			res.Step = "hook"
+		}
+		if res.Decision != Ask {
 			return *res
+		}
+		if hookAsk == nil {
+			hookAsk = res
 		}
 	}
 
@@ -498,6 +510,10 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// anything could put it to a person who might accept it.
 	if e.Mode == ModePlan && mutates {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
+	}
+
+	if hookAsk != nil {
+		return *hookAsk
 	}
 
 	// 2b. Destructive commands always confirm, in every mode. There is no

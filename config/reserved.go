@@ -16,7 +16,6 @@ var notYetInEffect = []string{
 	"memory.import_depth",   // memory imports (input and memory)
 	"record.dir",            // the local record (record and sessions)
 	"record.retention_days", // record pruning (record and sessions)
-	"hooks.disabled",        // hooks (governance)
 }
 
 // NotYetInEffect lists the settings the configuration's files made that this

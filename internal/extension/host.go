@@ -3,6 +3,8 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -18,6 +20,49 @@ import (
 type Host struct {
 	exts []*Extension
 	logf func(string, ...any)
+
+	firedMu sync.RWMutex
+	onFired func(Fired)
+}
+
+// Verdicts a hook can reach, as hook.fired records them. There is no allow.
+const (
+	VerdictBlock    = "block"
+	VerdictAsk      = "ask"
+	VerdictAnnotate = "annotate"
+)
+
+// Fired is one hook's verdict on one event: it blocked, forced an ask, or
+// only said something. A hook that said nothing did not fire.
+type Fired struct {
+	Extension string
+	Event     Event
+	Verdict   string
+	Reason    string
+}
+
+// SetOnFired sets what is told of each hook that fired, for the record.
+func (h *Host) SetOnFired(f func(Fired)) {
+	h.firedMu.Lock()
+	h.onFired = f
+	h.firedMu.Unlock()
+}
+
+func (h *Host) fired(f Fired) {
+	h.firedMu.RLock()
+	on := h.onFired
+	h.firedMu.RUnlock()
+	if on != nil {
+		on(f)
+	}
+}
+
+// Extensions are the started extensions, in load order.
+func (h *Host) Extensions() []*Extension {
+	if h == nil {
+		return nil
+	}
+	return append([]*Extension(nil), h.exts...)
 }
 
 func NewHost(logf func(string, ...any)) *Host {
@@ -77,32 +122,42 @@ type ToolCallDecision struct {
 	Args json.RawMessage
 }
 
-// OnToolCall asks every subscribed extension about a call.
+// OnToolCall asks every subscribed extension whose matcher takes the call.
 //
 // The result can only ever be the same or stricter than what policy decided.
-// An extension that returns nothing, crashes, or times out leaves the decision
-// untouched — which is why a misbehaving extension cannot widen access.
+// An extension that returns nothing leaves the decision untouched. One that
+// crashes or times out on the call fails closed: that call is blocked, and
+// every later one is asked, since the veto it stood for is gone.
 func (h *Host) OnToolCall(ctx context.Context, sessionID, tool string, args json.RawMessage) ToolCallDecision {
 	out := ToolCallDecision{}
 	for _, e := range h.exts {
-		if !e.Subscribed(EvToolCall) {
+		if !e.wants(EvToolCall) || !e.Matches(tool, args) {
 			continue
 		}
-		reply := e.Call(ctx, Request{
+		reply, err := e.call(ctx, Request{
 			Event: EvToolCall, SessionID: sessionID, Tool: tool, Args: args,
 		})
+		switch {
+		case errors.Is(err, errNotRunning):
+			reply = Reply{Ask: true, Reason: "extension " + e.Name() + " is not running, so each call it would have screened is asked"}
+		case err != nil:
+			reply = Reply{Block: true, Reason: "extension " + e.Name() + " did not answer (" + err.Error() + "), so the call is refused"}
+		}
 		if reply.Block {
 			// The first block is final: nothing another extension says can
 			// unblock it, so there is no reason to keep asking.
 			out.Block = true
 			out.Reason = firstNonEmpty(reply.Reason, "blocked by extension "+e.Name())
+			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictBlock, Reason: out.Reason})
 			return out
 		}
 		if reply.Ask {
 			out.Ask = true
+			why := firstNonEmpty(reply.Reason, "extension "+e.Name()+" requires approval")
 			if out.Reason == "" {
-				out.Reason = firstNonEmpty(reply.Reason, "extension "+e.Name()+" requires approval")
+				out.Reason = why
 			}
+			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictAsk, Reason: why})
 		}
 		if len(reply.Args) > 0 {
 			// A later extension sees the rewritten arguments, so a chain
@@ -112,6 +167,51 @@ func (h *Host) OnToolCall(ctx context.Context, sessionID, tool string, args json
 		}
 	}
 	return out
+}
+
+// Veto asks the extensions that take ev, a user_prompt_submit or
+// permission_request, whether to refuse what it is about, and returns why
+// when one does. Nothing a reply says approves anything. A permission_request
+// hook that crashes or hangs refuses the call, as a tool_call hook does.
+func (h *Host) Veto(ctx context.Context, ev Event, req Request) string {
+	req.Event = ev
+	for _, e := range h.exts {
+		if !e.wants(ev) || req.Tool != "" && !e.Matches(req.Tool, req.Args) {
+			continue
+		}
+		reply, err := e.call(ctx, req)
+		if err != nil && ev == EvPermissionRequest && !errors.Is(err, errNotRunning) {
+			reply = Reply{Block: true, Reason: "extension " + e.Name() + " did not answer (" + err.Error() + "), so the call is refused"}
+		}
+		switch {
+		case reply.Block:
+			why := firstNonEmpty(reply.Reason, "blocked by extension "+e.Name())
+			h.fired(Fired{Extension: e.Name(), Event: ev, Verdict: VerdictBlock, Reason: why})
+			return why
+		case reply.Ask || reply.Reason != "" || reply.Log != "":
+			h.fired(Fired{Extension: e.Name(), Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
+		}
+	}
+	return ""
+}
+
+// Observe tells the extensions that take ev, one that only observes, what
+// happened. An async extension is not waited for; one that answers with a
+// reason or a log line is recorded as annotating.
+func (h *Host) Observe(ctx context.Context, ev Event, req Request) {
+	req.Event = ev
+	for _, e := range h.exts {
+		if !e.Subscribed(ev) {
+			continue
+		}
+		if e.cfg.Async {
+			go e.Call(context.WithoutCancel(ctx), req)
+			continue
+		}
+		if reply := e.Call(ctx, req); reply.Reason != "" || reply.Log != "" {
+			h.fired(Fired{Extension: e.Name(), Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
+		}
+	}
 }
 
 // OnToolResult lets extensions rewrite a result before the model reads it.

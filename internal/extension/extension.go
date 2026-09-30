@@ -30,6 +30,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +39,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // Event names an extension can subscribe to.
@@ -68,7 +71,31 @@ const (
 	// the compaction or supply the summary itself, which is how an operator
 	// keeps something the default summarizer would drop.
 	EvBeforeCompact Event = "before_compact"
+
+	// EvUserPromptSubmit fires before a person's message is recorded and
+	// sent to the model. The reply may block it; the person is told why.
+	EvUserPromptSubmit Event = "user_prompt_submit"
+	// EvPermissionRequest fires before a call is put to the person. The reply
+	// may block it; nothing it says approves the call.
+	EvPermissionRequest Event = "permission_request"
+	// EvTurnEnd fires when the agent has finished answering a message, with
+	// the reason it stopped. It only observes.
+	EvTurnEnd Event = "turn_end"
+	// EvSubagentEnd fires when a subagent the agent waited on returns. It
+	// only observes.
+	EvSubagentEnd Event = "subagent_end"
+	// EvNotification fires when the agent needs the person, as when a call
+	// waits for approval. It only observes.
+	EvNotification Event = "notification"
 )
+
+// observeOnly are the events whose reply can change nothing; an extension
+// may take them asynchronously.
+var observeOnly = map[Event]bool{EvTurnEnd: true, EvSubagentEnd: true, EvNotification: true,
+	EvSessionStart: true, EvSessionEnd: true}
+
+// ObserveOnly reports whether an event's reply can change nothing.
+func ObserveOnly(ev Event) bool { return observeOnly[ev] }
 
 // Request is what Abhed sends an extension.
 type Request struct {
@@ -156,6 +183,12 @@ type Config struct {
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 	// Env is passed to the process on top of Abhed's own environment.
 	Env map[string]string `json:"env,omitempty"`
+	// Match narrows the tool events (tool_call, tool_result and
+	// permission_request) to calls a rule matches, written as permission
+	// rules are: bash(git *), write(src/**), web_fetch. None matches every call.
+	Match []string `json:"match,omitempty"`
+	// Async sends the events that only observe without waiting for a reply.
+	Async bool `json:"async,omitempty"`
 }
 
 // Extension is one running extension process.
@@ -170,6 +203,10 @@ type Extension struct {
 	// down mirrors dead for readers that must not wait behind a call in flight.
 	down atomic.Bool
 	logf func(string, ...any)
+	// match are the parsed Match rules.
+	match []policy.Rule
+	// lastErr is why the extension stopped being asked, once it has.
+	lastErr atomic.Value
 }
 
 const defaultTimeout = 5 * time.Second
@@ -190,6 +227,14 @@ func Start(ctx context.Context, cfg Config, logf func(string, ...any)) (*Extensi
 	}
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+	var match []policy.Rule
+	for _, m := range cfg.Match {
+		r, err := policy.ParseRule(m)
+		if err != nil {
+			return nil, fmt.Errorf("extension %q: match: %w", cfg.Name, err)
+		}
+		match = append(match, r)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
@@ -212,7 +257,7 @@ func Start(ctx context.Context, cfg Config, logf func(string, ...any)) (*Extensi
 	e := &Extension{
 		cfg: cfg, cmd: cmd, stdin: stdin,
 		stdout: bufio.NewReaderSize(stdout, 1<<20),
-		subs:   map[Event]bool{}, logf: logf,
+		subs:   map[Event]bool{}, logf: logf, match: match,
 	}
 	for _, ev := range cfg.Events {
 		e.subs[ev] = true
@@ -238,6 +283,42 @@ func (e *Extension) Running() bool { return !e.down.Load() }
 // Subscribed reports whether this extension wants an event.
 func (e *Extension) Subscribed(ev Event) bool { return !e.down.Load() && e.subs[ev] }
 
+// wants reports whether the extension asked for an event, running or not.
+func (e *Extension) wants(ev Event) bool { return e.subs[ev] }
+
+// Events are the events the extension takes, in no set order.
+func (e *Extension) Events() []Event {
+	out := make([]Event, 0, len(e.subs))
+	for ev := range e.subs {
+		out = append(out, ev)
+	}
+	return out
+}
+
+// Config is what the extension was started with.
+func (e *Extension) Config() Config { return e.cfg }
+
+// LastError is why the extension stopped being asked, or "".
+func (e *Extension) LastError() string {
+	s, _ := e.lastErr.Load().(string)
+	return s
+}
+
+// Matches reports whether a tool event about this call is the extension's:
+// it names no rules, or one of them matches the call.
+func (e *Extension) Matches(tool string, args json.RawMessage) bool {
+	if len(e.match) == 0 {
+		return true
+	}
+	subject := policy.Subject(tool, args)
+	for _, r := range e.match {
+		if r.Matches(tool, subject) {
+			return true
+		}
+	}
+	return false
+}
+
 // Call sends one request and waits for the reply.
 //
 // A failure here is never fatal to the run. An extension that crashes, hangs or
@@ -246,19 +327,30 @@ func (e *Extension) Subscribed(ev Event) bool { return !e.down.Load() && e.subs[
 // plugin misbehaved — trades a working agent for a broken one and protects
 // nothing, since an extension can only ever have made the decision stricter.
 func (e *Extension) Call(ctx context.Context, req Request) Reply {
+	r, _ := e.call(ctx, req)
+	return r
+}
+
+// errNotRunning is a call to an extension that is no longer asked.
+var errNotRunning = errors.New("not running")
+
+// call is Call that reports an extension that did not answer: one already
+// dead, or one that crashed, hung or answered with nonsense now. A cancelled
+// context is not the extension's failure and reports none.
+func (e *Extension) call(ctx context.Context, req Request) (Reply, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.dead {
-		return Reply{}
+		return Reply{}, errNotRunning
 	}
 
 	line, err := json.Marshal(req)
 	if err != nil {
-		return Reply{}
+		return Reply{}, err
 	}
 	if _, err := e.stdin.Write(append(line, '\n')); err != nil {
 		e.die("write failed: %v", err)
-		return Reply{}
+		return Reply{}, fmt.Errorf("write failed: %w", err)
 	}
 
 	type result struct {
@@ -284,21 +376,21 @@ func (e *Extension) Call(ctx context.Context, req Request) Reply {
 	defer timeout.Stop()
 	select {
 	case <-ctx.Done():
-		return Reply{}
+		return Reply{}, nil
 	case <-timeout.C:
 		// A hung extension is not retried: the read goroutine still owns the
 		// stream, so the next reply would be mismatched with its request.
 		e.die("did not answer %s within %s", req.Event, e.cfg.Timeout)
-		return Reply{}
+		return Reply{}, fmt.Errorf("did not answer within %s", e.cfg.Timeout)
 	case r := <-done:
 		if r.err != nil {
 			e.die("%v", r.err)
-			return Reply{}
+			return Reply{}, r.err
 		}
 		if r.reply.Log != "" {
 			e.logf("extension %s: %s", e.cfg.Name, r.reply.Log)
 		}
-		return r.reply
+		return r.reply, nil
 	}
 }
 
@@ -308,7 +400,9 @@ func (e *Extension) die(format string, args ...any) {
 	}
 	e.dead = true
 	e.down.Store(true)
-	e.logf("extension %s disabled: %s", e.cfg.Name, fmt.Sprintf(format, args...))
+	why := fmt.Sprintf(format, args...)
+	e.lastErr.Store(why)
+	e.logf("extension %s disabled: %s", e.cfg.Name, why)
 	_ = e.stdin.Close()
 	if e.cmd.Process != nil {
 		_ = e.cmd.Process.Kill()

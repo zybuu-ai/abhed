@@ -1,0 +1,110 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
+)
+
+// fakeHooks refuses prompts and calls that name a word, and keeps what it
+// was told.
+type fakeHooks struct {
+	refusePrompt, refuseCall string
+	mu                       sync.Mutex
+	seen                     []string
+}
+
+func (f *fakeHooks) note(s string) {
+	f.mu.Lock()
+	f.seen = append(f.seen, s)
+	f.mu.Unlock()
+}
+
+func (f *fakeHooks) PromptSubmitted(_ context.Context, _ string, text string) string {
+	f.note("prompt:" + text)
+	if f.refusePrompt != "" && strings.Contains(text, f.refusePrompt) {
+		return "prompt refused by hook"
+	}
+	return ""
+}
+
+func (f *fakeHooks) PermissionRequested(_ context.Context, _ string, tool string, args json.RawMessage, _ string) string {
+	f.note("permission:" + tool)
+	if f.refuseCall != "" && strings.Contains(string(args), f.refuseCall) {
+		return "call refused by hook"
+	}
+	return ""
+}
+
+func (f *fakeHooks) Observe(_ context.Context, event, _, tool, detail string) {
+	f.note(event + ":" + tool + ":" + detail)
+}
+
+// A refused prompt is never recorded or sent, and the run does not start.
+func TestHookRefusesAPrompt(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "never"}}, policy.ModeDefault, true)
+	hooks := &fakeHooks{refusePrompt: "forbidden"}
+	l.Hooks = hooks
+	reason, err := l.Run(context.Background(), "the forbidden thing")
+	if err != nil || reason != TermPromptRefused {
+		t.Fatalf("%s %v", reason, err)
+	}
+	evs, _ := store.Events("sess1")
+	if hasEvent(evs, EvUserMessage) || len(l.Adapter.(*scriptedAdapter).gotRequests) != 0 {
+		t.Fatal("a refused prompt was recorded or sent")
+	}
+	// A steering message a hook refuses is dropped, and said to be.
+	l.Steer("more forbidden talk")
+	if _, err := l.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ = store.Events("sess1")
+	if !hasEvent(evs, EvMessageDropped) {
+		t.Fatal("a refused steering message was not recorded as dropped")
+	}
+	for _, m := range l.Messages() {
+		if strings.Contains(m.Content, "forbidden") {
+			t.Fatal("a refused steering message reached the model")
+		}
+	}
+}
+
+// A permission_request hook's refusal stops a call before the person is
+// asked; otherwise the hooks hear that the person is needed, and the run's end.
+func TestHookRefusesAPermissionRequest(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("bash", map[string]string{"command": "make deploy"})}},
+		{calls: []model.ToolCall{call("bash", map[string]string{"command": "make test"})}},
+		{text: "done"},
+	}, policy.ModeDefault, true)
+	hooks := &fakeHooks{refuseCall: "deploy"}
+	l.Hooks = hooks
+	counter := &askCounter{}
+	l.Approver = counter
+	if _, err := l.Run(context.Background(), "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	if counter.asked != 1 {
+		t.Fatalf("asked %d times; the refused call must not be asked", counter.asked)
+	}
+	steps := deniedSteps(t, store)
+	if len(steps) == 0 || steps[0] != "hook" {
+		t.Fatalf("denied at %v", steps)
+	}
+	hooks.mu.Lock()
+	seen := slices.Clone(hooks.seen)
+	hooks.mu.Unlock()
+	if !slices.ContainsFunc(seen, func(s string) bool { return strings.HasPrefix(s, "notification:bash:approval needed") }) ||
+		seen[len(seen)-1] != "turn_end::completed" {
+		t.Fatalf("hooks heard %v", seen)
+	}
+	if slices.ContainsFunc(seen, func(s string) bool { return strings.HasPrefix(s, "notification") && strings.Contains(s, "deploy") }) {
+		t.Fatal("a refused call was announced as needing the person")
+	}
+}
