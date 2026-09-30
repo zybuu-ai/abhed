@@ -106,6 +106,10 @@ func checkHead(rep *Report, lines []line, head Head, have bool) {
 			return
 		}
 		rep.Reason = fmt.Sprintf("lines are missing from the end: the head says the record held %d lines, it holds %d", head.Lines, n)
+	case head.Lines == 0 && n > 1:
+		// A crash before the first real head leaves one line, never more.
+		rep.OK, rep.FirstBad = false, lines[1].Seq
+		rep.Reason = sentinelBehind
 	case head.Lines > 0 && lines[head.Lines-1].Hash != head.Hash:
 		l := lines[head.Lines-1]
 		rep.OK, rep.FirstBad, rep.EventID, rep.Line = false, l.Seq, l.ID, int(head.Lines)
@@ -114,6 +118,10 @@ func checkHead(rep *Report, lines []line, head Head, have bool) {
 		rep.Notes = append(rep.Notes, fmt.Sprintf("%d line(s) after the last sync point", n-head.Lines))
 	}
 }
+
+// sentinelBehind is why a record with more than one line but only its
+// creation head fails.
+const sentinelBehind = "the record has lines beyond its first but only its creation head"
 
 // cutShort is why a record whose head counts an unfinished last line fails.
 const cutShort = "the last line the head counts is cut short"
@@ -302,6 +310,9 @@ func (s *Store) VerifyIndex() (Report, error) {
 	switch {
 	case !have && rep.Events > 0:
 		rep.OK, rep.Reason = false, "the index head file is missing or malformed"
+	case have && head.Lines == 0 && rep.Events > 1:
+		rep.OK, rep.FirstBad, rep.Line = false, 2, 2
+		rep.Reason = sentinelBehind
 	case have && head.Lines > rep.Events:
 		rep.OK, rep.FirstBad = false, rep.Events+1
 		rep.Reason = fmt.Sprintf("index lines are missing: its head says it reached line %d", head.Lines)

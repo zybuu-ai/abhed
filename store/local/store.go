@@ -587,7 +587,13 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 	// The first line is always synced, so a record with lines never stands
 	// without a head that counts them.
 	if boundary(ev.Type) || h.synced.Lines == 0 {
+		first := h.synced.Lines == 0
 		syncErr = h.sync(s)
+		if syncErr != nil && first {
+			// Without a first real head, a second line would stand behind the
+			// creation head, which only damage leaves: nothing more is written.
+			h.poisoned = fmt.Errorf("the first head could not be written: %w", syncErr)
+		}
 	}
 	ended := s.track(h, ev)
 	h.mu.Unlock()

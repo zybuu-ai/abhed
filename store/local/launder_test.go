@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -418,5 +419,103 @@ func TestCountedLineCutShort(t *testing.T) {
 	}
 	if err := s2.Acquire("s-1"); err == nil || !strings.Contains(err.Error(), cutShort) {
 		t.Fatalf("open: %v", err)
+	}
+}
+
+// The review's round-4 probes: the creation head written over a real one.
+// With more than one line left, that is damage, never a first-write crash,
+// for a session and for the index.
+func TestSentinelOverARealHeadFails(t *testing.T) {
+	for _, keep := range []int{4, 2} {
+		dir := t.TempDir()
+		s := openTest(t, dir)
+		record(t, s, "s-1", "one", "two", "three", "four")
+		_ = s.Close()
+		s2 := openTest(t, dir)
+		cutLines(t, s2.Path("s-1"), keep, "")
+		_ = s2.writeHead("s-1", sentinelHead)
+		rep, _ := s2.Verify("s-1")
+		if rep.OK || rep.Reason != sentinelBehind {
+			t.Fatalf("session, %d lines: %+v", keep, rep)
+		}
+		if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
+			t.Fatalf("session, %d lines, opened: %v", keep, err)
+		}
+	}
+	for _, keep := range []int{4, 2} {
+		dir := t.TempDir()
+		s := openTest(t, dir)
+		record(t, s, "s-1", "one")
+		record(t, s, "s-2", "two")
+		_ = s.Close()
+		s2 := openTest(t, dir)
+		cutLines(t, s2.index.path(), keep, "")
+		_ = writeHeadFile(s2.index.headPath(), sentinelHead)
+		if rep, _ := s2.VerifyIndex(); rep.OK || rep.Reason != sentinelBehind {
+			t.Fatalf("index, %d lines: %+v", keep, rep)
+		}
+		if err := s2.CreateSession(t.Context(), store.SessionRecord{ID: "s-9"}); !errors.Is(err, ErrIndexDamaged) {
+			t.Fatalf("index, %d lines, appended: %v", keep, err)
+		}
+	}
+}
+
+// A new index has its sentinel head on disk before its first line.
+func TestIndexSentinelIsWrittenFirst(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	var seen Head
+	var ok bool
+	afterIndexSentinel = func() { seen, ok = readHeadFile(s.index.headPath()) }
+	defer func() { afterIndexSentinel = func() {} }()
+	if err := s.CreateSession(t.Context(), store.SessionRecord{ID: "s-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !ok || seen != sentinelHead {
+		t.Fatalf("index head before the first line: %+v %v", seen, ok)
+	}
+	if _, err := os.Stat(s.index.path()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Only the exact creation head may count no lines.
+func TestOnlyTheExactSentinelCountsNoLines(t *testing.T) {
+	if h, ok := parseHead([]byte(`{"lines":0,"seq":0,"hash":"` + Genesis + `"}`)); !ok || h != sentinelHead {
+		t.Fatal("the sentinel was refused")
+	}
+	other := strings.Replace(Genesis, "0", "1", 1)
+	for _, head := range []string{
+		`{"lines":0,"seq":1,"hash":"` + Genesis + `"}`,
+		`{"lines":0,"seq":0,"hash":"` + other + `"}`,
+	} {
+		if _, ok := parseHead([]byte(head)); ok {
+			t.Errorf("accepted %s", head)
+		}
+	}
+}
+
+// If a session's first real head cannot be written, nothing more is written
+// to it, so a second line never stands behind the creation head.
+func TestFirstHeadFailurePoisons(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs a folder the process cannot write")
+	}
+	s := openTest(t, t.TempDir())
+	if err := s.CreateSession(t.Context(), store.SessionRecord{ID: "s-1"}); err != nil {
+		t.Fatal(err)
+	}
+	headDir := filepath.Dir(s.headPath("s-1"))
+	_ = os.Chmod(headDir, 0o500)
+	defer func() { _ = os.Chmod(headDir, 0o700) }()
+	rec := agent.NewRecorder(s, "s-1", "")
+	if _, err := rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "one"}); err == nil {
+		t.Fatal("the first head's failure was not reported")
+	}
+	_ = os.Chmod(headDir, 0o700)
+	if _, err := rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "two"}); err == nil {
+		t.Fatal("a second line was written behind the creation head")
+	}
+	if rep, _ := s.Verify("s-1"); !rep.OK || rep.Events != 1 {
+		t.Fatalf("after: %+v", rep)
 	}
 }
