@@ -103,12 +103,24 @@ type Entry struct {
 	// Ended is the terminal reason, "" while the session is open.
 	Ended string
 	Head  Head
+	// Repo is the git repository the session's directory belongs to, the
+	// same for every worktree of it; "" outside one.
+	Repo string
+	// User is who the session was recorded for.
+	User string
+	// Subagent marks a subagent's own session, which lists do not show.
+	Subagent bool
+	// Pruned marks a session removed by prune; only its tombstone remains.
+	Pruned bool
 }
 
-// Head is the last line of a session's chain.
+// Head is the last line of a session's chain: how many lines it has, and
+// the seq and hash of the last. Seqs are unique but may be written out of
+// order by concurrent writers, so the line count is what shows lines missing.
 type Head struct {
-	Seq  int64
-	Hash string
+	Lines int64  `json:"lines"`
+	Seq   int64  `json:"seq"`
+	Hash  string `json:"hash"`
 }
 
 // Report is what Verify found.
@@ -120,10 +132,19 @@ type Report struct {
 	// file agrees with the last line.
 	OK bool
 	// FirstBad is the seq of the first line that failed, and Reason why.
+	// Line is its line number in the file, from 1, and EventID its id when
+	// the line could be read.
 	FirstBad int64
 	Reason   string
+	Line     int
+	EventID  string
 	// Repaired is set when a torn last line was cut off on open.
 	Repaired bool
+	// Torn is the length of an unfinished last line, which a crash leaves
+	// and the next writer cuts off; it is noted, not a failure.
+	Torn int64
+	// Notes are what verification found that is not a failure.
+	Notes []string
 }
 
 // Blobs is content-addressed storage for checkpoint pre-images. They hold

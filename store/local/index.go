@@ -1,0 +1,399 @@
+package local
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// Index operations. The index is append-only: a later line about a session
+// changes what an earlier one said, and nothing is rewritten.
+const (
+	opCreate = "create" // a new session, with where and for whom
+	opTitle  = "title"  // its first prompt, redacted and cut
+	opName   = "name"   // a name given by -n or /rename
+	opEnd    = "end"    // a run ended, with the head at that point
+	opOpen   = "open"   // a process claimed it to go on
+	opPrune  = "prune"  // the tombstone: the file was removed, its head kept
+	opRepair = "repair" // an unfinished last index line was cut off
+)
+
+// kindSubagent marks a subagent's own session.
+const kindSubagent = "subagent"
+
+// indexLine is one line of index.jsonl, chained like a session's lines.
+type indexLine struct {
+	N         int64  `json:"n"`
+	Op        string `json:"op"`
+	ID        string `json:"id"`
+	At        string `json:"at"`
+	Cwd       string `json:"cwd,omitempty"`
+	Repo      string `json:"repo,omitempty"`
+	GitBranch string `json:"git_branch,omitempty"`
+	Parent    string `json:"parent,omitempty"`
+	ForkSeq   int64  `json:"fork_seq,omitempty"`
+	User      string `json:"user,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Ended     string `json:"ended,omitempty"`
+	By        string `json:"by,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	HeadLines int64  `json:"head_lines,omitempty"`
+	HeadSeq   int64  `json:"head_seq,omitempty"`
+	HeadHash  string `json:"head_hash,omitempty"`
+	Prev      string `json:"prev"`
+	Hash      string `json:"hash,omitempty"`
+}
+
+func (l *indexLine) seal() ([]byte, error) {
+	l.Hash = ""
+	body, err := encode(l)
+	if err != nil {
+		return nil, err
+	}
+	l.Hash = hashBytes(body)
+	return encode(l)
+}
+
+// index is a tenant's index.jsonl, its head and the lock every process
+// takes to append to it.
+type index struct {
+	dir string
+	// clock is the time written on each line; nil is the wall clock.
+	clock func() time.Time
+}
+
+func (x *index) path() string     { return filepath.Join(x.dir, "index.jsonl") }
+func (x *index) headPath() string { return filepath.Join(x.dir, "index.head") }
+func (x *index) lockPath() string { return filepath.Join(x.dir, "index.lock") }
+
+func (x *index) now() time.Time {
+	if x.clock != nil {
+		return x.clock()
+	}
+	return time.Now().UTC()
+}
+
+// append adds one line under the index lock: numbered and chained after the
+// last line, synced, and the head moved to it.
+func (x *index) append(l indexLine) error {
+	lk, err := os.OpenFile(x.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("lock the index: %w", err)
+	}
+	defer func() { _ = lk.Close() }()
+	if err := waitLock(lk); err != nil {
+		return fmt.Errorf("lock the index: %w", err)
+	}
+	defer func() { _ = unlock(lk) }()
+
+	f, err := os.OpenFile(x.path(), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open the index: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	last, torn, size, err := lastLine(f)
+	if err != nil {
+		return err
+	}
+	prev, n := Genesis, int64(0)
+	if last != nil {
+		if pl, err := parseIndexLine(last); err == nil {
+			prev, n = pl.Hash, pl.N
+		} else {
+			prev = hashBytes(last)
+		}
+	}
+	if torn > 0 {
+		if err := f.Truncate(size - torn); err != nil {
+			return fmt.Errorf("repair the index: %w", err)
+		}
+		rep := indexLine{N: n + 1, Op: opRepair, ID: "-", At: x.now().Format(timeFormat), Reason: fmt.Sprintf("an unfinished last line of %d bytes was cut off", torn), Prev: prev}
+		raw, err := rep.seal()
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(raw, '\n')); err != nil {
+			return err
+		}
+		prev, n = rep.Hash, rep.N
+	}
+	l.N, l.Prev = n+1, prev
+	if l.At == "" {
+		l.At = x.now().Format(timeFormat)
+	}
+	raw, err := l.seal()
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		return fmt.Errorf("write the index: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return writeHeadFile(x.headPath(), Head{Lines: l.N, Hash: l.Hash})
+}
+
+// lastLine returns the index's last complete line, the length of an
+// unfinished one after it, and the file's size.
+func lastLine(f *os.File) (last []byte, torn, size int64, err error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	size = info.Size()
+	if size == 0 {
+		return nil, 0, 0, nil
+	}
+	for chunk := int64(4096); ; chunk *= 2 {
+		start := max(size-chunk, 0)
+		buf := make([]byte, size-start)
+		if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
+			return nil, 0, 0, err
+		}
+		i := bytes.LastIndexByte(buf, '\n')
+		if i < 0 {
+			if start > 0 {
+				continue
+			}
+			return nil, size, size, nil // the only line is unfinished
+		}
+		body := buf[:i]
+		j := bytes.LastIndexByte(body, '\n')
+		if j < 0 && start > 0 {
+			continue
+		}
+		return append([]byte(nil), body[j+1:]...), int64(len(buf) - (i + 1)), size, nil
+	}
+}
+
+func parseIndexLine(raw []byte) (indexLine, error) {
+	var l indexLine
+	dec := jsonStrict(raw)
+	if err := dec.Decode(&l); err != nil {
+		return l, err
+	}
+	return l, nil
+}
+
+// lines reads every complete index line; a damaged one is skipped here and
+// named by verify.
+func (x *index) lines() ([]indexLine, error) {
+	data, err := os.ReadFile(x.path())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []indexLine
+	for _, raw := range scan(data).raws {
+		if l, err := parseIndexLine(raw); err == nil {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// entries folds the index into one entry per session, in first-seen order.
+func (x *index) entries() ([]Entry, error) {
+	ls, err := x.lines()
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]*Entry{}
+	var order []string
+	for _, l := range ls {
+		at, _ := time.Parse(timeFormat, l.At)
+		e := byID[l.ID]
+		if e == nil {
+			if l.Op != opCreate {
+				continue
+			}
+			e = &Entry{ID: l.ID, Created: at}
+			byID[l.ID] = e
+			order = append(order, l.ID)
+		}
+		e.Updated = at
+		switch l.Op {
+		case opCreate:
+			e.Cwd, e.Repo, e.GitBranch, e.User = l.Cwd, l.Repo, l.GitBranch, l.User
+			e.Parent, e.ForkSeq, e.Subagent = l.Parent, l.ForkSeq, l.Kind == kindSubagent
+			if l.Title != "" {
+				e.Title = l.Title
+			}
+		case opTitle:
+			if e.Title == "" {
+				e.Title = l.Title
+			}
+		case opName:
+			e.Name = l.Name
+		case opEnd:
+			e.Ended = l.Ended
+			e.Head = Head{Lines: l.HeadLines, Seq: l.HeadSeq, Hash: l.HeadHash}
+		case opOpen:
+			e.Ended = ""
+		case opPrune:
+			e.Pruned = true
+			e.Head = Head{Lines: l.HeadLines, Seq: l.HeadSeq, Hash: l.HeadHash}
+		}
+	}
+	out := make([]Entry, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
+}
+
+func (x *index) get(id string) (Entry, bool) {
+	all, err := x.entries()
+	if err != nil {
+		return Entry{}, false
+	}
+	for _, e := range all {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
+// list selects sessions, most recently updated first: never a subagent's own
+// session, and never a pruned one.
+func (x *index) list(f Filter) ([]Entry, error) {
+	all, err := x.entries()
+	if err != nil {
+		return nil, err
+	}
+	cwd, repo := cleanDir(f.Cwd), ""
+	if f.Repo && !f.All {
+		repo = RepoOf(f.Cwd)
+	}
+	var out []Entry
+	for _, e := range all {
+		if e.Subagent || e.Pruned {
+			continue
+		}
+		switch {
+		case f.All:
+		case repo != "":
+			if e.Repo != repo && cleanDir(e.Cwd) != cwd {
+				continue
+			}
+		case cleanDir(e.Cwd) != cwd:
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out, nil
+}
+
+func cleanDir(d string) string {
+	if d == "" {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(d); err == nil {
+		d = r
+	}
+	return filepath.Clean(d)
+}
+
+// indexView is the Store's SessionIndex.
+type indexView struct{ s *Store }
+
+func (v indexView) List(f Filter) ([]Entry, error) {
+	out, err := v.s.index.list(f)
+	for i := range out {
+		if h, ok := v.s.readHead(out[i].ID); ok {
+			out[i].Head = h
+		}
+	}
+	return out, err
+}
+
+func (v indexView) Get(id string) (Entry, error) {
+	e, ok := v.s.index.get(id)
+	if !ok {
+		return Entry{}, fmt.Errorf("session %s: %w", id, ErrNotFound)
+	}
+	if h, ok := v.s.readHead(id); ok {
+		e.Head = h
+	}
+	return e, nil
+}
+
+// Resolve finds a session by id, name, unique id prefix, or the path of its
+// file in this records directory.
+func (v indexView) Resolve(key string) (Entry, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return Entry{}, ErrNotFound
+	}
+	if strings.ContainsRune(key, filepath.Separator) || strings.HasSuffix(key, ".jsonl") {
+		abs, err := filepath.Abs(key)
+		if err != nil {
+			return Entry{}, err
+		}
+		if cleanDir(filepath.Dir(abs)) != cleanDir(v.s.dir) {
+			return Entry{}, fmt.Errorf("%s is not in this records directory: %w", key, ErrNotFound)
+		}
+		key = strings.TrimSuffix(filepath.Base(abs), ".jsonl")
+	}
+	all, err := v.s.index.entries()
+	if err != nil {
+		return Entry{}, err
+	}
+	var live []Entry
+	for _, e := range all {
+		if !e.Pruned {
+			live = append(live, e)
+		}
+	}
+	for _, e := range live {
+		if e.ID == key {
+			return v.Get(e.ID)
+		}
+	}
+	for _, match := range []func(Entry) bool{
+		func(e Entry) bool { return e.Name == key },
+		func(e Entry) bool { return len(key) >= 4 && strings.HasPrefix(e.ID, key) },
+	} {
+		var hit []Entry
+		for _, e := range live {
+			if match(e) {
+				hit = append(hit, e)
+			}
+		}
+		switch len(hit) {
+		case 0:
+			continue
+		case 1:
+			return v.Get(hit[0].ID)
+		default:
+			return Entry{}, fmt.Errorf("%q: %w", key, ErrAmbiguous)
+		}
+	}
+	return Entry{}, fmt.Errorf("session %q: %w", key, ErrNotFound)
+}
+
+func (v indexView) Head(id string) (int64, string, error) {
+	h, ok := v.s.readHead(id)
+	if !ok {
+		return 0, "", fmt.Errorf("session %s: %w", id, ErrNotFound)
+	}
+	return h.Seq, h.Hash, nil
+}
