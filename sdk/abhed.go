@@ -458,6 +458,25 @@ func (a *Agent) Continue(ctx context.Context, prompt string) (string, error) {
 // boundary. Safe to call from another goroutine.
 func (a *Agent) Steer(text string) { a.loop.Steer(text) }
 
+// Queued counts steering messages not yet delivered: sent while no run was in
+// progress, or as the last run ended. The next run delivers them first.
+func (a *Agent) Queued() int { return len(a.loop.Queued()) }
+
+// RunQueued continues the conversation with only the queued steering
+// messages, for one that arrived as the last run ended. With none it does
+// nothing and returns the last message.
+func (a *Agent) RunQueued(ctx context.Context) (string, error) {
+	defer a.startRun()()
+	reason, err := a.loop.RunQueued(ctx)
+	if err != nil {
+		return "", err
+	}
+	if reason != agent.TermCompleted {
+		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+	}
+	return a.lastMessage(), nil
+}
+
 // WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
 // of its settings were ignored because it is not trusted.
 func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }

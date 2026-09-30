@@ -25,6 +25,8 @@ type globModel struct {
 	mu     sync.Mutex
 	bodies []string
 	hold   func(n int)
+	// text answers with a closing message instead of a call.
+	text bool
 }
 
 func (m *globModel) serve(t *testing.T) *httptest.Server {
@@ -38,6 +40,11 @@ func (m *globModel) serve(t *testing.T) *httptest.Server {
 			m.hold(n)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		if m.text {
+			fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`)
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
 		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c`+fmt.Sprint(n)+`","function":{"name":"glob","arguments":"{\"pattern\":\"*\"}"}}]}}]}`)
 		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
 		fmt.Fprint(w, "data: [DONE]\n\n")
@@ -69,14 +76,14 @@ func rpcWorkspace(t *testing.T, url, extra string) string {
 	return ws
 }
 
-// rpcSession runs abhed rpc on pipes the test writes to and reads from.
-type rpcSession struct {
+// rpcPipe runs abhed rpc on pipes the test writes to and reads from.
+type rpcPipe struct {
 	in    *os.File
 	lines chan string
 	done  chan struct{}
 }
 
-func startRPC(t *testing.T, ws string) *rpcSession {
+func startRPC(t *testing.T, ws string) *rpcPipe {
 	t.Helper()
 	inR, inW, err := os.Pipe()
 	if err != nil {
@@ -88,7 +95,7 @@ func startRPC(t *testing.T, ws string) *rpcSession {
 	}
 	oldIn, oldOut := os.Stdin, os.Stdout
 	os.Stdin, os.Stdout = inR, outW
-	s := &rpcSession{in: inW, lines: make(chan string, 4096), done: make(chan struct{})}
+	s := &rpcPipe{in: inW, lines: make(chan string, 4096), done: make(chan struct{})}
 	go func() {
 		sc := bufio.NewScanner(outR)
 		sc.Buffer(make([]byte, 0, 64<<10), 8<<20)
@@ -114,10 +121,10 @@ func startRPC(t *testing.T, ws string) *rpcSession {
 	return s
 }
 
-func (s *rpcSession) send(line string) { fmt.Fprintln(s.in, line) }
+func (s *rpcPipe) send(line string) { fmt.Fprintln(s.in, line) }
 
 // waitFor reads output until a line holds want, returning everything read.
-func (s *rpcSession) waitFor(t *testing.T, want string) string {
+func (s *rpcPipe) waitFor(t *testing.T, want string) string {
 	t.Helper()
 	var got strings.Builder
 	deadline := time.After(20 * time.Second)
@@ -157,11 +164,12 @@ func TestRPCHonoursTheConfiguredTurnLimit(t *testing.T) {
 // A steer sent while a prompt runs reaches that run; it was once read only
 // after the run ended.
 func TestRPCSteerReachesTheRunningPrompt(t *testing.T) {
-	steered := make(chan struct{})
+	steered, inFirst := make(chan struct{}), make(chan struct{})
 	m := &globModel{}
 	// The first turn waits for the steer to be acknowledged.
 	m.hold = func(n int) {
 		if n == 1 {
+			close(inFirst)
 			select {
 			case <-steered:
 			case <-time.After(5 * time.Second):
@@ -174,6 +182,7 @@ func TestRPCSteerReachesTheRunningPrompt(t *testing.T) {
 	s.waitFor(t, `"type":"ready"`)
 	s.send(`{"id":"2","method":"prompt","prompt":"look around"}`)
 	s.send(`{"id":"3","method":"prompt","prompt":"SECOND-PROMPT"}`)
+	<-inFirst
 	s.send(`{"id":"4","method":"steer","prompt":"STEER-TEXT"}`)
 	out := s.waitFor(t, `"type":"steered"`)
 	close(steered)
@@ -206,5 +215,114 @@ func TestACPSessionTakesTheConfiguredTurnLimit(t *testing.T) {
 	cl.request(2, "session/new", map[string]any{"cwd": "/ws", "mcpServers": []any{}})
 	if made == nil || !made.opts.ConfiguredLimits {
 		t.Fatal("the acp session does not take the configuration's turn limit")
+	}
+}
+
+// holdFirst makes the model's first request wait for release, and closes
+// entered when it arrives.
+func holdFirst(m *globModel) (entered, release chan struct{}) {
+	entered, release = make(chan struct{}), make(chan struct{})
+	m.hold = func(n int) {
+		if n == 1 {
+			close(entered)
+			select {
+			case <-release:
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}
+	return entered, release
+}
+
+// A steer sent straight after start reaches the session that start makes,
+// rather than finding no session yet.
+func TestRPCSteerRightAfterStartIsKept(t *testing.T) {
+	m := &globModel{text: true}
+	ws := rpcWorkspace(t, m.serve(t).URL, "")
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.send(`{"id":"2","method":"steer","prompt":"EARLY-STEER"}`)
+	if out := s.waitFor(t, `"id":"2"`); !strings.Contains(out, `"type":"queued"`) {
+		t.Fatalf("the steer was not kept for the new session:\n%s", out)
+	}
+	s.send(`{"id":"3","method":"prompt","prompt":"go"}`)
+	s.waitFor(t, `"id":"3"`)
+	if reqs := m.requests(); len(reqs) == 0 || !strings.Contains(reqs[0], "EARLY-STEER") {
+		t.Fatal("the held steer never reached the model")
+	}
+}
+
+// A steer read after a second start, still queued behind a prompt, goes to
+// that new session; it once went to the old one, which the start then closed.
+func TestRPCSteerAfterAQueuedStartGoesToTheNewSession(t *testing.T) {
+	m := &globModel{text: true}
+	entered, release := holdFirst(m)
+	ws := rpcWorkspace(t, m.serve(t).URL, "")
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"first"}`)
+	<-entered
+	s.send(`{"id":"3","method":"start"}`)
+	s.send(`{"id":"4","method":"steer","prompt":"FOR-THE-NEW-SESSION"}`)
+	if out := s.waitFor(t, `"id":"4"`); !strings.Contains(out, `"type":"queued"`) {
+		t.Fatalf("the steer was not held for the new session:\n%s", out)
+	}
+	close(release)
+	s.waitFor(t, `"id":"3"`)
+	s.send(`{"id":"5","method":"prompt","prompt":"second"}`)
+	s.waitFor(t, `"id":"5"`)
+	reqs := m.requests()
+	if strings.Contains(reqs[0], "FOR-THE-NEW-SESSION") || !strings.Contains(reqs[len(reqs)-1], "FOR-THE-NEW-SESSION") {
+		t.Fatalf("the steer did not reach the new session's prompt (%d requests)", len(reqs))
+	}
+}
+
+// A steer answered steered is read by the model even when the run was about
+// to end, before the prompt's answer; one only queued is named if never read.
+func TestRPCSteeredIsDeliveredAndQueuedIsAccountedFor(t *testing.T) {
+	m := &globModel{text: true}
+	entered, release := holdFirst(m)
+	ws := rpcWorkspace(t, m.serve(t).URL, "")
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"first"}`)
+	<-entered
+	s.send(`{"id":"3","method":"steer","prompt":"LATE-STEER"}`)
+	s.waitFor(t, `"type":"steered"`)
+	close(release)
+	s.waitFor(t, `"id":"2"`)
+	reqs := m.requests()
+	if len(reqs) < 2 || !strings.Contains(reqs[len(reqs)-1], "LATE-STEER") {
+		t.Fatalf("a steer answered steered was not delivered before the answer (%d requests)", len(reqs))
+	}
+
+	s.send(`{"id":"4","method":"steer","prompt":"NEVER-READ"}`)
+	if out := s.waitFor(t, `"id":"4"`); !strings.Contains(out, `"type":"queued"`) {
+		t.Fatalf("an idle steer should be answered queued:\n%s", out)
+	}
+	s.send(`{"id":"5","method":"quit"}`)
+	if out := s.waitFor(t, `"type":"bye"`); !strings.Contains(out, "1 queued steer message(s) were not delivered") {
+		t.Fatalf("quit did not say the queued steer was never read:\n%s", out)
+	}
+}
+
+// Requests beyond the cap are refused by name, not held without bound.
+func TestRPCRefusesRequestsBeyondTheCap(t *testing.T) {
+	m := &globModel{text: true}
+	entered, release := holdFirst(m)
+	defer close(release)
+	ws := rpcWorkspace(t, m.serve(t).URL, "")
+	s := startRPC(t, ws)
+	s.send(`{"id":"1","method":"start"}`)
+	s.waitFor(t, `"type":"ready"`)
+	s.send(`{"id":"2","method":"prompt","prompt":"first"}`)
+	<-entered
+	for i := range rpcMaxPending + 1 {
+		s.send(fmt.Sprintf(`{"id":"u%d","method":"providers"}`, i))
+	}
+	if out := s.waitFor(t, `"id":"u256"`); !strings.Contains(out, "requests are already waiting") {
+		t.Fatalf("the request past the cap was not refused:\n%s", out)
 	}
 }

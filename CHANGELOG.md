@@ -513,10 +513,13 @@ All notable changes to Abhed are recorded here. The format follows
   limit of 2 ran 16 turns. They now take it as the CLI does. An untrusted
   workspace can still only lower it, and a managed value stays the ceiling.
 - `abhed rpc`: a `steer` sent while a prompt ran was read only after the run
-  ended, so it never redirected it. Input is now read while a prompt runs: a
-  `steer` joins that run at its next turn and is answered `steered` at once.
-  Any other request, a second `prompt` included, waits its turn and is
-  answered in the order sent. A `steer` when no prompt runs leads the next one.
+  ended, so it never redirected it. Input is now read while a prompt runs. A
+  `steer` goes to the session of the last `start` sent and is answered at
+  once: `steered` when the running prompt will read it before its answer,
+  `queued` when that session's next prompt will. A queued steer never read is
+  named in an error line when the session ends. Any other request, a second
+  `prompt` included, waits its turn and is answered in the order sent, up to
+  256 waiting.
 - `bash`: the note that the sandbox has no network was left off when a
   pipeline ended in success, as `curl … | head` does; it now follows the
   network failure whatever the exit code.
@@ -574,6 +577,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- SDK: `Agent.Queued` counts steering messages not yet delivered, and
+  `Agent.RunQueued` runs them when one arrived as the last run ended.
 - SDK: `Options.ConfiguredLimits` takes `limits.max_turns` from the
   configuration, as the CLI does; `rpc` and `acp` set it. Embedders that leave
   it off keep today's behaviour: only a managed value binds, and a nonzero
