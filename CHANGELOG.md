@@ -21,8 +21,9 @@ All notable changes to Abhed are recorded here. The format follows
   from a status line command is drawn with every control and format
   character removed, rune by rune, keeping only text and colour: C0 and C1
   controls, OSC, DCS and other escapes, bidi overrides and isolates,
-  zero-width and tag characters. Conceal (SGR 8) is dropped from colour, so
-  printed text cannot be made invisible. Every row the terminal draws passes
+  zero-width and tag characters. Conceal (SGR 8) is dropped from colour, and in
+  what programs print, so is a colour that sets the text to its background's
+  colour when both are explicit: printed text cannot be made invisible. Every row the terminal draws passes
   through the same filter, and so does everything the line mode prints on a
   terminal (piped input, `TERM=dumb`): its approvals, replies, tool output
   and what commands print. In an approval and in a diff nothing is dropped:

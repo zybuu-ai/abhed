@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -501,6 +502,104 @@ func dropConceal(tok string) string {
 		return ""
 	}
 	return "\x1b[" + strings.Join(out, ";") + "m"
+}
+
+// colourGuard drops, from output the program did not draw itself, an SGR
+// that would make the foreground the same colour as the background when
+// both are set explicitly: printed text must not be hidden by colour. It
+// follows the colours across writes, as the terminal does.
+type colourGuard struct{ fg, bg string }
+
+func (g *colourGuard) filter(s string) string {
+	if !strings.Contains(s, "\x1b[") {
+		return s
+	}
+	var b strings.Builder
+	forEachToken(s, func(tok string, esc bool) {
+		if esc && isSGR(tok) {
+			fg, bg := g.fg, g.bg
+			applyColours(&fg, &bg, tok[2:len(tok)-1])
+			if fg != "" && fg == bg {
+				return
+			}
+			g.fg, g.bg = fg, bg
+		}
+		b.WriteString(tok)
+	})
+	return b.String()
+}
+
+// applyColours applies an SGR's parameters to the explicit foreground and
+// background, as "c<index>" or "rgb:r,g,b"; "" is the terminal's default.
+func applyColours(fg, bg *string, params string) {
+	ps := strings.Split(params, ";")
+	num := func(p string) int {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return -1
+		}
+		return n
+	}
+	// extended reads the colour after a 38 or 48, "5;n" or "2;r;g;b", and
+	// how many parameters it took.
+	extended := func(args []string) (string, int) {
+		if len(args) >= 2 && args[0] == "5" {
+			return "c" + strconv.Itoa(num(args[1])), 2
+		}
+		if len(args) >= 4 && args[0] == "2" {
+			a := args[1:4]
+			return "rgb:" + strconv.Itoa(num(a[0])) + "," + strconv.Itoa(num(a[1])) + "," + strconv.Itoa(num(a[2])), 4
+		}
+		return "", len(args)
+	}
+	for i := 0; i < len(ps); i++ {
+		p := ps[i]
+		if strings.Contains(p, ":") {
+			sub := strings.Split(p, ":")
+			switch sub[0] {
+			case "38", "48":
+				args := sub[1:]
+				if len(args) >= 5 && args[0] == "2" {
+					args = append([]string{"2"}, args[len(args)-3:]...) // "2::r:g:b"
+				}
+				c, _ := extended(args)
+				if sub[0] == "38" {
+					*fg = c
+				} else {
+					*bg = c
+				}
+			}
+			continue
+		}
+		n := num(p)
+		if p == "" {
+			n = 0
+		}
+		switch {
+		case n == 0:
+			*fg, *bg = "", ""
+		case n >= 30 && n <= 37:
+			*fg = "c" + strconv.Itoa(n-30)
+		case n >= 90 && n <= 97:
+			*fg = "c" + strconv.Itoa(n-90+8)
+		case n == 39:
+			*fg = ""
+		case n >= 40 && n <= 47:
+			*bg = "c" + strconv.Itoa(n-40)
+		case n >= 100 && n <= 107:
+			*bg = "c" + strconv.Itoa(n-100+8)
+		case n == 49:
+			*bg = ""
+		case n == 38 || n == 48 || n == 58:
+			c, used := extended(ps[i+1:])
+			if n == 38 {
+				*fg = c
+			} else if n == 48 {
+				*bg = c
+			}
+			i += used
+		}
+	}
 }
 
 // CleanText is sanitize for callers outside the package: text, and SGR

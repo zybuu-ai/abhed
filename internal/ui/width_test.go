@@ -165,3 +165,39 @@ func TestSanitizeDropsConceal(t *testing.T) {
 		}
 	}
 }
+
+// Printed output cannot set its text to its background's colour when both
+// are explicit, in one SGR or across several, in any colour notation. Other
+// colours, and a colour on the default background, pass.
+func TestColourGuardDropsTextOnItsOwnColour(t *testing.T) {
+	for in, want := range map[string]string{
+		"\x1b[31;41mhid":                        "hid",
+		"\x1b[41m\x1b[31mhid":                   "\x1b[41mhid",
+		"\x1b[38;5;1;48;5;1mhid":                "hid",
+		"\x1b[31m\x1b[48;5;1mhid":               "\x1b[31mhid",
+		"\x1b[38;2;9;9;9m\x1b[48;2;9;9;9mhid":   "\x1b[38;2;9;9;9mhid",
+		"\x1b[38:2::9:9:9m\x1b[48:2::9:9:9mhid": "\x1b[38:2::9:9:9mhid",
+		"\x1b[97;107mhid":                       "hid",
+		"\x1b[38;5;15;107mhid":                  "hid",
+		"\x1b[31;42mok":                         "\x1b[31;42mok",
+		"\x1b[31mok":                            "\x1b[31mok",
+		"\x1b[31;41m\x1b[0m\x1b[41mok":          "\x1b[0m\x1b[41mok",
+		"\x1b[41m\x1b[0m\x1b[31mok":             "\x1b[41m\x1b[0m\x1b[31mok",
+		"\x1b[41m\x1b[39;49m\x1b[31mok":         "\x1b[41m\x1b[39;49m\x1b[31mok",
+	} {
+		var g colourGuard
+		if got := g.filter(in); got != want {
+			t.Errorf("filter(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// The colours carry across writes, as they do on the terminal.
+	var g colourGuard
+	if got := g.filter("\x1b[44mblue ") + g.filter("\x1b[34mhid"); got != "\x1b[44mblue hid" {
+		t.Errorf("across writes: %q", got)
+	}
+	// Both captured paths use it: the dock and the line mode's filter.
+	f := &streamFilter{keepSGR: true}
+	if got := f.feed([]byte("\x1b[32;42mx\n")) + f.flush(); got != "x\n" {
+		t.Errorf("line mode: %q", got)
+	}
+}

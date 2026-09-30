@@ -162,3 +162,27 @@ func TestNoColorStripsCapturedColour(t *testing.T) {
 }
 
 func vtNew(cols, rows int) *vt.Terminal { return vt.New(cols, rows) }
+
+// Output the program printed cannot draw its text in its background's
+// colour: the dock drops that SGR and keeps the text.
+func TestDockDropsTextOnItsOwnColour(t *testing.T) {
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	m := &meter{term: vtNew(60, 20)}
+	d := newDock(r, m, Style{enabled: true})
+	d.size = func() (int, int) { return 60, 20 }
+	d.mu.Lock()
+	d.write([]byte("\x1b[41mshown \x1b[31mhid\x1b[0m\n"))
+	d.draw()
+	d.mu.Unlock()
+	m.mu.Lock()
+	wire := m.log.String()
+	m.mu.Unlock()
+	if strings.Contains(wire, "\x1b[31m") {
+		t.Fatalf("red text on red was drawn: %q", wire)
+	}
+	if !strings.Contains(wire, "hid") {
+		t.Fatalf("the text was lost: %q", wire)
+	}
+}

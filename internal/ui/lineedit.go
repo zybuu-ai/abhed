@@ -730,6 +730,15 @@ func (l *LineReader) captureLines() func() {
 type streamFilter struct {
 	keepSGR bool
 	carry   []byte
+	cg      colourGuard
+}
+
+func (f *streamFilter) clean(s string) string {
+	out := sanitize(s, f.keepSGR)
+	if f.keepSGR {
+		out = f.cg.filter(out)
+	}
+	return out
 }
 
 func (f *streamFilter) feed(p []byte) string {
@@ -750,11 +759,11 @@ func (f *streamFilter) feed(p []byte) string {
 		break
 	}
 	f.carry = append([]byte(nil), data[cut:]...)
-	return sanitize(string(data[:cut]), f.keepSGR)
+	return f.clean(string(data[:cut]))
 }
 
 func (f *streamFilter) flush() string {
-	out := sanitize(string(f.carry), f.keepSGR)
+	out := f.clean(string(f.carry))
 	f.carry = nil
 	return out
 }

@@ -65,6 +65,8 @@ type dock struct {
 	// reply's rows that may still change.
 	rawTail string
 	live    []string
+	// cg follows the colours of the program's own output.
+	cg colourGuard
 
 	// queued are messages typed while a turn runs, shown until the agent
 	// takes them or the turn ends.
@@ -1006,7 +1008,11 @@ func (d *dock) flushTail(lines *[]string) {
 // write is output from the program: complete lines are committed, and a
 // trailing partial line is held in the region until its newline arrives.
 func (d *dock) write(p []byte) {
-	text := d.rawTail + sanitize(string(p), d.st.enabled)
+	clean := sanitize(string(p), d.st.enabled)
+	if d.st.enabled {
+		clean = d.cg.filter(clean)
+	}
+	text := d.rawTail + clean
 	i := strings.LastIndexByte(text, '\n')
 	if i < 0 {
 		d.rawTail = text
