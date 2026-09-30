@@ -266,10 +266,14 @@ type Server struct {
 	// searching counts the workspace searches running per session.
 	searching sync.Map
 	store     EventStore
-	sessions  SessionRecorder // nil when the store is not durable
-	log       *slog.Logger
-	mu        sync.RWMutex
-	running   map[string]*liveSession
+	// base is the store under any event tap: the optional interfaces
+	// (liveness, fencing, approvals, deletion) are asserted on it, since the
+	// tap wraps only what the loop writes through.
+	base     EventStore
+	sessions SessionRecorder // nil when the store is not durable
+	log      *slog.Logger
+	mu       sync.RWMutex
+	running  map[string]*liveSession
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
@@ -421,6 +425,7 @@ func New(opts Options) *Server {
 	s := &Server{
 		opts:    opts,
 		store:   tapped,
+		base:    st,
 		log:     opts.Logger,
 		running: make(map[string]*liveSession),
 		holder:  holder,
@@ -441,6 +446,14 @@ func New(opts Options) *Server {
 	}
 	srv = s
 	return s
+}
+
+// under is the store under any event tap, where the optional interfaces are.
+func (s *Server) under() EventStore {
+	if s.base != nil {
+		return s.base
+	}
+	return s.store
 }
 
 // leaseRefused fences the session a store refused an append for: the store
@@ -1168,7 +1181,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		"provider": live.provider,
 	}); err != nil {
 		// An empty session left listed would be one nobody can open.
-		if del, ok := s.store.(agent.SessionDeleter); ok {
+		if del, ok := s.under().(agent.SessionDeleter); ok {
 			_ = del.DeleteSession(sessionID)
 		}
 		return "", fmt.Errorf("record session start: %w", err)
@@ -1187,7 +1200,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 // forgetUnstarted removes a session refused after its row was written, so no
 // session is left listed that never ran and never ends.
 func (s *Server) forgetUnstarted(sessionID string) {
-	if del, ok := s.store.(agent.SessionDeleter); ok {
+	if del, ok := s.under().(agent.SessionDeleter); ok {
 		_ = del.DeleteSession(sessionID)
 	}
 }
@@ -2755,7 +2768,7 @@ func (s *Server) releaseAndLetGo(live *liveSession) {
 // write claims it again first, with the end it has now to go back to. The
 // caller holds no claim lock.
 func (s *Server) letGo(live *liveSession) {
-	if _, fenced := s.store.(*store.Held); !fenced || live.fenced.Load() || live.unclaimed.Load() {
+	if _, fenced := s.under().(*store.Held); !fenced || live.fenced.Load() || live.unclaimed.Load() {
 		return
 	}
 	events, err := s.store.Events(live.ID)
@@ -3334,7 +3347,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 			o.Sessions = len(recs)
 		}
 	}
-	if pg, ok := s.store.(interface {
+	if pg, ok := s.under().(interface {
 		Stats(context.Context) (int64, int64, error)
 	}); ok {
 		if _, events, err := pg.Stats(r.Context()); err == nil {
@@ -3378,7 +3391,7 @@ func (s *Server) claimNode(ctx context.Context, sessionID string) error {
 // liveness is the store's holder bookkeeping, used whether or not routing by
 // node is configured.
 func (s *Server) liveness() (SessionRouter, bool) {
-	r, ok := s.store.(SessionRouter)
+	r, ok := s.under().(SessionRouter)
 	return r, ok
 }
 
@@ -3447,7 +3460,7 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 // renewNode refreshes this process's claim: fenced where the store can
 // fence it, and otherwise by claiming again.
 func (s *Server) renewNode(ctx context.Context, sessionID string) (bool, error) {
-	if r, ok := s.store.(LeaseRenewer); ok {
+	if r, ok := s.under().(LeaseRenewer); ok {
 		held, err := r.RenewNode(ctx, sessionID, s.holder)
 		if err != nil {
 			s.log.Warn("could not renew the claim on a session", "session", sessionID, "err", err)
@@ -3525,7 +3538,7 @@ func (s *Server) answerElsewhere(w http.ResponseWriter, r *http.Request, session
 // the exchange is worth doing on one node too, because it makes a pending
 // approval visible in the record rather than only in memory.
 func (s *Server) approvalStore() ApprovalStore {
-	a, ok := s.store.(ApprovalStore)
+	a, ok := s.under().(ApprovalStore)
 	if !ok {
 		return nil
 	}
@@ -3538,7 +3551,7 @@ func (s *Server) router() (SessionRouter, bool) {
 	if s.opts.NodeID == "" {
 		return nil, false
 	}
-	r, ok := s.store.(SessionRouter)
+	r, ok := s.under().(SessionRouter)
 	return r, ok
 }
 

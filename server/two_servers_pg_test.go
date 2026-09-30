@@ -235,3 +235,23 @@ func TestOnePostgresSweepSparesASessionItIsStarting(t *testing.T) {
 		}
 	}
 }
+
+// With an event tap (telemetry), the server still sees the store's
+// liveness, fencing and let-go: every message to a session runs and is
+// recorded, not only the first.
+func TestOnePostgresWithATapEveryMessageRuns(t *testing.T) {
+	var seen atomic.Int32
+	a := newBGServerWith(t, openSharedPG(t), func(_ *config.Config, o *Options) { o.EventTap = func(agent.Event) { seen.Add(1) } })
+	id := a.start("hello", false)
+	<-a.ended
+	for i := range 3 {
+		waitUntil(t, "the run", func() bool { return a.state(id) != "running" })
+		if rec := a.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`); rec.Code != http.StatusAccepted {
+			t.Fatalf("message %d: %d %s", i, rec.Code, rec.Body)
+		}
+		waitUntil(t, "the message recorded", func() bool { return countType(a.events(id), agent.EvUserMessage) == i+2 })
+	}
+	if l := a.live(id); l == nil || l.fenced.Load() || seen.Load() == 0 {
+		t.Fatalf("the session was fenced, or the tap saw nothing (%d)", seen.Load())
+	}
+}

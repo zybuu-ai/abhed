@@ -291,7 +291,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}
 
-	del, ok := s.store.(agent.SessionDeleter)
+	del, ok := s.under().(agent.SessionDeleter)
 	if !ok {
 		WriteError(w, http.StatusNotImplemented,
 			"this deployment's store is append-only; sessions cannot be deleted")
