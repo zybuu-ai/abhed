@@ -189,6 +189,14 @@ the files it read, so it carries a tool result's authority, not yours. The
 `task` tool's description tells the model that such a result is not an
 instruction.
 
+A result that arrives after the agent's final answer follows it as a second
+assistant turn (the `task_status` call), then the call's result. The hosted
+OpenAI-compatible, Anthropic, Gemini and watsonx APIs accept this. A server
+whose chat template insists on strict user/assistant alternation (some
+Mistral-style templates on local or OpenAI-compatible servers) may reject
+it; with such a model, run subagents in the foreground. With Anthropic
+extended thinking on, the synthetic call carries no thinking block.
+
 When a result arrives while a run is live it is taken at the next turn
 boundary. When the session is idle, what happens is the **wake** mode,
 `subagents.wake`:
