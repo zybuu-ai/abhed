@@ -171,3 +171,20 @@ func TestReadRegularRefusesLinksAndSize(t *testing.T) {
 		t.Fatal("read through a link")
 	}
 }
+
+// A file swapped for another between the check and the open is refused.
+func TestReadRegularRefusesASwap(t *testing.T) {
+	dir := t.TempDir()
+	p, other := filepath.Join(dir, "f.md"), filepath.Join(dir, "other.md")
+	for _, f := range []string{p, other} {
+		if err := os.WriteFile(f, []byte(f), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	was := openRegular
+	t.Cleanup(func() { openRegular = was })
+	openRegular = func(string) (*os.File, error) { return os.Open(other) }
+	if _, err := ReadRegular(p, 1<<10); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("read a swapped file: %v", err)
+	}
+}

@@ -139,6 +139,12 @@ func readFile(p string) ([]byte, error) {
 	return ReadRegular(p, MaxFileBytes)
 }
 
+// openRegular opens a checked file; a variable so a test can swap the file
+// between the check and the open.
+var openRegular = func(p string) (*os.File, error) {
+	return os.OpenFile(p, os.O_RDONLY|noFollow, 0) // #nosec G304 -- a file the person or operator named, checked first
+}
+
 // ReadRegular reads a regular file with one name and at most max bytes. The
 // last component is opened without following a link, and the open file must
 // be the one checked, so a swap between the check and the read is refused.
@@ -150,7 +156,7 @@ func ReadRegular(p string, max int64) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("not a regular file; a link is not followed")
 	}
-	f, err := os.OpenFile(p, os.O_RDONLY|noFollow, 0) // #nosec G304 -- a file the person or operator named, checked here
+	f, err := openRegular(p)
 	if err != nil {
 		return nil, err
 	}
