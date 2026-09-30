@@ -199,6 +199,18 @@ func (h *Host) Veto(ctx context.Context, ev Event, req Request) string {
 	return ""
 }
 
+// NotRunning names the extensions that take ev but have stopped, so a
+// caller can say what went unscreened.
+func (h *Host) NotRunning(ev Event) []string {
+	var out []string
+	for _, e := range h.exts {
+		if e.wants(ev) && !e.Running() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
 // Observe tells the extensions that take ev, one that only observes, what
 // happened. An async extension is not waited for; one that answers with a
 // reason or a log line is recorded as annotating.

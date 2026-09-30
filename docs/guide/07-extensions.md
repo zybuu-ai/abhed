@@ -45,7 +45,7 @@ exactly one reply.
 | `invoke_tool` | the model called one | return its `result` |
 | `session_start`, `session_end` | run boundaries | nothing; setup and teardown |
 | `user_prompt_submit` | before a message you send is recorded and sent (interactive CLI) | `block` it; you are told why and the model never sees it. A steering message typed during a run that is blocked is recorded as dropped |
-| `permission_request` | before a call is put to you (interactive CLI) | `block` it. Nothing in the reply approves the call; `allow` is ignored |
+| `permission_request` | before a call is put to you, a subagent's included (interactive CLI) | `block` it. Nothing in the reply approves the call; `allow` is ignored |
 | `turn_end` | the agent has finished answering, with the reason it stopped (interactive CLI) | nothing; it only observes |
 | `subagent_end` | a subagent the agent waited on has returned (interactive CLI) | nothing; it only observes |
 | `notification` | the agent needs you, as when a call waits for approval (interactive CLI) | nothing; it only observes |
@@ -144,8 +144,9 @@ Load order cannot change a verdict, which keeps the audit trail reproducible.
 past its timeout, or replies with something unparseable is marked dead. On a
 `tool_call` or `permission_request`, the call it failed on is refused, and
 while it is not running every call it would have screened is asked, since the
-veto it stood for is gone. For the other events it is skipped. The session
-goes on either way.
+veto it stood for is gone. For the other events it is skipped: a
+`user_prompt_submit` hook that has stopped fails open, and the CLI says each
+message went unscreened. The session goes on either way.
 
 **A hung extension is not retried.** The read is abandoned but the stream is
 not, so a later reply would be matched to the wrong request.

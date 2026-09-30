@@ -34,6 +34,10 @@ func (h cliHooks) PromptSubmitted(ctx context.Context, sessionID, text string) s
 	why := h.host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
 	if why != "" {
 		h.st.say(ui.Block{Kind: ui.BlockError, Text: "your message was not sent: " + why})
+	} else if down := h.host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+		// A prompt hook fails open; the person is told it did not look.
+		h.st.say(ui.Block{Kind: ui.BlockNotice, Text: "not screened: the user_prompt_submit hook " +
+			strings.Join(down, ", ") + " is not running"})
 	}
 	return why
 }

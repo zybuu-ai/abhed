@@ -505,7 +505,9 @@ All notable changes to Abhed are recorded here. The format follows
   `notification`, which only observe, in the interactive CLI. `match` narrows
   `tool_call` and `permission_request` to calls a permission rule matches, as
   a deny rule would match them, and `async` sends
-  observe-only events without waiting. Each hook that blocks, forces an ask
+  observe-only events without waiting. A subagent's calls go through the
+  parent's `permission_request` hooks. A `user_prompt_submit` hook that has
+  stopped fails open, and the CLI says so. Each hook that blocks, forces an ask
   or annotates is recorded as `hook.fired`. `/hooks` lists the extensions
   with their layer, events, matcher and status. A managed `hooks.disabled`
   now takes effect: extensions keep only the tools they provide.

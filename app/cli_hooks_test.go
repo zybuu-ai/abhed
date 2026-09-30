@@ -113,3 +113,23 @@ func TestCLIPromptHookVeto(t *testing.T) {
 func jsonQuote(s string) string {
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
 }
+
+// A prompt hook that has stopped fails open, and the person is told the
+// message went unscreened.
+func TestDeadPromptHookIsSaid(t *testing.T) {
+	env, surface, _ := recordedEnv(t, config.Default(), "default")
+	host := extension.NewHost(nil)
+	if errs := host.Load(context.Background(), []extension.Config{{Name: "dlp", Command: "bash",
+		Args: []string{writeScript(t, "#!/bin/bash\nread -r line\nexit 1\n")}, Events: []extension.Event{extension.EvUserPromptSubmit}}}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	t.Cleanup(host.Close)
+	env.st.hooks = host
+	env.st.attachHooks(env.st.loop)
+	if why := env.st.loop.Hooks.PromptSubmitted(context.Background(), "s1", "hello"); why != "" {
+		t.Fatalf("refused: %q", why)
+	}
+	if !strings.Contains(surface.text(), "not screened: the user_prompt_submit hook dlp is not running") {
+		t.Fatalf("shown:\n%s", surface.text())
+	}
+}
