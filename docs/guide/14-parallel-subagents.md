@@ -286,7 +286,8 @@ model is a new task. It may run in the background too.
 - Its role is the definition as it is now, so its tools are never wider than
   today's (`definition_changed` is recorded when the definition changed); a
   role this session no longer offers is refused.
-- It runs on the model it ran on, or not at all.
+- It runs on the model it ran on, or not at all; and not at all when a
+  managed role now pins another model.
 - A worktree subagent resumes in its worktree, which must still exist on its
   branch, and is settled again after; one whose worktree is gone, or whose
   record names a directory other than the workspace with no branch to

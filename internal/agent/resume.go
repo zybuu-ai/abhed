@@ -110,6 +110,12 @@ func (f *SubagentFactory) prepareResume(ctx context.Context, req SubagentRequest
 	if !found {
 		return nil, fmt.Errorf("task %s ran as agent type %s, which this session no longer offers; start a new task", id, orStr(rec.Definition, rec.AgentType))
 	}
+	// The organisation's pin on a managed role binds as it is now: a task
+	// that ran on another model does not go on against it.
+	if def.Source == SourceManaged && def.Model != "" && def.Model != rec.Provider {
+		return nil, fmt.Errorf("agent type %s now runs on model %q, set by the organisation, and task %s ran on %s; start a new task",
+			def.Name, def.Model, id, orStr(rec.Provider, rec.Model))
+	}
 	registry, err := childTools(f.Tools, def)
 	if err != nil {
 		return nil, err

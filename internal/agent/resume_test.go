@@ -505,3 +505,23 @@ func TestCarriedSpendCountsSessionlessReturns(t *testing.T) {
 		t.Fatalf("carried %d, want 20", tokens)
 	}
 }
+
+// A managed role's model pin binds a resume as the role is now: a task that
+// ran on another model is refused; one on the pinned model goes on.
+func TestResumeHonoursAManagedModelPin(t *testing.T) {
+	r := newResumeRig(t, "")
+	r.f.Models = func(string) (model.Adapter, error) { return r.m, nil }
+	r.f.Definitions = WithDefinitions(&Definition{Name: "onprem", Description: "d", Instruction: "i"},
+		&Definition{Name: "pinned", Description: "d", Instruction: "i", Model: "rmp", Source: SourceManaged})
+	loose := r.spawn(t, SubagentRequest{Prompt: "work", Description: "d", AgentType: "onprem"})
+	pinned := r.spawn(t, SubagentRequest{Prompt: "work", Description: "d", AgentType: "pinned"})
+	// The organisation now pins onprem to a model loose did not run on.
+	r.f.Definitions = WithDefinitions(&Definition{Name: "onprem", Description: "d", Instruction: "i", Model: "rmp", Source: SourceManaged},
+		&Definition{Name: "pinned", Description: "d", Instruction: "i", Model: "rmp", Source: SourceManaged})
+	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: loose}); err == nil || !strings.Contains(err.Error(), "set by the organisation") {
+		t.Fatalf("a task resumed against its role's new pin: %v", err)
+	}
+	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: pinned}); err != nil {
+		t.Fatalf("a task on the pinned model: %v", err)
+	}
+}
