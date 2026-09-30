@@ -645,6 +645,29 @@ func (p *Postgres) ApprovalAnsweredBy(ctx context.Context, id string) (string, e
 	return *by, nil
 }
 
+// OpenSessions pages through the ids of sessions not yet ended, not deleted
+// and not a subagent's, in id order after the given one: what a sweep for
+// orphans has to look at, however old.
+func (p *Postgres) OpenSessions(ctx context.Context, after string, limit int) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id FROM sessions
+		WHERE ended_at IS NULL AND deleted_at IS NULL AND parent_id IS NULL AND id > $1
+		ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list open sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("list open sessions: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // HolderStale is how long a holder's claim on a session lasts without a
 // heartbeat. A claim fresher than this belongs to a live process.
 const HolderStale = 2 * time.Minute

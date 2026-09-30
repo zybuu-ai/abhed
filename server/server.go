@@ -2437,35 +2437,71 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 	if _, ok := s.sessions.(OrphanClaimer); !ok {
 		return 0
 	}
-	recs, err := s.sessions.ListSessions(ctx, 500)
-	if err != nil {
-		s.log.Warn("could not list sessions to recover", "error", err)
-		return 0
-	}
 	n := 0
-	for _, rec := range recs {
-		if rec.EndedAt != nil || ctx.Err() != nil {
-			continue
-		}
+	err := s.eachOpenSession(ctx, func(id string) {
 		s.mu.RLock()
-		_, here := s.running[rec.ID]
+		_, here := s.running[id]
 		s.mu.RUnlock()
-		if here {
-			continue
+		if here || ctx.Err() != nil {
+			return
 		}
-		events, err := s.store.Events(rec.ID)
+		events, err := s.store.Events(id)
 		if err != nil {
-			continue
+			return
 		}
-		if s.recoverOrphan(ctx, rec.ID, events) {
-			s.releaseNode(rec.ID) // reconciled and ended: nothing of it runs here
+		if s.recoverOrphan(ctx, id, events) {
+			s.releaseNode(id) // reconciled and ended: nothing of it runs here
 			n++
 		}
+	})
+	if err != nil {
+		s.log.Warn("could not list sessions to recover", "error", err)
 	}
 	if n > 0 {
 		s.log.Warn("recovered sessions a crashed process left open", "count", n)
 	}
 	return n
+}
+
+// sweepPage is how many open sessions the sweep reads at a time.
+var sweepPage = 500
+
+// OpenSessionLister is implemented by stores that can page through every
+// session not yet ended, however old, for the orphan sweep.
+type OpenSessionLister interface {
+	OpenSessions(ctx context.Context, after string, limit int) ([]string, error)
+}
+
+// eachOpenSession calls f for every open session: through OpenSessions page
+// by page where the store has it, otherwise from its session list.
+func (s *Server) eachOpenSession(ctx context.Context, f func(id string)) error {
+	if l, ok := s.sessions.(OpenSessionLister); ok {
+		after := ""
+		for ctx.Err() == nil {
+			ids, err := l.OpenSessions(ctx, after, sweepPage)
+			if err != nil {
+				return err
+			}
+			for _, id := range ids {
+				f(id)
+			}
+			if len(ids) < sweepPage {
+				return nil
+			}
+			after = ids[len(ids)-1]
+		}
+		return ctx.Err()
+	}
+	recs, err := s.sessions.ListSessions(ctx, 500)
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if rec.EndedAt == nil {
+			f(rec.ID)
+		}
+	}
+	return nil
 }
 
 // sweepOrphans runs RecoverOrphans now and then every interval until ctx

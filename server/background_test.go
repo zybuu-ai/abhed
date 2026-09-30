@@ -910,13 +910,14 @@ func TestSweepRunsAgain(t *testing.T) {
 	<-a.ended
 	b := newBGServer(t, st)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go b.s.sweepOrphans(ctx, 50*time.Millisecond)
+	swept := make(chan struct{})
+	go func() { b.s.sweepOrphans(ctx, 50*time.Millisecond); close(swept) }()
+	defer func() { cancel(); <-swept }()
 	time.Sleep(100 * time.Millisecond)
 	st.mu.Lock()
-	swept := st.ended[id]
+	early := st.ended[id]
 	st.mu.Unlock()
-	if swept {
+	if early {
 		t.Fatal("a live session was swept")
 	}
 	st.crash(id)
@@ -947,5 +948,30 @@ func TestFailedHoldAnswers503(t *testing.T) {
 	rec = b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`)
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("a message to a session opened to view: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The sweep reaches every open session, page after page, not only the
+// newest few.
+func TestSweepPagesThroughEveryOpenSession(t *testing.T) {
+	old := sweepPage
+	sweepPage = 2
+	t.Cleanup(func() { sweepPage = old })
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	names := []string{"a", "b", "c", "d", "e"}
+	a := newBGServer(t, st, names...)
+	var ids []string
+	for _, n := range names {
+		id := a.start("bg:"+n, false)
+		<-a.ended
+		st.crash(id)
+		ids = append(ids, id)
+	}
+	b := newBGServer(t, st)
+	if n := b.s.RecoverOrphans(context.Background()); n != len(ids) {
+		t.Fatalf("recovered %d of %d", n, len(ids))
+	}
+	for _, n := range names {
+		a.ad.release(n)
 	}
 }

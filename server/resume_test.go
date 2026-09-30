@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -603,4 +604,21 @@ func TestServerResumeCarriesTokenTotals(t *testing.T) {
 	if got := v.live().Loop.Usage().InputTokens; got != 10 {
 		t.Fatalf("resumed with %d tokens in, want the recorded 10", got)
 	}
+}
+
+// OpenSessions pages through the open top-level rows in id order.
+func (d *durableMem) OpenSessions(_ context.Context, after string, limit int) ([]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var ids []string
+	for id, r := range d.rows {
+		if !d.ended[id] && r.ParentID == "" && id > after {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
 }

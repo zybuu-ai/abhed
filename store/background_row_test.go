@@ -197,3 +197,43 @@ func TestClaimOrphanOwnHolder(t *testing.T) {
 		t.Fatal("a node could not take back its own session")
 	}
 }
+
+// OpenSessions pages through the open top-level sessions in id order.
+func TestOpenSessionsPages(t *testing.T) {
+	p := openStore(t, "t-open")
+	ctx := context.Background()
+	var mine []string
+	for range 3 {
+		id := testID(t, "sess-open-")
+		newSession(t, p, id, "t-open")
+		mine = append(mine, id)
+	}
+	ended := testID(t, "sess-open-ended-")
+	newSession(t, p, ended, "t-open")
+	if err := p.Append(ev(ended, 1, agent.EvSessionEnded, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	after := ""
+	for {
+		ids, err := p.OpenSessions(ctx, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range ids {
+			seen[id] = true
+		}
+		if len(ids) < 2 {
+			break
+		}
+		after = ids[len(ids)-1]
+	}
+	for _, id := range mine {
+		if !seen[id] {
+			t.Fatalf("open session %s was not listed", id)
+		}
+	}
+	if seen[ended] {
+		t.Fatal("an ended session was listed")
+	}
+}
