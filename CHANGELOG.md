@@ -133,6 +133,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- Servers sharing one Postgres: stop every node of an older release before
+  starting a node of this one. Older nodes keep no holder on the sessions
+  they run, and a new node's startup sweep reconciles an open session with
+  no holder once nothing has been written to it for two minutes; a long
+  tool call on an old node can look like that. New nodes write the holder
+  with the session's row and heartbeat it.
+
 - ACP editors must answer a permission request with one of the option ids it
   offers. The ids are no longer the fixed `once`, `always` and `reject`; they
   are bound to the request, and any other answer is refused. An editor that
@@ -306,7 +313,10 @@ All notable changes to Abhed are recorded here. The format follows
   heartbeat is fenced: it renews only a claim that is still this process's,
   and a process that finds its claim taken, or cannot renew it for the
   stale window, stops its run and tasks as `lease_lost` and writes nothing
-  more to the session. A claim is never taken from another live holder. A hold that
+  more to the session. A claim is never taken from another live holder. A
+  started session's row is written with its holder, and a row with none is
+  an orphan only once its last event is two minutes old, on the database's
+  clock. A hold that
   cannot be recorded now fails the start, message or wake (503 for a
   message) instead of running unseen. `abhed serve` also sweeps at startup,
   reconciling every open session whose holder's heartbeat is stale.

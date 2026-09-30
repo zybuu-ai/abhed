@@ -119,3 +119,19 @@ func TestTwoServersOnePostgresFencesTheOldHolder(t *testing.T) {
 	a.ad.release("one")
 	waitUntil(t, "B's run", func() bool { return b.state(id) != "running" })
 }
+
+// A session an older release is running has no holder. Another server's
+// sweep leaves it alone while its record is still being written.
+func TestTwoServersOnePostgresSweepSparesAFreshNoHolderSession(t *testing.T) {
+	a := newBGServer(t, openSharedPG(t), "one")
+	id := a.start("bg:one", false)
+	<-a.ended
+	pgExec(t, "UPDATE sessions SET node_id = NULL, node_seen_at = NULL WHERE id = $1", id)
+	b := newBGServer(t, openSharedPG(t))
+	b.s.RecoverOrphans(context.Background())
+	if n := countType(b.events(id), agent.EvSubagentReturn); n != 0 {
+		t.Fatalf("the sweep reconciled a running session with no holder (%d returns)", n)
+	}
+	a.ad.release("one")
+	waitUntil(t, "A's closing end", func() bool { e, _ := agent.LastEnd(a.events(id)); return e.Settled })
+}

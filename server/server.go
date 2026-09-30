@@ -994,7 +994,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		return "", errDraining
 	}
 	sessionID := newSessionID()
-	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
+	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
 		return "", err
 	}
 
@@ -1065,9 +1065,15 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 
 // persistSession writes the session row. Events reference sessions, so the
 // row must exist before the first one.
-func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, mode string, adapter model.Adapter) error {
+func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, mode string, adapter model.Adapter, hold bool) error {
 	if s.sessions == nil {
 		return nil
+	}
+	// A session that runs at once is held from its row's first moment: no
+	// other process may take it for an orphan before its hold is written.
+	holder := ""
+	if _, ok := s.liveness(); ok && hold {
+		holder = s.holder
 	}
 	if err := s.sessions.CreateSession(ctx, store.SessionRecord{
 		ID: id,
@@ -1082,6 +1088,7 @@ func (s *Server) persistSession(ctx context.Context, id string, spec StartSpec, 
 		Mode:      mode,
 		Prompt:    spec.Prompt,
 		StartedAt: time.Now().UTC(),
+		Holder:    holder,
 	}); err != nil {
 		return fmt.Errorf("persist session: %w", err)
 	}
@@ -1115,7 +1122,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	if err != nil {
 		return "", err
 	}
-	if err := s.persistSession(ctx, sessionID, spec, mode, adapter); err != nil {
+	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, false); err != nil {
 		return "", err
 	}
 	live.State = "idle"

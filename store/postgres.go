@@ -207,11 +207,13 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 	}
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO sessions (id, tenant_id, user_id, workspace, model,
-		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)`,
+		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt,
+		                      node_id, node_seen_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,
+		        NULLIF($12,''), CASE WHEN $12 = '' THEN NULL ELSE now() END)`,
 		s.ID, s.Tenant, s.User, s.Workspace, s.Model,
 		s.PromptHash, s.HarnessVersion, s.Mode, s.ParentID, s.StartedAt,
-		truncatePrompt(s.Prompt))
+		truncatePrompt(s.Prompt), s.Holder)
 	if err != nil {
 		// An id already taken is another session's record; writing into it would merge the two.
 		var pgErr *pgconn.PgError
@@ -237,6 +239,9 @@ type SessionRecord struct {
 	Prompt    string
 	ParentID  string
 	StartedAt time.Time
+	// Holder, when set, is written with the row as the process holding it,
+	// so no other process can take it for an orphan before its first beat.
+	Holder string
 
 	EndedAt        *time.Time
 	TerminalReason string
@@ -485,10 +490,11 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 }
 
 // ClaimOrphan takes over a session a crashed process left open: its row is
-// still open, and its holder's liveness is older than stale or was never
-// written. Every process heartbeats what it holds, so that is the only sign
-// of a crash. The update writes holder as the new holder and tests the same
-// column, so of two processes claiming at once exactly one wins.
+// still open, and its holder's heartbeat is older than stale. A row with no
+// holder (written by an older release, which kept none) is an orphan only
+// once its last event is older than stale too, compared on the database's
+// clock. The update writes holder as the new holder and tests the same
+// columns, so of two processes claiming at once exactly one wins.
 func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, stale time.Duration) (bool, error) {
 	if holder == "" {
 		return false, errors.New("claim orphaned session: no holder")
@@ -496,7 +502,9 @@ func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, st
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
 		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
-		  AND (node_seen_at IS NULL OR node_seen_at <= now() - $3::interval)`,
+		  AND ((node_seen_at IS NOT NULL AND node_seen_at <= now() - $3::interval)
+		    OR (node_seen_at IS NULL AND COALESCE(
+		          (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) <= now() - $3::interval))`,
 		sessionID, holder, stale.String())
 	if err != nil {
 		return false, fmt.Errorf("claim orphaned session %s: %w", sessionID, err)

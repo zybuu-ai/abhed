@@ -108,6 +108,12 @@ func (d *durableMem) CreateSession(ctx context.Context, r store.SessionRecord) e
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.rows[r.ID] = r
+	if r.Holder != "" { // written with the row, as Postgres does
+		if d.holders == nil {
+			d.holders, d.seen = map[string]string{}, map[string]time.Time{}
+		}
+		d.holders[r.ID], d.seen[r.ID] = r.Holder, time.Now()
+	}
 	return nil
 }
 func (d *durableMem) ListSessions(ctx context.Context, limit int) ([]store.SessionRecord, error) {
@@ -163,6 +169,12 @@ func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale t
 	}
 	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
 		return false, nil // its holder is alive
+	}
+	if _, ok := d.seen[id]; !ok {
+		// No holder: an orphan only once nothing has been written for stale.
+		if evs, _ := d.MemStore.Events(id); len(evs) > 0 && time.Since(evs[len(evs)-1].CreatedAt) < stale {
+			return false, nil
+		}
 	}
 	if d.holders == nil {
 		d.holders, d.seen = map[string]string{}, map[string]time.Time{}

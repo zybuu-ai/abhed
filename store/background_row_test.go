@@ -98,12 +98,23 @@ func TestClaimOrphan(t *testing.T) {
 	if ok, _ := p.ClaimOrphan(ctx, id, "instance-z", 2*time.Minute); ok {
 		t.Fatal("an orphan was taken again from its new holder")
 	}
-	// A row whose holder never wrote a heartbeat is an orphan.
+	// A row with no holder (as an older release left it) is not an orphan
+	// while it is being written, and is once its last event is stale.
 	if _, err := p.pool.Exec(ctx, `UPDATE sessions SET node_id = NULL, node_seen_at = NULL WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := p.ClaimOrphan(ctx, id, "instance-y", 2*time.Minute); !ok {
-		t.Fatal("an open row with no holder was not taken")
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-y", 2*time.Minute); ok {
+		t.Fatal("an open row with no holder was taken while its record was fresh")
+	}
+	quiet := testID(t, "sess-orph-quiet-")
+	newSession(t, p, quiet, "t-orphan")
+	old := ev(quiet, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "go"})
+	old.CreatedAt = time.Now().Add(-10 * time.Minute)
+	if err := p.Append(old); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := p.ClaimOrphan(ctx, quiet, "instance-y", 2*time.Minute); !ok {
+		t.Fatal("an open row with no holder and a stale record was not taken")
 	}
 	// An ended row is not an orphan.
 	if err := p.Append(ev(id, 2, agent.EvSessionEnded, agent.Trusted, agent.SessionEnded{Reason: agent.TermShutdown})); err != nil {
@@ -149,5 +160,22 @@ func TestClaimNodeNeverTakesALiveHolder(t *testing.T) {
 	}
 	if err := p.ClaimNode(ctx, id, "instance-c"); err != nil {
 		t.Fatalf("the holder claiming again: %v", err)
+	}
+}
+
+// A session created with its holder is held from its first moment.
+func TestCreateSessionWritesTheHolder(t *testing.T) {
+	p := openStore(t, "t-holder")
+	ctx := context.Background()
+	id := testID(t, "sess-holder-")
+	if err := p.CreateSession(ctx, SessionRecord{ID: id, Tenant: "t-holder", User: "u", Workspace: "/w", Model: "m",
+		Mode: "default", StartedAt: time.Now().UTC(), Holder: "instance-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := p.ClaimOrphan(ctx, id, "instance-b", 2*time.Minute); ok {
+		t.Fatal("a session held from its creation was taken")
+	}
+	if node, err := p.NodeFor(ctx, id, 2*time.Minute); err != nil || node != "instance-a" {
+		t.Fatalf("holder %q, %v", node, err)
 	}
 }

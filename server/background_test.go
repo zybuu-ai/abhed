@@ -847,3 +847,17 @@ func TestFencedSessionWritesNothing(t *testing.T) {
 		}
 	}
 }
+
+// A started session's row carries its holder from the moment it is written.
+func TestStartedSessionRowCarriesItsHolder(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServer(t, st)
+	id := b.start("hello", false)
+	<-b.ended
+	st.mu.Lock()
+	holder := st.rows[id].Holder
+	st.mu.Unlock()
+	if holder != b.s.holder {
+		t.Fatalf("the row was written with holder %q, want %q", holder, b.s.holder)
+	}
+}
