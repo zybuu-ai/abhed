@@ -335,7 +335,8 @@ func resumeConversation(ctx context.Context, st *cliState, id string, events []a
 // messages, the turn count, and a sequence that goes on from the last event.
 func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 	msgs, err := agent.Fork(events, 0)
-	if err != nil && messaged(events) {
+	// A conversation rewound to before its first prompt has none to rebuild.
+	if err != nil && messaged(agent.Live(events)) {
 		return err
 	}
 	end, _ := agent.LastEnd(events)
@@ -347,6 +348,8 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 	// record owes the conversation arrive at the next task's first boundary.
 	loop.Budget.Carry(agent.CarriedSpend(events))
 	loop.QueueNotices(agent.PendingNotices(events, st.store.Events))
+	// Undo and rewind go on from the checkpoints the record holds.
+	rebuildUndo(st, events)
 	return nil
 }
 

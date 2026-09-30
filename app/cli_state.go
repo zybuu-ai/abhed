@@ -92,6 +92,7 @@ func (c *cliState) fresh() {
 	}
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
+		c.undo.Persist = checkpointSaver(c)
 		c.sess.Checkpoint = c.undo.Record
 		// Logins and connected hosts belong to the conversation that made them.
 		c.sess.ResetScoped()
