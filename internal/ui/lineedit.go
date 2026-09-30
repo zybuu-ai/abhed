@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -530,6 +531,15 @@ func draftDir() (string, error) {
 	dir := filepath.Join(home, ".abhed", "drafts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
+	}
+	// A link in its place, or a folder someone else owns, is not used:
+	// the draft is read back into the person's input box.
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !ownedByMe(info) {
+		return "", fmt.Errorf("%s is not a folder of yours; not writing the draft there", dir)
 	}
 	return dir, os.Chmod(dir, 0o700) // #nosec G302 -- a folder needs its search bit; only its owner has any
 }

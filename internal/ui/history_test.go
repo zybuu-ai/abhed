@@ -136,3 +136,23 @@ func TestDraftFile(t *testing.T) {
 		t.Fatal("a draft in use was removed")
 	}
 }
+
+// A drafts folder replaced by a link, or not owned by the person, is not
+// written to.
+func TestDraftFolderMustBeReal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	elsewhere := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(home, ".abhed", "drafts")); err != nil {
+		t.Skip(err)
+	}
+	if name, err := newDraft("secret draft"); err == nil {
+		t.Fatalf("a draft was written through a linked folder: %s", name)
+	}
+	if left, _ := os.ReadDir(elsewhere); len(left) != 0 {
+		t.Fatal("a file landed where the link points")
+	}
+}
