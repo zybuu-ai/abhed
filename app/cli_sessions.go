@@ -218,15 +218,15 @@ func slashExport(ctx context.Context, fields []string, r *ui.Renderer,
 	}
 	rec, onLocal := st.store.(*local.Store)
 	switch {
+	case onLocal:
+		var e local.Entry
+		if e, err = rec.Index().Get(st.sessionID); err == nil {
+			_, err = exportSession(rec, e, format, path, os.Stdout, false)
+		}
 	case format == "json":
 		var data []byte
 		if data, err = json.MarshalIndent(events, "", "  "); err == nil {
 			err = os.WriteFile(path, append(data, '\n'), 0o600)
-		}
-	case onLocal:
-		var e local.Entry
-		if e, err = rec.Index().Get(st.sessionID); err == nil {
-			_, err = exportSession(rec, e, format, path, os.Stdout)
 		}
 	case format == "html":
 		err = os.WriteFile(path, []byte(agent.ExportHTML(st.sessionID, events)+"\n"), 0o600)

@@ -2,8 +2,10 @@ package local
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -145,5 +147,40 @@ func TestIndexDamageStopsAppends(t *testing.T) {
 				t.Fatalf("append onto a damaged index: %v", err)
 			}
 		})
+	}
+}
+
+// A record that fails verify is not exported as sound: the export is
+// refused, or with the option marked unverified, and either way VerifyFile
+// on the copy fails. The trailer is the stored head, not the lines' own.
+func TestExportOfTamperedDoesNotVerify(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one", "two", "three")
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	cutLines(t, s2.Path("s-1"), 1, "")
+	mustFail(t, s2, "s-1", "cut")
+	var b bytes.Buffer
+	if _, err := s2.Export("s-1", &b, ExportOptions{}); !errors.Is(err, ErrUnverified) || b.Len() != 0 {
+		t.Fatalf("a failing record was exported: %v (%d bytes)", err, b.Len())
+	}
+	if _, err := s2.Export("s-1", &b, ExportOptions{Unverified: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "e.jsonl")
+	_ = os.WriteFile(out, b.Bytes(), 0o600)
+	if er, _ := VerifyFile(out); er.OK {
+		t.Fatalf("the export of a failing record verifies: %+v", er)
+	}
+	// Even with the verified mark removed, the stored head still disagrees.
+	lines := bytes.Split(bytes.TrimSuffix(b.Bytes(), []byte("\n")), []byte("\n"))
+	var tr exportTrailer
+	_ = json.Unmarshal(lines[len(lines)-1], &tr)
+	tr.Verified, tr.Unverified = nil, ""
+	last, _ := encode(tr)
+	_ = os.WriteFile(out, append(bytes.Join(append(lines[:len(lines)-1], last), []byte("\n")), '\n'), 0o600)
+	if er, _ := VerifyFile(out); er.OK {
+		t.Fatalf("the stored head did not show the cut: %+v", er)
 	}
 }

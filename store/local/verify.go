@@ -119,6 +119,10 @@ type exportTrailer struct {
 	Head    Head   `json:"abhed_record_head"`
 	Session string `json:"session_id"`
 	Format  int    `json:"format"`
+	// Verified is whether the record verified when it was exported, and
+	// Unverified why not.
+	Verified   *bool  `json:"verified,omitempty"`
+	Unverified string `json:"unverified,omitempty"`
 }
 
 // VerifyFile checks a session file on its own: a file in a records
@@ -156,6 +160,10 @@ func verifyData(data []byte, session string) Report {
 	case trailer != nil:
 		if rep.OK && trailer.Session != rep.ID {
 			rep.OK, rep.Reason = false, fmt.Sprintf("the trailer names session %s, not %s", trailer.Session, rep.ID)
+		}
+		if rep.OK && trailer.Verified != nil && !*trailer.Verified {
+			rep.OK, rep.FirstBad = false, rep.Head.Seq
+			rep.Reason = "it was exported from a record that failed verification: " + trailer.Unverified
 		}
 		checkHead(&rep, lines, trailer.Head, true)
 	default:

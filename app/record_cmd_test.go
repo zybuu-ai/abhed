@@ -91,6 +91,20 @@ func TestRecordVerifyFailsOnATamperedLine(t *testing.T) {
 	if code, out, _ := runRecord(t, ws, "verify", p); code != 1 || !strings.Contains(out, "FAILED") {
 		t.Fatalf("verify by path: %d %s", code, out)
 	}
+	// It is not exported as sound: refused, or marked with -unverified.
+	out = filepath.Join(t.TempDir(), "x.jsonl")
+	if code, _, e := runRecord(t, ws, "export", ids[0], "-o", out); code == 0 || !strings.Contains(e, "-unverified") {
+		t.Fatalf("export of a failing record: %d %s", code, e)
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Fatal("a refused export left a file")
+	}
+	if code, _, e := runRecord(t, ws, "export", ids[0], "-o", out, "-unverified"); code != 0 {
+		t.Fatalf("export -unverified: %s", e)
+	}
+	if code, o, _ := runRecord(t, ws, "verify", out); code != 1 || !strings.Contains(o, "FAILED") {
+		t.Fatalf("the marked export verified: %s", o)
+	}
 }
 
 func TestRecordExportAndVerifyTheCopy(t *testing.T) {

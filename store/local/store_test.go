@@ -433,7 +433,7 @@ func TestRedactedBeforeTheFirstWrite(t *testing.T) {
 	_, _ = rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "key sk-CANARY-4242"})
 	_, _ = rec.Record(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{Content: "echo sk-CANARY-4242"})
 	var buf bytes.Buffer
-	if _, err := s.Export("s-1", &buf); err != nil {
+	if _, err := s.Export("s-1", &buf, ExportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()
@@ -619,7 +619,7 @@ func TestExportVerifiesOffline(t *testing.T) {
 	record(t, s, "s-1", "one", "two", "three")
 	p := filepath.Join(t.TempDir(), "s-1.jsonl")
 	var buf bytes.Buffer
-	if _, err := s.Export("s-1", &buf); err != nil {
+	if _, err := s.Export("s-1", &buf, ExportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.WriteFile(p, buf.Bytes(), 0o600)

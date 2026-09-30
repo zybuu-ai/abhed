@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
   list    [-all|-repo] [-n N] [-json]   sessions in this workspace, newest first
   show    <session> [-json]            a session's events
   verify  [session|file ...]           check the chain; no argument checks everything
-  export  <session> [-o path] [-format jsonl|html|txt]
+  export  <session> [-o path] [-format jsonl|html|txt] [-unverified]
                                        jsonl carries its head for checking elsewhere
   prune   <session> | -older-than 90d [-yes]
                                        remove sessions, leaving a tombstone in the index
@@ -304,8 +305,9 @@ func (c recordCtx) export(args []string) int {
 	fs.SetOutput(c.err)
 	out := fs.String("o", "", "where to write it (default ~/.abhed/exports/<session>.<format>; - for stdout)")
 	format := fs.String("format", "jsonl", "jsonl (verifiable), html or txt")
+	unverified := fs.Bool("unverified", false, "export a record that fails verification, marked as such")
 	if fs.Parse(reorderFlags(args)) != nil || fs.NArg() != 1 {
-		fmt.Fprintln(c.err, "usage: abhed record export <session> [-o path] [-format jsonl|html|txt]")
+		fmt.Fprintln(c.err, "usage: abhed record export <session> [-o path] [-format jsonl|html|txt] [-unverified]")
 		return 2
 	}
 	e, err := c.resolve(fs.Arg(0))
@@ -316,7 +318,7 @@ func (c recordCtx) export(args []string) int {
 	if err != nil {
 		return c.fail("%v", err)
 	}
-	n, err := exportSession(c.rec, e, *format, path, c.out)
+	n, err := exportSession(c.rec, e, *format, path, c.out, *unverified)
 	if err != nil {
 		return c.fail("%v", err)
 	}
@@ -330,7 +332,7 @@ func (c recordCtx) export(args []string) int {
 // ~/.abhed/exports, never the workspace, where it would join the repository.
 func exportPath(given, id, format string) (string, error) {
 	switch format {
-	case "jsonl", "html", "txt":
+	case "jsonl", "json", "html", "txt":
 	default:
 		return "", fmt.Errorf("unknown export format %q; use jsonl, html or txt", format)
 	}
@@ -350,10 +352,23 @@ func exportPath(given, id, format string) (string, error) {
 
 // exportSession writes session e in format to path, "-" for stdout, and
 // returns how many events it holds. The record is already redacted.
-func exportSession(rec *local.Store, e local.Entry, format, path string, stdout io.Writer) (int, error) {
+func exportSession(rec *local.Store, e local.Entry, format, path string, stdout io.Writer, unverified bool) (int, error) {
+	// Checked before anything is written: a record that fails goes out only
+	// when asked for, and marked.
+	rep, err := rec.Verify(e.ID)
+	if err != nil {
+		return 0, err
+	}
+	if !rep.OK && !unverified {
+		return 0, fmt.Errorf("%w; abhed record export -unverified writes it marked as such", &local.UnverifiedError{Report: rep})
+	}
 	events, err := rec.Events(e.ID)
 	if err != nil {
 		return 0, err
+	}
+	banner := ""
+	if !rep.OK {
+		banner = fmt.Sprintf("UNVERIFIED RECORD: at seq %d, %s\n", rep.FirstBad, rep.Reason)
 	}
 	w := stdout
 	var f *os.File
@@ -365,11 +380,19 @@ func exportSession(rec *local.Store, e local.Entry, format, path string, stdout 
 	}
 	switch format {
 	case "jsonl":
-		_, err = rec.Export(e.ID, w)
+		_, err = rec.Export(e.ID, w, local.ExportOptions{Unverified: unverified})
+	case "json":
+		var data []byte
+		if data, err = json.MarshalIndent(events, "", "  "); err == nil {
+			if banner != "" {
+				data = []byte(fmt.Sprintf("{\"unverified\":%q,\"events\":%s}", strings.TrimSpace(banner), data))
+			}
+			_, err = w.Write(append(data, '\n'))
+		}
 	case "html":
-		_, err = io.WriteString(w, agent.ExportHTML(e.ID, events))
+		_, err = io.WriteString(w, htmlBanner(banner)+agent.ExportHTML(e.ID, events))
 	default:
-		_, err = io.WriteString(w, transcriptText(e, events))
+		_, err = io.WriteString(w, banner+transcriptText(e, events))
 	}
 	if f != nil {
 		if cerr := f.Close(); err == nil {
@@ -377,6 +400,14 @@ func exportSession(rec *local.Store, e local.Entry, format, path string, stdout 
 		}
 	}
 	return len(events), err
+}
+
+// htmlBanner marks an HTML export of an unverified record.
+func htmlBanner(text string) string {
+	if text == "" {
+		return ""
+	}
+	return "<p><strong>" + html.EscapeString(strings.TrimSpace(text)) + "</strong></p>\n"
 }
 
 func (c recordCtx) prune(args []string) int {
