@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -31,6 +32,14 @@ func TestOwner(t *testing.T) {
 		{"proxy user that is an address", &Identity{Provider: ProviderProxy, Subject: "Pat@Example.test"}, "pat@example.test"},
 		{"proxy user that is a name keeps its case", &Identity{Provider: ProviderProxy, Subject: "Pat"}, "Pat"},
 		{"unverified subject keeps its case", &Identity{Provider: "oidc", Subject: "U1@x"}, "oidc:U1@x"},
+		{"proxy subject in the local namespace", &Identity{Provider: ProviderProxy, Subject: "local:bob"}, "proxy:local:bob"},
+		{"proxy subject in any namespace case", &Identity{Provider: ProviderProxy, Subject: "Unclaimed:bob"}, "proxy:Unclaimed:bob"},
+		{"unnamed subject in the oidc namespace", &Identity{Subject: "oidc:u1"}, "subject:oidc:u1"},
+		{"unnamed subject in the github namespace", &Identity{Subject: "github:42"}, "subject:github:42"},
+		{"proxy email only", &Identity{Provider: ProviderProxy, Subject: "anonymous", Email: "Pat@Example.test", EmailVerified: true}, "pat@example.test"},
+		{"proxy email only, not an address", &Identity{Provider: ProviderProxy, Subject: "anonymous", Email: "pat", EmailVerified: true}, "nobody:proxy"},
+		{"provider with no subject", &Identity{Provider: "oidc", Email: "a@x.test", EmailVerified: true}, "nobody:oidc"},
+		{"local with no subject", &Identity{Provider: ProviderLocal}, "nobody:local"},
 	} {
 		if got := tc.id.Owner(); got != tc.want {
 			t.Errorf("%s: Owner() = %q, want %q", tc.name, got, tc.want)
@@ -87,5 +96,71 @@ func TestCreateUserChecksTheEmail(t *testing.T) {
 	// An email that is another account's username is refused too.
 	if err := l.CheckEmail(ctx, "dan", "Bob"); err == nil {
 		t.Fatal("an email equal to another account's username was accepted")
+	}
+}
+
+// Only the identity with no subject from no provider is anonymous; a
+// subjectless provider identity owns nothing, not everything.
+func TestNobodyOwnsNothing(t *testing.T) {
+	for _, id := range []*Identity{{Provider: "oidc"}, {Provider: "github"}, {Provider: ProviderLocal}} {
+		if o := id.Owner(); o == Anonymous || !OwnsNothing(o) {
+			t.Errorf("%+v owns %q", id, o)
+		}
+	}
+	if OwnsNothing(Anonymous) || OwnsNothing("local:bob") {
+		t.Error("a real owner reads as nobody")
+	}
+}
+
+// The proxy vouches for the email it sends, with or without a user, and a
+// request with neither is anonymous.
+func TestProxyHeadersOwner(t *testing.T) {
+	for _, tc := range []struct {
+		user, email, want string
+	}{
+		{"pat", "Pat@Example.test", "pat@example.test"},
+		{"", "pat@example.test", "pat@example.test"},
+		{"pat", "", "pat"},
+		{"", "", "anonymous"},
+		{"local:bob", "", "proxy:local:bob"},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		if tc.user != "" {
+			r.Header.Set("X-Abhed-User", tc.user)
+		}
+		if tc.email != "" {
+			r.Header.Set("X-Abhed-Email", tc.email)
+		}
+		id := headerIdentity(r)
+		if got := id.Owner(); got != tc.want {
+			t.Errorf("user %q email %q: owner %q, want %q", tc.user, tc.email, got, tc.want)
+		}
+		if named := tc.user != "" || tc.email != ""; named != (id.Provider == ProviderProxy && id.EmailVerified) {
+			t.Errorf("user %q email %q: provider %q verified %v", tc.user, tc.email, id.Provider, id.EmailVerified)
+		}
+	}
+}
+
+// The identity a sign-in issues is already a local one, before any request
+// re-reads the account.
+func TestSignInIssuesALocalIdentity(t *testing.T) {
+	l := NewLocalAuth(NewMemoryUserStore(), time.Hour, false)
+	if err := l.CreateUser(context.Background(), User{Username: "bob"}, "correct-horse-1"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := l.Authenticate(context.Background(), "bob", "correct-horse-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.issue(httptest.NewRecorder(), u)
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, s := range l.sessions {
+		if s.Identity.Provider != ProviderLocal || s.Identity.Owner() != "local:bob" {
+			t.Fatalf("issued %+v", s.Identity)
+		}
+	}
+	if len(l.sessions) != 1 {
+		t.Fatalf("%d sessions", len(l.sessions))
 	}
 }

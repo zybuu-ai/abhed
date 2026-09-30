@@ -1799,7 +1799,7 @@ func (s *Server) ownsStored(r *http.Request, id string) bool {
 // caller is "anonymous" in tenant "default", and filtering by user would leave
 // a single-user local deployment unable to see its own history.
 func ownsSession(recTenant, recUser, tenant, user string) bool {
-	if recTenant != tenant {
+	if recTenant != tenant || auth.OwnsNothing(user) {
 		return false
 	}
 	if user == "" || user == "anonymous" {

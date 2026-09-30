@@ -124,7 +124,7 @@ principal comes from one function, `auth.Identity.Owner`:
 | a local account | `local:<username>` |
 | single sign-on with an email the provider verified | that email |
 | single sign-on otherwise | `<provider>:<subject>`, such as `oidc:1234` |
-| a trusted proxy | `X-Abhed-Email` when set, else `X-Abhed-User` |
+| a trusted proxy | `X-Abhed-Email` when set (lowercased), else `X-Abhed-User` |
 | nothing (authentication off) | `anonymous`, which sees every session in its tenant |
 
 An email a person typed never decides ownership. The same string is the
@@ -247,7 +247,9 @@ forwards:
 
 A session is owned by `X-Abhed-Email` when the proxy sets it, else by
 `X-Abhed-User`, so the proxy must set the email only to an address it has
-verified. A request with no `X-Abhed-User` is `anonymous`, and `anonymous` owns every
+verified. A request with only `X-Abhed-Email` is owned by that address (and
+gets no groups); one whose email is not a plain address owns nothing. A
+request with neither header is `anonymous`, and `anonymous` owns every
 session in its tenant, now including each workbench shell: the proxy must set
 the header on every request.
 

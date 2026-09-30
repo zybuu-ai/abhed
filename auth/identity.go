@@ -39,6 +39,15 @@ const (
 // Anonymous is the owner of every request when authentication is off.
 const Anonymous = "anonymous"
 
+// NobodyPrefix begins the owner of an identity that names no subject. It
+// owns nothing: ownership checks refuse it rather than match it.
+const NobodyPrefix = "nobody:"
+
+// reservedPrefixes are the namespaces owners are built in. A subject from a
+// proxy or an unnamed provider that starts with one is namespaced again.
+var reservedPrefixes = []string{"local:", "unclaimed:", "oidc:", "github:", "proxy:",
+	"subject:", "schedule:", NobodyPrefix}
+
 // Owner is the principal that owns what this identity creates: sessions,
 // approvals it answers, and the rows its subagents write. It is the one
 // definition; every ownership check compares these strings.
@@ -50,23 +59,55 @@ const Anonymous = "anonymous"
 // otherwise by provider and subject. A trusted proxy has sole say over who
 // is calling, so its headers keep their meaning.
 func (id *Identity) Owner() string {
-	if id == nil || id.Subject == "" {
+	if id == nil {
 		return Anonymous
 	}
 	switch id.Provider {
+	case "":
+		if id.Subject == "" || id.Subject == Anonymous {
+			return Anonymous
+		}
+		return external("subject", id.Subject)
 	case ProviderLocal:
+		if id.Subject == "" {
+			return NobodyPrefix + ProviderLocal
+		}
 		return LocalOwner(id.Subject)
-	case "", ProviderProxy:
-		if id.Provider == ProviderProxy && id.EmailVerified && ownerEmail(id.Email) {
+	case ProviderProxy:
+		if id.EmailVerified && ownerEmail(id.Email) {
 			return strings.ToLower(id.Email)
 		}
-		return FoldEmailOwner(id.Subject)
+		if id.Subject == "" || id.Subject == Anonymous {
+			// An email the proxy sent that cannot own is not anonymous.
+			if id.Email != "" {
+				return NobodyPrefix + ProviderProxy
+			}
+			return Anonymous
+		}
+		return external(ProviderProxy, id.Subject)
+	}
+	if id.Subject == "" {
+		return NobodyPrefix + id.Provider
 	}
 	if id.EmailVerified && ownerEmail(id.Email) {
 		return strings.ToLower(id.Email)
 	}
 	return id.Provider + ":" + id.Subject
 }
+
+// external is a bare subject as an owner, moved under ns when it would
+// otherwise read as another namespace's principal.
+func external(ns, subject string) string {
+	for _, p := range reservedPrefixes {
+		if len(subject) >= len(p) && strings.EqualFold(subject[:len(p)], p) {
+			return ns + ":" + subject
+		}
+	}
+	return FoldEmailOwner(subject)
+}
+
+// OwnsNothing reports whether owner is one no session may be matched to.
+func OwnsNothing(owner string) bool { return strings.HasPrefix(owner, NobodyPrefix) }
 
 // FoldEmailOwner lowercases an owner that is a plain email (an "@" and no
 // ":"), so one address owns its sessions whatever case a provider sends.

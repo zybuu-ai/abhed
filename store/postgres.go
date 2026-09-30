@@ -47,6 +47,8 @@ type Postgres struct {
 	// is on the sign-in path.
 	usersOnce sync.Once
 	usersErr  error
+
+	owners OwnerPolicy
 }
 
 type Config struct {
@@ -63,6 +65,9 @@ type Config struct {
 	// mistakes and not against whoever holds the server's credentials. Off by
 	// default; an operator turns it on knowing that.
 	SingleRole bool
+	// Owners is what a single-role start's owner migration may do with rows
+	// keyed by a local account's name or email; empty means OwnersUnclaim.
+	Owners OwnerPolicy
 }
 
 func DefaultConfig(dsn string) Config {
@@ -129,7 +134,7 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event)}
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
 			pool.Close()
@@ -168,7 +173,7 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		return nil, fmt.Errorf("the database schema is older than this server: %s missing. "+
 			"Run `abhed migrate` as the owner (see docs/guide/02-configuration.md)", strings.Join(missing, ", "))
 	}
-	if done, err := ownersMigrated(ctx, pool); err != nil || !done {
+	if done, err := checkOwnersMigrated(ctx, pool); err != nil || !done {
 		pool.Close()
 		if err == nil {
 			err = errOwnersNotMigrated
@@ -190,7 +195,7 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	if _, err := p.pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	_, err := migrateOwners(ctx, p.pool)
+	_, err := migrateOwners(ctx, p.pool, p.owners)
 	return err
 }
 

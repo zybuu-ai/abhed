@@ -45,6 +45,9 @@ type ProvisionConfig struct {
 	// and must differ from the owner.
 	RuntimeRole string
 	Extensions  []Extension
+	// Owners is what the owner migration may do with rows keyed by a local
+	// account's name or email; empty means OwnersUnclaim.
+	Owners OwnerPolicy
 }
 
 // Provision applies the schema as the owner and grants the runtime role what
@@ -94,7 +97,7 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 		}
 	}
 
-	if _, err := migrateOwners(ctx, pool); err != nil {
+	if _, err := migrateOwners(ctx, pool, cfg.Owners); err != nil {
 		return err
 	}
 

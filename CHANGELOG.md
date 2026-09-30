@@ -32,7 +32,14 @@ All notable changes to Abhed are recorded here. The format follows
   - A single sign-on identity owns them by its email only when the provider
     verified it (OIDC `email_verified: true`, GitHub's verified primary
     email), as before; otherwise by `<provider>:<subject>`.
-  - A trusted proxy keeps `X-Abhed-Email` when set, else `X-Abhed-User`.
+  - A trusted proxy's request is owned by `X-Abhed-Email` when the proxy
+    sends one, with or without `X-Abhed-User`, else by `X-Abhed-User`. A
+    request with only an email that is not an address owns nothing, rather
+    than every session in the tenant as `anonymous` does.
+  - A subject from a proxy or an unnamed provider that reads like another
+    namespace (`local:`, `unclaimed:`, `oidc:`, `github:` and the like) is
+    moved under its own (`proxy:local:bob`), and an identity whose provider
+    names no subject owns nothing.
   - An owner that is an email address is lowercased, so a provider that
     changes the case of an address keeps one owner.
   - A local account's email must be a plain address that no other account
@@ -335,30 +342,43 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
-- Run `abhed migrate` as the owner before starting this release on Postgres:
-  `serve` and `user` running as the runtime role refuse to start until the session
-  owner migration (schema version 4) has run, and a `storage.single_role`
-  server runs it at start. For each owner key on existing session rows it
-  looks up the local accounts whose username or email is that key, without
-  regard to case:
-  - exactly one account: the rows move to that account (`local:<username>`),
-    so a person keeps the sessions made under their email or their name;
-  - more than one (an account whose email was another's name or email): the
-    rows become `unclaimed:<old key>`, which no one can open through the
-    API. The migration logs each such key with the accounts it matched. An
-    operator who knows the owner moves them with
+- Stop every server on the old release, then run `abhed migrate` as the
+  owner, then start this release. `serve` and `user` running as the runtime
+  role refuse to start until the session owner migration (schema version 4)
+  has run, and a `storage.single_role` server runs it at start. An old node
+  left running during a rolling upgrade writes sessions under the old owners
+  after the migration, and those sessions are then reachable by no one.
+- The migration looks at each owner key on existing session rows and the
+  local accounts **in that row's tenant** whose username or email is that key,
+  without regard to case. What it does with a match depends on whether local
+  accounts were the only way in, which `abhed migrate` prints and logs:
+  - `--owners=local-only`, the default when `auth.mode` is `local` with no
+    provider beside it: a key exactly one account holds moves to that
+    account (`local:<username>`), so a person keeps the sessions made under
+    their email or their name. A key several accounts hold (an account whose
+    email was another's name or email) becomes `unclaimed:<old key>`.
+  - `--owners=unclaim`, the default for every other `auth.mode` (`proxy`,
+    `oidc`, local with a provider, or none): every matching key becomes
+    `unclaimed:<old key>`. A proxy user or single sign-on identity could have
+    written under that name or address, which a local account may merely have
+    typed, so no row is given to an account. Pass `--owners=local-only` only
+    if you know local accounts wrote every such row.
+  - Unclaimed rows cannot be opened through the API. The migration logs each
+    key with its tenant and the accounts it matched. An operator who knows
+    the owner moves them with
     `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:<old key>'`
     as the owning role (run `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`
-    first and `FORCE` after, or it sees one tenant only);
-  - no account: left alone. These are single sign-on, proxy, CLI and
-    schedule rows, whose owner is unchanged, except that an OIDC identity
-    whose provider does not send `email_verified: true` is now owned by
-    `oidc:<subject>`, so its sessions from before stay under its email.
-  - rows owned by `anonymous` and the CLI's subagent rows (`agent`) never
+    first and `FORCE` after, or it sees one tenant only).
+  - A key no account in the row's tenant names is left alone: single sign-on,
+    proxy, CLI and schedule rows keep their owner, except that an OIDC
+    identity whose provider does not send `email_verified: true` is now owned
+    by `oidc:<subject>`, so its sessions from before stay under its email.
+  - Rows owned by `anonymous` and the CLI's subagent rows (`agent`) never
     move, even to an account of that name.
-  A session the CLI recorded under an OS user name that is also an account's
-  name moves to that account. The event record is append-only and keeps the
-  approver names it was written with.
+  Under `local-only`, a session the CLI recorded under an OS user name that
+  is also an account's name moves to that account, and the CLI still resumes
+  it. The event record is append-only and keeps the approver names it was
+  written with.
 - Workspace configuration files are untrusted after the upgrade, including
   ones you wrote yourself. Until you trust a workspace's
   `.abhed/config.json`, only its tightening settings apply, and a warning
@@ -393,7 +413,8 @@ All notable changes to Abhed are recorded here. The format follows
   - Editors on ACP: `session/new` now reports the decision in
     `_meta.abhed.workspaceTrust`.
 - The same migration lowercases every session owner that is a plain email
-  (an `@` and no `:`), in every tenant, because an owner email is now
+  (an `@` and no `:`), in every tenant, with the same fold the server applies
+  to a caller, because an owner email is now
   compared in lower case: a single sign-on or proxy identity whose provider
   sent `Alice@Example.COM` keeps the sessions stored under that spelling.
   Rows under several spellings of one address become one owner, and the
