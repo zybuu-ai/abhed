@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,5 +191,18 @@ func TestLooksLikeKey(t *testing.T) {
 		if looksLikeKey(name) {
 			t.Errorf("%s was taken for a key", name)
 		}
+	}
+}
+
+// Model names from the endpoint are shown escaped: a hostile endpoint
+// cannot drive the terminal through them.
+func TestEndpointModelNamesAreEscaped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"good"},{"id":"evil\u001b]0;pwned\u0007‮"}]}`)
+	}))
+	defer srv.Close()
+	_, out := endpointWith(t, srv.URL+"\n\ngood\n")
+	if strings.ContainsAny(out, "\x1b\x07‮") || !strings.Contains(out, `evil\u001b`) {
+		t.Fatalf("%q", out)
 	}
 }
