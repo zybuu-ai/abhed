@@ -552,7 +552,7 @@ func TestUnreachableErrorCarriesNoQuery(t *testing.T) {
 // login named when the call names no cluster or context.
 func resolved(t *testing.T, r tools.ArgResolver, sess *tools.Session, raw json.RawMessage) json.RawMessage {
 	t.Helper()
-	if out := r.ResolveArgs(sess, raw); out != nil {
+	if out, _ := r.ResolveArgs(sess, raw); out != nil {
 		return out
 	}
 	return raw

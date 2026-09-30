@@ -994,10 +994,11 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	canon = tools.WithholdSecretValues(tool, canon)
 	// A destination the call leaves to the session is named before policy
 	// judges it, so a rule on it holds and the approval covers only it.
+	var resolved []string
 	if r, ok := tool.(tools.ArgResolver); ok {
-		if resolved := r.ResolveArgs(l.Session, canon); resolved != nil {
-			if again, _, err := tools.CanonicalArgs(tool, resolved); err == nil {
-				canon = again
+		if out, which := r.ResolveArgs(l.Session, canon); out != nil {
+			if again, _, err := tools.CanonicalArgs(tool, out); err == nil {
+				canon, resolved = again, which
 			}
 		}
 	}
@@ -1040,6 +1041,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		Scope:            decision.Offer(),
 		Via:              viaOf(ctx),
 		Dropped:          dropped,
+		Resolved:         resolved,
 		Target:           target,
 	})
 	if err != nil {

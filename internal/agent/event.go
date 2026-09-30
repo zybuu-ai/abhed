@@ -189,6 +189,10 @@ type ActionRequested struct {
 	RawArgs string `json:"raw_args,omitempty"`
 	// Dropped names keys a fixed tool does not take, left out of Args before policy.
 	Dropped []string `json:"dropped_args,omitempty"`
+	// Resolved names arguments the harness set or rewrote before policy, such
+	// as a cluster the session's only login stands for, so an audit can tell
+	// them from the model's own.
+	Resolved []string `json:"resolved,omitempty"`
 	// Target is where the call sends what it carries, from the operator's
 	// config, such as the server a login's token goes to.
 	Target string `json:"target,omitempty"`

@@ -135,10 +135,23 @@ Permission rules and "always allow" read these tools by where the call goes.
 `k8s_login` reads as the cluster's name; `k8s_get` as
 `cluster/namespace/resource` and `k8s_apply` as `cluster/namespace/action`.
 A kubeconfig context reads as `context:NAME`, and the current context as
-`context:`. An empty namespace is the call's default: the login's or
-the kubeconfig's, or for `apply` the manifest's own. A call that names no
-cluster while the session has one login is judged, approved and recorded as
-a call to that cluster.
+`context:`.
+
+Before a rule reads a `k8s_get` or `k8s_apply` call, Abhed puts it in the
+form it runs in, and records it that way:
+
+- a call that names no cluster while the session has one login names that
+  cluster;
+- the resource is lower-cased and its singular or short form made the
+  plural it addresses: `Secret`, `secret` and `secrets` all read `secrets`;
+- a call that names no namespace gets the one it would use: the login's or
+  the kubeconfig context's default, or for an `apply` the namespace its
+  manifest names.
+
+`action.requested` lists the arguments Abhed set this way in `resolved`. A
+call on every namespace, `namespace: "*"`, is matched by a deny or ask rule
+that would match any namespace, so `k8s_get(*/kube-system/secrets)` also
+stops `k8s_get` of secrets in `*`.
 
 ```json
 "deny":  ["k8s_login(prod)", "k8s_apply(prod/*)", "k8s_get(*/kube-system/secrets)"],
@@ -147,10 +160,20 @@ a call to that cluster.
 
 "Always allow" on a login is offered as `k8s_login(lab)`, and on a write as
 `k8s_apply(lab/demo/delete)`, so a choice made for one cluster never
-approves a call to another. Deny and ask rules written on the resource, the
-action or the namespace alone, such as `k8s_get(secrets*)`, still apply;
-allow rules must name the cluster first. A cluster's name cannot hold
-`/`, `:`, `*` or `?`.
+approves a call to another. Allow rules must name the cluster first. Deny and
+ask rules written in the form each tool had before still apply: on the
+namespace for `k8s_login`, on the resource for `k8s_get`, such as
+`k8s_get(secrets*)`, and on the action for `k8s_apply`. A cluster's name
+cannot hold `/`, `:`, `*` or `?`.
+
+A rule on a declared cluster's name does not cover a kubeconfig context that
+reaches the same server: that call reads as `context:NAME` and uses the
+kubeconfig's own credential. To keep the agent off a server both ways, deny
+both, or deny every context:
+
+```json
+"deny": ["k8s_get(prod/*)", "k8s_apply(prod/*)", "k8s_get(context:*)", "k8s_apply(context:*)"]
+```
 
 **Do not expect `oc login` through bash to work.** Three separate things stop
 it, and the combination produced a confusing failure in practice:

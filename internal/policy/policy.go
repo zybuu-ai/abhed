@@ -512,6 +512,16 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	if key == "path" && tool != "bash" {
 		matches = Rule.matchesPathAny
 	}
+	// A Kubernetes call on every namespace, `*`, reads each one: a deny or ask
+	// rule matches it when the rule would match some namespace it covers.
+	if _, k8s := clusterSubject(tool, args); k8s && strings.ContainsAny(subject, "*?") {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			if r.matchesAny(tool, subjects) {
+				return true
+			}
+			return (r.tool == tool || r.tool == "*") && r.pattern != nil && globsMeet(r.glob, subject)
+		}
+	}
 
 	// 2. Deny rules — absolute, survive every mode including bypass.
 	for _, r := range e.Deny {
@@ -652,4 +662,34 @@ func suggestScope(tool, subject string) string {
 		}
 	}
 	return fmt.Sprintf("%s(%s)", tool, subject)
+}
+
+// globsMeet reports whether some string matches both glob patterns, where
+// `*` is any run of characters and `?` any one.
+func globsMeet(a, b string) bool {
+	type pos struct{ i, j int }
+	seen := map[pos]bool{}
+	var meet func(i, j int) bool
+	meet = func(i, j int) bool {
+		if i == len(a) && j == len(b) {
+			return true
+		}
+		p := pos{i, j}
+		if done, ok := seen[p]; ok {
+			return done
+		}
+		seen[p] = false
+		ok := false
+		switch {
+		case i < len(a) && a[i] == '*':
+			ok = meet(i+1, j) || (j < len(b) && meet(i, j+1))
+		case j < len(b) && b[j] == '*':
+			ok = meet(i, j+1) || (i < len(a) && meet(i+1, j))
+		case i < len(a) && j < len(b) && (a[i] == b[j] || a[i] == '?' || b[j] == '?'):
+			ok = meet(i+1, j+1)
+		}
+		seen[p] = ok
+		return ok
+	}
+	return meet(0, 0)
 }

@@ -143,35 +143,102 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 	return m.kubeClient(ctxName)
 }
 
-// resolve names the session's only login as the call's cluster when the call
-// names neither a cluster nor a context, as the model is told it may do.
-func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage) json.RawMessage {
-	if m == nil || sess == nil {
-		return nil
+// resolve puts a call in the form policy judges and the tool runs: the
+// session's only login named as its cluster when it names neither a cluster
+// nor a context, the resource in its canonical plural, and an empty
+// namespace filled with the one the call would use, the manifest's for an
+// apply. It reports which arguments it set or changed.
+func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) (json.RawMessage, []string) {
+	if m == nil {
+		return nil, nil
 	}
 	args, err := tools.DecodeArgs(raw)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	for _, key := range []string{"cluster", "context"} {
-		if v, ok := tools.Lookup(args, key); ok && v != "" {
-			return nil
+	str := func(key string) string {
+		v, _ := tools.Lookup(args, key)
+		s, _ := v.(string)
+		return s
+	}
+	var changed []string
+	set := func(key, value string) {
+		if str(key) != value {
+			args[key] = value
+			changed = append(changed, key)
 		}
 	}
+	clusterName, ctxName := str("cluster"), str("context")
 	l := m.logins(sess, false)
-	if l == nil {
-		return nil
+	if clusterName == "" && ctxName == "" && l != nil {
+		if name, n := l.only(); n == 1 {
+			clusterName = name
+			set("cluster", name)
+		}
 	}
-	name, n := l.only()
-	if n != 1 {
-		return nil
+	resource := str("resource")
+	if resource != "" {
+		resource = normalizeResource(strings.ToLower(strings.TrimSpace(resource)))
+		set("resource", resource)
 	}
-	args["cluster"] = name
+	ns := str("namespace")
+	if apply && str("action") == "apply" && ns == "" {
+		ns = manifestNamespace(str("manifest"))
+	}
+	if ns == "" && !clusterScoped[resource] {
+		ns = m.defaultNamespace(sess, clusterName, ctxName)
+	}
+	if ns != "" {
+		set("namespace", ns)
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
 	out, err := json.Marshal(args)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return out
+	sort.Strings(changed)
+	return out, changed
+}
+
+// manifestNamespace is the namespace an apply's manifest names, or "".
+func manifestNamespace(manifest string) string {
+	var obj struct {
+		Metadata struct {
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal([]byte(manifest), &obj) != nil {
+		return ""
+	}
+	return obj.Metadata.Namespace
+}
+
+// defaultNamespace is the namespace a call naming none uses: the login's, or
+// the kubeconfig context's. "" when it cannot be known, and the call will fail.
+func (m *Manager) defaultNamespace(sess *tools.Session, clusterName, ctxName string) string {
+	if clusterName != "" && ctxName != "" {
+		return ""
+	}
+	if clusterName != "" {
+		l := m.logins(sess, false)
+		if l == nil {
+			return ""
+		}
+		l.mu.Lock()
+		cred, ok := l.creds[clusterName]
+		l.mu.Unlock()
+		if !ok {
+			return ""
+		}
+		return orDefaultNS(cred.namespace, m.cfg.Namespace)
+	}
+	c, err := m.kubeClient(ctxName)
+	if err != nil {
+		return ""
+	}
+	return c.Namespace
 }
 
 // kubeClient returns the operator's client for a kubeconfig context, opened
@@ -298,10 +365,10 @@ func (l *logins) cluster(cfg Config, name string) (*Cluster, error) {
 
 type GetTool struct{ M *Manager }
 
-// ResolveArgs names the session's only login when the call names no cluster
-// or context, so policy judges the cluster the call reads.
-func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) json.RawMessage {
-	return t.M.resolve(sess, raw)
+// ResolveArgs puts the call in the form it runs in, its cluster, resource and
+// namespace named, so policy judges what the call reads.
+func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string) {
+	return t.M.resolve(sess, raw, false)
 }
 
 func (GetTool) Name() string  { return "k8s_get" }
@@ -404,10 +471,10 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 
 type ApplyTool struct{ M *Manager }
 
-// ResolveArgs names the session's only login when the call names no cluster
-// or context, so policy judges the cluster the call changes.
-func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) json.RawMessage {
-	return t.M.resolve(sess, raw)
+// ResolveArgs puts the call in the form it runs in, its cluster and
+// namespace named, so policy judges what the call changes.
+func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string) {
+	return t.M.resolve(sess, raw, true)
 }
 
 func (ApplyTool) Name() string { return "k8s_apply" }

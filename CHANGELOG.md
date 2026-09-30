@@ -218,8 +218,12 @@ All notable changes to Abhed are recorded here. The format follows
     are now read by cluster first: `k8s_login(prod)`,
     `k8s_get(prod/NAMESPACE/RESOURCE)` and
     `k8s_apply(prod/NAMESPACE/ACTION)`, a kubeconfig context as
-    `context:NAME`. A call that names no cluster while the session has one
-    login is judged and recorded as naming it, and one judged as going to
+    `context:NAME`. Each call is first put in the form it runs in, and
+    recorded that way, with the arguments Abhed set listed in `resolved`:
+    the session's only login as its cluster, the resource's plural
+    (`Secret` reads `secrets`), and the namespace it would use when it names
+    none, the manifest's for an `apply`. A call on every namespace (`*`) is
+    matched by a deny or ask rule on any namespace. One judged as going to
     the kubeconfig is refused if a login was made in between. See Upgrading.
 
 ### Upgrading
@@ -387,10 +391,11 @@ All notable changes to Abhed are recorded here. The format follows
   carries a user or password, is refused when it loads.
 - Rules on `k8s_login`, `k8s_get` and `k8s_apply` read the cluster first
   (see [Rules on a cluster](docs/ops/infrastructure.md#rules-on-a-cluster)).
-  An allow rule written on a namespace, resource or action alone, such as
-  `allow k8s_login(demo)` or `allow k8s_apply(scale)`, no longer approves
-  anything; write `k8s_login(lab)` or `k8s_apply(lab/*/scale)`. Deny and ask
-  rules written that way still apply. A `k8s.clusters` name holding `/`,
+  An allow rule written on the subject each tool had before (the namespace
+  for `k8s_login`, the resource for `k8s_get`, the action for `k8s_apply`),
+  such as `allow k8s_login(demo)` or `allow k8s_apply(scale)`, no longer
+  approves anything; write `k8s_login(lab)` or `k8s_apply(lab/*/scale)`.
+  Deny and ask rules written that way still apply. A `k8s.clusters` name holding `/`,
   `:`, `*` or `?` is refused when the configuration loads.
 - After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
   the kubeconfig's own credential, not the login. Name the logged-in
