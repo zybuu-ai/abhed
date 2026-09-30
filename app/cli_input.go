@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -73,9 +74,22 @@ type commandTurn struct {
 }
 
 // sendTurn asks the driver to run msg as the next turn once the command
-// returns; after, if set, runs when that turn ends.
-func (st *cliState) sendTurn(msg agent.Message, after func()) {
+// returns; after, if set, runs when that turn ends. Only one turn waits at
+// a time: a second is refused, so neither loses its after.
+func (st *cliState) sendTurn(msg agent.Message, after func()) error {
+	if err := st.turnFree(); err != nil {
+		return err
+	}
 	st.input.turn = &commandTurn{msg: msg, after: after}
+	return nil
+}
+
+// turnFree refuses a command that would send a turn while another waits.
+func (st *cliState) turnFree() error {
+	if st.input.turn != nil {
+		return errors.New("another command's turn is waiting to run; run this one again after it")
+	}
+	return nil
 }
 
 // takeTurn is the turn a command asked for, if any, and forgets it.

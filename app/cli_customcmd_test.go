@@ -218,3 +218,26 @@ func TestCommandsDirInsideWorkspaceNeedsTrust(t *testing.T) {
 		t.Fatalf("a trusted command did not run: %+v", turn)
 	}
 }
+
+// Two commands queued during a turn run one after another: the second is
+// refused while the first's turn waits, so the first keeps its turn and its
+// restore, and the tools come back when that turn ends.
+func TestQueuedCustomCommandsDoNotClobberTheWaitingTurn(t *testing.T) {
+	st, store, _ := customRig(t)
+	userCommand(t, "look.md", "---\nallowed-tools: [read]\n---\nLOOK")
+	userCommand(t, "grep.md", "---\nallowed-tools: [grep]\n---\nGREP")
+	typeLine(t, st, "/look")
+	typeLine(t, st, "/grep")
+	typeLine(t, st, "/init")
+	turn := st.takeTurn()
+	if turn == nil || turn.msg.Text != "LOOK" || strings.Join(st.loop.Tools.Names(), ",") != "read" {
+		t.Fatalf("turn %+v tools %v", turn, st.loop.Tools.Names())
+	}
+	if n := len(eventsOf(t, store, agent.EvCommandInvoked)); n != 1 {
+		t.Fatalf("%d commands recorded; the refused ones must not be", n)
+	}
+	turn.done()
+	if len(st.loop.Tools.Names()) != 3 {
+		t.Fatalf("tools not restored: %v", st.loop.Tools.Names())
+	}
+}

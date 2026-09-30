@@ -283,7 +283,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	prompted := false
 	for {
 		// A turn a command asked for runs before the next line (input track).
-		if t := sessionState.takeTurn(); t != nil && sessionState.loop != nil {
+		if t := sessionState.takeTurn(); t != nil {
+			if sessionState.loop == nil {
+				t.done() // dropped: what the command changed is put back
+				continue
+			}
 			prompted = false
 			code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
 				return loop.RunMessage(ctx, t.msg)

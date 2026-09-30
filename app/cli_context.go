@@ -364,6 +364,9 @@ If ABHED.md already exists, improve it: keep what is still true, fix what is not
 // any other write is. The record shows /init, as command.invoked.
 func slashInit(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	st := e.st
+	if err := st.turnFree(); err != nil {
+		return false, err
+	}
 	if err := ensureConversation(ctx, st); err != nil {
 		return false, err
 	}
@@ -376,8 +379,7 @@ func slashInit(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if extra := strings.TrimSpace(strings.Join(args, " ")); extra != "" {
 		text += "\n\nThe person adds: " + extra
 	}
-	st.sendTurn(agent.Message{Text: text}, nil)
-	return false, nil
+	return false, st.sendTurn(agent.Message{Text: text}, nil)
 }
 
 // contextPart is one share of the context window.

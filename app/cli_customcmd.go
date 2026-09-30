@@ -211,6 +211,10 @@ func customSlash(c *customcmd.Command, runnable bool) slashCmd {
 // narrowed to its tools and on its model.
 func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []string) error {
 	st, sf := e.st, e.ui
+	// Checked before the tools narrow or the model moves.
+	if err := st.turnFree(); err != nil {
+		return err
+	}
 	if err := ensureConversation(ctx, st); err != nil {
 		return err
 	}
@@ -268,11 +272,15 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 			}
 		})
 	}
-	st.sendTurn(msg, func() {
+	restore := func() {
 		for i := len(undo) - 1; i >= 0; i-- {
 			undo[i]()
 		}
-	})
+	}
+	if err := st.sendTurn(msg, restore); err != nil {
+		restore()
+		return err
+	}
 	return nil
 }
 
