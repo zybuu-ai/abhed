@@ -470,7 +470,8 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 		return "", err
 	}
 	for i, ev := range copied {
-		ev.SessionID, ev.ParentID, ev.Seq = id, "", int64(i+2)
+		// A new id: event ids are unique across sessions, as Postgres keys them.
+		ev.ID, ev.SessionID, ev.ParentID, ev.Seq = agent.NewEventID(), id, "", int64(i+2)
 		if err := es.Append(ev); err != nil {
 			return "", fmt.Errorf("copy into %s: %w", id, err)
 		}
