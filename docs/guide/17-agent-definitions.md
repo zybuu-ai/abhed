@@ -134,10 +134,14 @@ Highest first:
    management installs them, only when every directory and link on the way to
    it, and the file itself, is owned by root and writable by nobody else; the
    file is checked as it is opened and read from that same open file. On
-   Windows a managed link is never followed, and its name is still held. If
-   `/etc/abhed/agents` exists but cannot be listed, or is a link that leads
-   nowhere, no workspace or operator definition loads at all, only the
-   built-in roles. Only files ending in `.md` are read; `abhed doctor` names a
+   Windows a managed link is never followed, and its name is still held.
+   Root ownership is the whole check: on NixOS any user can put root-owned,
+   read-only files in `/nix/store`, so copy managed definitions into place
+   rather than linking them into the store. On macOS the check reads owner
+   and mode bits only; an ACL granting someone else write access is not seen.
+   If `/etc/abhed/agents` exists but cannot be listed, or it or a directory
+   above it is a link that leads nowhere, no workspace or operator definition
+   loads at all, only the built-in roles. Only files ending in `.md` are read; `abhed doctor` names a
    managed file such as `sec.MD` that is not.
 2. **The workspace:** `.abhed/agents/*.md`, only when you trust that exact
    content (below).

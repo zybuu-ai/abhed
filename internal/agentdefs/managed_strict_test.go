@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 // standIn makes the owner check pass for everything but what refuse names,
@@ -106,19 +108,6 @@ func TestDanglingManagedDirFailsClosed(t *testing.T) {
 	}
 }
 
-// fakeInfo is a FileInfo whose owner and mode the test chooses.
-type fakeInfo struct {
-	mode os.FileMode
-	sys  any
-}
-
-func (f fakeInfo) Name() string       { return "f" }
-func (f fakeInfo) Size() int64        { return 0 }
-func (f fakeInfo) Mode() os.FileMode  { return f.mode }
-func (f fakeInfo) ModTime() time.Time { return time.Time{} }
-func (f fakeInfo) IsDir() bool        { return f.mode.IsDir() }
-func (f fakeInfo) Sys() any           { return f.sys }
-
 // A managed .MD file is not read, and doctor is told so.
 func TestManagedCaseWarnings(t *testing.T) {
 	dir := t.TempDir()
@@ -127,5 +116,99 @@ func TestManagedCaseWarnings(t *testing.T) {
 	w := ManagedCaseWarnings(dir)
 	if len(w) != 1 || !strings.Contains(w[0], "sec.MD is not read") {
 		t.Fatalf("warnings: %v", w)
+	}
+}
+
+// A link loop is refused at the hop limit, and the name held.
+func TestManagedLinkLoopRefused(t *testing.T) {
+	standIn(t)
+	managed, op := t.TempDir(), t.TempDir()
+	a, b := filepath.Join(managed, "loop.md"), filepath.Join(managed, "other.lnk")
+	if err := os.Symlink("other.lnk", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("loop.md", b); err != nil {
+		t.Fatal(err)
+	}
+	writeDef(t, op, "loop.md", def("loop", ""))
+	done := make(chan struct{})
+	var defs []*agent.Definition
+	var msg string
+	go func() {
+		defer close(done)
+		d, errs := Load(Options{ManagedDir: managed, Dirs: []string{op}})
+		defs, msg = d, errText(errs)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a link loop was followed without end")
+	}
+	if len(defs) != 0 || !strings.Contains(msg, "too many links") {
+		t.Fatalf("a loop: %+v %s", defs, msg)
+	}
+}
+
+// A relative target starts from the link's own directory, as stow installs
+// them; and ".." after a link steps back from where that link led, as the
+// kernel does, not from the text before it.
+func TestManagedRelativeLinks(t *testing.T) {
+	standIn(t)
+	base, op := t.TempDir(), t.TempDir()
+	managed := filepath.Join(base, "managed")
+	other := filepath.Join(base, "other")
+	deep := filepath.Join(other, "sub", "deep")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for p, name := range map[string]string{
+		filepath.Join(other, "real.md"):     "rel",
+		filepath.Join(other, "sub", "k.md"): "kernel",
+		filepath.Join(other, "k.md"):        "lexical",
+	} {
+		writeDef(t, filepath.Dir(p), filepath.Base(p), def(name, ""))
+		if err := os.Chmod(p, 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("sub", "deep"), filepath.Join(other, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "other", "real.md"), filepath.Join(managed, "rel.md")); err != nil {
+		t.Fatal(err)
+	}
+	// other/lnk/.. is other/sub to the kernel; lexically it would be other.
+	// Written out, not joined: filepath.Join would clean the ".." away first.
+	if err := os.Symlink("../other/lnk/../k.md", filepath.Join(managed, "k.md")); err != nil {
+		t.Fatal(err)
+	}
+	defs, errs := Load(Options{ManagedDir: managed, Dirs: []string{op}})
+	got := map[string]bool{}
+	for _, d := range defs {
+		got[d.Name] = d.Source == "managed"
+	}
+	if !got["rel"] || !got["kernel"] || got["lexical"] {
+		t.Fatalf("resolved %v, %s", got, errText(errs))
+	}
+}
+
+// A managed directory under an ancestor link that leads nowhere fails closed.
+func TestDanglingManagedAncestorFailsClosed(t *testing.T) {
+	base, op := t.TempDir(), t.TempDir()
+	parent := filepath.Join(base, "abhed")
+	if err := os.Symlink(filepath.Join(base, "static", "abhed"), parent); err != nil {
+		t.Fatal(err)
+	}
+	writeDef(t, op, "sec.md", def("sec", ""))
+	defs, errs := Load(Options{ManagedDir: filepath.Join(parent, "agents"), Dirs: []string{op}})
+	if len(defs) != 0 || !strings.Contains(errText(errs), "leads nowhere") {
+		t.Fatalf("a dangling ancestor freed the names: %+v %s", defs, errText(errs))
+	}
+	// Truly absent is not a failure.
+	if defs, _ := Load(Options{ManagedDir: filepath.Join(base, "none", "agents"), Dirs: []string{op}}); len(defs) != 1 {
+		t.Fatalf("an absent managed directory stopped the rest: %+v", defs)
 	}
 }

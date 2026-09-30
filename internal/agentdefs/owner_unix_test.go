@@ -6,6 +6,7 @@ import (
 	"os"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Root's, and writable by nobody else: group- or other-writable is refused,
@@ -33,3 +34,16 @@ func TestRootOwnedNotSharedModes(t *testing.T) {
 		}
 	}
 }
+
+// fakeInfo is a FileInfo whose owner and mode the test chooses.
+type fakeInfo struct {
+	mode os.FileMode
+	sys  any
+}
+
+func (f fakeInfo) Name() string       { return "f" }
+func (f fakeInfo) Size() int64        { return 0 }
+func (f fakeInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeInfo) Sys() any           { return f.sys }

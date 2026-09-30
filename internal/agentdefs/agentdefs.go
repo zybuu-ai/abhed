@@ -176,13 +176,22 @@ const managedHops = 40
 // the organisation's: somebody else able to write any step could point the
 // managed name at a file of their choosing. It returns the resolved path.
 func strictPath(path string) (string, error) {
-	parts := strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
-	cur := string(filepath.Separator)
+	sep := string(filepath.Separator)
+	// Components are taken as the kernel takes them: "." is skipped, and ".."
+	// steps back from the physical directory reached so far, after any link
+	// before it has been followed, never by trimming the text.
+	split := func(p string) []string { return strings.Split(strings.TrimPrefix(p, sep), sep) }
+	parts := split(path)
+	cur := sep
 	if fi, err := os.Lstat(cur); err != nil || !managedOwnerOK(fi) {
 		return "", fmt.Errorf("%s is not the organisation's", cur)
 	}
 	for hops, i := 0, 0; i < len(parts); i++ {
-		if parts[i] == "" {
+		switch parts[i] {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
 			continue
 		}
 		next := filepath.Join(cur, parts[i])
@@ -201,11 +210,11 @@ func strictPath(path string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(cur, target)
+			// A relative target starts from the link's own directory.
+			if filepath.IsAbs(target) {
+				cur = sep
 			}
-			rest := append(strings.Split(strings.TrimPrefix(filepath.Clean(target), string(filepath.Separator)), string(filepath.Separator)), parts[i+1:]...)
-			parts, i, cur = rest, -1, string(filepath.Separator)
+			parts, i = append(split(target), parts[i+1:]...), -1
 			continue
 		}
 		if i < len(parts)-1 && !fi.IsDir() {
@@ -231,6 +240,11 @@ func readManaged(dir string) (files []file, claims map[string]string, unlistable
 	}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
+		// Missing only because a link above it leads nowhere (/etc/abhed
+		// dangling) is not "no managed definitions" either.
+		if link := danglingAbove(dir); link != "" {
+			return nil, claims, true, []error{fmt.Errorf("agent definitions: %s is a link that leads nowhere, so %s cannot be read", config.Printable(link), config.Printable(dir))}
+		}
 		return nil, claims, false, nil
 	}
 	if err != nil {
@@ -252,6 +266,21 @@ func readManaged(dir string) (files []file, claims map[string]string, unlistable
 		files = append(files, file{path: path, data: data})
 	}
 	return files, claims, false, errs
+}
+
+// danglingAbove names the first ancestor of dir (or dir itself) that is a
+// link leading nowhere, or "".
+func danglingAbove(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if fi, err := os.Lstat(d); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if _, err := os.Stat(d); err != nil {
+				return d
+			}
+		}
+		if parent := filepath.Dir(d); parent == d {
+			return ""
+		}
+	}
 }
 
 // readManagedFile reads a managed definition. A symlink, as configuration
