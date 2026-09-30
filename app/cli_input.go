@@ -47,6 +47,12 @@ func (plainInput) Expand(_ context.Context, _ *agent.Loop, raw string) (agent.Me
 	return agent.Message{Text: raw}, nil, nil
 }
 
+// inputState is what the input layer keeps across lines of one session.
+type inputState struct {
+	// memoryFor is the conversation memory.loaded was last recorded in.
+	memoryFor *agent.Loop
+}
+
 // isCommandLine reports whether a typed line is for the CLI rather than a
 // message: a slash command, a ! shell line or a # memory note. A mid-turn
 // line of this kind is held until the turn ends.
@@ -90,9 +96,11 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 }
 
 // expandForTurn is the message a typed line sends, with its @ mentions
-// attached through the session's policy. ok is false when the line must not
+// attached through the session's policy; memory.loaded is recorded first,
+// once in each conversation. ok is false when the line must not
 // be sent; why has been shown.
 func expandForTurn(ctx context.Context, st *cliState, r *ui.Renderer, line string) (agent.Message, bool) {
+	recordMemoryLoaded(st)
 	msg, _, err := (mentionExpander{st: st}).Expand(ctx, st.loop, line)
 	if err != nil {
 		surfaceOf(st, r).Append(ui.Block{Kind: ui.BlockError, Text: "not sent: " + err.Error()})

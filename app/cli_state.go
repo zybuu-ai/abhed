@@ -47,6 +47,8 @@ type cliState struct {
 	dynamic []slashSource
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
+	// input is what the input layer keeps across lines; see inputState.
+	input inputState
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

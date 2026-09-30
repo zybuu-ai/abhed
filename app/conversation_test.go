@@ -77,6 +77,13 @@ func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cl
 // startCLIConfig is startCLIWith under the configuration config makes from the model's URL.
 func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string) *cliSession {
 	t.Helper()
+	return startCLIPrepared(t, reply, config, nil)
+}
+
+// startCLIPrepared is startCLIConfig with prep run on the workspace before
+// the process starts, for files it reads at start-up.
+func startCLIPrepared(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, prep func(ws string)) *cliSession {
+	t.Helper()
 	c := &cliSession{t: t, out: &syncBuffer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -100,6 +107,9 @@ func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), c
 	}
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if prep != nil {
+		prep(ws)
 	}
 	c.cmd = exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
 	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+t.TempDir(), "USERPROFILE="+t.TempDir(),

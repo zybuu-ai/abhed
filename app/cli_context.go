@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -17,7 +21,7 @@ import (
 
 func init() {
 	registerSlash(slashCmd{Name: "/compact", Args: "[hint]", Help: "compact the context now", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
-	registerSlash(slashCmd{Name: "/memory", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, ReadOnly: true, Run: legacy("/memory", slashMemory)})
+	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <project|local|user> <note>]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
 
 // slashCompact is /compact.
@@ -43,27 +47,119 @@ func slashCompact(ctx context.Context, fields []string, r *ui.Renderer,
 	return false
 }
 
-// slashMemory is /memory.
-func slashMemory(ctx context.Context, fields []string, r *ui.Renderer,
-	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
-	files := agent.DiscoverMemoryFiles(sess.Root)
+// sessionMemory is the memory the session's system prompt was built with.
+// The prompt is built once per process, so the memory is too; memory.loaded
+// records it in each conversation.
+var sessionMemory atomic.Pointer[agent.Memory]
+
+// memoryOptions are where the CLI's memory comes from: the configured import
+// depth and rule directories, and the session's read rules for workspace
+// files, which a deny keeps out of the prompt as it keeps them from a read.
+func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agent.MemoryOptions {
+	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs}
+	if pol != nil {
+		o.Allow = func(path string) error {
+			if d := pol.Evaluate("read", false, argsJSON(map[string]string{"path": path})); d.Decision == policy.Deny {
+				return errors.New(d.Reason)
+			}
+			return nil
+		}
+	}
+	return o
+}
+
+// cliSystemPrompt is the main agent's prompt, as toolset.SystemPrompt builds
+// it, with the memory the configuration describes.
+func cliSystemPrompt(cfg config.Config, pol *policy.Engine, workspace string, adapter model.Adapter, skills string, toolNames []string) string {
+	mem := agent.LoadMemory(memoryOptions(cfg, pol, workspace))
+	sessionMemory.Store(mem)
+	return agent.BuildSystemPrompt(agent.BuildOptions{
+		Profile:       "main",
+		Workspace:     workspace,
+		Model:         adapter.Profile().Name,
+		ContextWindow: adapter.Profile().ContextWindow,
+		Memory:        mem,
+		Skills:        skills,
+		Tools:         toolNames,
+	})
+}
+
+// recordMemoryLoaded records, once in each conversation, which memory files
+// its prompt carries and their hashes.
+func recordMemoryLoaded(st *cliState) {
+	mem := sessionMemory.Load()
+	if st.loop == nil || mem == nil || st.input.memoryFor == st.loop {
+		return
+	}
+	files := mem.Files()
 	if len(files) == 0 {
-		path := filepath.Join(sess.Root, "ABHED.md")
-		fmt.Printf("  %s\n", s.Dim("no memory file yet; create "+path))
-		fmt.Printf("  %s\n", s.Dim("it is re-injected on every request, so keep it short"))
-		return false
+		st.input.memoryFor = st.loop
+		return
 	}
-	for _, f := range files {
-		data, err := agent.ReadMemoryFile(sess.Root, f)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("  %s %s\n", s.Bold(f), s.Dim(fmt.Sprintf("(%d bytes)", len(data))))
-		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
-			fmt.Printf("    %s\n", line)
-		}
+	if _, err := st.loop.Recorder.Record(agent.EvMemoryLoaded, agent.ActorSystem, agent.Trusted, agent.MemoryLoaded{Files: files}); err == nil {
+		st.input.memoryFor = st.loop
 	}
-	return false
+}
+
+// slashMemory is /memory: the files in effect, one shown whole, or a note
+// added to one of them.
+func slashMemory(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
+	sf := e.ui
+	mem := sessionMemory.Load()
+	if mem == nil {
+		mem = agent.LoadMemory(memoryOptions(e.st.appCfg, e.pol, e.sess.Root))
+	}
+	switch {
+	case len(args) >= 1 && args[0] == "add":
+		if len(args) < 3 {
+			return false, errors.New("usage: /memory add <project|local|user> <note>")
+		}
+		saveNote(ctx, e.st, sf, args[1], strings.Join(args[2:], " "))
+		return false, nil
+	case len(args) == 2 && args[0] == "show":
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 || n > len(mem.Entries) {
+			return false, fmt.Errorf("no memory file %s; /memory lists them", args[1])
+		}
+		ent := mem.Entries[n-1]
+		if ent.Skipped != "" {
+			return false, fmt.Errorf("%s was not loaded: %s", ent.Label, ent.Skipped)
+		}
+		return false, sf.Panel(ctx, ui.PanelSpec{Title: ent.Label, Body: []ui.Block{{Kind: ui.BlockMarkdown, Text: ent.Content}}})
+	case len(args) > 0:
+		return false, errors.New("usage: /memory [show <n>|add <project|local|user> <note>]")
+	}
+	if len(mem.Entries) == 0 {
+		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "no memory file yet; # <note> or /memory add project <note> starts ABHED.md.\n" +
+			"memory is put into every request, so keep it short"})
+		return false, nil
+	}
+	rows := [][]string{{"#", "scope", "file", "size", "sha256"}}
+	for i, ent := range mem.Entries {
+		size, sum := fmt.Sprintf("%d B", len(ent.Content)), shortSum(ent.SHA256)
+		if ent.Skipped != "" {
+			size, sum = "not loaded", ent.Skipped
+		}
+		label := ent.Label
+		if len(ent.Paths) > 0 {
+			label += " (for " + strings.Join(ent.Paths, ", ") + ")"
+		}
+		if ent.From != "" {
+			label += " (imported by " + filepath.Base(ent.From) + ")"
+		}
+		rows = append(rows, []string{strconv.Itoa(i + 1), ent.Scope, label, size, sum})
+	}
+	sf.Append(ui.Block{Kind: ui.BlockTable, Rows: rows})
+	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "/memory show <n> prints one; # <note> adds to one. " +
+		"Project memory came with the workspace: it is instructions, read only as its files allow."})
+	return false, nil
+}
+
+func shortSum(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 // Memory targets a note can go to.

@@ -3,14 +3,11 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
-	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // CorePrompt is layer 1 of the prompt stack (docs §07): stable across all
@@ -169,6 +166,8 @@ type BuildOptions struct {
 	Model         string
 	ContextWindow int
 	MemoryFiles   []string // discovered ABHED.md paths, in precedence order
+	// Memory, when set, is the loaded memory in place of MemoryFiles.
+	Memory *Memory
 	// Skills is the rendered skill listing: names and one-line descriptions
 	// only. Bodies are fetched by the skill tool, so twenty skills cost about
 	// three hundred tokens here rather than twenty thousand.
@@ -221,63 +220,15 @@ func BuildSystemPrompt(opts BuildOptions) string {
 		b.WriteString(opts.Skills)
 	}
 
-	for _, path := range opts.MemoryFiles {
-		data, err := ReadMemoryFile(opts.Workspace, path)
-		if err != nil || len(data) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "\n## Project memory (%s)\n", filepath.Base(path))
-		b.WriteString(strings.TrimSpace(string(data)))
-		b.WriteString("\n")
+	mem := opts.Memory
+	if mem == nil && len(opts.MemoryFiles) > 0 {
+		mem = memoryFromFiles(opts.Workspace, opts.MemoryFiles)
+	}
+	if mem != nil {
+		b.WriteString(mem.Render())
 	}
 
 	return b.String()
-}
-
-// ReadMemoryFile reads a memory file for the system prompt or /memory. A file
-// in the workspace is the agent's to change, so it is read as the file tools
-// read: a link planted there cannot put .abhed/users.json or a file outside
-// the workspace into the prompt. The operator's files, in ~/.abhed and
-// /etc/abhed, are read as they are, but never through a link.
-func ReadMemoryFile(workspace, path string) ([]byte, error) {
-	if workspace != "" {
-		ws, err := filepath.Abs(workspace)
-		if err == nil {
-			for _, root := range []string{ws, tools.RealPath(ws)} {
-				if rel, err := filepath.Rel(root, path); err == nil && filepath.IsLocal(rel) {
-					return tools.ReadInWorkspace(ws, path)
-				}
-			}
-		}
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	return os.ReadFile(path) // #nosec G304 -- an operator's memory file, not a link
-}
-
-// DiscoverMemoryFiles finds ABHED.md files in precedence order (docs §07).
-// Later files override earlier ones, except an org-managed file which always wins.
-func DiscoverMemoryFiles(workspace string) []string {
-	var out []string
-	add := func(p string) {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			out = append(out, p)
-		}
-	}
-
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".abhed", "ABHED.md"))
-	}
-	add(filepath.Join(workspace, "ABHED.md"))
-	add(filepath.Join(workspace, "ABHED.local.md"))
-	// Managed policy last so it cannot be overridden by user or project files.
-	add(filepath.Join("/etc", "abhed", "ABHED.md"))
-	return out
 }
 
 func gitState(dir string) (branch string, dirty int, isRepo bool) {
