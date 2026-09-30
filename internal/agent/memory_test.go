@@ -47,8 +47,8 @@ func TestMemoryOrderAndAgentsFallback(t *testing.T) {
 	put(t, filepath.Join(ws, "ABHED.local.md"), "LOCAL")
 	put(t, filepath.Join(ManagedMemoryDir, "ABHED.md"), "MANAGED")
 	// Other products' files are never read.
-	put(t, filepath.Join(ws, "CLAUDE.md"), "OTHER-PRODUCT")
-	put(t, filepath.Join(ws, ".cursorrules"), "OTHER-PRODUCT")
+	put(t, filepath.Join(ws, "OTHERTOOL.md"), "OTHER-PRODUCT")
+	put(t, filepath.Join(ws, ".othertoolrules"), "OTHER-PRODUCT")
 
 	m := LoadMemory(MemoryOptions{Workspace: ws, Home: home})
 	if got := scopes(m); got != "user:ABHED.md project:AGENTS.md local:ABHED.local.md managed:ABHED.md" {
