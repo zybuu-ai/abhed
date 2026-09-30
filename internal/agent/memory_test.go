@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -233,5 +234,39 @@ func TestMemoryRulesNotThroughLinks(t *testing.T) {
 	p := LoadMemory(MemoryOptions{Workspace: ws, Home: home, RuleDirs: []string{".abhed/rules"}}).Render()
 	if strings.Contains(p, "LINKED-RULE") || !strings.Contains(p, "OK-RULE") {
 		t.Fatalf("rules:\n%s", p)
+	}
+}
+
+// A subagent's prompt follows imports only through the read rules: a
+// denied import stays out, an allowed one comes in.
+func TestSubagentMemoryImportsFollowReadRules(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := subFactory(t, []scriptedTurn{{text: "done"}}, NewBudget(1_000_000, 10, false))
+	ws := f.Workspace
+	put(t, filepath.Join(ws, "ABHED.md"), "@secret/token.md @docs/ok.md")
+	put(t, filepath.Join(ws, "secret", "token.md"), "TOKEN-CANARY")
+	put(t, filepath.Join(ws, "docs", "ok.md"), "OK-IMPORT")
+	f.Policy.Roots = f.Session.PolicyRoots
+	if err := f.Policy.AddDeny("read(secret/**)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "go", Description: "go", AgentType: "explore"}); err != nil {
+		t.Fatal(err)
+	}
+	sys := f.Adapter.(*scriptedAdapter).gotRequests[0].System
+	if strings.Contains(sys, "TOKEN-CANARY") || !strings.Contains(sys, "OK-IMPORT") {
+		t.Fatalf("subagent prompt:\n%s", sys)
+	}
+}
+
+// A prompt built with no policy to ask (the server, the SDK, eval) reads
+// the memory files themselves but follows no import.
+func TestMemoryWithoutPolicyFollowsNoImport(t *testing.T) {
+	ws, _ := memoryWorld(t)
+	put(t, filepath.Join(ws, "ABHED.md"), "PROJECT @secret/token.md")
+	put(t, filepath.Join(ws, "secret", "token.md"), "TOKEN-CANARY")
+	p := BuildSystemPrompt(BuildOptions{Profile: "main", Workspace: ws, MemoryFiles: DiscoverMemoryFiles(ws)})
+	if !strings.Contains(p, "PROJECT") || strings.Contains(p, "TOKEN-CANARY") {
+		t.Fatalf("prompt:\n%s", p)
 	}
 }

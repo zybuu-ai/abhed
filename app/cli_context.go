@@ -74,14 +74,7 @@ func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agen
 	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto {
 		o.Auto = tools.AutoMemoryPath(home, workspace)
 	}
-	if pol != nil {
-		o.Allow = func(path string) error {
-			if d := pol.Evaluate("read", false, argsJSON(map[string]string{"path": path})); d.Decision == policy.Deny {
-				return errors.New(d.Reason)
-			}
-			return nil
-		}
-	}
+	o.Allow = agent.ReadAllowed(pol)
 	return o
 }
 

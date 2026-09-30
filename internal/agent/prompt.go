@@ -168,6 +168,9 @@ type BuildOptions struct {
 	MemoryFiles   []string // discovered ABHED.md paths, in precedence order
 	// Memory, when set, is the loaded memory in place of MemoryFiles.
 	Memory *Memory
+	// MemoryAllow puts the imports MemoryFiles name to the read rules; nil
+	// follows no import.
+	MemoryAllow func(path string) error
 	// Skills is the rendered skill listing: names and one-line descriptions
 	// only. Bodies are fetched by the skill tool, so twenty skills cost about
 	// three hundred tokens here rather than twenty thousand.
@@ -222,7 +225,7 @@ func BuildSystemPrompt(opts BuildOptions) string {
 
 	mem := opts.Memory
 	if mem == nil && len(opts.MemoryFiles) > 0 {
-		mem = memoryFromFiles(opts.Workspace, opts.MemoryFiles)
+		mem = memoryFromFiles(opts.Workspace, opts.MemoryFiles, opts.MemoryAllow)
 	}
 	if mem != nil {
 		b.WriteString(mem.Render())

@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -207,6 +209,8 @@ type memoryLoader struct {
 	o    MemoryOptions
 	m    *Memory
 	seen map[string]bool
+	// noImports leaves imports unread, for a caller with no read rules to ask.
+	noImports bool
 }
 
 func (l *memoryLoader) depth() int {
@@ -278,6 +282,9 @@ func (l *memoryLoader) file(p, scope, label, from string, depth int) {
 // workspace file stays in the workspace; one from the person's or the
 // organisation's file stays in its own directory or the workspace.
 func (l *memoryLoader) imports(from, scope, content string, depth int) {
+	if l.noImports {
+		return
+	}
 	for _, target := range importsOf(content) {
 		p := l.importPath(from, target)
 		e := MemoryEntry{Path: p, Scope: MemoryImport, Label: target, From: from}
@@ -546,12 +553,31 @@ func globMatch(glob, p string) bool {
 	}
 }
 
-// memoryFromFiles loads the given files as they were discovered, with their
-// imports at the default depth: the prompt of a caller that has no options.
-func memoryFromFiles(workspace string, files []string) *Memory {
+// ReadAllowed is a MemoryOptions.Allow that puts each workspace memory file
+// to a policy's read rules, as the read tool would be.
+func ReadAllowed(pol *policy.Engine) func(path string) error {
+	if pol == nil {
+		return nil
+	}
+	return func(path string) error {
+		args, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			return err
+		}
+		if d := pol.Evaluate("read", false, args); d.Decision == policy.Deny {
+			return errors.New(d.Reason)
+		}
+		return nil
+	}
+}
+
+// memoryFromFiles loads the given files as they were discovered. Imports
+// are followed, at the default depth, only when allow puts them to the read
+// rules: with no policy to ask, a file an import names is not read.
+func memoryFromFiles(workspace string, files []string, allow func(string) error) *Memory {
 	home, _ := os.UserHomeDir()
 	m := &Memory{Workspace: workspace}
-	l := memoryLoader{o: MemoryOptions{Workspace: workspace, Home: home}, m: m, seen: map[string]bool{}}
+	l := memoryLoader{o: MemoryOptions{Workspace: workspace, Home: home, Allow: allow}, m: m, seen: map[string]bool{}, noImports: allow == nil}
 	for _, f := range files {
 		scope, label := MemoryProject, filepath.Base(f)
 		switch {
