@@ -423,6 +423,9 @@ func (b *Background) reserveN(n int) (*slots, error) {
 func (s *slots) take() error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
+	if s.b.closed {
+		return errors.New("the session is closing; no background task can start")
+	}
 	if s.left == 0 {
 		return errors.New("no reserved background slot is left for this task")
 	}

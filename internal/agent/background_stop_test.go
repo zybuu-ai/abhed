@@ -292,3 +292,55 @@ func TestStopBetweenWakeDecisionAndRun(t *testing.T) {
 		t.Fatalf("the result: wake %q, want skipped:stopped", n.Wake)
 	}
 }
+
+// Closing the session while a tasks call starts its tasks is a stop: the
+// task being prepared and the rest are refused as stopped, and nothing is
+// recorded as spawned after the close.
+func TestCloseDuringTasksStartSpawnsNothingAfter(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "a", "b", "c")
+	block, inSlow := make(chan struct{}), make(chan struct{})
+	r.f.ModelNames = []string{"fast", "slow"}
+	r.f.Models = func(name string) (model.Adapter, error) {
+		if name == "slow" {
+			close(inSlow)
+			<-block
+		}
+		return r.m, nil
+	}
+	tk := Tasks{Spawn: r.f.Spawn, Background: r.f.SpawnBackground, Workspace: r.f.Workspace, Models: r.f.ModelNames}
+	done := make(chan string)
+	go func() {
+		done <- tk.Run(r.l.asParent(context.Background()), nil, json.RawMessage(`{"background":true,"tasks":[`+
+			`{"prompt":"a","description":"a","model":"fast"},{"prompt":"b","description":"b","model":"slow"},{"prompt":"c","description":"c"}]}`)).Content
+	}()
+	<-inSlow
+	closed := make(chan struct{})
+	go func() { r.l.Background.Close(TermSessionDeleted); close(closed) }()
+	waitFor(t, "the close", func() bool { r.l.Background.mu.Lock(); defer r.l.Background.mu.Unlock(); return r.l.Background.closed })
+	seq := lastSeq(r.events(t))
+	close(block)
+	out := <-done
+	<-closed
+	if strings.Count(out, ErrStopped.Error()) != 2 {
+		t.Fatalf("after the close:\n%s", out)
+	}
+	for _, e := range r.events(t) {
+		if e.Seq > seq && e.Type == EvSubagentSpawned {
+			t.Fatalf("a spawn was recorded after the close: %s", e.Payload)
+		}
+	}
+	r.m.release("a")
+}
+
+// A hold's slots are not given out once the session is closing.
+func TestSlotsRefusedAfterClose(t *testing.T) {
+	r := newBGRig(t, WakeNotify)
+	s, err := r.l.Background.reserveN(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.l.Background.Close(TermSessionClosed)
+	if err := s.take(); err == nil {
+		t.Fatal("a slot was taken after Close")
+	}
+}
