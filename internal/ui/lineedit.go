@@ -3,54 +3,195 @@ package ui
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 )
 
-// LineReader reads a line of input with the editing a terminal user expects.
+// LineReader is the interactive terminal: the input dock, the keys, and the
+// output drawn above them.
 //
-// The CLI read with bufio.Reader, which delivers whatever the terminal sends
-// and nothing more: arrow keys arrived as escape sequences and appeared as
-// "^[[D", there was no history, and a typo could only be fixed by backspacing
-// to it. That is not a preference — a prompt where Left does not move the
-// cursor reads as broken.
-//
-// When stdin is not a terminal — a pipe, a CI job, a here-doc — this falls
-// straight through to line reads, because raw mode on a pipe would corrupt the
-// input and there is nobody typing to benefit from it.
+// When stdin is not a terminal — a pipe, a CI job, a here-doc — it falls
+// straight through to line reads, because raw mode on a pipe would corrupt
+// the input and there is nobody typing to benefit from it.
 type LineReader struct {
-	ed      *editor
+	d       *dock
 	fd      int
 	state   *term.State
 	fallbck *bufio.Reader
 	raw     bool
+	done    chan struct{}
+	close   sync.Once
+	// resize, for a reader over a stream, sets the size it reports.
+	resize func(cols, rows int)
 }
+
+// Terminal modes the dock turns on while it runs, and off when it closes:
+// bracketed paste, so a paste arrives as one; and the keyboard protocol's
+// "disambiguate" level, so Shift+Enter and a lone Esc can be told apart.
+// A terminal that knows neither ignores both.
+const (
+	modesOn  = "\x1b[?2004h\x1b[>1u"
+	modesOff = "\x1b[<u\x1b[?2004l\x1b[?25h"
+)
+
+// errInterrupted is Ctrl-C on an empty line: the session decides whether it
+// stops a turn or, pressed again, ends the session.
+var errInterrupted = errors.New("interrupted")
+
+// ErrCtrlC is what ReadLine returns for Ctrl-C, for callers that script it.
+var ErrCtrlC = errInterrupted
+
+// ErrInterrupted reports whether a read ended in Ctrl-C.
+func ErrInterrupted(err error) bool { return errors.Is(err, errInterrupted) }
+
+var errNoTerminal = errors.New("no terminal to ask on")
 
 // NewLineReader prepares stdin for editing where that is possible.
 func NewLineReader(prompt string) *LineReader {
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	outFd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) || !term.IsTerminal(outFd) {
 		return &LineReader{fallbck: bufio.NewReader(os.Stdin)}
 	}
 	state, err := term.MakeRaw(fd)
 	if err != nil {
 		return &LineReader{fallbck: bufio.NewReader(os.Stdin)}
 	}
-	l := &LineReader{ed: newEditor(os.Stdin, os.Stdout, prompt), fd: fd, state: state, raw: true}
-
+	d := newDock(os.Stdin, os.Stdout, NewStyle(LazyStdout{}))
+	d.prompt = prompt
+	d.kr.ready = readyFunc(os.Stdin)
+	d.size = func() (int, int) {
+		w, h, err := term.GetSize(outFd)
+		if err != nil || w <= 0 {
+			return 80, 24
+		}
+		return w, h
+	}
+	d.extEdit = func(text string) (string, error) { return externalEdit(fd, state, text) }
+	l := &LineReader{d: d, fd: fd, state: state, raw: true, done: make(chan struct{})}
+	d.scr.raw(modesOn)
+	l.start()
+	watchResize(l.done, d.resized)
 	return l
 }
 
-// ReadLine returns the next line. In raw mode it supports Left and Right to
-// move, Up and Down for history, Home, End, Ctrl-A, Ctrl-E, Ctrl-U, Ctrl-K and
-// Ctrl-W, and Ctrl-C and Ctrl-D as interrupt and end of input.
+// NewLineReaderOn builds a reader over any stream with the terminal's
+// behaviour and a fixed size: the dock with no terminal to configure. Tests
+// drive it with keys and read the frames it writes.
+func NewLineReaderOn(in io.Reader, out io.Writer, cols, rows int) *LineReader {
+	d := newDock(in, out, Style{enabled: true})
+	var mu sync.Mutex
+	d.size = func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return cols, rows
+	}
+	l := &LineReader{d: d, raw: true, done: make(chan struct{})}
+	l.resize = func(c, r int) {
+		mu.Lock()
+		cols, rows = c, r
+		mu.Unlock()
+		d.resized()
+	}
+	l.start()
+	return l
+}
+
+func (l *LineReader) start() {
+	l.d.mu.Lock()
+	l.d.draw()
+	l.d.mu.Unlock()
+	go l.d.run()
+	go l.tick()
+}
+
+// tick drives what changes with time: the activity line's spinner and
+// clock, a hint's expiry, and — where no resize signal exists — the size.
+func (l *LineReader) tick() {
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-l.done:
+			return
+		case <-t.C:
+			l.d.tickFrame()
+		}
+	}
+}
+
+func (d *dock) tickFrame() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stopped {
+		return
+	}
+	redraw := false
+	if d.act.on {
+		d.spin++
+		if d.spin%40 == 0 {
+			d.act.verb++ // a new word every four seconds reads as progress
+		}
+		redraw = len(d.live) == 0 && d.pager == nil
+	}
+	if !d.hintAt.IsZero() && d.now().Sub(d.hintAt) > 2*time.Second {
+		d.hint, d.hintAt = "", time.Time{}
+		redraw = true
+	}
+	if !resizeSignalled {
+		if w, h := d.size(); w != d.width || h != d.height {
+			d.repaint()
+			return
+		}
+	}
+	if redraw {
+		d.draw()
+	}
+}
+
+// resized is called when the terminal reports a new size.
+func (d *dock) resized() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.repaint()
+}
+
+// repaint draws the screen again from the transcript, at the current size.
+//
+// A terminal reflows its own rows on a resize, each terminal differently,
+// and a region drawn at the old width no longer sits where its rows say.
+// Rather than guess, the visible screen is cleared and the tail of the
+// transcript drawn again at the new width, with the region under it: no
+// ghost of the old dock is left, and the text is wrapped for the new width
+// rather than cut by the terminal. Scrollback keeps what was above.
+func (d *dock) repaint() {
+	if d.stopped {
+		return
+	}
+	d.measure()
+	if d.pager != nil {
+		d.drawPager()
+		return
+	}
+	d.scr.raw("\x1b[H\x1b[2J")
+	d.scr.forget()
+	lines := d.tr.tail(d.contentWidth(), d.st, 2*d.height)
+	rows, cr, cc := d.frame()
+	d.scr.commit(lines, rows, cr, cc)
+}
+
+// ReadLine returns the next line, or an error: ErrCtrlC for Ctrl-C, io.EOF
+// when input ends.
 func (l *LineReader) ReadLine() (string, error) {
 	if l.raw {
-		return l.ed.readLine()
+		return l.d.readLine()
 	}
 	line, err := l.fallbck.ReadString('\n')
 	return strings.TrimRight(line, "\r\n"), err
@@ -58,18 +199,26 @@ func (l *LineReader) ReadLine() (string, error) {
 
 // Typing reports whether the person has something on the line: a wake turn
 // waits, since their message will carry the result anyway.
-func (l *LineReader) Typing() bool { return l.raw && l.ed.typing.Load() }
+func (l *LineReader) Typing() bool {
+	if !l.raw {
+		return false
+	}
+	l.d.mu.Lock()
+	defer l.d.mu.Unlock()
+	return !l.d.buf.empty()
+}
 
 // Raw reports whether editing is active, so a caller can print its own prompt
 // when it is not.
 func (l *LineReader) Raw() bool { return l.raw }
 
-// ApprovalKeys routes decision keys to an approval until end, in raw mode. read
-// arms the key guard each call: the approver calls it just after drawing.
+// ApprovalKeys routes decision keys to a line-based approval until end, in
+// raw mode. read arms the key guard each call: the approver calls it just
+// after drawing.
 func (l *LineReader) ApprovalKeys(ctx context.Context) (read func() (string, bool), end func()) {
-	keys := l.ed.beginApproval()
+	keys := l.d.beginLegacy()
 	read = func() (string, bool) {
-		l.ed.armApproval()
+		l.d.armLegacy()
 		select {
 		case k := <-keys:
 			return string(k), true
@@ -77,29 +226,142 @@ func (l *LineReader) ApprovalKeys(ctx context.Context) (read func() (string, boo
 			return "", false
 		}
 	}
-	return read, l.ed.endApproval
+	return read, l.d.endLegacy
 }
 
-// Quiet suspends the prompt while a turn is running, so the reader can stay
-// live for steering without painting over the turn's output.
+// Quiet marks a turn as running (true) or finished (false). The dock stays
+// on screen either way: what is typed during a turn is shown as it is typed,
+// and Esc stops the turn.
 func (l *LineReader) Quiet(q bool) {
-	if l.raw {
-		l.ed.setQuiet(q)
+	if !l.raw {
+		return
 	}
+	l.d.mu.Lock()
+	defer l.d.mu.Unlock()
+	l.d.busy = q
+	if !q {
+		l.d.queued = nil
+		l.d.act = activity{}
+		l.d.flushLive()
+	}
+	l.d.closeMenu()
+	l.d.draw()
 }
 
 // SetPrompt changes the prompt shown before the cursor.
 func (l *LineReader) SetPrompt(p string) {
 	if l.raw {
-		l.ed.setPrompt(p)
+		l.d.mu.Lock()
+		l.d.prompt = p
+		l.d.draw()
+		l.d.mu.Unlock()
 	}
 }
 
-// Write prints through the terminal so output does not collide with a line
-// being edited. Outside raw mode it goes to stdout unchanged.
+// Stops delivers Esc pressed while a turn runs: stop the turn. Unlike Ctrl-C
+// it never counts toward exiting. Nil when there is no terminal.
+func (l *LineReader) Stops() <-chan struct{} {
+	if !l.raw {
+		return nil
+	}
+	return l.d.stops
+}
+
+// SetStatus supplies what the footer shows; it is asked on every draw.
+func (l *LineReader) SetStatus(f func() StatusModel) {
+	if l.raw {
+		l.d.mu.Lock()
+		l.d.status = f
+		l.d.draw()
+		l.d.mu.Unlock()
+	}
+}
+
+// SetHistory replaces the in-memory history with h.
+func (l *LineReader) SetHistory(h *History) {
+	if l.raw && h != nil {
+		l.d.mu.Lock()
+		l.d.hist = h
+		l.d.hpos = len(h.Entries())
+		l.d.mu.Unlock()
+	}
+}
+
+// Hotkey runs f when the named key is pressed at the prompt: "shift+tab",
+// "ctrl+t", "esc esc". f runs outside the dock's lock and may call back.
+func (l *LineReader) Hotkey(name string, f func()) {
+	if l.raw {
+		l.d.mu.Lock()
+		l.d.hotkeys[name] = f
+		l.d.mu.Unlock()
+	}
+}
+
+// SetCommands supplies the slash commands the menu offers.
+func (l *LineReader) SetCommands(f func() []Command) {
+	if l.raw && f != nil {
+		l.d.mu.Lock()
+		l.d.commands = f
+		l.d.mu.Unlock()
+	}
+}
+
+// SetFiles supplies workspace paths for @ completion.
+func (l *LineReader) SetFiles(f func() []string) {
+	if l.raw {
+		l.d.mu.Lock()
+		l.d.files = f
+		l.d.mu.Unlock()
+	}
+}
+
+// SetVim turns modal (vim) editing of the input on or off.
+func (l *LineReader) SetVim(on bool) {
+	if l.raw {
+		l.d.mu.Lock()
+		l.d.setVim(on)
+		l.d.draw()
+		l.d.mu.Unlock()
+	}
+}
+
+// Vim reports whether modal editing is on.
+func (l *LineReader) Vim() bool {
+	if !l.raw {
+		return false
+	}
+	l.d.mu.Lock()
+	defer l.d.mu.Unlock()
+	return l.d.vim != nil
+}
+
+// Flash shows a hint in the footer for a moment.
+func (l *LineReader) Flash(s string) {
+	if l.raw {
+		l.d.mu.Lock()
+		l.d.flash(s)
+		l.d.draw()
+		l.d.mu.Unlock()
+	}
+}
+
+// Dialog shows a guarded numbered dialog in the dock and returns the chosen
+// choice's ID. It needs a terminal; PipeDialog asks over piped input.
+func (l *LineReader) Dialog(ctx context.Context, spec DialogSpec) (string, error) {
+	if !l.raw {
+		return "", errNoTerminal
+	}
+	return l.d.ask(ctx, spec)
+}
+
+// Write prints through the terminal so output does not collide with the
+// dock. Outside raw mode it goes to stdout unchanged.
 func (l *LineReader) Write(p []byte) (int, error) {
 	if l.raw {
-		return l.ed.write(p)
+		l.d.mu.Lock()
+		l.d.write(p)
+		l.d.mu.Unlock()
+		return len(p), nil
 	}
 	return os.Stdout.Write(p)
 }
@@ -108,50 +370,77 @@ func (l *LineReader) Write(p []byte) (int, error) {
 // unusable afterwards, which is a worse failure than anything this package
 // does, so callers must defer it.
 func (l *LineReader) Close() {
-	if l.raw && l.state != nil {
-		_ = term.Restore(l.fd, l.state)
-		l.raw = false
+	if !l.raw {
+		return
 	}
-}
-
-// rawWriter translates newlines for a terminal in raw mode.
-//
-// Raw mode turns off the driver's own ONLCR translation, so a bare \n moves the
-// cursor down without returning it to column 0 and every subsequent line starts
-// further right — the staircase. Ordinary Go code writes \n and should not have
-// to know the terminal is in raw mode, so the translation happens here, once,
-// on the way out.
-type rawWriter struct{ w io.Writer }
-
-func (r rawWriter) Write(p []byte) (int, error) {
-	// Only \n that is not already preceded by \r needs a carriage return
-	// added; rewriting an existing CRLF would double it.
-	var out []byte
-	var last byte
-	for _, c := range p {
-		if c == '\n' && last != '\r' {
-			out = append(out, '\r')
+	l.close.Do(func() {
+		close(l.done)
+		l.d.mu.Lock()
+		l.d.endDialogs()
+		if l.d.pager != nil {
+			l.d.closePager()
 		}
-		out = append(out, c)
-		last = c
-	}
-	if _, err := r.w.Write(out); err != nil {
-		return 0, err
-	}
-	// Report the caller's own length: it wrote p, and the padding is ours.
-	return len(p), nil
+		l.d.flushLive()
+		if l.d.rawTail != "" {
+			tail := l.d.rawTail
+			l.d.rawTail = ""
+			l.d.commit(&rawBlock{text: tail})
+		}
+		l.d.scr.clear()
+		l.d.stopped = true
+		l.d.scr.raw(modesOff)
+		l.d.mu.Unlock()
+		if l.state != nil {
+			_ = term.Restore(l.fd, l.state)
+		}
+	})
 }
 
-// Capture redirects the process's standard output and error through the raw
-// translation, and returns a function that restores them.
+// externalEdit opens text in $VISUAL or $EDITOR with the terminal in its
+// ordinary mode, and returns what was saved.
+func externalEdit(fd int, raw *term.State, text string) (string, error) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	f, err := os.CreateTemp("", "abhed-prompt-*.md")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(text); err != nil {
+		f.Close()
+		return "", err
+	}
+	f.Close()
+	if raw != nil {
+		_ = term.Restore(fd, raw)
+	}
+	_, _ = os.Stdout.WriteString(modesOff)
+	fields := strings.Fields(editor)
+	cmd := exec.Command(fields[0], append(fields[1:], f.Name())...) // #nosec G204 -- the person's own editor, on their own file
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	runErr := cmd.Run()
+	if _, err := term.MakeRaw(fd); err != nil {
+		return "", err
+	}
+	_, _ = os.Stdout.WriteString(modesOn)
+	if runErr != nil {
+		return "", runErr
+	}
+	data, err := os.ReadFile(f.Name())
+	return string(data), err
+}
+
+// Capture redirects the process's standard output and error into the dock,
+// and returns a function that restores them.
 //
 // Redirecting the streams rather than handing callers a writer is deliberate:
 // fmt.Println and every log line in the program write to os.Stdout directly,
-// and there are far too many of them to route by hand. One of them missed is a
-// staircase across the screen — which is exactly what shipped.
-//
-// A pipe is used rather than assigning to os.Stdout, because os.Stdout is an
-// *os.File and cannot be replaced with an arbitrary writer.
+// and there are far too many of them to route by hand.
 func (l *LineReader) Capture() func() {
 	if !l.raw {
 		return func() {}
@@ -170,24 +459,14 @@ func (l *LineReader) Capture() func() {
 	origOut, origErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = outW, errW
 
-	// Write through the terminal rather than past it. x/term tracks where the
-	// cursor is so it can clear the prompt line before other output and redraw
-	// it afterwards; bytes that go straight to the file bypass that bookkeeping,
-	// and the prompt stops reappearing after the first message printed
-	// mid-session. It also handles CRLF, so no separate translation is needed
-	// on this path.
 	var wg sync.WaitGroup
-	pump := func(r *os.File, fallback io.Writer) {
+	pump := func(r *os.File) {
 		defer wg.Done()
-		buf := make([]byte, 4096)
+		buf := make([]byte, 32*1024)
 		for {
 			n, err := r.Read(buf)
 			if n > 0 {
-				if l.ed != nil {
-					_, _ = l.ed.write(buf[:n])
-				} else {
-					_, _ = rawWriter{fallback}.Write(buf[:n])
-				}
+				_, _ = l.Write(buf[:n])
 			}
 			if err != nil {
 				return
@@ -195,8 +474,8 @@ func (l *LineReader) Capture() func() {
 		}
 	}
 	wg.Add(2)
-	go pump(outR, origOut)
-	go pump(errR, origErr)
+	go pump(outR)
+	go pump(errR)
 
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
@@ -211,21 +490,13 @@ func (l *LineReader) Capture() func() {
 // LazyStdout resolves os.Stdout at write time.
 //
 // A writer that captures os.Stdout when it is constructed keeps writing to the
-// original file after something replaces it — which is what left two lines of a
-// multi-line error staircasing while the rest was translated correctly. Looking
-// it up per write costs nothing measurable and removes the ordering hazard
-// entirely.
+// original file after something replaces it.
 type LazyStdout struct{}
 
 func (LazyStdout) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
 
-// IsTerminal reports whether output is going to a terminal, so styling is
-// decided by where the bytes end up rather than by the type of the wrapper.
-//
-// The redirect installed for raw mode replaces os.Stdout with a pipe, and a
-// pipe is not a character device — so asking os.Stdout directly would say "not
-// a terminal" for exactly the case that needs colour most. The answer is fixed
-// at startup, before any redirect, which is when it was true.
+// IsTerminal reports whether output is going to a terminal, fixed at startup
+// before any redirect, which is when it was true.
 func (LazyStdout) IsTerminal() bool { return startedOnTerminal }
 
 // startedOnTerminal records what stdout was before anything replaced it.
@@ -233,3 +504,5 @@ var startedOnTerminal = func() bool {
 	info, err := os.Stdout.Stat()
 	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
 }()
+
+func newBufReader(in io.Reader) *bufio.Reader { return bufio.NewReaderSize(in, 64*1024) }

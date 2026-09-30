@@ -1,0 +1,190 @@
+package ui
+
+import (
+	"strings"
+	"sync"
+)
+
+// block is one finished piece of the transcript. It renders itself at any
+// width, so a resize draws the transcript again instead of leaving the
+// terminal's reflow of the old rows, and expanded is the Ctrl-O view: the
+// whole of a tool's output or of the reasoning, where the transcript shows a
+// preview.
+type block interface {
+	lines(width int, s Style, expanded bool) []string
+}
+
+// transcript keeps the blocks a session has committed, up to a bound.
+type transcript struct {
+	mu     sync.Mutex
+	blocks []block
+	max    int
+}
+
+func (t *transcript) add(b block) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.blocks = append(t.blocks, b)
+	if t.max > 0 && len(t.blocks) > t.max {
+		t.blocks = append([]block(nil), t.blocks[len(t.blocks)-t.max:]...)
+	}
+}
+
+// replace swaps old for new where old is, so a reply streamed as rows is
+// kept as its markdown once complete.
+func (t *transcript) replace(old, new block) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := len(t.blocks) - 1; i >= 0; i-- {
+		if t.blocks[i] == old {
+			t.blocks[i] = new
+			return
+		}
+	}
+}
+
+func (t *transcript) snapshot() []block {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]block(nil), t.blocks...)
+}
+
+// tail renders the last blocks until at least want rows, oldest first.
+func (t *transcript) tail(width int, s Style, want int) []string {
+	bs := t.snapshot()
+	var chunks [][]string
+	n := 0
+	for i := len(bs) - 1; i >= 0 && n < want; i-- {
+		l := bs[i].lines(width, s, false)
+		chunks = append(chunks, l)
+		n += len(l)
+	}
+	var out []string
+	for i := len(chunks) - 1; i >= 0; i-- {
+		out = append(out, chunks[i]...)
+	}
+	return out
+}
+
+// rawBlock is output the program printed: lines of text, already styled.
+type rawBlock struct{ text string }
+
+func (b *rawBlock) lines(width int, _ Style, _ bool) []string {
+	var out []string
+	for _, l := range strings.Split(b.text, "\n") {
+		out = append(out, hardWrap(l, width)...)
+	}
+	return out
+}
+
+// rowsBlock is rows rendered once, at the width they were drawn.
+type rowsBlock struct{ rows []string }
+
+func (b *rowsBlock) lines(width int, _ Style, _ bool) []string {
+	var out []string
+	for _, r := range b.rows {
+		out = append(out, hardWrap(r, width)...)
+	}
+	return out
+}
+
+// promptBlock is a prompt as the person submitted it.
+type promptBlock struct {
+	text   string
+	prompt string
+}
+
+func (b *promptBlock) lines(width int, s Style, _ bool) []string {
+	pw := displayWidth(b.prompt)
+	indent := strings.Repeat(" ", pw)
+	var out []string
+	for i, l := range strings.Split(b.text, "\n") {
+		lead := indent
+		if i == 0 {
+			lead = b.prompt
+		}
+		for j, r := range wrapWords(l, max(width-pw, 8)) {
+			if j > 0 {
+				lead = indent
+			}
+			out = append(out, lead+s.Bold(r))
+		}
+	}
+	return out
+}
+
+// wrapWords wraps plain text at word boundaries to width columns; a word
+// longer than a row is the only thing ever cut.
+func wrapWords(text string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	if displayWidth(text) <= width {
+		return []string{text}
+	}
+	var rows []string
+	var row strings.Builder
+	used := 0
+	for _, word := range splitKeepSpaces(text) {
+		ww := displayWidth(word)
+		isSpace := strings.TrimSpace(word) == ""
+		switch {
+		case used+ww <= width:
+			row.WriteString(word)
+			used += ww
+		case isSpace:
+			// A space at the end of a row is dropped with the break.
+			rows = append(rows, strings.TrimRight(row.String(), " "))
+			row.Reset()
+			used = 0
+		case ww > width:
+			for _, part := range hardWrap(word, width) {
+				if used > 0 && used+displayWidth(part) > width {
+					rows = append(rows, strings.TrimRight(row.String(), " "))
+					row.Reset()
+					used = 0
+				}
+				row.WriteString(part)
+				used += displayWidth(part)
+			}
+		default:
+			rows = append(rows, strings.TrimRight(row.String(), " "))
+			row.Reset()
+			row.WriteString(word)
+			used = ww
+		}
+	}
+	rows = append(rows, strings.TrimRight(row.String(), " "))
+	return rows
+}
+
+// splitKeepSpaces splits text into words and the runs of spaces between them.
+func splitKeepSpaces(text string) []string {
+	var out []string
+	start := 0
+	inSpace := false
+	for i, r := range text {
+		sp := r == ' '
+		if i > 0 && sp != inSpace {
+			out = append(out, text[start:i])
+			start = i
+		}
+		inSpace = sp
+	}
+	if start < len(text) {
+		out = append(out, text[start:])
+	}
+	return out
+}
+
+// viewBlock wraps something the terminal draws in the I0 Block the Surface
+// carries.
+func viewBlock(v block) Block { return Block{Kind: BlockNotice, view: v} }
+
+// blockView is how the terminal draws b: its own view, or its text.
+func blockView(b Block) block {
+	if b.view != nil {
+		return b.view
+	}
+	return &rawBlock{text: sanitize(b.Text, false)}
+}

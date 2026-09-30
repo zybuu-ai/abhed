@@ -56,6 +56,11 @@ type Block struct {
 	Rows [][]string
 	// Path is the file a diff or tool output is about, relative to the workspace.
 	Path string
+
+	// view, when set, is how the terminal draws the block: a diff with line
+	// numbers, a command, a tool's result. The fields above still say what
+	// it is, for the line surface.
+	view block
 }
 
 // DialogKind is the shape of a Dialog.
@@ -97,6 +102,16 @@ type DialogSpec struct {
 	Default string
 	// Why says who is asking and on what grounds: step · rule · reason · asked by.
 	Why string
+
+	// Ask is the question itself, above the choices.
+	Ask string
+	// Cancel is the choice Esc and Ctrl-C take: "no", or the last, if unset.
+	Cancel string
+	// Outcome, when set, is what stays in the transcript for the chosen ID,
+	// in place of the choice's label.
+	Outcome func(id string) string
+	// NoRecord leaves nothing in the transcript; the caller writes its own.
+	NoRecord bool
 }
 
 // Confirm choice IDs.

@@ -45,4 +45,13 @@ type StatusModel struct {
 	Record      RecordStatus `json:"record"`
 	SessionName string       `json:"session_name,omitempty"`
 	GitBranch   string       `json:"git_branch,omitempty"`
+
+	// Cwd is the workspace as the footer shows it, ~ for home.
+	Cwd string `json:"cwd,omitempty"`
+	// PendingMode is a mode chosen while a turn runs; it applies when the
+	// turn ends, since the running turn reads the policy.
+	PendingMode string `json:"pending_mode,omitempty"`
+	// Line is a status line command's output; when set it replaces the
+	// footer's second row. It is the command's output, not its input.
+	Line string `json:"-"`
 }

@@ -96,7 +96,7 @@ func renderLine(s Style, line string) string {
 		return indent + s.Dim(n+".") + " " + inline(s, rest)
 	}
 
-	// Block quotes.
+	// block quotes.
 	if strings.HasPrefix(trimmed, "> ") {
 		return indent + s.Dim("│ "+stripInline(trimmed[2:]))
 	}

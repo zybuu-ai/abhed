@@ -33,7 +33,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	}
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
 		sandboxLabel, storageLabel(appCfg)))
-	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits."))
+	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 
 	// Input is read on its own goroutine so a line typed while the agent is
 	// working can steer it. Reading inline meant the prompt was simply not
@@ -46,6 +46,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// stdin is not a terminal, since raw mode on a pipe corrupts the input.
 	editor := ui.NewLineReader(ui.Prompt(s))
 	defer editor.Close()
+	setupTerminal(editor, workspace)
 	// Raw mode turns off the terminal's own newline translation, so every
 	// print in the program would otherwise staircase down the screen.
 	restoreStreams := editor.Capture()
@@ -184,6 +185,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	steering:
 		for {
 			select {
+			case <-editor.Stops():
+				// Esc stops the turn and keeps the session: unlike Ctrl-C it
+				// never counts toward exiting.
+				cancelTask()
 			case <-interruptCh:
 				// Ctrl-C stops the turn, and a pending approval with it: its
 				// wait ends on the cancelled context, so the call is refused.
@@ -240,10 +245,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					continue
 				}
 				loop.Steer(msg)
-				wasOn := r.PauseThinking()
-				fmt.Printf("  %s\n", s.Dim("steering — applied at the next step"))
-				if wasOn {
-					r.StartThinking()
+				if !editor.Raw() { // on a terminal the dock shows it, queued
+					fmt.Printf("  %s\n", s.Dim("steering — applied at the next step"))
 				}
 			}
 		}
@@ -260,7 +263,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			fmt.Printf("%s %s\n", s.Red("error:"), runErr)
 		}
 		settleTurn(sessionState, runErr)
-		printUsage(r, spent)
+		if !editor.Raw() { // on a terminal the footer carries it
+			printUsage(r, spent)
+		}
 		if runReason == agent.TermMaxTurns {
 			fmt.Println(s.Dim("  the turn limit counts the whole conversation; /clear starts a new one"))
 		}
