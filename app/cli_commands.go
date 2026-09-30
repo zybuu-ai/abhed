@@ -73,6 +73,8 @@ type cmdEnv struct {
 	st   *cliState
 	pol  *policy.Engine
 	sess *tools.Session
+	// modes is how a command changes the permission mode.
+	modes ModeController
 	// dynamic are the run-time command sources, after the built-ins.
 	dynamic []slashSource
 }
@@ -196,7 +198,8 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState) bool {
 	s := r.Style()
 	fields := strings.Fields(line)
-	env := &cmdEnv{ui: st.surface, r: r, st: st, pol: pol, sess: sess, dynamic: st.dynamic}
+	env := &cmdEnv{ui: st.surface, r: r, st: st, pol: pol, sess: sess, dynamic: st.dynamic,
+		modes: &cliModes{st: st, pol: pol}}
 	if env.ui == nil {
 		env.ui = ui.NewLineSurface(ui.LazyStdout{}, s, nil)
 	}
