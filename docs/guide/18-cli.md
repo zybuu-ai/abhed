@@ -101,7 +101,10 @@ The command reads the session's status as one JSON object on stdin:
 ```
 
 Its first line is shown after each task and in `/status`. It runs under the
-session's sandbox, with the same network setting, for at most 300 ms. Only
+process sandbox with the network off, whatever the session's tier or
+`sandbox.allow_network`, for at most 300 ms. Where the process sandbox is
+not available it does not run at all: the status line is empty and one
+warning says why. Only
 text and colour reach the terminal: a sequence that would move the cursor,
 clear the screen, set the title or write the clipboard is dropped. In a
 workspace's configuration it needs trust, like any other process.

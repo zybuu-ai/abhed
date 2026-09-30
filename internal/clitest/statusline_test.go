@@ -17,7 +17,7 @@ func TestStatuslineFromUserConfig(t *testing.T) {
 	t.Parallel()
 	h := StartRun(t, Opts{UserConfig: statuslineConfig, Cols: 120, Script: "text \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\""})
 	h.WaitText("Type a task")
-	// The first line may come before the sandbox is chosen, and is skipped.
+	// A few tasks, in case the first status line is slow to come.
 	for i := 1; i <= 5 && !strings.Contains(Strip(h.Output()), `"provider":"stub"`); i++ {
 		h.Settle()
 		h.Type("hi\r")

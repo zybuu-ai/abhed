@@ -466,8 +466,9 @@ All notable changes to Abhed are recorded here. The format follows
 - `statusline.command` runs a command of yours for the status line. It reads
   the session's status as JSON on stdin (model, provider, mode, context,
   tokens, sandbox, record, branch, background tasks) and its first line is
-  shown after each task and in `/status`. It runs under the session's
-  sandbox, with its network setting, for at most 300 ms, and only text and
+  shown after each task and in `/status`. It runs under the process
+  sandbox with the network off, whatever the session allows, for at most
+  300 ms, and not at all where that sandbox is missing. Only text and
   colour of its output reach the terminal. A workspace's statusline needs
   trust.
 
@@ -479,15 +480,16 @@ All notable changes to Abhed are recorded here. The format follows
   providers to move to, in order, when the model is unreachable or refuses
   access (401, 403, 404, 429, 5xx). The move is recorded as
   `model.fallback`. Only offered providers are used, and a managed
-  `model.default` is left only when the managed configuration names the
-  fallbacks too.
+  `model.default` is left only for the fallbacks the managed configuration
+  names; `-fallback-model` is then ignored with a warning.
 - `/status`: model, mode, sandbox, record, session, context, turn limit and
   its semantics, token budget, background tasks, workspace trust, and the
   managed settings. `/usage` (and `/cost`) adds prefill saving and a
   breakdown by subagent and tool source.
 - `/config` shows each setting and where it comes from; `/config set` writes
   a setting into your own `~/.abhed/config.json`. A change that lets the
-  agent do more asks first, and a managed setting is refused.
+  agent do more than your own file does asks first, even when the session
+  already does it, and a managed setting is refused.
 
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `memory.auto`,
@@ -503,7 +505,8 @@ All notable changes to Abhed are recorded here. The format follows
   need trust.
 - A first run on a terminal with no configuration offers to set one up: a
   local Ollama model, or an OpenAI-compatible endpoint by URL and the name
-  of the variable holding its key (a pasted key is refused). It checks the
+  of the variable holding its key (an answer that looks like a key is
+  refused, and a variable that is not set is taken only on a yes). It checks the
   model can call a tool, asks once about auto memory (No by default), and
   writes only `~/.abhed/config.json`, after confirming.
 - Headless runs read stdin. `cat build.log | abhed -p "why did this fail?"`

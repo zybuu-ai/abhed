@@ -1,12 +1,14 @@
 package app
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -57,6 +59,10 @@ type cliState struct {
 	registry *tools.Registry
 	// statuslineWarned is set once a failing statusline command was named.
 	statuslineWarned bool
+	// statuslineSB is the statusline's own sandbox, chosen at its first run.
+	statuslineOnce sync.Once
+	statuslineSB   sandbox.Sandbox
+	statuslineErr  error
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

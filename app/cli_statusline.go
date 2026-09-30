@@ -5,12 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -18,30 +22,35 @@ import (
 // every redraw of the status and must never hold the session.
 const statuslineTimeout = 300 * time.Millisecond
 
-// errSandboxNotChosen is a status line skipped because the sandbox it must
-// run under is still being chosen; the next one runs it.
-var errSandboxNotChosen = errors.New("the sandbox is still being chosen")
-
 // statuslineMax bounds what is read of its output.
 const statuslineMax = 4 << 10
 
+// processSandbox builds the statusline's backend; a test replaces it.
+var processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return sandbox.NewProcess(p) }
+
+// statuslineSandbox is where the statusline command runs: the process tier
+// with the network off, whatever the session's tier and network setting.
+// Where that tier is missing it is refused rather than run unsandboxed.
+func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, error) {
+	p, err := sandboxconfig.Policy(cfg, workspace)
+	if err != nil {
+		return nil, err
+	}
+	p.MinTier = sandbox.TierProcess
+	p.AllowNetwork = false
+	sb := processSandbox(p)
+	if ok, why := sb.Available(); !ok {
+		return nil, fmt.Errorf("not run: it runs only under the process sandbox, which is not available here (%s)", why)
+	}
+	return sb, nil
+}
+
 // runStatusline runs the configured statusline command with the status as
-// JSON on stdin and returns its first line, sanitized. It runs under the
-// session's sandbox: the same tier, the same network setting and the same
-// workspace-scoped writes as the agent's own commands. A workspace's
+// JSON on stdin and returns its first line, sanitized. A workspace's
 // statusline reaches here only once the workspace is trusted.
-func runStatusline(ctx context.Context, sb *lazySandbox, cwd, command string, m ui.StatusModel) (string, error) {
+func runStatusline(ctx context.Context, sb sandbox.Sandbox, cwd, command string, m ui.StatusModel) (string, error) {
 	if strings.TrimSpace(command) == "" || sb == nil {
 		return "", nil
-	}
-	// Commands wait for the sandbox to be chosen; a status line waits a
-	// second at most, apart from its own time limit.
-	select {
-	case <-sb.done:
-	case <-time.After(time.Second):
-		return "", errSandboxNotChosen
-	case <-ctx.Done():
-		return "", ctx.Err()
 	}
 	ctx, cancel := context.WithTimeout(ctx, statuslineTimeout)
 	defer cancel()
@@ -150,9 +159,10 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	if cmd == "" {
 		return ""
 	}
-	line, err := runStatusline(ctx, c.sandbox, c.workspace, cmd, c.statusModel(mode))
-	if errors.Is(err, errSandboxNotChosen) {
-		return ""
+	c.statuslineOnce.Do(func() { c.statuslineSB, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace) })
+	line, err := "", c.statuslineErr
+	if err == nil {
+		line, err = runStatusline(ctx, c.statuslineSB, c.workspace, cmd, c.statusModel(mode))
 	}
 	if err != nil {
 		if !c.statuslineWarned {
