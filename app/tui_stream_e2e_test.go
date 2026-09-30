@@ -8,10 +8,9 @@ import (
 	"time"
 )
 
-// Audit #1: the reply was drawn only at each newline, so a paragraph
-// streamed as a blank screen for as long as it took. Now each fragment is on
-// screen as it arrives: while the stub is still writing, what it has written
-// is visible.
+// A reply drawn only at each newline shows a paragraph as a blank screen
+// for as long as it takes to stream. Each fragment is on screen as it
+// arrives: while the stub is still writing, what it has written is visible.
 func TestTUIStreamsTokenByToken(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 100, 30)
@@ -42,7 +41,7 @@ func TestTUIStreamsTokenByToken(t *testing.T) {
 }
 
 // The first fragment is on screen within 50 ms of the model sending it
-// (plan §3.4), measured from the stub's write to the pty's read.
+// (the latency budget), measured from the stub's write to the pty's read.
 func TestTUIFirstTokenLatency(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 100, 30)
@@ -68,7 +67,7 @@ func TestTUIFirstTokenLatency(t *testing.T) {
 }
 
 // The activity line goes the moment the reply starts and leaves nothing
-// behind: no spinner frame or verb in the transcript (audit #16).
+// behind: no spinner frame or verb in the transcript.
 func TestTUISpinnerLeavesNoFrames(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 100, 30)
@@ -87,9 +86,9 @@ func TestTUISpinnerLeavesNoFrames(t *testing.T) {
 	}
 }
 
-// Audit #13: markdown in a streamed reply rendered a line at a time — a
-// fence was never a block, headings were upper-cased, prose was cut
-// mid-word by the terminal.
+// Markdown in a streamed reply renders as markdown: a fence is a block,
+// headings keep their case, and prose wraps between words rather than being
+// cut mid-word by the terminal.
 func TestTUIStreamedMarkdown(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 80, 40)

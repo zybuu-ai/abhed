@@ -15,7 +15,7 @@ import (
 
 // tuiStub is a scripted OpenAI-compatible model for the terminal tests. What
 // it does is chosen by a keyword in the latest user message, and by how many
-// tool results have come back since, so a scenario reads like the audit's:
+// tool results have come back since, so a scenario reads like a script:
 // "please edit" reads the file, then edits it, then says it is done.
 //
 // It streams: each chunk is flushed as it is written, and the time the first

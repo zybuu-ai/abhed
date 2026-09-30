@@ -16,10 +16,10 @@ func fileHas(t *testing.T, path, prefix string) bool {
 	return err == nil && strings.HasPrefix(string(data), prefix)
 }
 
-// S1, through the whole program: ↓ then Enter within milliseconds of the
-// dialog appearing approved an edit in the WIP branch. Here it does nothing;
-// a deliberate key later approves, and the dialog, its diff and its answer
-// stay in the transcript (audit #5, #9).
+// Through the whole program: ↓ then Enter within milliseconds of the dialog
+// appearing, as typing meant for the prompt would send, does nothing. A
+// deliberate key later approves, and the dialog, its diff and its answer stay
+// in the transcript.
 func TestTUIApprovalRaceAndRecord(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 80, 34)

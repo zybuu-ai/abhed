@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// Audit #9 and #11: an edit showed only old and new strings, no context or
-// line numbers, and after it was applied only "Edited hello.txt" remained;
-// paths were absolute everywhere. In accept-edits mode, where nothing is
-// asked, the diff is drawn under the call and stays in the transcript.
+// An edit shows a diff with context and line numbers, not just its old and
+// new strings, and paths relative to the workspace. In accept-edits mode,
+// where nothing is asked, the diff is drawn under the call and stays in the
+// transcript rather than only "Edited hello.txt".
 func TestTUIEditDiffStaysInTheTranscript(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 80, 30, "-mode", "accept-edits")
@@ -61,9 +61,8 @@ func TestTUIWriteShowsTheNewFile(t *testing.T) {
 	}
 }
 
-// Audit #10: a successful command showed only "exit 0", with no preview and
-// no way to see the output. Its first and last lines show, with the count
-// between, and Ctrl-O shows all of it.
+// A successful command shows more than "exit 0": its first and last
+// lines, with the count between, and Ctrl-O shows all of it.
 func TestTUICommandOutputPreviewExpands(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 80, 30, "-allow", "bash(seq *)")

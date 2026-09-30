@@ -120,7 +120,7 @@ func TestDialogBareEnterNeverApproves(t *testing.T) {
 	}
 }
 
-// S1: ↓ then Enter within 10, 100 or 290 ms of the dialog appearing does not
+// ↓ then Enter within 10, 100 or 290 ms of the dialog appearing does not
 // answer it — nor does any other key in that time.
 func TestDialogIgnoresEveryKeyAtFirst(t *testing.T) {
 	for _, at := range []time.Duration{10, 100, 290} {

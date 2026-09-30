@@ -20,9 +20,9 @@ func ruleRows(screen string) int {
 	return n
 }
 
-// The WIP branch left a copy of the old dock above the new one after the
-// terminal shrank (audit §4). A resize, down to 40 columns and back up,
-// leaves exactly one dock and the transcript rewrapped for the new width.
+// A resize, down to 40 columns and back up, leaves exactly one dock — no
+// copy of the old one above the new — and the transcript rewrapped for the
+// new width.
 func TestTUIResizeLeavesNoGhost(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 60, 24)

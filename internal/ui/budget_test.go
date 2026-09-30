@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// The redraw budgets (plan §3.4): typing at the end of the line at an idle
+// The redraw budgets: typing at the end of the line at an idle
 // prompt is at most 64 bytes a key; a mid-line edit at most 256; typing
 // during a turn, with the activity line running, at most 160. Redrawing the
-// whole dock on every key cost 833 to 1,386 bytes (audit §3).
+// whole dock on every key cost 833 to 1,386 bytes.
 func TestKeystrokeByteBudgets(t *testing.T) {
 	measure := func(g *rig, keys string) (mean float64, worst int64) {
 		var total int64
@@ -59,7 +59,7 @@ func TestKeystrokeByteBudgets(t *testing.T) {
 }
 
 // The spinner is at most ten frames a second and each frame is small: it
-// rewrites the glyph, not the line (plan §3.4: ≤ 120 B a frame).
+// rewrites the glyph, not the line (at most 120 B a frame).
 func TestSpinnerFrameBudget(t *testing.T) {
 	g := newRig(t, 100, 30)
 	g.lr.Quiet(true)

@@ -7,7 +7,7 @@ import (
 
 // Every colour a theme uses for text reads on the background it is meant
 // for: 3:1 at least (the large-text and interface minimum), 4.5:1 for the
-// high-contrast theme. Plain yellow and dim on white failed this (audit #20).
+// high-contrast theme. Plain yellow and dim on white fail this.
 func TestThemeContrast(t *testing.T) {
 	bgs := map[string]float64{"dark": luminance(0, 0, 0), "light": luminance(1, 1, 1),
 		"high-contrast": luminance(0, 0, 0), "colorblind": luminance(0, 0, 0)}

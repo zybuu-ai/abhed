@@ -195,7 +195,7 @@ func breakWord(word string, width int) []string {
 	return append(out, word)
 }
 
-// viewBlock wraps something the terminal draws in the I0 Block the Surface
+// viewBlock wraps something the terminal draws in the Block the Surface
 // carries.
 func viewBlock(v block) Block { return Block{Kind: BlockNotice, view: v} }
 

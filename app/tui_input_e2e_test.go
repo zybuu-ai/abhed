@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Audit #3: non-ASCII reached the model corrupted, one character per byte.
+// Non-ASCII reaches the model intact, not one garbage character per byte.
 func TestTUIUnicodeReachesTheModelIntact(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 100, 30)
@@ -20,8 +20,8 @@ func TestTUIUnicodeReachesTheModelIntact(t *testing.T) {
 	}
 }
 
-// Audit #2: at 40 columns a long prompt was printed again on every key,
-// nine copies down the screen.
+// At 40 columns a long prompt wraps in place: it is not printed again on
+// every key, copy after copy down the screen.
 func TestTUILongPromptAtFortyColumns(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 40, 20)
@@ -40,8 +40,8 @@ func TestTUILongPromptAtFortyColumns(t *testing.T) {
 	}
 }
 
-// Audit #4: a 25-line paste became one prompt plus 24 steering messages.
-// Bracketed or not, it is one prompt.
+// A 25-line paste is one prompt, bracketed or not: never one prompt plus a
+// steering message per line.
 func TestTUIPasteIsOnePrompt(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 25; i++ {
@@ -81,8 +81,8 @@ func TestTUIPasteIsOnePrompt(t *testing.T) {
 	}
 }
 
-// Audit #6: Esc did not interrupt and ate the next key, so "/cost" after it
-// went to the model as "cost".
+// Esc interrupts and does not eat the next key: "/cost" after it must not
+// reach the model as "cost".
 func TestTUIEscInterruptsAndTheNextKeyCounts(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 100, 30)
@@ -109,7 +109,7 @@ func TestTUIEscInterruptsAndTheNextKeyCounts(t *testing.T) {
 	}
 }
 
-// Audit #7: typing during a turn was invisible.
+// Typing during a turn is visible.
 func TestTUITypingDuringATurnIsVisible(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	r := startTUI(t, stub, ws, 100, 30)

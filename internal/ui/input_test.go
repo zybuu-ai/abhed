@@ -11,7 +11,7 @@ import (
 )
 
 // Non-ASCII arrived at the model as one garbage character per byte:
-// "héllo wörld 你好" became "hÃ©llo wÃ¶rld ä½å¥½" (audit #3).
+// "héllo wörld 你好" became "hÃ©llo wÃ¶rld ä½å¥½".
 func TestUnicodeRoundTrips(t *testing.T) {
 	g := newRig(t, 80, 24)
 	want := "héllo wörld 你好 — “quotes” 🙂 👩‍👩‍👧 🇮🇳 e\u0301"
@@ -89,8 +89,8 @@ func TestMultilineInput(t *testing.T) {
 	}
 }
 
-// A bracketed paste is one prompt, shown as a placeholder, sent whole
-// (audit #4: a 25-line paste became one prompt plus 24 steering messages).
+// A bracketed paste is one prompt, shown as a placeholder, sent whole:
+// never one prompt followed by a steering message per line.
 func TestBracketedPasteIsOnePrompt(t *testing.T) {
 	g := newRig(t, 80, 24)
 	var lines []string
@@ -213,7 +213,7 @@ func TestReverseSearch(t *testing.T) {
 }
 
 // Esc stops a running turn, and the key after it is its own key: "/cost"
-// after Esc was sent to the model as "cost" (audit #6).
+// after Esc must not reach the model as "cost".
 func TestEscInterruptsAndNeverEatsTheNextKey(t *testing.T) {
 	g := newRig(t, 80, 24)
 	g.lr.Quiet(true)
@@ -359,7 +359,7 @@ func TestVimMode(t *testing.T) {
 }
 
 // A prompt longer than the terminal is wide wraps in place: at 40 columns
-// the audit saw the same line printed nine times down the screen (#2).
+// the same line must not be printed again down the screen on every key.
 func TestLongPromptWrapsOnce(t *testing.T) {
 	g := newRig(t, 40, 20)
 	text := "type a fairly long line of input text " + strings.Repeat("abc ", 40) + "END"

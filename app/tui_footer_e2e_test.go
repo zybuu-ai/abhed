@@ -23,8 +23,7 @@ func footerRows(r *tuiRun) string {
 }
 
 // The footer shows the model, the mode, how full the context is, the
-// session's tokens and where the session is; /model changes it at once (the
-// WIP branch's footer went stale).
+// session's tokens and where the session is; /model changes it at once.
 func TestTUIFooterShowsTheSession(t *testing.T) {
 	stub, ws := tuiWorkspace(t, "")
 	if err := os.MkdirAll(filepath.Join(ws, ".git"), 0o700); err != nil {
@@ -54,7 +53,7 @@ func TestTUIStatusLineCommand(t *testing.T) {
 	r.waitFor("the custom status line", false, func(s string) bool { return strings.Contains(s, "custom status line") })
 }
 
-// S7: Shift-Tab steps through default, accept-edits and plan and never
+// Shift-Tab steps through default, accept-edits and plan and never
 // reaches auto or bypass, however often it is pressed; the mode is always
 // on screen.
 func TestTUIShiftTabNeverReachesAuto(t *testing.T) {
