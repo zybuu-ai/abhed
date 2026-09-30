@@ -401,6 +401,11 @@ func (k K8sConfig) validateClusters() error {
 		if strings.TrimSpace(c.Name) == "" || c.Name != strings.TrimSpace(c.Name) {
 			return fmt.Errorf("k8s.clusters[%d]: name is required, without surrounding spaces", i)
 		}
+		// Rules and "always allow" read a call as cluster/namespace/verb, and
+		// a kubeconfig context as context:NAME.
+		if strings.ContainsAny(c.Name, "/:*?") {
+			return fmt.Errorf("k8s.clusters %q: a name cannot hold / : * or ?, which permission rules on it use", c.Name)
+		}
 		if prev, dup := seen[strings.ToLower(c.Name)]; dup {
 			return fmt.Errorf("k8s.clusters: %q and %q name the same cluster", prev, c.Name)
 		}

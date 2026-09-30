@@ -992,6 +992,15 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// Before policy, approval, the record and history see it: a credential
 	// where a secret's name belongs is never kept.
 	canon = tools.WithholdSecretValues(tool, canon)
+	// A destination the call leaves to the session is named before policy
+	// judges it, so a rule on it holds and the approval covers only it.
+	if r, ok := tool.(tools.ArgResolver); ok {
+		if resolved := r.ResolveArgs(l.Session, canon); resolved != nil {
+			if again, _, err := tools.CanonicalArgs(tool, resolved); err == nil {
+				canon = again
+			}
+		}
+	}
 	c.Args, call.Args = canon, canon
 
 	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)

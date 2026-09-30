@@ -128,17 +128,50 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 		return l.cluster(m.cfg, clusterName)
 	}
 	if ctxName == "" && l != nil {
-		// With no context named, a single login is the default, as it was
-		// the reason for logging in; several need one named.
-		if name, n := l.only(); n == 1 {
-			return l.cluster(m.cfg, name)
-		} else if n > 1 {
+		// ResolveArgs names a single login before policy judges the call, so
+		// an unnamed call here was judged as going to the kubeconfig: one
+		// that meets a login made since, or several, is refused, not guessed.
+		if _, n := l.only(); n > 1 {
 			return nil, fmt.Errorf("this session is logged in to more than one cluster; name one "+
 				"as cluster (%s), or a kubeconfig context", strings.Join(l.names(), ", "))
+		} else if n == 1 {
+			return nil, fmt.Errorf("this session is logged in to cluster %s; name it as cluster, "+
+				"or name a kubeconfig context", strings.Join(l.names(), ", "))
 		}
 	}
 
 	return m.kubeClient(ctxName)
+}
+
+// resolve names the session's only login as the call's cluster when the call
+// names neither a cluster nor a context, as the model is told it may do.
+func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage) json.RawMessage {
+	if m == nil || sess == nil {
+		return nil
+	}
+	args, err := tools.DecodeArgs(raw)
+	if err != nil {
+		return nil
+	}
+	for _, key := range []string{"cluster", "context"} {
+		if v, ok := tools.Lookup(args, key); ok && v != "" {
+			return nil
+		}
+	}
+	l := m.logins(sess, false)
+	if l == nil {
+		return nil
+	}
+	name, n := l.only()
+	if n != 1 {
+		return nil
+	}
+	args["cluster"] = name
+	out, err := json.Marshal(args)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // kubeClient returns the operator's client for a kubeconfig context, opened
@@ -170,10 +203,8 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 	}
 	l := m.logins(sess, false)
 	if clusterName == "" && ctxName == "" && l != nil {
-		if name, n := l.only(); n == 1 {
-			clusterName = name
-		} else if n > 1 {
-			return "names no cluster while this session is logged in to several, so the call will be refused"
+		if _, n := l.only(); n > 0 {
+			return "names no cluster while this session is logged in, so the call will be refused"
 		}
 	}
 	if clusterName != "" && ctxName == "" {
@@ -266,6 +297,12 @@ func (l *logins) cluster(cfg Config, name string) (*Cluster, error) {
 // ---------------------------------------------------------------- read tool
 
 type GetTool struct{ M *Manager }
+
+// ResolveArgs names the session's only login when the call names no cluster
+// or context, so policy judges the cluster the call reads.
+func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) json.RawMessage {
+	return t.M.resolve(sess, raw)
+}
 
 func (GetTool) Name() string  { return "k8s_get" }
 func (GetTool) Mutates() bool { return false }
@@ -366,6 +403,12 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 // ---------------------------------------------------------------- write tool
 
 type ApplyTool struct{ M *Manager }
+
+// ResolveArgs names the session's only login when the call names no cluster
+// or context, so policy judges the cluster the call changes.
+func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) json.RawMessage {
+	return t.M.resolve(sess, raw)
+}
 
 func (ApplyTool) Name() string { return "k8s_apply" }
 

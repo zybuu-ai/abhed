@@ -348,6 +348,9 @@ func TestK8sClustersAreValidatedAtLoad(t *testing.T) {
 		"query":       {{Name: "a", Server: "https://x.example/?access_token=t"}},
 		"fragment":    {{Name: "a", Server: "https://x.example/#t"}},
 		"not a url":   {{Name: "a", Server: "x.example"}},
+		"slash":       {{Name: "prod/east", Server: "https://x.example"}},
+		"colon":       {{Name: "context:prod", Server: "https://x.example"}},
+		"wildcard":    {{Name: "prod*", Server: "https://x.example"}},
 	} {
 		c := Default()
 		c.K8s.Clusters = clusters

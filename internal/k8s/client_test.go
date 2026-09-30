@@ -285,7 +285,7 @@ func TestLoginOverridesStaleKubeconfig(t *testing.T) {
 	}
 
 	// After login: the same call succeeds, using the new credential.
-	res = GetTool{M: mgr}.Run(context.Background(), sess, args)
+	res = GetTool{M: mgr}.Run(context.Background(), sess, resolved(t, GetTool{M: mgr}, sess, args))
 	if res.IsError {
 		t.Fatalf("still failing after login: %s", res.Content)
 	}

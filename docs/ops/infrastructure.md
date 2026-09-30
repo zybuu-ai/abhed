@@ -119,8 +119,8 @@ is the login made with it.
 
 After logging in, name the cluster on each call: `k8s_get` and `k8s_apply`
 take `cluster`, a declared cluster this session logged in to. With a single
-login and no `cluster` or `context`, that login is used; with several, the
-call must name one. A kubeconfig `context` always uses the kubeconfig's own
+login and no `cluster` or `context`, that login is used, and the call is
+recorded as naming it; with several, the call must name one. A kubeconfig `context` always uses the kubeconfig's own
 credential: a login token is never put on a kubeconfig client, whose TLS
 settings and exec credential are not the ones the login was approved with.
 A session's logins close their connections when it is deleted.
@@ -128,6 +128,29 @@ A session's logins close their connections when it is deleted.
 The approval for a `k8s_apply` write names the cluster and server it changes
 and whose credential it uses: this session's login, with how TLS is checked,
 or a kubeconfig context and the kubeconfig's own credential.
+
+### Rules on a cluster
+
+Permission rules and "always allow" read these tools by where the call goes.
+`k8s_login` reads as the cluster's name; `k8s_get` as
+`cluster/namespace/resource` and `k8s_apply` as `cluster/namespace/action`.
+A kubeconfig context reads as `context:NAME`, and the current context as
+`context:`. An empty namespace is the call's default: the login's or
+the kubeconfig's, or for `apply` the manifest's own. A call that names no
+cluster while the session has one login is judged, approved and recorded as
+a call to that cluster.
+
+```json
+"deny":  ["k8s_login(prod)", "k8s_apply(prod/*)", "k8s_get(*/kube-system/secrets)"],
+"allow": ["k8s_login(lab)", "k8s_apply(lab/*/restart)"]
+```
+
+"Always allow" on a login is offered as `k8s_login(lab)`, and on a write as
+`k8s_apply(lab/demo/delete)`, so a choice made for one cluster never
+approves a call to another. Deny and ask rules written on the resource, the
+action or the namespace alone, such as `k8s_get(secrets*)`, still apply;
+allow rules must name the cluster first. A cluster's name cannot hold
+`/`, `:`, `*` or `?`.
 
 **Do not expect `oc login` through bash to work.** Three separate things stop
 it, and the combination produced a confusing failure in practice:

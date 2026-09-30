@@ -207,6 +207,20 @@ All notable changes to Abhed are recorded here. The format follows
     denied, refused in plan mode or rejected runs no helper.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
+  - Permission rules and "always allow" read `k8s_login` by its namespace,
+    or by nothing when none was given, not by where the token went. A rule
+    naming a cluster, such as `deny k8s_login(prod)`, never fired, and
+    "always allow" on a login to one cluster offered `k8s_login(NAMESPACE)`
+    or the whole tool, and then approved logins to every other cluster
+    without asking. `k8s_get` and `k8s_apply` were read by resource and
+    action alone, so "always allow" on a write to one cluster covered the
+    same write to every cluster. Affected: 0.1.0 through 1.2.1. These tools
+    are now read by cluster first: `k8s_login(prod)`,
+    `k8s_get(prod/NAMESPACE/RESOURCE)` and
+    `k8s_apply(prod/NAMESPACE/ACTION)`, a kubeconfig context as
+    `context:NAME`. A call that names no cluster while the session has one
+    login is judged and recorded as naming it, and one judged as going to
+    the kubeconfig is refused if a login was made in between. See Upgrading.
 
 ### Upgrading
 
@@ -371,6 +385,13 @@ All notable changes to Abhed are recorded here. The format follows
   `.abhed/config.json` are ignored. A configuration whose clusters repeat a
   name, leave one empty, or give a server that is not `https://`, or that
   carries a user or password, is refused when it loads.
+- Rules on `k8s_login`, `k8s_get` and `k8s_apply` read the cluster first
+  (see [Rules on a cluster](docs/ops/infrastructure.md#rules-on-a-cluster)).
+  An allow rule written on a namespace, resource or action alone, such as
+  `allow k8s_login(demo)` or `allow k8s_apply(scale)`, no longer approves
+  anything; write `k8s_login(lab)` or `k8s_apply(lab/*/scale)`. Deny and ask
+  rules written that way still apply. A `k8s.clusters` name holding `/`,
+  `:`, `*` or `?` is refused when the configuration loads.
 - After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
   the kubeconfig's own credential, not the login. Name the logged-in
   cluster as `cluster` instead. A session logged in to several clusters

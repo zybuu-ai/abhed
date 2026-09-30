@@ -51,6 +51,14 @@ type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
 }
 
+// ArgResolver fills in what a call leaves to the session, such as the one
+// cluster it logged in to, so that policy, the approver and the record judge
+// the destination the call will use. The loop runs it before policy and runs
+// the tool with what it returns; nil keeps the arguments as they are.
+type ArgResolver interface {
+	ResolveArgs(sess *Session, args json.RawMessage) json.RawMessage
+}
+
 // Targeter names where a call sends what it carries, such as the server a
 // credential goes to, when the arguments alone do not show it. The person
 // approving the call and the record both get it.

@@ -330,7 +330,42 @@ func (e *Engine) Screens(tool string) bool {
 // needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
 func Subject(tool string, args json.RawMessage) string {
 	_, s, _ := subjectOf(args)
+	if target, ok := clusterSubject(tool, args); ok {
+		return target
+	}
 	return s
+}
+
+// clusterSubject is the subject of a Kubernetes tool, which names where the
+// call goes first: the declared cluster, or `context:NAME` for a kubeconfig
+// context (`context:` for the current one). k8s_login's subject is the
+// cluster; k8s_get's is cluster/namespace/resource and k8s_apply's
+// cluster/namespace/action, with an empty namespace for the call's default.
+// So a rule or an "always allow" on one cluster never covers another.
+func clusterSubject(tool string, args json.RawMessage) (string, bool) {
+	if tool != "k8s_login" && tool != "k8s_get" && tool != "k8s_apply" {
+		return "", false
+	}
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", false
+	}
+	str := func(key string) string {
+		v, _ := tools.Lookup(m, key)
+		s, _ := v.(string)
+		return s
+	}
+	where := strings.TrimSpace(str("cluster"))
+	if where == "" {
+		where = "context:" + str("context")
+	}
+	switch tool {
+	case "k8s_get":
+		return where + "/" + str("namespace") + "/" + str("resource"), true
+	case "k8s_apply":
+		return where + "/" + str("namespace") + "/" + str("action"), true
+	}
+	return where, true
 }
 
 // subjectOf is Subject with the argument it came from. Arguments are decoded
@@ -449,6 +484,17 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		narrowAllows = !hasShellControl(subject)
 	case key == "path" && e.pathRules(tool):
 		subjects, allowSubjects = e.pathSubjects(subject)
+	}
+	// A Kubernetes call is judged on where it goes. Deny and ask rules also
+	// see the argument its subject used to be, so a rule written on a
+	// resource, a verb or a namespace still holds; allow rules and the
+	// offered scope see only the cluster-first subject.
+	if target, ok := clusterSubject(tool, args); ok {
+		subjects, allowSubjects = []string{target}, []string{target}
+		if subject != "" && subject != target {
+			subjects = append(subjects, subject)
+		}
+		subject, narrowAllows = target, !strings.ContainsAny(target, "\n\r")
 	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
