@@ -227,7 +227,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				if msg == "" {
 					continue
 				}
-				if strings.HasPrefix(msg, "/") {
+				if isCommandLine(msg) {
 					// A command typed mid-run is held, not dropped. Discarding
 					// it loses what the user asked for, and running it now
 					// would act on a session that is still changing under it.
@@ -270,7 +270,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// order it was typed.
 		for _, cmd := range queued {
 			fmt.Printf("%s%s\n", ui.Prompt(s), cmd)
-			if quit := handleCommand(ctx, cmd, r, pol, sess, sessionState); quit {
+			if quit := dispatchLine(ctx, cmd, r, pol, sess, sessionState); quit {
 				return 0, true
 			}
 		}
@@ -346,34 +346,25 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if bare := strings.ToLower(strings.TrimSpace(line)); bare == "exit" || bare == "quit" {
 			line = "/" + bare
 		}
-		if strings.HasPrefix(line, "/") {
-			if quit := handleCommand(ctx, line, r, pol, sess, sessionState); quit {
+		if isCommandLine(line) {
+			if quit := dispatchLine(ctx, line, r, pol, sess, sessionState); quit {
 				return 0
 			}
 			continue
 		}
 
 		turn++
-		if err := claimResumed(ctx, sessionState); err != nil {
+		if err := ensureConversation(ctx, sessionState); err != nil {
 			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
 			continue
 		}
-		if err := recordMove(sessionState); err != nil {
-			fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
+		// @ mentions are attached through the session's policy (input track).
+		task, ok := expandForTurn(ctx, sessionState, r, line)
+		if !ok {
 			continue
 		}
-		if sessionState.loop == nil {
-			id := newConversationID()
-			// The session state's config: /model changes which provider it names.
-			if err := recordSession(ctx, store, id, sessionState.appCfg); err != nil {
-				fmt.Printf("  %s not started: %v\n", s.Red("✕"), err)
-				continue
-			}
-			sessionState.open(id)
-		}
-		task := line
 		if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
-			return loop.Run(ctx, task)
+			return loop.RunMessage(ctx, task)
 		}); quit {
 			return code
 		}
