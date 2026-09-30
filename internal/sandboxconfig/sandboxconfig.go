@@ -55,9 +55,21 @@ func StatePaths(cfg config.Config, workspace string) []string {
 		out = append(out, path)
 	}
 	// The local record, when the managed configuration moves it out of
-	// ~/.abhed: the agent can neither read nor write it.
-	if cfg.Record.Dir != "" {
-		out = append(out, cfg.Record.Dir)
+	// ~/.abhed, or when ~/.abhed/records is a link to somewhere else: the
+	// agent can neither read nor write it where it really is.
+	records := cfg.Record.Dir
+	if records == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			records = filepath.Join(home, ".abhed", "records")
+		}
+	}
+	if records != "" {
+		if cfg.Record.Dir != "" {
+			out = append(out, records)
+		}
+		if real, err := filepath.EvalSymlinks(records); err == nil && real != records {
+			out = append(out, real)
+		}
 	}
 	return out
 }

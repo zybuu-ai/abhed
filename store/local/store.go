@@ -117,8 +117,19 @@ func Open(opts Options) (*Store, error) {
 	if err := checkID("tenant", tenant); err != nil {
 		return nil, err
 	}
+	if err := privateDir(root); err != nil {
+		return nil, err
+	}
+	// A records directory that is a link is used, and protected, by where it
+	// really is; the folders inside it may not be links.
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		root = real
+	}
 	dir := filepath.Join(root, tenant)
-	for _, d := range []string{root, dir, filepath.Join(dir, "head"), filepath.Join(dir, "locks"), filepath.Join(dir, "blobs")} {
+	for _, d := range []string{dir, filepath.Join(dir, "head"), filepath.Join(dir, "locks"), filepath.Join(dir, "blobs")} {
+		if info, err := os.Lstat(d); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%s is a link; the record's folders must be its own", d)
+		}
 		if err := privateDir(d); err != nil {
 			return nil, err
 		}

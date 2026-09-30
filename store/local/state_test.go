@@ -19,7 +19,7 @@ func TestAgentCannotReachTheRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if want := filepath.Join(home, ".abhed", "records"); s.Dir() != want {
+	if want, _ := filepath.EvalSymlinks(filepath.Join(home, ".abhed", "records")); s.Dir() != want {
 		t.Fatalf("default dir %s, want %s", s.Dir(), want)
 	}
 	record(t, s, "s-1", "a secret plan")

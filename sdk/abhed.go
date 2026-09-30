@@ -252,6 +252,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}}
 	}
 
+	// The record Options.Store names is state, as a managed record.dir is.
+	if cfg, err = withRecordState(cfg, opts); err != nil {
+		return nil, err
+	}
 	provider, err := cfg.Provider()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)

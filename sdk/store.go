@@ -6,6 +6,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -31,6 +32,23 @@ func OpenLocalRecord(dir, tenant string) (*local.Store, error) {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	return local.Open(local.Options{Dir: dir, Tenant: tenant, User: "embedded", Redact: red})
+}
+
+// withRecordState makes the local record an agent is given Abhed's state
+// for that agent: its real directory is where record.dir points, so the
+// file tools, the server's readers and every sandbox tier refuse it, and a
+// directory the agent's commands could reach (the workspace, an added
+// directory, a temp folder or a cache) is refused outright.
+func withRecordState(cfg config.Config, opts Options) (config.Config, error) {
+	rec, ok := opts.Store.(*local.Store)
+	if !ok {
+		return cfg, nil
+	}
+	cfg.Record.Dir = rec.Dir()
+	if err := sandboxconfig.CheckStatePaths(cfg, opts.Workspace); err != nil {
+		return cfg, fmt.Errorf("abhed: the record at %s: %w", rec.Dir(), err)
+	}
+	return cfg, nil
 }
 
 // sessionReleaser is a store that holds a writer's lock on a session, as
