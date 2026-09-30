@@ -101,6 +101,14 @@ const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); 
 	}
 }
 
+// An approval card and a call row name what the call is about: a web_fetch
+// by its URL, not its arguments as JSON.
+func TestIDENamesACallBySubject(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-subject", "", "ide_subject_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's call subjects failed:\n%s", out)
+	}
+}
+
 // New file in a just-opened folder keeps its name input when the folder's
 // listing arrives after it; the removal used to race the input's blur.
 func TestIDENewFileSurvivesTheFolderLoading(t *testing.T) {

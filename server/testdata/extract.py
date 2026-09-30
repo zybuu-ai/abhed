@@ -51,6 +51,7 @@ sets = {
     'ide-tree': ['const el = (tag, cls, text) => {','const clear = ','const parentOf = ','const joinPath = ','const dirs = ','const heldLoads = ',
           'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
           'async function newEntry(folder){'],
+    'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
     'ide-render': ['const el = (tag, cls, text) => {','function render(ev){','function subagentRow(id, p, at){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],

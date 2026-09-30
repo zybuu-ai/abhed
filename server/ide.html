@@ -1337,7 +1337,7 @@ function tail(p){ const parts = p.split('/').filter(Boolean); return parts.lengt
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
-  if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
+  if(args.url) return args.url; if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
   const s = JSON.stringify(args); return s === '{}' ? '' : s;
 }
 // The line under the conversation that says what the agent is doing, and for how long.
