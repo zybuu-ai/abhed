@@ -216,7 +216,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		prompt := f.task()
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
-		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, stdinIsPipe(), os.Stderr); err != nil {
+		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, f.readsStdin() && stdinIsPipe(), os.Stderr); err != nil {
 			if code, stopped := stopCode(ctx); stopped {
 				return code
 			}
@@ -375,7 +375,7 @@ func checkHeadlessFlags(f *cliFlags) int {
 	switch {
 	case !f.print.on && f.jsonSchema != "":
 		return bad("-json-schema needs -p: a structured answer is for a script")
-	case !f.print.on && f.inputFormat != "text":
+	case !f.print.on && f.inputFormat == "stream-json":
 		return bad("-input-format stream-json needs -p")
 	case !f.print.on && f.format != "text":
 		return bad("-output-format " + f.format + " needs -p")

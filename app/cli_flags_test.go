@@ -191,3 +191,24 @@ func TestRulesKeepCommasInParentheses(t *testing.T) {
 		}
 	}
 }
+
+// A task alone leaves stdin alone; no task, "-" or -input-format reads it.
+func TestReadsStdin(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want bool
+		task string
+	}{
+		{[]string{"-p", "fix it"}, false, "fix it"},
+		{[]string{"-p"}, true, ""},
+		{[]string{"-p", "summarise", "-"}, true, "summarise"},
+		{[]string{"-p", "-", "summarise"}, true, "summarise"},
+		{[]string{"-p", "summarise", "-input-format", "text"}, true, "summarise"},
+		{[]string{"-p", "-input-format", "stream-json"}, true, ""},
+	} {
+		f := parse(t, c.args...)
+		if got := f.readsStdin(); got != c.want || f.task() != c.task {
+			t.Errorf("%q: reads %v, task %q", c.args, got, f.task())
+		}
+	}
+}

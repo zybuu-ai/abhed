@@ -7,17 +7,26 @@ Three ways to run Abhed without a person at the prompt.
 ```bash
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
 abhed -p "explain what pkg/auth does" -mode plan
-cat build.log | abhed -p "why did this fail?"
+cat build.log | abhed -p "why did this fail?" -
 abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
 `-p` (or `--print`) runs one task and exits. The task is the text after
-`-p`, stdin, or both: with both, stdin is added below the task as its
-input, so `cat build.log | abhed -p "summarise"` sends the log with the
-question. Stdin is read to its end, up to 10 MiB; after three seconds with
-the pipe still open Abhed says it is waiting, so a caller that leaves stdin
-open by mistake should redirect it from `/dev/null`. Flags may come before
-or after the task.
+`-p`, stdin, or both. With no task on the command line, stdin is the task.
+With one, stdin is read only when asked, by a lone `-` or by
+`-input-format text`: then it is added below the task as its input, so
+`cat build.log | abhed -p "summarise" -` sends the log with the question.
+A task alone leaves stdin untouched, so a loop that reads a list on stdin
+runs once per line:
+
+```bash
+while read f; do abhed -p "fix the lint errors in $f"; done < files.txt
+```
+
+Stdin is read to its end, up to 10 MiB; after three seconds with the pipe
+still open Abhed says it is waiting, so a caller that leaves stdin open by
+mistake should redirect it from `/dev/null`. Flags may come before or after
+the task.
 
 ### Output
 

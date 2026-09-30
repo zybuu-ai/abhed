@@ -49,16 +49,26 @@ func resultOf(t *testing.T, stdout string) map[string]any {
 	return res
 }
 
-// cat log | abhed -p "summarise": the log reaches the model with the task.
+// cat log | abhed -p "summarise" -: the log reaches the model with the task.
 func TestHeadlessStdinJoinsThePrompt(t *testing.T) {
 	t.Parallel()
-	h := piped(t, Opts{Args: []string{"-p", "summarise"}, Stdin: "line one of the log\nline two\n", Script: `text "summary"`})
+	h := piped(t, Opts{Args: []string{"-p", "summarise", "-"}, Stdin: "line one of the log\nline two\n", Script: `text "summary"`})
 	req := lastRequestText(t, h)
 	if !strings.Contains(req, "summarise") || !strings.Contains(req, "line two of the log") && !strings.Contains(req, "line two") {
 		t.Fatalf("the request lacks the task or the log:\n%s", req)
 	}
 	if !strings.Contains(h.Stdout(), "summary") {
 		t.Fatalf("stdout:\n%s", h.Stdout())
+	}
+}
+
+// A task on the command line leaves inherited stdin unread, so
+// `while read f; do abhed -p "fix $f"; done < list` runs once per line.
+func TestHeadlessTaskLeavesStdinAlone(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "fix a.go"}, Stdin: "b.go\nc.go\n", Script: `text "ok"`})
+	if req := lastRequestText(t, h); !strings.Contains(req, "fix a.go") || strings.Contains(req, "c.go") {
+		t.Fatalf("the rest of the list was read:\n%s", req)
 	}
 }
 

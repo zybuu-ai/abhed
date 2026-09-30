@@ -509,9 +509,10 @@ All notable changes to Abhed are recorded here. The format follows
   refused, and a variable that is not set is taken only on a yes). It checks the
   model can call a tool, asks once about auto memory (No by default), and
   writes only `~/.abhed/config.json`, after confirming.
-- Headless runs read stdin. `cat build.log | abhed -p "why did this fail?"`
-  sends the log below the task; with no task, stdin is the task. Flags may
-  follow the task, and `-p` alone takes the task from stdin.
+- Headless runs read stdin. `cat build.log | abhed -p "why did this fail?" -`
+  sends the log below the task (a lone `-`, or `-input-format text`, asks
+  for it; a task alone leaves stdin untouched, so a `while read` loop over a
+  list works). With no task, stdin is the task. Flags may follow the task.
 - A task on the command line opens an interactive session with it:
   `abhed "fix the tests"` or `abhed -- fix the tests`. A single bare word
   that is not a command is still refused, now with a hint.

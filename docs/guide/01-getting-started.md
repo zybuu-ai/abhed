@@ -139,7 +139,7 @@ ending the session; at the prompt it clears the line. Ctrl-D exits.
 ```bash
 abhed -p "explain what pkg/auth does" -mode plan
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
-git diff | abhed -p "review this change"
+git diff | abhed -p "review this change" -
 abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
