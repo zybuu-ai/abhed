@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 // bgModelServer is an OpenAI-compatible stub. A prompt starting "go" starts
@@ -294,5 +297,22 @@ func TestCLIRunLineSteersUnlessADecision(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "made-by-parent.txt")); err != nil {
 		t.Fatalf("the decision key did not answer the ask: %v\n%s", err, out.String())
+	}
+}
+
+// A wake the session started itself that finds its results already taken
+// prints nothing; any other error, and an explicit wake's, still print.
+func TestWakeWithNothingToDoIsSilent(t *testing.T) {
+	if got := runErrorLine(agent.ErrNothingToWake, true); got != "" {
+		t.Fatalf("a policy wake with nothing to do printed %q", got)
+	}
+	if got := runErrorLine(agent.ErrNothingToWake, false); got == "" {
+		t.Fatal("an explicit wake with nothing to do said nothing")
+	}
+	if got := runErrorLine(errors.New("model down"), true); got != "model down" {
+		t.Fatalf("a wake's real error: %q", got)
+	}
+	if runErrorLine(nil, false) != "" {
+		t.Fatal("no error printed a line")
 	}
 }

@@ -583,6 +583,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 	// runTurn drives one run: the prompt's own, or a wake. It returns an exit
 	// code and true when the session should end.
+	// woken marks the turn runTurn is running as a wake the session started
+	// itself, whose "nothing to wake for" is not the person's error.
+	woken := false
 	runTurn := func(start func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error)) (int, bool) {
 		loop := sessionState.loop
 		// Each task gets its own cancellable context so Ctrl-C interrupts the
@@ -690,9 +693,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		spent := usageSince(before, loop.Usage())
 		sessionState.accumulate(spent)
 
-		if runErr != nil {
-			fmt.Printf("%s %s\n", s.Red("error:"), runErr)
+		if line := runErrorLine(runErr, woken); line != "" {
+			fmt.Printf("%s %s\n", s.Red("error:"), line)
 		}
+		woken = false
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
 		if runReason == agent.TermMaxTurns {
@@ -757,6 +761,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				continue
 			}
 			prompted = false
+			woken = true
 			if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
 				return loop.RunWoken(ctx, agent.Wake{By: "policy", TaskIDs: ids})
 			}); quit {
@@ -3331,4 +3336,14 @@ func noteStillWaiting(p *ui.Prompter, line, became string) {
 		return
 	}
 	fmt.Printf("  an approval is still waiting (a accepts, r rejects, A always allows); %s\n", became)
+}
+
+// runErrorLine is what a turn's error prints, "" for none. A wake the
+// session started for results a prompted run has since taken finds nothing
+// to do; that is not an error to show.
+func runErrorLine(err error, woken bool) string {
+	if err == nil || woken && errors.Is(err, agent.ErrNothingToWake) {
+		return ""
+	}
+	return err.Error()
 }
