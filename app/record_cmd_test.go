@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
 )
@@ -141,5 +143,81 @@ func TestRecordPruneNeedsConfirmAndLeavesATombstone(t *testing.T) {
 	}
 	if code, _, _ := runRecord(t, ws, "prune"); code != 2 {
 		t.Fatal("prune with nothing named")
+	}
+}
+
+// A managed record.dir moves the record: sessions go there, the record
+// command reads there, and the directory is state the agent cannot reach.
+// The same key in the user's own file is set aside.
+func TestManagedRecordDirTakesEffect(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "org-records")
+	managedConfig(t, `{"record":{"dir":"`+dir+`"}}`)
+	ws := t.TempDir()
+	cfg, err := config.LoadWith(ws, config.LoadOptions{Quiet: true})
+	if err != nil || cfg.Record.Dir != dir {
+		t.Fatalf("record.dir = %q, %v", cfg.Record.Dir, err)
+	}
+	es, closeStore, err := openStore(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := es.(*local.Store)
+	if rec.Dir() != dir {
+		t.Fatalf("the record opened at %s", rec.Dir())
+	}
+	_ = rec.CreateSession(context.Background(), store.SessionRecord{ID: "s-org", Workspace: ws})
+	closeStore()
+	if _, err := os.Stat(filepath.Join(dir, "default", "s-org.jsonl")); err != nil {
+		t.Fatal("the session is not in the managed directory")
+	}
+	if code, out, _ := runRecord(t, ws, "list"); code != 0 || !strings.Contains(out, "s-org") {
+		t.Fatalf("record list under the managed dir: %s", out)
+	}
+	registerState(cfg, ws)
+	if !tools.IsState(filepath.Join(dir, "default", "s-org.jsonl"), ws) {
+		t.Fatal("the managed record directory is not state")
+	}
+
+	managedConfig(t, "")
+	home, _ := os.UserHomeDir()
+	_ = os.MkdirAll(filepath.Join(home, ".abhed"), 0o700)
+	_ = os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(`{"record":{"dir":"/tmp/elsewhere","retention_days":1}}`), 0o600)
+	cfg, _ = config.LoadWith(ws, config.LoadOptions{Quiet: true})
+	if cfg.Record.Dir != "" || cfg.Record.RetentionDays != 0 {
+		t.Fatalf("the user's file moved or limited the record: %+v", cfg.Record)
+	}
+}
+
+// A managed record.retention_days prunes older sessions when the record is
+// opened, each leaving a tombstone.
+func TestManagedRetentionPrunes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "records")
+	managedConfig(t, `{"record":{"dir":"`+dir+`","retention_days":1}}`)
+	cfg, err := config.LoadWith(t.TempDir(), config.LoadOptions{Quiet: true})
+	if err != nil || !cfg.ManagedSets("record.retention_days") {
+		t.Fatalf("retention not managed: %v", err)
+	}
+	// One session last used two days ago, one now.
+	old, err := local.Open(local.Options{Dir: dir, Clock: func() time.Time { return time.Now().Add(-48 * time.Hour) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = old.CreateSession(context.Background(), store.SessionRecord{ID: "s-old", Workspace: dir})
+	_ = old.Close()
+	now, _ := local.Open(local.Options{Dir: dir})
+	_ = now.CreateSession(context.Background(), store.SessionRecord{ID: "s-new", Workspace: dir})
+	_ = now.Close()
+
+	rec, err := openRecord(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+	l, _ := rec.Index().List(local.Filter{All: true})
+	if len(l) != 1 || l[0].ID != "s-new" {
+		t.Fatalf("after retention: %+v", l)
+	}
+	if _, err := rec.Verify("s-old"); err == nil || !strings.Contains(err.Error(), "tombstone") {
+		t.Fatalf("the pruned session left no tombstone: %v", err)
 	}
 }

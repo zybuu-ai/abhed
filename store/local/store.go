@@ -32,6 +32,8 @@ type Options struct {
 	// Recorder's redactor does, so a writer that forgot one still cannot put
 	// a stored secret on disk. Nil leaves payloads as the Recorder made them.
 	Redact agent.Redactor
+	// Clock is the time written on index lines; nil is the wall clock.
+	Clock func() time.Time
 }
 
 // DefaultDir is ~/.abhed/records.
@@ -131,7 +133,7 @@ func Open(opts Options) (*Store, error) {
 		held: map[string]*session{}, subs: map[string][]chan agent.Event{},
 	}
 	s.blobs = &blobStore{dir: filepath.Join(dir, "blobs", "sha256")}
-	s.index = &index{dir: dir}
+	s.index = &index{dir: dir, clock: opts.Clock}
 	return s, nil
 }
 

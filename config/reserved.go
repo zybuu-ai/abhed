@@ -9,15 +9,13 @@ import "fmt"
 // The track that wires a setting deletes its entry here in the same change,
 // and its test that the setting takes effect replaces the warning.
 var notYetInEffect = []string{
-	"cli.mode_cycle",        // Shift-Tab and the ModeController (governance)
-	"commands.dirs",         // custom commands (input and memory)
-	"rules.dirs",            // path-scoped rules (input and memory)
-	"statusline",            // the statusline command (status)
-	"memory.auto",           // auto memory (input and memory)
-	"memory.import_depth",   // memory imports (input and memory)
-	"record.dir",            // the local record (record and sessions)
-	"record.retention_days", // record pruning (record and sessions)
-	"hooks.disabled",        // hooks (governance)
+	"cli.mode_cycle",      // Shift-Tab and the ModeController (governance)
+	"commands.dirs",       // custom commands (input and memory)
+	"rules.dirs",          // path-scoped rules (input and memory)
+	"statusline",          // the statusline command (status)
+	"memory.auto",         // auto memory (input and memory)
+	"memory.import_depth", // memory imports (input and memory)
+	"hooks.disabled",      // hooks (governance)
 }
 
 // NotYetInEffect lists the settings the configuration's files made that this

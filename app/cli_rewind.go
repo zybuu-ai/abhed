@@ -94,7 +94,7 @@ func slashRewind(ctx context.Context, fields []string, r *ui.Renderer,
 			if n := st.undo.Peek(p.Seq); n > 0 {
 				detail += fmt.Sprintf(" · %d file change(s) after it", n)
 			}
-			items = append(items, ui.PickItem{ID: strconv.FormatInt(p.Seq, 10), Label: firstLine(p.Text, 70), Detail: detail})
+			items = append(items, ui.PickItem{ID: "at-" + strconv.FormatInt(p.Seq, 10), Label: firstLine(p.Text, 70), Detail: detail})
 		}
 		id, err := st.ui().Pick(ctx, ui.PickSpec{Title: "Rewind to before which prompt?", Items: items})
 		if err != nil {
@@ -102,7 +102,7 @@ func slashRewind(ctx context.Context, fields []string, r *ui.Renderer,
 			return false
 		}
 		for _, p := range points {
-			if strconv.FormatInt(p.Seq, 10) == id {
+			if "at-"+strconv.FormatInt(p.Seq, 10) == id {
 				point = p
 			}
 		}

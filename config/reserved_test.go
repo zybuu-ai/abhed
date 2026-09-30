@@ -9,12 +9,10 @@ import (
 
 // A file that sets a control this version does not act on yet is warned,
 // from the user's file and from the managed one alike: an administrator must
-// not believe hooks are off or retention is enforced when neither is.
+// not believe hooks are off when they are not.
 func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 	for _, c := range []struct{ name, key, body string }{
 		{"hooks", "hooks.disabled", `{"hooks":{"disabled":true}}`},
-		{"retention", "record.retention_days", `{"record":{"retention_days":90}}`},
-		{"record dir", "record.dir", `{"record":{"dir":"/srv/records"}}`},
 		{"mode cycle", "cli.mode_cycle", `{"cli":{"mode_cycle":["plan"]}}`},
 		{"auto memory", "memory.auto", `{"memory":{"auto":false}}`},
 		{"import depth", "memory.import_depth", `{"memory":{"import_depth":2}}`},
