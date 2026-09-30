@@ -492,3 +492,24 @@ func TestLineReaderApprovalKeysArm(t *testing.T) {
 		t.Fatal("no answer through the line reader")
 	}
 }
+
+// The typing flag follows the line, for a wake that waits on it.
+func TestEditorTypingFlag(t *testing.T) {
+	r, w := io.Pipe()
+	e := newEditor(r, io.Discard, "> ")
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = e.readLine() }()
+	_, _ = w.Write([]byte("a"))
+	_, _ = w.Write([]byte("b")) // the flag is read before each key: after "a" it holds
+	for deadline := time.Now().Add(2 * time.Second); !e.typing.Load(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the flag never said the line holds text")
+		}
+	}
+	_, _ = w.Write([]byte{keyEnter})
+	<-done
+	go func() { _, _ = e.readLine() }()
+	_, _ = w.Write([]byte("x")) // the next line starts empty
+	time.Sleep(50 * time.Millisecond)
+	_ = w.Close()
+}

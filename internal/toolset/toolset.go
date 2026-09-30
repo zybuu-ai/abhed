@@ -9,6 +9,7 @@ package toolset
 
 import (
 	"context"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -48,9 +49,12 @@ const (
 	// WebFetch offers web_fetch when web_fetch.enabled. A policy engine the
 	// set is used with needs webfetch.AskReadOnly, or the tool never asks.
 	WebFetch
+	// Agents loads subagent definitions beside the built-in roles: managed,
+	// the workspace's when trusted, and the operator's directories.
+	Agents
 
 	// All is what the CLI runs with.
-	All = MCP | Vetoes | ExtensionTools | Skills | WebSearch | Retrieval | RAG | Infra | WebFetch
+	All = MCP | Vetoes | ExtensionTools | Skills | WebSearch | Retrieval | RAG | Infra | WebFetch | Agents
 )
 
 // Options are what a surface decides; everything else comes from the configuration.
@@ -84,6 +88,9 @@ type Set struct {
 	Gateway      *mcp.Gateway
 	Extensions   *extension.Host
 	Index        *index.Index
+	// Agents are the subagent types a session built from this set offers:
+	// the built-in roles, plus the loaded definitions with the Agents part.
+	Agents *agent.Definitions
 }
 
 // Build assembles the tools for a workspace from cfg. Something configured
@@ -103,6 +110,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.TodoTool{},
 		),
 		Skills: skills.NewRegistry(),
+		Agents: agent.BuiltinDefinitions(),
 	}
 	if o.Parts&(Vetoes|ExtensionTools) != 0 {
 		s.Extensions = extension.NewHost(o.Warn)
@@ -148,6 +156,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		if s.Skills.Len() > 0 {
 			s.Registry.Add(SkillTool(s.Skills))
 		}
+	}
+	if o.Parts&Agents != 0 {
+		s.Agents = LoadAgents(cfg, cfg.Workspace, warn)
 	}
 	var fetch *webfetch.Tool
 	if o.Parts&WebFetch != 0 {
@@ -306,13 +317,55 @@ func Budget(cfg config.Config) *agent.Budget {
 // A child's calls are judged by f.Policy (with its own root added) and put to
 // the approver of the loop that spawned it; f.Approver answers only a spawn
 // with no loop and, left nil, refuses. f.Budget must be the loop's Budget.
+//
+// The tools offer f.Definitions, the session's agent types: a set's Agents,
+// or the built-in roles when nil. They are fixed for the session.
 func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *tools.Registry {
 	out := reg.Clone()
 	f.Tools = out
-	out.Add(agent.Task{Spawn: f.Spawn, Profiles: agent.Profiles})
-	out.Add(agent.Tasks{Spawn: f.Spawn, Profiles: agent.Profiles,
-		Workspace: f.Workspace, MaxParallel: maxParallel})
+	if f.Definitions == nil {
+		f.Definitions = agent.BuiltinDefinitions()
+	}
+	var models []string
+	if f.Models != nil {
+		models = f.ModelNames
+	}
+	var bg func(context.Context, agent.SubagentRequest) (string, error)
+	if f.Background {
+		bg = f.SpawnBackground
+		out.Add(agent.TaskStatus{})
+		out.Add(agent.TaskCancel{})
+	}
+	out.Add(agent.Task{Spawn: f.Spawn, Agents: f.Definitions, Workspace: f.Workspace, Models: models, Background: bg})
+	out.Add(agent.Tasks{Spawn: f.Spawn, Agents: f.Definitions,
+		Workspace: f.Workspace, MaxParallel: maxParallel, Models: models, Background: bg})
 	return out
+}
+
+// BackgroundPolicy is a session's background limits from the configuration,
+// with the wake mode no wider than ceiling, the most the surface can host:
+// off where nobody can come back to the conversation, notify where nothing
+// can start a run on its own.
+func BackgroundPolicy(cfg config.Config, ceiling agent.WakeMode) agent.BackgroundPolicy {
+	mode, err := agent.ParseWakeMode(cfg.Subagents.Wake)
+	if err != nil {
+		mode = agent.WakeOff // Validate refuses it; fail to the tightest here too
+	}
+	minutes := cfg.Limits.BackgroundMaxMinutes
+	if minutes <= 0 {
+		minutes = 60
+	}
+	// The session's own switch may go no higher than what the configuration
+	// and the surface both allow.
+	mode = mode.Tighter(ceiling)
+	return agent.BackgroundPolicy{
+		Wake:            mode,
+		Ceiling:         mode,
+		MaxLive:         cfg.Limits.MaxBackgroundSubagents,
+		Lifetime:        time.Duration(min(minutes, 480)) * time.Minute,
+		MaxWakesPerHour: cfg.Subagents.MaxWakesPerHour,
+		WakeMaxTurns:    cfg.Subagents.WakeMaxTurns,
+	}
 }
 
 // SkillTool offers reg's skills. A skill declaring a pipeline is run rather

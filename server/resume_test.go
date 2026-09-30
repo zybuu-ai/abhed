@@ -26,6 +26,8 @@ type durableMem struct {
 	rows   map[string]store.SessionRecord
 	ended  map[string]bool
 	claims int
+	// orphaned marks rows taken by ClaimOrphan, so a second take fails.
+	orphaned map[string]bool
 	// onClaim, when set, runs after a claim is taken.
 	onClaim func()
 }
@@ -69,12 +71,31 @@ func (d *durableMem) GetSession(ctx context.Context, id string) (store.SessionRe
 }
 func (d *durableMem) Append(ev agent.Event) error {
 	if ev.Type == agent.EvSessionEnded {
+		// As Postgres: an end with background children running keeps the row open.
+		var end agent.SessionEnded
+		_ = json.Unmarshal(ev.Payload, &end)
 		d.mu.Lock()
-		d.ended[ev.SessionID] = true
+		d.ended[ev.SessionID] = end.Background == 0
 		d.mu.Unlock()
 	}
 	return d.MemStore.Append(ev)
 }
+
+// ClaimOrphan takes an open row as Postgres does: here no node ever holds
+// one, so a single server takes rows opened before orphanAfter.
+func (d *durableMem) ClaimOrphan(ctx context.Context, id, nodeID string, _ time.Duration, openedBefore time.Time) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.rows[id]; !ok || d.ended[id] || d.orphaned[id] {
+		return false, nil
+	}
+	if evs, _ := d.Events(id); nodeID == "" && len(evs) > 0 && !evs[len(evs)-1].CreatedAt.Before(openedBefore) {
+		return false, nil // active since this server started: not left by a crash
+	}
+	d.orphaned[id] = true
+	return true, nil
+}
+
 func (d *durableMem) ClaimResume(ctx context.Context, id string) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -97,7 +118,7 @@ func (d *durableMem) ClaimResume(ctx context.Context, id string) (bool, error) {
 func TestFinishedSessionContinuesFromRecord(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
 		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}), Store: st})
 	h := s.Handler()
@@ -212,7 +233,7 @@ func newViewRig(t *testing.T) *viewRig {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
 		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}), Store: st})
 	h := s.Handler()

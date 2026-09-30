@@ -39,6 +39,8 @@ configuration](#trusting-the-workspace-configuration).
 | `storage` | in-memory or Postgres |
 | `auth` | who may use a server deployment |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
+| `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
+| `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
@@ -114,6 +116,46 @@ subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
+
+## Background tasks
+
+```json
+"limits": {
+  "max_background_subagents": 4,
+  "background_max_minutes": 60
+},
+"subagents": {
+  "wake": "notify",
+  "max_wakes_per_hour": 4,
+  "wake_max_turns": 8
+}
+```
+
+`max_background_subagents` bounds a session's background tasks alive at once,
+across its runs; zero allows none. `background_max_minutes` is each task's
+lifetime, at most 480. `wake` is `off`, `notify` (the default) or `auto`:
+what a result arriving while the session is idle does. `auto` runs the agent
+on it, up to `wake_max_turns` turns and `max_wakes_per_hour` times an hour
+(zero never wakes). A surface may allow less: `-p`, eval and unattended runs
+are always `off`, and editors, rpc and the SDK never wake on their own. An
+untrusted workspace file may only lower these limits and tighten `wake`. See
+[Parallel subagents](14-parallel-subagents.md#background-tasks).
+
+## Agents
+
+```json
+"agents": {
+  "dirs": ["~/.abhed/agents", "/srv/team/agents"],
+  "disabled": false
+}
+```
+
+`dirs` are directories of subagent definitions, `*.md` files; a later
+directory wins a name. Unset, it is `~/.abhed/agents`. `disabled: true` loads
+only the organisation's `/etc/abhed/agents`. An untrusted workspace file may
+set `disabled: true` but not `dirs`. Definitions are read when a session
+starts; on a server, `POST /v1/admin/agents/reload` reads them again for the
+sessions started after it. See [Agent definitions](17-agent-definitions.md).
 
 ## Sandbox
 
@@ -426,6 +468,13 @@ server open.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
+
+A workspace's subagent definitions in `.abhed/agents/*.md` are covered by the
+same decision, with a hash of their own: until you trust them they are not
+loaded, and the warning names each one as `agents/<name>`. A definition can
+choose a model, and so where your code is sent. Declining new definitions
+keeps a file you already trusted. See [Agent
+definitions](17-agent-definitions.md).
 
 Trust is for the file's exact contents: after an edit it is asked about again.
 `abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and

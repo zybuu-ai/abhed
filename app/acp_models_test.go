@@ -356,6 +356,7 @@ func (a *switchingACPAgent) Run(ctx context.Context, _ string) (string, error) {
 }
 func (a *switchingACPAgent) Steer(string)                {}
 func (a *switchingACPAgent) Flush(context.Context) error { return nil }
+func (a *switchingACPAgent) CancelTasks() int            { return 0 }
 func (a *switchingACPAgent) Close()                      {}
 func (a *switchingACPAgent) Models() []abhed.Model {
 	return []abhed.Model{{Name: "alpha", Model: "m-a", Type: "ollama", Current: true}, {Name: "beta", Model: "m-b", Type: "ollama"}}

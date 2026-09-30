@@ -430,6 +430,26 @@ All notable changes to Abhed are recorded here. The format follows
 - A CLI subagent's session row in Postgres did not name its parent, so it
   was listed as a session of user `agent`, and deleting the conversation
   left it behind.
+- `tasks` ran a task naming an unknown `agent_type` as the general role; it
+  now refuses the call before anything runs, as `task` does.
+- A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
+  cap is now never above its parent's.
+- The parent loop's own asks now share the one-at-a-time queue its
+  subagents use, so a person is never asked two things at once by the tree.
+- On the server, an approval that ended always set the session to
+  `running`, even when no run was live; it now restores `running`, `idle` or
+  `done` as fits. A message sent while an ask was pending and no run was
+  live was queued as steering into a loop that was not running; it now
+  starts a run.
+- A server process that died mid-run left its session's row open, and no
+  node could ever continue it. The next message to such a session now takes
+  it over, when no live node holds it, and records the ends the crashed
+  process never wrote (`recovered`; lost background tasks as `lost`).
+- Continuing a session elsewhere reset its token and spawn allowance; the
+  budget now goes on from what its record says it spent.
+- A server turn continued by a message never refreshed or released this
+  node's claim on the session; every run now holds it, with its heartbeat,
+  while it or a background task is live.
 
 ### Added
 
@@ -446,6 +466,37 @@ All notable changes to Abhed are recorded here. The format follows
   as `model.switched`.
 - SDK: `Agent.Models` and `Agent.SwitchModelNamed` list and choose the
   configured models by name, with `ErrUnknownModel` and `ErrSwitchDuringRun`.
+- Background subagents. `task` and `tasks` take `background: true`: the
+  call returns at once, the task outlives the run, and its result comes back
+  as a `subagent.notice` (recorded first, untrusted, redacted), delivered as
+  a `task_status` call and result, never as the person's message.
+  `subagents.wake` (`off`, `notify` by default, `auto`) says what a result
+  does while the session is idle; `auto` runs a short wake run
+  (`session.woken`, `wake_limit`) within `subagents.max_wakes_per_hour` and
+  `subagents.wake_max_turns`. `-p`, eval and unattended runs join their
+  tasks; editors, rpc and the SDK never wake on their own. New limits
+  `limits.max_background_subagents` (4) and `limits.background_max_minutes`
+  (60, at most 480). New tools `task_status` and `task_cancel`. An explicit
+  stop cancels every background task; "send now" keeps them.
+- Resuming a finished subagent: `task` takes `resume`, a task id of this
+  session's, and continues that subagent's own conversation with a new
+  prompt, on the model it ran on, in its worktree, under its role as it is
+  now.
+- Server: the session state `background`; `GET /v1/sessions/{id}/tasks`,
+  `POST /v1/sessions/{id}/tasks/{task}/cancel` and `POST
+  /v1/sessions/{id}/wake`, owner only; the session list's `background` and
+  `pending_ask`; `Options.OwnerActive`. The console and workbench draw
+  background results, wakes and the closing end, and list background counts
+  and waiting approvals. `session.ended` gains `background`, `settled` and
+  `recovered`; in Postgres a session with background tasks running keeps its
+  row open until the closing end, and a store may implement `ClaimOrphan`.
+- CLI: results drawn at the prompt, `/tasks`, `/wake`; Ctrl-C twice at the
+  prompt cancels background tasks. rpc: `start.wake`, `tasks`,
+  `cancel_task`, `wake`. SDK: `Options.Background`, `Background`,
+  `CancelTask`, `CancelTasks`, `WaitBackground`, `Wake`,
+  `ErrNothingToWake`. ACP: a card per background task; an ask made between
+  prompt turns waits for the next one.
+
 - `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
   carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
   `requestId`. `destructive` is true for any command with no undo, whichever
@@ -526,6 +577,38 @@ All notable changes to Abhed are recorded here. The format follows
   it was built: an MCP server or extension that did not start, a cluster or
   host that skips verification. `abhed rpc` and `abhed acp` write these to
   stderr, as the terminal does; their stdout stays the protocol.
+- Agent definitions: markdown files whose frontmatter names a subagent role
+  (`name`, `description`, `tools`, `disallowed_tools`, `model`, `max_turns`,
+  `isolation`, `permission_mode`) and whose body is its instructions. They
+  load from the managed `/etc/abhed/agents`, then a workspace's
+  `.abhed/agents` when the workspace is trusted for that content, then
+  `agents.dirs` (default `~/.abhed/agents`); a higher level wins a name and
+  the shadowed file is named. `task` and `tasks` offer them beside the
+  built-in roles, on every surface (the SDK with `ConfiguredTools`; `eval`
+  keeps the built-in roles). See the new guide, Agent definitions.
+- Every key only narrows: a tool the session lacks refuses the spawn and is
+  named, `permission_mode` (`plan` or `default`) applies only where it
+  narrows, `max_turns` caps the role and binds the call, a `worktree` role
+  gets its own checkout. The built-in names are reserved. A key concerning
+  authority that Abhed does not honour (`hooks`, `mcpServers`,
+  `permissions`, allow or deny keys, sandbox settings), a wider mode, or a
+  model that is not a configured provider refuses the definition.
+- A subagent may run on another configured provider: `model` on the `task`
+  and `tasks` calls, or in a definition. It is a provider name, never an
+  endpoint; on a server only a provider sessions may run on. A model that
+  cannot be had refuses the call, with no fallback and no spawn counted. The
+  `model` property is offered only when more than one provider is.
+- Configuration keys `agents.dirs` (never from an untrusted workspace file)
+  and `agents.disabled` (an untrusted file may set it only to true).
+- `POST /v1/admin/agents/reload` reads the definitions again for sessions
+  started afterwards; a running session keeps the set it started with.
+- `subagent.spawned` records `definition`, `definition_source`,
+  `definition_sha256`, `tools`, `model` and `provider`; `subagent.returned`
+  records `model` and `provider`.
+- `abhed trust grant -agents-sha256 H`. The trust report (ACP, rpc, SDK)
+  gains `agents`, `agents_sha256`, `agents_trusted`, `agents_reason` and
+  `agents_problems`; the config package adds `GrantReviewed`,
+  `RecordDecision` and `RefreshAgents`.
 
 ### Changed
 
@@ -554,6 +637,26 @@ All notable changes to Abhed are recorded here. The format follows
   set, as the server's already did.
 - `abhed serve` and `abhed doctor` report web fetch, and the console's
   overview shows it.
+- Workspace trust covers `.abhed/agents` with a hash of its own, decided
+  apart from `config.json`: the prompt, `abhed trust` and `abhed doctor` show
+  each definition's name, model and tools, and declining new definitions
+  keeps a file already trusted. A trust record from an earlier version
+  decides nothing about definitions, so a workspace without them is not
+  asked again. A definition that is a link, has a second name or is larger
+  than 64 KiB is refused.
+- `agent_type` on `task` and `tasks` is an enum of the session's agent types,
+  and the `task` description lists each with when to use it.
+- Skills are read by a frontmatter reader shared with agent definitions;
+  they parse as before.
+- An agent definition's key reads the same quoted or not. A key that reads
+  like an honoured one (such as `denied_tools`), or a restriction nested under
+  another key, refuses the definition. A managed definition's name stays
+  reserved even when that file does not load, and its model binds the call.
+  `disallowed_tools` removes every tool a name could mean, `recall` too.
+- The event stream of a session with background tasks running stays open
+  past its run's end, until the closing end.
+- The interactive CLI follows a conversation's events for as long as it is
+  open, not per task.
 
 ## [1.2.1] - 2026-09-28
 

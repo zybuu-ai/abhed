@@ -334,6 +334,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .pill.running{background:var(--running-bg);color:var(--running)}
 .pill.completed,.pill.done{background:var(--done-bg);color:var(--done)}
 .pill.waiting_approval{background:var(--waiting-bg);color:var(--waiting)}
+.pill.background{background:var(--running-bg);color:var(--running)}
+.badge{padding:1px 6px;border-radius:3px;font-size:9.5px;background:var(--waiting-bg);color:var(--waiting)}
 .pill.error,.pill.max_turns,.pill.policy_denied,.pill.retry_exhausted,
 .pill.max_budget,.pill.user_interrupt,.pill.deadline,.pill.shutdown,
 .pill.stalled{background:var(--error-bg);color:var(--error)}
@@ -751,6 +753,7 @@ let streamBody = null;   // its text node
 let es = null;           // EventSource
 let lastSeq = 0;         // highest seq rendered, for reconnect de-duplication
 let live = false;        // is the viewed session still running
+let bgLive = false;      // does it still have background tasks running, with no run
 // Approval cards awaiting a verdict, by call_id. A replayed session resolves
 // them from its own action.approved / action.denied events; anything still
 // here when the session ends was never answered.
@@ -982,7 +985,7 @@ function sessionRow(s){
   pill.textContent = shown.replace(/_/g,' ');
   const when = document.createElement('span');
   when.textContent = ago(s.created);
-  m.append(pill, when);
+  m.append(pill, ...listBadges(s), when);
 
   const del = document.createElement('button');
   del.type = 'button';
@@ -1120,7 +1123,7 @@ function connect(id){
     es.close(); es = null;
     // A finished session's stream closes normally once the backlog is sent.
     // Only a live session is worth reconnecting to.
-    if(live && current === id){
+    if((live || bgLive) && current === id){
       setTimeout(() => { if(current === id && !es) connect(id); }, 1500);
     }
   };
@@ -1143,6 +1146,8 @@ function newTurn(){
 function render(ev){
   const tx = $('tx');
   const p = ev.payload || {};
+  // The closing end after background work is not a second end of the run.
+  if(ev.type === 'session.ended' && p.settled){ bgLive = false; tx.appendChild(node('note', 'background work finished')); return; }
 
   switch(ev.type){
     case 'user.message': {
@@ -1332,6 +1337,10 @@ function render(ev){
 
     case 'subagent.spawned': tx.appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
     case 'subagent.returned': tx.appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+    // A background task's result entering the conversation. What it says is
+    // the subagent's own summary, shown as that and never as the person's.
+    case 'subagent.notice': tx.appendChild(noticeCard(p)); break;
+    case 'session.woken': tx.appendChild(node('note', 'woke to act on background results' + (p.by === 'caller' ? ' (asked)' : ''))); break;
 
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.
@@ -1382,6 +1391,7 @@ function render(ev){
     case 'session.ended': {
       hideThinking();
       live = false;
+      bgLive = (p.background || 0) > 0;
       // The session is over, so every remaining card is unanswerable. Leaving
       // them clickable is what made a reopened session show a dead approval
       // prompt that swallowed every click.
@@ -1958,6 +1968,29 @@ $('wbreload').onclick = () => openWorkbench(wb.tab);
 // While the agent works, the list of changes goes stale with every edit.
 // Reloading on a tool result keeps it honest; the delay folds a burst of
 // edits into one request.
+// listBadges are what a list row says beyond the state: background tasks
+// running, and an approval waiting on you.
+function listBadges(s){
+  const out = [];
+  if(s.background){ const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'background ' + s.background; out.push(b); }
+  if(s.pending_ask){ const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'approval waiting';
+    b.title = (s.pending_ask.subagent ? 'subagent ' + s.pending_ask.subagent + ': ' : '') + s.pending_ask.tool; out.push(b); }
+  return out;
+}
+
+// noticeCard shows a background result: which task, how it ended, and the
+// summary it left, as text.
+function noticeCard(p){
+  const wrap = node('call bgnotice');
+  const hdr = node('hdr');
+  const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
+  hdr.append(node('tool', 'background'), node('arg', (p.description || p.task_id || '') + ' finished (' + (p.status || p.reason || '') + turns + ')'));
+  wrap.appendChild(hdr);
+  wrap.appendChild(node('out', p.content || ''));
+  wrap.appendChild(node('note', p.delivery === 'idle' ? 'result added to the conversation; the agent sees it with your next message' : 'result added to the conversation'));
+  return wrap;
+}
+
 function workbenchSaw(ev){
   if(!wb.open || wb.tab !== 'changes') return;
   if(ev.type !== 'observation' && ev.type !== 'session.ended') return;

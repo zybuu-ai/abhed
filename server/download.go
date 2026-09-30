@@ -274,6 +274,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 			c()
 		}
 		live.Cancel()
+		// Children first: none may append once its rows are gone.
+		live.Loop.Background.Close(agent.TermSessionDeleted)
 		live.closeTerminals()
 		// Hosts and logins the session made go with it.
 		if live.Loop != nil {

@@ -23,12 +23,15 @@ package skills
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/frontmatter"
 )
 
 // Skill is one loaded instruction set.
@@ -226,25 +229,28 @@ func discover(root string) ([]*Skill, []error) {
 // body.
 //
 // The frontmatter is name/description/allowed-tools and nothing else, so it is
-// parsed directly rather than through a YAML library — the same reasoning as
-// the kubeconfig reader: a narrow known shape does not justify a large
-// dependency in an air-gapped bundle.
+// read by the narrow shared reader rather than a YAML library — the same
+// reasoning as the kubeconfig reader: a narrow known shape does not justify a
+// large dependency in an air-gapped bundle.
 func Parse(content string) (*Skill, error) {
-	s := &Skill{}
-	text := strings.ReplaceAll(content, "\r\n", "\n")
-
-	if !strings.HasPrefix(strings.TrimLeft(text, " \t\n"), "---") {
+	doc, err := frontmatter.Parse(content)
+	switch {
+	case errors.Is(err, frontmatter.ErrMissing):
 		return nil, fmt.Errorf("missing frontmatter: a SKILL.md starts with a --- block " +
 			"containing name and description")
+	case err != nil:
+		return nil, err
 	}
-	text = strings.TrimLeft(text, " \t\n")
-	rest := text[3:]
-	if i := strings.Index(rest, "\n---"); i >= 0 {
-		frontmatter := rest[:i]
-		s.Body = strings.TrimSpace(rest[i+4:])
-		parseFrontmatter(frontmatter, s)
-	} else {
-		return nil, fmt.Errorf("frontmatter is not closed with ---")
+	s := &Skill{Body: doc.Body}
+	// Every key the reader found, nested ones included, and the last one
+	// wins: that is how skills have always been read.
+	for _, f := range doc.Fields {
+		switch strings.ToLower(f.Key) {
+		case "name":
+			s.Name = f.Value
+		case "description":
+			s.Description = f.Value
+		}
 	}
 
 	if s.Description == "" {
@@ -256,62 +262,6 @@ func Parse(content string) (*Skill, error) {
 		return nil, fmt.Errorf("skill has no instructions after the frontmatter")
 	}
 	return s, nil
-}
-
-func parseFrontmatter(fm string, s *Skill) {
-	lines := strings.Split(fm, "\n")
-	for i := 0; i < len(lines); i++ {
-		raw := lines[i]
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-		key = strings.ToLower(strings.TrimSpace(key))
-		value = strings.TrimSpace(value)
-
-		// Block scalars: "description: >" (folded) or "|" (literal) put the
-		// text on the following indented lines. A real skill used this and the
-		// description parsed as ">" — one character, which the model would
-		// never match a request against. Silently useless is the worst
-		// outcome, so it is handled rather than rejected.
-		if value == ">" || value == "|" || value == ">-" || value == "|-" {
-			var block []string
-			indent := len(raw) - len(strings.TrimLeft(raw, " \t"))
-			for j := i + 1; j < len(lines); j++ {
-				next := lines[j]
-				if strings.TrimSpace(next) == "" {
-					block = append(block, "")
-					continue
-				}
-				nextIndent := len(next) - len(strings.TrimLeft(next, " \t"))
-				if nextIndent <= indent {
-					break // dedented: the block ended
-				}
-				block = append(block, strings.TrimSpace(next))
-				i = j
-			}
-			if value == ">" || value == ">-" {
-				// Folded: newlines become spaces, blank lines become breaks.
-				value = strings.TrimSpace(strings.Join(block, " "))
-				value = strings.Join(strings.Fields(value), " ")
-			} else {
-				value = strings.TrimSpace(strings.Join(block, "\n"))
-			}
-		} else {
-			value = strings.Trim(value, `"'`)
-		}
-
-		switch key {
-		case "name":
-			s.Name = value
-		case "description":
-			s.Description = value
-		}
-	}
 }
 
 func expandHome(path string) string {

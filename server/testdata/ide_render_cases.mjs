@@ -31,4 +31,10 @@ __added.length = 0;
 render(ev(20, 'conversation.forked', 'user', {through_seq:7}));
 check('a fork marker is drawn', text().includes('forked at step 7'));
 
+// A background result and the closing end.
+__added.length = 0;
+render(ev(30, 'subagent.notice', 'system', {task_id:'t1', description:'scan logs', status:'completed', turns:1, content:'three errors'}));
+render(ev(31, 'session.ended', 'system', {reason:'completed', background:0, settled:true}));
+check('a background result is drawn with its summary', text().includes('background: scan logs finished (completed, 1 turn)') && text().includes('three errors'));
+check('the closing end is drawn as background work finishing', text().includes('background work finished'));
 if(!ok) process.exit(1);

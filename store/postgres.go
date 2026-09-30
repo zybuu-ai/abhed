@@ -343,12 +343,19 @@ func (p *Postgres) finalizeSession(ctx context.Context, ev agent.Event) {
 		v := int64(ended.ContextWindow)
 		ctxWindow = &v
 	}
+	// An end with background children still running is not the session's
+	// end: the row stays open, so no other node claims it while they run
+	// here. The closing end, with none left, releases it.
+	var endedAt *time.Time
+	if ended.Background == 0 {
+		endedAt = &ev.CreatedAt
+	}
 	_, _ = p.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = $2, terminal_reason = $3, turns = $4,
 		       tokens_in = $5, tokens_out = $6, tokens_cached = $7, compactions = $8,
 		       context_tokens = $9, context_window = $10
 		WHERE id = $1`,
-		ev.SessionID, ev.CreatedAt, string(ended.Reason), ended.Turns,
+		ev.SessionID, endedAt, string(ended.Reason), ended.Turns,
 		ended.TokensIn, ended.TokensOut, ended.TokensCached, ended.Compactions,
 		ctxTokens, ctxWindow)
 }
@@ -473,6 +480,26 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL`, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClaimOrphan takes over a session a crashed process left open: its row is
+// still open, and no node holds a fresh claim on it. With a node id, the
+// claim is this node's; a single server (no node id) may only take a session
+// whose last event is older than openedBefore, when it started. One update,
+// so two nodes cannot both take it.
+func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, nodeID string, stale time.Duration, openedBefore time.Time) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_id = NULLIF($2, ''),
+		       node_seen_at = CASE WHEN $2 = '' THEN NULL ELSE now() END
+		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
+		  AND (node_seen_at IS NULL OR node_seen_at <= now() - $3::interval)
+		  AND ($2 <> '' OR COALESCE(
+		        (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) < $4)`,
+		sessionID, nodeID, stale.String(), openedBefore)
+	if err != nil {
+		return false, fmt.Errorf("claim orphaned session %s: %w", sessionID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

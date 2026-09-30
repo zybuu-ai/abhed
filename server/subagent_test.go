@@ -213,7 +213,7 @@ func TestUnattendedSubagentAskIsRefused(t *testing.T) {
 // Two people's sessions each delegate: each child's row is its parent
 // owner's, the other person cannot read it, and neither list shows it.
 func TestSubagentsOfTwoUsersAreKeptApart(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	s, _ := delegatingServer(t, [2]string{}, st, func(c *config.Config) { c.Auth.Mode = "proxy" })
 
 	children := map[string]string{}
@@ -321,7 +321,7 @@ func TestDeletingASessionDeletesItsSubagents(t *testing.T) {
 // Subagents are left out of a list by the parent they name, not by a model
 // name: a session on a model called "subagent" is listed like any other.
 func TestListKeepsASessionOnAModelNamedSubagent(t *testing.T) {
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	s, _ := delegatingServer(t, [2]string{}, st)
 	for id, parent := range map[string]string{"s-top": "", "s-kid": "s-top"} {
 		if err := st.CreateSession(context.Background(), store.SessionRecord{ID: id, Tenant: "default",

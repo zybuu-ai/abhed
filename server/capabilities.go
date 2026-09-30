@@ -245,7 +245,7 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	}
 	// task and tasks are bound to one session's record, policy and budget in
 	// the same way, and every session has them.
-	for _, t := range []tools.Tool{agent.Task{Profiles: agent.Profiles}, agent.Tasks{}} {
+	for _, t := range []tools.Tool{agent.Task{Agents: s.state.agentDefs()}, agent.Tasks{}} {
 		c.Tools = append(c.Tools, capTool{Name: t.Name(), Description: firstSentence(t.Description()),
 			Mutates: t.Mutates(), Source: "builtin"})
 	}

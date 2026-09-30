@@ -79,6 +79,35 @@ carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
 `subagent.action` and `subagent.returned` stand for them, as the CLI's JSON
 output does.
 
+### Background tasks
+
+With `ConfiguredTools`, `Options.Background` says what a background task
+does. `"off"`, the default, joins it: `Run` returns when the work, the
+task's included, is done, as it always has, and cancelling `Run`'s context
+stops everything. `"notify"` lets a task outlive `Run`: its result is recorded
+and reaches `OnEvent` as a `subagent.notice` when it ends, and the next `Run`,
+or `Wake`, sees it. An embedded agent never starts a run on its own, so
+`"auto"` is refused.
+
+| Method | |
+|---|---|
+| `Background()` | the tasks, with status, model, turns and, when done, the summary |
+| `CancelTask(id)`, `CancelTasks()` | stop one, or all, as a person's stop |
+| `WaitBackground(ctx)` | wait until none is running |
+| `Wake(ctx)` | run the agent on the results waiting, recorded as `session.woken` by the caller; `ErrNothingToWake` when none waits |
+
+`Approve` may be called for a task's ask at any time until `Close`, after
+`Run` has returned included. `Close` cancels running tasks as
+`session_closed` and waits a moment for them to record their end.
+
+With `ConfiguredTools` the subagents offer the [agent
+definitions](17-agent-definitions.md) the CLI would load: the managed
+directory, `ConfigDir`'s `.abhed/agents` when that workspace is trusted, and
+`agents.dirs`. A subagent may run on another provider the configuration
+names, never on an endpoint. With `Options.Provider` set, the agent's own
+model is the only one, so no subagent chooses another: a definition naming a
+model does not load, and a call naming one is refused.
+
 ## Who settled a call
 
 Every `action.approved` and `action.denied` says who settled it in `by`.

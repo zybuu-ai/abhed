@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -54,6 +55,9 @@ type editor struct {
 	menuRows int // rows currently drawn, so they can be erased
 
 	mu sync.Mutex
+	// typing is whether the line being edited holds anything, for readers
+	// on other goroutines.
+	typing atomic.Bool
 
 	// approveCh, when non-nil, receives deliberate decision keys instead of
 	// the line, so the one reader the editor owns also answers approvals.
@@ -219,6 +223,8 @@ func (e *editor) readLine() (string, error) {
 
 	var buf [1]byte
 	for {
+		// Read by another goroutine: a wake waits while the person is typing.
+		e.typing.Store(len(e.line) > 0)
 		n, err := e.in.Read(buf[:])
 		if err != nil {
 			e.clearMenu()

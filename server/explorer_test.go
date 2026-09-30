@@ -684,7 +684,7 @@ func TestExplorerOnTheServerNotHoldingTheSessionIsRefused(t *testing.T) {
 	cfg.Auth.Mode = "proxy"
 	cfg.Permissions.Deny = append(cfg.Permissions.Deny, "write(**/frozen/**)")
 	dir := t.TempDir()
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	node := func() (*Server, http.Handler) {
 		s := New(Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{},
 			Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{}), Store: st})

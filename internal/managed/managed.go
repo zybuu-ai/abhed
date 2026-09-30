@@ -6,3 +6,7 @@ package managed
 
 // ConfigFile is the managed configuration. Every layer below it yields to it.
 var ConfigFile = "/etc/abhed/config.json"
+
+// AgentsDir holds the organisation's subagent definitions. They load first
+// and no workspace or operator definition can take their names.
+var AgentsDir = "/etc/abhed/agents"

@@ -653,7 +653,7 @@ func TestWorkbenchSessionReopensAfterRestart(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
 	dir := t.TempDir()
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
 	first := New(opts)
@@ -773,7 +773,7 @@ func TestWorkbenchSessionReopensOnlyForItsOwner(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
 	dir := t.TempDir()
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
 	first := New(opts)

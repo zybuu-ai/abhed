@@ -56,6 +56,10 @@ func (l *LineReader) ReadLine() (string, error) {
 	return strings.TrimRight(line, "\r\n"), err
 }
 
+// Typing reports whether the person has something on the line: a wake turn
+// waits, since their message will carry the result anyway.
+func (l *LineReader) Typing() bool { return l.raw && l.ed.typing.Load() }
+
 // Raw reports whether editing is active, so a caller can print its own prompt
 // when it is not.
 func (l *LineReader) Raw() bool { return l.raw }

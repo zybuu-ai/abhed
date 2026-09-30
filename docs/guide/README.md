@@ -32,6 +32,7 @@ model you point it at, and records everything it does.
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
+| [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
 
 Exporting the event log as OpenTelemetry traces and scheduled runs are
 Enterprise Edition features, documented with that edition.

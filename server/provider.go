@@ -3,8 +3,10 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 )
@@ -75,6 +77,25 @@ func (s *Server) resolveProvider(name string) (model.Adapter, error) {
 	a, err := p.Adapter()
 	if err != nil {
 		return nil, err
+	}
+	return a, nil
+}
+
+// providerNames are the providers a session may run on, sorted.
+func (s *Server) providerNames() []string {
+	var out []string
+	for _, p := range s.providers() {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+// subagentModel resolves a subagent's model as resolveProvider does, and
+// says what may be chosen instead when it cannot.
+func (s *Server) subagentModel(name string) (model.Adapter, error) {
+	a, err := s.resolveProvider(name)
+	if err != nil {
+		return nil, fmt.Errorf("%w; available: %s", err, strings.Join(s.providerNames(), ", "))
 	}
 	return a, nil
 }

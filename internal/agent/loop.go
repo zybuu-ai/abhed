@@ -23,7 +23,10 @@ var ErrShutdown = errors.New("server shutdown")
 // terminalForCancel distinguishes the ways a run is cancelled. The audit log
 // has to tell "someone stopped this" from "the process went away" or "time ran out".
 func terminalForCancel(ctx context.Context) TerminalReason {
+	var stop StopCause
 	switch {
+	case errors.As(context.Cause(ctx), &stop):
+		return stop.Reason
 	case errors.Is(context.Cause(ctx), ErrShutdown):
 		return TermShutdown
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -195,7 +198,10 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
-	Adapter   model.Adapter
+	Adapter model.Adapter
+	// Provider is the configured name Adapter came from, when the surface
+	// knows it. A subagent that runs on its parent's model records it.
+	Provider  string
 	Tools     *tools.Registry
 	Policy    *policy.Engine
 	Approver  Approver
@@ -220,6 +226,19 @@ type Loop struct {
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
 	Budget *Budget
+
+	// Background is the session's background children; nil runs none.
+	Background *Background
+	// runMu is held for a whole run, and by anything else that changes the
+	// conversation, so a notice delivered while the session is idle lands in
+	// the record and the messages in the same order.
+	runMu sync.Mutex
+	// wakeCap ends a wake run at this many turns; wakeDelivery names how its
+	// first boundary delivers, auto or caller. Both are set only in RunWoken.
+	wakeCap      int
+	wakeDelivery string
+	// beforeUnlock, in tests, runs as a run lets go of the conversation.
+	beforeUnlock func()
 
 	messages []model.Message
 	usage    Usage
@@ -311,8 +330,9 @@ func (l *Loop) QueueMessage(m Message) string {
 	}
 	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC()}
 	l.steerMu.Lock()
-	defer l.steerMu.Unlock()
 	l.steer = append(l.steer, q)
+	l.steerMu.Unlock()
+	l.Background.poke() // a run waiting for its children takes the message now
 	return q.ID
 }
 
@@ -472,6 +492,8 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 // RunMessage is Run for a prompt that carries a client's id, which the
 // recorded user.message echoes so the client can match it.
 func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error) {
+	l.runMu.Lock()
+	defer l.unlockRun()
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
 	if err := l.deliverQueued(); err != nil {
@@ -488,13 +510,39 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error
 // RunQueued continues the conversation with only the queued messages, for a
 // message that arrived after the last run had already decided to end.
 func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
-	if len(l.Queued()) == 0 {
+	l.runMu.Lock()
+	defer l.unlockRun()
+	if !l.hasWork() {
 		return TermCompleted, nil
 	}
 	return l.run(ctx)
 }
 
+// unlockRun ends a run's hold on the conversation. A result that arrived
+// after the run last looked, or a closing end now due, is taken by an idle
+// delivery rather than left for a message that may never come.
+func (l *Loop) unlockRun() {
+	if l.beforeUnlock != nil {
+		l.beforeUnlock()
+	}
+	l.runMu.Unlock()
+	if b := l.Background; b != nil {
+		b.mu.Lock()
+		due := len(b.notices) > 0 || b.owed
+		b.mu.Unlock()
+		if due {
+			b.kick()
+		}
+	}
+}
+
 func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
+	// This run sees every result delivered while the session was idle.
+	if b := l.Background; b != nil {
+		b.mu.Lock()
+		b.unacted = 0
+		b.mu.Unlock()
+	}
 	for {
 		if ctx.Err() != nil {
 			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
@@ -505,10 +553,23 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		if l.turns >= l.Config.MaxTurns {
 			return l.finish(TermMaxTurns), nil
 		}
+		// A wake run is short: the session goes on, and so do its children.
+		if l.wakeCap > 0 && l.turns >= l.wakeCap {
+			return l.finish(TermWakeLimit), nil
+		}
 		// At the turn boundary, not mid-turn: cutting a turn short would leave
 		// a tool result the model never sees.
 		if l.Budget.Exhausted() {
 			return l.finish(TermMaxBudget), nil
+		}
+		// Background results first, then steering, each in arrival order,
+		// and never between a turn's calls and their results.
+		delivery, wake := "boundary", ""
+		if l.wakeDelivery != "" {
+			delivery, wake, l.wakeDelivery = "wake", l.wakeDelivery, ""
+		}
+		if err := l.deliverNotices(delivery, wake); err != nil {
+			return TermError, err
 		}
 		// Steering is applied before the turn is counted, so a redirection
 		// never costs the user a turn from the budget.
@@ -537,10 +598,17 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 			return TermError, err
 		}
 		if done {
-			// A message queued during the final turn is answered now rather
-			// than left waiting for a prompt that may never come.
-			if reason == TermCompleted && len(l.Queued()) > 0 {
+			// A message queued during the final turn, or a background result,
+			// is answered now rather than left waiting for a prompt that may
+			// never come.
+			if reason == TermCompleted && l.hasWork() {
 				continue
+			}
+			// Joined children are waited for: the run ends with them.
+			if reason == TermCompleted && l.Background.joinedLive() > 0 {
+				if l.waitBackground(ctx) || ctx.Err() != nil {
+					continue
+				}
 			}
 			return l.finish(reason), nil
 		}
@@ -591,6 +659,8 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 
 // Compact forces compaction now, for the /compact command.
 func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
 	if l.Compactor == nil {
 		return Compaction{}, fmt.Errorf("compaction is not configured")
 	}
@@ -635,6 +705,8 @@ func (l *Loop) SetAdapter(a model.Adapter) {
 // so the record names the model that answers and a resume keeps it.
 // A switch the record refused is not made.
 func (l *Loop) SwitchModel(provider string, a model.Adapter) error {
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
 	if l.Recorder != nil {
 		from := ""
 		if l.Adapter != nil {
@@ -646,6 +718,7 @@ func (l *Loop) SwitchModel(provider string, a model.Adapter) error {
 		}
 	}
 	l.SetAdapter(a)
+	l.Provider = provider
 	return nil
 }
 
@@ -657,6 +730,8 @@ func (l *Loop) Messages() []model.Message { return l.messages }
 // ran it. turns is how many the earlier process used; the budget is for the
 // whole conversation, and a continuation does not get a fresh one.
 func (l *Loop) SetHistory(msgs []model.Message, turns int) {
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
 	if turns > l.turns {
 		l.turns = turns
@@ -1058,7 +1133,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	case policy.Ask:
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
-		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
+		approved, err := l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
@@ -1285,9 +1360,12 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 			})
 		}
 	}
+	// Children the end takes with it are stopped before it is recorded, so
+	// the end says how many live on.
+	l.Background.onRunEnd(reason)
 	l.usage.Turns = l.turns
 	ctxTokens, window := l.contextSize()
-	l.record(EvSessionEnded, ActorSystem, SessionEnded{
+	end := SessionEnded{
 		Reason:        reason,
 		Turns:         l.turns,
 		TokensIn:      l.usage.InputTokens,
@@ -1296,7 +1374,10 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		Compactions:   l.usage.Compactions,
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
-	})
+		Background:    l.Background.Live(),
+	}
+	l.record(EvSessionEnded, ActorSystem, end)
+	l.Background.noteEnd(end)
 	return reason
 }
 

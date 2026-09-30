@@ -8,7 +8,8 @@
 | `glob`, `grep` | find files and search contents |
 | `bash` | shell, sandboxed, destructive commands always confirm |
 | `todo` | the agent's task list for multi-step work, recorded as `todo.updated` |
-| `task`, `tasks` | run one subagent, or several at once; see [Parallel subagents](14-parallel-subagents.md) |
+| `task`, `tasks` | run one subagent, or several at once, in the foreground or the background; `task` can resume a finished one; see [Parallel subagents](14-parallel-subagents.md) |
+| `task_status`, `task_cancel` | report or cancel this session's background tasks, where the surface runs them |
 | `skill` | load a procedure on demand |
 | `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default |
 | `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |

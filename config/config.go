@@ -32,6 +32,8 @@ type Config struct {
 	Context     ContextConfig     `json:"context"`
 	RAG         RAGConfig         `json:"rag,omitempty"`
 	Skills      SkillsConfig      `json:"skills,omitempty"`
+	Agents      AgentsConfig      `json:"agents,omitempty"`
+	Subagents   SubagentsConfig   `json:"subagents"`
 	K8s         K8sConfig         `json:"k8s,omitempty"`
 	SSH         SSHConfig         `json:"ssh,omitempty"`
 	Limits      LimitsConfig      `json:"limits"`
@@ -373,6 +375,19 @@ type SkillsConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
+// AgentsConfig points at directories of subagent definitions: markdown files
+// naming a role, its tools and model, with the role's instructions as the body.
+//
+// A workspace's own .abhed/agents loads only when the person trusted that
+// exact content; the organisation's /etc/abhed/agents always loads.
+type AgentsConfig struct {
+	// Dirs hold *.md definitions. Defaults to ~/.abhed/agents when unset. A
+	// later directory wins a name.
+	Dirs []string `json:"dirs,omitempty"`
+	// Disabled loads only the organisation's managed definitions.
+	Disabled bool `json:"disabled,omitempty"`
+}
+
 // K8sConfig enables cluster access. Off by default: reaching a cluster is an
 // authorization decision, and the credentials already on the machine are not
 // a reason to hand them to an agent without being asked.
@@ -532,6 +547,26 @@ type LimitsConfig struct {
 	// MaxParallelSubagents bounds how many of a `tasks` call's subagents run
 	// at once. Zero means all of them, up to the tool's own cap of eight.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
+	// MaxBackgroundSubagents bounds a session's background subagents alive
+	// at once, across its runs. Zero allows none. Default 4.
+	MaxBackgroundSubagents int `json:"max_background_subagents"`
+	// BackgroundMaxMinutes is each background subagent's wall-clock
+	// lifetime. Zero means 60; at most 480.
+	BackgroundMaxMinutes int `json:"background_max_minutes,omitempty"`
+}
+
+// SubagentsConfig is what a background subagent's result does when it
+// arrives while the session is idle.
+type SubagentsConfig struct {
+	// Wake is off, notify or auto. notify, the default, records the result
+	// for the person's next message; auto starts a short run on its own; off
+	// makes a run wait for its background subagents. A surface may allow
+	// less: -p, eval and unattended runs are always off.
+	Wake string `json:"wake,omitempty"`
+	// MaxWakesPerHour bounds automatic wake runs per session. Zero never wakes. Default 4.
+	MaxWakesPerHour int `json:"max_wakes_per_hour"`
+	// WakeMaxTurns caps one wake run. Zero means 8.
+	WakeMaxTurns int `json:"wake_max_turns,omitempty"`
 }
 
 func Default() Config {
@@ -586,8 +621,10 @@ func Default() Config {
 		Limits: LimitsConfig{
 			MaxTurns: 100, MaxTokens: 8192, MaxBudgetTokens: 0,
 			MaxSubagents: 20, NestedSubagents: false,
+			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
 		},
-		Storage: StorageConfig{Driver: "memory", Tenant: "default", MaxConns: 10},
+		Subagents: SubagentsConfig{Wake: "notify", MaxWakesPerHour: 4, WakeMaxTurns: 8},
+		Storage:   StorageConfig{Driver: "memory", Tenant: "default", MaxConns: 10},
 		// Secure by default: a cookie that would travel over plain HTTP has
 		// to be asked for. Browsers accept Secure cookies on localhost, so
 		// local development does not need the exception it used to get.
@@ -783,6 +820,14 @@ type ToolsConfig struct {
 }
 
 func (c Config) Validate() error {
+	switch c.Subagents.Wake {
+	case "", "off", "notify", "auto":
+	default:
+		return fmt.Errorf("subagents.wake is %q; use off, notify or auto", c.Subagents.Wake)
+	}
+	if c.Limits.BackgroundMaxMinutes > 480 {
+		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
+	}
 	p, err := c.Provider()
 	if err != nil {
 		return err

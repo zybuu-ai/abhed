@@ -79,6 +79,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				ConfiguredTools: true,
 				// Stdout is the protocol; what the tool set skipped goes to stderr.
 				Warn: warnf,
+				// off (the default) or notify: rpc never starts a run on its own.
+				Background: req.Wake,
 				// Events are forwarded as they happen so a caller can render
 				// progress rather than waiting for the final answer.
 				OnEvent: func(ev agent.Event) {
@@ -143,6 +145,46 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		case "providers":
 			emit(rpcResponse{ID: req.ID, Type: "providers", Providers: abhed.Providers()})
 
+		case "tasks":
+			if a == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			tasks := a.Background()
+			if tasks == nil {
+				tasks = []abhed.TaskInfo{}
+			}
+			emit(rpcResponse{ID: req.ID, Type: "tasks", Tasks: tasks})
+
+		case "cancel_task":
+			if a == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			if err := a.CancelTask(req.TaskID); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error()})
+				continue
+			}
+			emit(rpcResponse{ID: req.ID, Type: "cancelled"})
+
+		case "wake":
+			// Runs the agent on background results waiting for it, as the caller asks.
+			if a == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			done := stopper.busy()
+			answer, err := a.Wake(ctx)
+			flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
+			_ = a.Flush(flushed)
+			cancelFlush()
+			if err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error(), Answer: answer})
+			} else {
+				emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer})
+			}
+			done()
+
 		case "quit":
 			emit(rpcResponse{ID: req.ID, Type: "bye"})
 			return 0
@@ -150,7 +192,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		default:
 			emit(rpcResponse{ID: req.ID, Type: "error",
 				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, "+
-					"usage, export, providers or quit", req.Method)})
+					"usage, export, providers, tasks, cancel_task, wake or quit", req.Method)})
 		}
 	}
 	if err := in.Err(); err != nil {
@@ -168,6 +210,10 @@ type rpcRequest struct {
 	Mode      string   `json:"mode,omitempty"`
 	Allow     []string `json:"allow,omitempty"`
 	Deny      []string `json:"deny,omitempty"`
+	// Wake, on start, is off (the default) or notify; TaskID names a
+	// background task for cancel_task.
+	Wake   string `json:"wake,omitempty"`
+	TaskID string `json:"task_id,omitempty"`
 }
 
 type rpcResponse struct {
@@ -178,6 +224,8 @@ type rpcResponse struct {
 	Event     *agent.Event `json:"event,omitempty"`
 	Usage     *agent.Usage `json:"usage,omitempty"`
 	Providers []string     `json:"providers,omitempty"`
+	// Tasks answers tasks: the session's background tasks.
+	Tasks []abhed.TaskInfo `json:"tasks,omitempty"`
 	// WorkspaceTrust, on ready, says whether the workspace file applied whole.
 	WorkspaceTrust *config.WorkspaceTrust `json:"workspace_trust,omitempty"`
 }
