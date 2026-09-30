@@ -44,7 +44,12 @@ func withRecordState(cfg config.Config, opts Options) (config.Config, error) {
 	if !ok {
 		return cfg, nil
 	}
-	cfg.Record.Dir = rec.Dir()
+	// A managed record.dir stays; the handed-in record is added beside it.
+	if cfg.Record.Dir == "" {
+		cfg.Record.Dir = rec.Dir()
+	} else if cfg.Record.Dir != rec.Dir() {
+		cfg.Record.Also = append(cfg.Record.Also, rec.Dir())
+	}
 	if err := sandboxconfig.CheckStatePaths(cfg, opts.Workspace); err != nil {
 		return cfg, fmt.Errorf("abhed: the record at %s: %w", rec.Dir(), err)
 	}

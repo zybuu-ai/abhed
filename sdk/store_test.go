@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -209,5 +210,32 @@ func TestSymlinkedRecordsAreProtectedWhereTheyAre(t *testing.T) {
 	sess, _ := tools.NewSession(ws)
 	if _, err := sess.ReadFile(p); err == nil {
 		t.Fatal("the agent's session reads the record through its real path")
+	}
+}
+
+// A managed record.dir stays state when an embedder hands in another record:
+// both are state for the agent.
+func TestSDKRecordKeepsTheManagedRecordDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ABHED_SECRETS_FILE", "")
+	managed := filepath.Join(home, ".abhed", "org-records")
+	cfg := config.Config{Record: config.RecordConfig{Dir: managed}}
+	rec, err := abhed.OpenLocalRecord("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+	paths := sandboxconfig.StatePaths(cfg, t.TempDir())
+	if !slices.Contains(paths, managed) {
+		t.Fatalf("no managed dir in %v", paths)
+	}
+	got, err := abhed.WithRecordStateForTest(cfg, abhed.Options{Workspace: t.TempDir(), Store: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths = sandboxconfig.StatePaths(got, t.TempDir())
+	if got.Record.Dir != managed || !slices.Contains(paths, managed) || !slices.Contains(paths, rec.Dir()) {
+		t.Fatalf("record.dir %s, state %v", got.Record.Dir, paths)
 	}
 }

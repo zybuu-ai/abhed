@@ -129,6 +129,9 @@ type RecordConfig struct {
 	// RetentionDays, when positive, is how long a session is kept before a
 	// prune may remove it. Zero keeps the record until it is pruned by hand.
 	RetentionDays int `json:"retention_days,omitempty"`
+	// Also are records an embedder hands in beside Dir, never read from a
+	// file; they are state as Dir is.
+	Also []string `json:"-"`
 }
 
 // HooksConfig governs the extension hooks.

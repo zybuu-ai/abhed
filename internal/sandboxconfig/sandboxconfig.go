@@ -71,7 +71,7 @@ func StatePaths(cfg config.Config, workspace string) []string {
 			out = append(out, real)
 		}
 	}
-	return out
+	return append(out, cfg.Record.Also...)
 }
 
 // CheckStatePaths refuses a configured state file that commands could reach:
