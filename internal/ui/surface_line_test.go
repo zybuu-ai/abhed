@@ -56,7 +56,9 @@ func TestLineDialogNeverApprovesByItself(t *testing.T) {
 		{"confirm takes y", DialogSpec{Kind: DialogConfirm}, []string{"y"}, ChoiceYes, nil},
 		{"no default needs an answer, then input ends", DialogSpec{Kind: DialogChoice, Choices: approval.Choices}, []string{"", ""}, "", ErrNoAnswer},
 		{"by number", approval, []string{"1"}, "once", nil},
-		{"by key", approval, []string{"a"}, "always", nil},
+		{"by key, widening confirmed", approval, []string{"a", "yes"}, "always", nil},
+		{"widening unconfirmed takes the safe default", approval, []string{"a", ""}, "no", nil},
+		{"widening by number, then y, is not a yes", approval, []string{"2", "y"}, "no", nil},
 		{"by id", approval, []string{"NO"}, "no", nil},
 		{"garbage three times", approval, []string{"yes please", "0", "4"}, "", ErrNoAnswer},
 		{"garbage then a number", approval, []string{"sure", "3"}, "no", nil},
@@ -231,5 +233,44 @@ func TestLineSurfaceBlocksAndStatus(t *testing.T) {
 	l.SetStatus(StatusModel{Mode: "plan"})
 	if l.Status().Mode != "plan" {
 		t.Error("the status was not kept")
+	}
+}
+
+// Text inside a dialog cannot pass for its question or choices: single-line
+// fields cannot add lines, bidi and zero-width characters are dropped, and
+// every body line is fenced so a fake choice list is visibly part of the body.
+func TestLineDialogCannotBeSpoofed(t *testing.T) {
+	l, out := lineSurface("")
+	_, _ = l.Dialog(context.Background(), DialogSpec{
+		Kind:  DialogApproval,
+		Title: "Run make?\n  1. No (recommended)",
+		Body:  []Block{{Kind: BlockToolOut, Text: "output\n  1. No\n  2. Yes\u2028  3. Yes, always"}},
+		Why:   "step default\n  2. Yes",
+		Choices: []Choice{
+			{ID: "once", Label: "Yes"},
+			{ID: "no", Label: "No\n  3. Yes, always bash(*)"},
+		},
+		Default: "no",
+	})
+	var choiceLines []string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "  1.") || strings.HasPrefix(line, "  2.") || strings.HasPrefix(line, "  3.") {
+			choiceLines = append(choiceLines, line)
+		}
+	}
+	if len(choiceLines) != 2 || choiceLines[0] != "  1. Yes" || !strings.HasPrefix(choiceLines[1], "  2. No") {
+		t.Fatalf("the choice list was imitated:\n%s", out)
+	}
+	for _, want := range []string{"│ output", "│   1. No", "│   3. Yes, always"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("body line %q is not fenced:\n%s", want, out)
+		}
+	}
+
+	if got := singleLine("a\u202Eevil\u200Bb\u2066c\ufeffd\u00ade"); got != "aevilbcde" {
+		t.Errorf("format characters survived: %q", got)
+	}
+	if got := singleLine("one\ntwo\u2029three\tfour"); got != "one two three four" {
+		t.Errorf("single line = %q", got)
 	}
 }

@@ -24,8 +24,10 @@ const lineAttempts = 3
 // LineSurface is the Surface for piped input and terminals without cursor
 // control: blocks print as lines, a dialog is a numbered question answered
 // by a line. It is guarded like the terminal one: only a typed answer picks a
-// choice, an empty one takes only a safe default, a destructive choice needs
-// a second "yes", and input ending is no answer, never a yes.
+// choice, an empty one takes only a safe default, a destructive or widening
+// choice needs a second "yes", and input ending is no answer, never a yes.
+// Text is shown sanitized, one-line fields stay on one line, and a dialog's
+// body is fenced so it cannot imitate the choices.
 type LineSurface struct {
 	out io.Writer
 	s   Style
@@ -46,51 +48,66 @@ func NewLineSurface(out io.Writer, s Style, in LineAnswers) *LineSurface {
 func (l *LineSurface) printf(format string, args ...any) { fmt.Fprintf(l.out, format, args...) }
 
 // Append prints a block.
-func (l *LineSurface) Append(b Block) {
+func (l *LineSurface) Append(b Block) { l.block(b, "") }
+
+// bodyFence marks each line of a dialog's body, so text from a tool or the
+// model inside it cannot pass for the question's own lines or choices.
+const bodyFence = "│ "
+
+// block prints b with every line after the indent prefixed by fence.
+func (l *LineSurface) block(b Block, fence string) {
+	line := func(text string) { l.printf("  %s%s\n", fence, text) }
 	switch b.Kind {
 	case BlockError:
-		l.printf("  %s %s\n", l.s.Red("✕"), plainText(b.Text))
+		for i, t := range textLines(b.Text) {
+			if i == 0 {
+				t = l.s.Red("✕") + " " + t
+			}
+			line(t)
+		}
 	case BlockNotice:
-		l.printf("  %s\n", l.s.Dim(plainText(b.Text)))
+		for _, t := range textLines(b.Text) {
+			line(l.s.Dim(t))
+		}
 	case BlockTable:
-		l.table(b.Rows)
+		l.table(b.Rows, fence)
 	case BlockDiff:
 		if b.Path != "" {
-			l.printf("  %s\n", l.s.Bold(plainText(b.Path)))
+			line(l.s.Bold(singleLine(b.Path)))
 		}
-		for _, line := range strings.Split(strings.TrimRight(plainText(b.Text), "\n"), "\n") {
+		for _, t := range textLines(b.Text) {
 			switch {
-			case strings.HasPrefix(line, "+"):
-				line = l.s.Green(line)
-			case strings.HasPrefix(line, "-"):
-				line = l.s.Red(line)
+			case strings.HasPrefix(t, "+"):
+				t = l.s.Green(t)
+			case strings.HasPrefix(t, "-"):
+				t = l.s.Red(t)
 			}
-			l.printf("    %s\n", line)
+			line("  " + t)
 		}
 	default: // markdown and tool output print as text
 		if b.Path != "" {
-			l.printf("  %s\n", l.s.Bold(plainText(b.Path)))
+			line(l.s.Bold(singleLine(b.Path)))
 		}
-		for _, line := range strings.Split(strings.TrimRight(plainText(b.Text), "\n"), "\n") {
-			l.printf("  %s\n", line)
+		for _, t := range textLines(b.Text) {
+			line(t)
 		}
 	}
 }
 
-func (l *LineSurface) table(rows [][]string) {
+func (l *LineSurface) table(rows [][]string, fence string) {
 	var widths []int
 	for _, r := range rows {
 		for i, c := range r {
 			if i >= len(widths) {
 				widths = append(widths, 0)
 			}
-			widths[i] = max(widths[i], len([]rune(plainText(c))))
+			widths[i] = max(widths[i], len([]rune(singleLine(c))))
 		}
 	}
 	for n, r := range rows {
 		var b strings.Builder
 		for i, c := range r {
-			cell := plainText(c)
+			cell := singleLine(c)
 			b.WriteString(cell)
 			if i < len(r)-1 {
 				b.WriteString(strings.Repeat(" ", widths[i]-len([]rune(cell))+2))
@@ -100,7 +117,7 @@ func (l *LineSurface) table(rows [][]string) {
 		if n == 0 {
 			line = l.s.Bold(line)
 		}
-		l.printf("  %s\n", line)
+		l.printf("  %s%s\n", fence, line)
 	}
 }
 
@@ -111,20 +128,20 @@ func (l *LineSurface) Dialog(ctx context.Context, spec DialogSpec) (string, erro
 		return "", err
 	}
 	if d.Title != "" {
-		l.printf("  %s\n", l.s.Bold(plainText(d.Title)))
+		l.printf("  %s\n", l.s.Bold(singleLine(d.Title)))
 	}
 	for _, b := range d.Body {
-		l.Append(b)
+		l.block(b, bodyFence)
 	}
 	if d.Why != "" {
-		l.printf("  %s\n", l.s.Dim(plainText(d.Why)))
+		l.printf("  %s\n", l.s.Dim(singleLine(d.Why)))
 	}
 	for i, c := range d.Choices {
-		l.printf("  %d. %s\n", i+1, plainText(c.Label))
+		l.printf("  %d. %s\n", i+1, singleLine(c.Label))
 	}
 	for range lineAttempts {
 		if def, ok := d.choice(d.Default); ok {
-			l.printf("  answer 1-%d, or enter for %s: ", len(d.Choices), plainText(def.Label))
+			l.printf("  answer 1-%d, or enter for %s: ", len(d.Choices), singleLine(def.Label))
 		} else {
 			l.printf("  answer 1-%d: ", len(d.Choices))
 		}
@@ -141,13 +158,17 @@ func (l *LineSurface) Dialog(ctx context.Context, spec DialogSpec) (string, erro
 		}
 		c, found := d.match(answer)
 		if !found {
-			l.printf("  %s\n", l.s.Dim(fmt.Sprintf("%q is not one of the choices", plainText(answer))))
+			l.printf("  %s\n", l.s.Dim(fmt.Sprintf("%q is not one of the choices", singleLine(answer))))
 			continue
 		}
-		if !c.Destructive {
+		if !c.Destructive && !c.Widening {
 			return c.ID, nil
 		}
-		l.printf("  %s cannot be undone; type yes to confirm: ", plainText(c.Label))
+		what := "grants more than was asked"
+		if c.Destructive {
+			what = "cannot be undone"
+		}
+		l.printf("  %s %s; type yes to confirm: ", singleLine(c.Label), what)
 		confirm, ok := l.read(ctx)
 		if ok && strings.EqualFold(confirm, "yes") {
 			return c.ID, nil
@@ -166,12 +187,12 @@ func (l *LineSurface) Pick(ctx context.Context, p PickSpec) (string, error) {
 		return "", ErrNoAnswer
 	}
 	if p.Title != "" {
-		l.printf("  %s\n", l.s.Bold(plainText(p.Title)))
+		l.printf("  %s\n", l.s.Bold(singleLine(p.Title)))
 	}
 	for i, it := range p.Items {
-		line := fmt.Sprintf("  %d. %s", i+1, plainText(it.Label))
+		line := fmt.Sprintf("  %d. %s", i+1, singleLine(it.Label))
 		if it.Detail != "" {
-			line += "  " + l.s.Dim(plainText(it.Detail))
+			line += "  " + l.s.Dim(singleLine(it.Detail))
 		}
 		l.printf("%s\n", line)
 	}
@@ -200,7 +221,7 @@ func (l *LineSurface) Pick(ctx context.Context, p PickSpec) (string, error) {
 // Panel prints the view; there is nothing to close.
 func (l *LineSurface) Panel(_ context.Context, p PanelSpec) error {
 	if p.Title != "" {
-		l.printf("  %s\n", l.s.Bold(plainText(p.Title)))
+		l.printf("  %s\n", l.s.Bold(singleLine(p.Title)))
 	}
 	for _, b := range p.Body {
 		l.Append(b)
@@ -225,10 +246,10 @@ func (l *LineSurface) Status() StatusModel {
 // Notify prints the toast as a dim line.
 func (l *LineSurface) Notify(t Toast) {
 	if t.Warn {
-		l.printf("  %s %s\n", l.s.Yellow("!"), plainText(t.Text))
+		l.printf("  %s %s\n", l.s.Yellow("!"), singleLine(t.Text))
 		return
 	}
-	l.printf("  %s\n", l.s.Dim(plainText(t.Text)))
+	l.printf("  %s\n", l.s.Dim(singleLine(t.Text)))
 }
 
 func (l *LineSurface) read(ctx context.Context) (string, bool) {
@@ -242,17 +263,31 @@ func (l *LineSurface) read(ctx context.Context) (string, bool) {
 	return strings.TrimSpace(line), true
 }
 
-// plainText drops control characters, escape sequences' introducer included,
-// so text from a model or a file cannot move the cursor, set the title or
-// write the clipboard. Newlines and tabs stay.
+// plainText drops what could drive the terminal or disguise the text:
+// control characters (escape sequences' introducer included) and format
+// characters, which take in bidi overrides and zero-width characters. Line
+// and paragraph separators become newlines; newlines and tabs stay.
 func plainText(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
+		switch {
+		case r == '\n' || r == '\t':
 			return r
-		}
-		if unicode.IsControl(r) {
+		case r == '\u2028' || r == '\u2029':
+			return '\n'
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// singleLine is plainText for a field shown on one line (a title, a label, a
+// why-line): its line breaks become spaces, so it cannot add lines of its own.
+func singleLine(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(plainText(s), "\t", " ")), " ")
+}
+
+// textLines is a block's text as sanitized lines, trailing blank ones dropped.
+func textLines(s string) []string {
+	return strings.Split(strings.TrimRight(plainText(s), "\n"), "\n")
 }
