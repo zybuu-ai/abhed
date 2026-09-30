@@ -120,7 +120,8 @@ func personBash(ctx context.Context, st *cliState, sf ui.Surface, cmd, descripti
 func bangContext(cmd, out string, code *int) string {
 	exit := ""
 	if code != nil && *code != 0 {
-		exit = fmt.Sprintf("\n<bash-exit-code>%d</bash-exit-code>", *code)
+		exit = fmt.Sprintf(" exit=%d", *code)
 	}
-	return fmt.Sprintf("The person ran a shell command with !:\n<bash-input>%s</bash-input>\n<bash-output>%s</bash-output>%s", cmd, out, exit)
+	return "The person ran a shell command with !. " + untrustedNote + "\n" +
+		fenced("bash-input", "", cmd) + "\n" + fenced("bash-output", strings.TrimSpace(exit), out)
 }

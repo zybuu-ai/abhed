@@ -166,7 +166,7 @@ func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw strin
 	if len(blocks) == 0 {
 		return agent.Message{Text: raw}, nil, nil
 	}
-	text := raw + "\n\nFiles the person attached with @, read through the session's policy:\n" + strings.Join(blocks, "\n")
+	text := raw + "\n\nFiles the person attached with @, read through the session's policy. " + untrustedNote + "\n" + strings.Join(blocks, "\n")
 	return agent.Message{Text: text}, atts, nil
 }
 
@@ -211,7 +211,7 @@ func attachFile(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs 
 	sum := sha256.Sum256([]byte(content))
 	att = Attachment{Path: rel, Range: ref.Range(), SHA256: hex.EncodeToString(sum[:]),
 		Bytes: int64(len(content)), Truncated: truncated || res.Truncated}
-	return fmt.Sprintf("<file path=%q%s>\n%s%s\n</file>", rel, lines, content, note), att, "", nil
+	return fenced("file", fmt.Sprintf("path=%q%s", rel, lines), content+note), att, "", nil
 }
 
 // attachDir lists a directory's files through the glob tool as the person,
@@ -247,7 +247,7 @@ func attachDir(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs s
 	sum := sha256.Sum256([]byte(content))
 	att = Attachment{Path: rel + "/", SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(content)),
 		Truncated: truncated || res.Truncated}
-	return fmt.Sprintf("<directory path=%q>\n%s\n</directory>", rel+"/", content), att, "", nil
+	return fenced("directory", fmt.Sprintf("path=%q", rel+"/"), content), att, "", nil
 }
 
 // capText cuts text to at most n bytes at a line or character boundary.

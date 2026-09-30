@@ -216,7 +216,7 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 			return ""
 		}
 		out, _ := capText(strings.TrimRight(res.Content, "\n"), bangOutputMax)
-		return out
+		return fenced("command-output", "", out)
 	})
 	if failed {
 		return fmt.Errorf("%s was not sent: one of its shell lines did not run", c.Name)
