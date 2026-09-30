@@ -146,3 +146,22 @@ func TestRevealMarksAJoinerOutsideEmoji(t *testing.T) {
 		}
 	}
 }
+
+// Conceal (SGR 8) is dropped from printed text; colours that happen to hold
+// an 8, and the rest of the token, are kept.
+func TestSanitizeDropsConceal(t *testing.T) {
+	for in, want := range map[string]string{
+		"a\x1b[8mhidden\x1b[0m":      "ahidden\x1b[0m",
+		"a\x1b[1;8;31mb":             "a\x1b[1;31mb",
+		"a\x1b[08mb":                 "ab",
+		"a\x1b[38;5;8mb":             "a\x1b[38;5;8mb",
+		"a\x1b[48;2;8;8;8;8mb":       "a\x1b[48;2;8;8;8mb",
+		"a\x1b[38:5:8mb":             "a\x1b[38:5:8mb",
+		"a\x1b[1mb\x1b[28mc":         "a\x1b[1mb\x1b[28mc",
+		"a\x1b[38;5;196;8;4mb\x1b[m": "a\x1b[38;5;196;4mb\x1b[m",
+	} {
+		if got := sanitize(in, true); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

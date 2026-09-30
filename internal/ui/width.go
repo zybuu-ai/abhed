@@ -399,7 +399,7 @@ func sanitize(s string, keepSGR bool) string {
 	forEachToken(s, func(tok string, esc bool) {
 		if esc {
 			if keepSGR && isSGR(tok) && safeSGR(tok) {
-				b.WriteString(tok)
+				b.WriteString(dropConceal(tok))
 			}
 			return
 		}
@@ -464,6 +464,43 @@ func safeSGR(tok string) bool {
 		}
 	}
 	return true
+}
+
+// dropConceal removes SGR 8 (conceal) from a safe SGR token, so printed text
+// cannot be made invisible on screen while it is still there to copy. The
+// colour arguments of 38, 48 and 58 are kept whole: the 8 in "38;5;8" is a
+// colour. A token left with no parameters is dropped rather than becoming a
+// reset.
+func dropConceal(tok string) string {
+	ps := strings.Split(tok[2:len(tok)-1], ";")
+	out := make([]string, 0, len(ps))
+	for i := 0; i < len(ps); i++ {
+		p := ps[i]
+		if (p == "38" || p == "48" || p == "58") && i+1 < len(ps) {
+			n := 0
+			switch ps[i+1] {
+			case "5":
+				n = 2
+			case "2":
+				n = 4
+			}
+			end := min(len(ps), i+1+n)
+			out = append(out, ps[i:end]...)
+			i = end - 1
+			continue
+		}
+		if strings.TrimLeft(p, "0") == "8" {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == len(ps) {
+		return tok
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "\x1b[" + strings.Join(out, ";") + "m"
 }
 
 // CleanText is sanitize for callers outside the package: text, and SGR
