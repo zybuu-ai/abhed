@@ -200,6 +200,15 @@ func slashExport(ctx context.Context, fields []string, r *ui.Renderer,
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(st.workspace, path) // named from where the session works
 		}
+		if !insideDir(path, st.workspace) && !inExports(path) {
+			answer, err := st.ui().Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm,
+				Title: fmt.Sprintf("Write the transcript to %s, outside the workspace?", path),
+				Why:   "an export goes to ~/.abhed/exports or the workspace unless you say otherwise"})
+			if err != nil || answer != ui.ChoiceYes {
+				fmt.Println(s.Dim("  not exported"))
+				return false
+			}
+		}
 	}
 	format := "html"
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -221,15 +230,23 @@ func slashExport(ctx context.Context, fields []string, r *ui.Renderer,
 	case onLocal:
 		var e local.Entry
 		if e, err = rec.Index().Get(st.sessionID); err == nil {
-			_, err = exportSession(rec, e, format, path, os.Stdout, false)
+			_, err = exportSession(rec, e, format, path, os.Stdout, false, st.workspace)
 		}
-	case format == "json":
-		var data []byte
-		if data, err = json.MarshalIndent(events, "", "  "); err == nil {
-			err = os.WriteFile(path, append(data, '\n'), 0o600)
+	case format == "json" || format == "html":
+		data := []byte(agent.ExportHTML(st.sessionID, events) + "\n")
+		if format == "json" {
+			data, err = json.MarshalIndent(events, "", "  ")
+			data = append(data, '\n')
 		}
-	case format == "html":
-		err = os.WriteFile(path, []byte(agent.ExportHTML(st.sessionID, events)+"\n"), 0o600)
+		var f *os.File
+		if err == nil {
+			if f, err = openExport(path, st.workspace); err == nil {
+				_, err = f.Write(data)
+				if cerr := f.Close(); err == nil {
+					err = cerr
+				}
+			}
+		}
 	default:
 		err = fmt.Errorf("%s export needs the local record; use .html or .json", format)
 	}
@@ -572,6 +589,14 @@ func storageLabel(cfg config.Config) string {
 		dir = "~/.abhed/records"
 	}
 	return "local record, chained (" + dir + "; abhed record verify)"
+}
+
+// insideDir reports whether path's folder is dir or under it, by real
+// paths; where the name itself leads is openExport's to judge.
+func insideDir(path, dir string) bool {
+	where := filepath.Join(tools.RealPath(filepath.Dir(path)), filepath.Base(path))
+	rel, err := filepath.Rel(tools.RealPath(dir), where)
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // releaseConversation lets go of the conversation this process was

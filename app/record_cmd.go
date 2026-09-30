@@ -46,6 +46,8 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1
 	}
+	// A moved record is state here too, so no export is written into it.
+	registerState(cfg, workspace)
 	rec, err := openRecord(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
@@ -318,7 +320,7 @@ func (c recordCtx) export(args []string) int {
 	if err != nil {
 		return c.fail("%v", err)
 	}
-	n, err := exportSession(c.rec, e, *format, path, c.out, *unverified)
+	n, err := exportSession(c.rec, e, *format, path, c.out, *unverified, c.workspace)
 	if err != nil {
 		return c.fail("%v", err)
 	}
@@ -352,7 +354,7 @@ func exportPath(given, id, format string) (string, error) {
 
 // exportSession writes session e in format to path, "-" for stdout, and
 // returns how many events it holds. The record is already redacted.
-func exportSession(rec *local.Store, e local.Entry, format, path string, stdout io.Writer, unverified bool) (int, error) {
+func exportSession(rec *local.Store, e local.Entry, format, path string, stdout io.Writer, unverified bool, roots ...string) (int, error) {
 	// Checked before anything is written: a record that fails goes out only
 	// when asked for, and marked.
 	rep, err := rec.Verify(e.ID)
@@ -373,7 +375,7 @@ func exportSession(rec *local.Store, e local.Entry, format, path string, stdout 
 	w := stdout
 	var f *os.File
 	if path != "-" {
-		if f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err != nil { // #nosec G304 -- the person names the file
+		if f, err = openExport(path, roots...); err != nil {
 			return 0, err
 		}
 		w = f

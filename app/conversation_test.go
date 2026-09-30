@@ -173,7 +173,12 @@ func (c *cliSession) waitFor(ok func(string) bool, what string) {
 // export writes the conversation's record and returns it.
 func (c *cliSession) export() []agent.Event {
 	c.t.Helper()
-	path := filepath.Join(c.t.TempDir(), "record.json")
+	// Inside the workspace: an export elsewhere asks first.
+	dir, err := os.MkdirTemp(c.ws, "export-")
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	path := filepath.Join(dir, "record.json")
 	c.command("/export "+path, "wrote ")
 	raw, err := os.ReadFile(path)
 	if err != nil {

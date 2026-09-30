@@ -458,3 +458,57 @@ func TestSecretsNeverReachTheRecord(t *testing.T) {
 	}
 	verified(t, g.record(), g.sessions()[0].ID)
 }
+
+// The review's probe: the agent plants a link in the workspace to the
+// record, and the person exports to that name. The export is refused and
+// the record is untouched; so is one over a hard link, or into the record.
+// An export outside the workspace asks first.
+func TestExportDoesNotFollowAPlantedLink(t *testing.T) {
+	g := newSessRig(t)
+	c := g.start()
+	g.ask(c, "Remember the codeword ZEBRA-41.")
+	id := func() string {
+		s := g.sessions()
+		return s[0].ID
+	}()
+	recPath := filepath.Join(g.home, ".abhed", "records", "default", id+".jsonl")
+	before, _ := os.ReadFile(recPath)
+	if err := os.Symlink(recPath, filepath.Join(g.ws, "notes.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	c.command("/export notes.jsonl", "an export is never written there")
+	idx := filepath.Join(g.home, ".abhed", "records", "default", "index.jsonl")
+	c.command("/export "+idx, "outside the workspace")
+	fmt.Fprintln(c.stdin, "yes")
+	c.waitFor(func(out string) bool { return strings.Contains(out, "Abhed's own state") }, "the refusal")
+	other := filepath.Join(t.TempDir(), "x.html")
+	c.command("/export "+other, "outside the workspace")
+	fmt.Fprintln(c.stdin, "no")
+	c.waitFor(func(out string) bool { return strings.Contains(out, "not exported") }, "the refusal")
+	exit(c)
+	if after, _ := os.ReadFile(recPath); !bytes.Equal(before, after) {
+		t.Fatal("the export wrote through the link into the record")
+	}
+	if _, err := os.Stat(other); err == nil {
+		t.Fatal("an unconfirmed export outside the workspace was written")
+	}
+	verified(t, g.record(), id)
+
+	// abhed record export -o refuses a link and a hard link too.
+	for _, planted := range []func(string) error{
+		func(p string) error { return os.Symlink(recPath, p) },
+		func(p string) error { return os.Link(recPath, p) },
+	} {
+		p := filepath.Join(t.TempDir(), "out.jsonl")
+		if err := planted(p); err != nil {
+			t.Fatal(err)
+		}
+		out, err := g.cmd("record", "export", id, "-o", p).CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "an export is never written there") && !strings.Contains(string(out), "an export does not write") {
+			t.Fatalf("record export over a planted name: %v %s", err, out)
+		}
+	}
+	if after, _ := os.ReadFile(recPath); !bytes.Equal(before, after) {
+		t.Fatal("record export wrote into the record")
+	}
+}
