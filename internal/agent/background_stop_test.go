@@ -132,3 +132,36 @@ func TestStopWhileTasksPreparesRefusesThem(t *testing.T) {
 		t.Fatalf("started after a stop: %+v, live %d", res, r.l.Background.Live())
 	}
 }
+
+// A Stop while idle in auto is not followed by a wake: the stopped tasks'
+// results are recorded as skipped:stopped and no model call is made, until
+// the next prompted run, after which results wake again.
+func TestStopWhileIdleBlocksWakeUntilPrompted(t *testing.T) {
+	r := newBGRig(t, WakeAuto, "one", "two")
+	r.l.Background.policy.MaxWakesPerHour = 4
+	h := hostFor(r, true)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "children's calls", func() bool { return r.m.childrenInCall() == 2 })
+	calls := r.m.calls.Load()
+	r.l.Background.CancelAll(TermUserInterrupt) // Stop in the console while idle
+	waitFor(t, "notices", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 2 })
+	h.wg.Wait()
+	time.Sleep(100 * time.Millisecond)
+	if w := payloads[SessionWoken](r.events(t), EvSessionWoken); len(w) != 0 || r.m.calls.Load() != calls {
+		t.Fatalf("a wake ran after Stop: %+v, %d model calls", w, r.m.calls.Load()-calls)
+	}
+	for _, n := range payloads[Notice](r.events(t), EvSubagentNotice) {
+		if n.Wake != "skipped:stopped" {
+			t.Fatalf("a stopped task's result: wake %q, want skipped:stopped", n.Wake)
+		}
+	}
+	// The next prompted run lifts it.
+	if _, err := r.l.Run(context.Background(), "thanks"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := r.l.Background.canWake(); !ok && why == "stopped" {
+		t.Fatal("a prompted run did not lift the stop's hold on wakes")
+	}
+}

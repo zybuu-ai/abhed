@@ -537,10 +537,13 @@ func (l *Loop) unlockRun() {
 }
 
 func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
-	// This run sees every result delivered while the session was idle.
+	// This run sees every result delivered while the session was idle, and
+	// ends the hold an explicit stop put on wakes: no wake of the session's
+	// own starts while it holds, so this run is one the person asked for.
 	if b := l.Background; b != nil {
 		b.mu.Lock()
 		b.unacted = 0
+		b.stopped = false
 		b.mu.Unlock()
 	}
 	for {

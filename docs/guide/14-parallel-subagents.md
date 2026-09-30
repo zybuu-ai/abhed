@@ -227,7 +227,9 @@ answer their asks.
 is still starting its tasks: none starts after the stop ("stopped before this
 background task started"), and a task whose start was already recorded ends
 at once with the stop's reason. "Send now" redirects the run and keeps the
-tasks already running.
+tasks already running. After an explicit stop no result wakes the session
+until your next message, even in `auto`: the stopped tasks' results are
+recorded as `skipped:stopped` and wait for that message.
 A run that ends in `error`, `max_turns` or `max_budget` takes them with it.
 Ending the conversation (`/exit`, `/clear`, `/resume`, SDK `Close`, rpc `quit`)
 ends them as `session_closed`; deleting a session, as `session_deleted`; a

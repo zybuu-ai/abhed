@@ -155,6 +155,9 @@ type Background struct {
 	// one's reason: a spawn that began before a stop does not start after it.
 	epoch      int
 	stopReason TerminalReason
+	// stopped is set by an explicit stop and cleared by the next prompted
+	// run: until then no result wakes the session.
+	stopped bool
 }
 
 // ErrStopped refuses a background spawn that began before a stop.
@@ -175,6 +178,7 @@ func (b *Background) markStop(reason TerminalReason) {
 	b.mu.Lock()
 	b.epoch++
 	b.stopReason = reason
+	b.stopped = true
 	b.mu.Unlock()
 }
 
@@ -709,8 +713,11 @@ func (b *Background) canWake() (bool, string) {
 	last, can := b.lastReason, b.hooks.CanWake
 	most := b.policy.MaxWakesPerHour
 	recent := b.recentWakesLocked()
+	stopped := b.stopped
 	b.mu.Unlock()
 	switch {
+	case stopped:
+		return false, "stopped"
 	case last != TermCompleted && last != TermWakeLimit:
 		return false, "last_run_" + orNone(string(last))
 	case l.Budget.Exhausted():
