@@ -78,7 +78,9 @@ With `-output-format text`, stdout is only that JSON; with `json` or
 - `-system-prompt` and `-system-prompt-file` replace it. Both are refused
   under a managed configuration, whose instructions the prompt carries.
 - The session's `session.started` event records which of these were used as
-  a SHA-256 of the text supplied, never the text.
+  a SHA-256 of the text supplied, never the text. It also records the
+  permission `mode` the run started in, and `bypass_confirmed`, true only
+  when bypass came from a confirmed `-dangerously-skip-permissions`.
 - There is no way to run without a record.
 
 ### Familiar flag spellings

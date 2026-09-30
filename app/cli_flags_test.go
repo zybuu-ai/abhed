@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -151,5 +152,28 @@ func TestSystemPromptFlags(t *testing.T) {
 	}
 	if _, err := systemPromptFlags(&cliFlags{appendSystem: "x"}, config.Config{Managed: true}); err != nil {
 		t.Fatalf("appending under managed: %v", err)
+	}
+}
+
+// After the yes, bypass is the session's mode, and session.started says so.
+func TestSkipPermissionsTakesEffectAfterYes(t *testing.T) {
+	cfg := config.Default()
+	f := &cliFlags{skipPerms: true}
+	if err := skipPermissions(cfg, f, func(config.Config) error { return errors.New("no") }); err == nil || f.mode != "" {
+		t.Fatalf("a refusal set %q", f.mode)
+	}
+	if err := skipPermissions(cfg, f, func(config.Config) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got, err := applyFlags(cfg, f.mode, 0, "", "", "")
+	if err != nil || got.Permissions.Mode != "bypass" {
+		t.Fatalf("mode %q %v", got.Permissions.Mode, err)
+	}
+	start := startPayload(got, f, true, "m")
+	if start["mode"] != "bypass" || start["bypass_confirmed"] != true {
+		t.Fatalf("%v", start)
+	}
+	if s := startPayload(config.Default(), &cliFlags{}, false, "m"); s["mode"] != "default" || s["bypass_confirmed"] != false {
+		t.Fatalf("%v", s)
 	}
 }

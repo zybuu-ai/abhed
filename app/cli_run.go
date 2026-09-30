@@ -54,12 +54,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fmt.Fprintf(os.Stderr, "abhed: -model: %v\n", err)
 		return 2
 	}
-	if f.skipPerms {
-		if err := confirmBypass(cfg, os.Stdin, os.Stderr); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
-			return 2
-		}
-		f.mode = string(policy.ModeBypass)
+	if err := skipPermissions(cfg, f, func(c config.Config) error { return confirmBypass(c, os.Stdin, os.Stderr) }); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
 	}
 	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
 		fail(err)
@@ -172,7 +169,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 	loopCfg.SystemPrompt = sysPrompt.apply(toolset.SystemPrompt(workspace, adapter, set.SkillListing, registry.Names()))
-	start := map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": provider.Model}
+	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)
 
 	// The CLI uses whatever the config selects. Previously this was hardcoded
@@ -386,6 +383,27 @@ func checkHeadlessFlags(f *cliFlags) int {
 		return bad("-include-partial-messages needs -output-format stream-json")
 	}
 	return 0
+}
+
+// skipPermissions applies -dangerously-skip-permissions: bypass, once
+// confirm has said yes.
+func skipPermissions(cfg config.Config, f *cliFlags, confirm func(config.Config) error) error {
+	if !f.skipPerms {
+		return nil
+	}
+	if err := confirm(cfg); err != nil {
+		return err
+	}
+	f.mode = string(policy.ModeBypass)
+	return nil
+}
+
+// startPayload is what session.started records about how the CLI started,
+// including the permission mode and whether bypass came from a confirmed
+// -dangerously-skip-permissions.
+func startPayload(cfg config.Config, f *cliFlags, headless bool, model string) map[string]any {
+	return map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": model,
+		"mode": orDefault(cfg.Permissions.Mode, "default"), "bypass_confirmed": f.skipPerms}
 }
 
 // confirmBypass asks, on a terminal, before -dangerously-skip-permissions
