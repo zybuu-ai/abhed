@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -173,4 +174,57 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 func hashOf(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// BranchCopy is what a branch of a session copies, as the new session's
+// events from seq first on: the conversation as it stands through step
+// through (0 for all of it), forks applied, and every checkpoint and
+// restore up to that step, abandoned branches included, since the files
+// they changed are still as they left them. Streamed fragments stay behind.
+// Each copy gets a new id and seq, and a restore's checkpoint is renumbered
+// to match, so the branch's undo log is the source's.
+func BranchCopy(events []Event, through int64, sessionID string, first int64) []Event {
+	keep := map[int64]bool{}
+	for _, ev := range Live(events) {
+		keep[ev.Seq] = true
+	}
+	var picked []Event
+	for _, ev := range events {
+		if through > 0 && ev.Seq > through {
+			continue
+		}
+		switch {
+		case ev.Type == EvAgentDelta || ev.Type == EvAgentReasoningDelta || ev.Type == EvForked:
+			continue
+		case keep[ev.Seq], ev.Type == EvCheckpoint, ev.Type == EvFileRestored:
+			picked = append(picked, ev)
+		}
+	}
+	sort.SliceStable(picked, func(i, j int) bool { return picked[i].Seq < picked[j].Seq })
+	old := make([]int64, len(picked))
+	for i := range picked {
+		old[i] = picked[i].Seq
+	}
+	// renumber maps a source seq to the first copied seq at or after it.
+	renumber := func(seq int64) int64 {
+		i := sort.Search(len(old), func(i int) bool { return old[i] >= seq })
+		return first + int64(i)
+	}
+	out := make([]Event, len(picked))
+	for i, ev := range picked {
+		ev.ID, ev.SessionID, ev.ParentID, ev.Seq = newID(), sessionID, "", first+int64(i)
+		if ev.Type == EvFileRestored {
+			var r FileRestored
+			if json.Unmarshal(ev.Payload, &r) == nil {
+				if used, err := strconv.ParseInt(r.Checkpoint, 10, 64); err == nil {
+					r.Checkpoint = strconv.FormatInt(renumber(used), 10)
+					if raw, err := json.Marshal(r); err == nil {
+						ev.Payload = raw
+					}
+				}
+			}
+		}
+		out[i] = ev
+	}
+	return out
 }

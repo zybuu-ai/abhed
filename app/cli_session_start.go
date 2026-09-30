@@ -455,45 +455,32 @@ func adoptBranch(st *cliState, id string) error {
 // Its record opens with session.branched naming the source and the last seq
 // taken, then the copied events, renumbered; the source is not touched.
 func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, from string, events []agent.Event, through int64, unverified string) (string, error) {
-	copied := branchEvents(events, through)
+	id := newConversationID()
+	copied := agent.BranchCopy(events, through, id, 2)
 	if len(copied) == 0 {
 		return "", fmt.Errorf("nothing to branch from %s", from)
 	}
-	id := newConversationID()
+	last := through
+	if last == 0 {
+		for _, ev := range events {
+			last = max(last, ev.Seq)
+		}
+	}
 	if err := recordSession(ctx, es, id, cfg); err != nil {
 		return "", err
 	}
 	rec := agent.NewRecorder(es, id, "")
 	rec.Redact = openVault().Redactor()
 	if _, err := rec.Record(agent.EvSessionBranched, agent.ActorUser, agent.Trusted,
-		agent.SessionBranched{From: from, ThroughSeq: copied[len(copied)-1].Seq, Unverified: unverified}); err != nil {
+		agent.SessionBranched{From: from, ThroughSeq: last, Unverified: unverified}); err != nil {
 		return "", err
 	}
-	for i, ev := range copied {
-		// A new id: event ids are unique across sessions, as Postgres keys them.
-		ev.ID, ev.SessionID, ev.ParentID, ev.Seq = agent.NewEventID(), id, "", int64(i+2)
+	for _, ev := range copied {
 		if err := es.Append(ev); err != nil {
 			return "", fmt.Errorf("copy into %s: %w", id, err)
 		}
 	}
 	return id, nil
-}
-
-// branchEvents is the part of a record a branch copies: the conversation as
-// it stands, forks applied, through seq.
-func branchEvents(events []agent.Event, through int64) []agent.Event {
-	var out []agent.Event
-	for _, ev := range agent.Live(events) {
-		if through > 0 && ev.Seq > through {
-			break
-		}
-		// A background child's live events stay with the session that ran it.
-		if ev.Type == agent.EvAgentDelta || ev.Type == agent.EvAgentReasoningDelta {
-			continue
-		}
-		out = append(out, ev)
-	}
-	return out
 }
 
 // afterOpen records what was waiting for the conversation to exist: the

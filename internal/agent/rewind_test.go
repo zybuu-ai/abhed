@@ -202,3 +202,52 @@ func TestRestoreStaysInTheSession(t *testing.T) {
 		t.Fatalf("the file outside the session was written: %q", b)
 	}
 }
+
+// The review's probe: a branch renumbers events, and a restore's checkpoint
+// must follow, or the branch's undo log offers pre-images already put back.
+// The branch rebuilds the source's undo log and conversation exactly.
+func TestBranchCopyKeepsTheUndoLog(t *testing.T) {
+	get := func(string) ([]byte, error) { return []byte("x"), nil }
+	orig := []Event{
+		ev(1, EvUserMessage, Message{Text: "one"}),
+		ev(2, EvAgentDelta, Delta{Text: "d"}),
+		ev(3, EvCheckpoint, CheckpointSaved{Path: "/w/a", SHA256: "h1", Turn: 1}),
+		ev(4, EvAgentDelta, Delta{Text: "d"}),
+		ev(5, EvCheckpoint, CheckpointSaved{Path: "/w/b", SHA256: "h2", Turn: 1}),
+		ev(6, EvFileRestored, FileRestored{Path: "/w/b", Checkpoint: "5", By: "user"}),
+		ev(7, EvUserMessage, Message{Text: "two"}),
+		ev(8, EvCheckpoint, CheckpointSaved{Path: "/w/c", SHA256: "h3", Turn: 2}),
+		ev(9, EvForked, Forked{ThroughSeq: 6}),
+		ev(10, EvUserMessage, Message{Text: "three"}),
+	}
+	u := NewUndoLog(nil, nil)
+	u.Rebuild(orig, get)
+	br := append([]Event{ev(1, EvSessionBranched, SessionBranched{From: "s", ThroughSeq: 10})}, BranchCopy(orig, 0, "b", 2)...)
+	b := NewUndoLog(nil, nil)
+	b.Rebuild(br, get)
+	if u.Peek(0) != b.Peek(0) || u.Pending() != b.Pending() {
+		t.Fatalf("checkpoints pending: original %d, branch %d", u.Peek(0), b.Peek(0))
+	}
+	ou, bu := u.Since(0), b.Since(0)
+	if len(ou) != len(bu) {
+		t.Fatalf("since: %+v vs %+v", ou, bu)
+	}
+	for i := range ou {
+		if ou[i].Path != bu[i].Path || ou[i].Blob != bu[i].Blob {
+			t.Fatalf("checkpoint %d: %+v vs %+v", i, ou[i], bu[i])
+		}
+	}
+	mo, _ := Fork(orig, 0)
+	mb, _ := Fork(br, 0)
+	if dump(mo) != dump(mb) {
+		t.Fatalf("conversation:\n%s\nvs\n%s", dump(mo), dump(mb))
+	}
+	for _, e := range br[1:] {
+		if e.SessionID != "b" || e.Type == EvAgentDelta || e.Type == EvForked {
+			t.Fatalf("copied %+v", e)
+		}
+	}
+	if br[1].ID == orig[0].ID {
+		t.Fatal("a copy kept its source id")
+	}
+}

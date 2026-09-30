@@ -257,7 +257,7 @@ func TestForkSessionLeavesTheOriginal(t *testing.T) {
 	}
 	// Fork of the copy through the copied part is the original's conversation.
 	want, _ := agent.Fork(before, 0)
-	got, _ := agent.Fork(evs, int64(len(branchEvents(before, 0))+1))
+	got, _ := agent.Fork(evs, int64(len(agent.BranchCopy(before, 0, "x", 2))+1))
 	if w, _ := json.Marshal(want); !bytes.Equal(w, mustJSON(got)) {
 		t.Fatalf("the copy's conversation differs:\n got %s\nwant %s", mustJSON(got), w)
 	}
