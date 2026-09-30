@@ -1649,7 +1649,12 @@ function askApproval(p, rid){
       const body = {approved:ok, request_id:rid}; if(scope) body.scope = scope;
       try{ const r = await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(body)});
         if(r && r.applied === false) settleAsk(p.call_id, 'recorded, but the run had already moved on'); }
-      catch(e){ if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
+      catch(e){
+        // While the run goes on, a 409 means it is not waiting on this request now: answered
+        // elsewhere, or queued behind another. The record settles the card; until then it stays.
+        if(e.status === 409 && live){ const n = a.querySelector('.note') || a.appendChild(el('p', 'note')); n.textContent = 'Not taken: the run is not waiting on this request right now. This stays open until the record settles it.';
+          btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); recheckSoon(); return; }
+        if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
         // Only the server running the session can check the answer against its request.
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
         a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };

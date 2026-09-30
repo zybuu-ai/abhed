@@ -25,4 +25,24 @@ render({seq:3, type:'subagent.ask', payload:{session:'child', subagent:'clean up
 render({seq:4, type:'subagent.action', payload:{session:'child', call_id:'c1', tool:'bash', decision:'denied', by:'system', request_id:'cev9'}});
 check('a subagent.action settles its card', !cards().some(c => c.isConnected && c.textContent.includes('touch b')));
 
+// While the run goes on, a 409 keeps the card answerable for the record to
+// settle; after the run it retires the card.
+globalThis.__reject = null;
+const rejecting = async (path, opts) => { if(__reject){ const e = new Error(__reject); __reject = null; throw e; } __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+render({seq:5, type:'subagent.ask', payload:{session:'child', subagent:'clean up', request_id:'cev11', call_id:'c5', tool:'bash', args:{command:'touch q'}}});
+const queuedCard = cards().find(c => c.textContent.includes('touch q'));
+__api = rejecting; __reject = 'that approval is no longer pending';
+queuedCard.querySelector('.yes').onclick(); await tick();
+check('a 409 during a run keeps the card, answerable, and says so',
+  queuedCard.isConnected && !queuedCard.querySelector('.yes').disabled && queuedCard.textContent.includes('Not taken'));
+__posted.length = 0; queuedCard.querySelector('.yes').onclick(); await tick();
+check('a second answer names the same request', __posted.length === 1 && __posted[0].body.request_id === 'cev11');
+render({seq:6, type:'subagent.action', payload:{session:'child', call_id:'c5', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev11'}});
+check('and the record settles it', !queuedCard.isConnected);
+render({seq:7, type:'subagent.ask', payload:{session:'child', subagent:'clean up', request_id:'cev12', call_id:'c6', tool:'bash', args:{command:'touch r'}}});
+const lateCard = cards().find(c => c.textContent.includes('touch r'));
+live = false; __reject = 'that approval is no longer pending';
+lateCard.querySelector('.yes').onclick(); await tick();
+check('a 409 after the run retires the card', !lateCard.isConnected);
+
 if(!ok) process.exit(1);

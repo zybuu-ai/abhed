@@ -1630,11 +1630,18 @@ function approval(p, rid){
       if(scope) resolveApproval(p.call_id, 'always allowed', 'ok', scope);
       else resolveApproval(p.call_id, ok ? 'approved' : 'rejected', ok ? 'ok' : 'no');
     }catch(e){
-      // A 409 means the session already moved on — the decision was made
-      // elsewhere, or this is a replay of a finished session. Say so and
-      // retire the card; re-enabling the buttons would invite a click that
-      // can never succeed.
+      // A 409 on a finished session, or a replay of one, can never succeed:
+      // retire the card. While the run goes on it means the run is not
+      // waiting on this request now, because it was answered elsewhere or is
+      // queued behind another: keep the card for the record to settle.
       const stale = /no approval is pending|no longer pending|already answered|session not found/i.test(e.message);
+      if(stale && live && !/session not found/i.test(e.message)){
+        let n = card.querySelector('.note');
+        if(!n){ n = node('note'); card.appendChild(n); }
+        n.textContent = 'Not taken: the run is not waiting on this request right now. This stays open until the record settles it.';
+        buttons.forEach(b => { b.disabled = false; });
+        return;
+      }
       if(stale){
         resolveApproval(p.call_id, 'no longer awaiting a decision');
         return;

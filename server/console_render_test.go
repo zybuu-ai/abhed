@@ -64,7 +64,8 @@ globalThis.refresh = ()=>{};
 globalThis.openDrawer = ()=>{};
 globalThis.paintOpenPill = ()=>{};
 globalThis.__posted = [];
-const api = async (path, opts) => { __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+let __api = async (path, opts) => { __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+const api = (path, opts) => __api(path, opts);
 function newTurn(){ turnEl = node('turn'); tx.appendChild(turnEl); return turnEl; }
 `
 	if out, err := runConsoleCases(t, "ask", harness, "console_ask_cases.mjs"); err != nil {

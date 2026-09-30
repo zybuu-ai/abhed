@@ -148,13 +148,26 @@ check('a prompt with a reused call id sends nothing for the new request', __post
 open()[0].querySelector('.btns').firstChild.on.click(); await tick();
 check('the new request is answered by its own id', __posted.length === 1 && __posted[0].body.request_id === 'ev4');
 
-// Either 409 settles the prompt: the server will not take an answer for it.
+// While the run goes on, a 409 means it is not waiting on this request now:
+// the prompt stays answerable, says so, asks the server again, and is settled
+// by the record. Once the run has ended, a 409 settles it.
 for(const msg of ['no approval is pending for this session', 'that approval is no longer pending']){
   fresh('s10', true);
   render(write(1));
   __defer('POST /v1/sessions/s10/approve').reject(Object.assign(new Error(msg), {status:409}));
+  __routes.length = 0; open()[0].querySelector('.btns').firstChild.on.click(); await tick(700);
+  check('"' + msg + '" during a run keeps the prompt answerable', open().length === 1 && asks.has('w1') &&
+    !open()[0].querySelector('.btns').firstChild.disabled && open()[0].textContent.includes('Not taken'));
+  check('and asks the server for the session\'s state', __routes.includes('GET /v1/sessions'));
+  __posted.length = 0; open()[0].querySelector('.btns').firstChild.on.click(); await tick();
+  check('a second answer is sent for the same request', __posted.length === 1 && __posted[0].body.request_id === 'ev1');
+  render(ev(2, 'action.approved', {call_id:'w1', step:'default', by:'reviewer'}));
+  check('and the record settles it', open().length === 0);
+  fresh('s10', true);
+  render(write(1)); live = false;
+  __defer('POST /v1/sessions/s10/approve').reject(Object.assign(new Error(msg), {status:409}));
   open()[0].querySelector('.btns').firstChild.on.click(); await tick();
-  check('"' + msg + '" settles the prompt', open().length === 0);
+  check('"' + msg + '" after the run settles the prompt', open().length === 0);
 }
 
 // Another node runs the session: the prompt says where it can be answered.
