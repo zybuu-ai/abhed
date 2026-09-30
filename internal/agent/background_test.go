@@ -605,3 +605,25 @@ func TestQueueNoticesOncePerTask(t *testing.T) {
 		t.Fatalf("pending %d, want 2", got)
 	}
 }
+
+// Close records the closing end and tells the host, as an idle settle does.
+func TestCloseFiresIdle(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "one")
+	settled := make(chan bool, 4)
+	r.l.Background.SetHooks(BackgroundHooks{Idle: func(ev IdleEvent) { settled <- ev.Settled }})
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.l.Background.Close(TermSessionDeleted)
+	select {
+	case s := <-settled:
+		if !s {
+			t.Fatal("Idle fired without the closing end")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close recorded the closing end and never told the host")
+	}
+	if e, _ := LastEnd(r.events(t)); !e.Settled {
+		t.Fatalf("last end %+v", e)
+	}
+}

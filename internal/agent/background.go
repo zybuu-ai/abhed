@@ -487,8 +487,9 @@ func waitDone(ts []*bgTask) {
 
 // Close ends the session's background work: no child starts after it, every
 // running one is cancelled with reason, and it waits a bounded time for them.
-// A closing end owed by the last run is recorded; the results not yet
-// delivered stay in the record, where PendingNotices finds them.
+// A closing end owed by the last run is recorded, and the Idle hook told of
+// it; the results not yet delivered stay in the record, where
+// PendingNotices finds them.
 func (b *Background) Close(reason TerminalReason) {
 	if b == nil {
 		return
@@ -515,8 +516,13 @@ func (b *Background) Close(reason TerminalReason) {
 	b.mu.Lock()
 	b.notices, b.waking = nil, false
 	b.mu.Unlock()
-	b.settleIfDue()
+	settled := b.settleIfDue()
 	b.loop.runMu.Unlock()
+	// The host hears of the closing end as of any other, and lets go of
+	// what it held for the background work.
+	if settled {
+		b.idle(IdleEvent{Settled: true})
+	}
 }
 
 // testHookChildEnded, when set by a test, runs as a child has ended.

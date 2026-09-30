@@ -687,3 +687,34 @@ func TestClaimAndIdleDeliveryDoNotDeadlock(t *testing.T) {
 	}
 	live.claimMu.Unlock()
 }
+
+// Deleting or draining a session with a child running stops its heartbeat
+// and releases its claim: nothing refreshes a session that is gone.
+func TestDeleteAndDrainStopTheHeartbeat(t *testing.T) {
+	old := nodeHeartbeat
+	nodeHeartbeat = 20 * time.Millisecond
+	defer func() { nodeHeartbeat = old }()
+	for _, how := range []string{"delete", "drain"} {
+		rm := &routingMem{MemStore: agent.NewMemStore()}
+		b := newBGServer(t, rm, "one")
+		b.s.opts.DrainTimeout = 50 * time.Millisecond
+		id := b.start("bg:one", false)
+		<-b.ended
+		n, _ := rm.snapshot()
+		waitUntil(t, "refreshes", func() bool { m, _ := rm.snapshot(); return m >= n+2 })
+		if how == "delete" {
+			if rec := b.do("alice", "DELETE", "/v1/sessions/"+id, ""); rec.Code != http.StatusNoContent {
+				t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+			}
+		} else {
+			b.s.drain()
+		}
+		time.Sleep(60 * time.Millisecond) // a beat already under way lands
+		n, rel := rm.snapshot()
+		time.Sleep(200 * time.Millisecond)
+		if m, _ := rm.snapshot(); m != n || !rel {
+			t.Fatalf("%s: %d refreshes after it, released %v", how, m-n, rel)
+		}
+		b.ad.release("one")
+	}
+}

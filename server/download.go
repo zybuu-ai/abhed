@@ -277,6 +277,15 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		// Children first: none may append once its rows are gone.
 		live.Loop.Background.Close(agent.TermSessionDeleted)
 		live.closeTerminals()
+		// No hold, and no heartbeat, outlives the session: a hold's timer
+		// would record its end again into rows about to go.
+		live.holdMu.Lock()
+		if live.release != nil {
+			live.release.Stop()
+		}
+		live.held = false
+		live.holdMu.Unlock()
+		s.releaseNodeNow(live)
 		s.mu.Lock()
 		delete(s.running, id)
 		s.mu.Unlock()

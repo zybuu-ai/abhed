@@ -701,6 +701,34 @@ func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
 	if got := st.holderOf(wb.session); got != "" {
 		t.Fatalf("holder after the hold ended: %q", got)
 	}
+
+	// Deleted while held: the hold's liveness goes with it, and its timer
+	// writes nothing into the deleted record.
+	hold := manualHold
+	manualHold = 300 * time.Millisecond
+	t.Cleanup(func() { manualHold = hold })
+	third := New(opts)
+	wb.h = third.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	if got := st.holderOf(wb.session); got != third.holder {
+		t.Fatalf("holder: %q", got)
+	}
+	del := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/v1/sessions/"+wb.session, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	wb.h.ServeHTTP(del, req)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", del.Code, del.Body)
+	}
+	if got := st.holderOf(wb.session); got != "" {
+		t.Fatalf("a deleted session is still held by %q", got)
+	}
+	time.Sleep(3 * manualHold)
+	if evs, _ := st.Events(wb.session); len(evs) != 0 {
+		t.Fatalf("the hold wrote %d events after the delete", len(evs))
+	}
 }
 
 // A workbench hold is not given back while a result is owed: given back, its
