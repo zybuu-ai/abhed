@@ -78,8 +78,10 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
 
 `/config set` refuses a setting the managed configuration makes, and asks
-before a change that lets the agent do more: a broader mode, network on, a
-higher or no turn limit, a looser syntax check, or a statusline command.
+before a change that lets the agent do more: a broader mode, network on
+(in any spelling, such as `1` or `T`), a higher or no turn limit, a looser
+syntax check, a statusline command, or a default model that is hosted
+rather than on this machine, since the code is sent to it.
 "More" is judged against your own file, or the default where it says
 nothing, not against the session: a session already in bypass from a flag,
 or with network on from a trusted workspace, still asks before writing

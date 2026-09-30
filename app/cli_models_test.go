@@ -118,7 +118,7 @@ func TestConfigKeysWiden(t *testing.T) {
 		{"tools.syntax_check", "refuse", "off", true}, {"tools.syntax_check", "off", "refuse", false},
 		{"statusline.command", "", "echo hi", true}, {"statusline.command", "echo hi", "", false},
 	} {
-		if got := find(c.path).widens(c.from, c.to); got != c.widens {
+		if got := find(c.path).widens(config.Default(), c.from, c.to); got != c.widens {
 			t.Errorf("%s %s→%s: %v", c.path, c.from, c.to, got)
 		}
 	}

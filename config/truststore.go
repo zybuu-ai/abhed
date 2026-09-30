@@ -109,7 +109,17 @@ var lockWait = 5 * time.Second
 // the returned function runs, waiting at most lockWait. The file itself is
 // never removed, so every writer locks the same one.
 func lockTrust(lock string) (func(), error) {
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- the lock beside the user's trust store
+	return lockPath(lock, "the trust store is busy: another abhed has held %s for %s; nothing was recorded")
+}
+
+// LockFile holds an exclusive lock on lock, a file beside the one it guards,
+// until the returned function runs, waiting at most five seconds.
+func LockFile(lock string) (func(), error) {
+	return lockPath(lock, "%s is held by another abhed (waited %s); nothing was changed")
+}
+
+func lockPath(lock, busy string) (func(), error) {
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- a lock file beside the user's own file
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +134,7 @@ func lockTrust(lock string) (func(), error) {
 		}
 		if time.Now().After(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("the trust store is busy: another abhed has held %s for %s; nothing was recorded", lock, lockWait)
+			return nil, fmt.Errorf(busy, lock, lockWait)
 		}
 	}
 	return func() {

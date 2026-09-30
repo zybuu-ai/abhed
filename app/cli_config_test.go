@@ -97,3 +97,66 @@ func TestWriteUserSettingIgnoresAPlantedTmp(t *testing.T) {
 		t.Fatalf("the link was followed: %q", data)
 	}
 }
+
+// Every spelling ParseBool takes for true is judged as true: none turns the
+// network on without the question.
+func TestConfigSetNetworkEverySpelling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, v := range []string{"1", "t", "T", "TRUE", "true", "True"} {
+		e, s := configEnv(config.Default(), "")
+		if err := configSet(context.Background(), e, "sandbox.allow_network", v); err == nil || s.dialogs != 1 {
+			t.Errorf("%q: err %v, %d dialogs", v, err, s.dialogs)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".abhed", "config.json")); err == nil {
+			t.Fatalf("%q was written with no answer", v)
+		}
+	}
+	for _, v := range []string{"0", "f", "F", "FALSE", "false", "False"} {
+		e, s := configEnv(config.Default(), "")
+		if err := configSet(context.Background(), e, "sandbox.allow_network", v); err != nil || s.dialogs != 0 {
+			t.Errorf("%q: err %v, %d dialogs", v, err, s.dialogs)
+		}
+	}
+}
+
+// Moving the default model to a hosted provider sends the code there, so
+// it asks; a local one does not.
+func TestConfigSetHostedModelAsks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	cfg.Model.Providers = map[string]config.ProviderConfig{
+		"near": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:8000/v1", Model: "m"},
+		"far":  {Type: "openai-compatible", BaseURL: "https://api.example.com/v1", Model: "m"}}
+	cfg.SetKeys = []string{"model.providers.near", "model.providers.far"}
+	e, s := configEnv(cfg, "")
+	if err := configSet(context.Background(), e, "model.default", "far"); err == nil || s.dialogs != 1 {
+		t.Fatalf("hosted: err %v, %d dialogs", err, s.dialogs)
+	}
+	e, s = configEnv(cfg, "")
+	if err := configSet(context.Background(), e, "model.default", "near"); err != nil || s.dialogs != 0 {
+		t.Fatalf("local: err %v, %d dialogs", err, s.dialogs)
+	}
+}
+
+// A /config set waits for another holding the file, and changes nothing if
+// it never lets go.
+func TestConfigSetIsLocked(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := config.LockFile(filepath.Join(home, ".abhed", "config.json.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	e, _ := configEnv(config.Default(), "")
+	if err := configSet(context.Background(), e, "limits.max_turns", "5"); err == nil || !strings.Contains(err.Error(), "held by another") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".abhed", "config.json")); err == nil {
+		t.Fatal("written while locked")
+	}
+}

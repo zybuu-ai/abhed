@@ -19,12 +19,14 @@ import (
 
 // configKey is a setting /config shows and may change in the person's own
 // file. widens says whether moving from old to new lets the agent do more,
-// which needs a confirmation; check refuses a value that cannot be used.
+// which needs a confirmation; both are in get's form, and c is the session's
+// configuration, for what a name refers to. check refuses a value that
+// cannot be used and returns it parsed.
 type configKey struct {
 	path   string
 	get    func(config.Config) string
 	check  func(config.Config, string) (any, error)
-	widens func(old, new string) bool
+	widens func(c config.Config, old, new string) bool
 }
 
 var modeOrder = []string{"plan", "default", "accept-edits", "auto", "bypass"}
@@ -41,7 +43,10 @@ var configKeys = []configKey{
 			}
 			return v, nil
 		},
-		widens: func(string, string) bool { return false }},
+		// A hosted model is sent the code, so moving to one asks.
+		widens: func(c config.Config, o, n string) bool {
+			return n != o && hostedLabel(c.Model.Providers[n].BaseURL) == "hosted"
+		}},
 	{path: "permissions.mode",
 		get: func(c config.Config) string { return orDefault(c.Permissions.Mode, "default") },
 		check: func(_ config.Config, v string) (any, error) {
@@ -50,11 +55,11 @@ var configKeys = []configKey{
 			}
 			return v, nil
 		},
-		widens: func(o, n string) bool { return rank(modeOrder, n) > rank(modeOrder, o) }},
+		widens: func(_ config.Config, o, n string) bool { return rank(modeOrder, n) > rank(modeOrder, o) }},
 	{path: "sandbox.allow_network",
 		get:    func(c config.Config) string { return strconv.FormatBool(c.Sandbox.AllowNetwork) },
 		check:  func(_ config.Config, v string) (any, error) { return strconv.ParseBool(v) },
-		widens: func(o, n string) bool { return n == "true" && o != "true" }},
+		widens: func(_ config.Config, o, n string) bool { return n == "true" && o != "true" }},
 	{path: "limits.max_turns",
 		get: func(c config.Config) string { return strconv.Itoa(c.Limits.MaxTurns) },
 		check: func(_ config.Config, v string) (any, error) {
@@ -64,7 +69,7 @@ var configKeys = []configKey{
 			}
 			return n, nil
 		},
-		widens: func(o, n string) bool {
+		widens: func(_ config.Config, o, n string) bool {
 			a, _ := strconv.Atoi(o)
 			b, _ := strconv.Atoi(n)
 			return (b == 0 && a != 0) || (a != 0 && b > a)
@@ -77,12 +82,12 @@ var configKeys = []configKey{
 			}
 			return v, nil
 		},
-		widens: func(o, n string) bool { return rank(syntaxOrder, n) > rank(syntaxOrder, o) }},
+		widens: func(_ config.Config, o, n string) bool { return rank(syntaxOrder, n) > rank(syntaxOrder, o) }},
 	{path: "statusline.command",
 		get:   func(c config.Config) string { return c.Statusline.Command },
 		check: func(_ config.Config, v string) (any, error) { return v, nil },
 		// A command is a process run on every redraw.
-		widens: func(o, n string) bool { return n != "" && n != o }},
+		widens: func(_ config.Config, o, n string) bool { return n != "" && n != o }},
 }
 
 // source says which layer made a setting.
@@ -152,13 +157,21 @@ func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
+	// Held across the read, the question and the write, so two sessions
+	// cannot lose each other's change.
+	unlock, err := lockUserConfig()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	// Judged against the person's own file, not this session: a session
-	// already widened by a flag or a workspace must not make that permanent unasked.
+	// already widened by a flag or a workspace must not make that permanent
+	// unasked. The parsed value is judged, so 1 or T is true as true is.
 	own, err := userFileConfig()
 	if err != nil {
 		return err
 	}
-	if k.widens(k.get(own), value) {
+	if k.widens(c, k.get(own), fmt.Sprint(v)) {
 		ans, err := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm,
 			Title: fmt.Sprintf("Set %s to %s in your own configuration?", path, config.Printable(value)),
 			Why:   "this lets the agent do more than it does now"})
@@ -172,6 +185,19 @@ func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 	}
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("%s set in %s; it applies from the next session", path, config.Printable(file))})
 	return nil
+}
+
+// lockUserConfig locks ~/.abhed/config.json against another /config set.
+func lockUserConfig() (func(), error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".abhed")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return config.LockFile(filepath.Join(dir, "config.json.lock"))
 }
 
 // userFileConfig is the defaults with only the person's own file laid over them.
