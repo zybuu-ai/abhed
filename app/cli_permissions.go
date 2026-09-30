@@ -264,6 +264,10 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if err := refusedDir(e.st.appCfg, canonical); err != nil {
 		return false, err
 	}
+	// Rules have no escape for * and ?, so a read-only rule could not name it.
+	if strings.ContainsAny(canonical, "*?") {
+		return false, fmt.Errorf("refusing %s: a path with * or ? cannot be named exactly by a rule", canonical)
+	}
 	for _, root := range e.sess.PolicyRoots() {
 		if within(canonical, tools.RealPath(root)) {
 			return false, fmt.Errorf("%s is already reachable, inside %s", canonical, root)

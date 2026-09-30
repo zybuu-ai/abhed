@@ -217,3 +217,34 @@ func TestAddDirRefusesAnyDirectoryChangedMidDialog(t *testing.T) {
 		t.Fatalf("the other folder became reachable (%v) or was recorded", err)
 	}
 }
+
+// A folder whose name holds characters rules treat specially is kept
+// read-only all the same; one with * or ?, which no rule can name exactly,
+// is refused before anyone is asked.
+func TestAddDirReadOnlyHoldsForAnyName(t *testing.T) {
+	t.Setenv("HOME", realDir(t))
+	for _, name := range []string{"a[b]", "c{d,e}", "f(g)", "h.i+j"} {
+		env, _, _ := permEnv(t, config.Default(), accessRead)
+		env.pol.Mode = policy.ModeAcceptEdits
+		dir := filepath.Join(realDir(t), name)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := slashAddDir(context.Background(), env, []string{dir}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := env.pol.Evaluate("write", true, pathCall(filepath.Join(dir, "x.go"))); got.Decision != policy.Deny {
+			t.Errorf("%s: a read-only folder took a write: %+v", name, got)
+		}
+	}
+	for _, name := range []string{"k*", "l?"} {
+		env, surface, _ := permEnv(t, config.Default(), accessRead)
+		dir := filepath.Join(realDir(t), name)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := slashAddDir(context.Background(), env, []string{dir}); err == nil || len(surface.asked) != 0 {
+			t.Errorf("%s: added (%v) or asked", name, err)
+		}
+	}
+}
