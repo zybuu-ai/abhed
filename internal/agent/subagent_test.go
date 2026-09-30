@@ -774,3 +774,45 @@ func TestSubagentAskNamesItsTarget(t *testing.T) {
 		t.Fatalf("subagent.ask does not name the target: %+v", asks[0])
 	}
 }
+
+// pipeTool runs one pipeline step, `touch step.txt`, on the loop that called it.
+type pipeTool struct{}
+
+func (pipeTool) Name() string            { return "pipe" }
+func (pipeTool) Description() string     { return "runs a pipeline" }
+func (pipeTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (pipeTool) Mutates() bool           { return false }
+func (pipeTool) Run(ctx context.Context, _ *tools.Session, _ json.RawMessage) tools.Result {
+	steps, err := StepsFor(ctx, "skill p pipeline")
+	if err != nil {
+		return tools.Result{Content: err.Error(), IsError: true}
+	}
+	res, err := steps.Run(ctx, "bash", json.RawMessage(`{"command":"touch step.txt"}`), 0)
+	if err != nil {
+		return tools.Result{Content: err.Error(), IsError: true}
+	}
+	return res
+}
+
+// A pipeline step a subagent runs is offered in the parent's record when it
+// is put to the person, naming the subagent and the pipeline.
+func TestSubagentPipelineStepAskReachesTheParent(t *testing.T) {
+	store := NewMemStore()
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "run it", "description": "runner"})}},
+		{calls: []model.ToolCall{{ID: "p1", Name: "pipe", Args: json.RawMessage(`{}`)}}},
+		{text: "ran"},
+		{text: "done"},
+	}}
+	appr := &askingApprover{}
+	l, _, f := taskTree(t, adapter, appr, store, store, false)
+	f.Tools.Add(pipeTool{})
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	asks := payloads[SubagentAsk](evs, EvSubagentAsk)
+	if len(appr.asked) != 1 || len(asks) != 1 || asks[0].Subagent != "runner" || asks[0].Via != "skill p pipeline" {
+		t.Fatalf("the step's ask did not reach the parent's record once, named: asked %v, %+v", appr.asked, asks)
+	}
+}

@@ -147,12 +147,13 @@ func (s *Steps) Stage(skill, stage, detail string, data map[string]any) {
 // and, in a subagent, with that subagent too.
 func (s *Steps) approver() Approver {
 	inner, who := s.loop.approverFor(context.Background()), ""
+	var asking func(context.Context)
 	if o, nested := inner.(oneAtATime); nested {
-		inner, who = o.Approver, o.who
+		inner, who, asking = o.Approver, o.who, o.asking
 	}
 	asks := s.asks
 	if asks == nil {
 		asks = make(chan struct{}, 1)
 	}
-	return oneAtATime{Approver: inner, asks: asks, who: who, via: s.via}
+	return oneAtATime{Approver: inner, asks: asks, who: who, via: s.via, asking: asking}
 }

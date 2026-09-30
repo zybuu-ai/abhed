@@ -270,7 +270,11 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		rec.Redact = parent.rec.redactor()
 	}
 	if parent != nil {
-		rec.tap = mirrorInto(parent, sessionID, req.Description)
+		rec.tap = mirrorInto(parent, sessionID)
+		if o, ok := approver.(oneAtATime); ok {
+			o.asking = askInto(parent, sessionID, req.Description)
+			approver = o
+		}
 	}
 
 	profile := req.AgentType
@@ -434,6 +438,9 @@ type oneAtATime struct {
 	asks chan struct{}
 	who  string
 	via  string // the pipeline asking, when a pipeline step asks
+	// asking records that the call is now the one put to the person, once it
+	// has its turn: a sibling's ask still queued behind it is not offered.
+	asking func(ctx context.Context)
 }
 
 func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
@@ -452,7 +459,31 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if o.via != "" {
 		ctx = context.WithValue(ctx, pipelineAskKey{}, o.via)
 	}
+	if o.asking != nil {
+		o.asking(ctx)
+	}
 	return o.Approver.Approve(ctx, tool, args, res)
+}
+
+// askInto writes a subagent's call to the parent's record as subagent.ask
+// when it is put to the approver, so a console or editor watching the parent
+// shows the request the run is waiting on, and only that one.
+func askInto(parent *parentLink, child, description string) func(context.Context) {
+	return func(ctx context.Context) {
+		ev, ok := ctx.Value(requestedKey{}).(Event)
+		if !ok {
+			return
+		}
+		var a ActionRequested
+		if json.Unmarshal(ev.Payload, &a) != nil || !a.RequiresApproval {
+			return
+		}
+		parent.record(EvSubagentAsk, ev.Actor, SubagentAsk{
+			Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
+			Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
+			Reason: a.Reason, Scope: a.Scope, Via: a.Via, Target: a.Target,
+		})
+	}
 }
 
 type subagentKey struct{}
@@ -507,7 +538,7 @@ type SubagentAsk struct {
 
 // mirrorInto copies the child's settled calls that matter to an audit into
 // the parent's record as they happen.
-func mirrorInto(parent *parentLink, child, description string) func(Event) {
+func mirrorInto(parent *parentLink, child string) func(Event) {
 	var mu sync.Mutex
 	type request struct {
 		ActionRequested
@@ -532,15 +563,7 @@ func mirrorInto(parent *parentLink, child, description string) func(Event) {
 				mu.Lock()
 				asked[a.CallID] = request{a, ev.ID}
 				mu.Unlock()
-				// Written before the approver is asked, so a console or editor
-				// watching the parent can show the request it is waiting on.
-				if a.RequiresApproval {
-					parent.record(EvSubagentAsk, ev.Actor, SubagentAsk{
-						Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
-						Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
-						Reason: a.Reason, Scope: a.Scope, Via: a.Via, Target: a.Target,
-					})
-				}
+				// Its subagent.ask is written by askInto when its turn to be asked comes.
 			}
 		case EvActionApproved, EvActionDenied:
 			var d map[string]string

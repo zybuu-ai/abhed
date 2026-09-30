@@ -494,7 +494,8 @@ All notable changes to Abhed are recorded here. The format follows
   session row is its parent's owner's, names the parent, and is not listed.
 - `subagent.ask` in the parent's record: a subagent's call waiting on the
   approver, with the call, reason, scope and the `request_id` an answer
-  names. `subagent.action` gains `request_id`.
+  names. Subagents running together are asked one at a time, and each ask is
+  written when its turn comes. `subagent.action` gains `request_id`.
 - Skill pipelines run in console and workbench sessions, their steps put
   through the session's loop as from the CLI.
 - SDK: `Options.ConfiguredTools` gives an embedded agent the CLI's tool set as
