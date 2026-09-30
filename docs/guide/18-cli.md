@@ -106,7 +106,12 @@ Its first line is shown after each task and in `/status`. It runs under the
 process sandbox with the network off, whatever the session's tier or
 `sandbox.allow_network`, for at most 300 ms. Where the process sandbox is
 not available it does not run at all: the status line is empty and one
-warning says why. Only
+warning says why. When the command starts with a script named by path (`~/…` or
+absolute), such as the example above, that one file is shown to the sandbox
+read-only wherever it lives, even in `~/.abhed`, which the sandbox otherwise
+hides; it must be an executable file. What the script itself reads must be
+visible to the sandbox too: the workspace and the system directories are,
+while on Linux the rest of your home directory is not. Only
 text and colour reach the terminal: a sequence that would move the cursor,
 clear the screen, set the title or write the clipboard is dropped. In a
 workspace's configuration it needs trust, like any other process.

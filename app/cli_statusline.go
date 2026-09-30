@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -20,7 +21,7 @@ import (
 
 // statuslineTimeout bounds one run of the statusline command: it runs on
 // every redraw of the status and must never hold the session.
-const statuslineTimeout = 300 * time.Millisecond
+var statuslineTimeout = 300 * time.Millisecond
 
 // statuslineMax bounds what is read of its output.
 const statuslineMax = 4 << 10
@@ -38,11 +39,49 @@ func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, er
 	}
 	p.MinTier = sandbox.TierProcess
 	p.AllowNetwork = false
+	if f := statuslineScript(cfg.Statusline.Command, p.StatePaths); f != "" {
+		p.ReadableFiles = []string{f}
+	}
 	sb := processSandbox(p)
 	if ok, why := sb.Available(); !ok {
 		return nil, fmt.Errorf("not run: it runs only under the process sandbox, which is not available here (%s)", why)
 	}
 	return sb, nil
+}
+
+// statuslineScript is the script a statusline command starts with, when it
+// names one by path (~/ or absolute): an executable regular file, which the
+// sandbox then shows read-only wherever it lives. A state file never is.
+func statuslineScript(command string, state []string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	path := fields[0]
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		path = filepath.Join(home, rest)
+	}
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return ""
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+	for _, sp := range state {
+		if rs, err := filepath.EvalSymlinks(sp); err == nil && rs == real {
+			return ""
+		}
+	}
+	return path
 }
 
 // runStatusline runs the configured statusline command with the status as
@@ -69,7 +108,7 @@ func runStatusline(ctx context.Context, sb sandbox.Sandbox, cwd, command string,
 	cmd.WaitDelay = 100 * time.Millisecond
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return "", errors.New("the statusline command took longer than 300 ms")
+			return "", fmt.Errorf("the statusline command took longer than %d ms", statuslineTimeout.Milliseconds())
 		}
 		return "", err
 	}

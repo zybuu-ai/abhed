@@ -65,6 +65,10 @@ type Policy struct {
 	AllowNetwork bool
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
+	// ReadableFiles are single files a command may read, and run, even where
+	// they sit in an area the process tier hides, such as a statusline
+	// script in ~/.abhed. The process tier only; each is read-only.
+	ReadableFiles []string
 	// StatePaths are files or folders holding Abhed's state outside .abhed,
 	// such as a configured users file. Commands can neither read nor write
 	// them, as for .abhed.

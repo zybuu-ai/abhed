@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -127,5 +129,53 @@ func TestStatuslineHasNoNetwork(t *testing.T) {
 	case <-hit:
 		t.Fatal("the statusline reached the network")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// The documented example: a script in ~/.abhed, which the process sandbox
+// otherwise hides, runs as the statusline and nothing beside it is read.
+func TestStatuslineScriptInHomeState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".abhed")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status.sh"), []byte("#!/bin/sh\ncat \"$HOME/.abhed/secrets.json\" 2>/dev/null; echo from-home\n"), 0o700); err != nil { // #nosec G306 -- the test's script
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.json"), []byte(`{"K":"do-not-read"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = "~/.abhed/status.sh"
+	sb, err := statuslineSandbox(cfg, ws)
+	if err != nil {
+		t.Skipf("no process sandbox here: %v", err)
+	}
+	if probe, err := runStatusline(context.Background(), sb, ws, "echo probe", ui.StatusModel{}); err != nil || probe != "probe" {
+		t.Skipf("the process sandbox cannot run a command here: %v", err)
+	}
+	// The first run of a new script pays for the system's checks of it,
+	// and a loaded machine is slow; the limit is not what this tests.
+	old := statuslineTimeout
+	statuslineTimeout = 10 * time.Second
+	t.Cleanup(func() { statuslineTimeout = old })
+	got, err := runStatusline(context.Background(), sb, ws, cfg.Statusline.Command, ui.StatusModel{})
+	if err != nil || got != "from-home" {
+		t.Fatalf("%q %v", got, err)
+	}
+	for _, c := range []string{"echo hi", "status.sh", "~/.abhed/secrets.json", "~/.abhed/none.sh"} {
+		if f := statuslineScript(c, nil); f != "" {
+			t.Errorf("%q named %s", c, f)
+		}
 	}
 }

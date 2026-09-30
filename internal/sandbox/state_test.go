@@ -153,3 +153,56 @@ func TestProcessSandboxShieldsConfiguredStatePaths(t *testing.T) {
 		t.Fatalf("a command replaced the users file:\n%s", out)
 	}
 }
+
+// A file named readable is readable and runnable even inside ~/.abhed,
+// which stays hidden around it.
+func TestReadableFileInsideHiddenState(t *testing.T) {
+	requireNetNS(t)
+	home := workspace(t)
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, stateDir)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(state, "status.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho status-ok\n"), 0o700); err != nil { // #nosec G306 -- a script the test runs
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "config.json"), []byte(`{"k":"state-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := workspace(t)
+	p := DefaultPolicy(ws)
+	p.ReadableFiles = []string{script}
+	s := NewProcess(p)
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	out, _ := runIn(t, s, ws, "~/.abhed/status.sh; cat ~/.abhed/config.json 2>&1; echo done")
+	if !strings.Contains(out, "status-ok") || strings.Contains(out, "state-secret") {
+		t.Fatalf("%s", out)
+	}
+	// Without the name, the script is out of reach as before.
+	out, _ = runIn(t, processSandbox(t, ws, false), ws, "~/.abhed/status.sh 2>&1; echo done")
+	if strings.Contains(out, "status-ok") {
+		t.Fatalf("the script ran without being named:\n%s", out)
+	}
+}
+
+// Under bubblewrap a file named readable is bound read-only, after every
+// mount that could hide it.
+func TestBwrapBindsReadableFilesLast(t *testing.T) {
+	ws := workspace(t)
+	f := filepath.Join(workspace(t), "status.sh")
+	if err := os.WriteFile(f, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a script the test names
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ReadableFiles = []string{f}
+	s := &Process{policy: p, backend: "bwrap"}
+	args := strings.Join(s.wrap(t.Context(), ws, nil, "/bin/true").Args, " ")
+	bind := "--ro-bind " + f + " " + f
+	if i := strings.Index(args, bind); i < 0 || i < strings.LastIndex(args, "--tmpfs") {
+		t.Fatalf("%s", args)
+	}
+}
