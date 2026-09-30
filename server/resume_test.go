@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ type durableMem struct {
 	holders  map[string]string
 	seen     map[string]time.Time
 	failHold bool
+	// refuseNotices makes every subagent.notice append fail.
+	refuseNotices atomic.Bool
 }
 
 func (d *durableMem) ClaimNode(_ context.Context, id, holder string) error {
@@ -148,6 +151,9 @@ func (d *durableMem) GetSession(ctx context.Context, id string) (store.SessionRe
 	return r, nil
 }
 func (d *durableMem) Append(ev agent.Event) error {
+	if ev.Type == agent.EvSubagentNotice && d.refuseNotices.Load() {
+		return errors.New("store unavailable")
+	}
 	if ev.Type == agent.EvSessionEnded {
 		// As Postgres: an end with background children running keeps the row open.
 		var end agent.SessionEnded

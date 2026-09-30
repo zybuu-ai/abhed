@@ -861,3 +861,23 @@ func TestStartedSessionRowCarriesItsHolder(t *testing.T) {
 		t.Fatalf("the row was written with holder %q, want %q", holder, b.s.holder)
 	}
 }
+
+// A store that keeps refusing a result while idle does not leave the session
+// held: once the retries are spent the work owed is settled, the session is
+// done here and its claim released; the result is rebuilt from the record.
+func TestIdleStoreErrorDoesNotHoldTheSession(t *testing.T) {
+	old := agent.IdleRetries
+	agent.IdleRetries = 0
+	t.Cleanup(func() { agent.IdleRetries = old })
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	st.refuseNotices.Store(true)
+	b := newBGServer(t, st, "one")
+	id := b.start("bg:one", false)
+	<-b.ended
+	b.ad.release("one")
+	waitUntil(t, "the session done", func() bool { return b.state(id) == "done" })
+	waitUntil(t, "the claim released", func() bool { return st.holderOf(id) == "" })
+	if pend := agent.PendingNotices(b.events(id), st.Events); len(pend) != 1 {
+		t.Fatalf("the result is not owed in the record: %+v", pend)
+	}
+}

@@ -547,6 +547,9 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.mu.Lock()
 		b.unacted = 0
 		b.stopped = false
+		// Results an idle delivery gave up on arrive at this run's first boundary.
+		b.notices = append(b.deferred, b.notices...)
+		b.deferred = nil
 		b.mu.Unlock()
 	}
 	for {

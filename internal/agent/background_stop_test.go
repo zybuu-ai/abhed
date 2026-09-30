@@ -344,3 +344,77 @@ func TestSlotsRefusedAfterClose(t *testing.T) {
 		t.Fatal("a slot was taken after Close")
 	}
 }
+
+// noticeRefuser refuses notices while refuse is set, or the first n of them.
+type noticeRefuser struct {
+	*MemStore
+	refuse atomic.Bool
+	first  atomic.Int32
+}
+
+func (s *noticeRefuser) Append(ev Event) error {
+	if ev.Type == EvSubagentNotice && (s.refuse.Load() || s.first.Add(-1) >= 0) {
+		return errors.New("store unavailable")
+	}
+	return s.MemStore.Append(ev)
+}
+
+// rigWithRefuser is a background rig whose parent record goes through st.
+func rigWithRefuser(t *testing.T, st *noticeRefuser) *bgRig {
+	r := newBGRig(t, WakeNotify, "one")
+	st.MemStore = r.store
+	r.l.Recorder = NewRecorder(st, "parent", "")
+	return r
+}
+
+// An idle delivery the record refuses once is tried again, and the result
+// arrives, with the closing end after it.
+func TestIdleDeliveryRetriedAfterAStoreError(t *testing.T) {
+	st := &noticeRefuser{}
+	st.first.Store(1)
+	r := rigWithRefuser(t, st)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release("one")
+	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+	if n := len(payloads[Notice](r.events(t), EvSubagentNotice)); n != 1 {
+		t.Fatalf("%d notices, want 1", n)
+	}
+	noNoticeAfterClosingEnd(t, r.events(t))
+}
+
+// A store that stays down does not hold the session owing: after the
+// retries the work owed is settled, and the result arrives at the next run.
+func TestIdleDeliveryGivesUpAndSettles(t *testing.T) {
+	old := IdleRetries
+	IdleRetries = 2
+	t.Cleanup(func() { IdleRetries = old })
+	st := &noticeRefuser{}
+	st.refuse.Store(true)
+	r := rigWithRefuser(t, st)
+	settled := make(chan bool, 8)
+	r.l.Background.SetHooks(BackgroundHooks{Idle: func(ev IdleEvent) { settled <- ev.Settled }})
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release("one")
+	select {
+	case s := <-settled:
+		if !s {
+			t.Fatal("given up without settling")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a store that stays down left the session owing")
+	}
+	if owed := r.l.Background.Owed(); owed != 0 {
+		t.Fatalf("owed %d after giving up", owed)
+	}
+	st.refuse.Store(false)
+	if _, err := r.l.Run(context.Background(), "next"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(payloads[Notice](r.events(t), EvSubagentNotice)); n != 1 {
+		t.Fatalf("%d notices at the next run, want 1", n)
+	}
+}

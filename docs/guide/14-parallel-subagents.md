@@ -267,7 +267,11 @@ its own: another session asking about one is told there is no such task.
 
 On a server, a session with tasks running keeps its row open, so another node
 does not continue it while they run here, and the event stream stays open for
-their results; the closing end (`settled`) releases it. A result that finished
+their results; the closing end (`settled`) releases it. A result the store
+refuses while the session is idle is tried again, waiting twice as long each
+time; after five tries the work owed is settled so the session is not held,
+and the result arrives at the session's next run (or, on another server, is
+rebuilt from the record). A result that finished
 before a restart, and a task a crashed process lost (ended `lost`), are
 delivered on the session's next run.
 

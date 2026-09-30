@@ -160,11 +160,20 @@ type Background struct {
 	// stopped is set by an explicit stop and cleared by the next prompted
 	// run: until then no result wakes the session.
 	stopped bool
+	// idleFailures counts idle deliveries in a row the record refused, and
+	// deferred holds the results given up on while idle, for the next run.
+	idleFailures int
+	deferred     []Notice
 	// wakeEpoch is the stop count when the last wake was decided: a stop
 	// after the decision and before the wake run takes the conversation
 	// refuses the run.
 	wakeEpoch int
 }
+
+// IdleRetries is how many times an idle delivery the record refused is
+// tried again, each after twice the wait of the last, before the results
+// are left to the record.
+var IdleRetries = 5
 
 // ErrStopped refuses a background spawn that began before a stop.
 var ErrStopped = errors.New("stopped before this background task started")
@@ -746,11 +755,33 @@ func (b *Background) deliverIdle() {
 	pendingNow := b.Pending()
 	delivered := b.peekNotices()
 	if err := l.deliverNotices("idle", wake); err != nil {
-		// The next run ends at once; the record still has each return.
-		l.noteRecordErr(err)
+		// Nothing refused was applied, so the conversation still matches the
+		// record, and the session's runs go on; the delivery is tried again.
+		b.mu.Lock()
+		b.idleFailures++
+		tries := b.idleFailures
+		if tries > IdleRetries {
+			// Given up while idle: the work owed is settled, so the session
+			// is not held for a store that stays down. The results wait for
+			// the next run here, and each return is in the record, from
+			// which another process's claim rebuilds its notice.
+			b.deferred = append(b.deferred, b.notices...)
+			b.notices, b.idleFailures = nil, 0
+		}
+		b.mu.Unlock()
+		if tries <= IdleRetries {
+			l.runMu.Unlock()
+			time.AfterFunc(b.settle()<<tries, b.deliverIdle)
+			return
+		}
+		settled := b.settleIfDue()
 		l.runMu.Unlock()
+		b.idle(IdleEvent{Settled: settled})
 		return
 	}
+	b.mu.Lock()
+	b.idleFailures = 0
+	b.mu.Unlock()
 	b.mu.Lock()
 	b.unacted += pendingNow
 	b.mu.Unlock()
