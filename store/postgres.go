@@ -168,6 +168,13 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		return nil, fmt.Errorf("the database schema is older than this server: %s missing. "+
 			"Run `abhed migrate` as the owner (see docs/guide/02-configuration.md)", strings.Join(missing, ", "))
 	}
+	if done, err := ownersMigrated(ctx, pool); err != nil || !done {
+		pool.Close()
+		if err == nil {
+			err = errOwnersNotMigrated
+		}
+		return nil, err
+	}
 	p.protected = true
 	return p, nil
 }
@@ -183,7 +190,8 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	if _, err := p.pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	return nil
+	_, err := migrateOwners(ctx, p.pool)
+	return err
 }
 
 func (p *Postgres) Close() { p.pool.Close() }

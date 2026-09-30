@@ -198,6 +198,10 @@ func headerIdentity(r *http.Request) *Identity {
 		Email:   r.Header.Get("X-Abhed-Email"),
 		Tenant:  headerOr(r, "X-Abhed-Tenant", "default"),
 	}
+	if r.Header.Get("X-Abhed-User") != "" {
+		// The proxy is the only way in and vouches for both headers.
+		id.Provider, id.EmailVerified = ProviderProxy, true
+	}
 	if groups := r.Header.Get("X-Abhed-Groups"); groups != "" && r.Header.Get("X-Abhed-User") != "" {
 		id.Groups = strings.Split(groups, ",")
 	}

@@ -768,14 +768,7 @@ func TenantOf(ctx context.Context) string {
 
 // callerOf is the user and tenant a request acts as, given its identity.
 func (s *Server) callerOf(ctx context.Context, id *auth.Identity) (user, tenant string) {
-	user = "anonymous"
-	if id != nil {
-		user = id.Subject
-		if id.Email != "" {
-			user = id.Email
-		}
-	}
-	return user, s.tenantFor(ctx, id)
+	return id.Owner(), s.tenantFor(ctx, id)
 }
 
 // tenantFor applies the configured resolver, or the default rule.
@@ -2432,7 +2425,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	me := map[string]any{
 		"authenticated": true, "auth_mode": mode,
 		"subject": id.Subject, "email": id.Email, "name": id.Name,
-		"tenant": id.Tenant, "groups": id.Groups,
+		"tenant": id.Tenant, "groups": id.Groups, "owner": id.Owner(),
 		"sign_out_url": "/logout",
 	}
 	// Switching user is a fresh sign-in: the identity provider's own
@@ -2533,6 +2526,10 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		// Checked before the code is spent, so a taken name or a short
 		// password does not use up the invite.
 		if err := local.CheckNewUser(r.Context(), req.Username, req.Password); err != nil {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := local.CheckEmail(r.Context(), req.Username, strings.TrimSpace(req.Email)); err != nil {
 			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
