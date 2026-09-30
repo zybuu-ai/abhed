@@ -6,6 +6,7 @@ import (
 	"io"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -189,5 +190,31 @@ func TestBuiltinsAreDescribed(t *testing.T) {
 		if c.Help == "" || c.Group == "" || c.Order == 0 || c.Source != sourceBuiltin {
 			t.Errorf("%s: %+v", c.Name, *c)
 		}
+	}
+}
+
+// Until the terminal UI provides a surface, a command's question is refused
+// at once: the prompt's own goroutine runs the command, so waiting for a line
+// there would hang the session.
+func TestCommandsGetASurfaceThatRefusesQuestions(t *testing.T) {
+	var got string
+	var gotErr error
+	st := &cliState{dynamic: []slashSource{fakeSource{{Name: "/ask", Source: sourceUser,
+		Run: func(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
+			got, gotErr = e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "sure?"})
+			return false, nil
+		}}}}}
+	done := make(chan struct{})
+	go func() {
+		handleCommand(context.Background(), "/ask", ui.NewRenderer(io.Discard, false), policy.New(policy.ModeDefault), nil, st)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the question hung the prompt")
+	}
+	if got != "" || !errors.Is(gotErr, ui.ErrNoAnswer) {
+		t.Fatalf("got %q, %v", got, gotErr)
 	}
 }

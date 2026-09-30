@@ -65,6 +65,10 @@ type slashSource interface {
 
 // cmdEnv is what a command runs against.
 type cmdEnv struct {
+	// ui is where a command shows and asks things. Until the terminal UI
+	// sets cliState.surface it is a line surface with no answers, so any
+	// question is refused rather than hanging the prompt.
+	ui   ui.Surface
 	r    *ui.Renderer
 	st   *cliState
 	pol  *policy.Engine
@@ -192,7 +196,10 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState) bool {
 	s := r.Style()
 	fields := strings.Fields(line)
-	env := &cmdEnv{r: r, st: st, pol: pol, sess: sess, dynamic: st.dynamic}
+	env := &cmdEnv{ui: st.surface, r: r, st: st, pol: pol, sess: sess, dynamic: st.dynamic}
+	if env.ui == nil {
+		env.ui = ui.NewLineSurface(ui.LazyStdout{}, s, nil)
+	}
 
 	c, ok := builtinSlash.lookup(fields[0], env.dynamic)
 	if !ok {

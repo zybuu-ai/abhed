@@ -45,6 +45,8 @@ type cliState struct {
 	// dynamic are the run-time slash command sources, looked up after the
 	// built-ins; see slashSource.
 	dynamic []slashSource
+	// surface is the session's ui.Surface, once the terminal UI provides one.
+	surface ui.Surface
 }
 
 // follow draws the conversation's events as they are recorded, for as long as
