@@ -96,7 +96,7 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 		} else {
 			p.Head = byID[sid].Head // the index's last recorded end
 		}
-		if evs, _, err := s.readEvents(sid); err == nil {
+		if evs, err := s.readEvents(sid); err == nil {
 			refs = append(refs, agent.BlobRefs(evs)...)
 		} else {
 			keepAll = true // what it named cannot be read: keep every blob

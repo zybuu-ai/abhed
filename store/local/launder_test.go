@@ -26,9 +26,9 @@ func cutLines(t *testing.T, path string, keep int, extra string) {
 	}
 }
 
-func mustFail(t *testing.T, s *Store, id, why string) {
+func mustFail(t *testing.T, s *Store, why string) {
 	t.Helper()
-	rep, err := s.Verify(id)
+	rep, err := s.Verify("s-1")
 	if err != nil || rep.OK {
 		t.Fatalf("%s: verify passed: %+v %v", why, rep, err)
 	}
@@ -44,7 +44,7 @@ func TestTruncateThenOpenIsNotLaundered(t *testing.T) {
 	s2 := openTest(t, dir)
 	cutLines(t, s2.Path("s-1"), 3, "")
 	head, _ := os.ReadFile(s2.headPath("s-1"))
-	mustFail(t, s2, "s-1", "cut")
+	mustFail(t, s2, "cut")
 	if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
 		t.Fatalf("a cut record was opened for writing: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestTruncateThenOpenIsNotLaundered(t *testing.T) {
 	if evs, err := s2.Events("s-1"); err != nil || len(evs) != 3 {
 		t.Fatalf("it can still be read: %d %v", len(evs), err)
 	}
-	mustFail(t, s2, "s-1", "after open")
+	mustFail(t, s2, "after open")
 	if now, _ := os.ReadFile(s2.headPath("s-1")); !bytes.Equal(now, head) {
 		t.Fatal("the head was rewritten")
 	}
@@ -76,11 +76,11 @@ func TestTornCutViaReadPathIsNotLaundered(t *testing.T) {
 	if after, _ := os.ReadFile(s2.Path("s-1")); !bytes.Equal(before, after) {
 		t.Fatal("a read changed the record")
 	}
-	mustFail(t, s2, "s-1", "after read")
+	mustFail(t, s2, "after read")
 	if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
 		t.Fatalf("a cut counted line was repaired as a crash: %v", err)
 	}
-	mustFail(t, s2, "s-1", "after a refused open")
+	mustFail(t, s2, "after a refused open")
 }
 
 // A counted line that lost only its newline is not torn: it is kept, and a
@@ -160,7 +160,7 @@ func TestExportOfTamperedDoesNotVerify(t *testing.T) {
 	_ = s.Close()
 	s2 := openTest(t, dir)
 	cutLines(t, s2.Path("s-1"), 1, "")
-	mustFail(t, s2, "s-1", "cut")
+	mustFail(t, s2, "cut")
 	var b bytes.Buffer
 	if _, err := s2.Export("s-1", &b, ExportOptions{}); !errors.Is(err, ErrUnverified) || b.Len() != 0 {
 		t.Fatalf("a failing record was exported: %v (%d bytes)", err, b.Len())
@@ -203,7 +203,7 @@ func TestInvalidHeadsFail(t *testing.T) {
 			s2 := openTest(t, dir)
 			cutLines(t, s2.Path("s-1"), 1, "")
 			_ = os.WriteFile(s2.headPath("s-1"), []byte(head), 0o600)
-			mustFail(t, s2, "s-1", name)
+			mustFail(t, s2, name)
 			if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
 				t.Fatalf("opened with a %s head: %v", name, err)
 			}

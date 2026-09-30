@@ -262,39 +262,6 @@ func (x *index) forget() {
 	x.mu.Unlock()
 }
 
-// lastLine returns the index's last complete line, the length of an
-// unfinished one after it, and the file's size.
-func lastLine(f *os.File) (last []byte, torn, size int64, err error) {
-	info, err := f.Stat()
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	size = info.Size()
-	if size == 0 {
-		return nil, 0, 0, nil
-	}
-	for chunk := int64(4096); ; chunk *= 2 {
-		start := max(size-chunk, 0)
-		buf := make([]byte, size-start)
-		if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
-			return nil, 0, 0, err
-		}
-		i := bytes.LastIndexByte(buf, '\n')
-		if i < 0 {
-			if start > 0 {
-				continue
-			}
-			return nil, size, size, nil // the only line is unfinished
-		}
-		body := buf[:i]
-		j := bytes.LastIndexByte(body, '\n')
-		if j < 0 && start > 0 {
-			continue
-		}
-		return append([]byte(nil), body[j+1:]...), int64(len(buf) - (i + 1)), size, nil
-	}
-}
-
 func parseIndexLine(raw []byte) (indexLine, error) {
 	var l indexLine
 	dec := jsonStrict(raw)

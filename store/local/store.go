@@ -539,7 +539,8 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 		h.mu.Unlock()
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, h.poisoned)
 	}
-	line := append(raw, '\n')
+	line := make([]byte, 0, len(raw)+1)
+	line = append(append(line, raw...), '\n')
 	if n, err := writeLine(h.f, line); err != nil || n != len(line) {
 		if err == nil {
 			err = io.ErrShortWrite
@@ -547,7 +548,7 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 		// A failed write is undone, so what follows never glues onto half a
 		// line; if it cannot be, nothing more is written to this session.
 		if terr := h.f.Truncate(h.size); terr != nil {
-			h.poisoned = fmt.Errorf("a failed write could not be undone (%v); the session takes no more writes", terr)
+			h.poisoned = fmt.Errorf("a failed write could not be undone; the session takes no more writes: %w", terr)
 		}
 		h.mu.Unlock()
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
@@ -751,7 +752,7 @@ func (s *Store) Since(sessionID string, seq int64) ([]agent.Event, error) {
 	if h == nil {
 		// A read never changes the record: an unfinished last line is left
 		// out here and dealt with by the next writer.
-		all, _, err := s.readEvents(sessionID)
+		all, err := s.readEvents(sessionID)
 		return after(all, seq), err
 	}
 	h.mu.Lock()
@@ -771,16 +772,15 @@ func after(all []agent.Event, seq int64) []agent.Event {
 
 // readEvents reads a session's file: its events in seq order, and whether an
 // unfinished last line was left out. A missing file is an empty record.
-func (s *Store) readEvents(id string) ([]agent.Event, bool, error) {
+func (s *Store) readEvents(id string) ([]agent.Event, error) {
 	data, err := readOwn(s.Path(id))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	evs, err := eventsOf(scan(data).raws)
-	return evs, len(scan(data).tail) > 0, err
+	return eventsOf(scan(data).raws)
 }
 
 // eventsOf parses complete lines into events in seq order.
