@@ -106,10 +106,10 @@ func (l *liveSession) pendingFor(ctx context.Context, requestID string) (*pendin
 	for {
 		l.mu.Lock()
 		p, ended := l.pending, l.ended[requestID]
-		// A background subagent's ask waiting with no run live is answered
-		// only by its request id: an approve naming none was meant for a
-		// run's ask, and must not land on one nobody was looking at.
-		byIDOnly := p != nil && p.Subagent != "" && l.ran == nil
+		// A subagent's ask is answered only by its request id: an approve
+		// naming none was meant for the run's own ask, and must not land on
+		// a subagent's that happens to be waiting first.
+		byIDOnly := p != nil && p.Subagent != ""
 		l.mu.Unlock()
 		switch {
 		case p != nil && requestID == "" && byIDOnly:

@@ -720,7 +720,7 @@ func TestDeleteAndDrainStopTheHeartbeat(t *testing.T) {
 	}
 }
 
-// A background subagent's ask waiting with no run live is answered only by a
+// A subagent's ask, with or without a run live, is answered only by a
 // request naming its request_id; an approve naming none is refused and the
 // ask keeps waiting.
 func TestIdleSubagentAskNeedsItsRequestID(t *testing.T) {
@@ -751,8 +751,8 @@ func TestIdleSubagentAskNeedsItsRequestID(t *testing.T) {
 		t.Fatal("the answer by request id was not applied")
 	}
 
-	// With a run live, a subagent's ask is the run's to answer, as before:
-	// a client naming no request still answers it.
+	// With a run live too, an approve naming no request does not answer a
+	// subagent's ask; one naming it does.
 	live.mu.Lock()
 	live.ran = make(chan struct{})
 	live.mu.Unlock()
@@ -762,8 +762,11 @@ func TestIdleSubagentAskNeedsItsRequestID(t *testing.T) {
 		got <- ok
 	}()
 	waitUntil(t, "the second ask", func() bool { return b.state(id) == "waiting_approval" })
-	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code >= 300 {
-		t.Fatalf("a live run's subagent ask with no request id: %d %s", rec.Code, rec.Body)
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusConflict {
+		t.Fatalf("an approve naming no request answered a subagent's ask during a run: %d %s", rec.Code, rec.Body)
+	}
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true,"request_id":"ev-child-2"}`); rec.Code >= 300 {
+		t.Fatalf("its own request id during a run: %d %s", rec.Code, rec.Body)
 	}
 	if !<-got {
 		t.Fatal("the answer was not applied")
