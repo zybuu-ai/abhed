@@ -26,6 +26,11 @@ func TestOwner(t *testing.T) {
 		{"proxy email", &Identity{Provider: ProviderProxy, Subject: "p", Email: "p@example.test", EmailVerified: true}, "p@example.test"},
 		{"proxy no email", &Identity{Provider: ProviderProxy, Subject: "p"}, "p"},
 		{"unnamed provider never uses email", &Identity{Subject: "s", Email: "bob", EmailVerified: true}, "s"},
+		{"verified email in any case", &Identity{Provider: "oidc", Subject: "u1", Email: "Carol@Example.TEST", EmailVerified: true}, "carol@example.test"},
+		{"proxy email in any case", &Identity{Provider: ProviderProxy, Subject: "p", Email: "P@Example.test", EmailVerified: true}, "p@example.test"},
+		{"proxy user that is an address", &Identity{Provider: ProviderProxy, Subject: "Pat@Example.test"}, "pat@example.test"},
+		{"proxy user that is a name keeps its case", &Identity{Provider: ProviderProxy, Subject: "Pat"}, "Pat"},
+		{"unverified subject keeps its case", &Identity{Provider: "oidc", Subject: "U1@x"}, "oidc:U1@x"},
 	} {
 		if got := tc.id.Owner(); got != tc.want {
 			t.Errorf("%s: Owner() = %q, want %q", tc.name, got, tc.want)
