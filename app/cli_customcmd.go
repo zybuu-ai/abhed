@@ -96,7 +96,25 @@ func loadCustomCommands(st *cliState) {
 
 	var trusted []customcmd.File
 	if ws != "" && !isHomeDir(ws, home) { // at home, .abhed/commands is the person's own
-		files, sum, errs := customcmd.ReadWorkspace(ws)
+		// A configured directory inside the workspace came with it, whoever
+		// named it: its commands need the same trust as .abhed/commands.
+		var outside, inside []string
+		for _, d := range userDirs {
+			if customcmd.Inside(ws, d) {
+				inside = append(inside, d)
+			} else {
+				outside = append(outside, d)
+			}
+		}
+		userDirs = outside
+		files, _, errs := customcmd.ReadWorkspace(ws)
+		more, moreErrs := customcmd.ReadWorkspaceDirs(ws, inside)
+		files = append(files, more...)
+		errs = append(errs, moreErrs...)
+		var sum string
+		if len(files) > 0 {
+			sum = customcmd.HashFiles(files)
+		}
 		for _, e := range errs {
 			cs.problems = append(cs.problems, e.Error())
 		}
@@ -330,7 +348,7 @@ func trustCommands(ctx context.Context, st *cliState, sf ui.Surface) error {
 	rows := [][]string{{"file", "sha256", "first line"}}
 	for _, f := range cs.wsFiles {
 		first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(f.Data)), "\n", 2)[0])
-		rows = append(rows, []string{f.Rel, shortSum(config.HashOf(f.Data)), first})
+		rows = append(rows, []string{f.Key, shortSum(config.HashOf(f.Data)), first})
 	}
 	choice, err := sf.Dialog(ctx, ui.DialogSpec{
 		Kind:  ui.DialogConfirm,

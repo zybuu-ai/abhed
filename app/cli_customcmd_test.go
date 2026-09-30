@@ -184,3 +184,37 @@ func TestCLICustomCommand(t *testing.T) {
 		t.Fatal("command.invoked is not in the record")
 	}
 }
+
+// A relative commands.dirs entry in the person's own configuration resolves
+// into the workspace: those commands came with the repository and need its
+// trust, as .abhed/commands does.
+func TestCommandsDirInsideWorkspaceNeedsTrust(t *testing.T) {
+	st, store, _ := customRig(t, "yes")
+	st.appCfg.Commands.Dirs = []string{"tools/cmds"}
+	write(t, filepath.Join(st.sess.Root, "tools", "cmds", "plant.md"), "PLANTED")
+	typeLine(t, st, "/plant")
+	if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvCommandInvoked)) != 0 {
+		t.Fatal("a command in the workspace ran without trust")
+	}
+	// An absolute path into the workspace, or through a link to it, is the same.
+	st, _, _ = customRig(t)
+	link := filepath.Join(t.TempDir(), "ws")
+	if err := os.Symlink(st.sess.Root, link); err != nil {
+		t.Skip(err)
+	}
+	st.appCfg.Commands.Dirs = []string{filepath.Join(link, "cmds")}
+	write(t, filepath.Join(st.sess.Root, "cmds", "plant.md"), "PLANTED")
+	typeLine(t, st, "/plant")
+	if st.takeTurn() != nil {
+		t.Fatal("a command reached through a link into the workspace ran without trust")
+	}
+	// Once trusted, it runs.
+	st, _, _ = customRig(t, "yes")
+	st.appCfg.Commands.Dirs = []string{"tools/cmds"}
+	write(t, filepath.Join(st.sess.Root, "tools", "cmds", "plant.md"), "PLANTED")
+	typeLine(t, st, "/commands trust")
+	typeLine(t, st, "/plant")
+	if turn := st.takeTurn(); turn == nil || turn.msg.Text != "PLANTED" {
+		t.Fatalf("a trusted command did not run: %+v", turn)
+	}
+}

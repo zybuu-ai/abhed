@@ -71,6 +71,9 @@ type File struct {
 	Rel  string // relative to its directory, slash-separated
 	Path string
 	Data []byte
+	// Key is what the trust hash names the file by, when not Rel: its path
+	// in the workspace.
+	Key string
 }
 
 // nameRE is a command name segment: plain ASCII, as the registry requires.
@@ -199,10 +202,46 @@ func ReadWorkspace(workspace string) ([]File, string, []error) {
 		}
 	}
 	files, errs := ReadDir(dir)
-	if len(files) == 0 {
-		return nil, "", errs
+	for i := range files {
+		files[i].Key = WorkspaceDir + "/" + files[i].Rel
 	}
 	return files, HashFiles(files), errs
+}
+
+// ReadWorkspaceDirs reads commands from directories inside the workspace
+// that a configuration named, with their paths in it as the trust hash's
+// keys: they came with the repository as much as .abhed/commands does.
+func ReadWorkspaceDirs(workspace string, dirs []string) ([]File, []error) {
+	var out []File
+	var errs []error
+	for _, d := range dirs {
+		files, e := ReadDir(d)
+		errs = append(errs, e...)
+		for _, f := range files {
+			if rel, err := filepath.Rel(workspace, f.Path); err == nil {
+				f.Key = filepath.ToSlash(rel)
+			}
+			out = append(out, f)
+		}
+	}
+	return out, errs
+}
+
+// Inside reports whether dir lies in the workspace, as written or with
+// links resolved.
+func Inside(workspace, dir string) bool {
+	real := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	for _, pair := range [][2]string{{workspace, dir}, {real(workspace), real(dir)}} {
+		if rel, err := filepath.Rel(pair[0], pair[1]); err == nil && (rel == "." || filepath.IsLocal(rel)) {
+			return true
+		}
+	}
+	return false
 }
 
 // HashFiles is the content hash a trust decision covers.
@@ -210,7 +249,11 @@ func HashFiles(files []File) string {
 	h := sha256.New()
 	for _, f := range files {
 		sum := sha256.Sum256(f.Data)
-		fmt.Fprintf(h, "%s\x00%s\n", f.Rel, hex.EncodeToString(sum[:]))
+		key := f.Key
+		if key == "" {
+			key = f.Rel
+		}
+		fmt.Fprintf(h, "%s\x00%s\n", key, hex.EncodeToString(sum[:]))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
