@@ -75,8 +75,12 @@ func (d *dock) ask(ctx context.Context, spec DialogSpec) (string, error) {
 	d.dlg = st
 	d.scr.raw("\x1b[?25l")
 	d.draw()
-	// The guard runs from the moment the choices reach the screen.
-	st.shownAt = d.now()
+	// The guard runs from the moment the choices reach the screen — not
+	// while the full-screen view or the editor hides them; those start it
+	// when they give the screen back.
+	if !d.stopped && d.pager == nil {
+		st.shownAt = d.now()
+	}
 	d.mu.Unlock()
 
 	var i int

@@ -51,6 +51,14 @@ func (d *dock) closePager() {
 	}
 	rows, cr, cc := d.frame()
 	d.scr.commit(lines, rows, cr, cc)
+	d.dialogVisible()
+}
+
+// dialogVisible starts a dialog's guard again as it comes back on screen.
+func (d *dock) dialogVisible() {
+	if d.dlg != nil {
+		d.dlg.shownAt = d.now()
+	}
 }
 
 func (d *dock) pageRows() int { return max(1, d.height-2) }

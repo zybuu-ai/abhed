@@ -869,6 +869,7 @@ func (d *dock) editExternally() func() {
 		defer d.mu.Unlock()
 		d.stopped = false
 		d.scr.forget()
+		defer d.dialogVisible()
 		if err != nil {
 			d.flash("editor: " + err.Error())
 			d.draw()

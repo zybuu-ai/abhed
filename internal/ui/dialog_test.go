@@ -481,3 +481,42 @@ func TestDialogPasteIsNeverAChoice(t *testing.T) {
 		}
 	}
 }
+
+// A dialog that arrives while the editor has the screen starts its guard
+// when the editor gives the screen back: a number typed straight after
+// leaving the editor is not an answer.
+func TestDialogGuardStartsWhenVisible(t *testing.T) {
+	g := newRig(t, 80, 30)
+	clock := newFakeClock()
+	tm := &timers{clock: clock}
+	release := make(chan struct{})
+	opened := make(chan struct{})
+	g.lr.d.mu.Lock()
+	g.lr.d.now, g.lr.d.after = clock.Now, tm.after
+	g.lr.d.extEdit = func(text string) (string, error) {
+		close(opened)
+		<-release
+		return text, nil
+	}
+	g.lr.d.mu.Unlock()
+	g.keys("\x07") // Ctrl-G: the editor has the screen
+	<-opened
+	answer := make(chan string, 1)
+	go func() {
+		id, _ := g.lr.Dialog(context.Background(), approvalSpec())
+		answer <- id
+	}()
+	time.Sleep(50 * time.Millisecond)
+	clock.advance(5 * time.Second) // long after the dialog was made, hidden
+	close(release)
+	g.waitText("Make this edit")
+	clock.advance(50 * time.Millisecond)
+	g.keys("1")
+	g.settle()
+	tm.advance(time.Second)
+	select {
+	case id := <-answer:
+		t.Fatalf("a 1 straight after the editor answered %q", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
