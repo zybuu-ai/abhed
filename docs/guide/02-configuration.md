@@ -86,7 +86,10 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
-and the token estimate is approximate.
+and the token estimate is approximate. Not much below 0.5 either: a
+compaction keeps recent turns up to about half the window, so below roughly
+0.3 what it keeps is already over the threshold and it compacts on almost
+every turn, each a summary call and a lost prefix cache.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
 after compaction. Project conventions belong there.
