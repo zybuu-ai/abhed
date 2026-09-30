@@ -106,7 +106,11 @@ func (k *keyReader) read() (key, error) {
 	case '[':
 		return k.csi()
 	case ']', 'P', '_', '^', 'X':
-		return k.controlString(next)
+		// A terminal's answer arrives whole, in one write; Alt+] or
+		// Alt+Shift+P pressed by a person is those two bytes alone.
+		if k.br.Buffered() > 0 {
+			return k.controlString(next)
+		}
 	case 'O':
 		return k.ss3()
 	case '\r', '\n':

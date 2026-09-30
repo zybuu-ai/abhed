@@ -492,3 +492,19 @@ func TestPasteKeepsNoControls(t *testing.T) {
 		t.Fatalf("the sent line kept controls: %q", got)
 	}
 }
+
+// Alt+] and Alt+Shift+P, X, _ and ^ pressed by a person are keys, not the
+// start of a terminal reply that would swallow what is typed after them.
+func TestAltBracketDoesNotSwallowTyping(t *testing.T) {
+	for _, alt := range []string{"\x1b]", "\x1bP", "\x1bX", "\x1b_", "\x1b^"} {
+		g := newRig(t, 80, 24)
+		g.keys(alt)
+		time.Sleep(60 * time.Millisecond)
+		g.typed("hello")
+		g.settle()
+		g.keys("\r")
+		if got, _ := g.line(); got != "hello" {
+			t.Errorf("after %q the line was %q", alt, got)
+		}
+	}
+}
