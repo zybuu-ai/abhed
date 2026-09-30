@@ -1,6 +1,7 @@
 package clitest
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func TestReadRecordLinks(t *testing.T) {
 }
 
 func TestReadRecordNone(t *testing.T) {
-	if _, err := readRecord(t.TempDir()); err != errNoRecord {
+	if _, err := readRecord(t.TempDir()); !errors.Is(err, errNoRecord) {
 		t.Fatalf("%v", err)
 	}
 }

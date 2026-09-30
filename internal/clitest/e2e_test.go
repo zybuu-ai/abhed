@@ -98,7 +98,7 @@ func writeFile(t *testing.T, path, body string) {
 // modes the binary sets are visible.
 func TestInterfaceOnly(t *testing.T) {
 	t.Parallel()
-	var h Harness = Start(t, Opts{Script: `text "ok"`})
+	h := Start(t, Opts{Script: `text "ok"`})
 	h.WaitText("Type a task")
 	if h.Screen().Modes().AltScreen {
 		t.Fatal("the line UI is not on the alternate screen")

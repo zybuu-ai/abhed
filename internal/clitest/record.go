@@ -47,7 +47,7 @@ func readRecord(home string) (Record, error) {
 
 // ReadRecordFile reads and link-checks one session file.
 func ReadRecordFile(path string) (Record, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- a record file under the run's own HOME
 	if err != nil {
 		return Record{}, err
 	}
@@ -61,7 +61,7 @@ func ReadRecordFile(path string) (Record, error) {
 		line := sc.Bytes()
 		var ev agent.Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			return rec, fmt.Errorf("%s line %d: %v", path, n+1, err)
+			return rec, fmt.Errorf("%s line %d: %w", path, n+1, err)
 		}
 		var link struct {
 			Prev string `json:"prev"`
@@ -78,7 +78,7 @@ func ReadRecordFile(path string) (Record, error) {
 		return rec, err
 	}
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-	if head, err := os.ReadFile(filepath.Join(filepath.Dir(path), "head", id)); err == nil {
+	if head, err := os.ReadFile(filepath.Join(filepath.Dir(path), "head", id)); err == nil { // #nosec G304 -- a head file beside the record the test reads
 		f := strings.Fields(string(head))
 		if len(f) < 2 || f[0] != strconv.FormatInt(lastSeq, 10) || f[1] != prevHash {
 			ok = false

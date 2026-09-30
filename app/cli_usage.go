@@ -162,7 +162,7 @@ func contextUse(events []agent.Event) (int, int) {
 
 // gitBranch reads the workspace's branch from .git/HEAD, without running git.
 func gitBranch(ws string) string {
-	data, err := os.ReadFile(filepath.Join(ws, ".git", "HEAD"))
+	data, err := os.ReadFile(filepath.Join(ws, ".git", "HEAD")) // #nosec G304 -- the workspace's .git/HEAD, read for the branch name
 	if err != nil {
 		return ""
 	}

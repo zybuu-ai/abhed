@@ -427,11 +427,11 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		switch pick = strings.ToLower(pick); {
-		case pick == "s":
+		switch pick = strings.ToLower(pick); pick {
+		case "s":
 			fmt.Fprintln(out, "Nothing written. The defaults expect Ollama at localhost:11434.")
 			return nil
-		case pick == "e":
+		case "e":
 			if name, p, err = o.endpoint(); err != nil {
 				return err
 			}
@@ -565,7 +565,7 @@ func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (str
 		return "", err
 	}
 	path := filepath.Join(dir, "config.json")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the person's own ~/.abhed/config.json, created new
 	if err != nil {
 		return path, err
 	}

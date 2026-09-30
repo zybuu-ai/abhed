@@ -142,16 +142,16 @@ func slashBug(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	e.ui.Append(ui.Block{Kind: ui.BlockMarkdown, Text: body})
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "nothing has been sent. To file it, open:"})
 	e.ui.Append(ui.Block{Kind: ui.BlockToolOut, Text: link})
-	ans, err := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "Open this link in your browser?"})
-	if err != nil || ans != ui.ChoiceYes {
+	// No answer, or no, leaves the link on the screen and opens nothing.
+	if ans, _ := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "Open this link in your browser?"}); ans != ui.ChoiceYes {
 		return false, nil
 	}
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
-	if err := exec.CommandContext(ctx, opener, link).Start(); err != nil {
-		return false, fmt.Errorf("could not open the browser: %v; the link is above", err)
+	if err := exec.CommandContext(ctx, opener, link).Start(); err != nil { // #nosec G204 -- the system opener, on a link the person just agreed to open
+		return false, fmt.Errorf("could not open the browser: %w; the link is above", err)
 	}
 	return false, nil
 }

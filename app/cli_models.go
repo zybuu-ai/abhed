@@ -307,7 +307,7 @@ func (f *fallbackAdapter) Complete(ctx context.Context, req model.Request) (<-ch
 		}
 		next, berr := f.build(f.names[i+1])
 		if berr != nil {
-			return nil, fmt.Errorf("%w (and fallback %s could not be built: %v)", err, f.names[i+1], berr)
+			return nil, fmt.Errorf("%w (and fallback %s could not be built: %w)", err, f.names[i+1], berr)
 		}
 		f.mu.Lock()
 		if f.cur == i {

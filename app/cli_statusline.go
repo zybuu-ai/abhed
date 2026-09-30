@@ -106,7 +106,7 @@ func sanitizeStatus(s string) string {
 			if j < len(s) && s[j] == ']' {
 				// OSC: skip to BEL or ST.
 				k := j + 1
-				for k < len(s) && s[k] != 0x07 && !(s[k] == 0x1b && k+1 < len(s) && s[k+1] == '\\') {
+				for k < len(s) && s[k] != 0x07 && (s[k] != 0x1b || k+1 >= len(s) || s[k+1] != '\\') {
 					k++
 				}
 				if k < len(s) && s[k] == 0x1b {

@@ -182,15 +182,15 @@ func Golden(t testing.TB, scenario, file, got string) {
 	}
 	path := filepath.Join("testdata", "golden", scenario, file)
 	if *update {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { // #nosec G301 -- testdata, committed to the repository
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil { // #nosec G306 -- testdata, committed to the repository
 			t.Fatal(err)
 		}
 		return
 	}
-	want, err := os.ReadFile(path)
+	want, err := os.ReadFile(path) // #nosec G304 -- a golden under the package's testdata
 	if err != nil {
 		t.Fatalf("clitest: %v (run with -update to create it)", err)
 	}

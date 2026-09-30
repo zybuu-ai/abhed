@@ -90,7 +90,7 @@ func ParseScript(s Script) ([]turn, error) {
 			err = fmt.Errorf("unknown step %q", op)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("script line %d %q: %v", i+1, line, err)
+			return nil, fmt.Errorf("script line %d %q: %w", i+1, line, err)
 		}
 		cur = append(cur, st)
 	}

@@ -200,9 +200,10 @@ func (t *Terminal) byte(b byte) {
 			t.oscDone()
 		}
 	case sDCS:
-		if b == 0x1b {
+		switch b {
+		case 0x1b:
 			t.st = sDCSEsc
-		} else if b == 0x07 {
+		case 0x07:
 			t.st = sGround
 		}
 	case sDCSEsc:
@@ -472,10 +473,10 @@ func (t *Terminal) csi(final byte) {
 		t.cur.y, t.cur.x = max(t.cur.y-n, t.upLimit()), 0
 		t.cur.wrap = false
 	case 'G', '`':
-		t.cur.x = clamp(n-1, 0, t.cols-1)
+		t.cur.x = clamp(n-1, t.cols-1)
 		t.cur.wrap = false
 	case 'd':
-		t.cur.y = clamp(n-1, 0, t.rows-1)
+		t.cur.y = clamp(n-1, t.rows-1)
 		t.cur.wrap = false
 	case 'H', 'f':
 		row, col := 1, 1
@@ -485,7 +486,7 @@ func (t *Terminal) csi(final byte) {
 		if len(p) > 1 && p[1] > 0 {
 			col = p[1]
 		}
-		t.cur.y, t.cur.x = clamp(row-1, 0, t.rows-1), clamp(col-1, 0, t.cols-1)
+		t.cur.y, t.cur.x = clamp(row-1, t.rows-1), clamp(col-1, t.cols-1)
 		t.cur.wrap = false
 	case 'J':
 		t.eraseDisplay(t.csiParams(0)[0])
@@ -763,7 +764,7 @@ func (t *Terminal) sgr() {
 
 func hex2(n int) string {
 	const digits = "0123456789abcdef"
-	n = clamp(n, 0, 255)
+	n = clamp(n, 255)
 	return string([]byte{digits[n>>4], digits[n&15]})
 }
 
@@ -830,7 +831,7 @@ func (t *Terminal) Resize(cols, rows int) {
 	}
 	t.cols, t.rows = cols, rows
 	t.top, t.bot = 0, rows-1
-	t.cur.x, t.cur.y = clamp(t.cur.x, 0, cols-1), clamp(t.cur.y, 0, rows-1)
+	t.cur.x, t.cur.y = clamp(t.cur.x, cols-1), clamp(t.cur.y, rows-1)
 	t.cur.wrap = false
 	t.changes++
 }
@@ -918,6 +919,7 @@ func rowText(r []Cell) string {
 	return strings.TrimRight(b.String(), " ")
 }
 
-func clamp(v, lo, hi int) int {
-	return max(lo, min(v, hi))
+// clamp is v held within 0..hi.
+func clamp(v, hi int) int {
+	return max(0, min(v, hi))
 }

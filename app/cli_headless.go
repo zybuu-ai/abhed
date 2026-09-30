@@ -136,7 +136,7 @@ func userMessageText(line []byte) (string, error) {
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(line, &m); err != nil {
-		return "", fmt.Errorf("not JSON: %v", err)
+		return "", fmt.Errorf("not JSON: %w", err)
 	}
 	if m.Type != "user" {
 		return "", fmt.Errorf("type %q; only user messages are read", m.Type)
@@ -196,7 +196,7 @@ type systemPrompt struct {
 func systemPromptFlags(f *cliFlags, cfg config.Config) (systemPrompt, error) {
 	var sp systemPrompt
 	read := func(flagName, path string) (string, error) {
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) // #nosec G304 -- a file the person named on the command line
 		if err != nil {
 			return "", fmt.Errorf("-%s: %w", flagName, err)
 		}

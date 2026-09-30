@@ -79,7 +79,7 @@ func slashMCP(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 			return false, fmt.Errorf("usage: /mcp, or /mcp restart <server>")
 		}
 		if err := gw.Restart(ctx, args[1]); err != nil {
-			return false, fmt.Errorf("mcp server %s did not reconnect: %v", args[1], err)
+			return false, fmt.Errorf("mcp server %s did not reconnect: %w", args[1], err)
 		}
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "reconnected " + args[1] + "; its tools reach the new connection, and tools it added are offered from the next session"})
 		return false, nil

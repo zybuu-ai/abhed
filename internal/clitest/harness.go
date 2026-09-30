@@ -64,16 +64,16 @@ func Binary(t testing.TB) string {
 			args = append(args, "-race")
 		}
 		args = append(args, "./cmd/abhed")
-		cmd := exec.Command("go", args...)
+		cmd := exec.Command("go", args...) // #nosec G204 -- go build of this module, with fixed arguments
 		cmd.Dir = root
 		cmd.Env = withoutGOROOT(os.Environ())
 		if out, err := cmd.CombinedOutput(); err != nil {
-			build.err = fmt.Errorf("go build: %v\n%s", err, out)
+			build.err = fmt.Errorf("go build: %w\n%s", err, out)
 			return
 		}
 		// The first exec of a new binary pays for the system's checks of it,
 		// which no start-up budget is about.
-		_ = exec.Command(build.bin, "-version").Run()
+		_ = exec.Command(build.bin, "-version").Run() // #nosec G204 -- the binary this test process built
 	})
 	if build.err != nil {
 		t.Fatalf("clitest: %v", build.err)
@@ -104,7 +104,7 @@ func withoutGOROOT(env []string) []string {
 func moduleRoot() (string, error) {
 	out, err := exec.Command("go", "env", "GOMOD").Output()
 	if err != nil {
-		return "", fmt.Errorf("go env GOMOD: %v", err)
+		return "", fmt.Errorf("go env GOMOD: %w", err)
 	}
 	mod := strings.TrimSpace(string(out))
 	if mod == "" || mod == os.DevNull {
@@ -231,7 +231,7 @@ func start(t testing.TB, o Opts) *run {
 	for i, a := range o.Args {
 		args[i] = h.expand(a)
 	}
-	h.cmd = exec.Command(bin, args...)
+	h.cmd = exec.Command(bin, args...) // #nosec G204 -- the binary this test process built, with the test's arguments
 	h.cmd.Dir = h.ws
 	h.cmd.Env = h.env()
 	h.term = vt.New(o.Cols, o.Rows, h.reply)
@@ -244,7 +244,7 @@ func start(t testing.TB, o Opts) *run {
 	if o.Piped {
 		h.startPiped()
 	} else {
-		tty, err := pty.StartWithSize(h.cmd, &pty.Winsize{Cols: uint16(o.Cols), Rows: uint16(o.Rows)})
+		tty, err := pty.StartWithSize(h.cmd, &pty.Winsize{Cols: uint16(o.Cols), Rows: uint16(o.Rows)}) // #nosec G115 -- a test terminal size, far below 65535
 		if err != nil {
 			t.Skipf("clitest: no pseudo-terminal: %v", err)
 		}
@@ -477,7 +477,7 @@ func (h *run) Resize(cols, rows int) {
 	h.term.Resize(cols, rows)
 	h.mu.Unlock()
 	if h.tty != nil {
-		_ = pty.Setsize(h.tty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+		_ = pty.Setsize(h.tty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}) // #nosec G115 -- a test terminal size, far below 65535
 	}
 }
 

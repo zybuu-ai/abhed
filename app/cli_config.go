@@ -177,9 +177,9 @@ func writeUserSetting(path string, v any) (string, error) {
 	}
 	file := filepath.Join(home, ".abhed", "config.json")
 	doc := map[string]any{}
-	if data, err := os.ReadFile(file); err == nil {
+	if data, err := os.ReadFile(file); err == nil { // #nosec G304 -- the person's own ~/.abhed/config.json
 		if err := json.Unmarshal(data, &doc); err != nil {
-			return file, fmt.Errorf("%s is not valid JSON, so it was not changed: %v", file, err)
+			return file, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", file, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return file, err
