@@ -372,11 +372,13 @@ func clusterSubject(tool string, args json.RawMessage) (string, bool) {
 		return where + "/" + ns + "/" + resource, true
 	case "k8s_apply":
 		if str("action") == "apply" {
-			var obj struct {
-				Kind string `json:"kind"`
+			// The manifest is read as the tool reads it; one that does not
+			// decode strictly is judged cluster-wide.
+			kind := ""
+			if mf, err := kubescope.DecodeManifest(str("manifest")); err == nil {
+				kind = mf.Kind
 			}
-			_ = json.Unmarshal([]byte(str("manifest")), &obj)
-			if namespaced, known := kubescope.KindScope(obj.Kind); !namespaced || !known {
+			if namespaced, known := kubescope.KindScope(kind); !namespaced || !known {
 				ns = kubescope.ClusterWide
 			}
 		} else if kubescope.ClusterScopedResource(resource) {

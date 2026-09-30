@@ -156,3 +156,22 @@ func TestClusterScopedObjectsAreNotInANamespace(t *testing.T) {
 		t.Errorf("a namespaced apply in dev was not allowed: %s", d.Reason)
 	}
 }
+
+// A manifest that repeats kind in another case is judged cluster-wide, never
+// by the kind a case-insensitive reader would take last.
+func TestApplySubjectReadsTheManifestStrictly(t *testing.T) {
+	for _, m := range []string{
+		`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRoleBinding","Kind":"ConfigMap","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","Kind":"ConfigMap","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn","labels":{"a":"1","A":"2"}}}`,
+	} {
+		args := clusterArgs("cluster", "lab", "namespace", "dev", "action", "apply", "manifest", m)
+		if got := Subject("k8s_apply", args); got != "lab/-/apply" {
+			t.Errorf("%s judged as %q", m, got)
+		}
+	}
+	ok := clusterArgs("cluster", "lab", "namespace", "dev", "action", "apply", "manifest", `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x"}}`)
+	if got := Subject("k8s_apply", ok); got != "lab/dev/apply" {
+		t.Errorf("a plain ConfigMap judged as %q", got)
+	}
+}
