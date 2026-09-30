@@ -269,7 +269,8 @@ forkSeq}`. With no `throughSeq` it forks at the head. The new session is
 recorded `conversation.forked` in the child and `session.branched` in the
 parent. Logins and ssh hosts do not carry over. Refused with -32002 while a
 prompt or a wake runs in the source session (the SDK's `ErrForkDuringRun`).
-Studio opens the fork in a new chat.
+The fork is returned open on this connection, as a `session/new` session is,
+so its first prompt needs no `session/load`. Studio opens it in a new chat.
 
 ### 4.3 Compact and clear
 
