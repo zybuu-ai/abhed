@@ -241,3 +241,21 @@ func TestQueuedCustomCommandsDoNotClobberTheWaitingTurn(t *testing.T) {
 		t.Fatalf("tools not restored: %v", st.loop.Tools.Names())
 	}
 }
+
+// A shell line's output that names a file is not read as the person's
+// mention; the command's own @ files still attach.
+func TestCustomCommandOutputIsNotReadAsAMention(t *testing.T) {
+	st, store, _ := customRig(t, "yes")
+	write(t, filepath.Join(st.sess.Root, "own.md"), "OWN-FILE")
+	write(t, filepath.Join(st.sess.Root, "other.md"), "OTHER-CANARY")
+	userCommand(t, "c.md", "see @own.md and !`echo @other.md`")
+	typeLine(t, st, "/c")
+	turn := st.takeTurn()
+	if turn == nil || !strings.Contains(turn.msg.Text, "OWN-FILE") || strings.Contains(turn.msg.Text, "OTHER-CANARY") ||
+		!strings.Contains(turn.msg.Text, "@other.md") {
+		t.Fatalf("turn: %+v", turn)
+	}
+	if n := len(eventsOf(t, store, agent.EvInputMention)); n != 1 {
+		t.Fatalf("%d mentions", n)
+	}
+}

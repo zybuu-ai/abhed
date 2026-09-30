@@ -227,25 +227,25 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 		return err
 	}
 	body := customcmd.Expand(c.Body, argText)
-	failed := false
+	// The command's own @ files are attached first, with each shell line held
+	// as a placeholder, so no output can name a file read as the person's.
+	var inline []string
+	ph := fenced("pending", "", "")
 	body = customcmd.ReplaceInline(body, func(cmd string) string {
-		if failed {
-			return ""
-		}
-		res, ran := personBash(ctx, st, sf, cmd, "run by the custom command "+c.Name, c.Name)
-		if !ran {
-			failed = true
-			return ""
-		}
-		out, _ := capText(strings.TrimRight(res.Content, "\n"), bangOutputMax)
-		return fenced("command-output", "", out)
+		inline = append(inline, cmd)
+		return fmt.Sprintf("%s#%d#", ph, len(inline)-1)
 	})
-	if failed {
-		return fmt.Errorf("%s was not sent: one of its shell lines did not run", c.Name)
-	}
 	msg, _, err := (mentionExpander{st: st}).Expand(ctx, loop, body)
 	if err != nil {
 		return fmt.Errorf("%s was not sent: %w", c.Name, err)
+	}
+	for i, cmd := range inline {
+		res, ran := personBash(ctx, st, sf, cmd, "run by the custom command "+c.Name, c.Name)
+		if !ran {
+			return fmt.Errorf("%s was not sent: one of its shell lines did not run", c.Name)
+		}
+		out, _ := capText(strings.TrimRight(res.Content, "\n"), bangOutputMax)
+		msg.Text = strings.Replace(msg.Text, fmt.Sprintf("%s#%d#", ph, i), fenced("command-output", "", out), 1)
 	}
 
 	var undo []func()
