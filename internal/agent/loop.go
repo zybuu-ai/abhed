@@ -1669,7 +1669,7 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
 	// Rules only, never the mode: bypass and auto approve calls, not secrets.
 	for _, name := range a.Secrets {
-		for _, r := range l.Policy.Deny {
+		for _, r := range l.Policy.DenyRules() {
 			if r.Matches("secret", name) {
 				return fmt.Sprintf("secret %s is denied by rule %s", name, r)
 			}

@@ -95,7 +95,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// Session-level state the slash commands operate on.
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
-		workspace: sess.Root, adapter: adapter, provider: provider,
+		workspace: sess.Root, adapter: adapter, provider: provider, overlay: pol.Session,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"reflect"
 	"sort"
@@ -223,9 +224,11 @@ func (c Config) Apply(o Overrides) (Config, error) {
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
 	warnNeverAllows(o.Allow)
-	// Copied, so the result never shares a list with the configuration it came from.
+	c.ruleLayers = maps.Clone(c.ruleLayers)
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
+	c.noteRuleLayer(LayerFlag)
+	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)
 	return c, nil
 }
@@ -248,4 +251,43 @@ func orRefuse(v string) string {
 		return "refuse"
 	}
 	return v
+}
+
+// Layers a permission rule can come from, as RuleLayer names them.
+const (
+	LayerDefault   = "default"
+	LayerUser      = "user"
+	LayerWorkspace = "workspace"
+	LayerManaged   = "managed"
+	LayerFlag      = "flag"
+)
+
+// noteRuleLayer credits the permission rules not yet credited to layer. The
+// managed layer takes every rule in a list it sets, since it replaced that
+// list; the others take only rules new to the list.
+func (c *Config) noteRuleLayer(layer string) {
+	if c.ruleLayers == nil {
+		c.ruleLayers = map[string]string{}
+	}
+	for list, rules := range map[string][]string{
+		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
+	} {
+		replaced := layer == LayerManaged && c.ManagedSets("permissions."+list)
+		for _, r := range rules {
+			k := list + "\x00" + strings.TrimSpace(r)
+			if _, have := c.ruleLayers[k]; !have || replaced {
+				c.ruleLayers[k] = layer
+			}
+		}
+	}
+}
+
+// RuleLayer names where a configured permission rule in list (allow, ask or
+// deny) came from: default, user, workspace, managed or flag. A rule loading
+// did not see, as in a Config built by hand, is "config".
+func (c Config) RuleLayer(list, rule string) string {
+	if l, ok := c.ruleLayers[list+"\x00"+strings.TrimSpace(rule)]; ok {
+		return l
+	}
+	return "config"
 }
