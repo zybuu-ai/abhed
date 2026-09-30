@@ -48,14 +48,19 @@ func (plainInput) Expand(_ context.Context, _ *agent.Loop, raw string) (agent.Me
 }
 
 // isCommandLine reports whether a typed line is for the CLI rather than a
-// message. A mid-turn line of this kind is held until the turn ends.
+// message: a slash command or a ! shell line. A mid-turn line of this kind is
+// held until the turn ends.
 func isCommandLine(line string) bool {
-	return strings.HasPrefix(line, "/")
+	return strings.HasPrefix(line, "/") || strings.HasPrefix(line, "!")
 }
 
 // dispatchLine runs a command line and reports whether the session should end.
 func dispatchLine(ctx context.Context, line string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState) bool {
+	if strings.HasPrefix(line, "!") {
+		runBang(ctx, st, r, strings.TrimSpace(line[1:]))
+		return false
+	}
 	return handleCommand(ctx, line, r, pol, sess, st)
 }
 
