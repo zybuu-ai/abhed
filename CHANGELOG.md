@@ -519,6 +519,11 @@ All notable changes to Abhed are recorded here. The format follows
 - `/rename`, `/branch` and `/clear [name]`. A branch opens with
   `session.branched` and a copy of the conversation and its undo history;
   the original is left as it was.
+- HawkEYE's sensitive-path finding and the checkpoint skip share one list of
+  key and credential file names, matched without case against each part of
+  a path in the call, where HawkEYE used to match fixed substrings; it now
+  also names `.envrc`, `*.env`, `.git-credentials`, `.pgpass`, `*.tfvars`,
+  `.azure/` and more, and no longer matches a name only inside a longer word.
 - SDK: `Options.Store` and `OpenLocalRecord`, so an embedded agent can keep
   the local record. Its directory becomes state for that agent, and `New`
   refuses one inside the workspace or any other folder the agent's commands

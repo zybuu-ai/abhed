@@ -84,8 +84,9 @@ cache.
   written to again. `abhed -r` goes on from it in a new session after a yes.
 - A session and the index are created with a head that counts no lines,
   before their first line. A crash before the first real head leaves that
-  head behind the lines, which is noted, not failed; a missing head file is
-  always damage.
+  head behind one line, which is noted, not failed; behind more than one it
+  is damage, and so is a missing head file. A session whose first real head
+  cannot be written takes no more lines.
 - If the index fails (a lost or damaged `index.head`, a cut line), no new
   session starts until it is looked at. `abhed record verify` names the line.
   Moving `index.jsonl` and `index.head` aside keeps them as evidence and
@@ -221,6 +222,10 @@ What `verify` cannot show:
 - **Lines after the last sync.** The head moves at turn boundaries, so lines
   written since then (streamed reply fragments, a tool's events mid-turn) can
   be cut from the end without a trace, and a crash can lose them.
+- **A record cut back to its creation.** A session or the index cut to its
+  first line, or to nothing, with its creation head written back, looks
+  exactly like a crash during its first write. That is the same edit as
+  rewriting a head, below. With two or more lines left, a creation head fails.
 - **An owner who rewrites the evidence.** Verification is only as strong as
   the head and index files, and the same owner can rewrite those as well as
   the lines, or compute a whole new chain. The record is tamper-evident against
