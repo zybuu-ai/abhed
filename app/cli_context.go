@@ -26,6 +26,7 @@ func init() {
 	registerSlash(slashCmd{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
 	registerSlash(slashCmd{Name: "/context", Help: "what fills the context window, in tokens and percent", Group: "context", Order: 45, ReadOnly: true, Run: slashContext})
 	registerSlash(slashCmd{Name: "/output-style", Args: "[name|off]", Help: "list output styles, or choose how the agent writes", Group: "context", Order: 96, Run: slashOutputStyle})
+	registerSlash(slashCmd{Name: "/import", Args: "<path>", Help: "append a file you name to ABHED.md, after showing it", Group: "context", Order: 87, Run: slashImport})
 	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
 	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
@@ -254,6 +255,12 @@ func saveNote(ctx context.Context, st *cliState, sf ui.Surface, target, note str
 // appendWorkspaceNote appends a note to a memory file in the workspace as
 // the person's write, and returns its path relative to the workspace.
 func appendWorkspaceNote(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs, note string) (string, error) {
+	return changeWorkspaceMemory(ctx, loop, sess, abs, func(before []byte) []byte { return appendItem(before, note) })
+}
+
+// changeWorkspaceMemory rewrites a memory file in the workspace as the
+// person's write, and returns its path relative to the workspace.
+func changeWorkspaceMemory(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, change func([]byte) []byte) (string, error) {
 	// The confined read refuses a link out of the workspace or into state.
 	existed := true
 	before, err := sess.ReadFile(abs)
@@ -263,7 +270,7 @@ func appendWorkspaceNote(ctx context.Context, loop *agent.Loop, sess *tools.Sess
 	if err != nil {
 		return "", err
 	}
-	after := appendItem(before, note)
+	after := change(before)
 	id := personCallID("note")
 	args := argsJSON(map[string]string{"path": abs, "content": string(after)})
 	_, refused, err := loop.ManualAuthorize("write", id, args)
@@ -278,7 +285,7 @@ func appendWorkspaceNote(ctx context.Context, loop *agent.Loop, sess *tools.Sess
 	}
 	start := time.Now()
 	werr := sess.RestoreFile(abs, after)
-	res := tools.Result{Content: "appended a note to " + sess.Rel(abs)}
+	res := tools.Result{Content: "changed " + sess.Rel(abs)}
 	if werr != nil {
 		res = tools.Result{Content: werr.Error(), IsError: true}
 	}
@@ -719,5 +726,80 @@ func slashOutputStyle(ctx context.Context, e *cmdEnv, args []string) (bool, erro
 		}
 	}
 	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "output style: " + args[0] + " (the next turn re-reads the prompt)"})
+	return false, nil
+}
+
+// importMax bounds what /import reads.
+const importMax = 256 << 10
+
+// slashImport is /import <path>: the one way instructions from another
+// tool's file reach Abhed's memory. Only the file the person names is read,
+// never through a link or from Abhed's state; it is shown, and appended to
+// ABHED.md only if the person confirms, as their write, redacted and
+// recorded.
+func slashImport(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
+	st, sf := e.st, e.ui
+	if len(args) != 1 {
+		return false, errors.New("usage: /import <path>")
+	}
+	p := args[0]
+	home, _ := os.UserHomeDir()
+	switch {
+	case strings.HasPrefix(p, "~/") && home != "":
+		p = filepath.Join(home, p[2:])
+	case !filepath.IsAbs(p):
+		p = filepath.Join(st.sess.Root, p)
+	}
+	p = filepath.Clean(p)
+	if tools.IsState(p, st.sess.Root, home) {
+		return false, fmt.Errorf("%s is Abhed's own state; it is not imported", args[0])
+	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s is not a regular file; a link is not followed", args[0])
+	}
+	if info.Size() > importMax {
+		return false, fmt.Errorf("%s is larger than %d KB", args[0], importMax>>10)
+	}
+	data, err := os.ReadFile(p) // #nosec G304 -- the one file the person named, checked above
+	if err != nil {
+		return false, err
+	}
+	if tools.IsBinary(data) {
+		return false, fmt.Errorf("%s is not text", args[0])
+	}
+	if err := ensureConversation(ctx, st); err != nil {
+		return false, err
+	}
+	text := redactFor(st.loop, strings.TrimSpace(string(data)))
+	choice, err := sf.Dialog(ctx, ui.DialogSpec{
+		Kind:  ui.DialogConfirm,
+		Title: "Append this to ABHED.md?",
+		Body:  []ui.Block{{Kind: ui.BlockMarkdown, Text: text, Path: args[0]}},
+		Why:   "/import · the file becomes project memory, read in every session",
+	})
+	if err != nil || choice != ui.ChoiceYes {
+		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "not imported"})
+		return false, nil
+	}
+	section := "\n## Imported from " + filepath.Base(p) + "\n\n" + text + "\n"
+	rel, err := changeWorkspaceMemory(ctx, st.loop, st.sess, filepath.Join(st.sess.Root, agent.MemoryFileName), func(before []byte) []byte {
+		out := append([]byte(nil), before...)
+		if len(out) > 0 && !strings.HasSuffix(string(out), "\n") {
+			out = append(out, '\n')
+		}
+		return append(out, section...)
+	})
+	if err != nil {
+		return false, err
+	}
+	if _, err := st.loop.Recorder.Record(agent.EvMemoryWritten, agent.ActorUser, agent.Trusted,
+		agent.MemoryWritten{Path: rel, Kind: "import", By: "user"}); err != nil {
+		return false, err
+	}
+	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "appended " + args[0] + " to " + rel + "; it is read from the next session"})
 	return false, nil
 }
