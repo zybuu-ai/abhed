@@ -95,8 +95,13 @@ type dock struct {
 	// later one with its cancel choice.
 	askSlot    chan struct{}
 	inputEnded bool
-	hotkeys    map[string]func()
-	extEdit    func(string) (string, error)
+	// autoTheme is set when the theme was not chosen: the terminal's answer
+	// about its background may set it, however late the answer comes.
+	autoTheme bool
+	// detected is told what the terminal reported, to remember it.
+	detected func(theme string, sync int)
+	hotkeys  map[string]func()
+	extEdit  func(string) (string, error)
 }
 
 type readResult struct {
@@ -208,6 +213,10 @@ func (d *dock) readLine() (string, error) {
 // key applies one key with the lock held, and returns work to run after it
 // is released.
 func (d *dock) key(k key, at time.Time) func() {
+	if k.code == kReply {
+		d.reply(k.paste)
+		return nil
+	}
 	gap := at.Sub(d.lastKey)
 	if gap > 5*time.Millisecond || d.burstKeys == 0 {
 		d.startBurst()
@@ -1214,4 +1223,30 @@ func shortcutHelp(s Style, w int) []string {
 		out = append(out, "  "+s.Dim(truncateWidth(p[1], w-2)))
 	}
 	return out
+}
+
+// reply applies a terminal's answer to a query. Nothing in it is ever typed.
+func (d *dock) reply(text string) {
+	switch {
+	case strings.HasPrefix(text, "]11;"):
+		theme := themeFromOSC11(text)
+		if theme == "" || !d.autoTheme {
+			return
+		}
+		if d.detected != nil {
+			d.detected(theme, -1)
+		}
+		if theme != Theme() {
+			_ = SetTheme(theme)
+			d.repaint()
+		}
+	case strings.HasPrefix(text, "[?2026;") && strings.HasSuffix(text, "$y"):
+		// DECRQM: 1 set, 2 reset — either way the terminal knows the mode.
+		v := strings.TrimSuffix(strings.TrimPrefix(text, "[?2026;"), "$y")
+		on := v == "1" || v == "2"
+		d.scr.sync = on
+		if d.detected != nil {
+			d.detected("", map[bool]int{true: 1, false: 0}[on])
+		}
+	}
 }

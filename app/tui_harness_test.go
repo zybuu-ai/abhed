@@ -103,6 +103,13 @@ func startTUI(t *testing.T, stub *tuiStub, ws string, cols, rows int, args ...st
 // query with background ("" answers nothing, as many terminals do).
 func startTUIWith(t *testing.T, stub *tuiStub, ws string, cols, rows int, background string, args ...string) *tuiRun {
 	t.Helper()
+	return startTUIDelayed(t, stub, ws, cols, rows, background, 0, args...)
+}
+
+// startTUIDelayed answers the background query after delay, as a terminal
+// over a slow link does.
+func startTUIDelayed(t *testing.T, stub *tuiStub, ws string, cols, rows int, background string, delay time.Duration, args ...string) *tuiRun {
+	t.Helper()
 	cmd := mainHelper(append([]string{"-C", ws}, args...))
 	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
@@ -123,7 +130,10 @@ func startTUIWith(t *testing.T, stub *tuiStub, ws string, cols, rows int, backgr
 				r.mu.Unlock()
 				_, _ = r.term.Write(buf[:n])
 				if background != "" && strings.Contains(string(buf[:n]), "\x1b]11;?") {
-					_, _ = io.WriteString(tty, "\x1b]11;rgb:"+background+"\x07\x1b[?62;22c")
+					go func() {
+						time.Sleep(delay)
+						_, _ = io.WriteString(tty, "\x1b]11;rgb:"+background+"\x07\x1b[?62;22c")
+					}()
 				}
 			}
 			if err != nil {

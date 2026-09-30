@@ -15,7 +15,7 @@ import (
 // hostile carries every way text has been found to reach a terminal raw:
 // OSC 52 (clipboard), OSC 0 (title), OSC 8 (link), ED and CUP, C1 CSI and
 // OSC, DCS, BEL, and the same behind a zero-width joiner.
-const hostile = "A\x1b]52;c;U1BPT0Y=\aB\x1b]0;TITLE\aC\x1b[2JD\x1b[5;5HE\u009b31mF\u009d0;T\aG\x1b]8;;http://x\x1b\\H\x1bP1$r\x1b\\I‍\x1b]0;Z\aJ‍\r\bK"
+const hostile = "A\x1b]52;c;U1BPT0Y=\aB\x1b]0;TITLE\aC\x1b[2JD\x1b[5;5HE\u009b31mF\u009d0;T\aG\x1b]8;;http://x\x1b\\H\x1bP1$r\x1b\\I\u200d\x1b]0;Z\aJ\u200d\r\bK"
 
 // forbidden are the bytes none of that may leave on the wire.
 var forbidden = []string{"\x1b]", "\a", "\x1b[2J", "\x1b[5;5H", "\u009b", "\u009d", "\x1bP", "\x1b\\", "\b"}

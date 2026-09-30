@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -115,10 +116,19 @@ func themeFromOSC11(reply string) string {
 }
 
 // uiPrefs are the terminal preferences /theme and /vim save, in
-// ~/.abhed/ui.json: the person's own, never a workspace's.
+// ~/.abhed/ui.json — the person's own, never a workspace's — and what each
+// terminal said about itself, so it need not be asked again at startup.
 type uiPrefs struct {
+	Theme     string               `json:"theme,omitempty"`
+	Vim       bool                 `json:"vim,omitempty"`
+	Terminals map[string]termCache `json:"terminals,omitempty"`
+}
+
+// termCache is what a terminal answered: its background's theme, and
+// whether it knows synchronized output (1 yes, 0 no).
+type termCache struct {
 	Theme string `json:"theme,omitempty"`
-	Vim   bool   `json:"vim,omitempty"`
+	Sync  *int   `json:"sync,omitempty"`
 }
 
 func prefsPath() string {
@@ -129,25 +139,21 @@ func prefsPath() string {
 	return filepath.Join(home, ".abhed", "ui.json")
 }
 
-// LoadPrefs reads the saved preferences; missing or unreadable is none.
-func LoadPrefs() (theme string, vim bool) {
+func loadPrefs() uiPrefs {
+	var u uiPrefs
 	p := prefsPath()
 	if p == "" {
-		return "", false
+		return u
 	}
 	data, err := os.ReadFile(p) // #nosec G304 -- the user's own preferences under their home
 	if err != nil {
-		return "", false
+		return u
 	}
-	var u uiPrefs
-	if json.Unmarshal(data, &u) != nil {
-		return "", false
-	}
-	return u.Theme, u.Vim
+	_ = json.Unmarshal(data, &u)
+	return u
 }
 
-// SavePrefs writes the preferences.
-func SavePrefs(theme string, vim bool) error {
+func savePrefs(u uiPrefs) error {
 	p := prefsPath()
 	if p == "" {
 		return fmt.Errorf("no home folder to save preferences in")
@@ -155,13 +161,69 @@ func SavePrefs(theme string, vim bool) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
-	data, _ := json.MarshalIndent(uiPrefs{Theme: theme, Vim: vim}, "", "  ")
+	data, _ := json.MarshalIndent(u, "", "  ")
 	return os.WriteFile(p, append(data, '\n'), 0o600)
 }
 
-// probeTimeout bounds how long startup waits for the terminal to say what
-// its background is; a terminal that does not answer costs no more.
-const probeTimeout = 100 * time.Millisecond
+// LoadPrefs reads the saved preferences; missing or unreadable is none.
+func LoadPrefs() (theme string, vim bool) {
+	u := loadPrefs()
+	return u.Theme, u.Vim
+}
+
+// SavePrefs writes the preferences, keeping what terminals said.
+func SavePrefs(theme string, vim bool) error {
+	prefsMu.Lock()
+	defer prefsMu.Unlock()
+	u := loadPrefs()
+	u.Theme, u.Vim = theme, vim
+	return savePrefs(u)
+}
+
+// terminalID names the terminal this process runs in, as far as its
+// environment says, for remembering its answers.
+func terminalID() string {
+	return os.Getenv("TERM_PROGRAM") + "|" + os.Getenv("TERM_PROGRAM_VERSION") + "|" + os.Getenv("TERM") + "|" + os.Getenv("COLORFGBG")
+}
+
+var prefsMu sync.Mutex
+
+// rememberTerminal records an answer: a theme, or sync (-1 for none).
+func rememberTerminal(theme string, sync int) {
+	prefsMu.Lock()
+	defer prefsMu.Unlock()
+	u := loadPrefs()
+	if u.Terminals == nil {
+		u.Terminals = map[string]termCache{}
+	}
+	c := u.Terminals[terminalID()]
+	if theme != "" {
+		c.Theme = theme
+	}
+	if sync >= 0 {
+		c.Sync = &sync
+	}
+	if len(u.Terminals) > 32 {
+		u.Terminals = map[string]termCache{} // a short memory is enough
+	}
+	u.Terminals[terminalID()] = c
+	_ = savePrefs(u)
+}
+
+// ForgetTerminal drops what this terminal said, for /theme auto.
+func ForgetTerminal() {
+	prefsMu.Lock()
+	defer prefsMu.Unlock()
+	u := loadPrefs()
+	delete(u.Terminals, terminalID())
+	_ = savePrefs(u)
+}
+
+// probeWait bounds how long startup waits for the terminal to answer, the
+// first time it is seen. A local terminal answers in a few milliseconds; one
+// that answers later, over a slow link, is still heard — the key reader sets
+// the answer aside and applies it — and one that never answers costs no more.
+const probeWait = 25 * time.Millisecond
 
 // Colour arithmetic, for choosing a theme and for the contrast tests.
 

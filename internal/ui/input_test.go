@@ -392,3 +392,62 @@ func TestTypingDuringATurnIsVisible(t *testing.T) {
 	g.lr.Quiet(false)
 	g.waitScreen("the queue cleared", func(s string) bool { return !strings.Contains(s, "↳") })
 }
+
+// A background-colour answer that arrives late — after startup stopped
+// waiting, as over a slow link — is never typed into the prompt and its BEL
+// never opens the editor; when the theme is automatic it sets the theme.
+func TestLateTerminalReplyIsNotTyped(t *testing.T) {
+	defer func() { _ = SetTheme("dark") }()
+	g := newRig(t, 80, 24)
+	edited := false
+	g.lr.d.mu.Lock()
+	g.lr.d.extEdit = func(string) (string, error) { edited = true; return "", nil }
+	g.lr.d.autoTheme = true
+	g.lr.d.mu.Unlock()
+	g.keys("hi")
+	g.settle()
+	time.Sleep(300 * time.Millisecond)
+	g.keys("\x1b]11;rgb:ffff/ffff/ffff\x07")
+	g.settle()
+	g.keys(" there\r")
+	if got, _ := g.line(); got != "hi there" {
+		t.Fatalf("the prompt was %q", got)
+	}
+	if edited {
+		t.Fatal("the reply's BEL opened the editor")
+	}
+	if Theme() != "light" {
+		t.Fatalf("the late answer did not set the theme: %s", Theme())
+	}
+	// A chosen theme is not overridden.
+	g.lr.SetAutoTheme(false)
+	g.keys("\x1b]11;rgb:0000/0000/0000\x07")
+	g.settle()
+	if Theme() != "light" {
+		t.Fatalf("a late answer overrode a chosen theme: %s", Theme())
+	}
+}
+
+// Synchronized output is used only once the terminal has said it knows it.
+func TestSyncOnlyWhenTheTerminalSaysSo(t *testing.T) {
+	g := newRig(t, 60, 20)
+	g.lr.Append(Block{Kind: BlockNotice, Text: "one"})
+	g.settle()
+	g.out.mu.Lock()
+	before := g.out.log.String()
+	g.out.mu.Unlock()
+	if strings.Contains(before, "\x1b[?2026h") {
+		t.Fatal("synchronized output was sent before the terminal said it knows it")
+	}
+	g.keys("\x1b[?2026;2$y")
+	g.settle()
+	g.out.mark()
+	g.lr.Append(Block{Kind: BlockNotice, Text: "two"})
+	g.settle()
+	g.out.mu.Lock()
+	after := g.out.log.String()[len(before):]
+	g.out.mu.Unlock()
+	if !strings.Contains(after, "\x1b[?2026h") {
+		t.Fatal("synchronized output was not used once the terminal said it knows it")
+	}
+}

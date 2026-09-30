@@ -105,3 +105,26 @@ func TestPasteDecodes(t *testing.T) {
 		t.Fatalf("after the paste: %+v", k)
 	}
 }
+
+// A terminal's answer is one reply, not keys, whatever its terminator, and
+// the key after it is its own.
+func TestTerminalRepliesAreNotKeys(t *testing.T) {
+	for _, seq := range []string{
+		"\x1b]11;rgb:1e1e/1e1e/1e1e\x07",
+		"\x1b]11;rgb:ffff/ffff/ffff\x1b\\",
+		"\x1b]52;c;U1BPT0Y=\x07",
+		"\x1bP1$r0m\x1b\\",
+		"\x1b_Gi=1;OK\x1b\\",
+		"\x1b[?62;22c",
+		"\x1b[?2026;2$y",
+	} {
+		kr := newKeyReader(bufio.NewReader(strings.NewReader(seq + "a")))
+		k, _ := kr.read()
+		if k.code != kReply {
+			t.Errorf("%q: got %+v, want a reply", seq, k)
+		}
+		if k, _ := kr.read(); k.r != 'a' || k.code != kNone {
+			t.Errorf("%q: the key after it was %+v", seq, k)
+		}
+	}
+}

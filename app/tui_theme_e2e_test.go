@@ -48,3 +48,24 @@ func TestTUIThemeCommand(t *testing.T) {
 	r2.send("/theme nope\r")
 	r2.waitText("unknown theme")
 }
+
+// Over a slow link the terminal answers after startup has stopped waiting:
+// the answer is not typed into the prompt and does not open the editor.
+func TestTUILateReplyIsNotTyped(t *testing.T) {
+	stub, ws := tuiWorkspace(t, "")
+	marker := filepath.Join(ws, "editor-ran")
+	t.Setenv("VISUAL", "touch "+marker)
+	r := startTUIDelayed(t, stub, ws, 80, 24, "ffff/ffff/ffff", 300*time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
+	r.send("hello\r")
+	r.waitText("You said: hello")
+	if p := stub.prompt(); p != "hello" {
+		t.Fatalf("the model got %q", p)
+	}
+	if strings.Contains(r.term.All(), "11;rgb") {
+		t.Fatalf("the answer was typed:\n%s", r.term.All())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the answer's BEL opened the editor")
+	}
+}

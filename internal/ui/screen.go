@@ -33,6 +33,9 @@ type screen struct {
 	written int64
 	// buf collects a frame, sent in one write.
 	buf strings.Builder
+	// sync is set once the terminal has said it knows synchronized output
+	// (DEC 2026); only then are frames bracketed with it.
+	sync bool
 }
 
 func newScreen(out io.Writer) *screen { return &screen{out: out} }
@@ -317,7 +320,9 @@ func widthOf(ts []token) int {
 // terminal without synchronized output (Terminal.app) has no blank frame to
 // show between the two.
 func (s *screen) commit(lines []string, rows []string, cr, cc int) {
-	s.buf.WriteString("\x1b[?2026h")
+	if s.sync {
+		s.buf.WriteString("\x1b[?2026h")
+	}
 	if s.drawn {
 		s.moveTo(0, 0)
 	} else {
@@ -331,7 +336,9 @@ func (s *screen) commit(lines []string, rows []string, cr, cc int) {
 	s.rows = s.rows[:0]
 	s.cr, s.cc, s.extent = 0, 0, 0
 	s.draw(clean(rows), cr, cc)
-	s.buf.WriteString("\x1b[?2026l")
+	if s.sync {
+		s.buf.WriteString("\x1b[?2026l")
+	}
 	s.flush()
 }
 

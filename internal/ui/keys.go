@@ -45,6 +45,10 @@ const (
 	kPaste
 	kInsert
 	kUnknown
+	// kReply is the terminal answering a query — a colour, its device
+	// attributes, a mode report — not a key anyone pressed. Its text is in
+	// key.paste. However late it arrives, it is never typing.
+	kReply
 )
 
 // keyReader decodes a terminal's input stream into keys.
@@ -101,6 +105,8 @@ func (k *keyReader) read() (key, error) {
 	switch next {
 	case '[':
 		return k.csi()
+	case ']', 'P', '_', '^', 'X':
+		return k.controlString(next)
 	case 'O':
 		return k.ss3()
 	case '\r', '\n':
@@ -113,6 +119,35 @@ func (k *keyReader) read() (key, error) {
 		return key{code: kEsc}, nil
 	}
 	return key{r: next, alt: true}, nil
+}
+
+// replyMax bounds a terminal reply that is read and set aside.
+const replyMax = 4096
+
+// controlString reads an OSC, DCS, APC, PM or SOS string to its end — BEL,
+// or ESC backslash — and reports it as a reply. Such strings are how a
+// terminal answers a query; read as keys, a late colour answer typed
+// "11;rgb:…" into the prompt and its BEL was Ctrl-G, opening the editor.
+func (k *keyReader) controlString(kind rune) (key, error) {
+	var b strings.Builder
+	b.WriteRune(kind)
+	for b.Len() < replyMax {
+		c, _, err := k.br.ReadRune()
+		if err != nil {
+			break
+		}
+		if c == 0x07 {
+			break
+		}
+		if c == 0x1b {
+			if n, _, err := k.br.ReadRune(); err == nil && n != '\\' {
+				_ = k.br.UnreadRune() // a new sequence: this one was cut short
+			}
+			break
+		}
+		b.WriteRune(c)
+	}
+	return key{code: kReply, paste: b.String()}, nil //nolint:nilerr // a reply cut off by the end of input is still a reply; the next read reports the end
 }
 
 // csi decodes "ESC [" params final.
@@ -129,6 +164,9 @@ func (k *keyReader) csi() (key, error) {
 			break
 		}
 		params.WriteRune(c)
+	}
+	if p := params.String(); strings.HasPrefix(p, "?") && (final == 'c' || final == 'y') || strings.HasSuffix(p, "$") && final == 'y' {
+		return key{code: kReply, paste: "[" + p + string(final)}, nil
 	}
 	ps := strings.Split(params.String(), ";")
 	num := func(i int) int {

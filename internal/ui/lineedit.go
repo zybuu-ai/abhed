@@ -63,15 +63,43 @@ func NewLineReader(prompt string) *LineReader {
 		return &LineReader{fallbck: bufio.NewReader(os.Stdin)}
 	}
 	// The theme: the one saved with /theme, else what the environment says,
-	// else what the terminal says its background is.
-	saved, vim := LoadPrefs()
-	theme := saved
-	if theme == "" || theme == "auto" {
+	// else what this terminal said about its background — remembered from
+	// before, or asked now. The question is sent either way when the theme
+	// is not chosen, and a late answer is applied when it comes; startup
+	// waits for it only the first time a terminal is seen, and briefly.
+	u := loadPrefs()
+	theme, vim := u.Theme, u.Vim
+	if theme == "auto" {
+		theme = ""
+	}
+	if theme == "" {
 		theme = ThemeFromEnv()
 	}
+	auto := theme == ""
+	cached := u.Terminals[terminalID()]
+	syncMode := -1
+	if cached.Sync != nil {
+		syncMode = *cached.Sync
+	}
 	var typed []byte
-	if theme == "" {
-		theme, typed = probeBackground(os.Stdin, os.Stdout)
+	if auto && cached.Theme != "" {
+		theme = cached.Theme
+	}
+	if auto || syncMode < 0 {
+		wait := probeWait
+		if cached.Theme != "" || !auto {
+			wait = 0 // what is known is used now; the answer refreshes it
+		}
+		t, sy, rest := probeTerminal(os.Stdin, os.Stdout, wait)
+		typed = rest
+		if auto && t != "" {
+			theme = t
+			rememberTerminal(t, -1)
+		}
+		if sy >= 0 {
+			syncMode = sy
+			rememberTerminal("", sy)
+		}
 	}
 	if SetTheme(theme) != nil {
 		_ = SetTheme("dark")
@@ -82,6 +110,9 @@ func NewLineReader(prompt string) *LineReader {
 	}
 	d := newDock(in, os.Stdout, NewStyle(LazyStdout{}))
 	d.prompt = prompt
+	d.autoTheme = auto
+	d.scr.sync = syncMode == 1
+	d.detected = func(theme string, sync int) { go rememberTerminal(theme, sync) }
 	if vim {
 		d.setVim(true)
 	}
@@ -346,6 +377,21 @@ func (l *LineReader) Flash(s string) {
 		l.d.draw()
 		l.d.mu.Unlock()
 	}
+}
+
+// SetAutoTheme says whether the terminal's answers about its background may
+// set the theme: false once a theme is chosen, true for /theme auto, which
+// also asks the terminal again.
+func (l *LineReader) SetAutoTheme(auto bool) {
+	if !l.raw {
+		return
+	}
+	l.d.mu.Lock()
+	l.d.autoTheme = auto
+	if auto {
+		l.d.scr.raw("\x1b]11;?\x07")
+	}
+	l.d.mu.Unlock()
 }
 
 // Repaint draws the screen again from the transcript, as a resize does:

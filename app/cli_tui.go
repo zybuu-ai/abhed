@@ -66,6 +66,10 @@ func slashTheme(_ context.Context, e *cmdEnv, args []string) (bool, error) {
 		e.ui.Append(ui.Block{Kind: ui.BlockError, Text: "theme not saved: " + err.Error()})
 	}
 	if l, ok := e.ui.(*ui.LineReader); ok {
+		if name == "auto" {
+			ui.ForgetTerminal() // and ask the terminal again; its answer applies
+		}
+		l.SetAutoTheme(name == "auto")
 		l.Repaint()
 	}
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "theme: " + ui.Theme()})
