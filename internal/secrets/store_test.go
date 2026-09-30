@@ -234,3 +234,45 @@ func TestFreshFollowsTheStore(t *testing.T) {
 		t.Fatalf("a store that stopped loading did not withhold: %s", got)
 	}
 }
+
+// Fresh sees a rewrite that keeps the size and the modification time, keeps
+// redacting a value rotated out during the session, and withholds for as long
+// as the store cannot be loaded.
+func TestFreshSeesEveryRewriteAndForgetsNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"TOKEN":"first-value-aaaa"}`)
+	s := Open(path)
+	first, err := s.LoadRedactor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.Fresh(first)
+	fi, _ := os.Stat(path)
+	// Same size, mtime put back: only the inode's change time moves.
+	write(`{"TOKEN":"other-value-bbbb"}`)
+	if err := os.Chtimes(path, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(f.Redact([]byte(`"other-value-bbbb"`))); got != `"[secret:TOKEN]"` {
+		t.Fatalf("a same-size rewrite with the old mtime was not seen: %s", got)
+	}
+	if got := string(f.Redact([]byte(`"first-value-aaaa"`))); got != `"[secret:TOKEN]"` {
+		t.Fatalf("a value rotated out during the session stopped being redacted: %s", got)
+	}
+	write(`{"TOKEN": `)
+	for i := 0; i < 2; i++ {
+		if got := f.Redact([]byte(`"x"`)); got != nil {
+			t.Fatalf("call %d on a store that cannot be loaded did not withhold: %s", i+1, got)
+		}
+	}
+	write(`{"TOKEN":"third-value-cccc"}`)
+	if got := string(f.Redact([]byte(`"first-value-aaaa third-value-cccc"`))); got != `"[secret:TOKEN] [secret:TOKEN]"` {
+		t.Fatalf("after the store loaded again: %s", got)
+	}
+}

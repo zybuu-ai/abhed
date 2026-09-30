@@ -142,8 +142,10 @@ All notable changes to Abhed are recorded here. The format follows
   with the values stored when it started, while `bash` reads the store at
   each call. A secret stored during a long session and allowed by a rule
   reached the record, the stream and the model unredacted. SDK redaction
-  now reads the store again whenever the file changes, and withholds every
-  payload while it cannot be loaded.
+  now reads the store again whenever the file changes (its size, times or
+  inode), keeps redacting every value it has loaded during the session after
+  it is rotated or removed, and withholds every payload while the store
+  cannot be loaded.
 - The SDK's `Approve` is now given the decision's reason and scope redacted,
   as well as the arguments.
 - `abhed secret set` refuses a value under 8 characters. A shorter value

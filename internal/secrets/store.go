@@ -257,13 +257,17 @@ func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
 
 // Fresh redacts with the values stored at each call, reading the store again
 // whenever the file has changed, for a session that runs while secrets are
-// added: a value bash can be given must be redacted from that moment on. A
-// store that stops loading withholds every payload until it loads again.
+// added: a value bash can be given must be redacted from that moment on.
+// Every value loaded during the session stays redacted after it is rotated
+// or removed, since a command may have been given it before. A store that
+// stops loading withholds every payload until it loads again.
 type Fresh struct {
 	store *Store
 	mu    sync.Mutex
 	stamp freshStamp
 	red   *Redactor
+	// down is set while the store at stamp could not be loaded.
+	down bool
 }
 
 type freshStamp struct {
@@ -271,6 +275,8 @@ type freshStamp struct {
 	missing bool
 	mod     int64
 	size    int64
+	inode   uint64
+	ctime   int64
 }
 
 // Fresh returns a redactor over the store that starts from first, the
@@ -289,7 +295,8 @@ func (f *Fresh) stat() freshStamp {
 	case err != nil:
 		return freshStamp{}
 	}
-	return freshStamp{ok: true, mod: fi.ModTime().UnixNano(), size: fi.Size()}
+	inode, ctime := fileIdentity(fi)
+	return freshStamp{ok: true, mod: fi.ModTime().UnixNano(), size: fi.Size(), inode: inode, ctime: ctime}
 }
 
 // Current is the redactor for the values stored now.
@@ -298,14 +305,38 @@ func (f *Fresh) Current() *Redactor {
 	defer f.mu.Unlock()
 	st := f.stat()
 	if st.ok && st == f.stamp && f.red != nil {
+		if f.down {
+			return Withholding()
+		}
 		return f.red
 	}
 	r, err := f.store.LoadRedactor()
 	if err != nil || !st.ok {
-		r = Withholding()
+		// Kept apart from the values seen so far, which a reload restores.
+		f.stamp, f.down = st, true
+		return Withholding()
 	}
-	f.red, f.stamp = r, st
+	if f.red != nil && !f.red.broken {
+		r = r.union(f.red)
+	}
+	f.red, f.stamp, f.down = r, st, false
 	return r
+}
+
+// union is r with every value of old it lacks, longest first as ever.
+func (r *Redactor) union(old *Redactor) *Redactor {
+	have := map[string]bool{}
+	for _, p := range r.pairs {
+		have[p.needle] = true
+	}
+	pairs := append([]pair(nil), r.pairs...)
+	for _, p := range old.pairs {
+		if !have[p.needle] {
+			pairs = append(pairs, p)
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
+	return &Redactor{pairs: pairs}
 }
 
 // Redact is Current().Redact.
