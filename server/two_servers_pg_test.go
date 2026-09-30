@@ -4,11 +4,13 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -196,5 +198,40 @@ func TestOnePostgresSessionContinuesAfterItsRun(t *testing.T) {
 	}
 	if n := countType(a.events(id), agent.EvUserMessage); n != 3 {
 		t.Fatalf("%d messages recorded, want 3", n)
+	}
+}
+
+// startSweeper runs the process's periodic sweep the moment a session's first
+// event is written, before the server has it in its running map.
+type startSweeper struct {
+	*store.Postgres
+	srv   atomic.Pointer[Server]
+	swept atomic.Int32
+}
+
+func (h *startSweeper) Append(ev agent.Event) error {
+	if err := h.Postgres.Append(ev); err != nil {
+		return err
+	}
+	if ev.Type == agent.EvSessionStarted && ev.ParentID == "" {
+		if s := h.srv.Load(); s != nil {
+			h.swept.Add(int32(s.RecoverOrphans(context.Background()))) // #nosec G115 -- a test count
+		}
+	}
+	return nil
+}
+
+// On Postgres too, a process's own sweep never reconciles a session it is
+// starting, whose row is held under its own id.
+func TestOnePostgresSweepSparesASessionItIsStarting(t *testing.T) {
+	h := &startSweeper{Postgres: openSharedPG(t)}
+	a := newBGServerWith(t, h, func(_ *config.Config, o *Options) { o.NodeID = "node-" + newSessionID() })
+	h.srv.Store(a.s)
+	id := a.start("hello", false)
+	<-a.ended
+	for _, e := range payloadsOf(a.events(id), agent.EvSessionEnded) {
+		if e["recovered"] == true {
+			t.Fatal("the process's own sweep reconciled a session it was starting")
+		}
 	}
 }

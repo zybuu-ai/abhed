@@ -2453,6 +2453,11 @@ func (s *Server) recoverOrphan(ctx context.Context, id string, events []agent.Ev
 	if err != nil || !claimed {
 		return false
 	}
+	return s.reconcile(id, events)
+}
+
+// reconcile writes what a claimed orphan's crashed holder never did.
+func (s *Server) reconcile(id string, events []agent.Event) bool {
 	if err := agent.Reconcile(s.store, id, events); err != nil {
 		s.log.Error("could not reconcile an orphaned session", "session", id, "error", err)
 		return false
@@ -2540,18 +2545,47 @@ func (s *Server) eachOpenSession(ctx context.Context, f func(id string)) error {
 	return nil
 }
 
-// sweepOrphans runs RecoverOrphans now and then every interval until ctx
+// OwnReclaimer is implemented by stores that let a node take back, at start,
+// the open sessions still held under its own id.
+type OwnReclaimer interface {
+	ReclaimOwn(ctx context.Context, sessionID, holder string) (bool, error)
+}
+
+// RecoverOwnAtStart is the startup sweep, run before the server serves:
+// with a node id, the open sessions held under it are this node's from
+// before a restart, and none can be running here yet, so they are taken
+// back at once; then the stale ones are recovered as RecoverOrphans does.
+// It must not run while sessions can start: a session this process is
+// starting is held under the same id.
+func (s *Server) RecoverOwnAtStart(ctx context.Context) int {
+	n := 0
+	if r, ok := s.sessions.(OwnReclaimer); ok && s.opts.NodeID != "" {
+		_ = s.eachOpenSession(ctx, func(id string) {
+			events, err := s.store.Events(id)
+			if err != nil || !agent.Orphaned(events) {
+				return
+			}
+			if mine, err := r.ReclaimOwn(ctx, id, s.holder); err == nil && mine && s.reconcile(id, events) {
+				s.releaseNode(id)
+				n++
+			}
+		})
+	}
+	return n + s.RecoverOrphans(ctx)
+}
+
+// sweepOrphans runs RecoverOrphans every interval until ctx
 // ends: a session whose holder goes stale later is recovered too.
 func (s *Server) sweepOrphans(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		s.RecoverOrphans(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		s.RecoverOrphans(ctx)
 	}
 }
 
@@ -3607,8 +3641,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		MaxHeaderBytes: 1 << 20,
 		// No write timeout: SSE streams are long-lived by design.
 	}
-	// Sessions a crashed process left open are reconciled now, and again
-	// every stale window, not only when someone next writes to them.
+	// Sessions this node held before a restart are taken back, and sessions
+	// a crashed process left open reconciled, before anything is served; then
+	// again every stale window, by staleness alone.
+	s.RecoverOwnAtStart(ctx)
 	go s.sweepOrphans(ctx, nodeStale)
 	stopped := make(chan struct{})
 	go func() {

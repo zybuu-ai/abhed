@@ -39,6 +39,19 @@ type durableMem struct {
 	failHold bool
 	// refuseNotices makes every subagent.notice append fail.
 	refuseNotices atomic.Bool
+	// afterStart, when set, runs once a session.started is appended.
+	afterStart func()
+}
+
+// ReclaimOwn takes back an open row held under holder's own id.
+func (d *durableMem) ReclaimOwn(_ context.Context, id, holder string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.rows[id]; !ok || d.ended[id] || d.holders[id] != holder {
+		return false, nil
+	}
+	d.seen[id] = time.Now()
+	return true, nil
 }
 
 func (d *durableMem) ClaimNode(_ context.Context, id, holder string) error {
@@ -155,6 +168,9 @@ func (d *durableMem) Append(ev agent.Event) error {
 	if ev.Type == agent.EvSubagentNotice && d.refuseNotices.Load() {
 		return errors.New("store unavailable")
 	}
+	if ev.Type == agent.EvSessionStarted && ev.ParentID == "" && d.afterStart != nil {
+		defer d.afterStart()
+	}
 	if ev.Type == agent.EvSessionEnded {
 		// As Postgres: an end with background children running keeps the row open.
 		var end agent.SessionEnded
@@ -174,8 +190,8 @@ func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale t
 	if _, ok := d.rows[id]; !ok || d.ended[id] {
 		return false, nil
 	}
-	if at, ok := d.seen[id]; ok && time.Since(at) < stale && d.holders[id] != holder {
-		return false, nil // its holder is alive, and another
+	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
+		return false, nil // its holder is alive
 	}
 	if _, ok := d.seen[id]; !ok {
 		// No holder: an orphan only once nothing has been written for stale.

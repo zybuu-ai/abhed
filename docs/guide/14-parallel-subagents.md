@@ -293,11 +293,11 @@ same statement, so a process that lost the session writes nothing into it
 even before its next heartbeat, and the refusal stops it there. What a tool
 was already doing when the session was lost (a command running, a file being
 written) is not something a record can undo. A node restarted with the same
-`node_id` takes back the sessions it held at once, so two running nodes must
-never share a `node_id`.
+`node_id` takes back the sessions it held when it starts, before it serves
+anything, so two running nodes must never share a `node_id`.
 
-A server also sweeps at startup, and again every two minutes: every open
-session whose holder's heartbeat is stale is reconciled then (its lost tasks
+A server also sweeps at startup, and again every two minutes, by staleness
+alone: every open session whose holder's heartbeat is stale is reconciled then (its lost tasks
 recorded as `lost`, its ends written), so the session list shows it ended and
 ready to continue rather than running.
 

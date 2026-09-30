@@ -571,15 +571,25 @@ func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) 
 	return tag.RowsAffected() == 1, nil
 }
 
+// ReclaimOwn takes back an open session held under holder's own id, however
+// fresh its heartbeat: for a node restarted with the same node id, before it
+// serves anything, when no session it holds can be running in it.
+func (p *Postgres) ReclaimOwn(ctx context.Context, sessionID, holder string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET node_seen_at = now()
+		WHERE id = $1 AND node_id = $2 AND ended_at IS NULL AND deleted_at IS NULL`, sessionID, holder)
+	if err != nil {
+		return false, fmt.Errorf("reclaim session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // ClaimOrphan takes over a session a crashed process left open: its row is
 // still open, and its holder's heartbeat is older than stale. A row with no
 // holder (written by an older release, which kept none) is an orphan only
 // once its last event is older than stale too, compared on the database's
-// clock. A row held under the claimer's own id is its own: a node restarted
-// with the same node id takes back what it held before at once (the caller
-// has checked the session is not running in this process). The update writes
-// holder as the new holder and tests the same columns, so of two processes
-// claiming at once exactly one wins.
+// clock. The update writes holder as the new holder and tests the same
+// columns, so of two processes claiming at once exactly one wins.
 func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, stale time.Duration) (bool, error) {
 	if holder == "" {
 		return false, errors.New("claim orphaned session: no holder")
@@ -587,8 +597,7 @@ func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, st
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET node_id = $2, node_seen_at = now()
 		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
-		  AND (node_id = $2
-		    OR (node_seen_at IS NOT NULL AND node_seen_at <= now() - $3::interval)
+		  AND ((node_seen_at IS NOT NULL AND node_seen_at <= now() - $3::interval)
 		    OR (node_seen_at IS NULL AND COALESCE(
 		          (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) <= now() - $3::interval))`,
 		sessionID, holder, stale.String())

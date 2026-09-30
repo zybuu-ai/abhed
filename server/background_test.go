@@ -884,22 +884,48 @@ func TestIdleStoreErrorDoesNotHoldTheSession(t *testing.T) {
 }
 
 // A node restarted with the same node id takes back the sessions it held
-// before at once, without waiting out its own old heartbeat.
-func TestSameNodeReclaimsItsCrashedSessions(t *testing.T) {
+// before, at once, in its startup sweep; a message to one before the old
+// heartbeat is stale does not, nor does another node.
+func TestSameNodeReclaimsItsCrashedSessionsAtStart(t *testing.T) {
 	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	nodeA := func(_ *config.Config, o *Options) { o.NodeID = "node-a" }
 	a := newBGServerWith(t, st, nodeA, "one")
 	id := a.start("bg:one", false)
 	<-a.ended // node-a "crashes" here, its heartbeat still fresh
 	restarted := newBGServerWith(t, st, nodeA)
+	if rec := restarted.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("a message took a freshly held session: %d", rec.Code)
+	}
 	other := newBGServerWith(t, st, func(_ *config.Config, o *Options) { o.NodeID = "node-b" })
-	if rec := other.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusConflict {
-		t.Fatalf("another node took a freshly held session: %d", rec.Code)
+	if n := other.s.RecoverOwnAtStart(context.Background()); n != 0 {
+		t.Fatal("another node's startup sweep took a freshly held session")
+	}
+	if n := restarted.s.RecoverOwnAtStart(context.Background()); n != 1 {
+		t.Fatalf("the restarted node's startup sweep took back %d, want 1", n)
 	}
 	if rec := restarted.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusAccepted {
-		t.Fatalf("the restarted node could not take back its own session: %d %s", rec.Code, rec.Body)
+		t.Fatalf("continue after the startup sweep: %d %s", rec.Code, rec.Body)
 	}
 	a.ad.release("one")
+}
+
+// A process's own periodic sweep never reconciles a session it is starting,
+// though the row is held under its own id before the session is running.
+func TestSweepSparesASessionItIsStarting(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServerWith(t, st, func(_ *config.Config, o *Options) { o.NodeID = "node-a" })
+	swept := 0
+	st.afterStart = func() { swept += b.s.RecoverOrphans(context.Background()) }
+	id := b.start("hello", false)
+	<-b.ended
+	for _, e := range payloadsOf(b.events(id), agent.EvSessionEnded) {
+		if e["recovered"] == true {
+			t.Fatal("the process's own sweep reconciled a session it was starting")
+		}
+	}
+	if swept != 0 {
+		t.Fatalf("swept %d", swept)
+	}
 }
 
 // The sweep runs again every interval: a session whose holder goes stale
