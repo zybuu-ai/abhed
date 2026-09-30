@@ -62,3 +62,7 @@ func (s Style) Accent(t string) string { return s.wrap("38;5;202", t) }
 // list reads as selected on every terminal theme — a colour chosen for a dark
 // background disappears on a light one.
 func (s Style) Reverse(t string) string { return s.wrap("7", t) }
+
+// DiffAdd and DiffDel colour a diff's added and removed lines.
+func (s Style) DiffAdd(t string) string { return s.wrap("32", t) }
+func (s Style) DiffDel(t string) string { return s.wrap("31", t) }

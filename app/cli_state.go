@@ -47,6 +47,9 @@ type cliState struct {
 	dynamic []slashSource
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
+	// checkpoint wraps the undo log's hook, so the renderer sees each file
+	// as it was before a change and can draw its diff.
+	checkpoint func(next func(string, []byte, bool)) func(string, []byte, bool)
 }
 
 // follow draws the conversation's events as they are recorded, for as long as
@@ -87,6 +90,9 @@ func (c *cliState) fresh() {
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.sess.Checkpoint = c.undo.Record
+		if c.checkpoint != nil {
+			c.sess.Checkpoint = c.checkpoint(c.undo.Record)
+		}
 		// Logins and connected hosts belong to the conversation that made them.
 		c.sess.ResetScoped()
 	}

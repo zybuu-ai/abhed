@@ -181,10 +181,63 @@ func splitKeepSpaces(text string) []string {
 // carries.
 func viewBlock(v block) Block { return Block{Kind: BlockNotice, view: v} }
 
-// blockView is how the terminal draws b: its own view, or its text.
+// blockView is how the terminal draws b: its own view, or one made from
+// its kind and text.
 func blockView(b Block) block {
 	if b.view != nil {
 		return b.view
 	}
-	return &rawBlock{text: sanitize(b.Text, false)}
+	return &surfaceBlock{b: b}
+}
+
+// surfaceBlock draws a Block given by kind and text.
+type surfaceBlock struct{ b Block }
+
+func (sb *surfaceBlock) lines(width int, s Style, expanded bool) []string {
+	b := sb.b
+	text := sanitize(b.Text, false)
+	var out []string
+	if b.Path != "" && (b.Kind == BlockDiff || b.Kind == BlockToolOut) {
+		out = append(out, s.Bold(sanitize(b.Path, false)))
+	}
+	switch b.Kind {
+	case BlockError:
+		for i, l := range wrapWords(text, max(width-2, 8)) {
+			lead := s.Red("✕ ")
+			if i > 0 {
+				lead = "  "
+			}
+			out = append(out, lead+l)
+		}
+	case BlockNotice:
+		for _, line := range strings.Split(text, "\n") {
+			for _, l := range wrapWords(line, width) {
+				out = append(out, s.Dim(l))
+			}
+		}
+	case BlockMarkdown:
+		out = append(out, renderMarkdown(s, text, width)...)
+	case BlockTable:
+		if len(b.Rows) > 0 {
+			out = append(out, renderTable(s, b.Rows, width)...)
+		}
+	case BlockDiff:
+		for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+			for _, row := range hardWrap(l, width) {
+				switch {
+				case strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++"):
+					row = s.DiffAdd(row)
+				case strings.HasPrefix(l, "-") && !strings.HasPrefix(l, "---"):
+					row = s.DiffDel(row)
+				case strings.HasPrefix(l, "@@"):
+					row = s.Cyan(row)
+				}
+				out = append(out, row)
+			}
+		}
+	default:
+		rb := &resultBlock{body: strings.Split(strings.TrimRight(text, "\n"), "\n"), headN: 3, tailN: 2}
+		out = append(out, rb.lines(width, s, expanded)...)
+	}
+	return out
 }

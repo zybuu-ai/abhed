@@ -86,7 +86,12 @@ func (r *tuiRun) nthSeen(s string, n int) time.Time {
 // a file to work on, and returns both.
 func tuiWorkspace(t *testing.T, extra string) (*tuiStub, string) {
 	t.Helper()
-	ws := t.TempDir()
+	// The canonical path: the tools refuse a new file named through a link
+	// to the workspace, and macOS's temporary folder is one.
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello world\nthe end\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
