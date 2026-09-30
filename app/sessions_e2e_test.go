@@ -504,7 +504,11 @@ func TestExportDoesNotFollowAPlantedLink(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := g.cmd("record", "export", id, "-o", p).CombinedOutput()
-		if err == nil || !strings.Contains(string(out), "an export is never written there") && !strings.Contains(string(out), "an export does not write") {
+		// Refused by the export's own checks, or, for a hard link, sooner:
+		// the record will not read a session file that has a second name.
+		refused := strings.Contains(string(out), "an export is never written there") ||
+			strings.Contains(string(out), "an export does not write") || strings.Contains(string(out), "has another name")
+		if err == nil || !refused {
 			t.Fatalf("record export over a planted name: %v %s", err, out)
 		}
 	}
