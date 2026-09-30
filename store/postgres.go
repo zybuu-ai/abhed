@@ -310,7 +310,11 @@ func (h *Held) Append(ev agent.Event) error {
 	return err
 }
 
-// leaseSession is the session whose lease covers an event.
+// leaseSession is the session whose lease covers an event: its own, or its
+// parent's for a subagent. A grandchild's parent is a subagent, whose row has
+// no holder and stays open while it runs; that is enough, since the grandchild
+// writes only its own record, and losing the top-level lease fences the
+// session, which closes its whole tree of subagents.
 func leaseSession(ev agent.Event) string {
 	if ev.ParentID != "" {
 		return ev.ParentID

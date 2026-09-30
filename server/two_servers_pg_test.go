@@ -103,10 +103,18 @@ func TestTwoServersOnePostgresFencesTheOldHolder(t *testing.T) {
 	id := a.start("bg:one", false)
 	<-a.ended
 	aLive := a.live(id)
-	// A's heartbeats stall, as through a database failover.
-	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
-	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusAccepted {
-		t.Fatalf("B could not take the stale session: %d %s", rec.Code, rec.Body)
+	// A's heartbeats stall, as through a database failover. A beat of A's may
+	// land between the stall and B's claim, so B tries until it takes over.
+	taken := false
+	for range 20 {
+		pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+		if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code == http.StatusAccepted {
+			taken = true
+			break
+		}
+	}
+	if !taken {
+		t.Fatal("B could not take the stale session")
 	}
 	waitUntil(t, "A to let go", func() bool { return a.live(id) == nil && aLive.Loop.Background.Live() == 0 })
 	time.Sleep(3 * nodeHeartbeat)
