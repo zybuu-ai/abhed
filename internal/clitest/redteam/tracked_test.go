@@ -17,41 +17,44 @@ type invariant struct {
 	name   string
 	e2e    string
 	checks []string
-	// pending names the work that owns what the checks cannot cover yet.
+	// pending names what the checks cannot cover yet, and the track that owns it.
 	pending string
 }
+
+// harness is what every end-to-end test waits for.
+const harness = "the pty harness: track E (internal/clitest)"
 
 var invariants = []invariant{
 	{"deny wins in every mode", "TestInvariantDenyWinsInEveryMode", []string{
 		"app.TestRedTeamDenyWinsInEveryMode", "internal/policy.TestSessionAllowCannotLiftDenyDestructiveAskOrPlan",
-		"internal/extension.TestHookAskNeverLiftsADeny"}, ""},
+		"internal/extension.TestHookAskNeverLiftsADeny"}, harness},
 	{"approvals are never auto-granted", "TestInvariantNoAutoApprove", []string{
 		"app.TestRedTeamInputEndingRefuses", "app.TestRedTeamHookAllowApprovesNothing",
 		"internal/policy.TestHookAllowIsNoOpinionAndAskWaitsForDeny", "internal/extension.TestPromptAndPermissionHooksOnlyVeto"},
-		"the arrow-key and number guard is the terminal UI's dialog"},
+		harness + "; the arrow-key and number guard: track A (the terminal dialog)"},
 	{"destructive actions always confirm", "TestInvariantDestructiveAlwaysConfirms", []string{
-		"app.TestRedTeamDestructiveAlwaysConfirms"}, ""},
+		"app.TestRedTeamDestructiveAlwaysConfirms"}, harness},
 	{"managed policy wins", "TestInvariantManagedPolicyWins", []string{
 		"app.TestRedTeamManagedPolicyWins", "app.TestModeAutoNeedsAYes", "app.TestAddDirIsRefusedUnderAManagedList",
-		"app.TestTurnLimitFollowsTheManagedConfiguration", "app.TestPlanDecisionHonoursAManagedMode"}, ""},
+		"app.TestTurnLimitFollowsTheManagedConfiguration", "app.TestPlanDecisionHonoursAManagedMode"}, harness},
 	{"@, ! and custom commands go through policy", "TestInvariantMentionsBangAndCommandsGoThroughPolicy", []string{
 		"app.TestRedTeamTypedInputRunsAndAttachesNothing"},
-		"@ mentions, ! commands and custom commands are built by the input track; today typed text is sent as text"},
+		harness + "; @ mentions, ! commands and custom commands: track D (input)"},
 	{"/permissions cannot widen past managed policy", "TestInvariantPermissionsCannotWidenPastManaged", []string{
 		"app.TestSessionAllowIsRefusedUnderManagedPermissions", "app.TestCLIPermissionsAcrossClear",
-		"app.TestClearedRuleIsNotRecordedInTheNextConversation"}, ""},
+		"app.TestClearedRuleIsNotRecordedInTheNextConversation"}, harness},
 	{"mode cycling cannot reach auto or bypass", "TestInvariantModeCycleNeverReachesAutoOrBypass", []string{
 		"app.TestModeCycleNeverReachesAutoOrBypass", "app.TestModeSetRules", "app.TestPlanDecision"},
-		"Shift-Tab itself is the terminal UI's key"},
+		harness + "; the Shift-Tab key: track A (the terminal UI)"},
 	{"rewind is a fork", "TestInvariantRewindIsAFork", []string{
 		"app.TestCLIForkCarriesIntoNextTask"},
-		"/rewind and a fork at the first message are built by the record track"},
+		harness + "; /rewind and a fork at the first message: track C (record)"},
 	{"the record is append-only", "TestInvariantRecordIsAppendOnly", []string{
-		"app.TestRedTeamRecordIsAppendOnly"}, "record verify and prune are built by the record track"},
+		"app.TestRedTeamRecordIsAppendOnly"}, harness + "; record verify and prune: track C (record)"},
 	{"secrets are redacted", "TestInvariantSecretsAreRedacted", []string{
-		"app.TestRedTeamSecretsAreRedacted"}, ""},
+		"app.TestRedTeamSecretsAreRedacted"}, harness},
 	{"workspace trust gates hooks", "TestInvariantUntrustedHooksDoNotRun", []string{
-		"config.TestUntrustedWorkspaceIgnoresWhatWidens", "app.TestCLIPromptHookVeto"}, ""},
+		"config.TestUntrustedWorkspaceIgnoresWhatWidens", "app.TestCLIPromptHookVeto"}, harness},
 }
 
 // testNames lists the Test functions declared in the _test.go files of dir.
@@ -93,6 +96,9 @@ func TestInvariantsAreTracked(t *testing.T) {
 		}
 		if len(inv.checks) == 0 {
 			t.Errorf("%s: nothing checks it today", inv.name)
+		}
+		if !strings.Contains(inv.pending, "track ") {
+			t.Errorf("%s: pending names no owning track", inv.name)
 		}
 		for _, c := range inv.checks {
 			pkg, name, ok := strings.Cut(c, ".")
