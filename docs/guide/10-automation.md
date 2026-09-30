@@ -55,7 +55,10 @@ per line, and runs each as the next turn of one conversation:
 {"type":"user","message":{"content":[{"type":"text","text":"a follow-up"}]}}
 ```
 
-Lines of any other type are skipped with a note on stderr.
+Lines of any other type are skipped with a note on stderr. The run ends at
+the end of stdin, after a turn that fails (later messages are not read), or
+on a stop signal, whether mid-turn or waiting for the next message, with
+the exit code below. The result line is written once, as the run ends.
 
 ### Structured answers
 

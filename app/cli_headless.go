@@ -361,15 +361,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if prompt != "" {
 		runOne(prompt)
 	}
-	inputs := o.inputs
-	if inputs == nil {
-		closed := make(chan string)
-		close(closed)
-		inputs = closed
-	}
-	for task := range inputs {
-		if err != nil || (ran && reason.ExitCode() != 0) || ctx.Err() != nil {
-			continue // drained, so the reader ends
+	// The next message is awaited alongside a stop signal: stdin may stay
+	// open for as long as the caller likes. Reading stops after a failure.
+	for o.inputs != nil && err == nil && (!ran || reason.ExitCode() == 0) && ctx.Err() == nil {
+		task, open := "", false
+		select {
+		case task, open = <-o.inputs:
+		case <-ctx.Done():
+		}
+		if !open {
+			break
 		}
 		runOne(task)
 	}
