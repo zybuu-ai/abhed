@@ -478,7 +478,7 @@ func TestPastesExpandByNumber(t *testing.T) {
 // no escape on the line or on the screen.
 func TestPasteKeepsNoControls(t *testing.T) {
 	g := newRig(t, 80, 24)
-	g.keys("\x1b[200~a\x1b]0;TITLE\x07\nb\x1b]52;c;eA==\x07\nc‮\nd\x1b[2J\x1b[201~")
+	g.keys("\x1b[200~a\x1b]0;TITLE\x07\nb\x1b]52;c;eA==\x07\nc\u202e\nd\x1b[2J\x1b[201~")
 	g.waitText("[Pasted text #1 +4 lines]")
 	g.keys("\t")
 	g.settle()
@@ -488,7 +488,7 @@ func TestPasteKeepsNoControls(t *testing.T) {
 	assertClean(t, "an opened paste", wire)
 	g.keys("\r")
 	got, _ := g.line()
-	if strings.ContainsAny(got, "\x1b\x07‮") {
+	if strings.ContainsAny(got, "\x1b\x07\u202e") {
 		t.Fatalf("the sent line kept controls: %q", got)
 	}
 }
