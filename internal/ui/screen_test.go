@@ -109,3 +109,18 @@ func TestScreenDiffRandomFrames(t *testing.T) {
 		}
 	}
 }
+
+// The screen writer itself is the boundary: a row handed to it with an
+// escape, a control or a joiner-hidden CR is drawn as text and colour only,
+// whatever composed it.
+func TestScreenCleansEveryRow(t *testing.T) {
+	var out strings.Builder
+	s := newScreen(&out)
+	row := "a\x1b]52;c;eA==\x07b\x1b[2Jc\u009b31md‍\re\x1b[31mred\x1b[0m"
+	s.render([]string{row, "x"}, 0, 0)
+	s.commit([]string{row}, []string{row}, 0, 0)
+	assertClean(t, "the screen writer", out.String())
+	if !strings.Contains(out.String(), "\x1b[31mred") {
+		t.Fatalf("colour was lost: %q", out.String())
+	}
+}

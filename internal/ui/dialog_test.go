@@ -545,3 +545,83 @@ func TestApprovalsAreNumbersOnly(t *testing.T) {
 		}
 	}
 }
+
+// A dialog behind the full-screen view starts its guard when the view
+// closes — so a number straight after is not an answer — and is answerable
+// once the guard has passed. Keys meanwhile go to the view.
+func TestDialogBehindThePanel(t *testing.T) {
+	g := newRig(t, 80, 30)
+	clock := newFakeClock()
+	tm := &timers{clock: clock}
+	g.lr.d.mu.Lock()
+	g.lr.d.now, g.lr.d.after = clock.Now, tm.after
+	g.lr.d.mu.Unlock()
+	ctx, closePanel := context.WithCancel(context.Background())
+	go func() {
+		_ = g.lr.Panel(ctx, PanelSpec{Title: "Status", Body: []Block{{Kind: BlockNotice, Text: "panel"}}})
+	}()
+	g.waitText("panel")
+	answer := make(chan string, 1)
+	go func() {
+		id, _ := g.lr.Dialog(context.Background(), approvalSpec())
+		answer <- id
+	}()
+	time.Sleep(50 * time.Millisecond)
+	clock.advance(5 * time.Second)
+	closePanel() // the view goes without a key, so no key gap protects
+	g.waitText("Make this edit")
+	clock.advance(100 * time.Millisecond)
+	g.keys("1")
+	g.settle()
+	tm.advance(time.Second)
+	select {
+	case id := <-answer:
+		t.Fatalf("a 1 just after the view closed answered %q", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	clock.advance(time.Second)
+	g.keys("1")
+	g.settle()
+	tm.advance(approvalGuard)
+	select {
+	case id := <-answer:
+		if id != "yes" {
+			t.Fatalf("answered %q", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the dialog could not be answered once the view closed")
+	}
+}
+
+// While the editor has the screen, a dialog made then counts no keys,
+// however long ago it was made: the key reader waits for the editor, and the
+// guard starts only when the screen comes back.
+func TestDialogHiddenByTheEditorTakesNoKeys(t *testing.T) {
+	g := newRig(t, 80, 30)
+	clock := newFakeClock()
+	tm := &timers{clock: clock}
+	release, opened := make(chan struct{}), make(chan struct{})
+	g.lr.d.mu.Lock()
+	g.lr.d.now, g.lr.d.after = clock.Now, tm.after
+	g.lr.d.extEdit = func(text string) (string, error) { close(opened); <-release; return text, nil }
+	g.lr.d.mu.Unlock()
+	g.keys("\x07")
+	<-opened
+	answer := make(chan string, 1)
+	go func() {
+		id, _ := g.lr.Dialog(context.Background(), approvalSpec())
+		answer <- id
+	}()
+	time.Sleep(50 * time.Millisecond)
+	clock.advance(5 * time.Second)
+	g.keys("1")
+	g.settle()
+	clock.advance(time.Second)
+	tm.advance(time.Second)
+	select {
+	case id := <-answer:
+		t.Fatalf("a key while the editor had the screen answered %q", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+}

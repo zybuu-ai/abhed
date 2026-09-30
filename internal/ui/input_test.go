@@ -548,3 +548,13 @@ func TestHistoryKeepsACollapsedPaste(t *testing.T) {
 		t.Fatalf("sent %q", got)
 	}
 }
+
+// The character that stands for a paste can only be put on the line by a
+// paste: insert refuses it, whatever calls insert.
+func TestInsertRefusesPasteCharacters(t *testing.T) {
+	var b inputBuf
+	b.insert([]rune{'a', pasteRuneFirst, 'b', pasteRuneFirst + 5})
+	if got := string(b.line); got != "ab" {
+		t.Fatalf("line %q", got)
+	}
+}

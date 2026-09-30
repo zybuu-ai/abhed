@@ -23,18 +23,29 @@ func TestPanicHelper(t *testing.T) {
 	if !l.Raw() {
 		os.Exit(3)
 	}
-	go func() {
-		defer RestoreOnPanic()
-		panic("boom from a goroutine")
-	}()
+	if os.Getenv("ABHED_UI_PANIC_HELPER") == "key" {
+		// The panic happens on the dock's own key reader, in a hotkey.
+		l.Hotkey("ctrl+t", func() { panic("boom from a goroutine") })
+	} else {
+		go func() {
+			defer RestoreOnPanic()
+			panic("boom from a goroutine")
+		}()
+	}
 	time.Sleep(5 * time.Second)
 }
 
 // A panic on any goroutine puts the terminal back before the program ends:
 // the modes it turned on are turned off.
 func TestPanicRestoresTheTerminal(t *testing.T) {
+	for _, mode := range []string{"goroutine", "key"} {
+		t.Run(mode, func(t *testing.T) { panicRestores(t, mode) })
+	}
+}
+
+func panicRestores(t *testing.T, mode string) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestPanicHelper$")
-	cmd.Env = append(os.Environ(), "ABHED_UI_PANIC_HELPER=1", "TERM=xterm-256color", "HOME="+t.TempDir())
+	cmd.Env = append(os.Environ(), "ABHED_UI_PANIC_HELPER="+mode, "TERM=xterm-256color", "HOME="+t.TempDir())
 	tty, err := pty.Start(cmd)
 	if err != nil {
 		t.Skipf("no pty: %v", err)
@@ -43,6 +54,10 @@ func TestPanicRestoresTheTerminal(t *testing.T) {
 	go func() { // answer the startup questions, as a terminal would
 		time.Sleep(20 * time.Millisecond)
 		_, _ = io.WriteString(tty, "\x1b]11;rgb:0000/0000/0000\x07\x1b[?62c")
+		if mode == "key" {
+			time.Sleep(200 * time.Millisecond)
+			_, _ = io.WriteString(tty, "\x14") // Ctrl-T
+		}
 	}()
 	var out bytes.Buffer
 	done := make(chan struct{})
