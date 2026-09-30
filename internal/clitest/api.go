@@ -63,6 +63,9 @@ type Opts struct {
 	// closed unless KeepStdin is set; Type then writes more.
 	Stdin     string
 	KeepStdin bool
+	// StdinFile, with Piped, is opened as the binary's stdin instead, as a
+	// shell's < file does; Stdin is then unused.
+	StdinFile string
 
 	// NoConfig starts with no user config at all, as a first run does.
 	NoConfig bool

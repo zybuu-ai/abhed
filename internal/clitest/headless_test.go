@@ -49,10 +49,10 @@ func resultOf(t *testing.T, stdout string) map[string]any {
 	return res
 }
 
-// cat log | abhed -p "summarise" -: the log reaches the model with the task.
+// cat log | abhed -p "summarise": the log reaches the model with the task.
 func TestHeadlessStdinJoinsThePrompt(t *testing.T) {
 	t.Parallel()
-	h := piped(t, Opts{Args: []string{"-p", "summarise", "-"}, Stdin: "line one of the log\nline two\n", Script: `text "summary"`})
+	h := piped(t, Opts{Args: []string{"-p", "summarise"}, Stdin: "line one of the log\nline two\n", Script: `text "summary"`})
 	req := lastRequestText(t, h)
 	if !strings.Contains(req, "summarise") || !strings.Contains(req, "line two of the log") && !strings.Contains(req, "line two") {
 		t.Fatalf("the request lacks the task or the log:\n%s", req)
@@ -62,13 +62,31 @@ func TestHeadlessStdinJoinsThePrompt(t *testing.T) {
 	}
 }
 
-// A task on the command line leaves inherited stdin unread, so
-// `while read f; do abhed -p "fix $f"; done < list` runs once per line.
-func TestHeadlessTaskLeavesStdinAlone(t *testing.T) {
+// cat log | abhed -p "q": piped stdin is the question's context, as users of
+// other command lines expect.
+func TestHeadlessPipedLogIsContext(t *testing.T) {
 	t.Parallel()
-	h := piped(t, Opts{Args: []string{"-p", "fix a.go"}, Stdin: "b.go\nc.go\n", Script: `text "ok"`})
-	if req := lastRequestText(t, h); !strings.Contains(req, "fix a.go") || strings.Contains(req, "c.go") {
-		t.Fatalf("the rest of the list was read:\n%s", req)
+	h := piped(t, Opts{Args: []string{"-p", "why did this fail?", "-output-format", "json"}, Stdin: "error: build broke at step 3\n", Script: `text "step 3"`})
+	req := lastRequestText(t, h)
+	if !strings.Contains(req, "why did this fail?") || !strings.Contains(req, "Input from stdin:") || !strings.Contains(req, "build broke at step 3") {
+		t.Fatalf("the log did not reach the model with the question:\n%s", req)
+	}
+	if resultOf(t, h.Stdout())["exit_code"] != float64(0) {
+		t.Fatalf("stdout:\n%s", h.Stdout())
+	}
+}
+
+// In `while read f; do abhed -p "fix $f" < /dev/null; done < list`, and with
+// -no-stdin, a run leaves the rest of the list alone.
+func TestHeadlessLoopLeavesTheListAlone(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "fix a.go"}, StdinFile: "/dev/null", Script: `text "ok"`})
+	if req := lastRequestText(t, h); !strings.Contains(req, "fix a.go") || strings.Contains(req, "Input from stdin") {
+		t.Fatalf("< /dev/null: %s", req)
+	}
+	n := piped(t, Opts{Args: []string{"-p", "fix a.go", "-no-stdin"}, Stdin: "b.go\nc.go\n", Script: `text "ok"`})
+	if req := lastRequestText(t, n); !strings.Contains(req, "fix a.go") || strings.Contains(req, "c.go") {
+		t.Fatalf("-no-stdin read the list:\n%s", req)
 	}
 }
 

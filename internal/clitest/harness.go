@@ -271,9 +271,19 @@ func start(t testing.TB, o Opts) *run {
 }
 
 func (h *run) startPiped() {
-	in, err := h.cmd.StdinPipe()
-	if err != nil {
-		h.t.Fatal(err)
+	var in io.WriteCloser
+	if h.o.StdinFile != "" {
+		f, err := os.Open(h.expand(h.o.StdinFile)) // #nosec G304 -- a file the test names
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		h.t.Cleanup(func() { _ = f.Close() })
+		h.cmd.Stdin = f
+	} else {
+		var err error
+		if in, err = h.cmd.StdinPipe(); err != nil {
+			h.t.Fatal(err)
+		}
 	}
 	outR, err := h.cmd.StdoutPipe()
 	if err != nil {
@@ -287,6 +297,9 @@ func (h *run) startPiped() {
 	// Written as a shell pipe would be, then closed unless the test keeps
 	// it open to write more.
 	go func() {
+		if in == nil {
+			return
+		}
 		h.wmu.Lock()
 		defer h.wmu.Unlock()
 		_, _ = io.WriteString(in, h.o.Stdin)

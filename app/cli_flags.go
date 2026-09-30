@@ -15,7 +15,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +96,7 @@ type cliFlags struct {
 	systemPrompt    string
 	systemFile      string
 	jsonSchema      string
+	noStdin         bool
 	skipPerms       bool
 	showVer         bool
 	listenAddr      string
@@ -124,7 +124,8 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "override the turn limit")
 	fs.IntVar(&f.maxBudget, "max-budget-tokens", 0, "end the run once it has used this many tokens (exit 3)")
 	fs.StringVar(&f.format, "output-format", "text", "text|json|stream-json: json and stream-json write one event per line, then a result line")
-	fs.StringVar(&f.inputFormat, "input-format", "", "text|stream-json: with -p, read stdin as the task's input (text) or as one user message per line (stream-json); default: stdin only when there is no task, or with -")
+	fs.StringVar(&f.inputFormat, "input-format", "text", "text|stream-json: with -p, stream-json reads one user message per line on stdin")
+	fs.BoolVar(&f.noStdin, "no-stdin", false, "with -p, do not read stdin, as with < /dev/null; for a loop that reads a list on stdin")
 	fs.BoolVar(&f.partial, "include-partial-messages", false, "with stream-json, include the streamed text fragments")
 	fs.BoolVar(&f.verbose, "verbose", false, "show reasoning in full, and each model call's tokens on stderr")
 	fs.StringVar(&f.allow, "allow", "", "comma-separated allow rules, e.g. 'bash(go test*)'")
@@ -174,14 +175,8 @@ func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string) error {
 }
 
 // task is the prompt the command line gives: the -p value and the words.
-// With -p, a lone "-" asks for stdin and is not part of the task.
 func (f *cliFlags) task() string {
-	var parts []string
-	for _, w := range f.words {
-		if !f.print.on || w != "-" {
-			parts = append(parts, w)
-		}
-	}
+	parts := append([]string{}, f.words...)
 	if f.print.prompt != "" {
 		parts = append([]string{f.print.prompt}, parts...)
 	}
@@ -212,7 +207,7 @@ func Main(args []string, opts ...Option) int {
 		fmt.Fprintf(os.Stderr, "abhed: unknown -output-format %q; use %s\n", f.format, strings.Join(outputFormats, ", "))
 		return 2
 	}
-	if f.inputFormat != "" && f.inputFormat != "text" && f.inputFormat != "stream-json" {
+	if f.inputFormat != "text" && f.inputFormat != "stream-json" {
 		fmt.Fprintf(os.Stderr, "abhed: unknown -input-format %q; use text or stream-json\n", f.inputFormat)
 		return 2
 	}
@@ -318,14 +313,6 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return a.serveCmd(workspace, *serveAddr)
 	}
 	return 2
-}
-
-// readsStdin reports whether a -p run takes stdin as its task's input: when
-// there is no task on the command line, or when "-" or -input-format asks.
-// A task alone leaves inherited stdin alone, so a loop reading a list on
-// stdin can run abhed -p for each line.
-func (f *cliFlags) readsStdin() bool {
-	return f.task() == "" || f.inputFormat != "" || slices.Contains(f.words, "-")
 }
 
 // permission is the mode the flags ask for: -mode, or its familiar

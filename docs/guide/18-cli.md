@@ -30,7 +30,7 @@ more often a mistyped command than a task.
 | `-append-system-prompt TEXT` | instructions added to the system prompt |
 | `-system-prompt TEXT` | the system prompt replaced; refused under a managed configuration |
 | `-trust-workspace` | trust the workspace's `.abhed/config.json` for this run |
-| `-p`, `-output-format`, `-input-format`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
+| `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 
 The familiar spellings `-permission-mode`, `-allowedTools`,
 `-disallowedTools` and `-dangerously-skip-permissions` are accepted too; the
