@@ -17,12 +17,12 @@ type invariant struct {
 	name   string
 	e2e    string
 	checks []string
-	// pending names what the checks cannot cover yet, and the track that owns it.
+	// pending names what the checks cannot cover yet, and what owns it.
 	pending string
 }
 
 // harness is what every end-to-end test waits for.
-const harness = "the pty harness: track E (internal/clitest)"
+const harness = "the pty harness, owned by internal/clitest"
 
 var invariants = []invariant{
 	{"deny wins in every mode", "TestInvariantDenyWinsInEveryMode", []string{
@@ -31,7 +31,7 @@ var invariants = []invariant{
 	{"approvals are never auto-granted", "TestInvariantNoAutoApprove", []string{
 		"app.TestRedTeamInputEndingRefuses", "app.TestRedTeamHookAllowApprovesNothing",
 		"internal/policy.TestHookAllowIsNoOpinionAndAskWaitsForDeny", "internal/extension.TestPromptAndPermissionHooksOnlyVeto"},
-		harness + "; the arrow-key and number guard: track A (the terminal dialog)"},
+		harness + "; the arrow-key and number guard, owned by the terminal UI's dialog (internal/ui)"},
 	{"destructive actions always confirm", "TestInvariantDestructiveAlwaysConfirms", []string{
 		"app.TestRedTeamDestructiveAlwaysConfirms"}, harness},
 	{"managed policy wins", "TestInvariantManagedPolicyWins", []string{
@@ -39,18 +39,18 @@ var invariants = []invariant{
 		"app.TestTurnLimitFollowsTheManagedConfiguration", "app.TestPlanDecisionHonoursAManagedMode"}, harness},
 	{"@, ! and custom commands go through policy", "TestInvariantMentionsBangAndCommandsGoThroughPolicy", []string{
 		"app.TestRedTeamTypedInputRunsAndAttachesNothing"},
-		harness + "; @ mentions, ! commands and custom commands: track D (input)"},
+		harness + "; @ mentions, ! commands and custom commands, owned by the CLI's input commands"},
 	{"/permissions cannot widen past managed policy", "TestInvariantPermissionsCannotWidenPastManaged", []string{
 		"app.TestSessionAllowIsRefusedUnderManagedPermissions", "app.TestCLIPermissionsAcrossClear",
 		"app.TestClearedRuleIsNotRecordedInTheNextConversation"}, harness},
 	{"mode cycling cannot reach auto or bypass", "TestInvariantModeCycleNeverReachesAutoOrBypass", []string{
 		"app.TestModeCycleNeverReachesAutoOrBypass", "app.TestModeSetRules", "app.TestPlanDecision"},
-		harness + "; the Shift-Tab key: track A (the terminal UI)"},
+		harness + "; the Shift-Tab key, owned by the terminal UI (internal/ui)"},
 	{"rewind is a fork", "TestInvariantRewindIsAFork", []string{
 		"app.TestCLIForkCarriesIntoNextTask"},
-		harness + "; /rewind and a fork at the first message: track C (record)"},
+		harness + "; /rewind and a fork at the first message, owned by the CLI's sessions and rewind"},
 	{"the record is append-only", "TestInvariantRecordIsAppendOnly", []string{
-		"app.TestRedTeamRecordIsAppendOnly"}, harness + "; record verify and prune: track C (record)"},
+		"app.TestRedTeamRecordIsAppendOnly"}, harness + "; record verify and prune, owned by the local record (store/local)"},
 	{"secrets are redacted", "TestInvariantSecretsAreRedacted", []string{
 		"app.TestRedTeamSecretsAreRedacted"}, harness},
 	{"workspace trust gates hooks", "TestInvariantUntrustedHooksDoNotRun", []string{
@@ -97,8 +97,8 @@ func TestInvariantsAreTracked(t *testing.T) {
 		if len(inv.checks) == 0 {
 			t.Errorf("%s: nothing checks it today", inv.name)
 		}
-		if !strings.Contains(inv.pending, "track ") {
-			t.Errorf("%s: pending names no owning track", inv.name)
+		if !strings.Contains(inv.pending, "owned by ") {
+			t.Errorf("%s: pending names no owner", inv.name)
 		}
 		for _, c := range inv.checks {
 			pkg, name, ok := strings.Cut(c, ".")
