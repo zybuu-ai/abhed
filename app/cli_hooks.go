@@ -25,7 +25,6 @@ func init() {
 type cliHooks struct {
 	host *extension.Host
 	st   *cliState
-	pol  *policy.Engine // places the relative paths of match rules
 }
 
 var _ agent.Hooks = cliHooks{}
@@ -42,9 +41,9 @@ func (h cliHooks) PromptSubmitted(ctx context.Context, sessionID, text string) s
 	return why
 }
 
-func (h cliHooks) PermissionRequested(ctx context.Context, sessionID, tool string, args json.RawMessage, reason string) string {
+func (h cliHooks) PermissionRequested(ctx context.Context, pol *policy.Engine, sessionID, tool string, args json.RawMessage, reason string) string {
 	return h.host.Veto(ctx, extension.EvPermissionRequest, extension.Request{
-		SessionID: sessionID, Tool: tool, Args: args, Content: reason, Policy: h.pol,
+		SessionID: sessionID, Tool: tool, Args: args, Content: reason, Policy: pol,
 	})
 }
 
@@ -59,7 +58,7 @@ func (c *cliState) attachHooks(loop *agent.Loop) {
 	if c.hooks == nil || c.hooks.Len() == 0 {
 		return
 	}
-	loop.Hooks = cliHooks{host: c.hooks, st: c, pol: loop.Policy}
+	loop.Hooks = cliHooks{host: c.hooks, st: c}
 	c.hooks.SetOnFired(func(f extension.Fired) {
 		rec := c.hookRecorder.Load()
 		if rec == nil {

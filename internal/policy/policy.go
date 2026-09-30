@@ -279,6 +279,9 @@ type Engine struct {
 	Ask   []Rule
 	Allow []Rule
 	Hooks []Hook
+	// EngineHooks are hooks made for the engine evaluating, so one copied for
+	// a subagent, with more roots, judges with those.
+	EngineHooks []func(*Engine) Hook
 
 	// Managed marks the engine as org-controlled: bypass mode is refused and
 	// local config cannot escalate past it (docs P7, §10 precedence).
@@ -321,7 +324,7 @@ func addAll(dst *[]Rule, patterns []string) error {
 // tool and not others. Something that cannot show each call to the engine,
 // such as an interactive shell, cannot honour such a rule and must not run.
 func (e *Engine) Screens(tool string) bool {
-	if len(e.Hooks) > 0 {
+	if len(e.Hooks)+len(e.EngineHooks) > 0 {
 		return true
 	}
 	for _, r := range e.DenyRules() {
@@ -476,7 +479,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// hook's refusal is final; its ask waits for the deny rules and plan mode
 	// below, so a hook can never turn a refusal into a question.
 	var hookAsk *Result
-	for _, h := range e.Hooks {
+	hooks := e.Hooks
+	for _, bind := range e.EngineHooks {
+		hooks = append(hooks[:len(hooks):len(hooks)], bind(e))
+	}
+	for _, h := range hooks {
 		res := h(tool, args)
 		if res == nil || res.Decision == Allow {
 			continue

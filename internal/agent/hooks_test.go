@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // fakeHooks refuses prompts and calls that name a word, and keeps what it
@@ -34,7 +35,7 @@ func (f *fakeHooks) PromptSubmitted(_ context.Context, _ string, text string) st
 	return ""
 }
 
-func (f *fakeHooks) PermissionRequested(_ context.Context, _ string, tool string, args json.RawMessage, _ string) string {
+func (f *fakeHooks) PermissionRequested(_ context.Context, _ *policy.Engine, _ string, tool string, args json.RawMessage, _ string) string {
 	f.note("permission:" + tool)
 	if f.refuseCall != "" && strings.Contains(string(args), f.refuseCall) {
 		return "call refused by hook"
@@ -179,5 +180,65 @@ func TestSubagentAskIsVetoedByTheParentsHooks(t *testing.T) {
 		if strings.HasPrefix(s, "prompt:") || strings.HasPrefix(s, "turn_end") {
 			t.Fatalf("the subagent's own run reached the hooks as %q", s)
 		}
+	}
+}
+
+// matchHooks refuse a call their rule matches, judged by the engine given,
+// as an extension's match rules are.
+type matchHooks struct {
+	fakeHooks
+	rules []policy.Rule
+}
+
+func (m *matchHooks) PermissionRequested(_ context.Context, pol *policy.Engine, _ string, tool string, args json.RawMessage, _ string) string {
+	if pol.MatchesCall(m.rules, tool, args) {
+		return "matched"
+	}
+	return ""
+}
+
+// A subagent in its own worktree judges with its own roots, so a match rule
+// written relative to the workspace takes its calls there: the policy hook
+// is made for the copy of the engine that evaluates, and a permission
+// request is judged by the loop's own engine.
+func TestWorktreeSubagentHooksUseItsRoots(t *testing.T) {
+	ws, wt := tempDir(t), tempDir(t)
+	rule, err := policy.ParseRule("write(src/**)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := policy.New(policy.ModeAuto)
+	parent.Roots = func() []string { return []string{ws} }
+	parent.EngineHooks = []func(*policy.Engine) policy.Hook{func(e *policy.Engine) policy.Hook {
+		return func(tool string, args json.RawMessage) *policy.Result {
+			if e.MatchesCall([]policy.Rule{rule}, tool, args) {
+				return &policy.Result{Decision: policy.Deny, Reason: "matched"}
+			}
+			return nil
+		}
+	}}
+	sess, err := tools.NewSession(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := childPolicy(parent, sess)
+	args, _ := json.Marshal(map[string]string{"path": wt + "/src/a.go"})
+	if got := child.Evaluate("write", true, args); got.Decision != policy.Deny || got.Step != "hook" {
+		t.Fatalf("the worktree's call skipped the hook: %+v", got)
+	}
+
+	l, _ := harnessIn(t, wt, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "w1", Name: "write", Args: args}}},
+		{text: "done"},
+	}, policy.ModeDefault, true)
+	l.Policy = childPolicy(policy.New(policy.ModeDefault), sess)
+	l.Hooks = &matchHooks{rules: []policy.Rule{rule}}
+	counter := &askCounter{}
+	l.Approver = counter
+	if _, err := l.Run(context.Background(), "write"); err != nil {
+		t.Fatal(err)
+	}
+	if counter.asked != 0 {
+		t.Fatal("a permission request the hook's rule matches in the worktree was put to the person")
 	}
 }

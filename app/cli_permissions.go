@@ -205,7 +205,7 @@ func explainDecision(e *cmdEnv, tool, what string) string {
 	}
 	args, _ := json.Marshal(map[string]string{key: what})
 	dry := *e.pol
-	dry.Hooks = nil
+	dry.Hooks, dry.EngineHooks = nil, nil
 	res := dry.Evaluate(tool, mutatesTool(e, tool, args), args)
 	rule := res.Rule
 	if rule == "" {

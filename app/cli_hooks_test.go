@@ -50,7 +50,7 @@ func TestHookFiredIsRecorded(t *testing.T) {
 	if why := hooks.PromptSubmitted(context.Background(), "s1", "a forbidden thing"); why == "" {
 		t.Fatal("not refused")
 	}
-	if why := hooks.PermissionRequested(context.Background(), "s1", "bash", []byte(`{"command":"make"}`), "asks"); why != "" {
+	if why := hooks.PermissionRequested(context.Background(), env.pol, "s1", "bash", []byte(`{"command":"make"}`), "asks"); why != "" {
 		t.Fatalf("a permission request was refused: %q", why)
 	}
 	got := eventsOf[agent.HookFired](t, events(), agent.EvHookFired)

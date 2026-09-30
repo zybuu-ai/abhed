@@ -316,8 +316,9 @@ type Loop struct {
 type Hooks interface {
 	// PromptSubmitted is asked before a person's message is recorded and sent.
 	PromptSubmitted(ctx context.Context, sessionID, text string) (refused string)
-	// PermissionRequested is asked before a call is put to the person.
-	PermissionRequested(ctx context.Context, sessionID, tool string, args json.RawMessage, reason string) (refused string)
+	// PermissionRequested is asked before a call is put to the person; pol is
+	// the engine judging it, whose roots place relative match rules.
+	PermissionRequested(ctx context.Context, pol *policy.Engine, sessionID, tool string, args json.RawMessage, reason string) (refused string)
 	// Observe tells hooks of something they may only watch: HookTurnEnd,
 	// HookSubagentEnd or HookNotification, with the tool it concerns, if any.
 	Observe(ctx context.Context, event, sessionID, tool, detail string)
@@ -1494,7 +1495,7 @@ func (l *Loop) permissionRefused(ctx context.Context, call model.ToolCall, decis
 	if l.Hooks == nil {
 		return ""
 	}
-	if why := l.Hooks.PermissionRequested(ctx, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
+	if why := l.Hooks.PermissionRequested(ctx, l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
 		return why
 	}
 	l.Hooks.Observe(ctx, HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
