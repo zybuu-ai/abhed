@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -23,7 +24,7 @@ func init() {
 	registerSlash(slashCmd{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
 	registerSlash(slashCmd{Name: "/context", Help: "what fills the context window, in tokens and percent", Group: "context", Order: 45, ReadOnly: true, Run: slashContext})
 	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
-	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <project|local|user> <note>]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
+	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
 
 // slashCompact is /compact.
@@ -66,6 +67,9 @@ var sessionMemory atomic.Pointer[agent.Memory]
 // files, which a deny keeps out of the prompt as it keeps them from a read.
 func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agent.MemoryOptions {
 	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs}
+	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto {
+		o.Auto = tools.AutoMemoryPath(home, workspace)
+	}
 	if pol != nil {
 		o.Allow = func(path string) error {
 			if d := pol.Evaluate("read", false, argsJSON(map[string]string{"path": path})); d.Decision == policy.Deny {
@@ -119,6 +123,8 @@ func slashMemory(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		mem = agent.LoadMemory(memoryOptions(e.st.appCfg, e.pol, e.sess.Root))
 	}
 	switch {
+	case len(args) >= 1 && args[0] == "auto":
+		return false, memoryAuto(e, args[1:])
 	case len(args) >= 1 && args[0] == "add":
 		if len(args) < 3 {
 			return false, errors.New("usage: /memory add <project|local|user> <note>")
@@ -468,4 +474,137 @@ func slashContext(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	body = append(body, ui.Block{Kind: ui.BlockNotice, Text: note})
 	return false, e.ui.Panel(ctx, ui.PanelSpec{Title: "Context", Body: body})
+}
+
+// autoMemory is the session's memory_write tool when auto memory is on.
+var autoMemory *tools.MemoryWrite
+
+// withAutoMemory is the main conversation's registry with memory_write when
+// the configuration turns auto memory on: the person's choice, which a
+// managed value binds and a workspace may only turn off. Only an interactive
+// session has it, where each save is shown as it happens.
+func withAutoMemory(reg *tools.Registry, cfg config.Config, workspace string, interactive bool) *tools.Registry {
+	if !cfg.Memory.Auto || !interactive {
+		return reg
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return reg
+	}
+	autoMemory = &tools.MemoryWrite{Path: tools.AutoMemoryPath(home, workspace)}
+	out := reg.Clone()
+	out.Add(autoMemory)
+	return out
+}
+
+// bindAutoMemory gives memory_write the conversation's redactor, and makes
+// each save visible and recorded as memory.written by the agent.
+func bindAutoMemory(st *cliState) {
+	if autoMemory == nil || st.loop == nil {
+		return
+	}
+	loop := st.loop
+	autoMemory.Bind(func(s string) string { return redactFor(loop, s) }, func(path, kind string) error {
+		shown := path
+		if home, err := os.UserHomeDir(); err == nil {
+			if rel, err := filepath.Rel(home, path); err == nil && filepath.IsLocal(rel) {
+				shown = "~/" + filepath.ToSlash(rel)
+			}
+		}
+		if _, err := loop.Recorder.Record(agent.EvMemoryWritten, agent.ActorAgent, agent.Untrusted,
+			agent.MemoryWritten{Path: shown, Kind: kind, By: "agent"}); err != nil {
+			return err
+		}
+		surfaceOf(st, nil).Append(ui.Block{Kind: ui.BlockNotice, Text: "the agent saved a " + kind + " note to auto memory (" + shown + "); /memory shows it"})
+		return nil
+	})
+}
+
+// autoMemoryQuestion is the one question onboarding asks about auto
+// memory. Its default is off.
+var autoMemoryQuestion = ui.DialogSpec{
+	Kind:  ui.DialogConfirm,
+	Title: "Let the agent keep notes between sessions (auto memory)?",
+	Body: []ui.Block{{Kind: ui.BlockNotice, Text: "When on, the agent may save short notes for this workspace in ~/.abhed/projects. " +
+		"Every save asks as a change, is shown and recorded, and secrets are redacted. " +
+		"Text the agent reads could try to make it save something, so it is off unless you turn it on. " +
+		"/memory auto on|off changes it later."}},
+	Default: ui.ChoiceNo,
+	Why:     "auto memory · off by default",
+}
+
+// AskAutoMemory is the onboarding hook: it asks once whether to turn auto
+// memory on and keeps the answer in the person's configuration. No answer
+// leaves it off. A managed value is not asked about.
+func AskAutoMemory(ctx context.Context, sf ui.Surface, cfg config.Config) (bool, error) {
+	if cfg.ManagedSets("memory.auto") {
+		return cfg.Memory.Auto, nil
+	}
+	choice, err := sf.Dialog(ctx, autoMemoryQuestion)
+	on := err == nil && choice == ui.ChoiceYes
+	return on, setUserAutoMemory(on)
+}
+
+// setUserAutoMemory sets memory.auto in ~/.abhed/config.json, keeping every
+// other setting as it is.
+func setUserAutoMemory(on bool) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, ".abhed", "config.json")
+	doc := map[string]any{}
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- the person's own configuration under their home
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("%s is not valid JSON, so it was left alone: %w", path, err)
+		}
+	}
+	mem, _ := doc["memory"].(map[string]any)
+	if mem == nil {
+		mem = map[string]any{}
+	}
+	mem["auto"] = on
+	doc["memory"] = mem
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, append(out, '\n'), 0o600)
+}
+
+// memoryAuto is /memory auto [on|off].
+func memoryAuto(e *cmdEnv, args []string) error {
+	cfg := e.st.appCfg
+	state := "off"
+	if cfg.Memory.Auto {
+		state = "on"
+	}
+	if len(args) == 0 {
+		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "auto memory is " + state + " in this session"})
+		return nil
+	}
+	if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+		return errors.New("usage: /memory auto [on|off]")
+	}
+	on := args[0] == "on"
+	if cfg.ManagedSets("memory.auto") && on != cfg.Memory.Auto {
+		return errors.New("auto memory is set by the organisation's managed configuration")
+	}
+	if err := setUserAutoMemory(on); err != nil {
+		return err
+	}
+	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "auto memory turned " + args[0] + " in ~/.abhed/config.json; it takes effect in the next session" +
+		map[bool]string{true: " (a workspace may still turn it off)", false: ""}[on]})
+	return nil
 }

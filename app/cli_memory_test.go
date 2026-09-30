@@ -68,7 +68,7 @@ func stubConfig(extra string) func(url string) string {
 // model; imports stop at memory.import_depth; memory.loaded is in the record;
 // /memory lists the files by scope.
 func TestCLIMemoryHierarchy(t *testing.T) {
-	c := startCLIPrepared(t, stubReply, stubConfig(`"rules":{"dirs":["rules"]},"memory":{"import_depth":1},`), func(ws string) {
+	c := startCLIPrepared(t, stubReply, stubConfig(`"rules":{"dirs":["rules"]},"memory":{"import_depth":1},`), func(ws, _ string) {
 		write(t, filepath.Join(ws, "AGENTS.md"), "AGENTS-MEMORY @docs/one.md")
 		write(t, filepath.Join(ws, "docs", "one.md"), "ONE-IMPORT @two.md")
 		write(t, filepath.Join(ws, "docs", "two.md"), "TWO-TOO-DEEP")

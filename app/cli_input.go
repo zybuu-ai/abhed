@@ -126,6 +126,7 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 		}
 		st.open(id)
 	}
+	bindAutoMemory(st)
 	return nil
 }
 

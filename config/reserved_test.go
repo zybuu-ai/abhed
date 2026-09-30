@@ -16,7 +16,6 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 		{"retention", "record.retention_days", `{"record":{"retention_days":90}}`},
 		{"record dir", "record.dir", `{"record":{"dir":"/srv/records"}}`},
 		{"mode cycle", "cli.mode_cycle", `{"cli":{"mode_cycle":["plan"]}}`},
-		{"auto memory", "memory.auto", `{"memory":{"auto":false}}`},
 		{"statusline", "statusline", `{"statusline":{"command":"s.sh"}}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {

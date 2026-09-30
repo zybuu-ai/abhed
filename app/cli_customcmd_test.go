@@ -165,7 +165,7 @@ func TestCustomCommandCannotShadowABuiltin(t *testing.T) {
 
 // End to end: a command from commands.dirs runs and its text reaches the model.
 func TestCLICustomCommand(t *testing.T) {
-	c := startCLIPrepared(t, stubReply, stubConfig(`"commands":{"dirs":["cmds"]},`), func(ws string) {
+	c := startCLIPrepared(t, stubReply, stubConfig(`"commands":{"dirs":["cmds"]},`), func(ws, _ string) {
 		write(t, filepath.Join(ws, "cmds", "greet.md"), "---\ndescription: greet\n---\nSay hello to $1")
 	})
 	c.tasks++

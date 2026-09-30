@@ -26,7 +26,7 @@ func TestRegistryKeepsTheHelpList(t *testing.T) {
 		{Name: "/clear", Help: "start a new conversation and session, keep the workspace"},
 		{Name: "/tasks", Args: "[cancel <id|all>]", Help: "list background tasks, or cancel them"},
 		{Name: "/wake", Args: "[off|notify|auto]", Help: "show or set what a background result does while idle"},
-		{Name: "/memory", Args: "[show <n>|add <project|local|user> <note>]", Help: "show the ABHED.md files in effect"},
+		{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect"},
 		{Name: "/model", Args: "[name]", Help: "show or switch the model, keeping the conversation"},
 		{Name: "/sessions", Help: "list recent sessions (durable store)"},
 		{Name: "/resume", Args: "<id>", Help: "replay a past session and continue its conversation"},

@@ -11,7 +11,6 @@ import "fmt"
 var notYetInEffect = []string{
 	"cli.mode_cycle",        // Shift-Tab and the ModeController (governance)
 	"statusline",            // the statusline command (status)
-	"memory.auto",           // auto memory (input and memory)
 	"record.dir",            // the local record (record and sessions)
 	"record.retention_days", // record pruning (record and sessions)
 	"hooks.disabled",        // hooks (governance)
