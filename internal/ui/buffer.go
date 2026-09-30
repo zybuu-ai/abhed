@@ -368,7 +368,7 @@ func (b *inputBuf) paste(text string) {
 		b.pastes = append(b.pastes, text)
 		b.pushUndo(opOther)
 		b.lastOp = opOther
-		b.insertRaw([]rune{rune(pasteRuneFirst + len(b.pastes) - 1)})
+		b.insertRaw([]rune{rune(pasteRuneFirst + len(b.pastes) - 1)}) // #nosec G115 -- bounded by the check above
 		return
 	}
 	b.pushUndo(opOther)

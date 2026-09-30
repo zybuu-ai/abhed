@@ -530,7 +530,7 @@ func draftDir() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return dir, os.Chmod(dir, 0o700)
+	return dir, os.Chmod(dir, 0o700) // #nosec G302 -- a folder needs its search bit; only its owner has any
 }
 
 // newDraft writes text to a new file of its own in draftDir.
