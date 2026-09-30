@@ -347,12 +347,18 @@ func TestProxyUserNamedLikeAReservedOwner(t *testing.T) {
 		t.Fatalf("create: %v %s", err, rec.Body)
 	}
 	time.Sleep(200 * time.Millisecond)
-	for _, user := range []string{"anonymous", "ANONYMOUS", "Anonymous", "agent", "AGENT"} {
+	for _, user := range []string{"anonymous", "ANONYMOUS", "Anonymous", " anonymous ", "\tanonymous", "agent", "AGENT", " agent "} {
 		if got := send("GET", "/v1/sessions", user, "").Body.String(); strings.Contains(got, "alice private prompt") {
 			t.Errorf("proxy user %q lists alice's session:\n%s", user, got)
 		}
 		if code := send("GET", "/v1/sessions/"+created.ID, user, "").Code; code != http.StatusNotFound {
 			t.Errorf("proxy user %q opens alice's session: %d", user, code)
+		}
+		if code := send("POST", "/v1/sessions/"+created.ID+"/approve", user, `{"approved":false}`).Code; code != http.StatusNotFound {
+			t.Errorf("proxy user %q answers alice's approval: %d", user, code)
+		}
+		if code := send("POST", "/v1/sessions/"+created.ID+"/messages", user, `{"prompt":"steer"}`).Code; code != http.StatusNotFound {
+			t.Errorf("proxy user %q steers alice's session: %d", user, code)
 		}
 	}
 	send("POST", "/v1/sessions", "anonymous", `{"prompt":"anon own prompt"}`)

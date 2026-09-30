@@ -42,6 +42,8 @@ func TestOwner(t *testing.T) {
 		{"proxy user named ANONYMOUS", &Identity{Provider: ProviderProxy, Subject: "ANONYMOUS"}, "proxy:ANONYMOUS"},
 		{"proxy user named agent", &Identity{Provider: ProviderProxy, Subject: "agent"}, "proxy:agent"},
 		{"proxy user named Agent with an email that cannot own", &Identity{Provider: ProviderProxy, Subject: "Agent", Email: "x", EmailVerified: true}, "proxy:Agent"},
+		{"proxy user named anonymous with spaces", &Identity{Provider: ProviderProxy, Subject: " anonymous "}, "proxy: anonymous "},
+		{"proxy user named agent with a tab", &Identity{Provider: ProviderProxy, Subject: "agent\t"}, "proxy:agent\t"},
 		{"proxy with neither", &Identity{Provider: ProviderProxy}, "nobody:proxy"},
 		{"unnamed subject Anonymous", &Identity{Subject: "Anonymous"}, "subject:Anonymous"},
 		{"unnamed subject agent", &Identity{Subject: "agent"}, "subject:agent"},

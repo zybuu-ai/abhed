@@ -107,7 +107,7 @@ func (id *Identity) Owner() string {
 // otherwise read as another namespace's principal.
 func external(ns, subject string) string {
 	for _, w := range reservedOwners {
-		if strings.EqualFold(subject, w) {
+		if strings.EqualFold(strings.TrimSpace(subject), w) {
 			return ns + ":" + subject
 		}
 	}
