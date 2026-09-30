@@ -414,3 +414,30 @@ func TestBareResumeFlag(t *testing.T) {
 }
 
 var _ = config.TrustEnv
+
+// A stored secret typed into a prompt, named, and exported never reaches
+// the record's files: it is redacted before the first write.
+func TestSecretsNeverReachTheRecord(t *testing.T) {
+	g := newSessRig(t)
+	_ = os.MkdirAll(filepath.Join(g.home, ".abhed"), 0o700)
+	if err := os.WriteFile(filepath.Join(g.home, ".abhed", "secrets.json"), []byte(`{"FAKE_TOKEN":"`+fakeVaultValue+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := g.start("-n", "about "+fakeVaultValue)
+	g.ask(c, "the token is "+fakeVaultValue+", keep it")
+	c.command("/rename again "+fakeVaultValue, "named")
+	c.command("/export", "wrote ")
+	c.command("/export out.jsonl", "wrote ")
+	exit(c)
+	for _, root := range []string{filepath.Join(g.home, ".abhed", "records"), filepath.Join(g.home, ".abhed", "exports"), filepath.Join(g.ws, "out.jsonl")} {
+		_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				if data, _ := os.ReadFile(p); bytes.Contains(data, []byte(fakeVaultValue)) {
+					t.Errorf("the stored secret is on disk in %s", p)
+				}
+			}
+			return nil
+		})
+	}
+	verified(t, g.record(), g.sessions()[0].ID)
+}

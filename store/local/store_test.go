@@ -664,3 +664,12 @@ func TestPruneOlderKeepsRecentAndHeldSessions(t *testing.T) {
 		t.Fatalf("pruned %+v skipped %v err %v", pruned, skipped, err)
 	}
 }
+
+// The local record offers no way to delete or rewrite a session: it is not
+// a SessionDeleter, and prune, the one way out, leaves a tombstone.
+func TestNoDeletePath(t *testing.T) {
+	var s any = &Store{}
+	if _, ok := s.(agent.SessionDeleter); ok {
+		t.Fatal("the local record can delete a session")
+	}
+}
