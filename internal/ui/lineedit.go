@@ -604,8 +604,8 @@ func (l *LineReader) Capture() func() {
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		outR.Close()
-		outW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return func() {}
 	}
 
@@ -633,11 +633,11 @@ func (l *LineReader) Capture() func() {
 
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
-		outW.Close()
-		errW.Close()
+		_ = outW.Close()
+		_ = errW.Close()
 		wg.Wait()
-		outR.Close()
-		errR.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 	}
 }
 
@@ -685,8 +685,8 @@ func (l *LineReader) captureLines() func() {
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		outR.Close()
-		outW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return func() {}
 	}
 	os.Stdout, os.Stderr = outW, errW
@@ -713,11 +713,11 @@ func (l *LineReader) captureLines() func() {
 	go pump(errR, origErr)
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
-		outW.Close()
-		errW.Close()
+		_ = outW.Close()
+		_ = errW.Close()
 		wg.Wait()
-		outR.Close()
-		errR.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 	}
 }
 
@@ -729,7 +729,7 @@ type streamFilter struct {
 }
 
 func (f *streamFilter) feed(p []byte) string {
-	data := append(f.carry, p...)
+	data := append(append([]byte(nil), f.carry...), p...)
 	f.carry = nil
 	cut := len(data)
 	// Hold an escape that has not ended, and a character not yet whole.

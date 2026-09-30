@@ -116,7 +116,7 @@ func TestScreenDiffRandomFrames(t *testing.T) {
 func TestScreenCleansEveryRow(t *testing.T) {
 	var out strings.Builder
 	s := newScreen(&out)
-	row := "a\x1b]52;c;eA==\x07b\x1b[2Jc\u009b31md‍\re\x1b[31mred\x1b[0m"
+	row := "a\x1b]52;c;eA==\x07b\x1b[2Jc\u009b31md\u200d\re\x1b[31mred\x1b[0m"
 	s.render([]string{row, "x"}, 0, 0)
 	s.commit([]string{row}, []string{row}, 0, 0)
 	assertClean(t, "the screen writer", out.String())

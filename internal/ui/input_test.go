@@ -14,7 +14,7 @@ import (
 // "héllo wörld 你好" became "hÃ©llo wÃ¶rld ä½å¥½".
 func TestUnicodeRoundTrips(t *testing.T) {
 	g := newRig(t, 80, 24)
-	want := "héllo wörld 你好 — “quotes” 🙂 👩‍👩‍👧 🇮🇳 e\u0301"
+	want := "héllo wörld 你好 — “quotes” 🙂 👩\u200d👩\u200d👧 🇮🇳 e\u0301"
 	g.keys(want + "\r")
 	got, err := g.line()
 	if err != nil || got != want {
@@ -26,11 +26,11 @@ func TestUnicodeRoundTrips(t *testing.T) {
 // a flag, a letter with a combining accent.
 func TestBackspaceRemovesWholeCharacters(t *testing.T) {
 	for in, want := range map[string]string{
-		"café\x7f":     "caf",
-		"a👩‍👩‍👧\x7f":   "a",
-		"x🇮🇳\x7f":      "x",
-		"ne\u0301\x7f": "n",
-		"日本\x7f":       "日",
+		"café\x7f":             "caf",
+		"a👩\u200d👩\u200d👧\x7f": "a",
+		"x🇮🇳\x7f":              "x",
+		"ne\u0301\x7f":         "n",
+		"日本\x7f":               "日",
 	} {
 		g := newRig(t, 80, 24)
 		g.keys(in)
@@ -513,7 +513,7 @@ func TestAltBracketDoesNotSwallowTyping(t *testing.T) {
 // escape, no control, no paste character.
 func TestMentionCompletionIsFiltered(t *testing.T) {
 	g := newRig(t, 80, 24)
-	g.lr.SetFiles(func() []string { return []string{"evil\U0010FF00\x1b]0;T\x07name‮.go"} })
+	g.lr.SetFiles(func() []string { return []string{"evil\U0010FF00\x1b]0;T\x07name\u202e.go"} })
 	g.typed("@evil")
 	g.settle()
 	g.keys("\t")
@@ -524,7 +524,7 @@ func TestMentionCompletionIsFiltered(t *testing.T) {
 	assertClean(t, "a completed file name", wire)
 	g.keys("\r")
 	got, _ := g.line()
-	if strings.ContainsAny(got, "\x1b\x07‮\U0010FF00") || !strings.Contains(got, "@evil") {
+	if strings.ContainsAny(got, "\x1b\x07\u202e\U0010FF00") || !strings.Contains(got, "@evil") {
 		t.Fatalf("the line was %q", got)
 	}
 }

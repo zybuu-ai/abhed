@@ -7,7 +7,7 @@ import (
 
 func TestClusterWidths(t *testing.T) {
 	for s, w := range map[string]int{
-		"a": 1, "é": 1, "é": 1, "你": 2, "🙂": 2, "👩‍👩‍👧": 2,
+		"a": 1, "é": 1, "é": 1, "你": 2, "🙂": 2, "👩\u200d👩\u200d👧": 2,
 		"🇮🇳": 2, "❤️": 2, "1️⃣": 2, "\x1b[31mred\x1b[0m": 3, "": 0,
 	} {
 		if got := displayWidth(s); got != w {
@@ -17,7 +17,7 @@ func TestClusterWidths(t *testing.T) {
 }
 
 func TestClusterBoundaries(t *testing.T) {
-	rs := []rune("aé👩‍👩‍👧🇮🇳🇺🇸x")
+	rs := []rune("aé👩\u200d👩\u200d👧🇮🇳🇺🇸x")
 	var got []string
 	for i := 0; i < len(rs); {
 		e := clusterEnd(rs, i)
@@ -27,7 +27,7 @@ func TestClusterBoundaries(t *testing.T) {
 		}
 		i = e
 	}
-	want := []string{"a", "é", "👩‍👩‍👧", "🇮🇳", "🇺🇸", "x"}
+	want := []string{"a", "é", "👩\u200d👩\u200d👧", "🇮🇳", "🇺🇸", "x"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("got %q", got)
 	}
@@ -95,7 +95,7 @@ func TestSanitizeChecksEveryRune(t *testing.T) {
 		}
 	}
 	// An emoji keeps its joiners.
-	if got := sanitize("👩‍👩‍👧", false); got != "👩‍👩‍👧" {
+	if got := sanitize("👩\u200d👩\u200d👧", false); got != "👩\u200d👩\u200d👧" {
 		t.Errorf("emoji changed: %q", got)
 	}
 }
@@ -113,7 +113,7 @@ func TestRevealShowsHiddenRunes(t *testing.T) {
 			t.Fatalf("reveal left %U in %q", r, got)
 		}
 	}
-	if got := reveal("👩‍👧 ok\nnext"); got != "👩‍👧 ok\nnext" {
+	if got := reveal("👩\u200d👧 ok\nnext"); got != "👩\u200d👧 ok\nnext" {
 		t.Errorf("reveal changed plain text: %q", got)
 	}
 }
@@ -134,13 +134,13 @@ func TestStreamFilterAcrossReads(t *testing.T) {
 // A joiner is kept only inside an emoji; between letters it would make two
 // strings that look the same, so reveal shows it.
 func TestRevealMarksAJoinerOutsideEmoji(t *testing.T) {
-	if got := reveal("中‍文"); !strings.Contains(got, "⟨U+200D⟩") {
+	if got := reveal("中\u200d文"); !strings.Contains(got, "⟨U+200D⟩") {
 		t.Fatalf("a joiner between letters was hidden: %q", got)
 	}
-	if got := sanitize("a‍b", false); strings.ContainsRune(got, 0x200d) {
+	if got := sanitize("a\u200db", false); strings.ContainsRune(got, 0x200d) {
 		t.Fatalf("sanitize kept a joiner between letters: %q", got)
 	}
-	for _, emoji := range []string{"👩‍👩‍👧", "👨🏽‍🦰", "❤️‍🔥", "🏳️‍🌈"} {
+	for _, emoji := range []string{"👩\u200d👩\u200d👧", "👨🏽\u200d🦰", "❤️\u200d🔥", "🏳️\u200d🌈"} {
 		if got := reveal(emoji); got != emoji {
 			t.Errorf("reveal changed %q to %q", emoji, got)
 		}
