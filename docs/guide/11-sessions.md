@@ -21,9 +21,11 @@ fragment at a time, so a value split between two is still caught. See
 
 ## Storage
 
-In memory by default, which loses everything when the process exits. Postgres
-makes sessions durable, and is what `/sessions`, `/resume`, replay and audit
-need:
+The command line keeps sessions in the local record by default: a chained,
+verifiable file per session under `~/.abhed/records`, described in
+[Sessions and the local record](12-records.md). `abhed serve` keeps them in
+memory unless configured otherwise, which loses everything when the process
+exits. Postgres makes sessions durable for a server and for teams:
 
 ```json
 "storage": { "driver": "postgres", "dsn": "postgres://...", "tenant": "default" }
@@ -41,8 +43,12 @@ is not a boundary.
 ```
 /tree            the session's steps
 /fork 12         rebuild the conversation up to step 12 and continue from there
+/rewind          take code and/or the conversation back to before a prompt
 /resume <id>     replay a recorded session and continue its conversation
 ```
+
+`-c`, `-r`, `/rename`, `/branch` and `/rewind` are covered in
+[Sessions and the local record](12-records.md).
 
 In the interactive CLI, every task you type continues one conversation, and
 the session's record holds all of them: one sequence, with a `session.ended`
@@ -83,8 +89,9 @@ session — it is the session.
 ## Getting it out
 
 ```
-/export                     a self-contained HTML transcript
+/export                     a self-contained HTML transcript, in ~/.abhed/exports
 /export session.json        the raw events, for a program
+/export session.jsonl       the chained record with its head, verifiable offline
 ```
 
 The HTML embeds everything and fetches nothing, so it works from a filesystem,

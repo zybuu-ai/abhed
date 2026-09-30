@@ -101,9 +101,16 @@ ending the session; at the prompt it clears the line. Ctrl-D exits.
 | `/compact` | compact the context now |
 | `/tree` | the session's steps |
 | `/fork <step>` | rebuild the conversation up to a step and continue from there |
-| `/clear` | start a new conversation and session; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
-| `/resume <id>` | replay a recorded session and continue its conversation |
-| `/export [path]` | write the transcript, HTML by default |
+| `/rewind` | take code and/or the conversation back to before a prompt, recorded |
+| `/clear [name]` | end this session and start a new one; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
+| `/resume [id]` | continue a recorded session; with no id, pick one |
+| `/rename <name>` | name the session, for `/resume` and `-r` |
+| `/branch` | go on in a copy of this session, leaving it as it was |
+| `/export [path]` | write the transcript, HTML in `~/.abhed/exports` by default |
+
+Sessions are kept in a local record and survive the process: `abhed -c`
+continues the last one in this workspace, and `abhed -r` picks one. See
+[Sessions and the local record](12-records.md).
 | `/model [name]` | show or switch the model, keeping the conversation |
 
 ## Without a terminal

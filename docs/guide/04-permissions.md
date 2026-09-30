@@ -365,10 +365,12 @@ same command. A denial that says only "no" makes a model retry forever.
 
 ## Recovering
 
-`/undo` reverts the last turn's file changes. `/diff` shows what changed this
-session. With Postgres storage, `/resume` replays a past session exactly, which
-is how you find out what an agent did rather than what it said it did, and the
-next task continues that session; see [Sessions](11-sessions.md).
+`/undo` reverts the last turn's file changes, and `/rewind` takes code and the
+conversation back to before any prompt; each file put back is your write, held
+to the same deny rules, and recorded. `/diff` shows what changed this session.
+`/resume` replays a past session exactly, which is how you find out what an
+agent did rather than what it said it did, and the next task continues that
+session; see [Sessions and the local record](12-records.md).
 
 ## The monitor
 

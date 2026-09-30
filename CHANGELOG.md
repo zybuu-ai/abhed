@@ -210,6 +210,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- The command line now keeps sessions in a local record under
+  `~/.abhed/records` when `storage.driver` is not `postgres`, where before
+  they were kept in memory and lost when it exited. Nothing to do: the
+  directory is created, private to you, on first use, and records are kept
+  until `abhed record prune` removes them. `abhed serve` still keeps memory
+  unless configured otherwise.
+- `/export` with no path now writes to `~/.abhed/exports`, not the
+  workspace, and a relative path is taken from the workspace.
+- `/undo` records each file it puts back as `file.restored`, and is held to
+  deny rules on `write`.
 - `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
   asks in default mode, is refused in plan mode, and is refused where nobody
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
@@ -453,10 +463,42 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A durable, tamper-evident local record, shared by the command line and
+  the SDK (`store/local`). See `docs/guide/12-records.md`.
+  - One append-only file per session. Each line is canonical JSON with
+    `prev` and `hash` (SHA-256), so an edit, a removed or moved line, or a
+    cut end fails `abhed record verify`, which names the event.
+  - It is evident against the agent and against accidental or partial
+    edits, and verifiable offline. It is not proof against the machine's
+    owner, who can rewrite a file and compute a new chain.
+  - Secrets are redacted before the first write. Directories are `0700` and
+    files `0600`, and the agent cannot reach the record by any path.
+  - One process writes a session at a time, by a lock the system drops
+    when the process exits. An unfinished last line left by a crash is cut
+    off and recorded as `record.repaired`.
+- `abhed record list|show|verify|export|prune`. A `.jsonl` export carries
+  its head and verifies on another machine. `prune` asks first and leaves a
+  tombstone in the index.
+- `-c`/`--continue`, `-r`/`--resume [id|name|file]` (a picker with no
+  argument), `-n`/`--name` and `--fork-session`, also with `-p`. Resuming a
+  record that fails verification shows it unverified and needs a yes.
+- `/rewind` takes code, the conversation or both back to before a prompt.
+  The conversation side is a recorded `conversation.forked`, never a
+  deletion, and rewinding to the first prompt is a fork at step 0 in the
+  same session. Each file put back is the person's write, put to policy and
+  recorded as `file.restored` with hashes before and after.
+- Checkpoints before each agent edit are kept in the record's blobs, so
+  `/undo` and `/rewind` work after `abhed -c`.
+- `/rename`, `/branch` and `/clear [name]`. A branch opens with
+  `session.branched` and a copy of the conversation; the original is left
+  as it was.
+- SDK: `Options.Store` and `OpenLocalRecord`, so an embedded agent can keep
+  the local record.
+- `record.dir` and `record.retention_days` are in effect, from the managed
+  configuration only.
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
-  `memory.import_depth`, `record.dir`, `record.retention_days` and
-  `hooks.disabled`. They are accepted so a file that sets them stays valid,
+  `memory.import_depth` and `hooks.disabled`. They are accepted so a file that sets them stays valid,
   but this version does not act on them yet: setting one prints "set but not
   yet in effect in this version", and `abhed doctor` reports it and does not
   call the configuration ready. Who may set each is already enforced.
