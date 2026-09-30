@@ -157,6 +157,10 @@ type Background struct {
 	// stopped is set by an explicit stop and cleared by the next prompted
 	// run: until then no result wakes the session.
 	stopped bool
+	// wakeEpoch is the stop count when the last wake was decided: a stop
+	// after the decision and before the wake run takes the conversation
+	// refuses the run.
+	wakeEpoch int
 }
 
 // ErrStopped refuses a background spawn that began before a stop.
@@ -718,6 +722,7 @@ func (b *Background) deliverIdle() {
 		} else {
 			b.mu.Lock()
 			b.waking = true
+			b.wakeEpoch = b.epoch
 			start := b.hooks.Wake
 			b.mu.Unlock()
 			l.runMu.Unlock()
@@ -877,6 +882,12 @@ func (l *Loop) RunWoken(ctx context.Context, w Wake) (TerminalReason, error) {
 	}
 	b.mu.Lock()
 	b.waking = false
+	// A stop between the wake's decision and now refuses it: the results
+	// wait, and the next idle delivery hands them over as skipped:stopped.
+	if w.By == "policy" && (b.stopped || b.epoch != b.wakeEpoch) {
+		b.mu.Unlock()
+		return "", ErrNothingToWake
+	}
 	if len(b.notices) == 0 && b.unacted == 0 {
 		b.mu.Unlock()
 		return "", ErrNothingToWake

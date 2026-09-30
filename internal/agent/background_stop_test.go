@@ -258,3 +258,37 @@ func TestForkRefusedWhileTasksRun(t *testing.T) {
 		t.Fatalf("fork once the tasks ended: %v", err)
 	}
 }
+
+// A Stop after the wake was decided and before its run takes the
+// conversation refuses the run: no model call follows, and the results are
+// delivered as skipped:stopped.
+func TestStopBetweenWakeDecisionAndRun(t *testing.T) {
+	r := newBGRig(t, WakeAuto, "one")
+	r.l.Background.policy.MaxWakesPerHour = 4
+	h := hostFor(r, true)
+	gate := make(chan struct{})
+	hooks := h.hooks()
+	inner := hooks.Wake
+	hooks.Wake = func(ids []string) bool {
+		go func() { <-gate; inner(ids) }()
+		return true
+	}
+	r.l.Background.SetHooks(hooks)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
+	r.m.release("one")
+	waitFor(t, "the wake decided", func() bool { r.l.Background.mu.Lock(); defer r.l.Background.mu.Unlock(); return r.l.Background.waking })
+	r.l.Background.CancelAll(TermUserInterrupt) // Stop, with no run live yet
+	calls := r.m.calls.Load()
+	close(gate)
+	waitFor(t, "the result", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 1 })
+	time.Sleep(100 * time.Millisecond)
+	if n := r.m.calls.Load() - calls; n != 0 || len(payloads[SessionWoken](r.events(t), EvSessionWoken)) != 0 {
+		t.Fatalf("a wake ran after Stop: %d model call(s)", n)
+	}
+	if n := payloads[Notice](r.events(t), EvSubagentNotice)[0]; n.Wake != "skipped:stopped" {
+		t.Fatalf("the result: wake %q, want skipped:stopped", n.Wake)
+	}
+}
