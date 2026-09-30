@@ -84,3 +84,26 @@ func TestAdapterAcceptsNoticeAfterFinalAnswer(t *testing.T) {
 		}
 	})
 }
+
+// Every functionResponse names its function, whatever the call's id: one of
+// Gemini's own, another provider's after a switch, or none found.
+func TestGeminiNamesEveryResponseByItsFunction(t *testing.T) {
+	req := Request{Messages: []Message{
+		{Role: RoleUser, Content: "go"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "read-1", Name: "read", Args: json.RawMessage(`{}`)}}},
+		{Role: RoleTool, ToolCallID: "read-1", Content: "x"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call_abc", Name: "bash", Args: json.RawMessage(`{}`)}}},
+		{Role: RoleTool, ToolCallID: "call_abc", Content: "y"},
+		{Role: RoleTool, ToolCallID: "orphan", Content: "z"},
+	}}
+	msgs := shapeOf(t, NewGemini("http://x", "k", "m", Profile{Name: "m"}).buildRequest(req).Contents)
+	var names []any
+	for _, m := range msgs {
+		if fr, ok := firstOf(m["parts"])["functionResponse"].(map[string]any); ok {
+			names = append(names, fr["name"])
+		}
+	}
+	if len(names) != 3 || names[0] != "read" || names[1] != "bash" || names[2] != "orphan" {
+		t.Fatalf("functionResponse names: %v", names)
+	}
+}
