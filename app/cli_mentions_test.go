@@ -108,7 +108,11 @@ func TestMentionAttachesThroughTheReadTool(t *testing.T) {
 	}
 	var m agent.InputMention
 	_ = json.Unmarshal(mentions[0].Payload, &m)
-	block := msg.Text[strings.Index(msg.Text, "<file"):]
+	at := strings.Index(msg.Text, "<file")
+	if at < 0 {
+		t.Fatalf("no file block:\n%s", msg.Text)
+	}
+	block := msg.Text[at:]
 	body := block[strings.Index(block, ">\n")+2 : strings.LastIndex(block, "\n</file>")]
 	sum := sha256.Sum256([]byte(body))
 	if m.Path != "notes.txt" || m.Range != "2-3" || m.SHA256 != hex.EncodeToString(sum[:]) || m.Bytes != int64(len(body)) {

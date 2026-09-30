@@ -234,7 +234,7 @@ func saveNote(ctx context.Context, st *cliState, sf ui.Surface, target, note str
 		if target == noteLocal {
 			name = "ABHED.local.md"
 		}
-		shown, err = appendWorkspaceNote(ctx, loop, st.sess, filepath.Join(st.sess.Root, name), note)
+		shown, err = appendWorkspaceNote(loop, st.sess, filepath.Join(st.sess.Root, name), note)
 	case noteUser:
 		shown, err = appendUserNote(note)
 	default:
@@ -254,13 +254,13 @@ func saveNote(ctx context.Context, st *cliState, sf ui.Surface, target, note str
 
 // appendWorkspaceNote appends a note to a memory file in the workspace as
 // the person's write, and returns its path relative to the workspace.
-func appendWorkspaceNote(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs, note string) (string, error) {
-	return changeWorkspaceMemory(ctx, loop, sess, abs, func(before []byte) []byte { return appendItem(before, note) })
+func appendWorkspaceNote(loop *agent.Loop, sess *tools.Session, abs, note string) (string, error) {
+	return changeWorkspaceMemory(loop, sess, abs, func(before []byte) []byte { return appendItem(before, note) })
 }
 
 // changeWorkspaceMemory rewrites a memory file in the workspace as the
 // person's write, and returns its path relative to the workspace.
-func changeWorkspaceMemory(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, change func([]byte) []byte) (string, error) {
+func changeWorkspaceMemory(loop *agent.Loop, sess *tools.Session, abs string, change func([]byte) []byte) (string, error) {
 	// The confined read refuses a link out of the workspace or into state.
 	existed := true
 	before, err := sess.ReadFile(abs)
@@ -781,12 +781,15 @@ func slashImport(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		Body:  []ui.Block{{Kind: ui.BlockMarkdown, Text: text, Path: args[0]}},
 		Why:   "/import · the file becomes project memory, read in every session",
 	})
-	if err != nil || choice != ui.ChoiceYes {
+	if err != nil && !errors.Is(err, ui.ErrNoAnswer) {
+		return false, err
+	}
+	if choice != ui.ChoiceYes {
 		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "not imported"})
 		return false, nil
 	}
 	section := "\n## Imported from " + filepath.Base(p) + "\n\n" + text + "\n"
-	rel, err := changeWorkspaceMemory(ctx, st.loop, st.sess, filepath.Join(st.sess.Root, agent.MemoryFileName), func(before []byte) []byte {
+	rel, err := changeWorkspaceMemory(st.loop, st.sess, filepath.Join(st.sess.Root, agent.MemoryFileName), func(before []byte) []byte {
 		out := append([]byte(nil), before...)
 		if len(out) > 0 && !strings.HasSuffix(string(out), "\n") {
 			out = append(out, '\n')

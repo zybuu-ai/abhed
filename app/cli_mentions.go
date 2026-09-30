@@ -141,7 +141,7 @@ func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw strin
 		var att Attachment
 		var why string
 		if isDir {
-			block, att, why, err = attachDir(ctx, loop, sess, abs, ref)
+			block, att, why, err = attachDir(ctx, loop, sess, abs)
 		} else {
 			block, att, why, err = attachFile(ctx, loop, sess, abs, ref)
 		}
@@ -216,7 +216,7 @@ func attachFile(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs 
 
 // attachDir lists a directory's files through the glob tool as the person,
 // after the read rules for the directory itself.
-func attachDir(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, ref mentionRef) (block string, att Attachment, why string, err error) {
+func attachDir(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string) (block string, att Attachment, why string, err error) {
 	id := personCallID("mention")
 	dirArgs := argsJSON(map[string]string{"path": abs + string(filepath.Separator)})
 	if d := loop.Policy.Evaluate("read", false, dirArgs); d.Decision == policy.Deny {

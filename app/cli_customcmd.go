@@ -238,14 +238,14 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 	}
 	if c.Model != "" && c.Model != st.appCfg.Model.Default {
 		was := st.appCfg.Model.Default
-		if err := switchModel(ctx, st, c.Model); err != nil {
+		if err := switchModel(st, c.Model); err != nil {
 			for _, u := range undo {
 				u()
 			}
 			return fmt.Errorf("%s was not sent: %w", c.Name, err)
 		}
 		undo = append(undo, func() {
-			if err := switchModel(context.Background(), st, was); err != nil {
+			if err := switchModel(st, was); err != nil {
 				sf.Append(ui.Block{Kind: ui.BlockError, Text: "could not switch back to " + was + ": " + err.Error()})
 			}
 		})
@@ -260,7 +260,7 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 
 // switchModel moves the conversation to a configured provider, recorded as
 // /model records it.
-func switchModel(ctx context.Context, st *cliState, name string) error {
+func switchModel(st *cliState, name string) error {
 	p, err := st.appCfg.ProviderNamed(name)
 	if err != nil {
 		return err
