@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -109,6 +110,14 @@ func Open(opts Options) (*Store, error) {
 	dir := filepath.Join(root, tenant)
 	for _, d := range []string{root, dir, filepath.Join(dir, "head"), filepath.Join(dir, "locks"), filepath.Join(dir, "blobs")} {
 		if err := privateDir(d); err != nil {
+			return nil, err
+		}
+	}
+	// The marker tells the state walk this folder is the record, which it
+	// guards by the folder rather than file by file.
+	marker := filepath.Join(root, tools.RecordMarker)
+	if _, err := os.Lstat(marker); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(marker, []byte("Abhed's local record. Check it with: abhed record verify\n"), 0o600); err != nil {
 			return nil, err
 		}
 	}

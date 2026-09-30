@@ -145,6 +145,14 @@ func (set *StateSet) walk(dir string) {
 		}
 		info := entryInfo(d)
 		switch {
+		case d.IsDir() && isRecordTree(path):
+			// The record is state by where it is: every path into it passes
+			// this folder, whose identity is kept. Its files are not listed
+			// one by one, which would make every check read every session.
+			if info != nil && path != dir && !set.seen(set.dirs, info) {
+				set.dirs = append(set.dirs, info)
+			}
+			return filepath.SkipDir
 		case info == nil || path == dir:
 		case d.IsDir() && d.Name() == "worktrees":
 			return filepath.SkipDir
@@ -160,6 +168,15 @@ func (set *StateSet) walk(dir string) {
 		}
 		return nil
 	})
+}
+
+// RecordMarker is the file the local record keeps at the top of its
+// directory, so the state walk knows the folder without listing it.
+const RecordMarker = ".abhed-record"
+
+func isRecordTree(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, RecordMarker))
+	return err == nil
 }
 
 // entryInfo returns an entry's info, or nil when it cannot be read: such
