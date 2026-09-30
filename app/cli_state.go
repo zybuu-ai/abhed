@@ -60,9 +60,13 @@ type cliState struct {
 	// statuslineWarned is set once a failing statusline command was named.
 	statuslineWarned bool
 	// statuslineSB is the statusline's own sandbox, chosen at its first run.
-	statuslineOnce sync.Once
-	statuslineSB   sandbox.Sandbox
-	statuslineErr  error
+	// statuslineRoots are the granted folders it was judged against; a
+	// change to them judges it again. statuslineMu guards all of these.
+	statuslineMu     sync.Mutex
+	statuslineJudged bool
+	statuslineRoots  []string
+	statuslineSB     sandbox.Sandbox
+	statuslineErr    error
 	// statuslineCmd is what runs, and statuslinePin the script it names,
 	// checked again before each run.
 	statuslineCmd string

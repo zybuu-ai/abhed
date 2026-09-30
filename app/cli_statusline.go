@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -252,9 +253,14 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	if cmd == "" {
 		return ""
 	}
-	c.statuslineOnce.Do(func() {
-		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace, c.grantedDirs())
-	})
+	c.statuslineMu.Lock()
+	defer c.statuslineMu.Unlock()
+	// Judged again when the session's folders change, as /add-dir does, so
+	// a script in a folder granted since is refused from then on.
+	if roots := c.grantedDirs(); !c.statuslineJudged || !slices.Equal(roots, c.statuslineRoots) {
+		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace, roots)
+		c.statuslineJudged, c.statuslineRoots = true, roots
+	}
 	// A missing sandbox is said once, as it holds for the whole session;
 	// a refused script every time, until it is moved.
 	if c.statuslineErr != nil && !errors.Is(c.statuslineErr, errNoProcessSandbox) {
@@ -289,5 +295,6 @@ func (c *cliState) grantedDirs() []string {
 	if c.sess != nil {
 		out = append(out, c.sess.PolicyRoots()...)
 	}
+	// PolicyRoots holds the skill folders already; asked again in case it stops.
 	return append(out, c.set.SkillDirs()...)
 }

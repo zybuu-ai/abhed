@@ -305,3 +305,27 @@ func TestReadableFileSameComparesMoreThanTheInode(t *testing.T) {
 		t.Error("a file rewritten in place passed")
 	}
 }
+
+// Same size, same mtime put back after a rewrite: only the change time
+// tells the file changed, and it is enough.
+func TestReadableFileSameCatchesAChangeTimeAlone(t *testing.T) {
+	path := filepath.Join(workspace(t), "status.sh")
+	f := pinned(t, path, "#!/bin/sh\necho one\n")
+	time.Sleep(20 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho two\n"), 0o700); err != nil { // #nosec G306 -- the test's script
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, f.Info.ModTime(), f.Info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(cur, f.Info) || cur.Size() != f.Info.Size() || !cur.ModTime().Equal(f.Info.ModTime()) || cur.Mode() != f.Info.Mode() {
+		t.Fatal("the setup changed more than the change time")
+	}
+	if f.Same() {
+		t.Fatal("a file differing only in its change time passed")
+	}
+}

@@ -320,3 +320,32 @@ func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
 		}
 	}
 }
+
+// A folder granted mid-session, as /add-dir does, is judged at the next
+// redraw: a script there is refused from then on.
+func TestStatuslineRejudgedWhenFoldersChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	dir := filepath.Join(home, "bin3")
+	writeScript(t, filepath.Join(dir, "s.sh"), "#!/bin/sh\necho ran\n")
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = filepath.Join(dir, "s.sh")
+	st := &cliState{appCfg: cfg, workspace: ws, sess: sess}
+	if got := st.statusLine(context.Background(), "default"); strings.Contains(got, "granted to its tools") {
+		t.Fatalf("refused before the folder was granted: %q", got)
+	}
+	if err := sess.AddRoot(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.statusLine(context.Background(), "default"); !strings.Contains(got, "granted to its tools") {
+		t.Fatalf("not refused once granted: %q", got)
+	}
+}
