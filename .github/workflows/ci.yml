@@ -115,6 +115,18 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
         run: go test ./... -race -count=1
 
+      # The end-to-end CLI tests are evidence only if they ran. A test may
+      # skip only as pending on a plan item listed here, each still being
+      # built: A1 the line editor, A2 the streaming renderer. Delete an item
+      # once it lands, and its tests must then pass.
+      - name: End-to-end CLI tests actually ran
+        env:
+          ABHED_CLITEST_PENDING: "A1 A2"
+        run: |
+          set -euo pipefail
+          go test ./internal/clitest/... -count=1 -json > clitest.json || true
+          python3 scripts/ci/clitest-skips.py < clitest.json
+
       # A skipped boundary test reads exactly like a passing one, and the trust
       # docs cite these by name. One reason is expected here: the hosted runner
       # cannot unshare a network namespace, so bubblewrap cannot start. The

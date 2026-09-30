@@ -670,7 +670,8 @@ func (h *run) Record() Record {
 	h.t.Helper()
 	r, err := readRecord(h.home)
 	if errors.Is(err, errNoRecord) {
-		h.t.Skipf("clitest: %v", err)
+		Pending(h.t, "C1", err.Error())
+		h.t.Fatalf("clitest: %v", err)
 	}
 	if err != nil {
 		h.t.Fatalf("clitest: reading the record: %v", err)

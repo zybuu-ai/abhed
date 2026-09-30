@@ -104,5 +104,22 @@ func AssertWithin(t testing.TB, what string, got, budget time.Duration) {
 // PromptGlyph is the prompt the interactive CLI draws when it is ready.
 const PromptGlyph = "▲"
 
-// budgetsTrackA runs the budgets another track's work has yet to meet.
-var budgetsTrackA = flag.Bool("budgets-track-a", false, "assert the rendering budgets Track A has yet to meet")
+// runPending runs the tests that wait on another track's work.
+var runPending = flag.Bool("clitest-run-pending", false, "run the clitest tests marked pending on another track's work")
+
+// PendingEnv lists the pending items CI accepts a skip for, such as "A1 A2".
+// A skip for any other reason fails the CI step that checks them, so an
+// end-to-end test that stops running is noticed; scripts/ci/clitest-skips.py
+// is that check.
+const PendingEnv = "ABHED_CLITEST_PENDING"
+
+// Pending skips t while the plan item it waits on (such as "A1", Track A's
+// editor) is unbuilt, saying so in a form CI checks. With
+// -clitest-run-pending it runs instead.
+func Pending(t testing.TB, item, why string) {
+	t.Helper()
+	if *runPending {
+		return
+	}
+	t.Skipf("clitest: pending (%s): %s", item, why)
+}

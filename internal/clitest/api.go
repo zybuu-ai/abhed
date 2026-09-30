@@ -23,6 +23,10 @@
 // The environment is built from nothing, so no variable of the person
 // running the tests reaches the binary.
 //
+// A test that waits on another track's work calls Pending with the plan
+// item; CI accepts a skip only for the items listed in ABHED_CLITEST_PENDING
+// in the workflow, so a test that stops running fails the build.
+//
 // In the strings of Args, Env, UserConfig and Managed, {{MODEL_URL}} is the
 // stub's base URL, {{HOME}} the run's HOME and {{WS}} its workspace.
 package clitest
@@ -153,8 +157,8 @@ type Harness interface {
 	// Requests are what the binary sent the stub model, in order.
 	Requests() []Request
 
-	// Record is the session's record, read and verified. It skips the
-	// test when the run kept no local record.
+	// Record is the session's record, read and verified. Until the local
+	// record exists it marks the test pending on C1.
 	Record() Record
 	// Exit closes input, waits for the binary to end and fails the test
 	// unless it exits with code.

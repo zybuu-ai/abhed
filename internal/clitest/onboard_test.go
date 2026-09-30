@@ -37,9 +37,7 @@ func TestBudgetStartupWithSlowPodman(t *testing.T) {
 // (A1) owns the editor.
 func TestKeysTypedDuringStartup(t *testing.T) {
 	t.Parallel()
-	if !*budgetsTrackA {
-		t.Skip("an Enter typed before raw mode arrives as Ctrl-J; Track A (A1): run with -budgets-track-a")
-	}
+	Pending(t, "A1", "an Enter typed before raw mode arrives as Ctrl-J")
 	h := StartRun(t, Opts{Script: `text "got it"`, Podman: "sleep 1; exit 1"})
 	h.Type("early task\r")
 	h.WaitOutput("got it")
