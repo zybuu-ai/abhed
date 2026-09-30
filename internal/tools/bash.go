@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -197,7 +198,60 @@ func IsDestructive(command string) (string, bool) {
 			return d.what, true
 		}
 	}
+	if rmForced(command) {
+		return "recursive/forced delete", true
+	}
 	return gitDestructive(command)
+}
+
+// rmForced finds rm's recursive or force flags anywhere among its words, as
+// GNU rm reads them: after operands, and long options by any prefix.
+func rmForced(command string) bool {
+	for _, part := range strings.Split(rmBreaks.Replace(command), "\n") {
+		words := strings.Fields(shellQuotes.Replace(part))
+		for i, w := range words {
+			if strings.TrimSuffix(CommandName(path.Base(w)), ".exe") != "rm" {
+				continue
+			}
+			for _, a := range words[i+1:] {
+				if a == "--" {
+					break
+				}
+				if rmArgForces(a) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// rmBreaks splits commands but keeps backticks in their word, so a
+// substitution among rm's arguments is seen as one.
+var rmBreaks = strings.NewReplacer(";", "\n", "&", "\n", "|", "\n", "(", "\n", ")", "\n")
+
+// rmArgForces reports whether one of rm's arguments is, or may expand to, a
+// recursive or force flag. A $ or backtick is a value not known until it runs.
+func rmArgForces(a string) bool {
+	switch {
+	case strings.ContainsAny(a, "$`"):
+		return true
+	case strings.HasPrefix(a, "--"):
+		// getopt_long takes any unambiguous prefix: --rec is --recursive.
+		name, _, _ := strings.Cut(a, "=")
+		if len(name) < 3 {
+			return false
+		}
+		for _, full := range []string{"--recursive", "--force"} {
+			if strings.HasPrefix(full, name) {
+				return true
+			}
+		}
+		return false
+	case strings.HasPrefix(a, "-"):
+		return strings.ContainsAny(a[1:], "rRf")
+	}
+	return false
 }
 
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
@@ -341,7 +395,8 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
 	// On the host the same text is the operating system's refusal, not a sandbox's.
-	if exitCode != 0 && b.network() == networkOff && networkFailure(content) {
+	// Any exit code: a pipeline's last command can succeed after curl failed.
+	if b.network() == networkOff && networkFailure(content) {
 		content += "\n\n" + networkHint
 	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
 		content += "\n\n" + hint

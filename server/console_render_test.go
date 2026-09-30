@@ -64,7 +64,8 @@ globalThis.refresh = ()=>{};
 globalThis.openDrawer = ()=>{};
 globalThis.paintOpenPill = ()=>{};
 globalThis.__posted = [];
-const api = async (path, opts) => { __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+let __api = async (path, opts) => { __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+const api = (path, opts) => __api(path, opts);
 function newTurn(){ turnEl = node('turn'); tx.appendChild(turnEl); return turnEl; }
 `
 	if out, err := runConsoleCases(t, "ask", harness, "console_ask_cases.mjs"); err != nil {
@@ -102,6 +103,29 @@ globalThis.$ = id => els[id] || null;
 `
 	if out, err := runConsoleCases(t, "state", harness, "list_state_cases.mjs"); err != nil {
 		t.Fatalf("the console's session states failed:\n%s", out)
+	}
+}
+
+// The console's mode selector starts on the server's configured mode, which
+// with plan is all a session may start in: it once loaded on default, which a
+// server configured otherwise refuses.
+func TestConsoleModeFollowsTheServer(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+let sel;
+globalThis.reset = () => {
+  sel = {value: 'default', options: [], appendChild(o){ this.options.push(o); return o; }};
+  for(const v of ['default', 'plan', 'accept-edits', 'auto']) sel.options.push({value: v, textContent: v, disabled: false});
+};
+reset();
+globalThis.__caps = null;
+const $ = id => id === 'mode' ? sel : null;
+const api = async path => { if(path !== '/v1/capabilities' || !__caps) throw new Error('no'); return __caps; };
+`
+	if out, err := runConsoleCases(t, "mode", harness, "mode_cases.mjs"); err != nil {
+		t.Fatalf("the console's mode selector failed:\n%s", out)
+	}
+	if !strings.Contains(consoleHTML, "loadProviders(); loadMode();") {
+		t.Error("the console does not load the server's mode when it starts")
 	}
 }
 

@@ -189,6 +189,10 @@ type ActionRequested struct {
 	RawArgs string `json:"raw_args,omitempty"`
 	// Dropped names keys a fixed tool does not take, left out of Args before policy.
 	Dropped []string `json:"dropped_args,omitempty"`
+	// Resolved names arguments the harness set or rewrote before policy, such
+	// as a cluster the session's only login stands for, so an audit can tell
+	// them from the model's own.
+	Resolved []string `json:"resolved,omitempty"`
 	// Target is where the call sends what it carries, from the operator's
 	// config, such as the server a login's token goes to.
 	Target string `json:"target,omitempty"`
@@ -430,15 +434,15 @@ func (m *MemStore) Append(ev Event) error {
 		}
 	}
 	m.events[ev.SessionID] = append(held, ev)
-	subs := append([]chan Event(nil), m.subs[ev.SessionID]...)
-	m.mu.Unlock()
-
-	for _, ch := range subs {
+	// Sent under the lock: Unsubscribe closes the channel under it, and a
+	// send racing that close panics. The sends never block, so this is cheap.
+	for _, ch := range m.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block the loop on a slow consumer
 		}
 	}
+	m.mu.Unlock()
 	return nil
 }
 

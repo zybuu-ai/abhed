@@ -122,8 +122,13 @@ type Options struct {
 	OnEvent func(Event)
 
 	// MaxTurns bounds one conversation. Zero uses the default, or the managed
-	// limits.max_turns, which it may not exceed.
+	// limits.max_turns, which it may not exceed. Set, it wins over the
+	// ConfigDir and user files, below the managed ceiling.
 	MaxTurns int
+
+	// ConfiguredLimits takes limits.max_turns from the configuration, as the
+	// CLI does, when MaxTurns is zero. Off, only a managed value binds.
+	ConfiguredLimits bool
 
 	// SystemPrompt replaces the built-in prompt entirely. Most callers want
 	// AppendSystem instead.
@@ -181,7 +186,7 @@ type Agent struct {
 	set      *toolset.Set
 	id       string
 	fwd      *forwarder
-	redact   *secrets.Redactor
+	redact   *secrets.Fresh
 	trust    config.WorkspaceTrust
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
@@ -234,10 +239,13 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 	// The CLI's redactor; a store that exists but cannot be loaded refuses the session.
-	red, err := secrets.Default().LoadRedactor()
+	first, err := secrets.Default().LoadRedactor()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// Read again as the store changes: bash reads it by name at each call,
+	// so a secret added during the session is redacted from then on.
+	red := secrets.Default().Fresh(first)
 	adapter, err := provider.Adapter()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -318,9 +326,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	rec.Redact = red
 
 	loopCfg := toolset.LoopConfig(cfg, "")
-	// The file's max_turns binds an embedded agent only when the organisation sets it.
+	// The file's max_turns binds an embedded agent when the organisation sets
+	// it, or when the caller asks for the configured limits.
 	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns
-	if (opts.MaxTurns > 0 || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
+	if (opts.MaxTurns > 0 || opts.ConfiguredLimits || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
 		loopCfg.MaxTurns = cfg.Limits.MaxTurns
 	}
 
@@ -449,6 +458,25 @@ func (a *Agent) Continue(ctx context.Context, prompt string) (string, error) {
 // boundary. Safe to call from another goroutine.
 func (a *Agent) Steer(text string) { a.loop.Steer(text) }
 
+// Queued counts steering messages not yet delivered: sent while no run was in
+// progress, or as the last run ended. The next run delivers them first.
+func (a *Agent) Queued() int { return len(a.loop.Queued()) }
+
+// RunQueued continues the conversation with only the queued steering
+// messages, for one that arrived as the last run ended. With none it does
+// nothing and returns the last message.
+func (a *Agent) RunQueued(ctx context.Context) (string, error) {
+	defer a.startRun()()
+	reason, err := a.loop.RunQueued(ctx)
+	if err != nil {
+		return "", err
+	}
+	if reason != agent.TermCompleted {
+		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+	}
+	return a.lastMessage(), nil
+}
+
 // WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
 // of its settings were ignored because it is not trusted.
 func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
@@ -543,7 +571,7 @@ func (f approverFn) Approve(ctx context.Context, tool string, args json.RawMessa
 	return f(ctx, tool, args, d)
 }
 
-func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error), red *secrets.Redactor) agent.Approver {
+func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error), red *secrets.Fresh) agent.Approver {
 	if f == nil {
 		// No approver means nobody to ask, so anything needing approval is
 		// refused. Defaulting to yes would make an embedded agent quietly more
@@ -562,7 +590,7 @@ var withheld = json.RawMessage(`{"withheld":"` + agent.Withheld + `"}`)
 
 // redactJSON replaces stored values in a JSON payload. It fails closed: a
 // payload redaction broke is withheld, never returned as it was.
-func redactJSON(red *secrets.Redactor, b json.RawMessage) json.RawMessage {
+func redactJSON(red *secrets.Fresh, b json.RawMessage) json.RawMessage {
 	out := red.Redact(b)
 	if !json.Valid(out) && !bytes.Equal(out, b) {
 		return withheld
@@ -571,7 +599,7 @@ func redactJSON(red *secrets.Redactor, b json.RawMessage) json.RawMessage {
 }
 
 // redactText replaces stored values in text, withholding it if that fails.
-func redactText(red *secrets.Redactor, s string) string {
+func redactText(red *secrets.Fresh, s string) string {
 	raw, _ := json.Marshal(s)
 	var out string
 	if json.Unmarshal(red.Redact(raw), &out) != nil {

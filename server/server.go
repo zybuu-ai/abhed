@@ -222,6 +222,10 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// StreamRecheck is how often an open event or terminal stream is
+	// authorised again. Zero means the default; it can only be shortened, and
+	// anything above maxStreamRecheck is held to it.
+	StreamRecheck time.Duration
 }
 
 // Server holds live sessions and serves the API.
@@ -254,6 +258,11 @@ type Server struct {
 	// "changes at runtime" in one struct is how a field ends up read without
 	// the lock.
 	state *mutable
+
+	// streams are the long-lived responses open now, told to authorise again
+	// when a sign-in changes (stream_auth.go).
+	streamMu sync.Mutex
+	streams  map[*streamGuard]struct{}
 }
 
 type liveSession struct {
@@ -376,6 +385,9 @@ func New(opts Options) *Server {
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
+	if local := s.LocalAuth(); local != nil {
+		local.OnChange(func(string) { s.RecheckStreams() })
+	}
 	return s
 }
 
@@ -405,6 +417,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
+	mux.HandleFunc("GET /v1/sessions/{id}/state", s.sessionState)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -698,15 +711,8 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 
 		// Identity comes from the auth layer, which has already verified it.
-		user := "anonymous"
 		id, _ := auth.FromContext(r.Context())
-		if id != nil {
-			user = id.Subject
-			if id.Email != "" {
-				user = id.Email
-			}
-		}
-		tenant := s.tenantFor(r.Context(), id)
+		user, tenant := s.callerOf(r.Context(), id)
 		ctx := context.WithValue(r.Context(), ctxUser, user)
 		ctx = context.WithValue(ctx, ctxTenant, tenant)
 
@@ -758,6 +764,11 @@ func TenantOf(ctx context.Context) string {
 		return v
 	}
 	return "default"
+}
+
+// callerOf is the user and tenant a request acts as, given its identity.
+func (s *Server) callerOf(ctx context.Context, id *auth.Identity) (user, tenant string) {
+	return id.Owner(), s.tenantFor(ctx, id)
 }
 
 // tenantFor applies the configured resolver, or the default rule.
@@ -1693,6 +1704,38 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, out)
 }
 
+// sessionStateResponse is one session's state, for a page watching it.
+type sessionStateResponse struct {
+	ID     string `json:"id"`
+	State  string `json:"state"` // running | waiting_approval | idle | done
+	Reason string `json:"reason,omitempty"`
+}
+
+// sessionState answers one session's state to its owner, so a page open on a
+// session with no run can tell when the next one starts without listing the
+// tenant's sessions. Anyone else is told it does not exist.
+func (s *Server) sessionState(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+		live.mu.Lock()
+		out := sessionStateResponse{ID: id, State: live.State, Reason: listedReason(live.State, live.Reason)}
+		live.mu.Unlock()
+		WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	if g, ok := s.sessions.(sessionGetter); ok && s.mayAccess(r, id) {
+		if rec, err := g.GetSession(r.Context(), id); err == nil {
+			out := sessionStateResponse{ID: id, State: "done", Reason: rec.TerminalReason}
+			if rec.EndedAt == nil {
+				out.State, out.Reason = "running", ""
+			}
+			WriteJSON(w, http.StatusOK, out)
+			return
+		}
+	}
+	WriteError(w, http.StatusNotFound, "session not found")
+}
+
 // mayAccess reports whether the request's caller owns session id, checking the
 // live map first and then the durable store.
 //
@@ -1837,13 +1880,27 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 
+	// Authorised again while it runs, not only when it opened: every write
+	// below goes through guard.allowed, and a refusal ends the stream.
+	guard := s.guardStream(r, id)
+	defer guard.stop()
+
 	// The store drops events for a subscriber that falls behind rather than
 	// stall the loop. Seeing a full buffer, or a gap in seq, means some may
 	// be gone, and they are read back from the record before going on.
+	// ended is true once the stream is over: the session ended or the
+	// caller is no longer authorised to read it.
 	send := func(batch []agent.Event) (ended bool) {
 		for _, e := range batch {
 			if e.Seq <= lastSeq {
 				continue
+			}
+			// Per event, not per batch: a refill can be a whole backlog, and a
+			// recheck asked for midway must stop the rest of it.
+			if err := guard.allowed(); err != nil {
+				flusher.Flush()
+				endStream(w, err)
+				return true
 			}
 			lastSeq = e.Seq
 			writeSSE(w, e)
@@ -1888,8 +1945,22 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-keepalive.C:
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
+		case <-guard.tick():
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
+		case <-guard.woken():
+			if err := guard.allowed(); err != nil {
+				endStream(w, err)
+				return
+			}
 		}
 	}
 }
@@ -2357,7 +2428,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	me := map[string]any{
 		"authenticated": true, "auth_mode": mode,
 		"subject": id.Subject, "email": id.Email, "name": id.Name,
-		"tenant": id.Tenant, "groups": id.Groups,
+		"tenant": id.Tenant, "groups": id.Groups, "owner": id.Owner(),
 		"sign_out_url": "/logout",
 	}
 	// Switching user is a fresh sign-in: the identity provider's own
@@ -2458,6 +2529,10 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		// Checked before the code is spent, so a taken name or a short
 		// password does not use up the invite.
 		if err := local.CheckNewUser(r.Context(), req.Username, req.Password); err != nil {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := local.CheckEmail(r.Context(), req.Username, strings.TrimSpace(req.Email)); err != nil {
 			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}

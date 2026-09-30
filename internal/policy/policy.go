@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -254,7 +255,9 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
-// Hook runs before rule evaluation and can short-circuit the decision.
+// Hook runs before rule evaluation. A Deny from it is final; an Ask applies
+// after the deny, plan-mode and ask steps, before the mode; an Allow, or nil, is
+// no opinion. A hook can tighten a decision and never loosen one.
 type Hook func(tool string, args json.RawMessage) *Result
 
 type Engine struct {
@@ -330,7 +333,62 @@ func (e *Engine) Screens(tool string) bool {
 // needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
 func Subject(tool string, args json.RawMessage) string {
 	_, s, _ := subjectOf(args)
+	if target, ok := clusterSubject(tool, args); ok {
+		return target
+	}
 	return s
+}
+
+// clusterSubject is the subject of a Kubernetes tool, which names where the
+// call goes first: the declared cluster, or `context:NAME` for a kubeconfig
+// context (`context:` for the current one). k8s_login's subject is the
+// cluster; k8s_get's is cluster/namespace/resource and k8s_apply's
+// cluster/namespace/action, with an empty namespace for the call's default.
+// So a rule or an "always allow" on one cluster never covers another.
+func clusterSubject(tool string, args json.RawMessage) (string, bool) {
+	if tool != "k8s_login" && tool != "k8s_get" && tool != "k8s_apply" {
+		return "", false
+	}
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", false
+	}
+	str := func(key string) string {
+		v, _ := tools.Lookup(m, key)
+		s, _ := v.(string)
+		return s
+	}
+	where := strings.TrimSpace(str("cluster"))
+	if where == "" {
+		where = "context:" + str("context")
+	}
+	// A cluster-scoped object, or a kind whose scope is not known, is judged
+	// under a namespace no rule written for a real one can match.
+	ns := str("namespace")
+	resource := kubescope.Resource(str("resource"))
+	switch tool {
+	case "k8s_get":
+		if kubescope.ClusterScopedResource(resource) {
+			ns = kubescope.ClusterWide
+		}
+		return where + "/" + ns + "/" + resource, true
+	case "k8s_apply":
+		if str("action") == "apply" {
+			// The manifest is read as the tool reads it; one that does not
+			// decode strictly is judged cluster-wide.
+			kind := ""
+			if mf, err := kubescope.DecodeManifest(str("manifest")); err == nil {
+				kind = mf.Kind
+			}
+			if namespaced, known := kubescope.KindScope(kind); !namespaced || !known {
+				ns = kubescope.ClusterWide
+			}
+		} else if kubescope.ClusterScopedResource(resource) {
+			ns = kubescope.ClusterWide
+		}
+		return where + "/" + ns + "/" + str("action"), true
+	}
+	return where, true
 }
 
 // subjectOf is Subject with the argument it came from. Arguments are decoded
@@ -450,14 +508,35 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	case key == "path" && e.pathRules(tool):
 		subjects, allowSubjects = e.pathSubjects(subject)
 	}
+	// A Kubernetes call is judged on where it goes. Deny and ask rules also
+	// see the argument its subject used to be, so a rule written on a
+	// resource, a verb or a namespace still holds; allow rules and the
+	// offered scope see only the cluster-first subject.
+	if target, ok := clusterSubject(tool, args); ok {
+		subjects, allowSubjects = []string{target}, []string{target}
+		if subject != "" && subject != target {
+			subjects = append(subjects, subject)
+		}
+		subject, narrowAllows = target, !strings.ContainsAny(target, "\n\r")
+	}
 
-	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
+	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
+	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
+	// steps below, so a hook can never turn a refusal into a question.
+	var hookAsk *Result
 	for _, h := range e.Hooks {
-		if res := h(tool, args); res != nil {
-			if res.Step == "" {
-				res.Step = "hook"
-			}
+		res := h(tool, args)
+		if res == nil || res.Decision == Allow {
+			continue
+		}
+		if res.Step == "" {
+			res.Step = "hook"
+		}
+		if res.Decision != Ask {
 			return *res
+		}
+		if hookAsk == nil {
+			hookAsk = res
 		}
 	}
 
@@ -465,6 +544,16 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	matches := Rule.matchesAny
 	if key == "path" && tool != "bash" {
 		matches = Rule.matchesPathAny
+	}
+	// A Kubernetes call on every namespace, `*`, reads each one: a deny or ask
+	// rule matches it when the rule would match some namespace it covers.
+	if _, k8s := clusterSubject(tool, args); k8s && strings.ContainsAny(subject, "*?") {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			if r.matchesAny(tool, subjects) {
+				return true
+			}
+			return (r.tool == tool || r.tool == "*") && r.pattern != nil && globsMeet(r.glob, subject)
+		}
 	}
 
 	// 2. Deny rules — absolute, survive every mode including bypass.
@@ -500,6 +589,12 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		if matches(r, tool, subjects) {
 			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: "", Step: "ask"}
 		}
+	}
+
+	// A hook's ask comes after the destructive, screen and ask-rule prompts, so
+	// the record names the stronger reason; before the mode, so no mode skips it.
+	if hookAsk != nil {
+		return *hookAsk
 	}
 
 	// 4. Permission mode.
@@ -606,4 +701,34 @@ func suggestScope(tool, subject string) string {
 		}
 	}
 	return fmt.Sprintf("%s(%s)", tool, subject)
+}
+
+// globsMeet reports whether some string matches both glob patterns, where
+// `*` is any run of characters and `?` any one.
+func globsMeet(a, b string) bool {
+	type pos struct{ i, j int }
+	seen := map[pos]bool{}
+	var meet func(i, j int) bool
+	meet = func(i, j int) bool {
+		if i == len(a) && j == len(b) {
+			return true
+		}
+		p := pos{i, j}
+		if done, ok := seen[p]; ok {
+			return done
+		}
+		seen[p] = false
+		ok := false
+		switch {
+		case i < len(a) && a[i] == '*':
+			ok = meet(i+1, j) || (j < len(b) && meet(i, j+1))
+		case j < len(b) && b[j] == '*':
+			ok = meet(i, j+1) || (i < len(a) && meet(i+1, j))
+		case i < len(a) && j < len(b) && (a[i] == b[j] || a[i] == '?' || b[j] == '?'):
+			ok = meet(i+1, j+1)
+		}
+		seen[p] = ok
+		return ok
+	}
+	return meet(0, 0)
 }

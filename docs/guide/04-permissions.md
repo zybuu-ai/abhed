@@ -348,6 +348,13 @@ has accept and reject only: approve it once, or write the rule yourself. The
 same holds for a call that matched an ask rule and for a destructive command,
 which must be asked about every time.
 
+Text in the prompt comes from the model, so it is shown as written, not
+obeyed. A carriage return, escape sequence, backspace, zero-width or bidi
+character is printed as an escape such as `\r`, `\x1b` or `⟨U+200D⟩`, and the
+prompt adds `! this call contains hidden or control characters`. The console
+and the IDE do the same on their approval cards, and an editor over `acp` gets
+the same escapes in the permission request's title.
+
 The record names the scope on the approval that chose it (`granted_scope`),
 and in the console and the API the person who answered (`approver`); a call a
 remembered scope let through later is `by: session-scope` with that `scope`.
@@ -450,6 +457,13 @@ A stored key file makes that lag visible, a few kilobytes of text, and values
 that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes
 `[redacted: output withheld]`.
+
+**File paths.** A `write` or `edit` whose path holds a stored secret is
+refused, in every mode. The path is matched as written, in its case, and
+only against values of 12 characters or more, so a value such as `postgres`
+does not refuse ordinary files. A value of 8 to 11 characters can therefore
+still become a file name in a mode that approves writes without asking;
+store longer values, or leave writes to ask.
 
 Every way of running a session redacts with the same store: the terminal, the
 server and the console, `abhed acp`, `abhed rpc`, `abhed resolve`, `abhed eval`,

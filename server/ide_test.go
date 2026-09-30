@@ -101,6 +101,25 @@ const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); 
 	}
 }
 
+// The agent's terminal prints a command's escapes rather than obeying them.
+func TestIDEAgentTerminalShowsCommandEscapes(t *testing.T) {
+	harness := `globalThis.__w = [];
+let agentTerm = {term: {write: s => __w.push(s)}}, activeTerm = null, termN = 0;
+const makeTerm = () => agentTerm, selectTerm = () => {};
+`
+	if out, err := runConsoleCases(t, "ide-term", harness, "ide_term_cases.mjs"); err != nil {
+		t.Fatalf("the agent terminal failed:\n%s", out)
+	}
+}
+
+// An approval card and a call row name what the call is about: a web_fetch
+// by its URL, not its arguments as JSON.
+func TestIDENamesACallBySubject(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-subject", "", "ide_subject_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's call subjects failed:\n%s", out)
+	}
+}
+
 // New file in a just-opened folder keeps its name input when the folder's
 // listing arrives after it; the removal used to race the input's blur.
 func TestIDENewFileSurvivesTheFolderLoading(t *testing.T) {
@@ -153,7 +172,8 @@ const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
 const tx = () => __root, qbox = new El('div'), add = n => __root.appendChild(n);
 let cid = 0; const bubble = (cls, who, text) => { const m = new El('div'); m.className = 'msg ' + cls; m.textContent = text || ''; return m; };
 const userBubble = (text, state) => { const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = 'c' + (++cid); return b; };
-const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = () => {};
+globalThis.__connected = []; let signInGone = false, leaving = false;
+const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = id => { __connected.push(id); };
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
 const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
@@ -168,11 +188,15 @@ const api = async (url, opts) => {
   if(opts && opts.body) __posted.push({route, body: JSON.parse(opts.body)});
   if(__pending[route]){ const p = __pending[route]; delete __pending[route]; return p; }
   if(url === '/v1/sessions'){ const snap = __sessions, d = __delays.shift() || 0; if(d) await new Promise(r => setTimeout(r, d)); return snap; }
+  const st = /^\/v1\/sessions\/([^/]+)\/state$/.exec(url); if(st){ const s = __sessions.find(x => x.id === st[1]); if(!s) throw Object.assign(new Error('session not found'), {status:404}); return {id:s.id, state:s.state}; }
   return [];
 };
 `
 	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_chat_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's approval prompt failed:\n%s", out)
+	}
+	if !strings.Contains(ideHTML, "setInterval(watchIdle, ") {
+		t.Error("nothing watches a session with no run")
 	}
 }
 

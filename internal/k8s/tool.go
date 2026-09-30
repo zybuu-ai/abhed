@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -128,17 +130,174 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 		return l.cluster(m.cfg, clusterName)
 	}
 	if ctxName == "" && l != nil {
-		// With no context named, a single login is the default, as it was
-		// the reason for logging in; several need one named.
-		if name, n := l.only(); n == 1 {
-			return l.cluster(m.cfg, name)
-		} else if n > 1 {
+		// ResolveArgs names a single login before policy judges the call, so
+		// an unnamed call here was judged as going to the kubeconfig: one
+		// that meets a login made since, or several, is refused, not guessed.
+		if _, n := l.only(); n > 1 {
 			return nil, fmt.Errorf("this session is logged in to more than one cluster; name one "+
 				"as cluster (%s), or a kubeconfig context", strings.Join(l.names(), ", "))
+		} else if n == 1 {
+			return nil, fmt.Errorf("this session is logged in to cluster %s; name it as cluster, "+
+				"or name a kubeconfig context", strings.Join(l.names(), ", "))
 		}
 	}
 
 	return m.kubeClient(ctxName)
+}
+
+// resolve puts a call in the form policy judges and the tool runs: the
+// session's only login named as its cluster when it names neither a cluster
+// nor a context, the resource in its canonical plural, and an empty
+// namespace filled with the one the call would use, the manifest's for an
+// apply. It reports which arguments it set or changed.
+func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) (json.RawMessage, []string, error) {
+	if m == nil {
+		return nil, nil, nil
+	}
+	args, err := tools.DecodeArgs(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	str := func(key string) string {
+		v, _ := tools.Lookup(args, key)
+		s, _ := v.(string)
+		return s
+	}
+	var changed []string
+	set := func(key, value string) {
+		if str(key) != value {
+			args[key] = value
+			changed = append(changed, key)
+		}
+	}
+	clusterName, ctxName := str("cluster"), str("context")
+	l := m.logins(sess, false)
+	if clusterName == "" && ctxName == "" && l != nil {
+		if name, n := l.only(); n == 1 {
+			clusterName = name
+			set("cluster", name)
+		}
+	}
+	resource := str("resource")
+	if resource != "" {
+		resource = kubescope.Resource(strings.ToLower(strings.TrimSpace(resource)))
+		set("resource", resource)
+	}
+	if err := checkSegments(str("namespace"), str("name"), resource); err != nil {
+		return nil, nil, err
+	}
+	ns := str("namespace")
+	clusterWide := kubescope.ClusterScopedResource(resource)
+	if apply && str("action") == "apply" {
+		mf, err := checkManifest(str("manifest"))
+		if err != nil {
+			return nil, nil, err
+		}
+		kind := ""
+		if mf != nil {
+			// Policy, the approver and the tool read this one encoding.
+			set("manifest", string(mf.Canonical))
+			kind = mf.Kind
+		}
+		namespaced, known := kubescope.KindScope(kind)
+		if kind != "" && !known {
+			return nil, nil, fmt.Errorf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash", kind)
+		}
+		clusterWide = kind != "" && !namespaced
+		if ns == "" && !clusterWide && mf != nil {
+			ns = mf.Namespace
+		}
+	}
+	switch {
+	case clusterWide:
+		// A cluster-scoped object has no namespace: one the model named is
+		// dropped, so no rule on a namespace reads as covering it.
+		if _, named := tools.Lookup(args, "namespace"); named {
+			delete(args, "namespace")
+			changed = append(changed, "namespace")
+		}
+	case ns == "":
+		ns = m.defaultNamespace(sess, clusterName, ctxName)
+		fallthrough
+	default:
+		if ns != "" {
+			set("namespace", ns)
+		}
+	}
+	if len(changed) == 0 {
+		return nil, nil, nil
+	}
+	out, err := json.Marshal(args)
+	if err != nil {
+		return nil, nil, err
+	}
+	sort.Strings(changed)
+	return out, changed, nil
+}
+
+var resourceRe = regexp.MustCompile(`^[a-z0-9]*$`)
+
+// checkSegments refuses a namespace, name or resource that could not stand as
+// one segment of a request path, so a call reaches only what it names.
+func checkSegments(ns, name, resource string) error {
+	if !kubescope.ValidNamespace(ns) {
+		return fmt.Errorf("namespace %q is not a namespace name (lower-case letters, digits and '-', or '*' for all)", ns)
+	}
+	if name != "" && !kubescope.ValidName(name) {
+		return fmt.Errorf("name %q cannot be a resource name: it holds '/', '?', '#', '%%', '..', a backslash, whitespace or a control character", name)
+	}
+	if !resourceRe.MatchString(resource) {
+		return fmt.Errorf("resource %q is not a resource type", resource)
+	}
+	return nil
+}
+
+// checkManifest decodes an apply's manifest strictly and refuses one whose
+// kind, apiVersion, name or namespace could not stand in a request path. An
+// empty manifest is left to the tool, which says why it is refused.
+func checkManifest(manifest string) (*kubescope.Manifest, error) {
+	if strings.TrimSpace(manifest) == "" {
+		return nil, nil
+	}
+	mf, err := kubescope.DecodeManifest(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("%w. Convert YAML to JSON first", err)
+	}
+	switch {
+	case mf.Kind != "" && !kubescope.ValidKind(mf.Kind):
+		return nil, fmt.Errorf("the manifest's kind %q is not a kind", mf.Kind)
+	case mf.APIVersion != "" && !kubescope.ValidAPIVersion(mf.APIVersion):
+		return nil, fmt.Errorf("the manifest's apiVersion %q is not group/version or version", mf.APIVersion)
+	case mf.Namespace == "*":
+		return nil, fmt.Errorf("the manifest's namespace cannot be '*'")
+	}
+	return mf, checkSegments(mf.Namespace, mf.Name, "")
+}
+
+// defaultNamespace is the namespace a call naming none uses: the login's, or
+// the kubeconfig context's. "" when it cannot be known, and the call will fail.
+func (m *Manager) defaultNamespace(sess *tools.Session, clusterName, ctxName string) string {
+	if clusterName != "" && ctxName != "" {
+		return ""
+	}
+	if clusterName != "" {
+		l := m.logins(sess, false)
+		if l == nil {
+			return ""
+		}
+		l.mu.Lock()
+		cred, ok := l.creds[clusterName]
+		l.mu.Unlock()
+		if !ok {
+			return ""
+		}
+		return orDefaultNS(cred.namespace, m.cfg.Namespace)
+	}
+	c, err := m.kubeClient(ctxName)
+	if err != nil {
+		return ""
+	}
+	return c.Namespace
 }
 
 // kubeClient returns the operator's client for a kubeconfig context, opened
@@ -170,10 +329,8 @@ func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string
 	}
 	l := m.logins(sess, false)
 	if clusterName == "" && ctxName == "" && l != nil {
-		if name, n := l.only(); n == 1 {
-			clusterName = name
-		} else if n > 1 {
-			return "names no cluster while this session is logged in to several, so the call will be refused"
+		if _, n := l.only(); n > 0 {
+			return "names no cluster while this session is logged in, so the call will be refused"
 		}
 	}
 	if clusterName != "" && ctxName == "" {
@@ -267,6 +424,12 @@ func (l *logins) cluster(cfg Config, name string) (*Cluster, error) {
 
 type GetTool struct{ M *Manager }
 
+// ResolveArgs puts the call in the form it runs in, its cluster, resource and
+// namespace named, so policy judges what the call reads.
+func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
+	return t.M.resolve(sess, raw, false)
+}
+
 func (GetTool) Name() string  { return "k8s_get" }
 func (GetTool) Mutates() bool { return false }
 
@@ -344,12 +507,15 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 	if ns == "" || ns == "*" {
 		ns = c.Namespace
 	}
+	if err := checkSegments(ns, a.Name, ""); err != nil || ns == "*" {
+		return errf("logs needs a pod name and a namespace that can stand in a request path: %v", err)
+	}
 	tail := a.Tail
 	if tail <= 0 {
 		tail = 200
 	}
 	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d",
-		ns, a.Name, tail)
+		url.PathEscape(ns), url.PathEscape(a.Name), tail)
 	if a.Container != "" {
 		path += "&container=" + urlEscape(a.Container)
 	}
@@ -366,6 +532,12 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 // ---------------------------------------------------------------- write tool
 
 type ApplyTool struct{ M *Manager }
+
+// ResolveArgs puts the call in the form it runs in, its cluster and
+// namespace named, so policy judges what the call changes.
+func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
+	return t.M.resolve(sess, raw, true)
+}
 
 func (ApplyTool) Name() string { return "k8s_apply" }
 
@@ -447,39 +619,49 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	if strings.TrimSpace(a.Manifest) == "" {
 		return errf("apply needs a manifest.")
 	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(a.Manifest), &obj); err != nil {
-		return errf("manifest must be JSON: %v. Convert YAML to JSON first.", err)
+	mf, err := kubescope.DecodeManifest(a.Manifest)
+	if err != nil {
+		return errf("%v. Convert YAML to JSON first.", err)
 	}
-	kind, _ := obj["kind"].(string)
-	apiVersion, _ := obj["apiVersion"].(string)
+	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
 		return errf("manifest needs both apiVersion and kind.")
 	}
-	meta, _ := obj["metadata"].(map[string]any)
-	name, _ := meta["name"].(string)
+	// One object, in one namespace, is what the approval and the rules judged.
+	if _, list := mf.Object["items"]; list || strings.HasSuffix(kind, "List") {
+		return errf("apply takes one object per call; apply each item of the %s on its own.", kind)
+	}
 	if name == "" {
 		return errf("manifest metadata.name is required.")
 	}
+	if !kubescope.ValidKind(kind) || !kubescope.ValidAPIVersion(apiVersion) {
+		return errf("the manifest's kind %q or apiVersion %q cannot stand in a request path.", kind, apiVersion)
+	}
 	ns := a.Namespace
 	if ns == "" {
-		if v, ok := meta["namespace"].(string); ok {
-			ns = v
-		} else {
+		if ns = mf.Namespace; ns == "" {
 			ns = c.Namespace
 		}
 	}
+	if err := checkSegments(ns, name, ""); err != nil || ns == "*" {
+		return errf("the manifest's name and namespace must each stand as one path segment: %v", err)
+	}
+	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
 	base := apiBase(apiVersion) + "/" + pluralFor(kind)
-	if isNamespaced(kind) {
+	namespaced, known := kubescope.KindScope(kind)
+	if !known {
+		return errf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash.", kind)
+	}
+	if namespaced {
 		base = apiBase(apiVersion) + "/namespaces/" + ns + "/" + pluralFor(kind)
 	}
 
 	// Server-side apply: one PATCH that creates or updates, so there is no
 	// read-modify-write race between checking existence and writing.
 	path := base + "/" + name + "?fieldManager=abhed&force=true"
-	body, _ := json.Marshal(obj)
-	data, err := c.doPatch(ctx, path, body, "application/apply-patch+yaml")
+	// The bytes sent are the canonical encoding the rules and the approver saw.
+	data, err := c.doPatch(ctx, path, mf.Canonical, "application/apply-patch+yaml")
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -642,14 +824,13 @@ var appsResources = map[string]bool{
 	"deployments": true, "statefulsets": true, "daemonsets": true, "replicasets": true,
 }
 
-var clusterScoped = map[string]bool{
-	"nodes": true, "namespaces": true, "persistentvolumes": true,
-	"clusterroles": true, "clusterrolebindings": true, "storageclasses": true,
-}
-
 func resourcePath(c *Cluster, resource, namespace, name string) (string, error) {
 	r := strings.ToLower(strings.TrimSpace(resource))
-	r = normalizeResource(r)
+	r = kubescope.Resource(r)
+	if err := checkSegments(namespace, name, r); err != nil {
+		return "", err
+	}
+	name = url.PathEscape(name)
 
 	var base string
 	switch {
@@ -669,7 +850,7 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 			resource, strings.Join(knownResources(), ", "))
 	}
 
-	if clusterScoped[r] {
+	if kubescope.ClusterScopedResource(r) {
 		if name != "" {
 			return base + "/" + r + "/" + name, nil
 		}
@@ -679,6 +860,12 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 	ns := namespace
 	if ns == "" {
 		ns = c.Namespace
+	}
+	if ns != "*" {
+		if !kubescope.ValidNamespace(ns) {
+			return "", fmt.Errorf("namespace %q is not a namespace name", ns)
+		}
+		ns = url.PathEscape(ns)
 	}
 	if ns == "*" {
 		if name != "" {
@@ -690,47 +877,6 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 		return base + "/namespaces/" + ns + "/" + r + "/" + name, nil
 	}
 	return base + "/namespaces/" + ns + "/" + r, nil
-}
-
-// normalizeResource accepts the singular and short forms people type.
-func normalizeResource(r string) string {
-	switch r {
-	case "po", "pod":
-		return "pods"
-	case "deploy", "deployment":
-		return "deployments"
-	case "svc", "service":
-		return "services"
-	case "ns", "namespace":
-		return "namespaces"
-	case "no", "node":
-		return "nodes"
-	case "cm", "configmap":
-		return "configmaps"
-	case "sts", "statefulset":
-		return "statefulsets"
-	case "ds", "daemonset":
-		return "daemonsets"
-	case "rs", "replicaset":
-		return "replicasets"
-	case "ing", "ingress":
-		return "ingresses"
-	case "job":
-		return "jobs"
-	case "cj", "cronjob":
-		return "cronjobs"
-	case "ev", "event":
-		return "events"
-	case "pvc":
-		return "persistentvolumeclaims"
-	case "pv":
-		return "persistentvolumes"
-	case "sa":
-		return "serviceaccounts"
-	case "secret":
-		return "secrets"
-	}
-	return r
 }
 
 func knownResources() []string {
@@ -765,15 +911,6 @@ func pluralFor(kind string) string {
 		return k[:len(k)-1] + "ies"
 	}
 	return k + "s"
-}
-
-func isNamespaced(kind string) bool {
-	switch strings.ToLower(kind) {
-	case "namespace", "node", "persistentvolume", "clusterrole",
-		"clusterrolebinding", "storageclass", "customresourcedefinition":
-		return false
-	}
-	return true
 }
 
 func errf(format string, a ...any) tools.Result {

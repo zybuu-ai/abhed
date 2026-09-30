@@ -122,7 +122,9 @@ and anything it routes to a person goes to the parent's approver:
   parent's own asks would be;
 - in the console and the workbench, the parent session's approval prompt,
   labelled with the subagent, answered like the agent's own: the answer names
-  the subagent's request, and a stale answer is refused. In a run with nobody
+  the subagent's request, and a stale answer is refused. Asks from subagents
+  running together are offered one at a time, each when the run starts
+  waiting on it. In a run with nobody
   attending it, a scheduled one, they are refused as `headless`;
 - in an ACP editor, a permission request whose tool call is named
   `subagent-<request id>`, sent after a `tool_call` of the same id.
@@ -137,7 +139,7 @@ prompt lasts for the rest of the session, as it would for the parent.
 Each subagent keeps its own record, whose events carry the parent's session
 as `parent_id`. The parent's record holds `subagent.spawned` and
 `subagent.returned` naming that `session`, a `subagent.ask` for each call
-the subagent put to the approver (written before the approver is asked, with
+the subagent put to the approver (written when its turn to be asked comes, with
 the call, the reason and the `request_id` an answer names), and a
 `subagent.action` for every call of the subagent's that was refused or put to
 an approver, with the same `request_id`. On a server with durable storage a

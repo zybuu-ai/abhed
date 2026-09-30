@@ -285,6 +285,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .call .why{padding:5px 10px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
 .ask{border:1px solid var(--warn);background:var(--warn-bg);border-radius:6px;padding:9px 10px;flex:none}
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.ask p.hidden-warn{color:var(--bad);font-weight:600}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -1307,6 +1308,16 @@ function connIdle(){
   if(!document.hidden && !connTimer && !signInGone && connState === true && !(es && es.readyState === 1)) connLost(false);
 }
 setInterval(connIdle, 5000);
+// A page open on a session whose run has ended holds no stream, and another
+// tab or client may start the next turn: ask after that session now and then,
+// and follow the turn.
+async function watchIdle(){
+  const id = current; if(!id || live || es || document.hidden || signInGone || leaving) return;
+  let st; try{ st = await api('/v1/sessions/' + id + '/state'); }catch{ return; }
+  if(current !== id || live || es || !st) return;
+  if(st.state === 'running' || st.state === 'waiting_approval'){ setLive(true); connect(id); }
+}
+const idleWatch = setInterval(watchIdle, 4000);
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
@@ -1334,10 +1345,25 @@ function trim(){
 }
 // An absolute path is mostly prefix. The end of it is what a person reads.
 function tail(p){ const parts = p.split('/').filter(Boolean); return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : p; }
+// visible writes out control and format characters (CR, ESC, zero-width, bidi)
+// as ⟨U+XXXX⟩, so a call's own text cannot reorder or hide part of it on the page.
+function visible(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
+    : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+// hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
+function hasHidden(v, depth = 0){
+  if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
+  if(typeof v !== 'string') return false;
+  if(/[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(v)) return true;
+  const t = v.trim();
+  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  return false;
+}
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
-  if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
+  if(args.url) return args.url; if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
   const s = JSON.stringify(args); return s === '{}' ? '' : s;
 }
 // The line under the conversation that says what the agent is doing, and for how long.
@@ -1551,7 +1577,7 @@ function render(ev){
     if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
     endThinking(at); streaming = null; streamBody = null;
     const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
-    s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
+    s.appendChild(el('span', 'tool', visible(p.tool))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
     const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
     // Arguments and output are drawn when the call is opened, so a session of
@@ -1587,9 +1613,15 @@ function render(ev){
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
-  case 'subagent.ask': { const id = 'subagent-' + p.request_id;
+  // Its row stays in the chat, so a reopened session shows what was decided.
+  case 'subagent.ask': { if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
+    const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
     asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
-  case 'subagent.action': if(p.request_id) settleAsk('subagent-' + p.request_id, p.decision === 'allowed' ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break;
+  case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
+    if(!ok){ c.node.classList.add('denied'); } c.res.textContent = ok ? 'allowed' : 'denied';
+    c.node.appendChild(el('div', 'why', (ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
+      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')));
+    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break; }
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
@@ -1621,8 +1653,19 @@ async function recheck(id){
   if(running || read){ if(!es) connect(id); if(running) return; }
   for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
 }
+// subagentRow is the chat's row for a subagent's call put to an approver or
+// refused, made the first time the record names it.
+function subagentRow(id, p, at){
+  let c = calls.get(id); if(c) return c;
+  endThinking(at); streaming = null; streamBody = null;
+  const d = el('details', 'call'), s = el('summary'), subj = subjectOf(p.tool, p.args), res = el('span', 'res', '…');
+  s.appendChild(el('span', 'tool', visible(p.tool + ' (subagent ' + (p.subagent || '') + ')'))); s.appendChild(el('span', 'subj', visible(subj || p.subject || ''))); s.appendChild(res);
+  d.appendChild(s); c = {node:d, res, tool:p.tool, subject:subj, args:p.args || {}, out:null, drawn:0};
+  d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
+  add(d); calls.set(id, c); return c;
+}
 function fillCall(c){
-  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', JSON.stringify(c.args, null, 2)), c.node.firstChild.nextSibling); }
+  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', visible(JSON.stringify(c.args, null, 2), true)), c.node.firstChild.nextSibling); }
   if(c.out != null && c.drawn < 2){ c.drawn = 2; c.node.appendChild(clip(c.out)); }
 }
 // Long output shows its head until asked for the rest.
@@ -1640,8 +1683,14 @@ function drawPlan(items){
   add(todoNode);
 }
 function askApproval(p, rid){
+  // An answer names its request; without one the server would apply it to whatever is pending.
+  if(!rid) return;
   const a = el('div', 'ask'); a.dataset.call = p.call_id;
-  a.appendChild(el('b', '', 'Allow ' + p.tool + '?')); a.appendChild(el('p', '', (subjectOf(p.tool, p.args) || '') + (p.reason ? '  —  ' + p.reason : '')));
+  // Every field is made visible: the prompt must show exactly what allowing runs.
+  const subj = subjectOf(p.tool, p.args) || '';
+  a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
+    a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
   const btns = el('div', 'btns');
   const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';
     b.addEventListener('click', async () => { const q = asks.get(p.call_id); if(!q || q.rid !== rid) return; btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
@@ -1649,13 +1698,20 @@ function askApproval(p, rid){
       const body = {approved:ok, request_id:rid}; if(scope) body.scope = scope;
       try{ const r = await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(body)});
         if(r && r.applied === false) settleAsk(p.call_id, 'recorded, but the run had already moved on'); }
-      catch(e){ if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
+      catch(e){
+        // While the run goes on, a 409 means it is not waiting on this request now: answered
+        // elsewhere, or queued behind another. The record settles the card; until then it stays.
+        if(e.status === 409 && live){ const n = a.querySelector('.note') || a.appendChild(el('p', 'note')); n.textContent = 'Not taken: the run is not waiting on this request right now. This stays open until the record settles it.';
+          btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); recheckSoon(); return; }
+        if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
         // Only the server running the session can check the answer against its request.
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
         a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
-  if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'));
-  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
+  if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'));
+  // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
+  if(p.via) a.appendChild(el('p', 'scope-note', 'Asked by ' + visible(p.via) + '.'));
+  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon();
   // A pending question is never left half off screen, wherever the reader had scrolled to.
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
@@ -2024,7 +2080,8 @@ function logTerminal(cmd, p, who){
   if(who === 'you') return; // the person's own commands are already on their terminal
   if(!agentTerm){ const keep = activeTerm; agentTerm = makeTerm('agent', 'agent'); agentTerm.term.write('\x1b[2mCommands the agent ran, with their output. Read only.\x1b[0m\r\n'); if(keep) selectTerm(keep); }
   const out = (p.content || '').slice(0, 8000);
-  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + cmd + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
+  // The command is the model's text: escapes in it must print, not drive the terminal.
+  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }
 function logEvent(ev, p){

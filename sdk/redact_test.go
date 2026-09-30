@@ -219,30 +219,174 @@ func TestSDKNoResultMessageIsRedacted(t *testing.T) {
 	}
 }
 
-// The approver's decision, its suggested scope included, is redacted too.
-func TestSDKApproverScopeIsRedacted(t *testing.T) {
+// bash on an embedded session reads a stored secret by name, as on the command
+// line: the value reaches the command, never the record, OnEvent or the model,
+// and without its own secret(NAME) rule the call is refused.
+func TestSDKBashUsesAStoredSecretByName(t *testing.T) {
 	vaultWith(t)
-	ws, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	args, _ := json.Marshal(map[string]any{"command": `echo "k=[$FAKE_TOKEN] n=${#FAKE_TOKEN}"`,
+		"description": "probe", "secrets": []string{"FAKE_TOKEN"}})
+	call, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+		"tool_calls": []any{map[string]any{"index": 0, "id": "c-bash", "type": "function",
+			"function": map[string]any{"name": "bash", "arguments": string(args)}}}}}}})
+	for name, allow := range map[string][]string{
+		"with the rule":    {"bash", "secret(FAKE_TOKEN)"},
+		"without the rule": {"bash"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, bodies := scripted(t, string(call))
+			var mu sync.Mutex
+			var stream strings.Builder
+			a, err := abhed.New(context.Background(), abhed.Options{
+				Workspace: t.TempDir(), Mode: "default", Allow: allow,
+				Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
+				OnEvent:  func(ev abhed.Event) { mu.Lock(); stream.Write(ev.Payload); mu.Unlock() },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			if _, err := a.Run(context.Background(), "probe"); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var record strings.Builder
+			for _, ev := range a.Events() {
+				record.Write(ev.Payload)
+			}
+			mu.Lock()
+			whole := stream.String() + record.String() + strings.Join(bodies(), "")
+			mu.Unlock()
+			if strings.Contains(whole, fakeSecret) {
+				t.Fatalf("the stored value left the session:\n%s", whole)
+			}
+			ran := strings.Contains(record.String(), fmt.Sprintf("k=[[secret:FAKE_TOKEN]] n=%d", len(fakeSecret)))
+			if len(allow) == 2 {
+				if !ran {
+					t.Fatalf("bash did not run with the stored secret:\n%s", record.String())
+				}
+				if b := bodies(); !strings.Contains(b[0], "Secrets available by name") || !strings.Contains(b[0], "FAKE_TOKEN") {
+					t.Fatalf("bash's description does not name the stored secret: %s", b[0])
+				}
+				return
+			}
+			if ran || !strings.Contains(record.String(), "secret(FAKE_TOKEN)") {
+				t.Fatalf("bash used a secret with no secret(NAME) rule:\n%s", record.String())
+			}
+		})
 	}
-	srv, _ := scripted(t, frameCall("write", map[string]string{"path": filepath.Join(ws, "n-"+fakeSecret+".txt"), "content": "x\n"}))
-	var seen []string
-	a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "default",
+}
+
+// A secret stored after the session started, and allowed by rule, is redacted
+// from then on: bash reads the store at each call, and so does redaction.
+func TestSDKRedactsASecretAddedDuringTheSession(t *testing.T) {
+	vaultWith(t)
+	const late = "late-added-secret-6d0e2a"
+	args, _ := json.Marshal(map[string]any{"command": `echo "v=$LATE_TOKEN"`, "description": "probe", "secrets": []string{"LATE_TOKEN"}})
+	call, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+		"tool_calls": []any{map[string]any{"index": 0, "id": "c-bash", "type": "function",
+			"function": map[string]any{"name": "bash", "arguments": string(args)}}}}}}})
+	srv, bodies := scripted(t, string(call))
+	var mu sync.Mutex
+	var stream strings.Builder
+	a, err := abhed.New(context.Background(), abhed.Options{
+		Workspace: t.TempDir(), Mode: "default", Allow: []string{"bash", "secret(LATE_TOKEN)"},
 		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
-		Approve: func(_ context.Context, _ string, _ json.RawMessage, d abhed.Decision) (bool, error) {
-			seen = append(seen, d.Scope, d.Reason)
-			return false, nil
-		}})
+		OnEvent:  func(ev abhed.Event) { mu.Lock(); stream.Write(ev.Payload); mu.Unlock() },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN":"`+fakeSecret+`","LATE_TOKEN":"`+late+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := a.Run(context.Background(), "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var record strings.Builder
+	for _, ev := range a.Events() {
+		record.Write(ev.Payload)
+	}
+	mu.Lock()
+	whole := stream.String() + record.String() + strings.Join(bodies(), "") + answer
+	mu.Unlock()
+	if !strings.Contains(record.String(), "v=[secret:LATE_TOKEN]") {
+		t.Fatalf("bash did not run with the late secret, redacted:\n%s", record.String())
+	}
+	if strings.Contains(whole, late) {
+		t.Fatalf("a secret added during the session left it unredacted:\n%s", whole)
+	}
+}
+
+// A write or edit whose path holds a stored value is refused in every mode,
+// naming the check and the secret: a file name is read by whoever lists the
+// directory. A short value, such as "postgres", and a value in another case
+// do not refuse ordinary paths, and a store that cannot be loaded refuses
+// every write.
+func TestSDKRefusesASecretInAFileName(t *testing.T) {
+	vaultWith(t)
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN":"`+fakeSecret+`","DB":"postgres"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string) (bool, string) {
+		t.Helper()
+		path := filepath.Join(ws, name)
+		srv, _ := scripted(t, frameCall("write", map[string]string{"path": path, "content": "x"}))
+		a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "bypass",
+			Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Close()
+		if _, err := a.Run(context.Background(), "write it"); err != nil {
+			t.Fatal(err)
+		}
+		var record strings.Builder
+		for _, ev := range a.Events() {
+			record.Write(ev.Payload)
+		}
+		_, statErr := os.Stat(path)
+		return statErr == nil, record.String()
+	}
+	if written, record := write("n-" + fakeSecret + ".txt"); written ||
+		!strings.Contains(record, "keeps stored secrets out of file names") || !strings.Contains(record, "stored secret [secret:FAKE_TOKEN]") {
+		t.Fatalf("a path holding the secret was written, or the refusal does not name the check and the secret: %v\n%s", written, record)
+	}
+	for _, name := range []string{"postgres-values.yaml", "Postgres.md", strings.ToUpper(fakeSecret) + ".txt"} {
+		if written, record := write(name); !written {
+			t.Errorf("%s was refused:\n%s", name, record)
+		}
+	}
+	// New refuses a store it cannot load; one that breaks after it is the case here.
+	path := filepath.Join(ws, "plain.txt")
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN":"`+fakeSecret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := scripted(t, frameCall("write", map[string]string{"path": path, "content": "x"}))
+	a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "bypass",
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := a.Run(context.Background(), "write it"); err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(seen, "\n")
-	if len(seen) == 0 || !strings.Contains(got, "[secret:FAKE_TOKEN]") || strings.Contains(got, fakeSecret) {
-		t.Fatalf("the approver's decision was not redacted: %q", got)
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("a write ran while the secrets store could not be loaded")
 	}
 }

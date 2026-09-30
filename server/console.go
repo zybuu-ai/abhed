@@ -457,6 +457,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
   border-radius:8px;padding:13px 15px;margin:12px 0}
 .approve h4{margin:0 0 4px;font-family:var(--mono);font-size:11.5px;color:var(--waiting)}
 .approve p{margin:0 0 9px;font-size:12px;color:var(--ink-2)}
+.approve p.hidden-warn{color:var(--danger);font-weight:600}
 .approve pre{font-family:var(--mono);font-size:11px;background:var(--sunken);
   border-radius:5px;padding:9px;overflow-x:auto;margin:0 0 10px;color:var(--ink-2)}
 .approve .row{display:flex;gap:8px}
@@ -806,6 +807,24 @@ async function health(){
  *
  * Only shown when there is a real choice. A select with one option tells the
  * user they can pick something when they cannot. */
+// The mode selector starts on the server's configured mode. A session may
+// start in that mode or in plan, and the server refuses any other, so those
+// are the choices offered.
+async function loadMode(){
+  let caps; try{ caps = await api('/v1/capabilities'); }catch{ return; }
+  const m = caps && caps.permissions && caps.permissions.mode;
+  if(!m) return;
+  const sel = $('mode');
+  if(!Array.from(sel.options).some(o => o.value === m)){
+    const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o);
+  }
+  for(const o of Array.from(sel.options)){
+    o.disabled = o.value !== m && o.value !== 'plan';
+    o.title = o.disabled ? 'This server runs in ' + m + ' mode; a session may start in it or in plan' : '';
+  }
+  sel.value = m;
+}
+
 let providers = [];
 // The provider the open chat's record last named, so a switch note can say what it left.
 let recProvider = null;
@@ -1256,8 +1275,8 @@ function render(ev){
       const wrap = node('call');
       const hdr = node('hdr');
       const caret = node('caret', '\u25be');
-      const tool = node('tool', p.tool);
-      const arg = node('arg', summarize(p.tool, p.args));
+      const tool = node('tool', visible(p.tool));
+      const arg = node('arg', visible(summarize(p.tool, p.args)));
       const peek = node('peek');   // one-line result, shown only when collapsed
       hdr.append(caret, tool, arg, peek);
       wrap.appendChild(hdr);
@@ -1330,12 +1349,14 @@ function render(ev){
       break;
     }
 
-    case 'subagent.spawned': tx.appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
-    case 'subagent.returned': tx.appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+    // In the turn, as its calls are, so they read before the answer that follows them.
+    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
+    case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
 
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.
     case 'subagent.ask': {
+      if(!p.request_id){ tx.appendChild(node('note', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
       hideThinking();
       const id = 'subagent-' + p.request_id;
       const wrap = node('call');
@@ -1424,6 +1445,23 @@ function kv(k, v){
   s.append(document.createTextNode(k + ' '), Object.assign(document.createElement('b'),
     {textContent: String(v)}));
   return s;
+}
+
+// visible writes out control and format characters (CR, ESC, zero-width, bidi)
+// as ⟨U+XXXX⟩, so a call's own text cannot reorder or hide part of it on the page.
+function visible(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
+    : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+
+// hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
+function hasHidden(v, depth = 0){
+  if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
+  if(typeof v !== 'string') return false;
+  if(/[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(v)) return true;
+  const t = v.trim();
+  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  return false;
 }
 
 function summarize(tool, args){
@@ -1591,20 +1629,29 @@ function setPeek(wrap, content){
 
 /* ------------------------------------------------------------------ approvals */
 function approval(p, rid){
+  // An answer names its request; without one the server would apply it to whatever is pending.
+  if(!rid) return;
   const card = node('approve');
   const h = document.createElement('h4');
-  h.textContent = 'Approval required — ' + p.tool;
+  h.textContent = 'Approval required — ' + visible(p.tool);
   card.appendChild(h);
-  if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: p.reason}));
+  // Every field is made visible: the card must show exactly what approving runs.
+  let args;
+  try{
+    args = JSON.stringify(typeof p.args === 'string' ? JSON.parse(p.args) : p.args, null, 2);
+  }catch{ args = String(p.args); }
+  // The warning reads the values themselves: stringify would turn a CR or ESC into plain text.
+  if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
+    card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this call contains hidden or control characters'}));
+  if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: visible(p.reason)}));
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
-    {className: 'scope-note', textContent: 'Asked by subagent ' + p.subagent + '. Always allow applies to the whole session: the agent and every subagent.'}));
+    {className: 'scope-note', textContent: 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'}));
+  // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
+  if(p.via) card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Asked by ' + visible(p.via) + '.'}));
 
   const pre = document.createElement('pre');
-  try{
-    pre.textContent = JSON.stringify(
-      typeof p.args === 'string' ? JSON.parse(p.args) : p.args, null, 2);
-  }catch{ pre.textContent = String(p.args); }
+  pre.textContent = visible(args, true);
   card.appendChild(pre);
 
   const row = node('row');
@@ -1616,7 +1663,7 @@ function approval(p, rid){
   // scope narrow enough to be safe to remember.
   const always = p.scope
     ? Object.assign(document.createElement('button'),
-        {className:'no', textContent: p.subagent ? 'Always allow in this session' : 'Always allow', title: p.scope})
+        {className:'no', textContent: p.subagent ? 'Always allow in this session' : 'Always allow', title: visible(p.scope)})
     : null;
   const buttons = always ? [yes, no, always] : [yes, no];
   const decide = (ok, scope) => async () => {
@@ -1630,11 +1677,18 @@ function approval(p, rid){
       if(scope) resolveApproval(p.call_id, 'always allowed', 'ok', scope);
       else resolveApproval(p.call_id, ok ? 'approved' : 'rejected', ok ? 'ok' : 'no');
     }catch(e){
-      // A 409 means the session already moved on — the decision was made
-      // elsewhere, or this is a replay of a finished session. Say so and
-      // retire the card; re-enabling the buttons would invite a click that
-      // can never succeed.
+      // A 409 on a finished session, or a replay of one, can never succeed:
+      // retire the card. While the run goes on it means the run is not
+      // waiting on this request now, because it was answered elsewhere or is
+      // queued behind another: keep the card for the record to settle.
       const stale = /no approval is pending|no longer pending|already answered|session not found/i.test(e.message);
+      if(stale && live && !/session not found/i.test(e.message)){
+        let n = card.querySelector('.note');
+        if(!n){ n = node('note'); card.appendChild(n); }
+        n.textContent = 'Not taken: the run is not waiting on this request right now. This stays open until the record settles it.';
+        buttons.forEach(b => { b.disabled = false; });
+        return;
+      }
       if(stale){
         resolveApproval(p.call_id, 'no longer awaiting a decision');
         return;
@@ -2287,7 +2341,7 @@ function hideThinking(){
   el.remove();
 }
 
-drawExamples(); whoami(); capabilities(); health(); refresh(); loadProviders();
+drawExamples(); whoami(); capabilities(); health(); refresh(); loadProviders(); loadMode();
 setInterval(health, 10000);
 setInterval(refresh, 5000);
 </script>

@@ -86,7 +86,10 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
-and the token estimate is approximate.
+and the token estimate is approximate. Not much below 0.5 either: a
+compaction keeps recent turns up to about half the window, so below roughly
+0.3 what it keeps is already over the threshold and it compacts on almost
+every turn, each a summary call and a lost prefix cache.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
 after compaction. Project conventions belong there.
@@ -291,7 +294,9 @@ signed out, and a group added or removed applies at once. Removing
 administrator rights through `POST /v1/admin/users/admin` also ends that
 person's sessions, on every server sharing the account store: at once on the
 one that removed them, and within about 2 seconds on the others over
-Postgres.
+Postgres. An event or terminal stream already open is authorised again while
+it runs, and ends when its sign-in would now be refused: at once for a change
+made on the same server, within 10 seconds otherwise.
 
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,

@@ -105,6 +105,54 @@ a way in for anyone who can reach the port, not a convenience. Turn it on and
 the sign-in card grows a "Create one" link; leave it off and the card says
 accounts are created by an administrator, which is true and actionable.
 
+### Emails
+
+An account's email is optional. When given, at `user add`, sign-up or an
+administrator's account creation, it must be a plain address
+(`name@example.com`, no display name) that no other account holds and that is
+not another account's username, compared without regard to case. The email is
+for people to read and for notices; it grants nothing.
+
+### Who owns a session
+
+A session belongs to the principal that started it, and only that principal
+lists it, reads it, continues it, answers its approvals or deletes it. The
+principal comes from one function, `auth.Identity.Owner`:
+
+| Signed in with | Owner |
+|---|---|
+| a local account | `local:<username>` |
+| single sign-on with an email the provider verified | that email |
+| single sign-on otherwise | `<provider>:<subject>`, such as `oidc:1234` |
+| a trusted proxy | `X-Abhed-Email` when set, else `X-Abhed-User` |
+| nothing (authentication off) | `anonymous`, which sees every session in its tenant |
+
+An email a person typed never decides ownership. The same string is the
+`user` of a session in `GET /v1/sessions`, the approver in the record and the
+`by` of an administrative audit line, and `/v1/whoami` returns it as `owner`.
+Sessions from before 1.2.2 are moved to these owners by `abhed migrate`; see
+the changelog's Upgrading notes for 1.2.2.
+
+### What accounts share
+
+Accounts separate sessions, not the machine. Every account on one server:
+
+- works in the **same workspace directory**. One account's files, and the
+  files its agent or terminal writes, are visible to every other account's
+  explorer, agent and shell, which can read and change them. The file API
+  returns a file's raw contents, including any secret written into it;
+  redaction applies to the record and the model, not to a person's editor.
+- runs its tools and terminals as the **same operating-system user**, the one
+  the server runs as.
+- draws on the **same secret store** (`abhed secret`). A secret an allow rule
+  permits is available to every account's sessions, not only to the person
+  who stored it.
+
+What is per account: sessions and their records, subagent records, approvals,
+and each session's terminals. People who must not see each other's files or
+secrets need separate servers, each with its own workspace, OS user and secret
+store.
+
 ### Password handling
 
 - bcrypt at the library default cost. Sign-in happens once per session, so a few
@@ -157,9 +205,19 @@ applies on every node without a new sign-in. Removing administrator rights,
 and any sign-out everywhere an edition offers, ends the person's sessions on
 every server sharing the account store: at once on the server that did it,
 and on the others when the session next reads its account (within about 2
-seconds on Postgres, on the next request after the users file changes). A
-terminal or event stream already open is checked when it opens, not while it
-runs.
+seconds on Postgres, on the next request after the users file changes).
+
+An event stream or a terminal stream already open is authorised again while
+it runs, through the same sign-in check and session ownership a new request
+meets: at once when a sign-out, removal, group change or reset happens on
+the same server, and otherwise at least every 10 seconds and before any write
+once its last check is that old. A stream that fails ends with an
+`event: refused` carrying the reason, and reconnecting meets the ordinary
+`401` or `403`. `StreamRecheck` in the server options can shorten the
+interval, never lengthen it past 15 seconds. The terminal's command itself
+keeps running until it ends or is stopped. Each recheck reruns the sign-in
+providers and reads the session once, so 1,000 open streams cost about 100
+session reads a second at the default interval; size the store for it.
 
 A users file must not be shared by servers or `abhed user` commands of
 different versions: one older than the release that added the revocation
@@ -187,7 +245,9 @@ forwards:
 | `X-Abhed-Tenant` | the tenant | `default` |
 | `X-Abhed-Groups` | comma-separated groups (the admin group among them, if any) | none |
 
-A request with no `X-Abhed-User` is `anonymous`, and `anonymous` owns every
+A session is owned by `X-Abhed-Email` when the proxy sets it, else by
+`X-Abhed-User`, so the proxy must set the email only to an address it has
+verified. A request with no `X-Abhed-User` is `anonymous`, and `anonymous` owns every
 session in its tenant, now including each workbench shell: the proxy must set
 the header on every request.
 

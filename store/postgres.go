@@ -168,6 +168,13 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		return nil, fmt.Errorf("the database schema is older than this server: %s missing. "+
 			"Run `abhed migrate` as the owner (see docs/guide/02-configuration.md)", strings.Join(missing, ", "))
 	}
+	if done, err := ownersMigrated(ctx, pool); err != nil || !done {
+		pool.Close()
+		if err == nil {
+			err = errOwnersNotMigrated
+		}
+		return nil, err
+	}
 	p.protected = true
 	return p, nil
 }
@@ -183,7 +190,8 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	if _, err := p.pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	return nil
+	_, err := migrateOwners(ctx, p.pool)
+	return err
 }
 
 func (p *Postgres) Close() { p.pool.Close() }
@@ -260,11 +268,15 @@ func (p *Postgres) CreateSubSession(ctx context.Context, id, description string)
 	return p.CreateSubagentSession(ctx, id, "", description)
 }
 
+// SubagentUser is the user a CLI subagent's row is recorded as; the session
+// named by its ParentID says whose it is.
+const SubagentUser = "agent"
+
 // CreateSubagentSession is CreateSubSession with the spawning session's id,
 // so the row is listed and deleted with its parent.
 func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
-		ID: id, Tenant: p.tenant, User: "agent",
+		ID: id, Tenant: p.tenant, User: SubagentUser,
 		Workspace: description, Model: "subagent", Mode: "auto",
 		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})
@@ -736,10 +748,11 @@ func (p *Postgres) Unsubscribe(sessionID string, ch <-chan agent.Event) {
 }
 
 func (p *Postgres) publish(ev agent.Event) {
+	// Sent under the lock: Unsubscribe closes the channel under it, and a
+	// send racing that close panics. The sends never block, so this is cheap.
 	p.mu.RLock()
-	subs := append([]chan agent.Event(nil), p.subs[ev.SessionID]...)
-	p.mu.RUnlock()
-	for _, ch := range subs {
+	defer p.mu.RUnlock()
+	for _, ch := range p.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block the agent loop on a slow consumer

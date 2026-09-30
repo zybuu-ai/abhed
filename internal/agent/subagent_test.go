@@ -774,3 +774,123 @@ func TestSubagentAskNamesItsTarget(t *testing.T) {
 		t.Fatalf("subagent.ask does not name the target: %+v", asks[0])
 	}
 }
+
+// pipeTool runs one pipeline step, `touch step.txt`, on the loop that called it.
+type pipeTool struct{}
+
+func (pipeTool) Name() string            { return "pipe" }
+func (pipeTool) Description() string     { return "runs a pipeline" }
+func (pipeTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (pipeTool) Mutates() bool           { return false }
+func (pipeTool) Run(ctx context.Context, _ *tools.Session, _ json.RawMessage) tools.Result {
+	steps, err := StepsFor(ctx, "skill p pipeline")
+	if err != nil {
+		return tools.Result{Content: err.Error(), IsError: true}
+	}
+	res, err := steps.Run(ctx, "bash", json.RawMessage(`{"command":"touch step.txt"}`), 0)
+	if err != nil {
+		return tools.Result{Content: err.Error(), IsError: true}
+	}
+	return res
+}
+
+// A pipeline step a subagent runs is offered in the parent's record when it
+// is put to the person, naming the subagent and the pipeline.
+func TestSubagentPipelineStepAskReachesTheParent(t *testing.T) {
+	store := NewMemStore()
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "run it", "description": "runner"})}},
+		{calls: []model.ToolCall{{ID: "p1", Name: "pipe", Args: json.RawMessage(`{}`)}}},
+		{text: "ran"},
+		{text: "done"},
+	}}
+	appr := &askingApprover{}
+	l, _, f := taskTree(t, adapter, appr, store, store, false)
+	f.Tools.Add(pipeTool{})
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	asks := payloads[SubagentAsk](evs, EvSubagentAsk)
+	if len(appr.asked) != 1 || len(asks) != 1 || asks[0].Subagent != "runner" || asks[0].Via != "skill p pipeline" {
+		t.Fatalf("the step's ask did not reach the parent's record once, named: asked %v, %+v", appr.asked, asks)
+	}
+}
+
+// askRefusingStore is a parent's store that refuses to record a subagent.ask,
+// as a fenced or moved session's store refuses its writes.
+type askRefusingStore struct{ *MemStore }
+
+func (s askRefusingStore) Append(ev Event) error {
+	if ev.Type == EvSubagentAsk {
+		return errors.New("the session is fenced on this node")
+	}
+	return s.MemStore.Append(ev)
+}
+
+// withholdAll is a redactor whose store cannot be loaded: every payload is withheld.
+type withholdAll struct{}
+
+func (withholdAll) Redact([]byte) []byte { return nil }
+func (withholdAll) Span() int            { return 0 }
+
+// A subagent's ask that cannot be recorded in the parent's record, because
+// the write is refused or the request's payload was withheld, is not put to
+// anyone: the call is denied by the system at step ask.
+func TestUnrecordedSubagentAskIsNeverPut(t *testing.T) {
+	for name, setup := range map[string]func(*SubagentFactory) (parent Store, child Store){
+		"parent write refused": func(*SubagentFactory) (Store, Store) {
+			ms := NewMemStore()
+			return askRefusingStore{ms}, ms
+		},
+		"payload withheld": func(f *SubagentFactory) (Store, Store) {
+			f.Redact = withholdAll{}
+			ms := NewMemStore()
+			return ms, ms
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &scriptedAdapter{turns: []scriptedTurn{
+				{calls: []model.ToolCall{call("task", map[string]string{"prompt": "touch it", "description": "toucher"})}},
+				{calls: []model.ToolCall{{ID: "k1", Name: "bash", Args: json.RawMessage(`{"command":"touch made.txt"}`)}}},
+				{text: "could not"},
+				{text: "done"},
+			}}
+			appr := &askingApprover{}
+			probe := &SubagentFactory{}
+			parentStore, childStore := setup(probe)
+			l, dir, f := taskTree(t, adapter, appr, parentStore, childStore, false)
+			f.Redact = probe.Redact
+			_, _ = l.Run(context.Background(), "go")
+			if len(appr.asked) != 0 {
+				t.Fatalf("the approver was asked %v with no ask in the parent's record", appr.asked)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "made.txt")); err == nil {
+				t.Fatal("the subagent's call ran")
+			}
+			ms := childStore.(*MemStore)
+			parentEvs, _ := ms.Events("parent")
+			kid := ""
+			for _, sp := range payloads[map[string]any](parentEvs, EvSubagentSpawned) {
+				if id, _ := sp["session"].(string); id != "" {
+					kid = id
+				}
+			}
+			if kid == "" {
+				t.Fatalf("no subagent was spawned: %s", types(parentEvs))
+			}
+			evs, _ := ms.Events(kid)
+			denied := false
+			for _, ev := range evs {
+				// A withheld payload hides the step; the actor still says who refused.
+				if ev.Type == EvActionDenied && ev.Actor == ActorSystem &&
+					(strings.Contains(string(ev.Payload), `"step":"ask"`) || strings.Contains(string(ev.Payload), "withheld")) {
+					denied = true
+				}
+			}
+			if !denied {
+				t.Fatal("the child's call was not denied by the system at step ask")
+			}
+		})
+	}
+}

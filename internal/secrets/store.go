@@ -254,6 +254,102 @@ func (s *Store) Live() *Live { return &Live{Redactor: s.Redactor(), store: s} }
 // Load reads the store again, as LoadRedactor does.
 func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
 
+// Fresh redacts with the values stored at each call, reading the store again
+// whenever the file has changed, for a session that runs while secrets are
+// added: a value bash can be given must be redacted from that moment on.
+// Every value loaded during the session stays redacted after it is rotated
+// or removed, since a command may have been given it before. A store that
+// stops loading withholds every payload until it loads again.
+type Fresh struct {
+	store *Store
+	mu    sync.Mutex
+	stamp freshStamp
+	red   *Redactor
+	// down is set while the store at stamp could not be loaded.
+	down bool
+}
+
+type freshStamp struct {
+	ok      bool
+	missing bool
+	mod     int64
+	size    int64
+	inode   uint64
+	ctime   int64
+}
+
+// Fresh returns a redactor over the store that starts from first, the
+// reading a session was admitted with.
+func (s *Store) Fresh(first *Redactor) *Fresh {
+	f := &Fresh{store: s, red: first}
+	f.stamp = f.stat()
+	return f
+}
+
+func (f *Fresh) stat() freshStamp {
+	fi, err := os.Stat(f.store.path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return freshStamp{ok: true, missing: true}
+	case err != nil:
+		return freshStamp{}
+	}
+	inode, ctime := fileIdentity(fi)
+	return freshStamp{ok: true, mod: fi.ModTime().UnixNano(), size: fi.Size(), inode: inode, ctime: ctime}
+}
+
+// Current is the redactor for the values stored now.
+func (f *Fresh) Current() *Redactor {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.stat()
+	if st.ok && st == f.stamp && f.red != nil {
+		if f.down {
+			return Withholding()
+		}
+		return f.red
+	}
+	r, err := f.store.LoadRedactor()
+	if err != nil || !st.ok {
+		// Kept apart from the values seen so far, which a reload restores.
+		f.stamp, f.down = st, true
+		return Withholding()
+	}
+	if f.red != nil && !f.red.broken {
+		r = r.union(f.red)
+	}
+	f.red, f.stamp, f.down = r, st, false
+	return r
+}
+
+// union is r with every value of old it lacks, longest first as ever.
+func (r *Redactor) union(old *Redactor) *Redactor {
+	have := map[string]bool{}
+	for _, p := range r.pairs {
+		have[p.needle] = true
+	}
+	pairs := append([]pair(nil), r.pairs...)
+	for _, p := range old.pairs {
+		if !have[p.needle] {
+			pairs = append(pairs, p)
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].needle) > len(pairs[j].needle) })
+	return &Redactor{pairs: pairs}
+}
+
+// Redact is Current().Redact.
+func (f *Fresh) Redact(b []byte) []byte { return f.Current().Redact(b) }
+
+// Span is Current().Span.
+func (f *Fresh) Span() int { return f.Current().Span() }
+
+// FindSent is Current().FindSent.
+func (f *Fresh) FindSent(text string) (string, bool) { return f.Current().FindSent(text) }
+
+// FindInPath is Current().FindInPath.
+func (f *Fresh) FindInPath(path string) (string, bool) { return f.Current().FindInPath(path) }
+
 // Withholding returns a redactor that withholds every payload.
 func Withholding() *Redactor { return &Redactor{broken: true} }
 
@@ -386,6 +482,85 @@ func (r *Redactor) Find(s string) (label string, found bool) {
 	}
 	for _, p := range r.pairs {
 		if strings.Contains(s, p.needle) {
+			return p.label, true
+		}
+	}
+	return "", false
+}
+
+// FindSent reports whether text holds a stored value in any form it could
+// take on its way to another server: as written, percent-encoded any number
+// of times (a malformed escape elsewhere does not stop the decoding), with
+// '+' as a space, and in any case, since a host or a search engine may fold
+// it. A store that could not be loaded holds everything, with an empty label.
+func (r *Redactor) FindSent(text string) (label string, found bool) {
+	forms := []string{text, strings.ReplaceAll(text, "+", " ")}
+	for s := text; len(forms) < 2+maxDecodes; {
+		next := lenientUnescape(s)
+		if next == s {
+			break
+		}
+		forms = append(forms, next, strings.ReplaceAll(next, "+", " "))
+		s = next
+	}
+	for _, f := range forms {
+		if label, found := r.FindFold(f); found {
+			return label, true
+		}
+	}
+	return "", false
+}
+
+// maxDecodes bounds the rounds of percent-decoding; text encoded more deeply
+// than this is not a form any server decodes back.
+const maxDecodes = 16
+
+// lenientUnescape turns each valid %XX into its byte and leaves the rest,
+// a malformed escape included, as written.
+func lenientUnescape(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			b.WriteByte(unhex(s[i+1])<<4 | unhex(s[i+2]))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
+}
+
+// PathMinLength is the fewest characters a value must have to be looked for
+// in a file path: shorter ones, such as "postgres" or "test", name ordinary
+// files and directories too often.
+const PathMinLength = 12
+
+// FindInPath reports whether a file path holds a stored value of at least
+// PathMinLength characters, as written and in its case. A store that could
+// not be loaded holds everything, with an empty label.
+func (r *Redactor) FindInPath(path string) (label string, found bool) {
+	if r.broken {
+		return "", true
+	}
+	for _, p := range r.pairs {
+		if utf8.RuneCountInString(p.needle) >= PathMinLength && strings.Contains(path, p.needle) {
 			return p.label, true
 		}
 	}

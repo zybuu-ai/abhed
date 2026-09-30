@@ -66,8 +66,8 @@ type Options struct {
 	// Options.Extensions are. The configuration's are subject to workspace
 	// trust when it is loaded: an untrusted file adds none.
 	Extensions []extension.Config
-	// Vault is the secrets store a login tool reads a credential from by
-	// name, and web_fetch refuses a URL holding a value from. Nil offers no
+	// Vault is the secrets store bash and a login tool read a credential from
+	// by name, and web_fetch refuses a URL holding a value from. Nil offers no
 	// stored secrets, and leaves web_fetch unable to fetch.
 	Vault *secrets.Store
 	// Warn receives what failed and was skipped: an MCP server, an extension,
@@ -96,6 +96,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	}
 	// Connections and processes outlive the call that built them; Close ends them.
 	ctx = context.WithoutCancel(ctx)
+	// Every surface's bash reads stored secrets from the same vault as the
+	// login tools; each name still needs its own secret(NAME) allow rule.
+	if o.Vault != nil && o.Bash.Secrets == nil {
+		o.Bash.Secrets = o.Vault.Env
+		o.Bash.SecretNames = VaultNames(o.Vault)
+	}
 	s := &Set{
 		Registry: tools.NewRegistry(
 			tools.Read{}, tools.Write{}, tools.Edit{},
@@ -154,7 +160,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		fetch = WebFetchTool(cfg, o.Vault)
 	}
 	if o.Parts&WebSearch != 0 {
-		if t, err := WebSearchTool(cfg); err != nil {
+		if t, err := WebSearchTool(cfg, o.Vault); err != nil {
 			warn("web search disabled: %v", err)
 		} else if t != nil {
 			// Results point at web_fetch only where it is offered.
@@ -319,4 +325,14 @@ func Subagents(reg *tools.Registry, f *agent.SubagentFactory, maxParallel int) *
 // than described, its tool steps put through the loop that called it.
 func SkillTool(reg *skills.Registry) skills.Tool {
 	return skills.Tool{R: reg, RunPipeline: PipelineRunner(nil)}
+}
+
+// VaultNames lists what the model may ask for. An unreadable store lists
+// nothing: the failure surfaces when a secret is used, with its reason.
+func VaultNames(v *secrets.Store) []string {
+	names, err := v.Names()
+	if err != nil {
+		return nil
+	}
+	return names
 }
