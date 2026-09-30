@@ -198,11 +198,11 @@ func TestLooksLikeKey(t *testing.T) {
 // cannot drive the terminal through them.
 func TestEndpointModelNamesAreEscaped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"data":[{"id":"good"},{"id":"evil\u001b]0;pwned\u0007‮"}]}`)
+		fmt.Fprint(w, `{"data":[{"id":"good"},{"id":"evil\u001b]0;pwned\u0007\u202e"}]}`)
 	}))
 	defer srv.Close()
 	_, out := endpointWith(t, srv.URL+"\n\ngood\n")
-	if strings.ContainsAny(out, "\x1b\x07‮") || !strings.Contains(out, `evil\u001b`) {
+	if strings.ContainsAny(out, "\x1b\x07\u202e") || !strings.Contains(out, `evil\u001b`) {
 		t.Fatalf("%q", out)
 	}
 }

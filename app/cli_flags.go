@@ -178,7 +178,7 @@ func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string) error {
 func (f *cliFlags) task() string {
 	var parts []string
 	for _, w := range f.words {
-		if !(f.print.on && w == "-") {
+		if !f.print.on || w != "-" {
 			parts = append(parts, w)
 		}
 	}
