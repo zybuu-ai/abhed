@@ -354,3 +354,60 @@ func TestDialogApproverSaysWhoAskedAndWhy(t *testing.T) {
 		}
 	}
 }
+
+// Approvals have no default, by decision: the dialog the approver builds
+// selects nothing, a Yes or "always" default is refused before it is drawn,
+// and Enter alone never approves, however long after the question appeared.
+func TestApprovalHasNoDefault(t *testing.T) {
+	a := &DialogApprover{Base: NewApprover(io.Discard), Render: NewRenderer(io.Discard, false)}
+	for _, res := range []policy.Result{
+		{Decision: policy.Ask, Step: "default", Scope: "bash(go test *)", Reason: "r"},
+		{Decision: policy.Ask, Step: "destructive", Reason: "r"},
+	} {
+		spec := a.spec(context.Background(), "bash", json.RawMessage(`{"command":"go test ./..."}`), res, "Bash(go test ./...)")
+		if spec.Default != "" {
+			t.Fatalf("the approval dialog has a default, %q", spec.Default)
+		}
+		for _, c := range spec.Choices {
+			withDefault := spec
+			withDefault.Default = c.ID
+			if c.ID != ChoiceNo {
+				if _, err := withDefault.Normalized(); err == nil {
+					t.Errorf("an approval with default %q was accepted", c.ID)
+				}
+			}
+		}
+	}
+
+	g := newRig(t, 80, 30)
+	clock := newFakeClock()
+	g.lr.d.mu.Lock()
+	g.lr.d.now = clock.Now
+	g.lr.d.mu.Unlock()
+	a.Reader = g.lr
+	done := make(chan bool, 1)
+	go func() {
+		ok, _ := a.Approve(context.Background(), "bash", json.RawMessage(`{"command":"go test ./..."}`),
+			policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(go test *)", Reason: "r"})
+		done <- ok
+	}()
+	g.waitText("Run this command?")
+	for i := 0; i < 5; i++ {
+		clock.advance(2 * time.Second)
+		g.keys("\r")
+		g.settle()
+	}
+	select {
+	case ok := <-done:
+		t.Fatalf("Enter alone answered the approval (approved %v)", ok)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if strings.Contains(g.term.Text(), "❯") {
+		t.Fatalf("a choice is selected before any was made:\n%s", g.term.Dump())
+	}
+	clock.advance(2 * time.Second)
+	g.keys("\x1b")
+	if ok := <-done; ok {
+		t.Fatal("Esc approved")
+	}
+}

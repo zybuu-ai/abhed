@@ -79,8 +79,10 @@ and numbered answers.
   of this session. It is offered only when the policy suggests a rule.
 - **3. No, and tell Abhed what to do instead** refuses it and stops the turn.
 
-Press the number, or move with ↑ ↓ and press Enter. Esc means No. Ctrl-C means
-No at once.
+**Enter alone never approves, and nothing is selected when the question
+appears.** You answer with an explicit 1, 2 or 3, or by moving to a choice
+with ↑ ↓ and then pressing Enter. There is no default answer to fall back on.
+Esc means No. Ctrl-C means No at once.
 
 A key counts as an answer only when it is meant as one:
 
