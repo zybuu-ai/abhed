@@ -61,11 +61,11 @@ func TestBangRunsAsThePersonAndJoinsTheNextMessage(t *testing.T) {
 	if len(q) != 1 || !regexp.MustCompile(`(?s)<bash-output-[0-9a-f]{12}>.*BANG-42\n</bash-output-[0-9a-f]{12}>`).MatchString(q[0].Text) {
 		t.Fatalf("output does not join the next message: %+v", q)
 	}
-	ap := eventsOf(t, store, agent.EvActionApproved)
+	ap := storeEventsOf(t, store, agent.EvActionApproved)
 	if len(ap) != 1 || ap[0].Actor != agent.ActorUser || payloadOf(t, ap[0])["by"] != "user" {
 		t.Fatalf("not recorded as the person's: %+v", ap)
 	}
-	if obs := eventsOf(t, store, agent.EvObservation); len(obs) != 1 {
+	if obs := storeEventsOf(t, store, agent.EvObservation); len(obs) != 1 {
 		t.Fatalf("%d observations", len(obs))
 	}
 	if len(sf.asked) != 0 {
@@ -82,7 +82,7 @@ func TestBangUnderDenyRuleRefusedAndRecorded(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a denied command ran")
 	}
-	den := eventsOf(t, store, agent.EvActionDenied)
+	den := storeEventsOf(t, store, agent.EvActionDenied)
 	if len(den) != 1 || !strings.Contains(payloadOf(t, den[0])["reason"].(string), "bash(cat *vault*)") {
 		t.Fatalf("denial not recorded with its rule: %+v", den)
 	}
@@ -115,11 +115,11 @@ func TestBangDestructiveNeedsAConfirm(t *testing.T) {
 			t.Fatalf("answer %q: asked %d times", tc.answer, len(sf.asked))
 		}
 		if tc.runs {
-			ap := eventsOf(t, store, agent.EvActionApproved)
+			ap := storeEventsOf(t, store, agent.EvActionApproved)
 			if len(ap) != 1 || payloadOf(t, ap[0])["confirmed"] != "true" {
 				t.Fatalf("confirmed run not recorded as confirmed: %+v", ap)
 			}
-		} else if den := eventsOf(t, store, agent.EvActionDenied); len(den) != 1 || den[0].Actor != agent.ActorUser {
+		} else if den := storeEventsOf(t, store, agent.EvActionDenied); len(den) != 1 || den[0].Actor != agent.ActorUser {
 			t.Fatalf("answer %q: refusal not recorded as the person's: %+v", tc.answer, den)
 		}
 	}

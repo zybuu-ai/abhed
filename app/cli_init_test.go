@@ -17,7 +17,7 @@ func TestInitSendsItsRequest(t *testing.T) {
 	if turn == nil || !strings.HasPrefix(turn.msg.Text, "Write ABHED.md") || !strings.HasSuffix(turn.msg.Text, "The person adds: keep it brief") {
 		t.Fatalf("turn: %+v", turn)
 	}
-	ev := eventsOf(t, store, agent.EvCommandInvoked)
+	ev := storeEventsOf(t, store, agent.EvCommandInvoked)
 	var p agent.CommandInvoked
 	if len(ev) == 1 {
 		_ = json.Unmarshal(ev[0].Payload, &p)

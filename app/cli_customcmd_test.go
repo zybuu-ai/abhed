@@ -53,7 +53,7 @@ func TestCustomCommandRuns(t *testing.T) {
 	if turn == nil || turn.msg.Text != "Fix issue 42 in 42 SECRET-CANARY" {
 		t.Fatalf("turn: %+v", turn)
 	}
-	ev := eventsOf(t, store, agent.EvCommandInvoked)
+	ev := storeEventsOf(t, store, agent.EvCommandInvoked)
 	if len(ev) != 1 {
 		t.Fatalf("%d command.invoked", len(ev))
 	}
@@ -70,7 +70,7 @@ func TestWorkspaceCommandNeedsTrust(t *testing.T) {
 	st, store, sf := customRig(t, "yes")
 	write(t, filepath.Join(st.sess.Root, ".abhed", "commands", "deploy.md"), "DEPLOY-PROMPT")
 	typeLine(t, st, "/deploy")
-	if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvCommandInvoked)) != 0 {
+	if st.takeTurn() != nil || len(storeEventsOf(t, store, agent.EvCommandInvoked)) != 0 {
 		t.Fatal("an untrusted workspace command ran")
 	}
 	if !strings.Contains(sf.shown(), "not trusted") {
@@ -113,7 +113,7 @@ func TestCustomCommandInlineShellAsks(t *testing.T) {
 	st, store, sf := customRig(t, "")
 	userCommand(t, "st.md", "status: !`echo INLINE-OUT`")
 	typeLine(t, st, "/st")
-	if st.takeTurn() != nil || len(sf.asked) != 1 || len(eventsOf(t, store, agent.EvObservation)) != 0 {
+	if st.takeTurn() != nil || len(sf.asked) != 1 || len(storeEventsOf(t, store, agent.EvObservation)) != 0 {
 		t.Fatalf("an unanswered shell line ran: asked %d", len(sf.asked))
 	}
 
@@ -127,7 +127,7 @@ func TestCustomCommandInlineShellAsks(t *testing.T) {
 	st, store, sf = customRig(t, "yes")
 	userCommand(t, "v.md", "!`cat my.vault`")
 	typeLine(t, st, "/v")
-	if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvActionDenied)) != 1 || len(sf.asked) != 0 {
+	if st.takeTurn() != nil || len(storeEventsOf(t, store, agent.EvActionDenied)) != 1 || len(sf.asked) != 0 {
 		t.Fatal("a denied shell line in a command was asked about or ran")
 	}
 }
@@ -158,7 +158,7 @@ func TestCustomCommandCannotShadowABuiltin(t *testing.T) {
 	st, store, _ := customRig(t)
 	userCommand(t, "help.md", "HIJACK")
 	typeLine(t, st, "/help")
-	if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvCommandInvoked)) != 0 {
+	if st.takeTurn() != nil || len(storeEventsOf(t, store, agent.EvCommandInvoked)) != 0 {
 		t.Fatal("a custom command replaced /help")
 	}
 }
@@ -193,7 +193,7 @@ func TestCommandsDirInsideWorkspaceNeedsTrust(t *testing.T) {
 	st.appCfg.Commands.Dirs = []string{"tools/cmds"}
 	write(t, filepath.Join(st.sess.Root, "tools", "cmds", "plant.md"), "PLANTED")
 	typeLine(t, st, "/plant")
-	if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvCommandInvoked)) != 0 {
+	if st.takeTurn() != nil || len(storeEventsOf(t, store, agent.EvCommandInvoked)) != 0 {
 		t.Fatal("a command in the workspace ran without trust")
 	}
 	// An absolute path into the workspace, or through a link to it, is the same.
@@ -233,7 +233,7 @@ func TestQueuedCustomCommandsDoNotClobberTheWaitingTurn(t *testing.T) {
 	if turn == nil || turn.msg.Text != "LOOK" || strings.Join(st.loop.Tools.Names(), ",") != "read" {
 		t.Fatalf("turn %+v tools %v", turn, st.loop.Tools.Names())
 	}
-	if n := len(eventsOf(t, store, agent.EvCommandInvoked)); n != 1 {
+	if n := len(storeEventsOf(t, store, agent.EvCommandInvoked)); n != 1 {
 		t.Fatalf("%d commands recorded; the refused ones must not be", n)
 	}
 	turn.done()
@@ -255,7 +255,7 @@ func TestCustomCommandOutputIsNotReadAsAMention(t *testing.T) {
 		!strings.Contains(turn.msg.Text, "@other.md") {
 		t.Fatalf("turn: %+v", turn)
 	}
-	if n := len(eventsOf(t, store, agent.EvInputMention)); n != 1 {
+	if n := len(storeEventsOf(t, store, agent.EvInputMention)); n != 1 {
 		t.Fatalf("%d mentions", n)
 	}
 }
@@ -289,7 +289,7 @@ func TestRelativeCommandsDirAtHomeNeedsTrust(t *testing.T) {
 		write(t, filepath.Join(st.sess.Root, "cmds", "plant.md"), "PLANTED")
 		userCommand(t, "mine.md", "MINE")
 		typeLine(t, st, "/plant")
-		if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvCommandInvoked)) != 0 {
+		if st.takeTurn() != nil || len(storeEventsOf(t, store, agent.EvCommandInvoked)) != 0 {
 			t.Fatalf("above=%v: a relative commands dir ran without trust", above)
 		}
 		typeLine(t, st, "/mine")

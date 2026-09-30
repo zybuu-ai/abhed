@@ -75,7 +75,7 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-func eventsOf(t *testing.T, store *agent.MemStore, typ agent.EventType) []agent.Event {
+func storeEventsOf(t *testing.T, store *agent.MemStore, typ agent.EventType) []agent.Event {
 	t.Helper()
 	evs, err := store.Events("s-m")
 	if err != nil {
@@ -103,7 +103,7 @@ func TestMentionAttachesThroughTheReadTool(t *testing.T) {
 	if len(atts) != 1 || atts[0].Path != "notes.txt" || atts[0].Range != "2-3" {
 		t.Fatalf("attachments: %+v", atts)
 	}
-	mentions := eventsOf(t, store, agent.EvInputMention)
+	mentions := storeEventsOf(t, store, agent.EvInputMention)
 	if len(mentions) != 1 {
 		t.Fatalf("%d input.mention events", len(mentions))
 	}
@@ -120,7 +120,7 @@ func TestMentionAttachesThroughTheReadTool(t *testing.T) {
 		t.Fatalf("input.mention %+v does not describe what was attached", m)
 	}
 	// The read is the person's, recorded as the agent's reads are.
-	if reqs := eventsOf(t, store, agent.EvActionRequested); len(reqs) != 1 || reqs[0].Actor != agent.ActorUser {
+	if reqs := storeEventsOf(t, store, agent.EvActionRequested); len(reqs) != 1 || reqs[0].Actor != agent.ActorUser {
 		t.Fatalf("the read was not recorded as the person's: %+v", reqs)
 	}
 	// A mention of nothing on disk stays as text.
@@ -151,7 +151,7 @@ func TestMentionSymlinkEscapeRefused(t *testing.T) {
 			t.Errorf("%s: the refusal does not say why: %v", typed, err)
 		}
 	}
-	if n := len(eventsOf(t, store, agent.EvInputMention)); n != 0 {
+	if n := len(storeEventsOf(t, store, agent.EvInputMention)); n != 0 {
 		t.Fatalf("%d mentions recorded for refused reads", n)
 	}
 }
@@ -170,7 +170,7 @@ func TestMentionOfDeniedPathRefused(t *testing.T) {
 			t.Errorf("%s: the rule is not shown: %v", typed, err)
 		}
 	}
-	if n := len(eventsOf(t, store, agent.EvActionDenied)); n != 2 {
+	if n := len(storeEventsOf(t, store, agent.EvActionDenied)); n != 2 {
 		t.Fatalf("%d denials recorded, want 2", n)
 	}
 }

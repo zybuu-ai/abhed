@@ -29,7 +29,7 @@ func TestImportAppendsOnlyWhenConfirmed(t *testing.T) {
 	if len(sf.asked) != 2 || !strings.Contains(sf.asked[1].Body[0].Text, "use four spaces") {
 		t.Fatal("the file was not shown before it was imported")
 	}
-	if w := eventsOf(t, store, agent.EvMemoryWritten); len(w) != 1 || payloadOf(t, w[0])["kind"] != "import" {
+	if w := storeEventsOf(t, store, agent.EvMemoryWritten); len(w) != 1 || payloadOf(t, w[0])["kind"] != "import" {
 		t.Fatalf("memory.written %+v", w)
 	}
 }
@@ -66,7 +66,7 @@ func TestImportOfDeniedPathRefused(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(st.sess.Root, "ABHED.md")); strings.Contains(string(data), "CANARY") || len(sf.asked) != 0 {
 		t.Fatalf("imported a denied file: %q", data)
 	}
-	if len(eventsOf(t, store, agent.EvActionDenied)) != 1 {
+	if len(storeEventsOf(t, store, agent.EvActionDenied)) != 1 {
 		t.Fatal("the refusal is not recorded")
 	}
 }

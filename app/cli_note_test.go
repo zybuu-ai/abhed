@@ -40,7 +40,7 @@ func TestNoteGoesToTheChosenMemory(t *testing.T) {
 		if tc.file != "" && !strings.HasPrefix(string(data), "# Rules\nexisting\n") {
 			t.Fatalf("%s: the file's content was not kept: %q", tc.answer, data)
 		}
-		w := eventsOf(t, store, agent.EvMemoryWritten)
+		w := storeEventsOf(t, store, agent.EvMemoryWritten)
 		if len(w) != 1 || w[0].Actor != agent.ActorUser {
 			t.Fatalf("%s: memory.written %+v", tc.answer, w)
 		}
@@ -61,7 +61,7 @@ func TestNoteWithoutAnAnswerIsNotSaved(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(st.sess.Root, "ABHED.md")); err == nil {
 		t.Fatal("saved without an answer")
 	}
-	if len(eventsOf(t, store, agent.EvMemoryWritten)) != 0 || !strings.Contains(sf.shown(), "not saved") {
+	if len(storeEventsOf(t, store, agent.EvMemoryWritten)) != 0 || !strings.Contains(sf.shown(), "not saved") {
 		t.Fatalf("shown %q", sf.shown())
 	}
 }
@@ -77,7 +77,7 @@ func TestNoteFollowsPolicyAndBoundary(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(st.sess.Root, "ABHED.md")); err == nil {
 		t.Fatal("a denied write happened")
 	}
-	if len(eventsOf(t, store, agent.EvActionDenied)) != 1 || !strings.Contains(sf.shown(), "write(ABHED.md)") {
+	if len(storeEventsOf(t, store, agent.EvActionDenied)) != 1 || !strings.Contains(sf.shown(), "write(ABHED.md)") {
 		t.Fatalf("denial not recorded and shown: %q", sf.shown())
 	}
 

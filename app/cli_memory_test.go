@@ -21,7 +21,7 @@ func TestMemoryLoadedRecordedOncePerConversation(t *testing.T) {
 	t.Cleanup(func() { sessionMemory.Store(nil) })
 	recordMemoryLoaded(st)
 	recordMemoryLoaded(st)
-	ev := eventsOf(t, store, agent.EvMemoryLoaded)
+	ev := storeEventsOf(t, store, agent.EvMemoryLoaded)
 	if len(ev) != 1 {
 		t.Fatalf("%d memory.loaded events", len(ev))
 	}

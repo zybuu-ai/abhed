@@ -50,7 +50,7 @@ func TestOutputStyle(t *testing.T) {
 	if st.loop.Config.SystemPrompt != "FRESH" {
 		t.Fatalf("off left %q", st.loop.Config.SystemPrompt)
 	}
-	if n := len(eventsOf(t, store, agent.EvCommandInvoked)); n != 3 {
+	if n := len(storeEventsOf(t, store, agent.EvCommandInvoked)); n != 3 {
 		t.Fatalf("%d choices recorded", n)
 	}
 }
