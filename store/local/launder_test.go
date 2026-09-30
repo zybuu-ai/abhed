@@ -354,3 +354,26 @@ func TestFirstLineWithoutAHeadIsACrash(t *testing.T) {
 		t.Fatalf("index after: %+v", rep)
 	}
 }
+
+// The review's probe E: a line the head counts, cut to a fragment. Verify
+// and open give the same reason, and verify does not promise a repair.
+func TestCountedLineCutShort(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one", "two", "three")
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	cutLines(t, s2.Path("s-1"), 2, `{"seq":3,"id":"x`)
+	rep, _ := s2.Verify("s-1")
+	if rep.OK || rep.Reason != cutShort {
+		t.Fatalf("verify: %+v", rep)
+	}
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "cuts it off") {
+			t.Fatalf("verify promises a repair: %q", n)
+		}
+	}
+	if err := s2.Acquire("s-1"); err == nil || !strings.Contains(err.Error(), cutShort) {
+		t.Fatalf("open: %v", err)
+	}
+}

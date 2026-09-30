@@ -123,6 +123,9 @@ func checkHeadOrFirstLine(rep *Report, lines []line, head Head, have, absent boo
 	checkHead(rep, lines, head, have)
 }
 
+// cutShort is why a record whose head counts an unfinished last line fails.
+const cutShort = "the last line the head counts is cut short"
+
 // exists reports whether anything is at path, a link included.
 func exists(path string) bool {
 	_, err := os.Lstat(path)
@@ -170,7 +173,7 @@ func verifyData(data []byte, session string) Report {
 	rep, lines := verifyLines(raws, session)
 	if len(s.tail) > 0 {
 		rep.Torn = int64(len(s.tail))
-		rep.Notes = append(rep.Notes, fmt.Sprintf("an unfinished last line of %d bytes, which a crash leaves; it is cut off when the session is next opened", len(s.tail)))
+		rep.Notes = append(rep.Notes, fmt.Sprintf("an unfinished last line of %d bytes, left out", len(s.tail)))
 	}
 	switch {
 	case trailer != nil:
@@ -223,11 +226,19 @@ func (s *Store) Verify(id string) (Report, error) {
 	}
 	sc := scan(data)
 	rep, lines := verifyLines(sc.raws, id)
+	head, have := s.readHead(id)
 	if len(sc.tail) > 0 {
 		rep.Torn = int64(len(sc.tail))
-		rep.Notes = append(rep.Notes, fmt.Sprintf("an unfinished last line of %d bytes, which a crash leaves; it is cut off when the session is next opened", len(sc.tail)))
+		if have && head.Lines > int64(len(lines)) {
+			// The head counts it: a cut, which no open repairs.
+			if rep.OK {
+				rep.OK, rep.FirstBad = false, rep.Head.Seq+1
+				rep.Reason = cutShort
+			}
+		} else {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("an unfinished last line of %d bytes, which a crash leaves; the next writer cuts it off", len(sc.tail)))
+		}
 	}
-	head, have := s.readHead(id)
 	checkHeadOrFirstLine(&rep, lines, head, have, !exists(s.headPath(id)))
 	if rep.OK {
 		s.checkIndexHeads(&rep, id, lines)

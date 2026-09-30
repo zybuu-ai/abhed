@@ -363,7 +363,7 @@ func (s *Store) load(id string, lk *os.File, create, unlisted bool) (*session, e
 	rep, lines := verifyLines(sc.raws, id)
 	if len(sc.tail) > 0 && action == keep && rep.OK {
 		rep.OK, rep.FirstBad = false, rep.Head.Seq+1
-		rep.Reason = "the last line the head counts is cut short"
+		rep.Reason = cutShort
 	}
 	if len(sc.raws) > 0 || have {
 		checkHeadOrFirstLine(&rep, lines, head, have, !exists(s.headPath(id)))
