@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,41 +54,41 @@ func TestRegistryKeepsTheHelpList(t *testing.T) {
 	}
 }
 
-type fakeSource []slashCmd
+type fakeSource struct {
+	kind string
+	cmds []slashCmd
+}
 
-func (f fakeSource) SlashCommands() []slashCmd { return f }
+func (f fakeSource) Source() string            { return f.kind }
+func (f fakeSource) SlashCommands() []slashCmd { return f.cmds }
 
 func runs(name string, ran *string) func(context.Context, *cmdEnv, []string) (bool, error) {
 	return func(context.Context, *cmdEnv, []string) (bool, error) { *ran = name; return false, nil }
 }
 
-// A run-time command can never take a built-in's name or alias, nor claim to
-// be built in; of two that share a name, the first source wins.
+// A run-time command can never take a built-in's name or alias; of two that
+// share a name, the first source wins.
 func TestBuiltinNamesAlwaysWin(t *testing.T) {
 	var ran string
-	src := fakeSource{
-		{Name: "/mode", Source: sourceWorkspace, Run: runs("workspace /mode", &ran)},
-		{Name: "/leave", Aliases: []string{"/exit"}, Source: sourceUser, Run: runs("user /leave", &ran)},
-		{Name: "/sneaky", Source: sourceBuiltin, Run: runs("claims builtin", &ran)},
-		{Name: "/nosource", Run: runs("no source", &ran)},
-		{Name: "/deploy", Args: "[env]", Help: "ship it", Source: sourceUser, Run: runs("user /deploy", &ran)},
-		{Name: "/deploy", Source: sourceMCP, Run: runs("mcp /deploy", &ran)},
-	}
-	dyn := []slashSource{src}
+	user := fakeSource{sourceUser, []slashCmd{
+		{Name: "/mode", Run: runs("user /mode", &ran)},
+		{Name: "/leave", Aliases: []string{"/exit"}, Run: runs("user /leave", &ran)},
+		{Name: "/deploy", Args: "[env]", Help: "ship it", Run: runs("user /deploy", &ran)},
+	}}
+	mcp := fakeSource{sourceMCP, []slashCmd{{Name: "/deploy", Run: runs("mcp /deploy", &ran)}}}
+	dyn := []slashSource{user, mcp}
 
-	c, ok := builtinSlash.lookup("/mode", dyn)
+	c, _, ok := builtinSlash.lookup("/mode", dyn)
 	if !ok || c.Source != sourceBuiltin {
 		t.Fatalf("/mode resolved to %+v", c)
 	}
-	if c, _ := builtinSlash.lookup("/exit", dyn); c.Name != "/quit" {
+	if c, _, _ := builtinSlash.lookup("/exit", dyn); c.Name != "/quit" {
 		t.Fatalf("/exit resolved to %s, not the built-in /quit", c.Name)
 	}
-	for _, name := range []string{"/leave", "/sneaky", "/nosource"} {
-		if _, ok := builtinSlash.lookup(name, dyn); ok {
-			t.Errorf("%s was admitted", name)
-		}
+	if _, why, ok := builtinSlash.lookup("/leave", dyn); ok || !strings.Contains(why, "built-in /exit") {
+		t.Errorf("/leave: admitted %v, why %q", ok, why)
 	}
-	c, ok = builtinSlash.lookup("/deploy", dyn)
+	c, _, ok = builtinSlash.lookup("/deploy", dyn)
 	if !ok || c.Source != sourceUser {
 		t.Fatalf("/deploy resolved to %+v, want the first source's", c)
 	}
@@ -96,7 +98,7 @@ func TestBuiltinNamesAlwaysWin(t *testing.T) {
 	for _, c := range list {
 		names[c.Name]++
 	}
-	if names["/mode"] != 1 || names["/deploy"] != 1 || names["/sneaky"] != 0 || names["/leave"] != 0 {
+	if names["/mode"] != 1 || names["/deploy"] != 1 || names["/leave"] != 0 {
 		t.Fatalf("listed %v", names)
 	}
 	if list[len(list)-1].Name != "/deploy" {
@@ -116,6 +118,63 @@ func TestBuiltinNamesAlwaysWin(t *testing.T) {
 	ran = ""
 	if handleCommand(context.Background(), "/leave", r, pol, nil, st) || ran != "" {
 		t.Fatalf("a command that shadows a built-in alias ran: %q", ran)
+	}
+}
+
+// The source is the loader's to say: a command cannot record itself as
+// managed or built in, and a source of no known kind supplies nothing.
+func TestCommandSourceIsSetByTheLoader(t *testing.T) {
+	var ran string
+	dyn := []slashSource{
+		fakeSource{sourceWorkspace, []slashCmd{{Name: "/ship", Source: sourceManaged, Run: runs("ship", &ran)}}},
+		fakeSource{sourceBuiltin, []slashCmd{{Name: "/sneaky", Run: runs("sneaky", &ran)}}},
+		fakeSource{"", []slashCmd{{Name: "/nosource", Run: runs("nosource", &ran)}}},
+		fakeSource{sourceUser, []slashCmd{{Name: "/norun"}}},
+	}
+	c, _, ok := builtinSlash.lookup("/ship", dyn)
+	if !ok || c.Source != sourceWorkspace {
+		t.Fatalf("/ship resolved to source %q, want the loader's %q", c.Source, sourceWorkspace)
+	}
+	for _, name := range []string{"/sneaky", "/nosource", "/norun"} {
+		if _, why, ok := builtinSlash.lookup(name, dyn); ok || why == "" {
+			t.Errorf("%s: admitted %v, why %q", name, ok, why)
+		}
+	}
+}
+
+// A run-time name that differs from a built-in's only by case, separators or
+// look-alike digits, or that uses characters outside plain ASCII, is refused
+// and the person is told why rather than left with two look-alike commands.
+func TestLookalikeNamesAreRefusedAndSaid(t *testing.T) {
+	var ran string
+	var cmds []slashCmd
+	for _, n := range []string{"/Mode", "/MODE", "/m0de", "/hawk-eye", "/c1ear", "/m\u043ede", "/mode\u200b", "/Exit", "/deploy"} {
+		cmds = append(cmds, slashCmd{Name: n, Run: runs(n, &ran)})
+	}
+	dyn := []slashSource{fakeSource{sourceWorkspace, cmds}}
+	admitted, dropped := builtinSlash.admitted(dyn)
+	if len(admitted) != 1 || admitted[0].Name != "/deploy" {
+		t.Fatalf("admitted %v", admitted)
+	}
+	if len(dropped) != len(cmds)-1 {
+		t.Fatalf("dropped %v", dropped)
+	}
+	warnings := slashWarnings(dyn)
+	if len(warnings) != len(dropped) || !strings.Contains(warnings[0], "workspace command /Mode is not available: /Mode looks like the built-in /mode") {
+		t.Fatalf("warnings %q", warnings)
+	}
+	var out strings.Builder
+	r := ui.NewRenderer(&out, false)
+	st := &cliState{dynamic: dyn}
+	old := os.Stdout
+	rd, w, _ := os.Pipe()
+	os.Stdout = w
+	handleCommand(context.Background(), "/m0de", r, policy.New(policy.ModeDefault), nil, st)
+	w.Close()
+	os.Stdout = old
+	printed, _ := io.ReadAll(rd)
+	if ran != "" || !strings.Contains(string(printed), "/m0de is not available: /m0de looks like the built-in /mode") {
+		t.Fatalf("ran %q, printed %q", ran, printed)
 	}
 }
 
@@ -166,14 +225,14 @@ func TestDispatchQuitUnknownAndErrors(t *testing.T) {
 		t.Error("an unknown command quit the session")
 	}
 	var gotArgs []string
-	st.dynamic = []slashSource{fakeSource{{Name: "/fails", Source: sourceUser,
+	st.dynamic = []slashSource{fakeSource{sourceUser, []slashCmd{{Name: "/fails",
 		Run: func(_ context.Context, e *cmdEnv, args []string) (bool, error) {
 			if e.st != st || e.pol != pol || e.r != r {
 				t.Error("the command did not get the session's environment")
 			}
 			gotArgs = args
 			return false, errors.New("boom")
-		}}}}
+		}}}}}
 	if handleCommand(context.Background(), "/fails a b", r, pol, nil, st) {
 		t.Error("a failing command quit the session")
 	}
@@ -199,11 +258,11 @@ func TestBuiltinsAreDescribed(t *testing.T) {
 func TestCommandsGetASurfaceThatRefusesQuestions(t *testing.T) {
 	var got string
 	var gotErr error
-	st := &cliState{dynamic: []slashSource{fakeSource{{Name: "/ask", Source: sourceUser,
+	st := &cliState{dynamic: []slashSource{fakeSource{sourceUser, []slashCmd{{Name: "/ask",
 		Run: func(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 			got, gotErr = e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "sure?"})
 			return false, nil
-		}}}}}
+		}}}}}}
 	done := make(chan struct{})
 	go func() {
 		handleCommand(context.Background(), "/ask", ui.NewRenderer(io.Discard, false), policy.New(policy.ModeDefault), nil, st)
@@ -216,5 +275,30 @@ func TestCommandsGetASurfaceThatRefusesQuestions(t *testing.T) {
 	}
 	if got != "" || !errors.Is(gotErr, ui.ErrNoAnswer) {
 		t.Fatalf("got %q, %v", got, gotErr)
+	}
+}
+
+// reentrant registers a command while being asked for its own.
+type reentrant struct{ g *slashRegistry }
+
+func (reentrant) Source() string { return sourceMCP }
+func (r reentrant) SlashCommands() []slashCmd {
+	r.g.register(slashCmd{Name: "/late", Run: func(context.Context, *cmdEnv, []string) (bool, error) { return false, nil }})
+	return nil
+}
+
+// Sources are code the registry does not control, so they are asked without
+// its lock held: one that registers, or blocks, cannot deadlock it.
+func TestSourcesAreAskedOutsideTheLock(t *testing.T) {
+	g := &slashRegistry{byName: map[string]*slashCmd{}}
+	done := make(chan struct{})
+	go func() {
+		g.admitted([]slashSource{reentrant{g}})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("asking a source deadlocked the registry")
 	}
 }
