@@ -341,7 +341,8 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
 	// On the host the same text is the operating system's refusal, not a sandbox's.
-	if exitCode != 0 && b.network() == networkOff && networkFailure(content) {
+	// Any exit code: a pipeline's last command can succeed after curl failed.
+	if b.network() == networkOff && networkFailure(content) {
 		content += "\n\n" + networkHint
 	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
 		content += "\n\n" + hint
