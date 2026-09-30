@@ -603,6 +603,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed serve` on Postgres could leave an event, such as a parallel
+  subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
+  took their seq before writing, so a later seq could commit first; the
+  stream read the record on the gap, moved past it, and then skipped the
+  earlier one when it landed. A session's events are now written and
+  published in seq order.
 - `abhed rpc` and `abhed acp` ignored `limits.max_turns` from the user's and
   a trusted workspace's configuration, which bind the CLI and the server: a
   limit of 2 ran 16 turns. They now take it as the CLI does. An untrusted
