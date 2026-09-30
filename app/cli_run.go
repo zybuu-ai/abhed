@@ -108,6 +108,8 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg),
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
+	// ask_user, for the main conversation at a terminal only (input track).
+	registry = withAsk(registry, prompt == "")
 	// The memory in it follows the configuration and the read rules (input track).
 	loopCfg.SystemPrompt = cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.Names())
 

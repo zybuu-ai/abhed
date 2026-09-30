@@ -117,6 +117,7 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 	if err := recordMove(st); err != nil {
 		return err
 	}
+	personAsk.SetAsker(surfaceAsker{st: st})
 	if st.loop == nil {
 		id := newConversationID()
 		// The session state's config: /model changes which provider it names.
@@ -188,4 +189,58 @@ func argsJSON(v any) json.RawMessage {
 		panic(fmt.Sprintf("abhed: marshal arguments: %v", err))
 	}
 	return b
+}
+
+// personAsk is the interactive session's ask_user tool. Only the main
+// conversation has it, and only at a terminal the person is at: a headless
+// run has no one to ask, and the tool is never answered for them.
+var personAsk = tools.NewAsk()
+
+// surfaceAsker puts the agent's question to the person as a choice dialog.
+// It is a question, not an approval: no default, and nothing it answers
+// changes a rule or the mode.
+type surfaceAsker struct {
+	st *cliState
+}
+
+func (a surfaceAsker) AskPerson(ctx context.Context, q tools.Question) (string, error) {
+	choices := make([]ui.Choice, 0, len(q.Options)+1)
+	keys := "abcdefgh"
+	for i, o := range q.Options {
+		label := o.Label
+		if o.Description != "" {
+			label += " — " + o.Description
+		}
+		choices = append(choices, ui.Choice{ID: fmt.Sprintf("o%d", i), Label: label, Key: rune(keys[i])})
+	}
+	choices = append(choices, ui.Choice{ID: "none", Label: "None of these; I will say in the chat", Key: 'x'})
+	id, err := surfaceOf(a.st, nil).Dialog(ctx, ui.DialogSpec{
+		Kind:    ui.DialogChoice,
+		Title:   q.Question,
+		Choices: choices,
+		Why:     "asked by the agent · a question, not an approval",
+	})
+	if err != nil {
+		return "", tools.ErrNotAnswered
+	}
+	if id == "none" {
+		return "none of the options; they will say what they want in the chat", nil
+	}
+	for i, o := range q.Options {
+		if id == fmt.Sprintf("o%d", i) {
+			return o.Label, nil
+		}
+	}
+	return "", tools.ErrNotAnswered
+}
+
+// withAsk is the main conversation's registry with the ask_user tool, for an
+// interactive session; subagents keep the registry they were given.
+func withAsk(reg *tools.Registry, interactive bool) *tools.Registry {
+	if !interactive {
+		return reg
+	}
+	out := reg.Clone()
+	out.Add(personAsk)
+	return out
 }
