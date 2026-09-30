@@ -167,7 +167,9 @@ once its last check is that old. A stream that fails ends with an
 `event: refused` carrying the reason, and reconnecting meets the ordinary
 `401` or `403`. `StreamRecheck` in the server options can shorten the
 interval, never lengthen it past 15 seconds. The terminal's command itself
-keeps running until it ends or is stopped.
+keeps running until it ends or is stopped. Each recheck reruns the sign-in
+providers and reads the session once, so 1,000 open streams cost about 100
+session reads a second at the default interval; size the store for it.
 
 A users file must not be shared by servers or `abhed user` commands of
 different versions: one older than the release that added the revocation

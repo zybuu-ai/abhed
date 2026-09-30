@@ -468,3 +468,98 @@ func TestStreamRecheckIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// markStale asks every open stream to check before its next write, without
+// waking it: only the check on the write path can then refuse.
+func (g *streamRig) markStale() {
+	g.s.streamMu.Lock()
+	defer g.s.streamMu.Unlock()
+	for sg := range g.s.streams {
+		select {
+		case sg.stale <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// The write itself checks: an event arriving with a recheck, before the
+// wake-up is seen, is not delivered to a refused caller.
+func TestEventStreamWriteChecksAPendingRecheck(t *testing.T) {
+	g := newStreamRig(t, flipAuth)
+	g.s.opts.StreamRecheck = maxStreamRecheck
+	lines := g.openEvents(t)
+	waitFor(t, lines, seqLine(g.emit(t)))
+
+	g.prov.allow.Store(false)
+	g.markStale()
+	late := g.emit(t)
+	seen := untilClosed(t, lines, 2*time.Second)
+	for _, l := range seen {
+		if l == seqLine(late) {
+			t.Fatalf("event %d, written with a recheck pending, was delivered: %q", late, seen)
+		}
+	}
+	if !strings.Contains(strings.Join(seen, "\n"), "event: refused") {
+		t.Fatalf("stream closed without saying why: %q", seen)
+	}
+}
+
+// The same for a terminal's next chunk of output.
+func TestTerminalStreamWriteChecksAPendingRecheck(t *testing.T) {
+	g := newStreamRig(t, flipAuth)
+	g.s.opts.StreamRecheck = maxStreamRecheck
+	run := g.startTestPTY()
+	lines := g.open(t, "/v1/sessions/s1/pty/p1")
+	waitSubscribed(t, run)
+	run.say("before")
+	waitFor(t, lines, said("before"))
+
+	g.prov.allow.Store(false)
+	g.markStale()
+	run.say("after")
+	seen := untilClosed(t, lines, 2*time.Second)
+	for _, l := range seen {
+		if l == said("after") {
+			t.Fatalf("output delivered with a recheck pending: %q", seen)
+		}
+	}
+	if !strings.Contains(strings.Join(seen, "\n"), "event: refused") {
+		t.Fatalf("terminal stream closed without saying why: %q", seen)
+	}
+}
+
+// swapProvider accepts bob's cookie but names whoever subject holds, standing
+// in for credentials that come to name someone else.
+type swapProvider struct{ subject atomic.Value }
+
+func (p *swapProvider) Name() string { return "swap" }
+func (p *swapProvider) Identify(r *http.Request) (*auth.Identity, bool) {
+	if c, err := r.Cookie("flip"); err != nil || c.Value != "bob" {
+		return nil, false
+	}
+	return &auth.Identity{Subject: p.subject.Load().(string), Tenant: "default"}, true
+}
+func (p *swapProvider) Routes(*http.ServeMux)                          {}
+func (p *swapProvider) PublicPaths() []string                          { return nil }
+func (p *swapProvider) SignIn() (string, string)                       { return "", "" }
+func (p *swapProvider) SignOut(w http.ResponseWriter, _ *http.Request) {}
+
+// A stream whose credentials now name another person ends for that reason,
+// before the session check is reached.
+func TestEventStreamEndsWhenTheSignInNamesSomeoneElse(t *testing.T) {
+	swap := &swapProvider{}
+	swap.subject.Store("bob")
+	g := newStreamRig(t, func(*flipProvider) *auth.Middleware {
+		return &auth.Middleware{Providers: []auth.Provider{swap}, PublicPaths: PublicPaths()}
+	})
+	g.s.opts.StreamRecheck = maxStreamRecheck
+	lines := g.openEvents(t)
+	waitFor(t, lines, seqLine(g.emit(t)))
+
+	swap.subject.Store("mallory")
+	g.s.RecheckStreams()
+	seen := strings.Join(untilClosed(t, lines, 2*time.Second), "\n")
+	if !strings.Contains(seen, errStreamIdentity.Error()) {
+		t.Fatalf("stream did not end on the changed identity: %q", seen)
+	}
+}

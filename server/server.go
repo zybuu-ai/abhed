@@ -1898,13 +1898,16 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	// ended is true once the stream is over: the session ended or the
 	// caller is no longer authorised to read it.
 	send := func(batch []agent.Event) (ended bool) {
-		if err := guard.allowed(); err != nil {
-			endStream(w, err)
-			return true
-		}
 		for _, e := range batch {
 			if e.Seq <= lastSeq {
 				continue
+			}
+			// Per event, not per batch: a refill can be a whole backlog, and a
+			// recheck asked for midway must stop the rest of it.
+			if err := guard.allowed(); err != nil {
+				flusher.Flush()
+				endStream(w, err)
+				return true
 			}
 			lastSeq = e.Seq
 			writeSSE(w, e)
