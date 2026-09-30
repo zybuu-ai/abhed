@@ -108,7 +108,7 @@ func (k *keyReader) read() (key, error) {
 	case ']', 'P', '_', '^', 'X':
 		// A terminal's answer arrives whole, in one write; Alt+] or
 		// Alt+Shift+P pressed by a person is those two bytes alone.
-		if k.br.Buffered() > 0 {
+		if k.br.Buffered() > 0 || k.replyFollows(next) {
 			return k.controlString(next)
 		}
 	case 'O':
@@ -123,6 +123,38 @@ func (k *keyReader) read() (key, error) {
 		return key{code: kEsc}, nil
 	}
 	return key{r: next, alt: true}, nil
+}
+
+// replyWait is how long a split reply may take to go on after "ESC ]" or
+// "ESC P"; a person's Alt key waits this long before it is a key.
+const replyWait = 150 * time.Millisecond
+
+// replyFollows reports whether what arrives within replyWait after "ESC ]"
+// or "ESC P" begins as a terminal's answer does: "digits;" for an OSC, as
+// the colour answer "11;rgb:…" does, and "1$r", "0$r", "1+r", "0+r" or ">|"
+// for a DCS. A reply split by a slow link right after its introducer was
+// otherwise read as Alt+] and then typed into the prompt.
+func (k *keyReader) replyFollows(kind rune) bool {
+	if (kind != ']' && kind != 'P') || k.ready == nil || !k.ready(replyWait) {
+		return false
+	}
+	if _, err := k.br.Peek(1); err != nil {
+		return false
+	}
+	head, _ := k.br.Peek(k.br.Buffered())
+	if kind == 'P' {
+		for _, p := range []string{"1$r", "0$r", "1+r", "0+r", ">|"} {
+			if strings.HasPrefix(string(head), p) {
+				return true
+			}
+		}
+		return false
+	}
+	i := 0
+	for i < len(head) && head[i] >= '0' && head[i] <= '9' {
+		i++
+	}
+	return i > 0 && i < len(head) && head[i] == ';'
 }
 
 // replyMax bounds a terminal reply that is read and set aside.

@@ -2,8 +2,10 @@ package ui
 
 import (
 	"bufio"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The decoder turns every sequence terminals send into one key.
@@ -126,5 +128,63 @@ func TestTerminalRepliesAreNotKeys(t *testing.T) {
 		if k, _ := kr.read(); k.r != 'a' || k.code != kNone {
 			t.Errorf("%q: the key after it was %+v", seq, k)
 		}
+	}
+}
+
+// chunked hands out one chunk per Read, as bytes split by a slow link arrive.
+type chunked struct{ parts []string }
+
+func (c *chunked) Read(p []byte) (int, error) {
+	if len(c.parts) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.parts[0])
+	c.parts[0] = c.parts[0][n:]
+	if c.parts[0] == "" {
+		c.parts = c.parts[1:]
+	}
+	return n, nil
+}
+
+// A reply split right after its introducer is still a reply when the rest
+// begins as an answer does; Alt+] followed by typing stays Alt+] and the
+// typing.
+func TestSplitReplyAfterIntroducer(t *testing.T) {
+	for _, c := range []struct {
+		parts []string
+		reply bool
+	}{
+		{[]string{"\x1b]", "11;rgb:0000/0000/0000\x07a"}, true},
+		{[]string{"\x1b]", "4;1;rgb:ffff/0000/0000\x1b\\a"}, true},
+		{[]string{"\x1bP", "1$r0m\x1b\\a"}, true},
+		{[]string{"\x1bP", ">|xterm(390)\x1b\\a"}, true},
+		{[]string{"\x1b]", "a"}, false},
+		{[]string{"\x1b]", "11a"}, false},
+		{[]string{"\x1b]", ";a"}, false},
+		{[]string{"\x1bP", "1a"}, false},
+		{[]string{"\x1b_", "Gi=1;OK\x1b\\a"}, false},
+	} {
+		kr := newKeyReader(bufio.NewReader(&chunked{parts: append([]string(nil), c.parts...)}))
+		kr.ready = func(time.Duration) bool { return true }
+		k, _ := kr.read()
+		if got := k.code == kReply; got != c.reply {
+			t.Errorf("%q: got %+v, want reply=%v", c.parts, k, c.reply)
+			continue
+		}
+		if !c.reply {
+			if !k.alt {
+				t.Errorf("%q: want an Alt key, got %+v", c.parts, k)
+			}
+			continue
+		}
+		if k, _ := kr.read(); k.r != 'a' || k.code != kNone {
+			t.Errorf("%q: the key after it was %+v", c.parts, k)
+		}
+	}
+	// Nothing more arrives: Alt+] at once, with no reply read.
+	kr := newKeyReader(bufio.NewReader(&chunked{parts: []string{"\x1b]"}}))
+	kr.ready = func(time.Duration) bool { return false }
+	if k, _ := kr.read(); k.code == kReply || !k.alt || k.r != ']' {
+		t.Errorf("a lone Alt+]: %+v", k)
 	}
 }

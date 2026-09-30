@@ -69,3 +69,28 @@ func TestTUILateReplyIsNotTyped(t *testing.T) {
 		t.Fatal("the answer's BEL opened the editor")
 	}
 }
+
+// A late answer split by the link right after "ESC ]" is still an answer:
+// neither half is typed and its BEL does not open the editor.
+func TestTUISplitLateReplyIsNotTyped(t *testing.T) {
+	stub, ws := tuiWorkspace(t, "")
+	marker := filepath.Join(ws, "editor-ran")
+	t.Setenv("VISUAL", "touch "+marker)
+	r := startTUI(t, stub, ws, 80, 24)
+	r.quiet(100 * time.Millisecond)
+	r.send("\x1b]")
+	time.Sleep(80 * time.Millisecond)
+	r.send("11;rgb:ffff/ffff/ffff\x07")
+	time.Sleep(300 * time.Millisecond)
+	r.send("hello\r")
+	r.waitText("You said: hello")
+	if p := stub.prompt(); p != "hello" {
+		t.Fatalf("the model got %q", p)
+	}
+	if strings.Contains(r.term.All(), "rgb:") {
+		t.Fatalf("the answer was typed:\n%s", r.term.All())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the answer's BEL opened the editor")
+	}
+}
