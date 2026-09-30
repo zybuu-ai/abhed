@@ -259,6 +259,19 @@ render(ev(5, 'subagent.action', {session:'child', call_id:'k3', tool:'bash', sub
   check('and none is offered as an open card', open().length === 0 && asks.size === 0);
 }
 
+// A page whose run ended, a second tab say, follows the next turn another
+// tab starts: it asks the server now and then, and opens the stream.
+fresh('s22', false); es = null; __connected.length = 0;
+__sessions = [{id:'s22', state:'idle'}];
+watchIdle(); await tick();
+check('an idle session is left idle', !live && __connected.length === 0);
+__sessions = [{id:'s22', state:'running'}];
+watchIdle(); await tick();
+check('a turn started elsewhere is followed', live && __connected.length === 1 && __connected[0] === 's22');
+es = {}; __routes.length = 0; live = false;
+watchIdle(); await tick();
+check('a page with a stream open does not ask', !__routes.includes('GET /v1/sessions'));
+
 // A pipeline step's ask names the pipeline asking.
 fresh('s19', true);
 render(ev(1, 'action.requested', {call_id:'step_1', tool:'bash', args:{command:'date -u > stamp.txt'}, requires_approval:true, via:'skill tide-audit pipeline'}));

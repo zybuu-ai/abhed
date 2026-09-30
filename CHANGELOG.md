@@ -439,6 +439,11 @@ All notable changes to Abhed are recorded here. The format follows
   configured on this deployment" and its description named none. It now
   reads the secrets store by name as the CLI's does, and each name still
   needs its own `secret(NAME)` allow rule.
+- A second `/ide` tab stopped following a session once the run it opened
+  into ended: a turn started from another tab, and its approval, never
+  appeared in it, though its status bar still read connected. A page open
+  on a session with no run now asks the server every few seconds and
+  follows the next turn.
 - The console's mode selector always started on `default`, and a server
   lets a client choose only its configured mode or `plan`, so on a server
   configured with another mode the first message was refused (403). It now

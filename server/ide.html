@@ -1307,6 +1307,10 @@ function connIdle(){
   if(!document.hidden && !connTimer && !signInGone && connState === true && !(es && es.readyState === 1)) connLost(false);
 }
 setInterval(connIdle, 5000);
+// A page open on a session whose run has ended holds no stream, and another
+// tab or client may start the next turn: ask now and then, and follow it.
+function watchIdle(){ if(current && !live && !es && !document.hidden && !signInGone && !leaving) recheck(current); }
+setInterval(watchIdle, 4000);
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
