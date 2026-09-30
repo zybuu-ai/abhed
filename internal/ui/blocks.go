@@ -138,7 +138,7 @@ func wrapWords(text string, width int) []string {
 			row.Reset()
 			used = 0
 		case ww > width:
-			for _, part := range hardWrap(word, width) {
+			for _, part := range breakWord(word, width) {
 				if used > 0 && used+displayWidth(part) > width {
 					rows = append(rows, strings.TrimRight(row.String(), " "))
 					row.Reset()
@@ -175,6 +175,23 @@ func splitKeepSpaces(text string) []string {
 		out = append(out, text[start:])
 	}
 	return out
+}
+
+// breakWord cuts a word wider than a row into pieces of at most width
+// columns, after a slash or a dash where one falls near the end of a piece,
+// so a long path breaks between its parts.
+func breakWord(word string, width int) []string {
+	var out []string
+	for displayWidth(word) > width {
+		rows := hardWrap(word, width)
+		piece := rows[0]
+		if i := strings.LastIndexAny(piece, "/-_."); i >= width/2 && i < len(piece)-1 {
+			piece = piece[:i+1]
+		}
+		out = append(out, piece)
+		word = word[len(piece):]
+	}
+	return append(out, word)
 }
 
 // viewBlock wraps something the terminal draws in the I0 Block the Surface

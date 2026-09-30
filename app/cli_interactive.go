@@ -62,17 +62,6 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	if ap, ok := approver.(*ui.Approver); ok {
 		ap.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
 			wasThinking := r.PauseThinking()
-			if editor.Raw() {
-				// Raw TTY: answer with a single keypress.
-				read, end := editor.ApprovalKeys(ctx)
-				cleanup := func() {
-					end()
-					if wasThinking {
-						r.StartThinking()
-					}
-				}
-				return read, cleanup
-			}
 			// Piped stdin: the answer arrives as a line on the lines channel,
 			// handed over by the steering loop's prompter.Deliver.
 			read := func() (string, bool) { return prompter.Await(ctx) }
@@ -83,6 +72,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 			return read, cleanup
 		}
+		// On a terminal the question is the dock's guarded dialog.
+		approver = dialogApprover(ap, editor, r, sess)
 	}
 
 	lines := make(chan string)

@@ -212,23 +212,6 @@ func (l *LineReader) Typing() bool {
 // when it is not.
 func (l *LineReader) Raw() bool { return l.raw }
 
-// ApprovalKeys routes decision keys to a line-based approval until end, in
-// raw mode. read arms the key guard each call: the approver calls it just
-// after drawing.
-func (l *LineReader) ApprovalKeys(ctx context.Context) (read func() (string, bool), end func()) {
-	keys := l.d.beginLegacy()
-	read = func() (string, bool) {
-		l.d.armLegacy()
-		select {
-		case k := <-keys:
-			return string(k), true
-		case <-ctx.Done():
-			return "", false
-		}
-	}
-	return read, l.d.endLegacy
-}
-
 // Quiet marks a turn as running (true) or finished (false). The dock stays
 // on screen either way: what is typed during a turn is shown as it is typed,
 // and Esc stops the turn.

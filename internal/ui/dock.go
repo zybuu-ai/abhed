@@ -67,7 +67,6 @@ type dock struct {
 	queued []string
 
 	dlg     *dialogState
-	legacy  *legacyApproval
 	help    bool
 	hint    string
 	hintAt  time.Time
@@ -219,9 +218,6 @@ func (d *dock) key(k key, at time.Time) func() {
 	}
 	if d.dlg != nil {
 		d.dialogKey(k, at, gap)
-		return nil
-	}
-	if d.legacy != nil && d.legacyKey(k, at, gap) {
 		return nil
 	}
 	if d.searching && d.searchKey(k) {

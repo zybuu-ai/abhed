@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+// approvalGuard is the quiet a dialog's answer needs: after the dialog
+// appears, after the key before it, and after itself.
+const approvalGuard = 300 * time.Millisecond
+
+// Notices the line-based approver shows in place of an answer: typing is
+// kept as steering, or a decision key was pressed on a line with text.
+const (
+	approvalHeld rune = 0
+	approvalBusy rune = 1
+)
+
 // dialogState is a dialog on screen.
 type dialogState struct {
 	spec     DialogSpec
@@ -225,11 +236,15 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	inner := max(w-2, 10)
 	var head, body, tail []string
 
-	head = append(head, s.Accent("╭─ ")+s.Bold(truncateWidth(st.spec.Title, w-4)))
-	for _, l := range wrapWords(st.spec.Why, inner) {
-		if strings.TrimSpace(l) != "" {
-			head = append(head, bar+s.Dim(l))
+	for i, l := range wrapWords(st.spec.Title, w-4) {
+		lead := s.Accent("╭─ ")
+		if i > 0 {
+			lead = bar + " "
 		}
+		head = append(head, lead+s.Bold(l))
+	}
+	for _, l := range whyRows(st.spec.Why, inner) {
+		head = append(head, bar+s.Dim(l))
 	}
 	for _, b := range st.spec.Body {
 		for _, l := range blockView(b).lines(inner, s, false) {
@@ -293,11 +308,15 @@ type dialogRecord struct {
 func (r *dialogRecord) lines(width int, s Style, expanded bool) []string {
 	c := r.spec.Choices[r.chosen]
 	var out []string
-	out = append(out, s.Accent("● ")+s.Bold(r.spec.Title))
-	for _, l := range wrapWords(r.spec.Why, width-2) {
-		if strings.TrimSpace(l) != "" {
-			out = append(out, "  "+s.Dim(l))
+	for i, l := range wrapWords(r.spec.Title, width-2) {
+		lead := s.Accent("● ")
+		if i > 0 {
+			lead = "  "
 		}
+		out = append(out, lead+s.Bold(l))
+	}
+	for _, l := range whyRows(r.spec.Why, width-2) {
+		out = append(out, "  "+s.Dim(l))
 	}
 	for _, b := range r.spec.Body {
 		for _, l := range blockView(b).lines(width-2, s, expanded) {
@@ -309,7 +328,7 @@ func (r *dialogRecord) lines(width int, s Style, expanded bool) []string {
 		outcome = r.spec.Outcome(c.ID)
 	}
 	mark := s.Green("✓ ")
-	if c.ID == "no" || r.chosen == cancelOf(r.spec) {
+	if c.ID == "no" || c.ID == r.spec.Cancel {
 		mark = s.Red("✕ ")
 	}
 	for i, l := range wrapWords(outcome, width-4) {
@@ -322,7 +341,15 @@ func (r *dialogRecord) lines(width int, s Style, expanded bool) []string {
 	return out
 }
 
-func cancelOf(spec DialogSpec) int {
-	st := &dialogState{spec: spec}
-	return st.cancelIndex()
+// whyRows wraps the explanation, line by line.
+func whyRows(why string, width int) []string {
+	var out []string
+	for _, line := range strings.Split(why, "\n") {
+		for _, l := range wrapWords(line, width) {
+			if strings.TrimSpace(l) != "" {
+				out = append(out, l)
+			}
+		}
+	}
+	return out
 }

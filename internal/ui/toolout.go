@@ -239,7 +239,9 @@ func (r *Renderer) toolObserved(d *dock, o agent.Observation) {
 		first, rest := splitFirst(content)
 		d.commit(&resultBlock{head: s.Red("Error: " + first), body: rest, style: s.Red, headN: 6})
 	case (o.Tool == "edit" || o.Tool == "write") && c != nil:
-		d.commit(r.changeResult(o, c, content))
+		if b := r.changeResult(o, c, content); b != nil {
+			d.commit(b)
+		}
 	case o.Tool == "bash":
 		first, rest := splitFirst(content)
 		code := 0
@@ -293,7 +295,7 @@ func (r *Renderer) changeResult(o agent.Observation, c *toolCall, content string
 	}
 	diff := newFileDiff(r.rel(args.Path), string(before.before), after, !before.existed)
 	if shown {
-		return &resultBlock{head: s.Dim(diff.summary())}
+		return nil // the dialog's record already shows the change
 	}
 	return &resultBlock{head: diff.summary(), diff: diff}
 }
