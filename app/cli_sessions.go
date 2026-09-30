@@ -23,7 +23,7 @@ import (
 
 func init() {
 	registerSlash(slashCmd{Name: "/clear", Help: "start a new conversation and session, keep the workspace", Group: "session", Order: 60, Run: legacy("/clear", slashClear)})
-	registerSlash(slashCmd{Name: "/sessions", Help: "list recent sessions (durable store)", Group: "session", Order: 110, ReadOnly: true, Run: legacy("/sessions", slashSessions)})
+	registerSlash(slashCmd{Name: "/sessions", Help: "list this workspace's recorded sessions", Group: "session", Order: 110, ReadOnly: true, Run: legacy("/sessions", slashSessions)})
 	registerSlash(slashCmd{Name: "/resume", Args: "<id>", Help: "replay a past session and continue its conversation", Group: "session", Order: 120, Run: legacy("/resume", slashResume)})
 	registerSlash(slashCmd{Name: "/export", Args: "[path]", Help: "write the transcript (.html by default, .json for events)", Group: "session", Order: 150, Run: legacy("/export", slashExport)})
 }
@@ -31,6 +31,26 @@ func init() {
 // slashSessions is /sessions.
 func slashSessions(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
+	if rec, ok := st.store.(*local.Store); ok {
+		entries, err := rec.Index().List(local.Filter{Cwd: st.workspace, Limit: 20})
+		if err != nil {
+			fmt.Printf("  %s %v\n", s.Red("✕"), err)
+			return false
+		}
+		if len(entries) == 0 {
+			fmt.Println(s.Dim("  no sessions recorded in this workspace; abhed record list -all shows every one"))
+			return false
+		}
+		for _, e := range entries {
+			mark := "  "
+			if e.ID == st.sessionID {
+				mark = "* "
+			}
+			fmt.Printf("%s%s\n", mark, entryLine(e, false))
+		}
+		fmt.Println(s.Dim("  /resume <id or name> continues one"))
+		return false
+	}
 	lister, ok := st.store.(interface {
 		ListSessions(context.Context, int) ([]store.SessionRecord, error)
 	})
@@ -106,6 +126,7 @@ func slashClear(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
 	// The next task starts a new conversation, and with it a new session.
 	st.endBackground()
+	releaseConversation(st)
 	st.loop, st.sessionID = nil, ""
 	st.fresh()
 	fmt.Println(s.Dim("  context cleared; the workspace is untouched"))
@@ -218,6 +239,7 @@ func resumeConversation(ctx context.Context, st *cliState, id string, events []a
 		// The last conversation's background tasks end before its logins are
 		// reset, so none of them can log in into the one resumed.
 		st.endBackground()
+		releaseConversation(st)
 		st.fresh()
 	}
 	if err := rebuildFrom(st, id, events); err != nil {
@@ -411,11 +433,16 @@ func mustCwd() string {
 	return "."
 }
 
-// openStore selects the event store. Memory is fine for a CLI session; audit
-// and replay across restarts need Postgres.
+// openStore selects the event store: Postgres when the configuration names
+// it, and otherwise the local record, so sessions survive the process and
+// can be listed, resumed, branched, rewound and verified without a database.
 func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(), error) {
 	if cfg.Storage.Driver != "postgres" {
-		return agent.NewMemStore(), func() {}, nil
+		rec, err := openRecord(cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rec, func() { _ = rec.Close() }, nil
 	}
 	pg, err := store.Open(ctx, storeConfig(cfg))
 	if err != nil {
@@ -452,7 +479,19 @@ func storageLabel(cfg config.Config) string {
 		}
 		return label + ")"
 	}
-	return "memory (sessions do not survive restart)"
+	dir := cfg.Record.Dir
+	if dir == "" {
+		dir = "~/.abhed/records"
+	}
+	return "local record, chained (" + dir + "; abhed record verify)"
+}
+
+// releaseConversation lets go of the conversation this process was
+// writing, so another Abhed process may continue it; its record stays.
+func releaseConversation(st *cliState) {
+	if rec, ok := st.store.(*local.Store); ok && st.sessionID != "" {
+		_ = rec.Release(st.sessionID)
+	}
 }
 
 func storeConfig(cfg config.Config) store.Config {
