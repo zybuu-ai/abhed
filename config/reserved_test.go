@@ -18,7 +18,6 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 		{"mode cycle", "cli.mode_cycle", `{"cli":{"mode_cycle":["plan"]}}`},
 		{"auto memory", "memory.auto", `{"memory":{"auto":false}}`},
 		{"import depth", "memory.import_depth", `{"memory":{"import_depth":2}}`},
-		{"statusline", "statusline", `{"statusline":{"command":"s.sh"}}`},
 		{"commands", "commands.dirs", `{"commands":{"dirs":["c"]}}`},
 		{"rules", "rules.dirs", `{"rules":{"dirs":["r"]}}`},
 	} {
@@ -44,7 +43,8 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 	}
 	var out bytes.Buffer
 	warnOut = &out
-	withManaged(t, `{"permissions":{"mode":"default"}}`)
+	// statusline is in effect: the CLI runs it.
+	withManaged(t, `{"permissions":{"mode":"default"},"statusline":{"command":"s.sh"}}`)
 	if cfg, _ := Load(t.TempDir()); len(cfg.NotYetInEffect()) != 0 || strings.Contains(out.String(), "not yet in effect") {
 		t.Fatalf("a file with none of them was warned: %v %q", cfg.NotYetInEffect(), out.String())
 	}

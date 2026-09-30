@@ -49,6 +49,8 @@ type cliState struct {
 	surface ui.Surface
 	// sandbox is the session's sandbox, chosen behind the prompt.
 	sandbox *lazySandbox
+	// statuslineWarned is set once a failing statusline command was named.
+	statuslineWarned bool
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

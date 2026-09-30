@@ -453,6 +453,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `statusline.command` runs a command of yours for the status line. It reads
+  the session's status as JSON on stdin (model, provider, mode, context,
+  tokens, sandbox, record, branch, background tasks) and its first line is
+  shown after each task and in `/status`. It runs under the session's
+  sandbox, with its network setting, for at most 300 ms, and only text and
+  colour of its output reach the terminal. A workspace's statusline needs
+  trust.
+
 - `/model` with no name offers the configured models with their model id,
   context window and whether they are local; a managed `model.default` is
   not switched. `/effort low|medium|high|on|off|default` sets the reasoning
@@ -472,7 +480,7 @@ All notable changes to Abhed are recorded here. The format follows
   agent do more asks first, and a managed setting is refused.
 
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
-  `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
+  `commands.dirs`, `rules.dirs`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and
   `hooks.disabled`. They are accepted so a file that sets them stays valid,
   but this version does not act on them yet: setting one prints "set but not

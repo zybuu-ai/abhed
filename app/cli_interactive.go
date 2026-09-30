@@ -267,6 +267,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
+		// A configured statusline, until the terminal UI draws a footer.
+		if line := sessionState.statusLine(ctx, string(pol.Mode)); line != "" {
+			fmt.Printf("%s\n", s.Dim(line))
+		}
 		if runReason == agent.TermMaxTurns {
 			fmt.Println(s.Dim("  the turn limit counts the whole conversation; /clear starts a new one"))
 		}

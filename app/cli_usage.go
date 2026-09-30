@@ -227,6 +227,9 @@ func slashStatus(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	if cfg.Managed {
 		rows = append(rows, []string{"managed", managed.ConfigFile + ": " + orDefault(strings.Join(cfg.ManagedKeys, ", "), "no settings")})
 	}
+	if line := st.statusLine(ctx, string(e.pol.Mode)); line != "" {
+		rows = append(rows, []string{"statusline", line})
+	}
 	for _, k := range cfg.NotYetInEffect() {
 		rows = append(rows, []string{"not in effect", config.NotYetInEffectMessage(k)})
 	}
