@@ -153,8 +153,10 @@ func rewindCode(ctx context.Context, st *cliState, sess *tools.Session, since in
 	}
 	defer release()
 	cps := st.undo.Since(since)
+	// Read through the session: a record's checkpoint names a path, and a
+	// changed record must not reach a file outside the session's roots.
 	current := func(path string) ([]byte, bool) {
-		data, err := os.ReadFile(path) //nolint:gosec // a file the agent's own checkpoint names, inside the session
+		data, err := sess.ReadFile(path)
 		return data, err == nil
 	}
 	restore := func(path string, data []byte, existed bool) error {

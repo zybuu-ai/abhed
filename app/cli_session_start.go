@@ -122,7 +122,7 @@ func startSession(ctx context.Context, st *cliState, r *ui.Renderer) {
 			fmt.Printf("  %s %v\n", s.Red("✕"), err)
 			return
 		}
-		replayTail(r, events, resumeTurnsShown)
+		replayTail(r, events)
 		return
 	}
 	if f.Fork {
@@ -131,7 +131,7 @@ func startSession(ctx context.Context, st *cliState, r *ui.Renderer) {
 			fmt.Printf("  %s %v\n", s.Red("✕"), err)
 			return
 		}
-		replayTail(r, events, resumeTurnsShown)
+		replayTail(r, events)
 		say("branched %s into %s; the original is left as it was", id, newID)
 		return
 	}
@@ -155,11 +155,11 @@ func continueSession(ctx context.Context, st *cliState, r *ui.Renderer, id strin
 			fmt.Printf("  %s %v\n", s.Red("✕"), err)
 			return
 		}
-		replayTail(r, events, resumeTurnsShown)
+		replayTail(r, events)
 		fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("forked into %s", newID)))
 		return
 	}
-	replayTail(r, events, resumeTurnsShown)
+	replayTail(r, events)
 	if err := resumeConversation(ctx, st, id, events); err != nil {
 		fmt.Printf("  %s replayed, not continued: %v\n", s.Red("✕"), err)
 		return
@@ -301,7 +301,7 @@ func fromFile(ctx context.Context, st *cliState, path string, say func(string, .
 // readRecordFile reads the events of a record file, an export's trailer
 // passed over.
 func readRecordFile(path string) ([]agent.Event, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the person names the file
+	data, err := os.ReadFile(path) // #nosec G304 -- the person names the file
 	if err != nil {
 		return nil, err
 	}
@@ -372,9 +372,10 @@ func pickItem(e local.Entry, withCwd bool) ui.PickItem {
 // on the screen; the rest are summarised.
 const resumeTurnsShown = 10
 
-// replayTail draws the last n prompts of a session and what followed them,
+// replayTail draws the last resumeTurnsShown prompts of a session and what followed them,
 // with a line for what came before. Nothing is run again.
-func replayTail(r *ui.Renderer, events []agent.Event, n int) {
+func replayTail(r *ui.Renderer, events []agent.Event) {
+	n := resumeTurnsShown
 	live := agent.Live(events)
 	start, seen := 0, 0
 	for i := len(live) - 1; i >= 0; i-- {

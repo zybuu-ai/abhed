@@ -15,7 +15,7 @@ func RepoOf(dir string) string {
 		return ""
 	}
 	common := gitDir
-	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil { //nolint:gosec // git's own file
+	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil { // #nosec G304 -- git's own file
 		c := strings.TrimSpace(string(data))
 		if !filepath.IsAbs(c) {
 			c = filepath.Join(gitDir, c)
@@ -32,7 +32,7 @@ func BranchOf(dir string) string {
 	if gitDir == "" {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(gitDir, "HEAD")) //nolint:gosec // git's own file
+	data, err := os.ReadFile(filepath.Join(gitDir, "HEAD")) // #nosec G304 -- git's own file
 	if err != nil {
 		return ""
 	}
@@ -59,7 +59,7 @@ func gitDirOf(dir string) string {
 			if info.IsDir() {
 				return p
 			}
-			data, err := os.ReadFile(p) //nolint:gosec // git's own file
+			data, err := os.ReadFile(p) // #nosec G304 -- git's own file
 			if err != nil {
 				return ""
 			}

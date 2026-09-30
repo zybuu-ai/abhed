@@ -20,20 +20,22 @@ import (
 // killed, or holds it, as ABHED_RECORD_CHILD says.
 func TestMain(m *testing.M) {
 	if role := os.Getenv("ABHED_RECORD_CHILD"); role != "" {
-		os.Exit(child(role, os.Getenv("ABHED_RECORD_DIR")))
+		child(role, os.Getenv("ABHED_RECORD_DIR"))
+		os.Exit(1)
 	}
 	os.Exit(m.Run())
 }
 
-func child(role, dir string) int {
+// child writes or holds until it is killed; it returns only on a failure.
+func child(role, dir string) {
 	s, err := Open(Options{Dir: dir, User: "child"})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return
 	}
 	if err := s.CreateSession(context.Background(), store.SessionRecord{ID: "s-child", Workspace: dir}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return
 	}
 	_ = os.WriteFile(filepath.Join(dir, "ready"), nil, 0o600)
 	rec := agent.NewRecorder(s, "s-child", "")
@@ -44,17 +46,17 @@ func child(role, dir string) int {
 		}
 		if _, err := rec.Record(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{Content: fmt.Sprint(i, big)}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return
 		}
 		if _, err := rec.Record(agent.EvAgentDelta, agent.ActorAgent, agent.Trusted, agent.Delta{Text: big[:i%4096]}); err != nil {
-			return 1
+			return
 		}
 	}
 }
 
 func startChild(t *testing.T, role, dir string) *exec.Cmd {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^$") //nolint:gosec // the test binary itself
+	cmd := exec.Command(os.Args[0], "-test.run=^$") // #nosec G304 -- the test binary itself
 	cmd.Env = append(os.Environ(), "ABHED_RECORD_CHILD="+role, "ABHED_RECORD_DIR="+dir)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

@@ -126,7 +126,7 @@ type exportTrailer struct {
 // with neither a trailer nor a head beside it is checked line by line and
 // noted, since lines cut from its end cannot then be detected.
 func VerifyFile(path string) (Report, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // the person names the file to check
+	data, err := os.ReadFile(path) // #nosec G304 -- the person names the file to check
 	if err != nil {
 		return Report{}, err
 	}

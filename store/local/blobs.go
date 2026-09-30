@@ -38,7 +38,7 @@ func (b *blobStore) Get(sha string) ([]byte, error) {
 	if !isHash(sha) {
 		return nil, fmt.Errorf("checkpoint %q: %w", sha, ErrNotFound)
 	}
-	data, err := os.ReadFile(b.path(sha)) //nolint:gosec // a path built from a checked hash
+	data, err := os.ReadFile(b.path(sha)) // #nosec G304 -- a path built from a checked hash
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("checkpoint %s: %w", sha, ErrNotFound)
 	}

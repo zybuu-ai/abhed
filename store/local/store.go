@@ -164,7 +164,7 @@ func privateDir(dir string) error {
 		return fmt.Errorf("%s: %w", dir, err)
 	}
 	if info.Mode().Perm() != 0o700 {
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- a directory, owner-only
 			return fmt.Errorf("make %s private: %w", dir, err)
 		}
 	}
@@ -229,7 +229,7 @@ func (s *Store) take(id string, create bool, entry *indexLine) (*session, error)
 		}
 		return h, nil
 	}
-	lk, err := os.OpenFile(s.lockPath(id), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // an id checked to be a plain name
+	lk, err := os.OpenFile(s.lockPath(id), os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- an id checked to be a plain name
 	if err != nil {
 		return nil, fmt.Errorf("lock session %s: %w", id, err)
 	}
@@ -284,7 +284,7 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 	if create {
 		flags |= os.O_EXCL
 	}
-	f, err := os.OpenFile(path, flags, 0o600) //nolint:gosec // an id checked to be a plain name
+	f, err := os.OpenFile(path, flags, 0o600) // #nosec G304 -- an id checked to be a plain name
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil, store.ErrSessionExists
@@ -292,7 +292,7 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 		return nil, fmt.Errorf("open session %s: %w", id, err)
 	}
 	h := &session{id: id, f: f, lock: lk, seqs: map[int64]string{}, last: Head{Hash: Genesis}}
-	data, err := os.ReadFile(path) //nolint:gosec // as above
+	data, err := os.ReadFile(path) // #nosec G304 -- as above
 	if err != nil {
 		_ = f.Close()
 		return nil, err
@@ -670,7 +670,7 @@ func after(all []agent.Event, seq int64) []agent.Event {
 // readEvents reads a session's file: its events in seq order, and whether an
 // unfinished last line was left out. A missing file is an empty record.
 func (s *Store) readEvents(id string) ([]agent.Event, bool, error) {
-	data, err := os.ReadFile(s.Path(id)) //nolint:gosec // an id checked to be a plain name
+	data, err := os.ReadFile(s.Path(id)) // #nosec G304 -- an id checked to be a plain name
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -717,7 +717,7 @@ func (s *Store) readHead(id string) (Head, bool) {
 }
 
 func readHeadFile(path string) (Head, bool) {
-	data, err := os.ReadFile(path) //nolint:gosec // a path the store builds
+	data, err := os.ReadFile(path) // #nosec G304 -- a path the store builds
 	if err != nil {
 		return Head{}, false
 	}
@@ -778,15 +778,14 @@ func writeAtomic(path string, data []byte) error {
 // CreateSession starts a session's file and index entry and takes its lock:
 // the process that creates a session is its writer until it lets it go.
 func (s *Store) CreateSession(_ context.Context, rec store.SessionRecord) error {
-	_, err := s.create(rec, "", 0, "")
-	return err
+	return s.create(rec, "", "")
 }
 
-func (s *Store) create(rec store.SessionRecord, parent string, forkSeq int64, kind string) (*session, error) {
+func (s *Store) create(rec store.SessionRecord, parent, kind string) error {
 	e := indexLine{
 		Cwd: rec.Workspace, Repo: RepoOf(rec.Workspace), GitBranch: BranchOf(rec.Workspace),
 		User: rec.User, Model: rec.Model, Mode: rec.Mode, Parent: orStr(parent, rec.ParentID),
-		ForkSeq: forkSeq, Kind: kind,
+		Kind: kind,
 	}
 	if rec.Prompt != "" {
 		p := rec.Prompt
@@ -799,19 +798,18 @@ func (s *Store) create(rec store.SessionRecord, parent string, forkSeq int64, ki
 	}
 	h, err := s.acquire(rec.ID, true, &e)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	h.mu.Lock()
 	h.running, h.titled = true, e.Title != ""
 	h.mu.Unlock()
-	return h, nil
+	return nil
 }
 
 // CreateSubagentSession starts a subagent's own session, named as its
 // parent's child so lists leave it out and resume checks whose it is.
 func (s *Store) CreateSubagentSession(_ context.Context, id, parentID, description string) error {
-	_, err := s.create(store.SessionRecord{ID: id, User: "agent", Model: "subagent", Mode: "auto", Prompt: description}, parentID, 0, kindSubagent)
-	return err
+	return s.create(store.SessionRecord{ID: id, User: "agent", Model: "subagent", Mode: "auto", Prompt: description}, parentID, kindSubagent)
 }
 
 // SubSessionOf reports whether childID is a subagent session parentID started.
@@ -925,7 +923,7 @@ func (s *Store) running(id string) bool {
 
 // heldElsewhere reports whether another process holds session id's lock.
 func (s *Store) heldElsewhere(id string) bool {
-	lk, err := os.Open(s.lockPath(id)) //nolint:gosec // an id checked to be a plain name
+	lk, err := os.Open(s.lockPath(id)) // #nosec G304 -- an id checked to be a plain name
 	if err != nil {
 		return false
 	}

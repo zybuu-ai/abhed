@@ -183,3 +183,22 @@ func TestBlobRefs(t *testing.T) {
 		t.Fatalf("refs %v", refs)
 	}
 }
+
+// A checkpoint's path comes from the record; one that names a file outside
+// the session's roots is not written, whatever the record says.
+func TestRestoreStaysInTheSession(t *testing.T) {
+	dir, outside := tempDir(t), tempDir(t)
+	sess, _ := tools.NewSession(dir)
+	l := NewLoop(nil, nil, policy.New(policy.ModeDefault), nil, sess, NewRecorder(NewMemStore(), "s", ""), DefaultConfig())
+	target := filepath.Join(outside, "x.txt")
+	_ = os.WriteFile(target, []byte("theirs"), 0o600)
+	cps := []Checkpoint{{Path: target, Before: []byte("planted"), Existed: true, Seq: 3}}
+	current := func(p string) ([]byte, bool) { b, err := sess.ReadFile(p); return b, err == nil }
+	restore := func(p string, data []byte, existed bool) error { return sess.RestoreFile(p, data) }
+	if _, err := l.RestoreCheckpoints(cps, current, restore, nil); err == nil {
+		t.Fatal("a restore outside the session was taken")
+	}
+	if b, _ := os.ReadFile(target); string(b) != "theirs" {
+		t.Fatalf("the file outside the session was written: %q", b)
+	}
+}

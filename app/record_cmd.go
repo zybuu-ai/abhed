@@ -358,7 +358,7 @@ func exportSession(rec *local.Store, e local.Entry, format, path string, stdout 
 	w := stdout
 	var f *os.File
 	if path != "-" {
-		if f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err != nil { //nolint:gosec // the person names the file
+		if f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err != nil { // #nosec G304 -- the person names the file
 			return 0, err
 		}
 		w = f

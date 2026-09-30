@@ -10,7 +10,7 @@ import (
 	"github.com/zybuu-ai/abhed/store"
 )
 
-func benchStore(b *testing.B) (*Store, *agent.Recorder) {
+func benchStore(b *testing.B) *agent.Recorder {
 	s, err := Open(Options{Dir: b.TempDir()})
 	if err != nil {
 		b.Fatal(err)
@@ -19,12 +19,12 @@ func benchStore(b *testing.B) (*Store, *agent.Recorder) {
 	if err := s.CreateSession(context.Background(), store.SessionRecord{ID: "s-bench"}); err != nil {
 		b.Fatal(err)
 	}
-	return s, agent.NewRecorder(s, "s-bench", "")
+	return agent.NewRecorder(s, "s-bench", "")
 }
 
 // BenchmarkAppendStreamed is an append with no sync: a streamed fragment.
 func BenchmarkAppendStreamed(b *testing.B) {
-	_, rec := benchStore(b)
+	rec := benchStore(b)
 	for b.Loop() {
 		if _, err := rec.Record(agent.EvAgentDelta, agent.ActorAgent, agent.Trusted, agent.Delta{Text: "a few words of a reply"}); err != nil {
 			b.Fatal(err)
@@ -34,7 +34,7 @@ func BenchmarkAppendStreamed(b *testing.B) {
 
 // BenchmarkAppendSynced is an append that syncs and moves the head.
 func BenchmarkAppendSynced(b *testing.B) {
-	_, rec := benchStore(b)
+	rec := benchStore(b)
 	for b.Loop() {
 		if _, err := rec.Record(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{Turn: 1, TokensIn: 1200}); err != nil {
 			b.Fatal(err)
