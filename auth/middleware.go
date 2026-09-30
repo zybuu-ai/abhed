@@ -157,7 +157,7 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 
 	if m.TrustHeaders {
 		id := headerIdentity(r)
-		if r.Header.Get("X-Abhed-User") != "" {
+		if proxied(r) {
 			if err := m.check(r.Context(), id); err != nil {
 				return nil, nil, failRefused, err
 			}
@@ -198,7 +198,7 @@ func headerIdentity(r *http.Request) *Identity {
 		Email:   r.Header.Get("X-Abhed-Email"),
 		Tenant:  headerOr(r, "X-Abhed-Tenant", "default"),
 	}
-	if r.Header.Get("X-Abhed-User") != "" {
+	if proxied(r) {
 		// The proxy is the only way in and vouches for both headers.
 		id.Provider, id.EmailVerified = ProviderProxy, true
 	}
@@ -206,6 +206,11 @@ func headerIdentity(r *http.Request) *Identity {
 		id.Groups = strings.Split(groups, ",")
 	}
 	return id
+}
+
+// proxied reports whether a trusted proxy named the caller, by user or email.
+func proxied(r *http.Request) bool {
+	return r.Header.Get("X-Abhed-User") != "" || r.Header.Get("X-Abhed-Email") != ""
 }
 
 // ProxyMode reports whether identity comes from a trusted proxy's headers:
@@ -229,7 +234,7 @@ func (m Middleware) Identify(w http.ResponseWriter, r *http.Request) (id *Identi
 			return id, p.Name(), nil
 		}
 	}
-	if m.ProxyMode() && r.Header.Get("X-Abhed-User") != "" {
+	if m.ProxyMode() && proxied(r) {
 		id := headerIdentity(r)
 		if err := m.check(r.Context(), id); err != nil {
 			return nil, "proxy", err

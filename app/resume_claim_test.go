@@ -576,3 +576,19 @@ func TestSubagentOwnershipWalkEdges(t *testing.T) {
 		t.Errorf("a failed lookup was not reported as one: %v", err)
 	}
 }
+
+// A session the owner migration moved to the account named like this OS
+// user is still this user's; another account's is not.
+func TestCLIOwnsItsMigratedSessions(t *testing.T) {
+	st, rs, _, _ := resumeRig(t, "me", "default")
+	t.Setenv("USER", "Me")
+	ended := time.Now()
+	rs.rows["s-moved"] = store.SessionRecord{ID: "s-moved", User: "local:me", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-theirs"] = store.SessionRecord{ID: "s-theirs", User: "local:you", Tenant: "default", EndedAt: &ended}
+	if err := ownedHere(context.Background(), st, "s-moved"); err != nil {
+		t.Errorf("the CLI lost its migrated session: %v", err)
+	}
+	if err := ownedHere(context.Background(), st, "s-theirs"); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("another account's session was owned here: %v", err)
+	}
+}

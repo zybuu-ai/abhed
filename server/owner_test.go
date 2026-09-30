@@ -180,3 +180,12 @@ func TestOwnerComesFromOneFunction(t *testing.T) {
 		t.Fatal("callerOf no longer uses auth.Identity.Owner")
 	}
 }
+
+// An owner that names nobody matches no session, not even an anonymous one.
+func TestNobodyOwnsNoSession(t *testing.T) {
+	for _, rec := range []string{"anonymous", "nobody:oidc", "local:bob"} {
+		if ownsSession("default", rec, "default", "nobody:oidc") {
+			t.Errorf("nobody:oidc owns a session of %q", rec)
+		}
+	}
+}

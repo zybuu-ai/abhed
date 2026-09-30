@@ -150,7 +150,7 @@ func Main(args []string, opts ...Option) int {
 	case "hawkeye":
 		return hawkeyeCmd(workspace, rest[1:], a.trust)
 	case "migrate":
-		return migrateCmd(workspace, a.migrate, a.trust)
+		return migrateCmd(workspace, rest[1:], a.migrate, a.trust)
 	case "resolve":
 		return resolveCmd(workspace, rest[1:], a.trust)
 	case "acp":
@@ -2180,7 +2180,9 @@ func ownedHere(ctx context.Context, st *cliState, id string) error {
 	}
 	// A subagent's row whose chain ends without a person owns nothing, even
 	// for a user who happens to be named like the subagent rows are.
-	if owner.User == store.SubagentUser || owner.User != cliUser() || rec.Tenant != tenant || owner.Tenant != tenant {
+	// A session the owner migration moved to the same-named account is still this user's.
+	mine := owner.User == cliUser() || owner.User == auth.LocalOwner(cliUser())
+	if owner.User == store.SubagentUser || !mine || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
@@ -2408,9 +2410,30 @@ func usersFile(cfg config.Config, workspace string) string {
 	return filepath.Join(workspace, ".abhed", "users.json")
 }
 
+// ownerPolicy is what the owner migration may assume: local accounts were
+// the only way in only when auth.mode is local with no provider beside it.
+// Anything else, or nothing configured, cannot rule out another writer.
+func ownerPolicy(cfg config.Config) store.OwnerPolicy {
+	if m := authModes(cfg); len(m) == 1 && m[0] == "local" {
+		return store.OwnersLocalOnly
+	}
+	return store.OwnersUnclaim
+}
+
+func ownerPolicyWhy(cfg config.Config, flagged bool) string {
+	switch {
+	case flagged:
+		return "set by --owners"
+	case ownerPolicy(cfg) == store.OwnersLocalOnly:
+		return "auth.mode is local with no other sign-in"
+	}
+	return "auth.mode " + orDefault(cfg.Auth.Mode, "none") + " may have had other writers; rows a local account's name or email matches are unclaimed"
+}
+
 func storeConfig(cfg config.Config) store.Config {
 	sc := store.DefaultConfig(cfg.Storage.DSN)
 	sc.SingleRole = cfg.Storage.SingleRole
+	sc.Owners = ownerPolicy(cfg)
 	if cfg.Storage.Tenant != "" {
 		sc.Tenant = cfg.Storage.Tenant
 	}
@@ -3003,7 +3026,14 @@ func writeHawkeye(path string, rep hawkeye.Report) error {
 
 // migrateCmd applies the schema as the owning role and grants the runtime role
 // what the server needs. It is the one place the owner's credentials are used.
-func migrateCmd(workspace string, extensions []store.Extension, trust config.TrustChoice) int {
+func migrateCmd(workspace string, args []string, extensions []store.Extension, trust config.TrustChoice) int {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	owners := fs.String("owners", "", "what to do with sessions keyed by a local account's name or email: "+
+		"local-only (move them to the account) or unclaim; default from auth.mode")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "usage: abhed migrate [--owners=local-only|unclaim]")
+		return 2
+	}
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err == nil {
 		err = cfg.Workspace.DeploymentError("migrate")
@@ -3024,8 +3054,16 @@ func migrateCmd(workspace string, extensions []store.Extension, trust config.Tru
 	if err != nil {
 		fail(fmt.Errorf("storage.dsn: %w", err))
 	}
+	policy := ownerPolicy(cfg)
+	if *owners != "" {
+		if policy, err = store.ParseOwnerPolicy(*owners); err != nil {
+			fail(err)
+		}
+	}
+	fmt.Printf("Session owners: %s (%s).\n", policy, ownerPolicyWhy(cfg, *owners != ""))
 	if err := store.Provision(context.Background(), store.ProvisionConfig{
 		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User, Extensions: extensions,
+		Owners: policy,
 	}); err != nil {
 		fail(err)
 	}
