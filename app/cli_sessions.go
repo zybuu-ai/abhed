@@ -20,6 +20,13 @@ import (
 	"github.com/zybuu-ai/abhed/store"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/clear", Help: "start a new conversation and session, keep the workspace", Group: "session", Order: 60, Run: legacy("/clear", slashClear)})
+	registerSlash(slashCmd{Name: "/sessions", Help: "list recent sessions (durable store)", Group: "session", Order: 110, ReadOnly: true, Run: legacy("/sessions", slashSessions)})
+	registerSlash(slashCmd{Name: "/resume", Args: "<id>", Help: "replay a past session and continue its conversation", Group: "session", Order: 120, Run: legacy("/resume", slashResume)})
+	registerSlash(slashCmd{Name: "/export", Args: "[path]", Help: "write the transcript (.html by default, .json for events)", Group: "session", Order: 150, Run: legacy("/export", slashExport)})
+}
+
 // slashSessions is /sessions.
 func slashSessions(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {

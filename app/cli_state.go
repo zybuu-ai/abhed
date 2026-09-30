@@ -42,6 +42,9 @@ type cliState struct {
 	// seq it drew.
 	unfollow func()
 	rendered atomic.Int64
+	// dynamic are the run-time slash command sources, looked up after the
+	// built-ins; see slashSource.
+	dynamic []slashSource
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

@@ -10,6 +10,11 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/tasks", Args: "[cancel <id|all>]", Help: "list background tasks, or cancel them", Group: "background", Order: 70, Run: legacy("/tasks", slashTasks)})
+	registerSlash(slashCmd{Name: "/wake", Args: "[off|notify|auto]", Help: "show or set what a background result does while idle", Group: "background", Order: 80, Run: legacy("/wake", slashWake)})
+}
+
 // liveTasks is how many background tasks the conversation has running.
 func (c *cliState) liveTasks() int {
 	if c.loop == nil {

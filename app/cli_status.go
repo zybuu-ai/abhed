@@ -10,6 +10,13 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/cost", Help: "tokens, cache hit rate, compactions this session", Group: "status", Order: 40, ReadOnly: true, Run: legacy("/cost", slashCost)})
+	registerSlash(slashCmd{Name: "/hawkeye", Args: "[path]", Help: "what this session did: tokens, policy decisions, findings", Group: "status", Order: 160, Run: legacy("/hawkeye", slashHawkeye)})
+	registerSlash(slashCmd{Name: "/think", Help: "show or collapse the model's reasoning", Group: "status", Order: 170, Run: legacy("/think", slashThink)})
+	registerSlash(slashCmd{Name: "/cwd", Help: "show the workspace root", Group: "status", Order: 180, ReadOnly: true, Run: legacy("/cwd", slashCwd)})
+}
+
 // slashCost is /cost.
 func slashCost(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {

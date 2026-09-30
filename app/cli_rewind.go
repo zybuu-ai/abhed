@@ -14,6 +14,13 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/undo", Help: "revert the last turn's file changes", Group: "rewind", Order: 20, Run: legacy("/undo", slashUndo)})
+	registerSlash(slashCmd{Name: "/diff", Help: "files changed this session", Group: "rewind", Order: 30, ReadOnly: true, Run: legacy("/diff", slashDiff)})
+	registerSlash(slashCmd{Name: "/tree", Help: "show the session's steps, with the numbers /fork takes", Group: "rewind", Order: 130, ReadOnly: true, Run: legacy("/tree", slashTree)})
+	registerSlash(slashCmd{Name: "/fork", Args: "[step]", Help: "rebuild the conversation up to a step and continue from it", Group: "rewind", Order: 140, Run: legacy("/fork", slashFork)})
+}
+
 // slashUndo is /undo.
 func slashUndo(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {

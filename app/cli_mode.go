@@ -10,6 +10,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/mode", Args: "<name>", Help: "default | accept-edits | plan | auto", Group: "mode", Order: 10, Run: legacy("/mode", slashMode)})
+}
+
 // switchMode is /mode. The managed configuration binds it as it binds -mode,
 // and bypass is never offered mid-session.
 func switchMode(cfg config.Config, pol *policy.Engine, arg string) error {

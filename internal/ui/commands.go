@@ -2,7 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 )
 
 // Command is one slash command: the name the user types, the argument shape,
@@ -17,7 +19,10 @@ type Command struct {
 	Help string
 }
 
-// Commands is the full set, in the order /help prints them.
+// Commands is the full set, in the order /help prints them. It is the
+// built-in list until the command registry replaces it through SetCommands;
+// read it through commandList, since the registry may change it while the
+// line editor is completing.
 var Commands = []Command{
 	{"/mode", "<name>", "default | accept-edits | plan | auto"},
 	{"/undo", "", "revert the last turn's file changes"},
@@ -41,10 +46,27 @@ var Commands = []Command{
 	{"/quit", "", "exit"},
 }
 
+var commandsMu sync.RWMutex
+
+// SetCommands replaces the list /help, completion and the menu show. The
+// registry that owns the commands calls it; this package only displays them.
+func SetCommands(cs []Command) {
+	commandsMu.Lock()
+	defer commandsMu.Unlock()
+	Commands = slices.Clone(cs)
+}
+
+// commandList is the current list, safe to range over while it is replaced.
+func commandList() []Command {
+	commandsMu.RLock()
+	defer commandsMu.RUnlock()
+	return Commands
+}
+
 // HelpText renders the command list for /help.
 func HelpText(s Style) string {
 	var b strings.Builder
-	for _, c := range Commands {
+	for _, c := range commandList() {
 		left := c.Name
 		if c.Args != "" {
 			left += " " + c.Args
@@ -63,7 +85,7 @@ func MatchCommands(prefix string) []Command {
 		return nil
 	}
 	var out []Command
-	for _, c := range Commands {
+	for _, c := range commandList() {
 		if strings.HasPrefix(c.Name, prefix) {
 			out = append(out, c)
 		}

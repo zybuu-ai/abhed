@@ -14,6 +14,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/model", Args: "[name]", Help: "show or switch the model, keeping the conversation", Group: "model", Order: 100, Run: legacy("/model", slashModel)})
+}
+
 // slashModel is /model.
 func slashModel(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {

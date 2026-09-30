@@ -12,6 +12,11 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
+func init() {
+	registerSlash(slashCmd{Name: "/compact", Args: "[hint]", Help: "compact the context now", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
+	registerSlash(slashCmd{Name: "/memory", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, ReadOnly: true, Run: legacy("/memory", slashMemory)})
+}
+
 // slashCompact is /compact.
 func slashCompact(ctx context.Context, fields []string, r *ui.Renderer,
 	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
