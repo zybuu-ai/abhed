@@ -506,7 +506,10 @@ func (d *dock) enter() func() {
 		d.afterEdit()
 		return nil
 	}
-	d.remember(out, true)
+	// On disk a large paste stays its placeholder: the whole of it is for
+	// this session's Up, not for a file that outlives it.
+	d.hist.AddStored(out, shown)
+	d.hpos = len(d.hist.Entries())
 	d.buf.reset()
 	d.help = false
 	d.closeMenu()

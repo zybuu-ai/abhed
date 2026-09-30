@@ -35,7 +35,11 @@ for editing. A terminal that does not mark pastes sends them as fast typing;
 that is recognised by its speed, and treated the same way.
 
 **History** is kept per workspace, in `~/.abhed/history/`, readable only by
-you. It is outside the workspace, so the agent cannot write to it.
+you (0600, never opened through a link). A vault secret in a prompt is
+redacted before it is written, as it is in the session's record, and a large
+paste is written as its placeholder, not its text. The folder is outside the
+workspace: under a sandbox (the process tier and above) the agent cannot
+reach it; with no sandbox, commands run as you and can.
 
 ## While the agent works
 

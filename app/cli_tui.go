@@ -19,7 +19,12 @@ func setupTerminal(editor *ui.LineReader, r *ui.Renderer, workspace string) {
 		return
 	}
 	r.Attach(editor)
-	editor.SetHistory(ui.LoadHistory(ui.HistoryPath(workspace)))
+	// A vault secret in a prompt is withheld from the history file as it is
+	// from the record.
+	h := ui.LoadHistory(ui.HistoryPath(workspace))
+	red := openVault().Redactor()
+	h.SetRedact(func(s string) string { return string(red.Redact([]byte(s))) })
+	editor.SetHistory(h)
 }
 
 // dialogApprover asks on the dock's dialog when there is a terminal, and
