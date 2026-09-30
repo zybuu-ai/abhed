@@ -78,3 +78,31 @@ func TestAddRootAllowsAFolderHoldingTheWorkspace(t *testing.T) {
 		t.Fatal("the workspace's .abhed became reachable through the added root")
 	}
 }
+
+// A .abhed folder is never a root, whoever adds it and in whatever case:
+// the workspace's, another project's, or one named on its own.
+func TestAddRootRefusesAStateFolder(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := filepath.Join(base, "ws")
+	for _, d := range []string{filepath.Join(ws, ".abhed"), filepath.Join(base, "other", ".abhed"), filepath.Join(base, "third", ".ABHED")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{filepath.Join(ws, ".abhed"), filepath.Join(base, "other", ".abhed"), filepath.Join(base, "third", ".ABHED")} {
+		if err := s.AddRoot(d); err == nil || !strings.Contains(err.Error(), "Abhed's own state") {
+			t.Errorf("%s: %v", d, err)
+		}
+	}
+	if err := s.AddRoot(filepath.Join(base, "other")); err != nil {
+		t.Fatalf("the project holding a .abhed was refused: %v", err)
+	}
+}

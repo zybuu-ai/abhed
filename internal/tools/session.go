@@ -230,8 +230,8 @@ func (s *Session) AddRootAs(dir, want string) (string, error) {
 var credentialDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", filepath.Join(".config", "gcloud")}
 
 // CheckRoot resolves dir and says why it may not be a root: it is /, it
-// holds the home directory, it is inside a credential folder, or the home
-// directory's state or a registered state file is in it.
+// holds the home directory, it is inside a credential folder, it is a .abhed
+// folder, or the home directory's state or a registered state file is in it.
 func (s *Session) CheckRoot(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -256,6 +256,9 @@ func (s *Session) CheckRoot(dir string) (string, error) {
 	if abs == "/" {
 		return "", fmt.Errorf("refusing to add / as a workspace root: " +
 			"that removes the boundary entirely. Add the specific project directory")
+	}
+	if strings.EqualFold(filepath.Base(abs), StateDir) {
+		return "", fmt.Errorf("refusing to add %s: a %s folder is Abhed's own state", abs, StateDir)
 	}
 	var stateDirs []string
 	if home, err := os.UserHomeDir(); err == nil {
