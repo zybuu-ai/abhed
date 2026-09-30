@@ -550,8 +550,11 @@ func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (str
 		prov["api_key_env"] = p.APIKeyEnv
 	}
 	cfg := map[string]any{
-		"model":  map[string]any{"default": name, "providers": map[string]any{name: prov}},
-		"memory": map[string]any{"auto": autoMemory},
+		"model": map[string]any{"default": name, "providers": map[string]any{name: prov}},
+	}
+	// Off is the default, so only a yes is written.
+	if autoMemory {
+		cfg["memory"] = map[string]any{"auto": true}
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
