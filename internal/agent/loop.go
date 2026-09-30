@@ -1655,13 +1655,13 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 	if red == nil {
 		return ""
 	}
-	const unreadable = "the secrets store could not be read, so the path cannot be checked for a stored value"
-	if f, ok := red.(interface{ FindSent(string) (string, bool) }); ok {
-		if label, found := f.FindSent(a.Path); found {
+	const unreadable = "refused by the check that keeps stored secrets out of file names: the secrets store could not be read, so the path cannot be checked"
+	if f, ok := red.(interface{ FindInPath(string) (string, bool) }); ok {
+		if label, found := f.FindInPath(a.Path); found {
 			if label == "" {
 				return unreadable
 			}
-			return fmt.Sprintf("the path contains the stored secret %s; a secret is never written into a file name", label)
+			return fmt.Sprintf("refused by the check that keeps stored secrets out of file names: the path contains the stored secret %s", label)
 		}
 		return ""
 	}
@@ -1669,7 +1669,7 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 	if out := red.Redact(quoted); out == nil {
 		return unreadable
 	} else if string(out) != string(quoted) {
-		return "the path contains a stored secret; a secret is never written into a file name"
+		return "refused by the check that keeps stored secrets out of file names: the path contains a stored secret"
 	}
 	return ""
 }

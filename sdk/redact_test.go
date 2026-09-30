@@ -326,14 +326,21 @@ func TestSDKRedactsASecretAddedDuringTheSession(t *testing.T) {
 }
 
 // A write or edit whose path holds a stored value is refused in every mode,
-// naming the secret: a file name is read by whoever lists the directory.
+// naming the check and the secret: a file name is read by whoever lists the
+// directory. A short value, such as "postgres", and a value in another case
+// do not refuse ordinary paths, and a store that cannot be loaded refuses
+// every write.
 func TestSDKRefusesASecretInAFileName(t *testing.T) {
 	vaultWith(t)
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN":"`+fakeSecret+`","DB":"postgres"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ws, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{fakeSecret + ".txt", strings.ToUpper(fakeSecret) + ".txt"} {
+	write := func(name string) (bool, string) {
+		t.Helper()
 		path := filepath.Join(ws, name)
 		srv, _ := scripted(t, frameCall("write", map[string]string{"path": path, "content": "x"}))
 		a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "bypass",
@@ -341,6 +348,7 @@ func TestSDKRefusesASecretInAFileName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer a.Close()
 		if _, err := a.Run(context.Background(), "write it"); err != nil {
 			t.Fatal(err)
 		}
@@ -348,12 +356,37 @@ func TestSDKRefusesASecretInAFileName(t *testing.T) {
 		for _, ev := range a.Events() {
 			record.Write(ev.Payload)
 		}
-		a.Close()
-		if _, err := os.Stat(path); err == nil {
-			t.Fatalf("%s was written", name)
+		_, statErr := os.Stat(path)
+		return statErr == nil, record.String()
+	}
+	if written, record := write("n-" + fakeSecret + ".txt"); written ||
+		!strings.Contains(record, "keeps stored secrets out of file names") || !strings.Contains(record, "stored secret [secret:FAKE_TOKEN]") {
+		t.Fatalf("a path holding the secret was written, or the refusal does not name the check and the secret: %v\n%s", written, record)
+	}
+	for _, name := range []string{"postgres-values.yaml", "Postgres.md", strings.ToUpper(fakeSecret) + ".txt"} {
+		if written, record := write(name); !written {
+			t.Errorf("%s was refused:\n%s", name, record)
 		}
-		if !strings.Contains(record.String(), "stored secret [secret:FAKE_TOKEN]") {
-			t.Fatalf("the refusal does not name the secret:\n%s", record.String())
-		}
+	}
+	// New refuses a store it cannot load; one that breaks after it is the case here.
+	path := filepath.Join(ws, "plain.txt")
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN":"`+fakeSecret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := scripted(t, frameCall("write", map[string]string{"path": path, "content": "x"}))
+	a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "bypass",
+		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := os.WriteFile(os.Getenv("ABHED_SECRETS_FILE"), []byte(`{"FAKE_TOKEN": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "write it"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("a write ran while the secrets store could not be loaded")
 	}
 }

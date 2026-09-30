@@ -136,8 +136,11 @@ All notable changes to Abhed are recorded here. The format follows
 - A `write` or `edit` whose path held a stored secret ran as asked, in
   auto, accept-edits and bypass modes without a prompt, so the value became
   a file name anyone who can list the directory reads. Such a call is now
-  refused on every surface, naming the secret, with the same forms checked
-  as for `web_search`.
+  refused on every surface, naming the check and the secret. The path is
+  matched as written, in its case, against stored values of 12 characters
+  or more, so a short value such as `postgres` does not refuse ordinary
+  files. While the secrets store cannot be loaded, every `write` and `edit`
+  is refused.
 - An SDK session, and so an `abhed rpc` or `abhed acp` session, redacted
   with the values stored when it started, while `bash` reads the store at
   each call. A secret stored during a long session and allowed by a rule

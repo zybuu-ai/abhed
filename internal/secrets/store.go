@@ -347,6 +347,9 @@ func (f *Fresh) Span() int { return f.Current().Span() }
 // FindSent is Current().FindSent.
 func (f *Fresh) FindSent(text string) (string, bool) { return f.Current().FindSent(text) }
 
+// FindInPath is Current().FindInPath.
+func (f *Fresh) FindInPath(path string) (string, bool) { return f.Current().FindInPath(path) }
+
 // Withholding returns a redactor that withholds every payload.
 func Withholding() *Redactor { return &Redactor{broken: true} }
 
@@ -542,4 +545,24 @@ func unhex(c byte) byte {
 		return c - 'A' + 10
 	}
 	return c - '0'
+}
+
+// PathMinLength is the fewest characters a value must have to be looked for
+// in a file path: shorter ones, such as "postgres" or "test", name ordinary
+// files and directories too often.
+const PathMinLength = 12
+
+// FindInPath reports whether a file path holds a stored value of at least
+// PathMinLength characters, as written and in its case. A store that could
+// not be loaded holds everything, with an empty label.
+func (r *Redactor) FindInPath(path string) (label string, found bool) {
+	if r.broken {
+		return "", true
+	}
+	for _, p := range r.pairs {
+		if utf8.RuneCountInString(p.needle) >= PathMinLength && strings.Contains(path, p.needle) {
+			return p.label, true
+		}
+	}
+	return "", false
 }
