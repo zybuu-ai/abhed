@@ -135,3 +135,66 @@ func TestTwoServersOnePostgresSweepSparesAFreshNoHolderSession(t *testing.T) {
 	a.ad.release("one")
 	waitUntil(t, "A's closing end", func() bool { e, _ := agent.LastEnd(a.events(id)); return e.Settled })
 }
+
+// A holder that lost the session and has not heard yet (no heartbeat since)
+// writes nothing into the record: the store refuses each append on the
+// lease, takes no seq, and the refusal fences the session there.
+func TestTwoServersOnePostgresStaleWritesAreRefused(t *testing.T) {
+	old := nodeHeartbeat
+	nodeHeartbeat = time.Hour // A is paused: no heartbeat before it writes
+	defer func() { nodeHeartbeat = old }()
+	a := newBGServer(t, openSharedPG(t), "one")
+	b := newBGServer(t, openSharedPG(t))
+	id := a.start("bg:one", false)
+	<-a.ended
+	al := a.live(id)
+	pgExec(t, "UPDATE sessions SET node_seen_at = now() - interval '10 minutes' WHERE id = $1", id)
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"x"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("takeover: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B's run", func() bool { l := b.live(id); return l != nil && b.state(id) != "running" })
+	child := payloadsOf(b.events(id), agent.EvSubagentSpawned)[0]["session"].(string)
+	childBefore, _ := b.store.Events(child)
+	before := len(b.events(id))
+	for i := range 40 {
+		if _, err := al.Loop.Recorder.Record(agent.EvAgentDelta, agent.ActorAgent, agent.Untrusted, map[string]any{"text": "stale", "n": i}); err == nil {
+			t.Fatalf("the old holder's write %d landed in the new holder's record", i)
+		}
+	}
+	if after := len(b.events(id)); after != before {
+		t.Fatalf("the record grew from %d to %d events", before, after)
+	}
+	waitUntil(t, "A fenced", func() bool { return a.live(id) == nil })
+	// B goes on, its sequence intact.
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("B's next message: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "B's second run", func() bool { return b.state(id) != "running" })
+	if e, _ := agent.LastEnd(b.events(id)); e.Reason != agent.TermCompleted {
+		t.Fatalf("B's run ended %s", e.Reason)
+	}
+	// A's child, stopped by the fence, writes nothing into its record either.
+	a.ad.release("one")
+	time.Sleep(200 * time.Millisecond)
+	if childAfter, _ := b.store.Events(child); len(childAfter) != len(childBefore) {
+		t.Fatalf("the old holder's child wrote %d events after the takeover", len(childAfter)-len(childBefore))
+	}
+}
+
+// A session let go after its run is claimed back by the next message on the
+// same server, and runs as before.
+func TestOnePostgresSessionContinuesAfterItsRun(t *testing.T) {
+	a := newBGServer(t, openSharedPG(t))
+	id := a.start("hello", false)
+	<-a.ended
+	waitUntil(t, "let go", func() bool { return a.live(id).unclaimed.Load() })
+	for i := range 2 {
+		if rec := a.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`); rec.Code != http.StatusAccepted {
+			t.Fatalf("message %d: %d %s", i, rec.Code, rec.Body)
+		}
+		waitUntil(t, "the run", func() bool { return a.state(id) != "running" })
+	}
+	if n := countType(a.events(id), agent.EvUserMessage); n != 3 {
+		t.Fatalf("%d messages recorded, want 3", n)
+	}
+}

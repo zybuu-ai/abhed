@@ -313,7 +313,10 @@ All notable changes to Abhed are recorded here. The format follows
   heartbeat is fenced: it renews only a claim that is still this process's,
   and a process that finds its claim taken, or cannot renew it for the
   stale window, stops its run and tasks as `lease_lost` and writes nothing
-  more to the session. A claim is never taken from another live holder. A
+  more to the session. On Postgres each append is also fenced in the store,
+  in the insert itself, so a process that lost a session cannot add to its
+  record even before its next heartbeat. A claim is never taken from
+  another live holder. A
   started session's row is written with its holder, and a row with none is
   an orphan only once its last event is two minutes old, on the database's
   clock. A hold that

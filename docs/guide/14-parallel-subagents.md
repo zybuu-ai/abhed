@@ -286,7 +286,13 @@ that process's: a process whose heartbeat is refused (another has taken the
 session over), or has failed for as long as the claim takes to go stale,
 stops at once. Its run and background tasks end as `lease_lost`, recorded in
 the tasks' own records, it writes nothing more to the session, and it drops
-the session; its claim is never taken back. A node restarted with the same
+the session; its claim is never taken back. On Postgres the record is
+fenced in the store as well: each event is inserted only while its writer
+holds the session (a subagent's, while its parent's session is held), in the
+same statement, so a process that lost the session writes nothing into it
+even before its next heartbeat, and the refusal stops it there. What a tool
+was already doing when the session was lost (a command running, a file being
+written) is not something a record can undo. A node restarted with the same
 `node_id` takes back the sessions it held at once, so two running nodes must
 never share a `node_id`.
 

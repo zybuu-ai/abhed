@@ -279,17 +279,72 @@ func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, desc
 //
 // Replaying the same event is success, so an append retried after a crash is
 // safe; a different event at a taken (session_id, seq) is refused, not dropped.
-func (p *Postgres) Append(ev agent.Event) error {
+func (p *Postgres) Append(ev agent.Event) error { return p.appendAs(ev, "") }
+
+// ErrNotHolder refuses an append from a process that does not hold the
+// session: another has taken it over, or it ended and was let go.
+var ErrNotHolder = errors.New("this process does not hold the session")
+
+// Held is the store as one holder writes through it: every append is fenced
+// on that holder's lease, checked in the same statement as the insert.
+type Held struct {
+	*Postgres
+	holder  string
+	refused func(sessionID string)
+}
+
+// HeldBy returns the store fenced for holder. refused, when set, is told the
+// session whose lease refused an append (a subagent's parent, for its events).
+func (p *Postgres) HeldBy(holder string, refused func(sessionID string)) *Held {
+	return &Held{Postgres: p, holder: holder, refused: refused}
+}
+
+// Append inserts only while holder holds the session, or while nobody does
+// and it is still open; a subagent's events are held by its parent's lease.
+// Otherwise it answers ErrNotHolder and takes no seq.
+func (h *Held) Append(ev agent.Event) error {
+	err := h.appendAs(ev, h.holder)
+	if errors.Is(err, ErrNotHolder) && h.refused != nil {
+		h.refused(leaseSession(ev))
+	}
+	return err
+}
+
+// leaseSession is the session whose lease covers an event.
+func leaseSession(ev agent.Event) string {
+	if ev.ParentID != "" {
+		return ev.ParentID
+	}
+	return ev.SessionID
+}
+
+func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tag, err := p.pool.Exec(ctx, `
-		INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
-		                    payload, actor, trust, created_at)
-		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (session_id, seq) DO NOTHING`,
-		ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
-		[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt)
+	var tag pgconn.CommandTag
+	var err error
+	if holder == "" {
+		tag, err = p.pool.Exec(ctx, `
+			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
+			                    payload, actor, trust, created_at)
+			VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10)
+			ON CONFLICT (session_id, seq) DO NOTHING`,
+			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
+			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt)
+	} else {
+		tag, err = p.pool.Exec(ctx, `
+			INSERT INTO events (id, session_id, tenant_id, parent_id, seq, type,
+			                    payload, actor, trust, created_at)
+			SELECT $1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10
+			WHERE EXISTS (SELECT 1 FROM sessions s
+			              WHERE s.id = $11 AND s.deleted_at IS NULL
+			                AND (s.node_id = $12 OR (s.node_id IS NULL AND s.ended_at IS NULL)))
+			ON CONFLICT (session_id, seq) DO NOTHING`,
+			ev.ID, ev.SessionID, p.tenant, ev.ParentID, ev.Seq, string(ev.Type),
+			[]byte(ev.Payload), string(ev.Actor), string(ev.Trust), ev.CreatedAt,
+			leaseSession(ev), holder)
+	}
 	if err != nil {
 		// A missing session FK is the common misuse; say so plainly.
 		var pgErr *pgconn.PgError
@@ -299,6 +354,18 @@ func (p *Postgres) Append(ev agent.Event) error {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	if tag.RowsAffected() == 0 {
+		if holder != "" {
+			var mine bool
+			if err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions s
+				WHERE s.id = $1 AND s.deleted_at IS NULL
+				  AND (s.node_id = $2 OR (s.node_id IS NULL AND s.ended_at IS NULL)))`,
+				leaseSession(ev), holder).Scan(&mine); err != nil {
+				return fmt.Errorf("append event %s/%d: check the lease: %w", ev.SessionID, ev.Seq, err)
+			}
+			if !mine {
+				return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, ErrNotHolder)
+			}
+		}
 		// A replay of this event is success; another event at its seq is another writer's.
 		var held string
 		if err := p.pool.QueryRow(ctx, `SELECT id FROM events WHERE session_id = $1 AND seq = $2`,
@@ -483,6 +550,21 @@ func (p *Postgres) ClaimResume(ctx context.Context, sessionID string) (bool, err
 	tag, err := p.pool.Exec(ctx, `
 		UPDATE sessions SET ended_at = NULL, terminal_reason = NULL
 		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL`, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClaimResume is Postgres.ClaimResume that also writes the holder in the
+// same update, so a claimed session is never open with no holder, when a
+// stale writer's fenced append would pass.
+func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) {
+	tag, err := h.pool.Exec(ctx, `
+		UPDATE sessions SET ended_at = NULL, terminal_reason = NULL, node_id = $2, node_seen_at = now()
+		WHERE id = $1 AND ended_at IS NOT NULL AND deleted_at IS NULL
+		  AND (node_id IS NULL OR node_id = $2 OR node_seen_at IS NULL
+		       OR node_seen_at <= now() - $3::interval)`, sessionID, h.holder, HolderStale.String())
 	if err != nil {
 		return false, fmt.Errorf("claim session %s: %w", sessionID, err)
 	}

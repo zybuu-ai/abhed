@@ -395,6 +395,18 @@ func New(opts Options) *Server {
 		opts.Redact = secrets.Default().Live()
 	}
 	st := opts.Store
+	holder := holderID(opts.NodeID)
+	// On Postgres every append is fenced on this process's lease, in the
+	// insert itself: a process that lost a session writes nothing into it,
+	// and a refusal fences the session here.
+	var srv *Server
+	if pg, ok := st.(*store.Postgres); ok {
+		st = pg.HeldBy(holder, func(id string) {
+			if srv != nil {
+				srv.leaseRefused(id)
+			}
+		})
+	}
 	// The tap wraps only what the loop writes through. Optional interfaces
 	// (session recording, deletion, access records) are asserted on the
 	// unwrapped store below, so tapping cannot silently switch them off.
@@ -411,7 +423,7 @@ func New(opts Options) *Server {
 		store:   tapped,
 		log:     opts.Logger,
 		running: make(map[string]*liveSession),
-		holder:  holderID(opts.NodeID),
+		holder:  holder,
 		// Ten sign-in attempts a minute is far beyond what a person typing a
 		// password needs, and far below what makes guessing viable.
 		signinLimiter:  newLimiter(10, time.Minute),
@@ -427,7 +439,19 @@ func New(opts Options) *Server {
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
+	srv = s
 	return s
+}
+
+// leaseRefused fences the session a store refused an append for: the store
+// found it held by another process, or let go.
+func (s *Server) leaseRefused(id string) {
+	s.mu.RLock()
+	live := s.running[id]
+	s.mu.RUnlock()
+	if live != nil {
+		go s.fence(live) // not under the recorder that is appending now
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -1061,7 +1085,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		for live.settle(runCtx, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
-		s.releaseNodeIfQuiet(live)
+		s.releaseAndLetGo(live)
 		if spec.OnEnd != nil {
 			spec.OnEnd(string(reason), err)
 		}
@@ -1232,6 +1256,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	rec.Gate = func() error {
 		if live.fenced.Load() {
 			return errLeaseLost
+		}
+		// A session let go after its run is claimed again by its next write.
+		if live.unclaimed.Load() {
+			return s.claimForWrite(sessionID, live)
 		}
 		return nil
 	}
@@ -2356,7 +2384,7 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		for live.settle(ctx, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
-		s.releaseNodeIfQuiet(live)
+		s.releaseAndLetGo(live)
 		switch {
 		case errors.Is(err, agent.ErrNothingToWake):
 			s.log.Info(what+" found nothing to do", "session", live.ID)
@@ -2411,7 +2439,7 @@ func (s *Server) onIdle(live *liveSession, ev agent.IdleEvent) {
 		live.State = "done"
 	}
 	live.mu.Unlock()
-	s.releaseNodeIfQuiet(live)
+	s.releaseAndLetGo(live)
 }
 
 // recoverOrphan takes over a session left open by a process that went away,
@@ -2673,6 +2701,41 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 	if quiet {
 		stop()
 		s.releaseNode(live.ID)
+	}
+}
+
+// releaseAndLetGo is releaseNodeIfQuiet at the end of a run or of background
+// work, where the caller holds no claim lock: the session is also let go.
+func (s *Server) releaseAndLetGo(live *liveSession) {
+	s.releaseNodeIfQuiet(live)
+	live.mu.Lock()
+	released := live.beatStop == nil
+	live.mu.Unlock()
+	if released {
+		s.letGo(live)
+	}
+}
+
+// letGo marks a session whose run ended and whose claim was released as
+// no longer held here, on a store that fences writes on the claim: its next
+// write claims it again first, with the end it has now to go back to. The
+// caller holds no claim lock.
+func (s *Server) letGo(live *liveSession) {
+	if _, fenced := s.store.(*store.Held); !fenced || live.fenced.Load() || live.unclaimed.Load() {
+		return
+	}
+	events, err := s.store.Events(live.ID)
+	if end, ok := agent.LastEnd(events); err != nil || !ok || end.Background > 0 {
+		return // the row is still open: nothing to claim it back from
+	}
+	live.claimMu.Lock()
+	defer live.claimMu.Unlock()
+	live.mu.Lock()
+	idle := live.ran == nil && live.beatStop == nil
+	live.mu.Unlock()
+	if idle {
+		live.priorEnd = priorEnd(events, store.SessionRecord{})
+		live.unclaimed.Store(true)
 	}
 }
 
