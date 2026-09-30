@@ -31,6 +31,9 @@ type CheckpointSaved struct {
 	Turn   int    `json:"turn"`
 	// Mode is the file's permission bits, so a restore keeps them.
 	Mode uint32 `json:"mode,omitempty"`
+	// Skipped says why no content was kept, such as a file policy keeps
+	// from being read or one that holds keys; such a file is not restored.
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // BlobRefs lists the blobs a session's events name: its checkpoints and the
@@ -132,6 +135,10 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 	var done []string
 	var failed []string
 	for _, cp := range cps {
+		if cp.Skipped != "" {
+			failed = append(failed, fmt.Sprintf("%s: no copy was kept before the change (%s)", cp.Path, cp.Skipped))
+			continue
+		}
 		// The person's own write, recorded as their action: the request, the
 		// policy's decision (an ask is theirs to answer, and they did), and
 		// what came of it.

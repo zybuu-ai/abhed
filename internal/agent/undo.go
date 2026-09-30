@@ -30,6 +30,8 @@ type Checkpoint struct {
 	Blob string
 	// Mode is the file's permission bits when the checkpoint was taken.
 	Mode os.FileMode
+	// Skipped says why no content was kept; such a file is not restored.
+	Skipped string
 	// load reads Before from the record, for a checkpoint rebuilt on resume.
 	load func() ([]byte, error)
 }
@@ -109,6 +111,10 @@ func (u *UndoLog) Record(path string, before []byte, existed bool) {
 	for i := len(u.stack) - 1; i >= 0; i-- {
 		if u.stack[i].Path == cp.Path && u.stack[i].At.Equal(cp.At) && u.stack[i].Seq == 0 {
 			u.stack[i].Seq, u.stack[i].Blob, u.stack[i].Mode = saved.Seq, saved.Blob, saved.Mode
+			if saved.Skipped != "" {
+				// Not kept on disk, and not held here either.
+				u.stack[i].Skipped, u.stack[i].Before = saved.Skipped, nil
+			}
 			break
 		}
 	}
@@ -130,7 +136,7 @@ func (u *UndoLog) Rebuild(events []Event, get func(sha string) ([]byte, error)) 
 			if json.Unmarshal(ev.Payload, &c) != nil {
 				continue
 			}
-			cp := Checkpoint{Path: c.Path, Existed: c.SHA256 != "", Turn: c.Turn, At: ev.CreatedAt, Seq: ev.Seq, Blob: c.SHA256, Mode: os.FileMode(c.Mode).Perm()}
+			cp := Checkpoint{Path: c.Path, Existed: c.SHA256 != "" || c.Skipped != "", Turn: c.Turn, At: ev.CreatedAt, Seq: ev.Seq, Blob: c.SHA256, Mode: os.FileMode(c.Mode).Perm(), Skipped: c.Skipped}
 			if sha := c.SHA256; sha != "" && get != nil {
 				cp.load = func() ([]byte, error) { return get(sha) }
 			}
@@ -265,6 +271,10 @@ func (u *UndoLog) Undo() ([]string, error) {
 
 	for _, path := range paths {
 		cp := earliest[path]
+		if cp.Skipped != "" {
+			failures = append(failures, fmt.Sprintf("%s: no copy was kept before the change (%s)", path, cp.Skipped))
+			continue
+		}
 		if !cp.Existed {
 			// Undoing a creation means removing the file.
 			if err := u.remove(path); err != nil && !os.IsNotExist(err) {

@@ -155,3 +155,39 @@ func TestRewindRestoreRespectsDeny(t *testing.T) {
 		t.Fatalf("%d restores, %d denials", count(evs, agent.EvFileRestored), count(evs, agent.EvActionDenied))
 	}
 }
+
+// A file policy keeps from being read, or one named as keys, is not copied
+// into the record's blobs before an edit: its checkpoint says why, and it is
+// not offered for restore.
+func TestNoCheckpointOfSecretOrDeniedFiles(t *testing.T) {
+	g := newSessRig(t)
+	c := g.start("-mode", "accept-edits", "-deny", "read("+filepath.Join(g.ws, "private.txt")+")")
+	g.ask(c, "write .env=TOKEN=FIRST-7731")
+	g.ask(c, "write .env=TOKEN=SECOND-7731")
+	g.ask(c, "write private.txt=PRIVATE-FIRST-7731")
+	g.ask(c, "write private.txt=PRIVATE-SECOND-7731")
+	c.command("/undo", "no copy was kept")
+	exit(c)
+	if got, _ := g.file("private.txt"); got != "PRIVATE-SECOND-7731" {
+		t.Fatalf("private.txt = %q", got)
+	}
+	_ = filepath.Walk(filepath.Join(g.home, ".abhed", "records"), func(p string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			if data, _ := os.ReadFile(p); strings.Contains(string(data), "FIRST-7731") && strings.Contains(p, "blobs") {
+				t.Errorf("a secret file's content was kept in %s", p)
+			}
+		}
+		return nil
+	})
+	evs := verified(t, g.record(), g.sessions()[0].ID)
+	skipped := 0
+	for _, e := range evs {
+		var cp agent.CheckpointSaved
+		if e.Type == agent.EvCheckpoint && json.Unmarshal(e.Payload, &cp) == nil && cp.Skipped != "" {
+			skipped++
+		}
+	}
+	if skipped != 2 {
+		t.Fatalf("%d skipped checkpoints, want 2 (the second edit of each file)", skipped)
+	}
+}

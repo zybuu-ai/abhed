@@ -209,6 +209,16 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 		if info, err := os.Lstat(cp.Path); err == nil && info.Mode().IsRegular() {
 			cp.Mode = info.Mode().Perm()
 		}
+		// A file policy keeps from being read, or one that holds keys, is
+		// not copied into the record: its checkpoint says so, and it is not
+		// offered for restore.
+		if why := noCheckpoint(st.loop, cp.Path); cp.Existed && why != "" {
+			cp.Skipped, cp.Before = why, nil
+			ev, err := st.loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
+				agent.CheckpointSaved{Path: cp.Path, Turn: cp.Turn, Mode: uint32(cp.Mode), Skipped: why})
+			cp.Seq = ev.Seq
+			return cp, err
+		}
 		if cp.Existed {
 			if rec, ok := st.store.(*local.Store); ok {
 				sha, err := rec.Blobs().Put(cp.Before)
@@ -227,6 +237,32 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 		}
 		cp.Seq = ev.Seq
 		return cp, nil
+	}
+}
+
+// secretNames are files and folders that hold keys and credentials; a
+// checkpoint does not copy them into the record.
+var secretNames = []string{".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ecdsa*", "id_ed25519*",
+	".netrc", ".npmrc", ".pypirc", "credentials", ".ssh", ".aws", ".gnupg", ".kube", ".docker"}
+
+// noCheckpoint says why a file's content is not kept before an edit, "" when
+// it is: policy keeps it from being read, or its name says it holds keys.
+func noCheckpoint(loop *agent.Loop, path string) string {
+	if loop != nil && loop.Policy != nil {
+		args, _ := json.Marshal(map[string]string{"path": path})
+		if d := loop.Policy.Evaluate("read", false, args); d.Decision == policy.Deny {
+			return "policy denies reading it: " + d.Reason
+		}
+	}
+	for dir := path; ; dir = filepath.Dir(dir) {
+		for _, pat := range secretNames {
+			if ok, _ := filepath.Match(pat, filepath.Base(dir)); ok {
+				return "it looks like a file of keys or credentials"
+			}
+		}
+		if filepath.Dir(dir) == dir {
+			return ""
+		}
 	}
 }
 
