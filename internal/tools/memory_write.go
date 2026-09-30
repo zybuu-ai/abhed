@@ -122,7 +122,7 @@ func (m *MemoryWrite) Run(_ context.Context, _ *Session, raw json.RawMessage) Re
 	if err != nil {
 		return errf("Cannot read the memory: %v", err)
 	}
-	notes[a.Name] = note{kind: a.Type, text: strings.ReplaceAll(a.Content, "\n## ", "\n### ")}
+	notes[a.Name] = note{kind: a.Type, text: NeutralizeHeadings(a.Content)}
 	data := renderNotes(notes)
 	if len(data) > memoryMaxTotal {
 		return errf("The memory is full (%d KB); replace an old note instead.", memoryMaxTotal>>10)
@@ -209,4 +209,16 @@ func writeNotes(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// NeutralizeHeadings escapes every line that starts with #, so a note can
+// never open a section of its own in the file or in the prompt.
+func NeutralizeHeadings(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimLeft(l, " \t"), "#") {
+			lines[i] = "\\" + strings.TrimLeft(l, " \t")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
