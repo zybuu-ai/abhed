@@ -100,6 +100,10 @@ In the line mode (piped input, `TERM=dumb`) the same question is printed
 with its numbered answers, and only a line holding one of those numbers
 answers it; anything else, an empty line included, asks again. The command
 and the diff are shown with hidden characters marked, as in the dialog.
+The line mode has no key-timing guard: it reads whole lines, so a number
+followed by Enter while the question is open answers it, typed or pasted.
+A line typed before the question appeared is your next message, not an
+answer.
 
 A key counts as an answer only when it is meant as one:
 
