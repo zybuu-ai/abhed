@@ -52,6 +52,30 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `session.ended` | terminal reason, totals; `background`, the background tasks still running at a run's end (the session is not over while there are some: in Postgres its row stays open); `settled`, the closing end once they have all ended; `recovered`, written by reconciliation after a crash. Terminal reason `wake_limit` ends a wake run (exit code 0) | system |
 | `conversation.forked` | `through_seq`; the conversation goes on from that step, and the steps between it and the marker are abandoned: kept in the record for audit, left out of every rebuild (`/fork`, `/tree`, `/resume`, a continued session) | user |
 
+**Reserved for the interactive CLI.** These types and their payloads are
+defined (`internal/agent/event_cli.go`) so the work that records them shares
+one shape. None is emitted yet; each row says *(not yet emitted)* until the
+change that records it removes the note. Rewind reuses `conversation.forked`
+and adds `file.restored`.
+
+| Type | Payload | Emitted by |
+|---|---|---|
+| `mode.changed` | `from`, `to`, `by`, `via` (`flag`, `slash`, `shift-tab` or `plan-exit`) *(not yet emitted)* | user |
+| `permission.changed` | `op` (`add` or `remove`), `list` (`allow`, `ask` or `deny`), `rule`, `scope` (`session`), `by`; a session rule, which ends with the session *(not yet emitted)* | user |
+| `workspace.dir_added` | `path` as typed, `canonical` with symlinks resolved, `access` (`read` or `read-write`), `by` *(not yet emitted)* | user |
+| `input.mention` | a file attached with `@`: `path`, `range` (`10-20`, absent for the whole file), `sha256`, `bytes`, `truncated`; not the content, which the message carries *(not yet emitted)* | user |
+| `command.invoked` | `name`, `source` (`builtin`, `user`, `workspace`, `managed` or `mcp`, set by the loader, never by the command), `sha256` of a command file's content, `args` redacted *(not yet emitted)* | user |
+| `memory.loaded` | `files`, each `path`, `scope` (`managed`, `user`, `project`, `local`, `subdirectory` or `rule`) and `sha256` *(not yet emitted)* | system |
+| `memory.written` | `path`, `kind` (`user`, `feedback`, `project`, `reference` or `note`), `by` (`user` or `agent`) *(not yet emitted)* | the writer |
+| `session.named` | `name` *(not yet emitted)* | user |
+| `session.branched` | in the new session: `from`, the session it was copied from, and `through_seq`, the last event taken *(not yet emitted)* | user |
+| `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, `by` (`user`) *(not yet emitted)* | user |
+| `plan.proposed` | `text`, the plan the agent submitted in plan mode *(not yet emitted)* | agent |
+| `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass` *(not yet emitted)* | user |
+| `model.fallback` | `from`, `to`, `reason`; a move to a configured fallback model *(not yet emitted)* | system |
+| `hook.fired` | `extension`, `event`, `verdict` (`block`, `ask` or `annotate`; a hook never allows) *(not yet emitted)* | system |
+| `record.repaired` | `reason`, `truncated_bytes`; a torn last line cut off when the local record was opened *(not yet emitted)* | system |
+
 **Who settled a call** is in `by` on every `action.approved` and `action.denied`:
 
 | `by` | Meaning | Actor |
