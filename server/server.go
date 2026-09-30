@@ -2357,11 +2357,14 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 			reason, err = live.Loop.RunQueued(ctx)
 		}
 		s.releaseNodeIfQuiet(live)
-		if err != nil {
+		switch {
+		case errors.Is(err, agent.ErrNothingToWake):
+			s.log.Info(what+" found nothing to do", "session", live.ID)
+		case err != nil:
 			s.log.Error(what+" failed", "session", live.ID, "error", err)
-			return
+		default:
+			s.log.Info(what+" ended", "session", live.ID, "reason", reason)
 		}
-		s.log.Info(what+" ended", "session", live.ID, "reason", reason)
 	}()
 }
 
@@ -2370,6 +2373,11 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, err error) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// A wake that found nothing to do (its results taken, or a Stop since)
+	// is no failure: the session keeps the end it had.
+	if errors.Is(err, agent.ErrNothingToWake) {
+		reason, err = l.Reason, nil
+	}
 	// A wake run stopped at its cap leaves a message queued after it last
 	// looked as a completed run does: it runs now.
 	if err == nil && ctx.Err() == nil && (reason == agent.TermCompleted || reason == agent.TermWakeLimit) && len(l.Loop.Queued()) > 0 {

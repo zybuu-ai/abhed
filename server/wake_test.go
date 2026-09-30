@@ -171,3 +171,25 @@ func TestWakeLimitWithQueuedMessageRunsOn(t *testing.T) {
 		t.Fatal("an interrupted run ran on")
 	}
 }
+
+// A wake that finds nothing to do is no failure: the session keeps the end
+// it had, and is not marked as ended in error.
+func TestServerWakeWithNothingToDoIsBenign(t *testing.T) {
+	b := newBGServer(t, nil)
+	id := b.start("hello", false)
+	<-b.ended
+	live := b.live(id)
+	live.mu.Lock()
+	prior := live.Reason
+	live.mu.Unlock()
+	if !b.s.wake(live, nil) {
+		t.Fatal("the wake was not started")
+	}
+	waitUntil(t, "the wake's end", func() bool { live.mu.Lock(); defer live.mu.Unlock(); return live.ran == nil })
+	live.mu.Lock()
+	reason, state := live.Reason, live.State
+	live.mu.Unlock()
+	if reason != prior || reason == agent.TermError || state != "done" {
+		t.Fatalf("after a wake with nothing to do: reason %q (was %q), state %q", reason, prior, state)
+	}
+}
