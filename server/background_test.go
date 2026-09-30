@@ -614,3 +614,76 @@ func TestSettleCountsOwedResults(t *testing.T) {
 		t.Fatalf("state after an ask with a result owed: %q", state)
 	}
 }
+
+// drainedWithResultOwed is a session whose child a drain ended: its return
+// is recorded, its notice is not, and its row is released.
+func drainedWithResultOwed(t *testing.T) (*durableMem, string) {
+	t.Helper()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one")
+	a.s.opts.DrainTimeout = 50 * time.Millisecond
+	id := a.start("bg:one", false)
+	<-a.ended
+	a.s.drain()
+	if evs, _ := st.Events(id); len(agent.PendingNotices(evs, st.Events)) != 1 {
+		t.Fatal("precondition: one result owed")
+	}
+	return st, id
+}
+
+// Viewing a session never claims or writes it, even one owing a result: the
+// result is queued once a message claims it, not when it is opened.
+func TestViewingWritesNothing(t *testing.T) {
+	st, id := drainedWithResultOwed(t)
+	b := newBGServer(t, st)
+	before, _ := st.Events(id)
+	claims := st.claims
+	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2500 * time.Millisecond) // past the idle settle window
+	after, _ := st.Events(id)
+	st.mu.Lock()
+	claimed := st.claims != claims
+	st.mu.Unlock()
+	if len(after) != len(before) || claimed || !live.unclaimed.Load() || live.Loop.Background.Pending() != 0 {
+		t.Fatalf("viewing wrote %d events, claimed %v, unclaimed %v, pending %d",
+			len(after)-len(before), claimed, live.unclaimed.Load(), live.Loop.Background.Pending())
+	}
+	// A message claims it, and the owed result is delivered then, once.
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"what happened?"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("continue: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "the notice", func() bool { return countType(b.events(id), agent.EvSubagentNotice) == 1 })
+	time.Sleep(2500 * time.Millisecond)
+	if n := countType(b.events(id), agent.EvSubagentNotice); n != 1 {
+		t.Fatalf("%d notices, want 1", n)
+	}
+}
+
+// Lock order: a write under the run lock never claims, so a claim in
+// progress (holding claimMu) can always take the run lock. Before, an idle
+// delivery on a viewed session held the run lock waiting for claimMu while
+// the claim waited for the run lock.
+func TestClaimAndIdleDeliveryDoNotDeadlock(t *testing.T) {
+	st, id := drainedWithResultOwed(t)
+	b := newBGServer(t, st)
+	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.claimMu.Lock() // a message's claim under way
+	time.Sleep(2500 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		live.Loop.SetHistory(nil, 0) // what catchUp does under claimMu
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: the run lock is held by a write waiting to claim")
+	}
+	live.claimMu.Unlock()
+}

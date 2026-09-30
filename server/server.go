@@ -1418,9 +1418,13 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 		loop.CarryUsage(end)
 	}
 	// Results a background child left that the conversation never took,
-	// such as one that finished before a drain, arrive at the next boundary;
-	// and the allowance goes on from what the session already spent.
-	loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
+	// such as one that finished before a drain, arrive at the next boundary,
+	// once the session is claimed: a session opened only to view it writes
+	// nothing, and an idle delivery would. The allowance goes on from what
+	// the session already spent.
+	if !durable || claim {
+		loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
+	}
 	loop.Budget.Carry(agent.CarriedSpend(events))
 	live.Turns = rec.Turns
 	// Idle until the caller's prompt starts it: postMessage treats a running
@@ -1589,6 +1593,9 @@ func (s *Server) claimLocked(ctx context.Context, id string, live *liveSession) 
 		return false, err
 	}
 	live.unclaimed.Store(false)
+	// Owed results are queued only now it is claimed, so their delivery
+	// (which writes) never has to claim from under the run lock.
+	live.Loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
 	return true, nil
 }
 
@@ -1602,7 +1609,6 @@ func (s *Server) catchUp(live *liveSession, events []agent.Event) error {
 	live.Loop.Recorder.Advance(events[len(events)-1].Seq)
 	live.Loop.SetHistory(msgs, end.Turns)
 	live.Loop.CarryUsage(end)
-	live.Loop.QueueNotices(agent.PendingNotices(events, s.store.Events))
 	live.Loop.Budget.Carry(agent.CarriedSpend(events))
 	live.priorEnd = priorEnd(events, store.SessionRecord{})
 	live.mu.Lock()
@@ -1640,7 +1646,9 @@ func (s *Server) releaseHeld(id string, live *liveSession, now bool) {
 		return
 	}
 	live.mu.Lock()
-	busy := live.State == "running" || live.State == "waiting_approval"
+	// A result still owed keeps the claim: given back, it would be delivered
+	// (a write) on a session nobody holds.
+	busy := live.State == "running" || live.State == "waiting_approval" || live.Loop.Background.Owed() > 0
 	for _, run := range live.ptys {
 		select {
 		case <-run.done:

@@ -123,12 +123,13 @@ different replica behind a load balancer.
 On the Postgres store the continuation is claimed atomically, so two replicas
 asked to continue the same session at once cannot both do it; the second
 answers `409`. Only the session's owner can continue it. Opening a finished
-session in the workbench to read it does not claim it: it stays ended, with
-its reason. The first thing written to it, a message or workbench work such
+session in the workbench to read it does not claim it or write to it: it
+stays ended, with its reason, and a background result it still owes is
+delivered only once something claims it. The first thing written to it, a message or workbench work such
 as a save or a terminal, claims it, after catching up on anything another
 process recorded meanwhile; while another process is running it, that write
 is refused. A claim taken for workbench work alone is given back two minutes
-after its last write, once no terminal is open, by recording the end it was
+after its last write, once no terminal is open and no result is owed, by recording the end it was
 opened with again, so that work appears in the record after an end. A
 session running elsewhere is not opened at all.
 

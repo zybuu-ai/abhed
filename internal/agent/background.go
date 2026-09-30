@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -808,7 +809,8 @@ func (b *Background) requeue(ns []Notice) {
 }
 
 // QueueNotices adds notices rebuilt from the record, such as a result that
-// arrived before a restart, for the next delivery.
+// arrived before a restart, for the next delivery. A task's notice already
+// waiting is not queued twice.
 func (l *Loop) QueueNotices(ns []Notice) {
 	if len(ns) == 0 {
 		return
@@ -816,8 +818,14 @@ func (l *Loop) QueueNotices(ns []Notice) {
 	if l.Background == nil {
 		NewBackground(l, BackgroundPolicy{Wake: WakeOff})
 	}
+	b := l.Background
 	for _, n := range ns {
-		l.Background.push(n)
+		b.mu.Lock()
+		dup := slices.ContainsFunc(b.notices, func(q Notice) bool { return q.TaskID == n.TaskID })
+		b.mu.Unlock()
+		if !dup {
+			b.push(n)
+		}
 	}
 }
 

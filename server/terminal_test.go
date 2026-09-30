@@ -703,6 +703,38 @@ func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
 	}
 }
 
+// A workbench hold is not given back while a result is owed: given back, its
+// delivery would write to a session nobody holds.
+func TestWorkbenchHoldKeptWhileResultOwed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+	second := New(opts)
+	wb.h = second.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	second.mu.RLock()
+	live := second.running[wb.session]
+	second.mu.RUnlock()
+	live.Loop.QueueNotices([]agent.Notice{{TaskID: "t-1", Session: "t-1", CallID: "bgn_t1", Content: "done"}})
+	second.releaseHeld(wb.session, live, false)
+	live.holdMu.Lock()
+	held := live.held
+	live.holdMu.Unlock()
+	if !held || live.unclaimed.Load() {
+		t.Fatalf("the hold was given back with a result owed: held %v, unclaimed %v", held, live.unclaimed.Load())
+	}
+	second.drain()
+}
+
 // The terminal's environment starts from the host's when the command left it
 // unset; appending TERM to nothing gave the container CLI no PATH at all.
 func TestTerminalEnvironmentKeepsTheHost(t *testing.T) {

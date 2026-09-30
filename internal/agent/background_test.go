@@ -594,3 +594,14 @@ func TestChildEndAndNoticeAreAtomic(t *testing.T) {
 	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
 	noNoticeAfterClosingEnd(t, r.events(t))
 }
+
+// A task's result rebuilt from the record twice is queued once.
+func TestQueueNoticesOncePerTask(t *testing.T) {
+	r := newBGRig(t, WakeOff)
+	n := Notice{TaskID: "t-1", Session: "t-1", CallID: "bgn_1", Content: "x"}
+	r.l.QueueNotices([]Notice{n})
+	r.l.QueueNotices([]Notice{n, {TaskID: "t-2", Session: "t-2", CallID: "bgn_2"}})
+	if got := r.l.Background.Pending(); got != 2 {
+		t.Fatalf("pending %d, want 2", got)
+	}
+}
