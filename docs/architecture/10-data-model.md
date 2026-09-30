@@ -37,7 +37,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args (always a JSON object, the canonical arguments every step and the tool read; `{}` on a call refused at step `args`); `raw_args`, the refused arguments as text; `dropped_args`, keys a built-in tool did not declare and dropped; `via` when something issued it for the agent, such as `skill research pipeline` for a skill pipeline's step (recorded in the record of the loop whose `skill` call ran the pipeline) | agent |
-| `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
+| `action.approved` / `.denied` | the step that decided (`step`), `reason`, `by`; `rule`, the rule as written, when a deny, ask or allow rule decided; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |

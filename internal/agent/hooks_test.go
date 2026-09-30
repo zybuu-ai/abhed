@@ -108,3 +108,39 @@ func TestHookRefusesAPermissionRequest(t *testing.T) {
 		t.Fatal("a refused call was announced as needing the person")
 	}
 }
+
+// An approval or denial a rule made names the rule in the record; one the
+// mode made names none.
+func TestRecordedDecisionsNameTheRule(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{
+		{calls: []model.ToolCall{
+			call("bash", map[string]string{"command": "go test ./..."}),
+			call("bash", map[string]string{"command": "curl http://x"}),
+			call("glob", map[string]string{"pattern": "*.go"}),
+		}},
+		{text: "done"},
+	}, policy.ModeAuto, false)
+	if err := l.Policy.AddAllow("bash(go test*)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Policy.AddDeny("bash(curl *)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	var got []string
+	for _, e := range evs {
+		if e.Type != EvActionApproved && e.Type != EvActionDenied {
+			continue
+		}
+		var p map[string]string
+		_ = json.Unmarshal(e.Payload, &p)
+		got = append(got, string(e.Type)+" "+p["step"]+" "+p["rule"])
+	}
+	want := []string{"action.approved allow bash(go test*)", "action.denied deny bash(curl *)", "action.approved mode "}
+	if !slices.Equal(got, want) {
+		t.Fatalf("recorded %q, want %q", got, want)
+	}
+}

@@ -1185,9 +1185,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	answer := &Answer{}
 	switch decision.Decision {
 	case policy.Deny:
-		l.record(EvActionDenied, ActorSystem, map[string]string{
+		l.record(EvActionDenied, ActorSystem, withRule(map[string]string{
 			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
-		})
+		}, decision))
 		// Feed the denial back so the model can choose another approach.
 		return false, tools.Result{
 			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
@@ -1253,9 +1253,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 
 	// by says who let it through: the policy on its own, a person asked, or
 	// what the approver reported in their place.
-	approvedBy := map[string]string{
+	approvedBy := withRule(map[string]string{
 		"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
-	}
+	}, decision)
 	if decision.Decision == policy.Ask {
 		approvedBy["by"] = ByReviewer
 		if answer.By != "" {
@@ -1269,6 +1269,15 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	}
 	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
+}
+
+// withRule adds the rule that decided, when one did, so an approval or
+// denial by policy names what made it.
+func withRule(p map[string]string, d policy.Result) map[string]string {
+	if d.Rule != "" {
+		p["rule"] = d.Rule
+	}
+	return p
 }
 
 // WithheldLookalikeArgs stands in for the arguments of an unknown call

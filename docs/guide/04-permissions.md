@@ -45,9 +45,9 @@ ahead of that message.
 `edit` and `write` inside the workspace, without asking; a command (`bash`)
 runs without asking only where an allow rule covers it. It still asks for
 anything an ask rule names, for destructive commands, and for reads that can
-send data out, and deny rules still refuse. Every approval is recorded with
-the step and, where one decided, the rule (`step`, `reason`); `/permissions
-explain` shows the same for a call you name.
+send data out, and deny rules still refuse. Every approval and denial is recorded
+with the step that decided and, where a rule did, the rule (`step`, `rule`,
+`reason`); `/permissions explain` shows the same for a call you name.
 
 ### Plan mode
 

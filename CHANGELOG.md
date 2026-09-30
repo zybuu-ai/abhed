@@ -503,7 +503,9 @@ All notable changes to Abhed are recorded here. The format follows
   or annotates is recorded as `hook.fired`. `/hooks` lists the extensions
   with their layer, events, matcher and status. A managed `hooks.disabled`
   now takes effect: extensions keep only the tools they provide.
-- `policy.Result` names the rule that decided (`Rule`).
+- `policy.Result` names the rule that decided (`Rule`), and `action.approved`
+  and `action.denied` record it as `rule` when a deny, ask or allow rule
+  decided.
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and
