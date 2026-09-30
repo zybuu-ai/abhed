@@ -538,3 +538,41 @@ func TestResumeOfOwnSubagentNamesItsParent(t *testing.T) {
 		}
 	}
 }
+
+// brokenParent is a store whose lookup of one session fails.
+type brokenParent struct {
+	*rowStore
+	broken string
+}
+
+func (b brokenParent) GetSession(ctx context.Context, id string) (store.SessionRecord, error) {
+	if id == b.broken {
+		return store.SessionRecord{}, fmt.Errorf("connection reset")
+	}
+	return b.rowStore.GetSession(ctx, id)
+}
+
+// A subagent's row is owned only through a parent in this tenant, never by a
+// user named like the subagent rows are, and a lookup that fails says so
+// rather than blaming another user.
+func TestSubagentOwnershipWalkEdges(t *testing.T) {
+	st, rs, _, _ := resumeRig(t, "me", "default")
+	ended := time.Now()
+	rs.rows["s-far-top"] = store.SessionRecord{ID: "s-far-top", User: "me", Tenant: "other", EndedAt: &ended}
+	rs.rows["s-far-kid"] = store.SessionRecord{ID: "s-far-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-far-top", EndedAt: &ended}
+	rs.rows["s-orphan"] = store.SessionRecord{ID: "s-orphan", User: store.SubagentUser, Tenant: "default", ParentID: "s-gone", EndedAt: &ended}
+	rs.rows["s-top"] = store.SessionRecord{ID: "s-top", User: "me", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-kid"] = store.SessionRecord{ID: "s-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-top", EndedAt: &ended}
+	if err := ownedHere(context.Background(), st, "s-far-kid"); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("a subagent whose parent is in another tenant was owned here: %v", err)
+	}
+	t.Setenv("USER", store.SubagentUser)
+	if err := ownedHere(context.Background(), st, "s-orphan"); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("a user named %q owned an orphaned subagent row: %v", store.SubagentUser, err)
+	}
+	t.Setenv("USER", "me")
+	st.store = brokenParent{rowStore: rs, broken: "s-top"}
+	if err := ownedHere(context.Background(), st, "s-kid"); err == nil || strings.Contains(err.Error(), "another user") || !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("a failed lookup was not reported as one: %v", err)
+	}
+}

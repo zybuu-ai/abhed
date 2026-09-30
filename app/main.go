@@ -2167,12 +2167,20 @@ func ownedHere(ctx context.Context, st *cliState, id string) error {
 	owner := rec
 	for hops := 0; owner.User == store.SubagentUser && owner.ParentID != "" && owner.Tenant == tenant && hops < 16; hops++ {
 		parent, found, err := storedSession(ctx, st, owner.ParentID)
-		if err != nil || !found {
+		if errors.Is(err, store.ErrNotFound) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("could not check who owns session %s: %w", id, err)
+		}
+		if !found {
 			break
 		}
 		owner = parent
 	}
-	if owner.User != cliUser() || rec.Tenant != tenant || owner.Tenant != tenant {
+	// A subagent's row whose chain ends without a person owns nothing, even
+	// for a user who happens to be named like the subagent rows are.
+	if owner.User == store.SubagentUser || owner.User != cliUser() || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
