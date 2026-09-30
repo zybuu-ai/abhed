@@ -641,3 +641,26 @@ func TestIDsMustBePlainNames(t *testing.T) {
 		t.Error("tenant ../up accepted")
 	}
 }
+
+func TestPruneOlderKeepsRecentAndHeldSessions(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	old := time.Now().Add(-100 * 24 * time.Hour)
+	s.index.clock = func() time.Time { return old }
+	record(t, s, "s-old", "long ago")
+	record(t, s, "s-old-held", "long ago too")
+	s.index.clock = nil
+	record(t, s, "s-new", "today")
+	_ = s.Release("s-old")
+	_ = s.Release("s-new")
+	// s-old-held stays open in another store, as another process would hold it.
+	other := openTest(t, dir)
+	_ = s.Release("s-old-held")
+	if err := other.Acquire("s-old-held"); err != nil {
+		t.Fatal(err)
+	}
+	pruned, skipped, err := s.PruneOlder(time.Now().Add(-90*24*time.Hour), "managed", "record.retention_days is 90")
+	if err != nil || len(pruned) != 1 || pruned[0].ID != "s-old" || len(skipped) != 1 || skipped[0] != "s-old-held" {
+		t.Fatalf("pruned %+v skipped %v err %v", pruned, skipped, err)
+	}
+}

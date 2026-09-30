@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -121,8 +122,12 @@ func Open(opts Options) (*Store, error) {
 			return nil, err
 		}
 	}
+	red := opts.Redact
+	if v := reflect.ValueOf(red); red != nil && v.Kind() == reflect.Pointer && v.IsNil() {
+		red = nil // a typed nil redacts nothing, and must not be called
+	}
 	s := &Store{
-		root: root, dir: dir, tenant: tenant, user: opts.User, redact: opts.Redact,
+		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red,
 		held: map[string]*session{}, subs: map[string][]chan agent.Event{},
 	}
 	s.blobs = &blobStore{dir: filepath.Join(dir, "blobs", "sha256")}

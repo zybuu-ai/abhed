@@ -114,6 +114,8 @@ func Main(args []string, opts ...Option) int {
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
+	case "record":
+		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "hawkeye":
 		return hawkeyeCmd(workspace, rest[1:], a.trust)
 	case "migrate":

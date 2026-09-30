@@ -18,6 +18,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
+	"github.com/zybuu-ai/abhed/store/local"
 )
 
 func init() {
@@ -421,6 +422,24 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 		return nil, nil, fmt.Errorf("open event store: %w", err)
 	}
 	return pg, pg.Close, nil
+}
+
+// openRecord opens the local record the configuration names: the managed
+// record.dir, or ~/.abhed/records, for this tenant and user, redacting with
+// the secrets store before anything is written. A managed
+// record.retention_days prunes what is older, leaving tombstones.
+func openRecord(cfg config.Config) (*local.Store, error) {
+	rec, err := local.Open(local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Redactor()})
+	if err != nil {
+		return nil, fmt.Errorf("open the local record: %w", err)
+	}
+	if days := cfg.Record.RetentionDays; days > 0 && cfg.ManagedSets("record.retention_days") {
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		if _, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days)); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: the record's retention could not be applied: %v\n", err)
+		}
+	}
+	return rec, nil
 }
 
 func storageLabel(cfg config.Config) string {
