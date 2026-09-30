@@ -177,11 +177,15 @@ const api = async (url, opts) => {
   if(opts && opts.body) __posted.push({route, body: JSON.parse(opts.body)});
   if(__pending[route]){ const p = __pending[route]; delete __pending[route]; return p; }
   if(url === '/v1/sessions'){ const snap = __sessions, d = __delays.shift() || 0; if(d) await new Promise(r => setTimeout(r, d)); return snap; }
+  const st = /^\/v1\/sessions\/([^/]+)\/state$/.exec(url); if(st){ const s = __sessions.find(x => x.id === st[1]); if(!s) throw Object.assign(new Error('session not found'), {status:404}); return {id:s.id, state:s.state}; }
   return [];
 };
 `
 	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_chat_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's approval prompt failed:\n%s", out)
+	}
+	if !strings.Contains(ideHTML, "setInterval(watchIdle, ") {
+		t.Error("nothing watches a session with no run")
 	}
 }
 

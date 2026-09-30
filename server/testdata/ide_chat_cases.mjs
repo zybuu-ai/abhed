@@ -265,12 +265,14 @@ fresh('s22', false); es = null; __connected.length = 0;
 __sessions = [{id:'s22', state:'idle'}];
 watchIdle(); await tick();
 check('an idle session is left idle', !live && __connected.length === 0);
-__sessions = [{id:'s22', state:'running'}];
+__sessions = [{id:'s22', state:'running'}]; __routes.length = 0;
 watchIdle(); await tick();
 check('a turn started elsewhere is followed', live && __connected.length === 1 && __connected[0] === 's22');
+check('by asking after that session alone, not the tenant\'s list',
+  __routes.includes('GET /v1/sessions/s22/state') && !__routes.includes('GET /v1/sessions'));
 es = {}; __routes.length = 0; live = false;
 watchIdle(); await tick();
-check('a page with a stream open does not ask', !__routes.includes('GET /v1/sessions'));
+check('a page with a stream open does not ask', __routes.length === 0);
 
 // An ask with no request id is not drawn as a card anyone could answer.
 fresh('s23', true);

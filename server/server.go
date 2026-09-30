@@ -405,6 +405,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
+	mux.HandleFunc("GET /v1/sessions/{id}/state", s.sessionState)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -1691,6 +1692,38 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		l.mu.Unlock()
 	}
 	WriteJSON(w, http.StatusOK, out)
+}
+
+// sessionStateResponse is one session's state, for a page watching it.
+type sessionStateResponse struct {
+	ID     string `json:"id"`
+	State  string `json:"state"` // running | waiting_approval | idle | done
+	Reason string `json:"reason,omitempty"`
+}
+
+// sessionState answers one session's state to its owner, so a page open on a
+// session with no run can tell when the next one starts without listing the
+// tenant's sessions. Anyone else is told it does not exist.
+func (s *Server) sessionState(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+		live.mu.Lock()
+		out := sessionStateResponse{ID: id, State: live.State, Reason: listedReason(live.State, live.Reason)}
+		live.mu.Unlock()
+		WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	if g, ok := s.sessions.(sessionGetter); ok && s.mayAccess(r, id) {
+		if rec, err := g.GetSession(r.Context(), id); err == nil {
+			out := sessionStateResponse{ID: id, State: "done", Reason: rec.TerminalReason}
+			if rec.EndedAt == nil {
+				out.State, out.Reason = "running", ""
+			}
+			WriteJSON(w, http.StatusOK, out)
+			return
+		}
+	}
+	WriteError(w, http.StatusNotFound, "session not found")
 }
 
 // mayAccess reports whether the request's caller owns session id, checking the

@@ -44,7 +44,7 @@ sets = {
     'ide-chat': ['const el = (tag, cls, text) => {','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
-          'function subagentRow(id, p, at){','function watchIdle(){'],
+          'function subagentRow(id, p, at){','async function watchIdle(){'],
     'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
           'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
     # From ide.html: the explorer's tree and its name input.

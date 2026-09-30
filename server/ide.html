@@ -1308,9 +1308,15 @@ function connIdle(){
 }
 setInterval(connIdle, 5000);
 // A page open on a session whose run has ended holds no stream, and another
-// tab or client may start the next turn: ask now and then, and follow it.
-function watchIdle(){ if(current && !live && !es && !document.hidden && !signInGone && !leaving) recheck(current); }
-setInterval(watchIdle, 4000);
+// tab or client may start the next turn: ask after that session now and then,
+// and follow the turn.
+async function watchIdle(){
+  const id = current; if(!id || live || es || document.hidden || signInGone || leaving) return;
+  let st; try{ st = await api('/v1/sessions/' + id + '/state'); }catch{ return; }
+  if(current !== id || live || es || !st) return;
+  if(st.state === 'running' || st.state === 'waiting_approval'){ setLive(true); connect(id); }
+}
+const idleWatch = setInterval(watchIdle, 4000);
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
