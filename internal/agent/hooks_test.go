@@ -144,3 +144,40 @@ func TestRecordedDecisionsNameTheRule(t *testing.T) {
 		t.Fatalf("recorded %q, want %q", got, want)
 	}
 }
+
+// A subagent's call that would be put to the person is screened by the
+// parent's hooks first, and a refusal there means nobody is asked.
+func TestSubagentAskIsVetoedByTheParentsHooks(t *testing.T) {
+	parent, _, _ := harness(t, []scriptedTurn{{text: "parent"}}, policy.ModeDefault, true)
+	hooks := &fakeHooks{refuseCall: "deploy"}
+	parent.Hooks = hooks
+	f := subFactory(t, nil, NewBudget(1_000_000, 10, false))
+	counter := &askCounter{}
+	f.Approver = counter
+	args, _ := json.Marshal(map[string]string{"path": f.Workspace + "/deploy.txt", "content": "x"})
+	// A subagent runs on the model its parent runs on now.
+	parent.Adapter = &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "w1", Name: "write", Args: args}}},
+		{text: "done"},
+	}}
+	if _, err := f.Spawn(parent.asParent(context.Background()), SubagentRequest{
+		Prompt: "write it", Description: "write", AgentType: "general",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if counter.asked != 0 {
+		t.Fatalf("the person was asked %d times about a call the hook refused", counter.asked)
+	}
+	hooks.mu.Lock()
+	defer hooks.mu.Unlock()
+	if !slices.Contains(hooks.seen, "permission:write") {
+		t.Fatalf("the parent's hooks never saw the subagent's call: %v", hooks.seen)
+	}
+	// The subagent's task is not a person's message, and its end is the
+	// parent's subagent_end, not a turn_end of its own.
+	for _, s := range hooks.seen {
+		if strings.HasPrefix(s, "prompt:") || strings.HasPrefix(s, "turn_end") {
+			t.Fatalf("the subagent's own run reached the hooks as %q", s)
+		}
+	}
+}

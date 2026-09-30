@@ -626,6 +626,10 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	}
 	sub.depth = depth + 1
 	sub.Provider = provider
+	// A subagent's calls reach the same person, so the same hooks screen them.
+	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
+		sub.Hooks = childHooks{parent.loop.Hooks}
+	}
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.
 	sub.Budget = f.Budget

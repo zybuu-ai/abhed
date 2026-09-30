@@ -330,6 +330,19 @@ const (
 	HookNotification = "notification"
 )
 
+// childHooks are a parent's hooks as a subagent sees them: its calls are
+// screened and announced, but its task is not a person's message and its
+// end is reported by the parent as subagent_end.
+type childHooks struct{ Hooks }
+
+func (childHooks) PromptSubmitted(context.Context, string, string) string { return "" }
+
+func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
+	if event == HookNotification {
+		c.Hooks.Observe(ctx, event, sessionID, tool, detail)
+	}
+}
+
 // TermPromptRefused is a run that never started: a hook refused the message.
 const TermPromptRefused TerminalReason = "prompt_refused"
 
