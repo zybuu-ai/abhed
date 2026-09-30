@@ -121,6 +121,9 @@ type SessionNamed struct {
 type SessionBranched struct {
 	From       string `json:"from"`
 	ThroughSeq int64  `json:"through_seq"`
+	// Unverified says why the source's record failed verification, when a
+	// person chose to go on from it; "" when it verified.
+	Unverified string `json:"unverified,omitempty"`
 }
 
 // FileRestored is the payload of file.restored.

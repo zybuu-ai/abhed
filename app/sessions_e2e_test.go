@@ -325,17 +325,34 @@ func TestResumeTamperedNeedsConfirm(t *testing.T) {
 	}
 	exit(c)
 
+	before, _ := os.ReadFile(p)
 	c = g.start("-r", id)
 	c.waitFor(func(out string) bool { return strings.Contains(out, "unverified") }, "the warning")
 	fmt.Fprintln(c.stdin, "yes")
-	c.waitFor(func(out string) bool { return strings.Contains(out, "resumed") }, "the resume")
+	c.waitFor(func(out string) bool { return strings.Contains(out, "going on in a new session") }, "the fork")
 	if body := g.ask(c, "What is the codeword?"); !strings.Contains(body, "ZEBRA-99") {
-		t.Fatalf("a confirmed resume did not continue:\n%s", body)
+		t.Fatalf("a confirmed resume did not go on:\n%s", body)
 	}
 	exit(c)
-	// The edit is still there to find: going on does not launder it.
-	if rep, _ := g.record().Verify(id); rep.OK || rep.FirstBad != 1 {
+	// Nothing was written into the failing record, and its edit is still
+	// there to find; the fork names it and why.
+	if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+		t.Fatal("the unverified record was written to")
+	}
+	rec := g.record()
+	if rep, _ := rec.Verify(id); rep.OK || rep.FirstBad != 1 {
 		t.Fatalf("the tampered line is no longer reported: %+v", rep)
+	}
+	var fork local.Entry
+	for _, e := range g.sessions() {
+		if e.Parent == id {
+			fork = e
+		}
+	}
+	evs := verified(t, rec, fork.ID)
+	var b agent.SessionBranched
+	if evs[0].Type != agent.EvSessionBranched || json.Unmarshal(evs[0].Payload, &b) != nil || b.From != id || !strings.Contains(b.Unverified, "seq 1") {
+		t.Fatalf("the fork does not record its unverified source: %s %s", evs[0].Type, evs[0].Payload)
 	}
 }
 

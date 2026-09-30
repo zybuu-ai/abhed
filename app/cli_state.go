@@ -49,10 +49,10 @@ type cliState struct {
 	surface ui.Surface
 	// pendingName is a name given before the conversation exists.
 	pendingName string
-	// fromFile is the session a record file from elsewhere was copied into,
-	// with the file's events.
-	fromFile       string
-	fromFileEvents []agent.Event
+	// copiedID is the session a record from elsewhere, or one that failed
+	// verification, was copied into, with the events copied.
+	copiedID     string
+	copiedEvents []agent.Event
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

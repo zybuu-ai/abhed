@@ -292,48 +292,118 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 		return nil, fmt.Errorf("open session %s: %w", id, err)
 	}
 	h := &session{id: id, f: f, lock: lk, seqs: map[int64]string{}, last: Head{Hash: Genesis}}
-	data, err := os.ReadFile(path) // #nosec G304 -- as above
-	if err != nil {
+	fail := func(err error) (*session, error) {
 		_ = f.Close()
 		return nil, err
 	}
+	data, err := os.ReadFile(path) // #nosec G304 -- as above
+	if err != nil {
+		return fail(err)
+	}
 	sc := scan(data)
+	head, have := s.readHead(id)
+	counted := int64(len(sc.raws))
+	// Decide the repair, check the record as it would then stand, and write
+	// only if it verifies: a refused record is left exactly as found.
+	const (
+		keep = iota
+		complete
+		cut
+	)
+	action := keep
 	if len(sc.tail) > 0 {
-		// A crash cut the last line short: it is cut off, never completed.
-		if err := f.Truncate(int64(len(data) - len(sc.tail))); err != nil {
-			_ = f.Close()
-			return nil, fmt.Errorf("repair session %s: %w", id, err)
+		switch {
+		case completesChain(sc):
+			// A whole line that lost only its newline is completed, not cut.
+			action = complete
+			sc.raws = append(sc.raws, sc.tail)
+		case have && head.Lines > counted:
+			// The head counts a line the file no longer holds whole: that is
+			// a cut, not a crash, and it is left as evidence.
+		default:
+			// A crash cut a line the head never counted: it can go.
+			action = cut
 		}
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			return nil, err
+	}
+	rep, lines := verifyLines(sc.raws, id)
+	if len(sc.tail) > 0 && action == keep && rep.OK {
+		rep.OK, rep.FirstBad = false, rep.Head.Seq+1
+		rep.Reason = "the last line the head counts is cut short"
+	}
+	if len(sc.raws) > 0 || have {
+		checkHead(&rep, lines, head, have)
+	}
+	if !rep.OK {
+		return fail(&UnverifiedError{Report: rep})
+	}
+	switch action {
+	case complete:
+		if _, err := f.Write([]byte{'\n'}); err != nil {
+			return fail(fmt.Errorf("repair session %s: %w", id, err))
+		}
+		h.repair = &agent.RecordRepaired{Reason: "a last line without its newline was completed"}
+	case cut:
+		if err := f.Truncate(int64(len(data) - len(sc.tail))); err != nil {
+			return fail(fmt.Errorf("repair session %s: %w", id, err))
 		}
 		h.repair = &agent.RecordRepaired{Reason: "an unfinished last line, left by a crash, was cut off", TruncatedBytes: int64(len(sc.tail))}
 	}
-	for _, raw := range sc.raws {
-		l, err := parseLine(raw)
-		h.last.Lines++
-		if err != nil {
-			// A damaged line stays as it is; verify names it. The chain goes
-			// on from its bytes, so what follows is still linked to it.
-			h.last.Hash = hashBytes(raw)
-			continue
+	if h.repair != nil {
+		if err := syncFile(f); err != nil {
+			return fail(err)
 		}
+	}
+	for _, l := range lines {
 		ev := l.event()
 		h.events = append(h.events, ev)
 		h.seqs[ev.Seq] = ev.ID
-		h.last.Seq, h.last.Hash = l.Seq, l.Hash
 	}
 	sortEvents(h.events)
-	if hd, ok := s.readHead(id); !ok || hd != h.last {
-		if err := s.writeHead(id, h.last); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
+	h.last = rep.Head
+	if h.last.Lines == 0 {
+		h.last.Hash = Genesis
 	}
-	h.synced = h.last
+	// The head only ever moves forward, to lines the chain holds.
+	h.synced = head
+	if !have || h.last.Lines > head.Lines {
+		if err := s.writeHead(id, h.last); err != nil {
+			return fail(err)
+		}
+		h.synced = h.last
+	}
 	return h, nil
 }
+
+// completesChain reports whether a file's unfinished tail is a whole sealed
+// line that follows the last complete one, and lost only its newline.
+func completesChain(sc scanned) bool {
+	l, why := checkLine(sc.tail)
+	if why != "" {
+		return false
+	}
+	prev := Genesis
+	if n := len(sc.raws); n > 0 {
+		last, err := parseLine(sc.raws[n-1])
+		if err != nil {
+			return false
+		}
+		prev = last.Hash
+	}
+	return l.Prev == prev
+}
+
+// ErrUnverified is a session whose record fails verification. It is read,
+// never written to; going on from it is a fork into a new session.
+var ErrUnverified = errors.New("the record fails verification")
+
+// UnverifiedError says why a session's record cannot be written to.
+type UnverifiedError struct{ Report Report }
+
+func (e *UnverifiedError) Error() string {
+	return fmt.Sprintf("session %s: %v: at seq %d, %s", e.Report.ID, ErrUnverified, e.Report.FirstBad, e.Report.Reason)
+}
+
+func (e *UnverifiedError) Unwrap() error { return ErrUnverified }
 
 // Release gives up this process's lock on a session, so another process
 // may continue it. The session's file stays as it is.
@@ -469,7 +539,7 @@ func (h *session) sync(s *Store) error {
 	if h.synced == h.last {
 		return nil
 	}
-	if err := h.f.Sync(); err != nil {
+	if err := syncFile(h.f); err != nil {
 		return fmt.Errorf("sync session %s: %w", h.id, err)
 	}
 	if err := s.writeHead(h.id, h.last); err != nil {
@@ -624,8 +694,8 @@ func (s *Store) Unsubscribe(sessionID string, ch <-chan agent.Event) {
 }
 
 // Events returns a session's events in seq order. A session nobody holds
-// is read from its file; an unfinished last line is left out, and cut off
-// with a record.repaired event when the session can be taken to do so.
+// is read from its file, an unfinished last line left out; nothing is
+// written.
 func (s *Store) Events(sessionID string) ([]agent.Event, error) {
 	return s.Since(sessionID, 0)
 }
@@ -639,18 +709,10 @@ func (s *Store) Since(sessionID string, seq int64) ([]agent.Event, error) {
 	h := s.held[sessionID]
 	s.mu.Unlock()
 	if h == nil {
-		all, torn, err := s.readEvents(sessionID)
-		if err != nil || !torn {
-			return after(all, seq), err
-		}
-		// Repaired now if nobody is writing it, so a continuation starts
-		// from the seq the repair took.
-		if err := s.Acquire(sessionID); err == nil {
-			_ = s.Release(sessionID)
-			all, _, err = s.readEvents(sessionID)
-			return after(all, seq), err
-		}
-		return after(all, seq), nil
+		// A read never changes the record: an unfinished last line is left
+		// out here and dealt with by the next writer.
+		all, _, err := s.readEvents(sessionID)
+		return after(all, seq), err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -837,7 +899,7 @@ func (s *Store) ClaimResume(_ context.Context, sessionID string) (bool, error) {
 			if errors.Is(err, ErrHeldElsewhere) {
 				return false, nil
 			}
-			return false, err
+			return false, err // an unverified record is refused, and says why
 		}
 	}
 	h.mu.Lock()

@@ -170,13 +170,15 @@ func continueSession(ctx context.Context, st *cliState, r *ui.Renderer, id strin
 
 // chooseSession finds the session -c or -r names, checks its record, and
 // returns its id and events; "" when there is none to go on with. copied is
-// set when a file from outside the record was copied into a new session.
+// set when a file from outside the record, or an unverified record, was
+// copied into a new session.
 func chooseSession(ctx context.Context, st *cliState, f sessionFlags, say func(string, ...any)) (id string, events []agent.Event, copied bool, err error) {
+	st.copiedID, st.copiedEvents = "", nil
 	id, events, err = findSession(ctx, st, f, say)
-	if err != nil || id != "" || f.Resume == "" {
+	if err != nil || id != "" {
 		return id, events, false, err
 	}
-	return st.fromFile, st.fromFileEvents, st.fromFile != "", nil
+	return st.copiedID, st.copiedEvents, st.copiedID != "", nil
 }
 
 func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(string, ...any)) (string, []agent.Event, error) {
@@ -216,7 +218,8 @@ func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(str
 		}
 		id = e.ID
 	}
-	if err := checkRecorded(ctx, st, id); err != nil {
+	unverified, err := checkRecorded(ctx, st, id)
+	if err != nil {
 		return "", nil, err
 	}
 	events, err := st.store.Events(id)
@@ -225,6 +228,17 @@ func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(str
 	}
 	if len(events) == 0 {
 		return "", nil, fmt.Errorf("session %s has no events", id)
+	}
+	if unverified != "" {
+		// Nothing more is written into a record that fails: going on from it
+		// is a fork into a new session, which names it and why.
+		newID, err := copyBranch(ctx, st.store, st.appCfg, id, events, 0, unverified)
+		if err != nil {
+			return "", nil, err
+		}
+		say("going on in a new session %s; %s is left exactly as it is", newID, id)
+		st.copiedID, st.copiedEvents = newID, events
+		return "", nil, nil
 	}
 	return id, events, nil
 }
@@ -242,27 +256,32 @@ func inRecordDir(rec *local.Store, path string) bool {
 	return err == nil
 }
 
-// checkRecorded verifies a session's chain before it goes on: a record that
-// fails is shown as unverified and continued only when the person confirms.
-func checkRecorded(ctx context.Context, st *cliState, id string) error {
+// checkRecorded verifies a session's chain before it goes on. A record that
+// fails is shown as unverified and, only when the person confirms, goes on
+// in a fork; the reason is returned for the fork to record.
+func checkRecorded(ctx context.Context, st *cliState, id string) (string, error) {
 	rec, ok := st.store.(*local.Store)
 	if !ok {
-		return nil
+		return "", nil
 	}
 	rep, err := rec.Verify(id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rep.OK {
-		return nil
+		return "", nil
 	}
-	return confirmUnverified(ctx, st, id, rep)
+	return unverifiedReason(rep), confirmUnverified(ctx, st, id, rep)
+}
+
+func unverifiedReason(rep local.Report) string {
+	return fmt.Sprintf("at seq %d, %s", rep.FirstBad, rep.Reason)
 }
 
 func confirmUnverified(ctx context.Context, st *cliState, name string, rep local.Report) error {
 	answer, err := st.ui().Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm,
-		Title: fmt.Sprintf("The record of %s is unverified: at seq %d, %s. Continue from it anyway?", name, rep.FirstBad, rep.Reason),
-		Why:   "the chain shows an edit, a reorder or lines missing; abhed record verify has the details"})
+		Title: fmt.Sprintf("The record of %s is unverified: at seq %d, %s. Go on from it in a new session?", name, rep.FirstBad, rep.Reason),
+		Why:   "the chain shows an edit, a reorder or lines missing; the record is left as it is, and abhed record verify has the details"})
 	if err != nil || answer != ui.ChoiceYes {
 		return fmt.Errorf("not continued: the record of %s is unverified", name)
 	}
@@ -277,10 +296,12 @@ func fromFile(ctx context.Context, st *cliState, path string, say func(string, .
 	if err != nil {
 		return "", nil, err
 	}
+	unverified := ""
 	if !rep.OK {
 		if err := confirmUnverified(ctx, st, path, rep); err != nil {
 			return "", nil, err
 		}
+		unverified = unverifiedReason(rep)
 	}
 	events, err := readRecordFile(path)
 	if err != nil {
@@ -289,12 +310,12 @@ func fromFile(ctx context.Context, st *cliState, path string, say func(string, .
 	if len(events) == 0 {
 		return "", nil, fmt.Errorf("%s holds no events", path)
 	}
-	newID, err := copyBranch(ctx, st.store, st.appCfg, events[0].SessionID, events, 0)
+	newID, err := copyBranch(ctx, st.store, st.appCfg, events[0].SessionID, events, 0, unverified)
 	if err != nil {
 		return "", nil, err
 	}
 	say("%s copied into a new session %s; the file is left as it is", path, newID)
-	st.fromFile, st.fromFileEvents = newID, events
+	st.copiedID, st.copiedEvents = newID, events
 	return "", nil, nil
 }
 
@@ -411,7 +432,7 @@ func noteMove(st *cliState, s ui.Style, events []agent.Event) {
 // branchInto copies session from's conversation, as it stands through seq
 // (0 for all of it), into a new session and makes that the conversation.
 func branchInto(ctx context.Context, st *cliState, from string, events []agent.Event, through int64) (string, error) {
-	id, err := copyBranch(ctx, st.store, st.appCfg, from, events, through)
+	id, err := copyBranch(ctx, st.store, st.appCfg, from, events, through, "")
 	if err != nil {
 		return "", err
 	}
@@ -433,7 +454,7 @@ func adoptBranch(st *cliState, id string) error {
 // copyBranch writes a new session holding from's conversation through seq.
 // Its record opens with session.branched naming the source and the last seq
 // taken, then the copied events, renumbered; the source is not touched.
-func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, from string, events []agent.Event, through int64) (string, error) {
+func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, from string, events []agent.Event, through int64, unverified string) (string, error) {
 	copied := branchEvents(events, through)
 	if len(copied) == 0 {
 		return "", fmt.Errorf("nothing to branch from %s", from)
@@ -445,7 +466,7 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 	rec := agent.NewRecorder(es, id, "")
 	rec.Redact = openVault().Redactor()
 	if _, err := rec.Record(agent.EvSessionBranched, agent.ActorUser, agent.Trusted,
-		agent.SessionBranched{From: from, ThroughSeq: copied[len(copied)-1].Seq}); err != nil {
+		agent.SessionBranched{From: from, ThroughSeq: copied[len(copied)-1].Seq, Unverified: unverified}); err != nil {
 		return "", err
 	}
 	for i, ev := range copied {
@@ -533,7 +554,7 @@ func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loo
 	case copied:
 		return seeded(st.store, from)
 	case f.Fork:
-		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0)
+		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0, "")
 		if err != nil {
 			return "", nil, err
 		}

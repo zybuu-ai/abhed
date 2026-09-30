@@ -325,6 +325,16 @@ func TestTornTailIsRepairedAndRecorded(t *testing.T) {
 	if !rep.OK || rep.Torn == 0 {
 		t.Fatalf("a torn tail is noted, not a failure: %+v", rep)
 	}
+	// A read leaves it; the next writer cuts it.
+	if evs, _ := s.Events("s-1"); len(evs) != 2 {
+		t.Fatalf("read: %d events", len(evs))
+	}
+	if data, _ := os.ReadFile(s.Path("s-1")); !bytes.HasSuffix(data, []byte(torn)) {
+		t.Fatal("a read changed the record")
+	}
+	if err := s.Acquire("s-1"); err != nil {
+		t.Fatal(err)
+	}
 	evs, err := s.Events("s-1")
 	if err != nil {
 		t.Fatal(err)
