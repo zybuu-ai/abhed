@@ -1903,11 +1903,10 @@ func ownsSession(recTenant, recUser, tenant, user string) bool {
 	return recUser == user
 }
 
-// streamEvents serves the session's event stream over SSE, resumable via
-// Last-Event-ID so a dropped connection does not lose the session.
 // closesStream is the end after which a session makes no more events: one
-// with no background child still running. A run's end with children live
-// keeps the stream open for their results and the closing end.
+// that owes nothing (no background child running, no result undelivered, no
+// wake starting). A run's end that owes some keeps the stream open for the
+// results and the closing end.
 func closesStream(e agent.Event) bool {
 	if e.Type != agent.EvSessionEnded {
 		return false
@@ -1916,6 +1915,8 @@ func closesStream(e agent.Event) bool {
 	return json.Unmarshal(e.Payload, &end) != nil || end.Background == 0
 }
 
+// streamEvents serves the session's event stream over SSE, resumable via
+// Last-Event-ID so a dropped connection does not lose the session.
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -3081,16 +3082,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// session resolves a live session for a caller, or reports absence.
-//
-// Both the tenant AND the user must match. Tenancy alone was the original
-// check, which quietly meant every user in a tenant could read another user's
-// transcript, post to their agent, interrupt it, and — worst of all — answer
-// its approval prompts. Approving a dangerous tool call on someone else's
-// behalf is a privilege the model was never meant to accept from a bystander.
-//
-// A caller who is not the owner gets the same "not found" as a caller who
-// invented the ID, so the lookup does not confirm that a session exists.
 // claimNode records that this process holds the session, under its liveness
 // identity, wherever the store keeps holders, with or without a NodeID. A
 // failure is returned: it is also the liveness another process reads to
@@ -3236,6 +3227,16 @@ func (s *Server) router() (SessionRouter, bool) {
 	return r, ok
 }
 
+// session resolves a live session for a caller, or reports absence.
+//
+// Both the tenant AND the user must match. Tenancy alone was the original
+// check, which quietly meant every user in a tenant could read another user's
+// transcript, post to their agent, interrupt it, and — worst of all — answer
+// its approval prompts. Approving a dangerous tool call on someone else's
+// behalf is a privilege the model was never meant to accept from a bystander.
+//
+// A caller who is not the owner gets the same "not found" as a caller who
+// invented the ID, so the lookup does not confirm that a session exists.
 func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

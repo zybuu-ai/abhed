@@ -563,7 +563,8 @@ func (a *Agent) Wake(ctx context.Context) (string, error) {
 	return a.lastMessage(), nil
 }
 
-// wakeOf is the configured wake mode, notify when unset or unreadable.
+// wakeOf is the configured wake mode: notify when unset, and off, the
+// tightest, when the setting cannot be read.
 func wakeOf(cfg config.Config) agent.WakeMode {
 	m, err := agent.ParseWakeMode(cfg.Subagents.Wake)
 	if err != nil {
