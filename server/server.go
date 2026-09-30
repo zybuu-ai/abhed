@@ -327,6 +327,9 @@ type liveSession struct {
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
 	unclaimed atomic.Bool
+	// ownerGone is set when the last check before an idle delivery found the
+	// owner no longer active.
+	ownerGone atomic.Bool
 	claimMu   sync.Mutex
 	holdMu    sync.Mutex // guards held and release; a write takes it under claimMu
 	held      bool
@@ -1216,7 +1219,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	loop.Background.SetHooks(agent.BackgroundHooks{
 		Idle:    func(ev agent.IdleEvent) { s.onIdle(live, ev) },
 		CanWake: func() (bool, string) { return s.canWake(live) },
-		Wake:    func(ids []string) bool { return s.wake(live, ids) },
+		// The owner lookup may take seconds: made before the run lock, in
+		// every wake mode, and read by CanWake.
+		BeforeIdle: func() { s.checkOwner(live) },
+		Wake:       func(ids []string) bool { return s.wake(live, ids) },
 	})
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
@@ -2378,11 +2384,22 @@ func (s *Server) canWake(live *liveSession) (bool, string) {
 		return false, "draining"
 	case live.unclaimed.Load():
 		return false, "not_claimed"
-	case !s.ownerActive(live):
-		go live.Loop.Background.CancelAll(agent.TermOwnerInactive)
+	case live.ownerGone.Load():
 		return false, "owner_inactive"
 	}
 	return true, ""
+}
+
+// checkOwner looks the session's owner up before an idle delivery, outside
+// the run lock. An owner no longer active cannot answer their children's
+// asks, so those children are cancelled whatever the wake mode, and no wake
+// runs for them.
+func (s *Server) checkOwner(live *liveSession) {
+	gone := !s.ownerActive(live)
+	live.ownerGone.Store(gone)
+	if gone {
+		live.Loop.Background.CancelAll(agent.TermOwnerInactive)
+	}
 }
 
 // ownerActive asks Options.OwnerActive, or the local accounts when there

@@ -162,6 +162,10 @@ type BackgroundHooks struct {
 	Wake func(taskIDs []string) bool
 	// Idle is told of notices delivered while no run was live.
 	Idle func(IdleEvent)
+	// BeforeIdle runs before an idle delivery takes the run lock, in every
+	// wake mode: a check that may be slow (is the owner still active?) is
+	// made here, never while the conversation is locked.
+	BeforeIdle func()
 }
 
 // IdleEvent is what an idle delivery did.
@@ -585,6 +589,12 @@ func (b *Background) deliverIdle() {
 	if closed || l == nil {
 		return
 	}
+	b.mu.Lock()
+	before := b.hooks.BeforeIdle
+	b.mu.Unlock()
+	if before != nil {
+		before()
+	}
 	l.runMu.Lock()
 	b.mu.Lock()
 	pending, waking := len(b.notices), b.waking
@@ -622,7 +632,7 @@ func (b *Background) deliverIdle() {
 			wake = "skipped:host"
 		}
 	}
-	before := b.Pending()
+	pendingNow := b.Pending()
 	delivered := b.peekNotices()
 	if err := l.deliverNotices("idle", wake); err != nil {
 		// The next run ends at once; the record still has each return.
@@ -631,7 +641,7 @@ func (b *Background) deliverIdle() {
 		return
 	}
 	b.mu.Lock()
-	b.unacted += before
+	b.unacted += pendingNow
 	b.mu.Unlock()
 	settled := b.settleIfDue()
 	l.runMu.Unlock()

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,30 +48,68 @@ func TestNoWakeWhileDraining(t *testing.T) {
 }
 
 // An owner no longer active gets no wake, and the session's other children
-// are cancelled as owner_inactive: nobody may answer their asks.
+// are cancelled as owner_inactive, in notify mode as in auto: nobody may
+// answer their asks.
 func TestWakeSkippedOwnerInactive(t *testing.T) {
+	for _, mode := range []string{"auto", "notify"} {
+		b := newBGServerWith(t, nil, func(c *config.Config, o *Options) {
+			c.Subagents.Wake = mode
+			o.OwnerActive = func(context.Context, string, string) bool { return false }
+		}, "one", "two")
+		id := b.start("bg:one", false)
+		<-b.ended
+		if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"bg:two"}`); rec.Code != http.StatusAccepted {
+			t.Fatalf("%s: message: %d", mode, rec.Code)
+		}
+		waitUntil(t, "two running", func() bool { return b.live(id).Loop.Background.Live() == 2 && b.state(id) == "background" })
+		b.ad.release("one")
+		waitUntil(t, mode+": two cancelled", func() bool {
+			for _, r := range payloadsOf(b.events(id), agent.EvSubagentReturn) {
+				if r["description"] == "two" && r["reason"] == string(agent.TermOwnerInactive) {
+					return true
+				}
+			}
+			return false
+		})
+		if countType(b.events(id), agent.EvSessionWoken) != 0 {
+			t.Fatalf("%s: a wake ran for an inactive owner", mode)
+		}
+	}
+}
+
+// The owner lookup, which may take seconds, is never made while the
+// conversation is locked: anything needing the run lock goes on meanwhile.
+func TestOwnerLookupOutsideTheRunLock(t *testing.T) {
+	var live atomic.Pointer[liveSession]
+	unlocked := make(chan bool, 4)
 	b := newBGServerWith(t, nil, func(c *config.Config, o *Options) {
 		c.Subagents.Wake = "auto"
-		o.OwnerActive = func(context.Context, string, string) bool { return false }
-	}, "one", "two")
+		o.OwnerActive = func(context.Context, string, string) bool {
+			l := live.Load()
+			done := make(chan struct{})
+			go func() { l.Loop.SetHistory(l.Loop.Messages(), 0); close(done) }()
+			select {
+			case <-done:
+				unlocked <- true
+			case <-time.After(2 * time.Second):
+				unlocked <- false
+			}
+			return true
+		}
+	}, "one")
 	id := b.start("bg:one", false)
 	<-b.ended
-	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"bg:two"}`); rec.Code != http.StatusAccepted {
-		t.Fatalf("message: %d", rec.Code)
-	}
-	waitUntil(t, "two running", func() bool { return b.live(id).Loop.Background.Live() == 2 && b.state(id) == "background" })
+	live.Store(b.live(id))
 	b.ad.release("one")
-	waitUntil(t, "two cancelled", func() bool {
-		for _, r := range payloadsOf(b.events(id), agent.EvSubagentReturn) {
-			if r["description"] == "two" && r["reason"] == string(agent.TermOwnerInactive) {
-				return true
-			}
+	select {
+	case ok := <-unlocked:
+		if !ok {
+			t.Fatal("the owner lookup ran with the run lock held")
 		}
-		return false
-	})
-	if countType(b.events(id), agent.EvSessionWoken) != 0 {
-		t.Fatal("a wake ran for an inactive owner")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the owner was never looked up")
 	}
+	waitUntil(t, "the wake run", func() bool { return countType(b.events(id), agent.EvSessionWoken) == 1 })
 }
 
 // A wake run's ask waits for the owner like any other; nothing approves it.

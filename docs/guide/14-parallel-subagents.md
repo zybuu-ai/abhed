@@ -216,7 +216,10 @@ approver and "Always allow" scopes. It starts only when the last run
 completed, budget and turns remain, the hourly limit allows, and the surface
 can host it (on a server: not draining, the session held here, and its owner
 still active). Otherwise the notice is recorded as `skipped:<reason>` and
-handled as `notify`.
+handled as `notify`. On a server, whenever a result arrives with no run live,
+in any wake mode, the owner is looked up first; if they are no longer active,
+the session's other tasks are cancelled as `owner_inactive`, since nobody may
+answer their asks.
 
 **Stop means stop.** An explicit stop cancels every background task: Stop or
 `/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),
