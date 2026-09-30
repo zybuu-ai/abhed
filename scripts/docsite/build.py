@@ -219,8 +219,11 @@ def render(md, section):
         if not ln.strip():
             i += 1; continue
 
-        # paragraph
-        para = []
+        # paragraph. Its first line is always taken, so a line that looked
+        # like the start of a block and was not (a "|" row with no table
+        # around it) still moves the parse on instead of looping forever.
+        para = [ln]
+        i += 1
         while i < len(lines) and lines[i].strip() and not re.match(
                 r"^(#{1,4}\s|```|\||\s*[-*]\s|\s*\d+\.\s|>)", lines[i]):
             para.append(lines[i]); i += 1

@@ -107,11 +107,11 @@ ending the session; at the prompt it clears the line. Ctrl-D exits.
 | `/rename <name>` | name the session, for `/resume` and `-r` |
 | `/branch` | go on in a copy of this session, leaving it as it was |
 | `/export [path]` | write the transcript, HTML in `~/.abhed/exports` by default |
+| `/model [name]` | show or switch the model, keeping the conversation |
 
 Sessions are kept in a local record and survive the process: `abhed -c`
 continues the last one in this workspace, and `abhed -r` picks one. See
 [Sessions and the local record](12-records.md).
-| `/model [name]` | show or switch the model, keeping the conversation |
 
 ## Without a terminal
 
