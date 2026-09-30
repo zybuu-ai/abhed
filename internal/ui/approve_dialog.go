@@ -178,7 +178,6 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 		Body:    body,
 		Ask:     question,
 		Choices: choices,
-		Default: "yes",
 		Cancel:  "no",
 		Outcome: func(id string) string {
 			switch id {

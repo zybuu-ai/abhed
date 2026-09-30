@@ -64,11 +64,10 @@ func (d *dock) ask(ctx context.Context, spec DialogSpec) (string, error) {
 	}
 	defer func() { <-d.askSlot }()
 
+	// Nothing is selected unless the dialog has a default: Enter alone then
+	// answers nothing, so an approval is always a choice someone made.
 	st := &dialogState{spec: spec, pending: -1, done: make(chan int, 1)}
-	st.sel = max(st.index(spec.Default), 0)
-	if spec.Default == "" && spec.Kind == DialogConfirm {
-		st.sel = st.cancelIndex()
-	}
+	st.sel = st.index(spec.Default)
 	d.mu.Lock()
 	if d.inputEnded {
 		d.mu.Unlock()
@@ -159,6 +158,9 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 	case k.code == kEsc:
 		d.resolve(st.cancelIndex())
 	case k.code == kUp || k.code == kNone && (k.r == keyCtrlP || k.r == 'k'):
+		if st.sel < 0 {
+			st.sel = len(st.spec.Choices)
+		}
 		st.sel = (st.sel + len(st.spec.Choices) - 1) % len(st.spec.Choices)
 		st.lastMove = at
 		st.note = ""
@@ -169,6 +171,10 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 	case k.code == kNone && k.r == keyCtrlO:
 		d.openDialogPager(st)
 	case k.code == kNone && k.r == keyEnter:
+		if st.sel < 0 {
+			st.note = "choose with a number, or ↑↓ then Enter"
+			return
+		}
 		if !quiet || at.Sub(st.lastMove) < approvalGuard {
 			st.note = "too quick after another key; press Enter again"
 			return
@@ -260,7 +266,7 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	// A long list shows a window of choices around the selected one.
 	first, last := 0, len(st.spec.Choices)
 	if window := max(maxRows-len(head)-4, 3); last > window {
-		first = min(max(0, st.sel-window/2), last-window)
+		first = min(max(0, max(st.sel, 0)-window/2), last-window)
 		last = first + window
 	}
 	if first > 0 {

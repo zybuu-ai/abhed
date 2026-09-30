@@ -126,6 +126,13 @@ const (
 // Confirm dialog's default can only be "no", and an Approval's only "no" or
 // none, so a bare Enter can never say yes to either.
 func (d DialogSpec) Normalized() (DialogSpec, error) {
+	// The kind decides which default is allowed, so a dialog without a
+	// known one could skip the check below.
+	switch d.Kind {
+	case DialogConfirm, DialogChoice, DialogApproval:
+	default:
+		return d, fmt.Errorf("a dialog needs a known kind, not %q", d.Kind)
+	}
 	if d.Kind == DialogConfirm {
 		if len(d.Choices) == 0 {
 			d.Choices = []Choice{{ID: ChoiceYes, Label: "Yes", Key: 'y'}, {ID: ChoiceNo, Label: "No", Key: 'n'}}

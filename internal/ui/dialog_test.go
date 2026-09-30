@@ -101,7 +101,22 @@ func approvalSpec() DialogSpec {
 		Kind: DialogApproval, Title: "Edit(hello.txt)", Ask: "Make this edit to hello.txt?",
 		Choices: []Choice{{ID: "yes", Label: "Yes", Key: 'y'}, {ID: "always", Label: "Yes, and don't ask again for edit(hello.txt) this session"},
 			{ID: "no", Label: "No, and tell Abhed what to do instead (esc)", Key: 'n'}},
-		Default: "yes", Cancel: "no",
+		Cancel: "no",
+	}
+}
+
+// Nothing is selected when an approval appears: Enter alone, however
+// deliberate, answers nothing.
+func TestDialogBareEnterNeverApproves(t *testing.T) {
+	dr := openDialog(t, approvalSpec())
+	dr.clock.advance(5 * time.Second)
+	dr.key("\r")
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("a bare Enter answered %q", id)
+	}
+	dr.waitText("choose with a number")
+	if strings.Contains(dr.term.Text(), "❯") {
+		t.Fatalf("a choice is highlighted before any was made:\n%s", dr.term.Dump())
 	}
 }
 
@@ -127,6 +142,7 @@ func TestDialogIgnoresEveryKeyAtFirst(t *testing.T) {
 func TestDialogEnterNeedsAPauseAfterAnArrow(t *testing.T) {
 	dr := openDialog(t, approvalSpec())
 	dr.clock.advance(time.Second)
+	dr.key("\x1b[B") // to "yes"
 	dr.key("\x1b[B") // to "always"
 	dr.clock.advance(50 * time.Millisecond)
 	dr.key("\r")

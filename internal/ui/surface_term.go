@@ -57,7 +57,11 @@ func (l *LineReader) Pick(ctx context.Context, p PickSpec) (string, error) {
 	if len(p.Items) == 0 {
 		return "", ErrNoAnswer
 	}
-	spec := DialogSpec{Kind: DialogChoice, Title: p.Title, Default: p.Default, NoRecord: true, Cancel: "\x00cancel"}
+	def := p.Default
+	if def == "" {
+		def = p.Items[0].ID // picking is not a grant: Enter may take the first
+	}
+	spec := DialogSpec{Kind: DialogChoice, Title: p.Title, Default: def, NoRecord: true, Cancel: "\x00cancel"}
 	for _, it := range p.Items {
 		label := it.Label
 		if it.Detail != "" {

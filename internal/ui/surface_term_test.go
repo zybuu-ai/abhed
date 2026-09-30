@@ -109,3 +109,14 @@ func TestTerminalSurfacePanel(t *testing.T) {
 		t.Fatal("the panel did not close")
 	}
 }
+
+// A dialog must say what kind it is: the kind decides which default is
+// allowed, so an empty or unknown one could skip that check.
+func TestNormalizedRefusesAnUnknownKind(t *testing.T) {
+	for _, kind := range []DialogKind{"", "nonsense"} {
+		_, err := DialogSpec{Kind: kind, Choices: []Choice{{ID: "yes", Label: "Yes"}}, Default: "yes"}.Normalized()
+		if err == nil {
+			t.Errorf("kind %q was accepted", kind)
+		}
+	}
+}
