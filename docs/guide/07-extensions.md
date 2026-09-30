@@ -13,11 +13,11 @@ tool runs, rewrite a result before the model reads it, drop messages before they
 go upstream, supply a compaction summary, and add tools. It cannot turn a denied
 action into an allowed one.
 
-The reason is structural. The policy engine evaluates hooks first so they can
-veto — which means a hook returning "allow" would short-circuit the deny rules
-beneath it. That is acceptable for code an operator compiled in; it is not
-acceptable for a file an operator dropped into a directory. A permission gate an
-extension can remove is not a guarantee.
+The reason is structural. The policy engine asks hooks first so they can veto.
+A hook's refusal is final there; its ask waits until the deny rules and plan
+mode have had their say, so it can never turn a refusal into a question; and
+an "allow" is no opinion at all. A permission gate an extension could remove
+would not be a guarantee.
 
 ## Protocol
 
@@ -44,9 +44,21 @@ exactly one reply.
 | `list_tools` | once at startup | declare `tools` this extension provides |
 | `invoke_tool` | the model called one | return its `result` |
 | `session_start`, `session_end` | run boundaries | nothing; setup and teardown |
+| `user_prompt_submit` | before a message you send is recorded and sent (interactive CLI) | `block` it; you are told why and the model never sees it. A steering message typed during a run that is blocked is recorded as dropped |
+| `permission_request` | before a call is put to you (interactive CLI) | `block` it. Nothing in the reply approves the call; `allow` is ignored |
+| `turn_end` | the agent has finished answering, with the reason it stopped (interactive CLI) | nothing; it only observes |
+| `subagent_end` | a subagent the agent waited on has returned (interactive CLI) | nothing; it only observes |
+| `notification` | the agent needs you, as when a call waits for approval (interactive CLI) | nothing; it only observes |
 
-Declaring no `events` subscribes to all of them. An empty reply `{}` means no
-opinion.
+Declaring no `events` subscribes to the events up to `session_end` above; the
+five after it are sent only to an extension that names them. An empty reply
+`{}` means no opinion.
+
+Each hook that blocks, forces an ask or answers with a `reason` or `log` is
+recorded as `hook.fired`, with the extension, the event and its verdict:
+`block`, `ask` or `annotate`. There is no `allow`. `/hooks` in the CLI lists
+the configured extensions with the layer each came from, the events it takes,
+its matcher and whether it is running, or why it stopped.
 
 A `tool_call` is not always one call. The workbench Explorer's New folder,
 rename and delete arrive as `mkdir`, `rename` and `delete`, with a `path` (and
@@ -59,9 +71,23 @@ new one; a hook that keeps a count or a log should expect that.
 ```json
 "extensions": [
   { "name": "guard", "command": "bash", "args": ["/opt/abhed/guard.sh"],
-    "events": ["tool_call"], "timeout_ms": 5000 }
+    "events": ["tool_call"], "timeout_ms": 5000 },
+  { "name": "git-guard", "command": "/opt/abhed/git-guard",
+    "events": ["tool_call", "permission_request"], "match": ["bash(git *)"] },
+  { "name": "notify", "command": "/opt/abhed/notify",
+    "events": ["notification", "turn_end"], "async": true }
 ]
 ```
+
+- `match` narrows `tool_call`, `tool_result` and `permission_request` to the
+  calls a rule matches, written as [permission rules](04-permissions.md) are.
+  With none, every call reaches the extension.
+- `async` sends the events that only observe (`turn_end`, `subagent_end`,
+  `notification`, `session_start`, `session_end`) without waiting for a reply.
+- A workspace's extensions start only once the workspace is trusted.
+- `hooks.disabled`, which only the managed configuration sets, turns hooks
+  off: each extension keeps only the tools it provides, is sent no hook
+  event, and one that provides no tools is not started.
 
 ## Worked examples
 
@@ -112,11 +138,12 @@ done
 one wins; where one asks for approval and another is silent, the call is asked.
 Load order cannot change a verdict, which keeps the audit trail reproducible.
 
-**A failing extension is skipped, not fatal.** One that crashes, hangs past its
-timeout, or replies with something unparseable is marked dead and skipped; the
-agent continues under policy alone. Failing the session would trade a working
-agent for a broken one and protect nothing, since an extension could only ever
-have made a decision stricter.
+**A failing extension fails closed, and is not fatal.** One that crashes, hangs
+past its timeout, or replies with something unparseable is marked dead. On a
+`tool_call` or `permission_request`, the call it failed on is refused, and
+while it is not running every call it would have screened is asked, since the
+veto it stood for is gone. For the other events it is skipped. The session
+goes on either way.
 
 **A hung extension is not retried.** The read is abandoned but the stream is
 not, so a later reply would be matched to the wrong request.
@@ -133,8 +160,8 @@ compacts, one request at a time. An extension that must not see one user's
 work alongside another's belongs on a server of its own. The serve banner
 lists the extensions and names any that is not running, and
 `/v1/capabilities` gives each one's `status`: `running`, `stopped` (it
-crashed, hung or was closed) or `not started`. Only a running extension's
-veto applies; the sessions go on without the others.
+crashed, hung or was closed) or `not started`. A stopped `tool_call`
+extension's calls are asked, as above.
 
 ## Providing tools
 

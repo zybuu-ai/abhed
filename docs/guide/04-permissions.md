@@ -21,6 +21,110 @@ tool call, in a fixed order, with one rule that nothing can override.
 In headless mode there is no one to ask, so anything needing approval is
 refused. Use `-mode auto` with explicit `-allow` rules.
 
+### Changing mode in the CLI
+
+`/mode <name>` changes the mode; `/mode` on its own shows the mode in force,
+the Shift-Tab cycle, the turn limit and, in auto mode, what auto approves.
+
+- **Shift-Tab** cycles `default` → `accept-edits` → `plan` → `default`. It
+  never reaches `auto` or `bypass`, however often it is pressed. A managed
+  `cli.mode_cycle` can take modes out of the cycle and never add one; a
+  managed `permissions.mode` leaves only that mode and `plan`.
+- **`/mode auto`** asks first, with no as the default: Enter, a no, or input
+  ending leaves the mode as it was. Over a managed `permissions.mode` it is
+  refused before you are asked.
+- **`bypass`** is chosen only at startup, with `-mode bypass`, and is refused
+  under a managed configuration. Deny rules still refuse in bypass.
+
+Every change is recorded as `mode.changed`, with the mode it came from, the
+mode it went to and how: `flag`, `slash`, `shift-tab` or `plan-exit`. A mode
+chosen before the first message is recorded when the conversation opens,
+ahead of that message.
+
+**Auto mode is rules, not a judgment.** It approves read-only tools, and
+`edit` and `write` inside the workspace, without asking; a command (`bash`)
+runs without asking only where an allow rule covers it. It still asks for
+anything an ask rule names, for destructive commands, and for reads that can
+send data out, and deny rules still refuse. Every approval is recorded with
+the step and, where one decided, the rule (`step`, `reason`); `/permissions
+explain` shows the same for a call you name.
+
+### Plan mode
+
+In `plan` mode nothing is changed, and the agent has one extra tool,
+`exit_plan`, which it calls with its plan when it is ready. In every other
+mode the tool is not offered, and a call to it is refused as an unknown tool.
+Calling it changes nothing, the mode included: the plan is recorded as
+`plan.proposed`, the run ends, and the CLI shows the plan and asks:
+
+```
+  Proceed with this plan?
+  │ 1. Create notes.txt …
+  1. Yes, and accept edits
+  2. Yes, ask before each change
+  3. No, keep planning (tell it what to change)
+  answer 1-3, or enter for No, keep planning (tell it what to change):
+```
+
+Keeping planning is the default. Auto and bypass are never offered, and a
+mode the managed configuration would refuse is left out. The answer is
+recorded as `plan.decided`; accepting changes the mode through the same path
+as `/mode`, recorded as `mode.changed` with `via: plan-exit`, and the
+conversation goes on with "The plan is approved (mode …). Carry it out." as
+the next message. To keep planning, say what to change.
+
+### Session rules: `/permissions`
+
+`/permissions` lists every rule in force with where it came from:
+`managed (locked)`, `user`, `workspace` (or `workspace (untrusted: tightens
+only)`), `flag`, `default`, and `session` for the rules added below. Settings
+an untrusted workspace file made that were ignored are named under it.
+
+`/permissions allow|ask|deny <rule>` adds a rule for this session only:
+
+- A deny or ask rule only tightens, so it is added as given.
+- An allow rule is asked about first, with no as the default. One that
+  approves every call to a tool (`bash`, `bash(*)`, `write(**)`, `*`) is
+  asked about twice.
+- An allow rule is refused when the managed configuration sets any
+  `permissions` setting.
+- Session rules are evaluated after the configured ones in each list, so a
+  session allow approves only what would otherwise ask: it cannot lift a deny
+  rule, a destructive command, an ask rule or plan mode. It does not allow a
+  `secret`, which needs a configured rule.
+- Each change is recorded as `permission.changed` with `scope: session`.
+  `/permissions remove <rule>` takes one out again.
+- `/clear` and `/resume` end the session's rules.
+
+`/permissions explain <tool> <command, path or url>` is a dry run: it prints
+the decision, the step, the rule and the reason policy would give, for
+example `deny · step deny · bash(curl *) · denied by rule bash(curl *)`.
+Hooks are not asked, since that would show them a call that is not being made.
+
+### Adding a directory: `/add-dir`
+
+`/add-dir <dir>` lets the session reach another directory. It is bound as the
+`-add-dir` flag is: a managed `additional_dirs` refuses it. The directory is
+shown with its links resolved, and you choose read only, read and write, or
+no, which is the default. Read-only is held by deny rules on `edit` and
+`write` for that directory, which `/clear` keeps, so `accept-edits` does not
+approve changes there unless you granted write; commands run by `bash` are
+asked about as they are anywhere. Abhed's own state (`~/.abhed`, a
+workspace's `.abhed`, the record directory, a configured state file),
+credential folders such as `~/.ssh` and `~/.aws`, and any folder that holds
+your home directory are refused, judged by where a link leads. Each added
+directory is recorded as `workspace.dir_added` with its access.
+
+### Turn limit
+
+`limits.max_turns` bounds how many turns the agent takes. In the interactive
+CLI it applies to each message you send, so a long conversation does not run
+out for good: a message that reaches it stops with "send "continue" to let it
+go on". Where the managed configuration sets `limits.max_turns`, it bounds
+the whole conversation instead, as the organisation wrote it, and `/clear`
+starts a new one. `/mode` says which applies. Headless runs and the server
+count the whole conversation.
+
 ## Rules
 
 A rule is a tool name, optionally followed by a pattern:
@@ -224,7 +328,9 @@ Every call goes through the same steps, and the order is the design:
    lists them in `dropped_args`; an MCP tool whose schema sets
    `additionalProperties: false` refuses them instead. Every later step,
    and the tool itself, reads those same canonical arguments
-1. **Hooks** — extensions, next, so they can veto
+1. **Hooks** — extensions, next, so they can veto. A hook's refusal is final
+   here. A hook's ask takes effect after the deny rules and plan mode, so it
+   never turns a refusal into a question, and a hook's "allow" is no opinion
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
@@ -275,6 +381,9 @@ Every call goes through the same steps, and the order is the design:
    satisfies them: an ask rule asks every time
 6. **Mode**
 7. **Allow rules**, then a default: read-only proceeds, mutations ask
+
+The rules a person adds with `/permissions` are evaluated with the configured
+ones, after them, in each of the deny, ask and allow lists.
 
 Two consequences worth stating plainly. **A deny rule cannot be overridden** by
 a mode, an allow rule, an extension, or an operator's own bypass. And **an
@@ -362,6 +471,14 @@ It would be permitted by the rule bash(git commit *), which is not configured.
 
 Rejecting feeds the reason back so the model adapts rather than rephrasing the
 same command. A denial that says only "no" makes a model retry forever.
+
+A call that could not succeed is not put to you. An `edit` or `write` of an
+existing file that has not been read this session, an `edit` of a file that
+changed on disk since it was read, and an `edit` of a file that is not there
+are refused before the prompt with the reason the tool would give, so your
+approval is not spent on them and the model is told to read first. When
+another call in the same turn names the file, or a command runs before it,
+the tool decides when it runs.
 
 ## Recovering
 
