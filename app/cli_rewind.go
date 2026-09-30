@@ -159,14 +159,22 @@ func rewindCode(ctx context.Context, st *cliState, sess *tools.Session, since in
 		data, err := sess.ReadFile(path)
 		return data, err == nil
 	}
-	restore := func(path string, data []byte, existed bool) error {
+	restore := func(path string, data []byte, existed bool, mode os.FileMode) error {
 		if !existed {
 			if err := sess.RemoveFile(path); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 			return nil
 		}
-		return sess.RestoreFile(path, data)
+		if err := sess.RestoreFile(path, data); err != nil {
+			return err
+		}
+		// The file's own mode comes back with its content; RestoreFile
+		// writes it owner-only, and an executable would lose its x.
+		if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && mode != 0 {
+			return os.Chmod(path, mode.Perm())
+		}
+		return nil
 	}
 	var blobs agent.BlobPutter
 	if rec, ok := st.store.(*local.Store); ok {
@@ -198,6 +206,9 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 		if st.loop == nil {
 			return cp, nil
 		}
+		if info, err := os.Lstat(cp.Path); err == nil && info.Mode().IsRegular() {
+			cp.Mode = info.Mode().Perm()
+		}
 		if cp.Existed {
 			if rec, ok := st.store.(*local.Store); ok {
 				sha, err := rec.Blobs().Put(cp.Before)
@@ -210,7 +221,7 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 			}
 		}
 		ev, err := st.loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
-			agent.CheckpointSaved{Path: cp.Path, SHA256: cp.Blob, Turn: cp.Turn})
+			agent.CheckpointSaved{Path: cp.Path, SHA256: cp.Blob, Turn: cp.Turn, Mode: uint32(cp.Mode)})
 		if err != nil {
 			return cp, err
 		}

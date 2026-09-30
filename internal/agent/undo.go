@@ -28,6 +28,8 @@ type Checkpoint struct {
 	// sha256 its content is kept under; both zero when it was not recorded.
 	Seq  int64
 	Blob string
+	// Mode is the file's permission bits when the checkpoint was taken.
+	Mode os.FileMode
 	// load reads Before from the record, for a checkpoint rebuilt on resume.
 	load func() ([]byte, error)
 }
@@ -106,7 +108,7 @@ func (u *UndoLog) Record(path string, before []byte, existed bool) {
 	defer u.mu.Unlock()
 	for i := len(u.stack) - 1; i >= 0; i-- {
 		if u.stack[i].Path == cp.Path && u.stack[i].At.Equal(cp.At) && u.stack[i].Seq == 0 {
-			u.stack[i].Seq, u.stack[i].Blob = saved.Seq, saved.Blob
+			u.stack[i].Seq, u.stack[i].Blob, u.stack[i].Mode = saved.Seq, saved.Blob, saved.Mode
 			break
 		}
 	}
@@ -128,7 +130,7 @@ func (u *UndoLog) Rebuild(events []Event, get func(sha string) ([]byte, error)) 
 			if json.Unmarshal(ev.Payload, &c) != nil {
 				continue
 			}
-			cp := Checkpoint{Path: c.Path, Existed: c.SHA256 != "", Turn: c.Turn, At: ev.CreatedAt, Seq: ev.Seq, Blob: c.SHA256}
+			cp := Checkpoint{Path: c.Path, Existed: c.SHA256 != "", Turn: c.Turn, At: ev.CreatedAt, Seq: ev.Seq, Blob: c.SHA256, Mode: os.FileMode(c.Mode).Perm()}
 			if sha := c.SHA256; sha != "" && get != nil {
 				cp.load = func() ([]byte, error) { return get(sha) }
 			}

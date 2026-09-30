@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // NewEventID returns a new event id, for a store that records an event of
@@ -27,6 +29,8 @@ type CheckpointSaved struct {
 	// SHA256 names the blob holding the content; "" when the file did not exist.
 	SHA256 string `json:"sha256,omitempty"`
 	Turn   int    `json:"turn"`
+	// Mode is the file's permission bits, so a restore keeps them.
+	Mode uint32 `json:"mode,omitempty"`
 }
 
 // BlobRefs lists the blobs a session's events name: its checkpoints and the
@@ -110,9 +114,10 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
 	return 0, nil
 }
 
-// RestoreFile is how a rewind puts one file back: path to data, or removed
-// when existed is false. It is the session's, confined to its roots.
-type RestoreFile func(path string, data []byte, existed bool) error
+// RestoreFile is how a rewind puts one file back: path to data with mode
+// (0 for owner-only), or removed when existed is false. It is the
+// session's, confined to its roots.
+type RestoreFile func(path string, data []byte, existed bool, mode os.FileMode) error
 
 // BlobPutter keeps a file's content by its hash, for a restore to be undone.
 type BlobPutter interface {
@@ -127,12 +132,22 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 	var done []string
 	var failed []string
 	for _, cp := range cps {
-		args, _ := json.Marshal(map[string]string{"path": cp.Path})
-		if d := l.Policy.Evaluate("write", true, args); d.Decision == policy.Deny {
-			_ = l.ManualRefused("write", "restore-"+newID(), args, d)
-			failed = append(failed, fmt.Sprintf("%s: refused: %s", cp.Path, d.Reason))
+		// The person's own write, recorded as their action: the request, the
+		// policy's decision (an ask is theirs to answer, and they did), and
+		// what came of it.
+		id := "restore-" + newID()
+		args, _ := json.Marshal(map[string]string{"path": cp.Path, "restore_from": "checkpoint " + strconv.FormatInt(cp.Seq, 10)})
+		decision := l.Policy.Evaluate("write", true, args)
+		refused, err := l.manualDecide("write", id, args, decision, Unanswered)
+		if err != nil {
+			return done, err
+		}
+		if refused != nil {
+			_ = l.ManualObserve(id, "write", *refused, 0)
+			failed = append(failed, fmt.Sprintf("%s: refused: %s", cp.Path, decision.Reason))
 			continue
 		}
+		start := time.Now()
 		data, err := cp.content()
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", cp.Path, err))
@@ -145,7 +160,8 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 				_, _ = blobs.Put(now) // so this restore can be undone in turn
 			}
 		}
-		if err := restore(cp.Path, data, cp.Existed); err != nil {
+		if err := restore(cp.Path, data, cp.Existed, cp.Mode); err != nil {
+			_ = l.ManualObserve(id, "write", tools.Result{Content: err.Error(), IsError: true}, time.Since(start))
 			failed = append(failed, fmt.Sprintf("%s: %v", cp.Path, err))
 			continue
 		}
@@ -153,15 +169,18 @@ func (l *Loop) RestoreCheckpoints(cps []Checkpoint, current func(path string) ([
 		if cp.Existed {
 			after = hashOf(data)
 		}
+		verb := "restored "
+		if !cp.Existed {
+			verb = "removed "
+		}
+		if err := l.ManualObserve(id, "write", tools.Result{Content: verb + cp.Path}, time.Since(start)); err != nil {
+			return done, err
+		}
 		if _, err := l.Recorder.Record(EvFileRestored, ActorUser, Trusted, FileRestored{
 			Path: cp.Path, BeforeSHA256: before, AfterSHA256: after,
 			Checkpoint: strconv.FormatInt(cp.Seq, 10), By: "user",
 		}); err != nil {
 			return done, err
-		}
-		verb := "restored "
-		if !cp.Existed {
-			verb = "removed "
 		}
 		done = append(done, verb+cp.Path)
 	}

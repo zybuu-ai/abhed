@@ -142,7 +142,7 @@ func TestRestoreCheckpointsRecordsAndRespectsDeny(t *testing.T) {
 		{Path: keep, Before: []byte("original"), Existed: true, Seq: 6},
 	}
 	current := func(p string) ([]byte, bool) { b, err := os.ReadFile(p); return b, err == nil }
-	restore := func(p string, data []byte, existed bool) error { return sess.RestoreFile(p, data) }
+	restore := func(p string, data []byte, existed bool, _ os.FileMode) error { return sess.RestoreFile(p, data) }
 	done, err := l.RestoreCheckpoints(cps, current, restore, nil)
 	if err == nil || len(done) != 1 {
 		t.Fatalf("done %v err %v", done, err)
@@ -194,7 +194,7 @@ func TestRestoreStaysInTheSession(t *testing.T) {
 	_ = os.WriteFile(target, []byte("theirs"), 0o600)
 	cps := []Checkpoint{{Path: target, Before: []byte("planted"), Existed: true, Seq: 3}}
 	current := func(p string) ([]byte, bool) { b, err := sess.ReadFile(p); return b, err == nil }
-	restore := func(p string, data []byte, existed bool) error { return sess.RestoreFile(p, data) }
+	restore := func(p string, data []byte, existed bool, _ os.FileMode) error { return sess.RestoreFile(p, data) }
 	if _, err := l.RestoreCheckpoints(cps, current, restore, nil); err == nil {
 		t.Fatal("a restore outside the session was taken")
 	}
@@ -249,5 +249,40 @@ func TestBranchCopyKeepsTheUndoLog(t *testing.T) {
 	}
 	if br[1].ID == orig[0].ID {
 		t.Fatal("a copy kept its source id")
+	}
+}
+
+// A restore is recorded as the person's action, as ManualAs records one: the
+// request by the user, the decision, the result; and file.restored. The
+// file's mode comes back with its content.
+func TestRestoreIsThePersonsRecordedAction(t *testing.T) {
+	dir := tempDir(t)
+	sess, _ := tools.NewSession(dir)
+	store := NewMemStore()
+	l := NewLoop(nil, nil, policy.New(policy.ModeDefault), nil, sess, NewRecorder(store, "s", ""), DefaultConfig())
+	script := filepath.Join(dir, "run.sh")
+	_ = os.WriteFile(script, []byte("changed"), 0o600)
+	cps := []Checkpoint{{Path: script, Before: []byte("#!/bin/sh\n"), Existed: true, Seq: 4, Mode: 0o755}}
+	current := func(p string) ([]byte, bool) { b, err := sess.ReadFile(p); return b, err == nil }
+	restore := func(p string, data []byte, existed bool, mode os.FileMode) error {
+		if err := sess.RestoreFile(p, data); err != nil {
+			return err
+		}
+		return os.Chmod(p, mode)
+	}
+	if _, err := l.RestoreCheckpoints(cps, current, restore, nil); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(script); info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+	events, _ := store.Events("s")
+	var types []string
+	for _, e := range events {
+		types = append(types, string(e.Type)+"/"+string(e.Actor))
+	}
+	want := "action.requested/user action.approved/user observation/tool file.restored/user"
+	if strings.Join(types, " ") != want {
+		t.Fatalf("recorded %v, want %s", types, want)
 	}
 }
