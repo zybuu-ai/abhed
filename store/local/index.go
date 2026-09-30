@@ -58,7 +58,7 @@ type indexLine struct {
 	Verified   *bool  `json:"verified,omitempty"`
 	Unverified string `json:"unverified,omitempty"`
 	Prev       string `json:"prev"`
-	Hash      string `json:"hash,omitempty"`
+	Hash       string `json:"hash,omitempty"`
 }
 
 func (l *indexLine) seal() ([]byte, error) {
@@ -105,7 +105,7 @@ func (x *index) now() time.Time {
 // append adds one line under the index lock: numbered and chained after the
 // last line, synced, and the head moved to it.
 func (x *index) append(l indexLine) error {
-	lk, err := os.OpenFile(x.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	lk, err := openOwn(x.lockPath(), os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return fmt.Errorf("lock the index: %w", err)
 	}
@@ -115,7 +115,7 @@ func (x *index) append(l indexLine) error {
 	}
 	defer func() { _ = unlock(lk) }()
 
-	f, err := os.OpenFile(x.path(), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	f, err := openOwn(x.path(), os.O_CREATE|os.O_RDWR|os.O_APPEND)
 	if err != nil {
 		return fmt.Errorf("open the index: %w", err)
 	}
@@ -291,7 +291,7 @@ func parseIndexLine(raw []byte) (indexLine, error) {
 // lines reads every complete index line; a damaged one is skipped here and
 // named by verify.
 func (x *index) lines() ([]indexLine, error) {
-	data, err := os.ReadFile(x.path())
+	data, err := readOwn(x.path())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

@@ -67,7 +67,7 @@ func (s *Store) Prune(id, by, reason string) ([]Pruned, error) {
 			release()
 			return nil, fmt.Errorf("session %s is open in this process; close it first", sid)
 		}
-		lk, err := os.OpenFile(s.lockPath(sid), os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- an id checked to be a plain name
+		lk, err := openOwn(s.lockPath(sid), os.O_CREATE|os.O_RDWR)
 		if err != nil {
 			release()
 			return nil, err

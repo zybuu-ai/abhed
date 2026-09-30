@@ -3,7 +3,6 @@ package local
 import (
 	"fmt"
 	"io"
-	"os"
 )
 
 // ExportFormat is the version of the export trailer. Version 2 carries
@@ -39,7 +38,7 @@ func (s *Store) Export(id string, w io.Writer, o ExportOptions) (Head, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 	}
-	data, err := os.ReadFile(s.Path(id))
+	data, err := readOwn(s.Path(id))
 	if err != nil {
 		return Head{}, fmt.Errorf("session %s: %w", id, ErrNotFound)
 	}

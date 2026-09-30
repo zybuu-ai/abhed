@@ -191,7 +191,7 @@ func (s *Store) Verify(id string) (Report, error) {
 		defer h.mu.Unlock()
 		_ = h.sync(s)
 	}
-	data, err := os.ReadFile(s.Path(id))
+	data, err := readOwn(s.Path(id))
 	if errors.Is(err, os.ErrNotExist) {
 		if !indexed {
 			return Report{ID: id}, fmt.Errorf("session %s: %w", id, ErrNotFound)
@@ -244,7 +244,7 @@ func (s *Store) checkIndexHeads(rep *Report, id string, lines []line) {
 // linked to the one before, and its head file naming a line it holds.
 func (s *Store) VerifyIndex() (Report, error) {
 	rep := Report{ID: "index", OK: true}
-	data, err := os.ReadFile(s.index.path())
+	data, err := readOwn(s.index.path())
 	if errors.Is(err, os.ErrNotExist) {
 		return rep, nil
 	}

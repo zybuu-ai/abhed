@@ -249,7 +249,7 @@ func (s *Store) take(id string, create bool, entry *indexLine) (*session, error)
 		}
 		return h, nil
 	}
-	lk, err := os.OpenFile(s.lockPath(id), os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- an id checked to be a plain name
+	lk, err := openOwn(s.lockPath(id), os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return nil, fmt.Errorf("lock session %s: %w", id, err)
 	}
@@ -304,7 +304,7 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 	if create {
 		flags |= os.O_EXCL
 	}
-	f, err := os.OpenFile(path, flags, 0o600) // #nosec G304 -- an id checked to be a plain name
+	f, err := openOwn(path, flags)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil, store.ErrSessionExists
@@ -316,7 +316,7 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- as above
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return fail(err)
 	}
@@ -772,7 +772,7 @@ func after(all []agent.Event, seq int64) []agent.Event {
 // readEvents reads a session's file: its events in seq order, and whether an
 // unfinished last line was left out. A missing file is an empty record.
 func (s *Store) readEvents(id string) ([]agent.Event, bool, error) {
-	data, err := os.ReadFile(s.Path(id)) // #nosec G304 -- an id checked to be a plain name
+	data, err := readOwn(s.Path(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -819,7 +819,7 @@ func (s *Store) readHead(id string) (Head, bool) {
 }
 
 func readHeadFile(path string) (Head, bool) {
-	data, err := os.ReadFile(path) // #nosec G304 -- a path the store builds
+	data, err := readOwn(path)
 	if err != nil {
 		return Head{}, false
 	}
@@ -1042,7 +1042,7 @@ func (s *Store) running(id string) bool {
 
 // heldElsewhere reports whether another process holds session id's lock.
 func (s *Store) heldElsewhere(id string) bool {
-	lk, err := os.Open(s.lockPath(id)) // #nosec G304 -- an id checked to be a plain name
+	lk, err := openOwn(s.lockPath(id), os.O_RDONLY)
 	if err != nil {
 		return false
 	}
