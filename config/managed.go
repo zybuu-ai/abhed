@@ -140,6 +140,8 @@ type Overrides struct {
 	Allow          []string
 	Deny           []string
 	AdditionalDirs []string
+	// MemoryAuto, when set, turns auto memory on or off.
+	MemoryAuto *bool
 }
 
 // ManagedError is an override refused because it would loosen a setting the
@@ -203,6 +205,13 @@ func (c Config) Apply(o Overrides) (Config, error) {
 				"the managed configuration allows at most %d", c.Limits.MaxTurns))
 		}
 		c.Limits.MaxTurns = o.MaxTurns
+	}
+	if o.MemoryAuto != nil {
+		if c.ManagedSets("memory.auto") && *o.MemoryAuto != c.Memory.Auto {
+			return c, refuse("memory.auto", fmt.Sprint(*o.MemoryAuto), fmt.Sprintf(
+				"the managed configuration sets it to %v", c.Memory.Auto))
+		}
+		c.Memory.Auto = *o.MemoryAuto
 	}
 	if len(o.Allow) > 0 && c.ManagedSets("permissions.allow") {
 		return c, refuse("permissions.allow", strings.Join(o.Allow, ","),

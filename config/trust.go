@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -223,8 +224,20 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	}
 	st.Trusted, st.Reason = decide(st, o)
 	if st.Trusted {
-		_, err := mergeData(cfg, path, data)
-		return st, err
+		auto := cfg.Memory.Auto
+		if _, err := mergeData(cfg, path, data); err != nil {
+			return st, err
+		}
+		// Trust does not reach these: a workspace never makes a managed-only
+		// setting, and may only turn auto memory off.
+		setAside(cfg, path)
+		if cfg.Memory.Auto && !auto {
+			cfg.Memory.Auto = false
+			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
+			cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Key: "memory.auto",
+				Reason: "a workspace may only turn auto memory off"})
+		}
+		return st, nil
 	}
 	return st, tighten(cfg, path, data, &st)
 }
@@ -567,6 +580,15 @@ var workspaceRules = map[string]fieldRule{
 	"agents.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
 	"agents.dirs":        {nil, "a definition is instructions and a model choice"},
 	"telemetry":          {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
+
+	"commands.dirs":       {nil, "a command is instructions to the agent"},
+	"rules.dirs":          {nil, "a rule is instructions to the agent"},
+	"statusline":          {nil, "a statusline command is a process"},
+	"memory.auto":         {onlyFalse(func(c *Config) *bool { return &c.Memory.Auto }), "only false"},
+	"memory.import_depth": {lower(func(c *Config) *int { return &c.Memory.ImportDepth }, zeroIs(defaultImportDepth)), "only lower"},
+	"cli":                 {nil, "only the managed configuration sets it"},
+	"record":              {nil, "only the managed configuration sets it"},
+	"hooks":               {nil, "only the managed configuration sets it"},
 
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},
 	"model":            {nil, "a provider and its base_url receive the code"},

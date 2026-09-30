@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -54,6 +55,21 @@ type Config struct {
 	Auth      AuthConfig       `json:"auth"`
 	Tools     ToolsConfig      `json:"tools,omitempty"`
 
+	// CLI tunes the interactive command line.
+	CLI CLIConfig `json:"cli,omitempty"`
+	// Commands are directories of custom slash commands.
+	Commands CommandsConfig `json:"commands,omitempty"`
+	// Rules are directories of path-scoped instructions.
+	Rules RulesConfig `json:"rules,omitempty"`
+	// Statusline is a command that draws the status line.
+	Statusline StatuslineConfig `json:"statusline,omitempty"`
+	// Memory governs what the agent remembers between sessions.
+	Memory MemoryConfig `json:"memory,omitempty"`
+	// Record is where the local record is kept and for how long.
+	Record RecordConfig `json:"record,omitempty"`
+	// Hooks governs the extension hooks.
+	Hooks HooksConfig `json:"hooks,omitempty"`
+
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
 	// ManagedKeys are the settings the managed file made, as sorted dotted
@@ -65,7 +81,159 @@ type Config struct {
 	SetKeys []string `json:"-"`
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
+	// SetAside are settings a file made that its layer may not make, such
+	// as a managed-only key in the user's file; each was left out.
+	SetAside []SetAsideKey `json:"-"`
 }
+
+// CLIConfig tunes the interactive command line.
+type CLIConfig struct {
+	// ModeCycle is the modes Shift-Tab steps through, from default,
+	// accept-edits and plan. Managed only, and it can only remove modes:
+	// auto and bypass are never in the cycle.
+	ModeCycle []string `json:"mode_cycle,omitempty"`
+}
+
+// CommandsConfig lists directories of custom slash commands.
+type CommandsConfig struct {
+	Dirs []string `json:"dirs,omitempty"`
+}
+
+// RulesConfig lists directories of path-scoped rule files.
+type RulesConfig struct {
+	Dirs []string `json:"dirs,omitempty"`
+}
+
+// StatuslineConfig is a command run to draw the status line. It gets the
+// status as JSON on stdin.
+type StatuslineConfig struct {
+	Command string `json:"command,omitempty"`
+}
+
+// MemoryConfig governs what the agent remembers between sessions.
+type MemoryConfig struct {
+	// Auto lets the agent write its own memory files. Off unless turned on:
+	// a memory the agent writes is a way for injected text to persist. A
+	// workspace may only turn it off, and a managed value binds.
+	Auto bool `json:"auto,omitempty"`
+	// ImportDepth bounds how deep @imports in memory files are followed.
+	// Zero means the default, 5.
+	ImportDepth int `json:"import_depth,omitempty"`
+}
+
+// RecordConfig is where the local record lives and how long it is kept.
+// Both are managed only: the record is the audit trail.
+type RecordConfig struct {
+	// Dir replaces ~/.abhed/records.
+	Dir string `json:"dir,omitempty"`
+	// RetentionDays, when positive, is how long a session is kept before a
+	// prune may remove it. Zero keeps the record until it is pruned by hand.
+	RetentionDays int `json:"retention_days,omitempty"`
+}
+
+// HooksConfig governs the extension hooks.
+type HooksConfig struct {
+	// Disabled switches every hook off. Managed only; only true means anything.
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// SetAsideKey is a setting a file made that was left out, and why.
+type SetAsideKey struct {
+	File   string
+	Key    string
+	Reason string
+}
+
+func (k SetAsideKey) String() string {
+	return fmt.Sprintf("%s sets %s, which is ignored: %s", Printable(k.File), k.Key, k.Reason)
+}
+
+// managedOnly are the settings only the managed configuration may make. The
+// same key in the user's file or a trusted workspace's is set aside.
+var managedOnly = map[string]string{
+	"cli.mode_cycle":        "only the managed configuration narrows the Shift-Tab modes",
+	"record.dir":            "only the managed configuration moves the record",
+	"record.retention_days": "only the managed configuration sets how long the record is kept",
+	"hooks.disabled":        "only the managed configuration switches hooks off, since that removes their vetoes",
+}
+
+// ManagedOnly reports whether only the managed configuration may make the
+// setting at path.
+func ManagedOnly(path string) bool {
+	_, ok := managedOnly[path]
+	return ok
+}
+
+// clearManagedOnly resets a managed-only setting to its default.
+func clearManagedOnly(c *Config, key string) {
+	switch key {
+	case "cli.mode_cycle":
+		c.CLI.ModeCycle = nil
+	case "record.dir":
+		c.Record.Dir = ""
+	case "record.retention_days":
+		c.Record.RetentionDays = 0
+	case "hooks.disabled":
+		c.Hooks.Disabled = false
+	}
+}
+
+// setAside leaves out the managed-only settings the files merged so far
+// made, crediting them to file. It runs before the managed file is merged,
+// so every managed-only value present came from a lower layer.
+func setAside(c *Config, file string) {
+	kept := c.SetKeys[:0:0]
+	for _, k := range c.SetKeys {
+		if why, ok := managedOnly[k]; ok {
+			clearManagedOnly(c, k)
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: k, Reason: why})
+			continue
+		}
+		kept = append(kept, k)
+	}
+	c.SetKeys = kept
+}
+
+// warnSetAside writes each set-aside setting once per process.
+func warnSetAside(keys []SetAsideKey) {
+	warnedMu.Lock()
+	defer warnedMu.Unlock()
+	for _, k := range keys {
+		if id := "aside\x00" + k.File + "\x00" + k.Key; !warned[id] {
+			warned[id] = true
+			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
+		}
+	}
+}
+
+// DefaultModeCycle is the Shift-Tab cycle when nothing narrows it. Auto and
+// bypass are never in it: they are chosen on purpose, not by a stray key.
+var DefaultModeCycle = []string{"default", "accept-edits", "plan"}
+
+// ModeCycle is the modes Shift-Tab offers, in order: the default cycle, less
+// any the managed cli.mode_cycle leaves out.
+func (c Config) ModeCycle() []string {
+	if len(c.CLI.ModeCycle) == 0 {
+		return slices.Clone(DefaultModeCycle)
+	}
+	var out []string
+	for _, m := range DefaultModeCycle {
+		if slices.Contains(c.CLI.ModeCycle, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// MemoryImportDepth is how deep memory imports are followed.
+func (c Config) MemoryImportDepth() int {
+	if c.Memory.ImportDepth <= 0 {
+		return defaultImportDepth
+	}
+	return c.Memory.ImportDepth
+}
+
+const defaultImportDepth = 5
 
 type ModelConfig struct {
 	Default   string                    `json:"default"`
@@ -657,6 +825,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if err := mergeFile(&cfg, userFile); err != nil {
 			return cfg, err
 		}
+		setAside(&cfg, userFile)
 	}
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
 	cfg.Workspace = st
@@ -671,6 +840,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
+	warnSetAside(cfg.SetAside)
 	warnNeverAllows(cfg.Permissions.Allow)
 	if !o.Quiet {
 		warnUntrusted(cfg.Workspace)
@@ -824,6 +994,18 @@ func (c Config) Validate() error {
 	case "", "off", "notify", "auto":
 	default:
 		return fmt.Errorf("subagents.wake is %q; use off, notify or auto", c.Subagents.Wake)
+	}
+	for _, m := range c.CLI.ModeCycle {
+		if !slices.Contains(DefaultModeCycle, m) {
+			return fmt.Errorf("cli.mode_cycle may only leave modes out of %s; %q is not one of them",
+				strings.Join(DefaultModeCycle, ", "), m)
+		}
+	}
+	if c.Record.RetentionDays < 0 {
+		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
+	}
+	if c.Memory.ImportDepth < 0 {
+		return fmt.Errorf("memory.import_depth is %d; use 0 for the default of %d, or a positive depth", c.Memory.ImportDepth, defaultImportDepth)
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)

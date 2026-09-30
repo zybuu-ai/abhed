@@ -149,6 +149,11 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `schedules` | ignored: prompts that the server runs on its own |
+| `commands.dirs`, `rules.dirs` | ignored: a custom command or a rule is instructions to the agent |
+| `statusline` | ignored: a statusline command is a process |
+| `memory.auto` | **applied** only when false, trusted or not: a workspace never turns auto memory on |
+| `memory.import_depth` | **applied** only when lower; zero means the default of 5 |
+| `cli.mode_cycle`, `record.dir`, `record.retention_days`, `hooks.disabled` | ignored, trusted or not, as in the user's own file: only the managed configuration makes these |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse
