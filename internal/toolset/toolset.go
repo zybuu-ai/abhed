@@ -252,7 +252,7 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 	if h == nil || h.Len() == 0 || pol == nil {
 		return
 	}
-	pol.Hooks = append(pol.Hooks, h.PolicyHook(context.Background(), sessionID))
+	pol.Hooks = append(pol.Hooks, h.PolicyHookFor(context.Background(), sessionID, pol))
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the

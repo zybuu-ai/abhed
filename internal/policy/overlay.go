@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -170,4 +171,32 @@ func IsBroad(pattern string) bool {
 		return false
 	}
 	return r.tool == "*" || r.pattern == nil || strings.Trim(r.glob, "*/") == ""
+}
+
+// MatchesCall reports whether any of rules matches a call the way a deny rule
+// would: each part of a bash chain, a path in every spelling against the
+// roots, and NFC. When the call cannot be read that far it reports true.
+func (e *Engine) MatchesCall(rules []Rule, tool string, args json.RawMessage) bool {
+	key, subject, err := subjectOf(args)
+	if err != nil {
+		return true
+	}
+	subjects, match := []string{subject}, Rule.matchesAny
+	switch {
+	case tool == "bash":
+		var complete bool
+		if subjects, complete = commandSegments(subject); !complete {
+			return true
+		}
+		subjects = append(subjects, subject)
+	case key == "path":
+		subjects, _ = e.pathSubjects(subject)
+		match = Rule.matchesPathAny
+	}
+	for _, r := range rules {
+		if match(r, tool, subjects) {
+			return true
+		}
+	}
+	return false
 }

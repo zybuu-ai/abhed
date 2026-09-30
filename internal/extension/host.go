@@ -129,9 +129,13 @@ type ToolCallDecision struct {
 // crashes or times out on the call fails closed: that call is blocked, and
 // every later one is asked, since the veto it stood for is gone.
 func (h *Host) OnToolCall(ctx context.Context, sessionID, tool string, args json.RawMessage) ToolCallDecision {
+	return h.onToolCall(ctx, sessionID, tool, args, nil)
+}
+
+func (h *Host) onToolCall(ctx context.Context, sessionID, tool string, args json.RawMessage, p *policy.Engine) ToolCallDecision {
 	out := ToolCallDecision{}
 	for _, e := range h.exts {
-		if !e.wants(EvToolCall) || !e.Matches(tool, args) {
+		if !e.wants(EvToolCall) || !e.Matches(p, tool, args) {
 			continue
 		}
 		reply, err := e.call(ctx, Request{
@@ -176,7 +180,7 @@ func (h *Host) OnToolCall(ctx context.Context, sessionID, tool string, args json
 func (h *Host) Veto(ctx context.Context, ev Event, req Request) string {
 	req.Event = ev
 	for _, e := range h.exts {
-		if !e.wants(ev) || req.Tool != "" && !e.Matches(req.Tool, req.Args) {
+		if !e.wants(ev) || req.Tool != "" && !e.Matches(req.Policy, req.Tool, req.Args) {
 			continue
 		}
 		reply, err := e.call(ctx, req)
@@ -310,8 +314,14 @@ func (h *Host) Notify(ctx context.Context, ev Event, sessionID string) {
 // for one an operator dropped into a directory. Refusing to construct Allow
 // here is what keeps deny absolute.
 func (h *Host) PolicyHook(ctx context.Context, sessionID string) policy.Hook {
+	return h.PolicyHookFor(ctx, sessionID, nil)
+}
+
+// PolicyHookFor is PolicyHook for engine p, whose roots place the relative
+// paths in extensions' match rules.
+func (h *Host) PolicyHookFor(ctx context.Context, sessionID string, p *policy.Engine) policy.Hook {
 	return func(tool string, args json.RawMessage) *policy.Result {
-		d := h.OnToolCall(ctx, sessionID, tool, args)
+		d := h.onToolCall(ctx, sessionID, tool, args, p)
 		switch {
 		case d.Block:
 			return &policy.Result{Decision: policy.Deny, Reason: d.Reason}

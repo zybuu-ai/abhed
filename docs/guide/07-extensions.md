@@ -79,9 +79,11 @@ new one; a hook that keeps a count or a log should expect that.
 ]
 ```
 
-- `match` narrows `tool_call`, `tool_result` and `permission_request` to the
-  calls a rule matches, written as [permission rules](04-permissions.md) are.
-  With none, every call reaches the extension.
+- `match` narrows `tool_call` and `permission_request` to the calls a rule
+  matches, written as [permission rules](04-permissions.md) are and matched as
+  a deny rule is: each part of a chained command, a path relative to the
+  workspace or absolute, and in any Unicode normal form. A call that cannot be
+  read that far is sent. With no `match`, every call reaches the extension.
 - `async` sends the events that only observe (`turn_end`, `subagent_end`,
   `notification`, `session_start`, `session_end`) without waiting for a reply.
 - A workspace's extensions start only once the workspace is trusted.

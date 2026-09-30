@@ -10,6 +10,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/extension"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -24,6 +25,7 @@ func init() {
 type cliHooks struct {
 	host *extension.Host
 	st   *cliState
+	pol  *policy.Engine // places the relative paths of match rules
 }
 
 var _ agent.Hooks = cliHooks{}
@@ -38,7 +40,7 @@ func (h cliHooks) PromptSubmitted(ctx context.Context, sessionID, text string) s
 
 func (h cliHooks) PermissionRequested(ctx context.Context, sessionID, tool string, args json.RawMessage, reason string) string {
 	return h.host.Veto(ctx, extension.EvPermissionRequest, extension.Request{
-		SessionID: sessionID, Tool: tool, Args: args, Content: reason,
+		SessionID: sessionID, Tool: tool, Args: args, Content: reason, Policy: h.pol,
 	})
 }
 
@@ -53,7 +55,7 @@ func (c *cliState) attachHooks(loop *agent.Loop) {
 	if c.hooks == nil || c.hooks.Len() == 0 {
 		return
 	}
-	loop.Hooks = cliHooks{host: c.hooks, st: c}
+	loop.Hooks = cliHooks{host: c.hooks, st: c, pol: loop.Policy}
 	c.hooks.SetOnFired(func(f extension.Fired) {
 		rec := c.hookRecorder.Load()
 		if rec == nil {

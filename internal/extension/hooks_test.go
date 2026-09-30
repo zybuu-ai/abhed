@@ -2,12 +2,14 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 func hostOf(t *testing.T, cfgs ...Config) (*Host, *[]Fired) {
@@ -133,5 +135,46 @@ func TestHookAskNeverLiftsADeny(t *testing.T) {
 	e.Mode = policy.ModePlan
 	if got := e.Evaluate("write", true, []byte(`{"path":"/x"}`)); got.Decision != policy.Deny {
 		t.Fatalf("a hook's ask lifted plan mode: %+v", got)
+	}
+}
+
+// A match rule takes a call as a deny rule would: each part of a chained
+// command, a path in any spelling against the workspace, and NFC. A hook
+// named for git is not skipped because the command starts with cd.
+func TestMatchFollowsPolicySubjects(t *testing.T) {
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, match, tool string
+		args              map[string]string
+	}{
+		{"chained command", "bash(git push*)", "bash", map[string]string{"command": "cd " + ws + " && git push secret main"}},
+		{"relative rule, absolute path", "write(src/**)", "write", map[string]string{"path": ws + "/src/secret.go"}},
+		{"dot segment", "write(" + ws + "/src/**)", "write", map[string]string{"path": ws + "/./src/secret.go"}},
+		{"NFD rule, NFC path", "write(" + ws + "/café/**)", "write", map[string]string{"path": ws + "/café/secret.go"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _ := hostOf(t, Config{Name: "blocker.sh", Events: []Event{EvToolCall}, Match: []string{c.match}})
+			e := policy.New(policy.ModeAuto)
+			e.Roots = func() []string { return []string{ws} }
+			e.Hooks = []policy.Hook{h.PolicyHookFor(context.Background(), "s", e)}
+			args, _ := json.Marshal(c.args)
+			if got := e.Evaluate(c.tool, true, args); got.Decision != policy.Deny || got.Step != "hook" {
+				t.Fatalf("the hook was not asked: %+v", got)
+			}
+		})
+	}
+}
+
+// Where the system folds the case of command names, a match rule does too.
+func TestMatchFoldsCommandNames(t *testing.T) {
+	if !tools.FoldsCommandNames() {
+		t.Skip("this system does not fold the case of command names")
+	}
+	h, _ := hostOf(t, Config{Name: "blocker.sh", Events: []Event{EvToolCall}, Match: []string{"bash(git *)"}})
+	if d := h.OnToolCall(context.Background(), "s", "bash", []byte(`{"command":"GIT show secret"}`)); !d.Block {
+		t.Fatal("a case-folded command skipped the hook")
 	}
 }

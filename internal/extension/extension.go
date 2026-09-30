@@ -108,6 +108,8 @@ type Request struct {
 	IsError   bool            `json:"is_error,omitempty"`
 	Messages  []Message       `json:"messages,omitempty"`
 	System    string          `json:"system,omitempty"`
+	// Policy judges which calls an extension's match rules take; not sent.
+	Policy *policy.Engine `json:"-"`
 }
 
 // Message is the subset of a conversation message an extension can see. Tool
@@ -183,9 +185,8 @@ type Config struct {
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 	// Env is passed to the process on top of Abhed's own environment.
 	Env map[string]string `json:"env,omitempty"`
-	// Match narrows the tool events (tool_call, tool_result and
-	// permission_request) to calls a rule matches, written as permission
-	// rules are: bash(git *), write(src/**), web_fetch. None matches every call.
+	// Match narrows tool_call and permission_request to calls a rule matches,
+	// as a deny rule would: bash(git *), write(src/**). None takes every call.
 	Match []string `json:"match,omitempty"`
 	// Async sends the events that only observe without waiting for a reply.
 	Async bool `json:"async,omitempty"`
@@ -305,18 +306,16 @@ func (e *Extension) LastError() string {
 }
 
 // Matches reports whether a tool event about this call is the extension's:
-// it names no rules, or one of them matches the call.
-func (e *Extension) Matches(tool string, args json.RawMessage) bool {
+// it names no rules, or one matches the call as a deny rule would, judged by
+// p (its roots place relative rules; nil judges paths as given).
+func (e *Extension) Matches(p *policy.Engine, tool string, args json.RawMessage) bool {
 	if len(e.match) == 0 {
 		return true
 	}
-	subject := policy.Subject(tool, args)
-	for _, r := range e.match {
-		if r.Matches(tool, subject) {
-			return true
-		}
+	if p == nil {
+		p = policy.New(policy.ModeDefault)
 	}
-	return false
+	return p.MatchesCall(e.match, tool, args)
 }
 
 // Call sends one request and waits for the reply.

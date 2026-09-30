@@ -498,7 +498,8 @@ All notable changes to Abhed are recorded here. The format follows
 - Hooks: extensions can take `user_prompt_submit` and `permission_request`,
   which may block and never approve, and `turn_end`, `subagent_end` and
   `notification`, which only observe, in the interactive CLI. `match` narrows
-  tool events to calls a permission-style rule matches, and `async` sends
+  `tool_call` and `permission_request` to calls a permission rule matches, as
+  a deny rule would match them, and `async` sends
   observe-only events without waiting. Each hook that blocks, forces an ask
   or annotates is recorded as `hook.fired`. `/hooks` lists the extensions
   with their layer, events, matcher and status. A managed `hooks.disabled`
