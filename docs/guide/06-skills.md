@@ -62,11 +62,16 @@ rule stated once in the middle and expected to hold.
 ## Pipelines
 
 A skill directory may also hold a `pipeline.json`, whose stages the harness
-runs itself in the CLI (`abhed`, `abhed -p`); the server, console and SDK do
-not run pipelines. Each tool step is an ordinary tool call of the loop that
-called the skill: deny and ask rules, the mode, approvals and the record all
-apply, and the record names the pipeline in `via`. With no one to approve
-(`-p`), a step that would be asked about is refused, so give it an allow rule.
+runs itself wherever the `skill` tool is offered: the CLI (`abhed`,
+`abhed -p`), console and workbench sessions on `abhed serve`, `abhed rpc`,
+`abhed acp`, and an SDK agent with `Options.ConfiguredTools`. Each tool step
+is an ordinary tool call of the loop that called the skill: deny and ask
+rules, the mode, approvals and the record all apply, the record names the
+pipeline in `via`, and an approval prompt or card names the pipeline asking.
+With no one to approve (`-p`, `rpc`, an unattended server run), a step that
+would be asked about is refused, so give it an allow rule. A step's `path`
+arguments must be absolute: a relative one is refused, and a required step
+that fails stops the pipeline.
 A pipeline is refused when it would call the `skill` tool or start beneath
 another pipeline's step, including from a subagent a step started; that
 skill then falls back to its instructions.
