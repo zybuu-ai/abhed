@@ -15,6 +15,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -222,19 +223,29 @@ func newAdapter(p config.ProviderConfig) (model.Adapter, error) {
 
 // fallbackChain is the providers a session may move to when its model is
 // unavailable: -fallback-model then model.fallback, in order, each an
-// offered configured provider other than the default. A managed
-// model.default is not left unless the managed configuration names the
-// fallbacks too. The second result are warnings about names left out.
+// offered configured provider other than the default. Under a managed
+// model.default the chain is the managed model.fallback alone, or nothing.
+// The second result are warnings about names left out.
 func fallbackChain(cfg config.Config, flag string) ([]string, []string) {
 	names := append(splitRules(flag), cfg.Model.Fallback...)
-	if len(names) == 0 {
-		return nil, nil
+	var warn []string
+	if cfg.ManagedSets("model.default") {
+		if !cfg.ManagedSets("model.fallback") {
+			if len(names) > 0 {
+				warn = append(warn, "the managed configuration sets model.default, so no fallback is used")
+			}
+			return nil, warn
+		}
+		if flag != "" {
+			warn = append(warn, "the managed configuration sets model.default and its fallbacks, so -fallback-model is ignored")
+		}
+		names = cfg.Model.Fallback
 	}
-	if cfg.ManagedSets("model.default") && !cfg.ManagedSets("model.fallback") {
-		return nil, []string{"the managed configuration sets model.default, so no fallback is used"}
+	if len(names) == 0 {
+		return nil, warn
 	}
 	offered := toolset.OfferedModels(cfg)
-	var chain, warn []string
+	var chain []string
 	for _, n := range names {
 		switch {
 		case n == cfg.Model.Default || slices.Contains(chain, n):
@@ -245,6 +256,20 @@ func fallbackChain(cfg config.Config, flag string) ([]string, []string) {
 		}
 	}
 	return chain, warn
+}
+
+// modelFlag applies -model. Under a managed model.default it may only name
+// that model, as /model may only stay on it.
+func modelFlag(cfg config.Config, name string) (config.Config, error) {
+	if name == "" || name == cfg.Model.Default {
+		return cfg, nil
+	}
+	if cfg.ManagedSets("model.default") {
+		return cfg, &config.ManagedError{Key: "model.default", Value: name,
+			Reason: fmt.Sprintf("the managed configuration sets the model to %s", cfg.Model.Default), File: managed.ConfigFile}
+	}
+	cfg.Model.Default = name
+	return cfg, nil
 }
 
 // fallbackAdapter moves to the next model in its chain when the current one

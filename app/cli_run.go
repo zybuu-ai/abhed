@@ -50,8 +50,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fail(err)
 	}
 	registerState(cfg, workspace)
-	if f.modelID != "" {
-		cfg.Model.Default = f.modelID
+	if cfg, err = modelFlag(cfg, f.modelID); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: -model: %v\n", err)
+		return 2
 	}
 	if f.skipPerms {
 		if err := confirmBypass(cfg, os.Stdin, os.Stderr); err != nil {

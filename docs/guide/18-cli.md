@@ -64,7 +64,9 @@ server error after the retries), the session moves to the next configured
 provider in `model.fallback` or `-fallback-model`, says so, and records a
 `model.fallback` event with the reason. A request the model rejects for its
 content never moves. A managed `model.default` is left only when the managed
-configuration names the fallbacks too.
+configuration names the fallbacks too, and then only for those: a
+`-fallback-model` is ignored with a warning. `-model` naming another
+provider is refused under a managed `model.default`, as `/model` is.
 
 ## Status
 

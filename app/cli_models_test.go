@@ -150,3 +150,55 @@ func TestWriteUserSettingKeepsTheRest(t *testing.T) {
 		t.Fatal("a broken file was overwritten")
 	}
 }
+
+// Under a managed model.default the chain is the managed model.fallback
+// exactly: -fallback-model names are left out with a warning.
+func TestFallbackChainUnderAManagedModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Model.Default = "a"
+	cfg.Model.Providers = map[string]config.ProviderConfig{"a": {}, "b": {}, "c": {}}
+	cfg.SetKeys = []string{"model.providers.a", "model.providers.b", "model.providers.c"}
+	cfg.Model.Fallback = []string{"b"}
+	cfg.ManagedKeys = []string{"model.default", "model.fallback"}
+	chain, warn := fallbackChain(cfg, "c")
+	if !slices.Equal(chain, []string{"b"}) || len(warn) != 1 || !strings.Contains(warn[0], "-fallback-model") {
+		t.Fatalf("%q %q", chain, warn)
+	}
+	if chain, warn := fallbackChain(cfg, ""); !slices.Equal(chain, []string{"b"}) || len(warn) != 0 {
+		t.Fatalf("%q %q", chain, warn)
+	}
+}
+
+// -model is refused under a managed model.default, as /model is.
+func TestModelFlagUnderAManagedModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Model.Default = "a"
+	if got, err := modelFlag(cfg, "b"); err != nil || got.Model.Default != "b" {
+		t.Fatalf("unmanaged: %v %q", err, got.Model.Default)
+	}
+	cfg.ManagedKeys = []string{"model.default"}
+	if _, err := modelFlag(cfg, "b"); err == nil {
+		t.Fatal("-model left a managed model")
+	}
+	if got, err := modelFlag(cfg, "a"); err != nil || got.Model.Default != "a" {
+		t.Fatalf("naming the managed model: %v", err)
+	}
+}
+
+// /model refuses to leave a managed model.default.
+func TestSwitchModelRefusedUnderAManagedModel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Model.Default = "a"
+	cfg.Model.Providers = map[string]config.ProviderConfig{
+		"a": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m"},
+		"b": {Type: "openai-compatible", BaseURL: "http://127.0.0.1:9/v1", Model: "m"}}
+	cfg.SetKeys = []string{"model.providers.a", "model.providers.b"}
+	cfg.ManagedKeys = []string{"model.default"}
+	e, _ := configEnv(cfg, "")
+	if err := switchModel(context.Background(), e, "b"); err == nil || !strings.Contains(err.Error(), "managed") {
+		t.Fatalf("switched: %v", err)
+	}
+	if e.st.appCfg.Model.Default != "a" {
+		t.Fatal("the default moved")
+	}
+}
