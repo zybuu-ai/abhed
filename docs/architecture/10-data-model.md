@@ -73,14 +73,15 @@ and adds `file.restored`.
 | `command.invoked` | `name`, `source` (`builtin`, `user`, `workspace`, `managed` or `mcp`, set by the loader, never by the command), `sha256` of a command file's content, `args` redacted; recorded for custom commands, `/init` and `/output-style` | user |
 | `memory.loaded` | `files`, each `path` (relative to the workspace when in it), `scope` (`managed`, `user`, `project`, `local`, `import`, `rule` or `auto`) and `sha256`; once per conversation | system |
 | `memory.written` | `path`, `kind` (`user`, `feedback`, `project`, `reference`, `note` or `import`), `by` (`user` or `agent`); an agent's write is recorded untrusted | the writer |
-| `session.named` | `name` *(not yet emitted)* | user |
-| `session.branched` | in the new session: `from`, the session it was copied from, and `through_seq`, the last event taken *(not yet emitted)* | user |
-| `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, `by` (`user`) *(not yet emitted)* | user |
+| `session.named` | `name`, from `-n` or `/rename` | user |
+| `session.branched` | the first event of a new session: `from`, the session it was copied from; `through_seq`, the last event taken; `unverified`, why the source's record failed verification, absent when it verified. A copy of the source's conversation and undo history follows, renumbered, with new ids; copies from a file or a failing record are `untrusted` | user |
+| `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, the seq of the `checkpoint.saved` whose content was put back, `by` (`user`). Recorded after the person's `action.requested`, the decision and its `observation` | user |
+| `checkpoint.saved` | a file's content just before the agent changed it: `path`; `sha256`, the blob holding the content, absent when the file did not exist or none was kept; `turn`; `mode`, its permission bits; `skipped`, why no content was kept (a read deny rule, or a name that holds keys) | system |
 | `plan.proposed` | `text`, the plan the agent submitted in plan mode | agent |
 | `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass` | user |
 | `model.fallback` | `from`, `to`, `reason`; a move to a configured fallback model *(not yet emitted)* | system |
 | `hook.fired` | `extension`, `event`, `verdict` (`block`, `ask` or `annotate`; a hook never allows) | system |
-| `record.repaired` | `reason`, `truncated_bytes`; a torn last line cut off when the local record was opened *(not yet emitted)* | system |
+| `record.repaired` | `reason`, `truncated_bytes`; recorded by the local record when it is opened for writing and its last line was left unfinished by a crash: cut off when the head does not count it (`truncated_bytes` says how much), or completed when it was whole and lost only its newline (`truncated_bytes` 0) | system |
 
 **Who settled a call** is in `by` on every `action.approved` and `action.denied`:
 

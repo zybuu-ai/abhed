@@ -447,3 +447,27 @@ func TestRootEscapeIsErrOutside(t *testing.T) {
 		t.Fatalf("os.Root's escape error is not recognised: %v", err)
 	}
 }
+
+// A file in the record with a second name is named by Linked, although the
+// state walk does not list the record's files.
+func TestLinkedFindsARecordFileWithASecondName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	rec := filepath.Join(home, StateDir, "records")
+	if err := os.MkdirAll(filepath.Join(rec, "default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(rec, RecordMarker), nil, 0o600)
+	session := filepath.Join(rec, "default", "s-1.jsonl")
+	_ = os.WriteFile(session, []byte("{}\n"), 0o600)
+	if got := NewStateSet(t.TempDir()).Linked(); len(got) != 0 {
+		t.Fatalf("linked with one name: %v", got)
+	}
+	if err := os.Link(session, filepath.Join(t.TempDir(), "second")); err != nil {
+		t.Skip("no hard links here")
+	}
+	got := NewStateSet(t.TempDir()).Linked()
+	if len(got) != 1 || filepath.Base(got[0]) != "s-1.jsonl" {
+		t.Fatalf("linked: %v", got)
+	}
+}

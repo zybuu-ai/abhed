@@ -208,16 +208,18 @@ func TestDoctorNamesSettingsNotYetInEffect(t *testing.T) {
 		t.Fatalf("the defaults were reported: %q", b.String())
 	}
 	cfg := config.Default()
-	cfg.SetKeys = []string{"record.dir", "record.retention_days", "model.default", "hooks.disabled"}
+	cfg.SetKeys = []string{"statusline.command", "record.dir", "record.retention_days", "memory.auto", "model.default", "hooks.disabled"}
 	if !printNotInEffect(&b, cfg) {
 		t.Fatal("nothing was reported")
 	}
-	for _, want := range []string{"record.dir is set but not yet in effect in this version", "record.retention_days is set but not yet in effect"} {
+	for _, want := range []string{"statusline is set but not yet in effect in this version"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, b.String())
 		}
 	}
-	if strings.Contains(b.String(), "model.default") || strings.Contains(b.String(), "hooks.disabled") {
-		t.Errorf("a setting in effect was reported:\n%s", b.String())
+	for _, k := range []string{"model.default", "hooks.disabled", "record.dir", "record.retention_days", "memory.auto"} {
+		if strings.Contains(b.String(), k) {
+			t.Errorf("a setting in effect, %s, was reported:\n%s", k, b.String())
+		}
 	}
 }

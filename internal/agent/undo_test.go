@@ -173,7 +173,7 @@ func TestChangedListsFiles(t *testing.T) {
 func TestPersistHookCalled(t *testing.T) {
 	u := newTestUndo()
 	var persisted int
-	u.Persist = func(cp Checkpoint) error { persisted++; return nil }
+	u.Persist = func(cp Checkpoint) (Checkpoint, error) { persisted++; return cp, nil }
 
 	u.BeginTurn()
 	u.Record("/w/a.go", []byte("x"), true)
@@ -187,7 +187,7 @@ func TestPersistHookCalled(t *testing.T) {
 // A persistence failure must not prevent the edit from being recorded.
 func TestPersistFailureIsNotFatal(t *testing.T) {
 	u := newTestUndo()
-	u.Persist = func(cp Checkpoint) error { return os.ErrPermission }
+	u.Persist = func(cp Checkpoint) (Checkpoint, error) { return cp, os.ErrPermission }
 	u.BeginTurn()
 	u.Record("/w/a.go", []byte("x"), true)
 	if u.Pending() != 1 {

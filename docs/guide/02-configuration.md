@@ -243,8 +243,22 @@ is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 }
 ```
 
-`memory` (the default) loses sessions when the process exits. `postgres` makes
-them durable and replayable, and is what `/sessions`, `/resume` and audit need.
+Without `postgres`, the command line keeps sessions in the local record under
+`~/.abhed/records` (see [Sessions and the local record](12-records.md)), and
+`abhed serve` keeps them in memory, which loses them when the process exits.
+`postgres` makes them durable and replayable for a server and for teams.
+
+Two settings about the local record are taken only from the managed
+configuration:
+
+```json
+"record": { "dir": "/srv/abhed/records", "retention_days": 90 }
+```
+
+`record.dir` moves the record, and is state the agent cannot reach.
+`record.retention_days` prunes sessions last used longer ago than that when
+the record is opened, leaving a tombstone for each. Unset, nothing is removed
+unless you run `abhed record prune`.
 
 **Two roles, not one.** The audit record is only as protected as the role that
 writes it. Database triggers refuse an `UPDATE`, a `DELETE` or a `TRUNCATE` on

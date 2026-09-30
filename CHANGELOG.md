@@ -232,6 +232,28 @@ All notable changes to Abhed are recorded here. The format follows
   `/hooks` and the serve banner show which one stopped.
 - The interactive CLI counts `limits.max_turns` per message unless the
   managed configuration sets it.
+- The command line now keeps sessions in a local record under
+  `~/.abhed/records` when `storage.driver` is not `postgres`, where before
+  they were kept in memory and lost when it exited. Nothing to do: the
+  directory is created, private to you, on first use, and records are kept
+  until `abhed record prune` removes them. `abhed serve` still keeps memory
+  unless configured otherwise.
+- `/export` with no path now writes to `~/.abhed/exports`, not the
+  workspace; a relative path is taken from the workspace, and a path outside
+  it asks first. An export is refused for a record that fails verification.
+- `/undo` records each file it puts back as `file.restored`, and is held to
+  deny rules on `write`.
+- On macOS the local record syncs with `fsync`, as SQLite does by default,
+  not the drive-cache flush Go's `File.Sync` asks for there. After a power
+  cut, a session's head can then have survived while lines the drive had
+  cached did not: the session reports lines missing and is not written to
+  again. `abhed -r <session>` goes on from it, after a yes, in a new session
+  that names it; the original stays as it is, or `abhed record prune`
+  removes it with a tombstone. If the index's head is lost the same way, no
+  new session starts until the index is looked at: `abhed record verify`
+  names the line; moving `index.jsonl` and `index.head` aside keeps them as
+  evidence and starts a new index, and a session file from the old one goes
+  on with `abhed -r <file>`, copied into a new session.
 - `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
   asks in default mode, is refused in plan mode, and is refused where nobody
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
@@ -565,12 +587,67 @@ All notable changes to Abhed are recorded here. The format follows
 - `policy.Result` names the rule that decided (`Rule`), and `action.approved`
   and `action.denied` record it as `rule` when a deny, ask or allow rule
   decided.
+- A durable, tamper-evident local record, shared by the command line and
+  the SDK (`store/local`). See `docs/guide/12-records.md`.
+  - One append-only file per session. Each line is canonical JSON with
+    `prev` and `hash` (SHA-256). `abhed record verify` fails, naming the
+    event, on an edited, removed, moved or repeated line, on lines the head
+    counts cut from the end, on a head or index that no longer matches, and
+    on a listed session whose file is gone.
+  - It cannot show lines written after the last sync being cut, and it is
+    only as strong as the head and index files, which the same owner can
+    rewrite. It is evident against the agent and against accidental or
+    partial edits, and verifiable offline. It is not proof against the
+    machine's owner.
+  - A record that fails is never written to again; reading, verifying,
+    exporting or opening it changes nothing, and going on from it is a
+    recorded fork into a new session.
+  - Secrets are redacted before the first write. Directories are `0700` and
+    files `0600`. The agent's file tools and sandbox tiers refuse the
+    record: `~/.abhed/records`, a managed `record.dir`, a linked records
+    directory's real path, and an SDK agent's record.
+  - One process writes a session at a time, by a lock the system drops
+    when the process exits; the record belongs on a local disk. A crash's
+    unfinished last line is cut off, only past what the head counts, and
+    recorded as `record.repaired`.
+- `abhed record list|show|verify|export|prune`. A `.jsonl` export carries
+  the stored head and whether the record verified; a failing record exports
+  only with `-unverified`, marked. An export never writes through a link or
+  into the record. `prune` asks first and leaves a tombstone saying what it
+  found.
+- `-c`/`--continue`, `-r`/`--resume [id|name|file]` (a picker with no
+  argument), `-n`/`--name` and `--fork-session`, also with `-p`. Resuming a
+  record that fails verification shows it unverified, and with a yes goes on
+  in a new session that names it.
+- `/rewind` takes code, the conversation or both back to before a prompt.
+  The conversation side is a recorded `conversation.forked`, never a
+  deletion, and rewinding to the first prompt is a fork at step 0 in the
+  same session. Each file put back is recorded as the person's action, put
+  to policy, then as `file.restored` with hashes before and after, and
+  keeps its mode.
+- Checkpoints before each agent edit are kept in the record's blobs, so
+  `/undo` and `/rewind` work after `abhed -c`. Files a read deny rule covers
+  or that hold keys are not copied.
+- `/rename`, `/branch` and `/clear [name]`. A branch opens with
+  `session.branched` and a copy of the conversation and its undo history;
+  the original is left as it was.
+- HawkEYE's sensitive-path finding and the checkpoint skip share one list of
+  key and credential file names, matched without case against each part of
+  a path in the call, where HawkEYE used to match fixed substrings; it now
+  also names `.envrc`, `*.env`, `.git-credentials`, `.pgpass`, `*.tfvars`,
+  `.azure/` and more, and no longer matches a name only inside a longer word.
+- SDK: `Options.Store` and `OpenLocalRecord`, so an embedded agent can keep
+  the local record. Its directory becomes state for that agent, and `New`
+  refuses one inside the workspace or any other folder the agent's commands
+  can write.
+- `record.dir` and `record.retention_days` are in effect, from the managed
+  configuration only.
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and
   `hooks.disabled`. They are accepted so a file that sets them stays valid.
-  `cli.mode_cycle` and `hooks.disabled` are in effect (below); for the rest
-  this version does not act on them yet: setting one prints "set but not
+  All but `statusline` are now in effect (above); this version does not act
+  on `statusline` yet: setting it prints "set but not
   yet in effect in this version", and `abhed doctor` reports it and does not
   call the configuration ready. Who may set each is already enforced.
   `cli.mode_cycle`, `record.*` and `hooks.disabled` are managed only: the

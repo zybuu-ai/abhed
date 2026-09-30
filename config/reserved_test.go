@@ -9,11 +9,9 @@ import (
 
 // A file that sets a control this version does not act on yet is warned,
 // from the user's file and from the managed one alike: an administrator must
-// not believe hooks are off or retention is enforced when neither is.
+// not believe a setting acts when it does not.
 func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 	for _, c := range []struct{ name, key, body string }{
-		{"retention", "record.retention_days", `{"record":{"retention_days":90}}`},
-		{"record dir", "record.dir", `{"record":{"dir":"/srv/records"}}`},
 		{"statusline", "statusline", `{"statusline":{"command":"s.sh"}}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {

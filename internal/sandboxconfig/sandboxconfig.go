@@ -43,8 +43,8 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 }
 
 // StatePaths are the files holding Abhed's state that a configuration can put
-// outside .abhed: the local accounts and the secrets store. The tools, the
-// server and the sandbox all refuse them.
+// outside .abhed: the local accounts, the secrets store and a managed record
+// directory. The tools, the server and the sandbox all refuse them.
 func StatePaths(cfg config.Config, workspace string) []string {
 	users := cfg.Auth.UsersFile
 	if users == "" {
@@ -54,7 +54,24 @@ func StatePaths(cfg config.Config, workspace string) []string {
 	if path, err := secrets.DefaultPath(); err == nil {
 		out = append(out, path)
 	}
-	return out
+	// The local record, when the managed configuration moves it out of
+	// ~/.abhed, or when ~/.abhed/records is a link to somewhere else: the
+	// agent can neither read nor write it where it really is.
+	records := cfg.Record.Dir
+	if records == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			records = filepath.Join(home, ".abhed", "records")
+		}
+	}
+	if records != "" {
+		if cfg.Record.Dir != "" {
+			out = append(out, records)
+		}
+		if real, err := filepath.EvalSymlinks(records); err == nil && real != records {
+			out = append(out, real)
+		}
+	}
+	return append(out, cfg.Record.Also...)
 }
 
 // CheckStatePaths refuses a configured state file that commands could reach:

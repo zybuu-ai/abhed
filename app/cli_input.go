@@ -146,6 +146,8 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 			return err
 		}
 		st.open(id)
+		// A name given before the conversation existed (record track).
+		afterOpen(st)
 	}
 	bindAutoMemory(st)
 	applyStyle(st)

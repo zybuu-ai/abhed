@@ -60,6 +60,17 @@ func Main(args []string, opts ...Option) int {
 		listenAddr = fs.String("addr", ":8080", "listen address for abhed serve")
 		trustWS    = fs.Bool("trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	)
+	// Sessions: the record keeps every one, so these pick which goes on.
+	args, pickResume := bareResume(args)
+	sf := &startFlags
+	*sf = sessionFlags{Pick: pickResume}
+	fs.BoolVar(&sf.Continue, "c", false, "continue this workspace's most recent session")
+	fs.BoolVar(&sf.Continue, "continue", false, "same as -c")
+	fs.StringVar(&sf.Resume, "r", "", "resume a session by id, name or file; alone, pick one")
+	fs.StringVar(&sf.Resume, "resume", "", "same as -r")
+	fs.StringVar(&sf.Name, "n", "", "name the session")
+	fs.StringVar(&sf.Name, "name", "", "same as -n")
+	fs.BoolVar(&sf.Fork, "fork-session", false, "with -c or -r, go on in a new session branched from it")
 	fs.Usage = func() { a.usage(fs) }
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -76,6 +87,10 @@ func Main(args []string, opts ...Option) int {
 	// format parsed prose without noticing.
 	if !validFormat(*format) {
 		fmt.Fprintf(os.Stderr, "abhed: unknown -output-format %q; use %s\n", *format, strings.Join(outputFormats, " or "))
+		return 2
+	}
+	if err := sf.check(); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
 	}
 	if *mode != "" && !validMode(*mode) {
@@ -114,6 +129,8 @@ func Main(args []string, opts ...Option) int {
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
+	case "record":
+		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "hawkeye":
 		return hawkeyeCmd(workspace, rest[1:], a.trust)
 	case "migrate":

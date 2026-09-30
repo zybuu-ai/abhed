@@ -73,6 +73,8 @@ type StateSet struct {
 	files []os.FileInfo
 	paths []string // where each of files was found
 	named []string // registered paths, lexical and resolved
+	// records are the record folders met, whose files are not listed.
+	records []string
 }
 
 // NewStateSet gathers the state under the given roots, in the home directory
@@ -145,6 +147,16 @@ func (set *StateSet) walk(dir string) {
 		}
 		info := entryInfo(d)
 		switch {
+		case d.IsDir() && isRecordTree(path):
+			// The record is state by where it is: every path into it passes
+			// this folder, whose identity is kept. Its files are not listed
+			// one by one, which would make every check read every session;
+			// Linked walks it for second names when asked.
+			if info != nil && path != dir && !set.seen(set.dirs, info) {
+				set.dirs = append(set.dirs, info)
+			}
+			set.records = append(set.records, path)
+			return filepath.SkipDir
 		case info == nil || path == dir:
 		case d.IsDir() && d.Name() == "worktrees":
 			return filepath.SkipDir
@@ -160,6 +172,15 @@ func (set *StateSet) walk(dir string) {
 		}
 		return nil
 	})
+}
+
+// RecordMarker is the file the local record keeps at the top of its
+// directory, so the state walk knows the folder without listing it.
+const RecordMarker = ".abhed-record"
+
+func isRecordTree(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, RecordMarker))
+	return err == nil
 }
 
 // entryInfo returns an entry's info, or nil when it cannot be read: such
@@ -248,6 +269,17 @@ func (set *StateSet) Linked() []string {
 		if nlink.Of(info) > 1 {
 			out = append(out, set.paths[i])
 		}
+	}
+	for _, tree := range set.records {
+		_ = filepath.WalkDir(tree, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.Type().IsRegular() {
+				return nil //nolint:nilerr // an unreadable entry cannot be judged
+			}
+			if info, err := d.Info(); err == nil && nlink.Of(info) > 1 {
+				out = append(out, path)
+			}
+			return nil
+		})
 	}
 	return out
 }

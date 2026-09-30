@@ -28,6 +28,7 @@ model you point it at, and records everything it does.
 | [The SDK](09-sdk.md) | embedding Abhed in a Go program |
 | [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
+| [Sessions and the local record](12-records.md) | `-c`, `-r`, rewind, checkpoints, `abhed record verify`, what tamper-evident means |
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |

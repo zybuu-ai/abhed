@@ -68,6 +68,12 @@ type cliState struct {
 	// added. A new conversation's record restates both; see carryState.
 	pol       *policy.Engine
 	addedDirs []agent.WorkspaceDirAdded
+	// pendingName is a name given before the conversation exists.
+	pendingName string
+	// copiedID is the session a record from elsewhere, or one that failed
+	// verification, was copied into, with the events copied.
+	copiedID     string
+	copiedEvents []agent.Event
 }
 
 // follow draws the conversation's events as they are recorded, for as long as
@@ -112,6 +118,7 @@ func (c *cliState) fresh() {
 	c.carryState()
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
+		c.undo.Persist = checkpointSaver(c)
 		c.sess.Checkpoint = c.undo.Record
 		// Logins and connected hosts belong to the conversation that made them.
 		c.sess.ResetScoped()
