@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -89,6 +90,21 @@ type index struct {
 	clock func() time.Time
 	// onHead is given each new head, for an anchor.
 	onHead func(Head)
+
+	// cache is the parsed index, and folded what it says per session.
+	cmu        sync.Mutex
+	cache      indexCache
+	folded     []Entry
+	foldedFrom int
+}
+
+// indexCache is the index as last read: its size and time, how far its
+// whole lines go, and those lines parsed.
+type indexCache struct {
+	size  int64
+	mtime time.Time
+	off   int64
+	lines []indexLine
 }
 
 func (x *index) path() string     { return filepath.Join(x.dir, "index.jsonl") }
@@ -289,30 +305,70 @@ func parseIndexLine(raw []byte) (indexLine, error) {
 }
 
 // lines reads every complete index line; a damaged one is skipped here and
-// named by verify.
+// named by verify. What was read is kept, keyed by the file's size and time,
+// and only what was added since is read again.
 func (x *index) lines() ([]indexLine, error) {
-	data, err := readOwn(x.path())
+	f, err := openOwn(x.path(), os.O_RDONLY)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var out []indexLine
-	for _, raw := range scan(data).raws {
-		if l, err := parseIndexLine(raw); err == nil {
-			out = append(out, l)
-		}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	x.cmu.Lock()
+	defer x.cmu.Unlock()
+	c := &x.cache
+	if info.Size() == c.size && info.ModTime().Equal(c.mtime) {
+		return c.lines, nil
+	}
+	if info.Size() < c.off {
+		*c = indexCache{} // shrank: read it all again
+	}
+	data := make([]byte, info.Size()-c.off)
+	if _, err := f.ReadAt(data, c.off); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	sc := scan(data)
+	lines := slices.Clone(c.lines)
+	off := c.off
+	for _, raw := range sc.raws {
+		if l, err := parseIndexLine(raw); err == nil {
+			lines = append(lines, l)
+		}
+		off += int64(len(raw)) + 1
+	}
+	*c = indexCache{size: info.Size(), mtime: info.ModTime(), off: off, lines: lines}
+	return lines, nil
 }
 
 // entries folds the index into one entry per session, in first-seen order.
+// The fold is kept with the lines it came from.
 func (x *index) entries() ([]Entry, error) {
 	ls, err := x.lines()
 	if err != nil {
 		return nil, err
 	}
+	x.cmu.Lock()
+	if x.folded != nil && x.foldedFrom == len(ls) {
+		out := slices.Clone(x.folded)
+		x.cmu.Unlock()
+		return out, nil
+	}
+	x.cmu.Unlock()
+	out := fold(ls)
+	x.cmu.Lock()
+	x.folded, x.foldedFrom = slices.Clone(out), len(ls)
+	x.cmu.Unlock()
+	return out, nil
+}
+
+// fold is what the index says about each session, in first-seen order.
+func fold(ls []indexLine) []Entry {
 	byID := map[string]*Entry{}
 	var order []string
 	for _, l := range ls {
@@ -356,7 +412,7 @@ func (x *index) entries() ([]Entry, error) {
 	for _, id := range order {
 		out = append(out, *byID[id])
 	}
-	return out, nil
+	return out
 }
 
 func (x *index) get(id string) (Entry, bool) {
