@@ -378,15 +378,15 @@ func (c *Anthropic) Complete(ctx context.Context, req Request) (<-chan Chunk, er
 			if c.Bearer != "" && looksLikeSubscriptionRefusal(se) {
 				return nil, errSubscriptionRestricted
 			}
-			return nil, fmt.Errorf("anthropic returned %s", se.Error())
+			return nil, fmt.Errorf("anthropic returned %w", se)
 		}
 		return nil, fmt.Errorf("%s is unreachable: %w", c.BaseURL, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return nil, fmt.Errorf("anthropic returned %s: %s",
-			resp.Status, strings.TrimSpace(string(msg)))
+		return nil, fmt.Errorf("anthropic returned %w",
+			&StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg)), Attempts: 1})
 	}
 
 	out := make(chan Chunk, 32)
