@@ -179,7 +179,7 @@ func (d *durableMem) ClaimOrphan(ctx context.Context, id, holder string, stale t
 	}
 	if _, ok := d.seen[id]; !ok {
 		// No holder: an orphan only once nothing has been written for stale.
-		if evs, _ := d.MemStore.Events(id); len(evs) > 0 && time.Since(evs[len(evs)-1].CreatedAt) < stale {
+		if evs, _ := d.Events(id); len(evs) > 0 && time.Since(evs[len(evs)-1].CreatedAt) < stale {
 			return false, nil
 		}
 	}

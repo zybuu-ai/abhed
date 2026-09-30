@@ -428,7 +428,6 @@ func TestHeartbeatLosesTheLease(t *testing.T) {
 	f := &fencingRouter{}
 	s.store = f
 	lost := make(chan time.Time, 4)
-	start := time.Now()
 	stop := s.heartbeatNodeEvery(context.Background(), "s-1", 20*time.Millisecond, func() { lost <- time.Now() })
 	defer stop()
 	select {
@@ -441,7 +440,7 @@ func TestHeartbeatLosesTheLease(t *testing.T) {
 	g.held.Store(true)
 	g.fail.Store(true)
 	s.store = g
-	start = time.Now()
+	start := time.Now()
 	stop2 := s.heartbeatNodeEvery(context.Background(), "s-2", 20*time.Millisecond, func() { lost <- time.Now() })
 	defer stop2()
 	select {
