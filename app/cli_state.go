@@ -47,6 +47,9 @@ type cliState struct {
 	dynamic []slashSource
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
+	// pending are the person's actions made before a conversation had a
+	// record, recorded when the next one opens; see recordCLI.
+	pending []pendingEvent
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

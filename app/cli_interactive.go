@@ -100,6 +100,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
+	// Commands ask their questions on the typed lines until the terminal UI
+	// provides its own surface.
+	sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines: lines, ended: readErr})
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
@@ -139,6 +142,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.endBackground()
 		sessionState.loop, sessionState.sessionID = loop, id
 		sessionState.follow(store, id, r)
+		sessionState.flushPending()
 		return loop
 	}
 	defer sessionState.endBackground()

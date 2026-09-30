@@ -9,7 +9,6 @@ import "fmt"
 // The track that wires a setting deletes its entry here in the same change,
 // and its test that the setting takes effect replaces the warning.
 var notYetInEffect = []string{
-	"cli.mode_cycle",        // Shift-Tab and the ModeController (governance)
 	"commands.dirs",         // custom commands (input and memory)
 	"rules.dirs",            // path-scoped rules (input and memory)
 	"statusline",            // the statusline command (status)
