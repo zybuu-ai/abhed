@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -487,21 +486,19 @@ func (r *Redactor) Find(s string) (label string, found bool) {
 }
 
 // FindSent reports whether text holds a stored value in any form it could
-// take on its way to another server: as written, percent-encoded one or more
-// times, and in any case, since a host or a search engine may fold it. A store
-// that could not be loaded holds everything, with an empty label.
+// take on its way to another server: as written, percent-encoded any number
+// of times (a malformed escape elsewhere does not stop the decoding), with
+// '+' as a space, and in any case, since a host or a search engine may fold
+// it. A store that could not be loaded holds everything, with an empty label.
 func (r *Redactor) FindSent(text string) (label string, found bool) {
-	forms := []string{text}
-	for s := text; ; {
-		next, err := url.QueryUnescape(s)
-		if err != nil || next == s || len(forms) > 4 {
+	forms := []string{text, strings.ReplaceAll(text, "+", " ")}
+	for s := text; len(forms) < 2+maxDecodes; {
+		next := lenientUnescape(s)
+		if next == s {
 			break
 		}
-		forms = append(forms, next)
+		forms = append(forms, next, strings.ReplaceAll(next, "+", " "))
 		s = next
-	}
-	if p, err := url.PathUnescape(text); err == nil {
-		forms = append(forms, p)
 	}
 	for _, f := range forms {
 		if label, found := r.FindFold(f); found {
@@ -509,4 +506,40 @@ func (r *Redactor) FindSent(text string) (label string, found bool) {
 		}
 	}
 	return "", false
+}
+
+// maxDecodes bounds the rounds of percent-decoding; text encoded more deeply
+// than this is not a form any server decodes back.
+const maxDecodes = 16
+
+// lenientUnescape turns each valid %XX into its byte and leaves the rest,
+// a malformed escape included, as written.
+func lenientUnescape(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			b.WriteByte(unhex(s[i+1])<<4 | unhex(s[i+2]))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
 }

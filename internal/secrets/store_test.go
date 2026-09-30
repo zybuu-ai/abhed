@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,5 +275,42 @@ func TestFreshSeesEveryRewriteAndForgetsNothing(t *testing.T) {
 	write(`{"TOKEN":"third-value-cccc"}`)
 	if got := string(f.Redact([]byte(`"first-value-aaaa third-value-cccc"`))); got != `"[secret:TOKEN] [secret:TOKEN]"` {
 		t.Fatalf("after the store loaded again: %s", got)
+	}
+}
+
+// FindSent finds a value however deeply it is percent-encoded, with a
+// malformed escape or a literal "100%" elsewhere in the text.
+func TestFindSentDecodesLeniently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"TOKEN":"Sent-Value 7c2d"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(path).LoadRedactor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := func(s string, n int) string {
+		for i := 0; i < n; i++ {
+			var b strings.Builder
+			for _, c := range []byte(s) {
+				fmt.Fprintf(&b, "%%%02X", c)
+			}
+			s = b.String()
+		}
+		return s
+	}
+	for _, text := range []string{
+		"100% " + enc("Sent-Value 7c2d", 1),
+		"%zz" + enc("Sent-Value 7c2d", 1),
+		"q=" + enc("Sent-Value 7c2d", 6),
+		"Sent-Value+7c2d",
+		"sent-value%207C2D",
+	} {
+		if label, found := r.FindSent(text); !found || label != "[secret:TOKEN]" {
+			t.Errorf("%q: not found", text)
+		}
+	}
+	if _, found := r.FindSent("100% of the tests pass %zz"); found {
+		t.Error("ordinary text was taken for the value")
 	}
 }
