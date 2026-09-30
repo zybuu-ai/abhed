@@ -1,0 +1,31 @@
+size 100 30 cursor 21 2
+            ▄      ABHED  dev
+       ▗▟▙▖        deep agent harness · on-prem
+      ▗█▛▜█▖
+     ▗█▛  ▜█▖      model    gemma4:26b
+    ▗█▛▀▀▀▀▜█▖     work     /tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws
+   ▗█▛      ▜█▖    sandbox  process · no network
+  ▗██▖      ▗██▖   storage  memory (sessions do not survive restart)
+
+Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits.
+
+▲ hi
+  connection failed — retrying (attempt 2 of 4)
+  connection failed — retrying (attempt 3 of 4)
+  connection failed — retrying (attempt 4 of 4)
+
+! ended: error
+error: model call failed: call http://127.0.0.1:1/v1: Post "http://127.0.0.1:1/v1/chat/completions":
+ dial tcp 127.0.0.1:1: connect: connection refused
+1 turns · 0 in / 0 out tokens
+
+▲
+
+
+
+
+
+
+
+

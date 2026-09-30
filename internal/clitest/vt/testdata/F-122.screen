@@ -1,0 +1,41 @@
+size 100 40 cursor 39 2
+
+1 turns · 1200 in / 80 out tokens
+
+▲
+▲
+▲ !echo hi from bang
+
+Hello from the stub. You said: !echo hi from bang
+
+1 turns · 1200 in / 80 out tokens
+
+▲ @hel summarise
+
+Hello from the stub. You said: @hel summarise
+
+1 turns · 1200 in / 80 out tokens
+
+▲ please edit
+● edit hello.txt
+  ✕ path must be absolute. Did you mean /tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws-F-122/hello.txt?
+
+● edit /tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwww/ws-F-122/hello.txt
+  changing a file needs approval in default mode
+  - hello world
+  + hello, abhed world
+  + second line added
+  [a]ccept  [r]eject  [A]lways allow edit(/tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws-F-122/hello.txt) ● edit /tmp/audit/wwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws-F-122/hello.txt
+
+  [a]ccept  [r]eject  [A]lways allow edit(/tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+
+  ✕ interrupted before an answer
+
+! ended: user_interrupt
+2 turns · 2400 in / 160 out tokens
+
+▲
