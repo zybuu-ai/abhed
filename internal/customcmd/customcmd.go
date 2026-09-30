@@ -230,21 +230,41 @@ func ReadWorkspaceDirs(workspace string, dirs []string) ([]File, []error) {
 	return out, errs
 }
 
-// Inside reports whether dir lies in the workspace, as written or with
-// links resolved.
+// Inside reports whether dir lies in the workspace: dir, or a folder above
+// it, is the workspace's own folder by identity, with links resolved. An
+// identity check holds on a disk that folds case, where two spellings name
+// one folder. A dir that does not exist yet is judged by its nearest parent.
 func Inside(workspace, dir string) bool {
-	real := func(p string) string {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			return r
-		}
-		return p
+	root, err := os.Stat(workspace)
+	if err != nil {
+		return false
 	}
-	for _, pair := range [][2]string{{workspace, dir}, {real(workspace), real(dir)}} {
-		if rel, err := filepath.Rel(pair[0], pair[1]); err == nil && (rel == "." || filepath.IsLocal(rel)) {
-			return true
+	for _, p := range []string{filepath.Clean(dir), resolved(dir)} {
+		for ; ; p = filepath.Dir(p) {
+			if info, err := os.Stat(p); err == nil && os.SameFile(root, info) {
+				return true
+			}
+			if filepath.Dir(p) == p {
+				break
+			}
 		}
 	}
 	return false
+}
+
+// resolved is p with its links followed, as far as the path exists.
+func resolved(p string) string {
+	p = filepath.Clean(p)
+	var rest []string
+	for q := p; ; q = filepath.Dir(q) {
+		if r, err := filepath.EvalSymlinks(q); err == nil {
+			return filepath.Join(append([]string{r}, rest...)...)
+		}
+		if filepath.Dir(q) == q {
+			return p
+		}
+		rest = append([]string{filepath.Base(q)}, rest...)
+	}
 }
 
 // HashFiles is the content hash a trust decision covers.

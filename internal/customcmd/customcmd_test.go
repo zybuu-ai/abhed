@@ -188,3 +188,31 @@ func TestReadRegularRefusesASwap(t *testing.T) {
 		t.Fatalf("read a swapped file: %v", err)
 	}
 }
+
+// Inside judges by identity: another spelling of the workspace, a link to
+// it, or a path not made yet under it is inside; a sibling is not.
+func TestInsideByIdentity(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "Cmds"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "ws")
+	if err := os.Symlink(ws, link); err != nil {
+		t.Skip(err)
+	}
+	for _, d := range []string{filepath.Join(ws, "Cmds"), filepath.Join(link, "Cmds"), filepath.Join(ws, "not", "yet"), ws} {
+		if !Inside(ws, d) {
+			t.Errorf("%s is inside", d)
+		}
+	}
+	if Inside(ws, t.TempDir()) || Inside(ws, filepath.Dir(ws)) {
+		t.Error("a folder outside was taken as inside")
+	}
+	// On a disk that folds case, another spelling of the workspace is it.
+	upper := strings.ToUpper(ws)
+	if info, err := os.Stat(upper); err == nil {
+		if wsInfo, _ := os.Stat(ws); os.SameFile(info, wsInfo) && !Inside(ws, filepath.Join(upper, "cmds")) {
+			t.Error("another spelling of the workspace was taken as outside")
+		}
+	}
+}
