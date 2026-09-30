@@ -110,7 +110,7 @@ func startTUIWith(t *testing.T, stub *tuiStub, ws string, cols, rows int, backgr
 // over a slow link does.
 func startTUIDelayed(t *testing.T, stub *tuiStub, ws string, cols, rows int, background string, delay time.Duration, args ...string) *tuiRun {
 	t.Helper()
-	cmd := mainHelper(append([]string{"-C", ws}, args...))
+	cmd := mainHelper(append([]string{"-C", ws}, args...), "TERM="+os.Getenv("TERM"))
 	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		t.Skipf("no pty: %v", err)

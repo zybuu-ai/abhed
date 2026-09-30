@@ -10,7 +10,7 @@ import (
 type Style struct{ enabled bool }
 
 func NewStyle(w io.Writer) Style {
-	if os.Getenv("NO_COLOR") != "" {
+	if os.Getenv("NO_COLOR") != "" || dumbTerminal() {
 		return Style{false}
 	}
 	// A writer that stands in for the terminal answers for itself. Without

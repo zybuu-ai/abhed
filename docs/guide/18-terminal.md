@@ -2,8 +2,10 @@
 
 `abhed` with no `-p` is an interactive session. The input box sits at the
 bottom of the screen and stays there; the conversation scrolls above it.
-Without a terminal (piped input, a CI job) the same session reads lines and
-prints lines, and asks its questions as numbered prompts answered with a line.
+Without a terminal (piped input, a CI job), or on one that says it cannot
+move the cursor (`TERM=dumb`, or no `TERM` outside Windows), the same session
+reads lines and prints lines, without colour, and asks its questions as
+numbered prompts answered with a line.
 
 ## Typing
 

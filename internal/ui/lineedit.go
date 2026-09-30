@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -55,7 +56,7 @@ func ErrInterrupted(err error) bool { return errors.Is(err, errInterrupted) }
 func NewLineReader(prompt string) *LineReader {
 	fd := int(os.Stdin.Fd())
 	outFd := int(os.Stdout.Fd())
-	if !term.IsTerminal(fd) || !term.IsTerminal(outFd) {
+	if !term.IsTerminal(fd) || !term.IsTerminal(outFd) || dumbTerminal() {
 		return &LineReader{fallbck: bufio.NewReader(os.Stdin)}
 	}
 	state, err := term.MakeRaw(fd)
@@ -554,3 +555,12 @@ var startedOnTerminal = func() bool {
 }()
 
 func newBufReader(in io.Reader) *bufio.Reader { return bufio.NewReaderSize(in, 64*1024) }
+
+// dumbTerminal reports a terminal that says it cannot move the cursor:
+// TERM=dumb, or no TERM at all outside Windows, whose consoles do not set
+// one. It gets lines in and lines out, as a pipe does: no raw mode, no
+// bracketed paste, no questions to the terminal, no cursor addressing.
+func dumbTerminal() bool {
+	t := os.Getenv("TERM")
+	return t == "dumb" || t == "" && runtime.GOOS != "windows"
+}

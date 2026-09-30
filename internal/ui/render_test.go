@@ -13,6 +13,7 @@ import (
 // moment the interactive path started routing output through a wrapper.
 func TestStyleAsksAWriterThatKnows(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 
 	if s := NewStyle(claimsTerminal{true}); !s.enabled {
 		t.Error("a writer reporting a terminal must get colour")
@@ -31,6 +32,7 @@ func TestStyleAsksAWriterThatKnows(t *testing.T) {
 // NO_COLOR outranks everything, including a writer that says it is a terminal.
 func TestNoColorWins(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
 	if s := NewStyle(claimsTerminal{true}); s.enabled {
 		t.Error("NO_COLOR must disable colour whatever the writer says")
 	}
