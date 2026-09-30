@@ -136,7 +136,8 @@ func TestManagedCLISettings(t *testing.T) {
 		t.Fatalf("the managed value itself was refused: %v", err)
 	}
 
-	for _, bad := range []string{`{"cli":{"mode_cycle":["auto"]}}`, `{"cli":{"mode_cycle":["default","bypass"]}}`, `{"record":{"retention_days":-1}}`} {
+	for _, bad := range []string{`{"cli":{"mode_cycle":["auto"]}}`, `{"cli":{"mode_cycle":["default","bypass"]}}`, `{"record":{"retention_days":-1}}`,
+		`{"memory":{"import_depth":11}}`, `{"memory":{"import_depth":1000000000}}`, `{"memory":{"import_depth":-1}}`} {
 		withManaged(t, bad)
 		if _, err := Load(t.TempDir()); err == nil {
 			t.Errorf("%s loaded", bad)
@@ -166,5 +167,14 @@ func TestModeCycleAndMemoryDefaults(t *testing.T) {
 	}
 	if ManagedOnly("memory.auto") || ManagedOnly("commands.dirs") {
 		t.Error("a user setting is marked managed only")
+	}
+}
+
+// The deepest allowed import chain loads.
+func TestImportDepthCap(t *testing.T) {
+	withManaged(t, `{"memory":{"import_depth":10}}`)
+	cfg, err := Load(t.TempDir())
+	if err != nil || cfg.MemoryImportDepth() != 10 {
+		t.Fatalf("depth %d, %v", cfg.MemoryImportDepth(), err)
 	}
 }

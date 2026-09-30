@@ -117,7 +117,7 @@ type MemoryConfig struct {
 	// workspace may only turn it off, and a managed value binds.
 	Auto bool `json:"auto,omitempty"`
 	// ImportDepth bounds how deep @imports in memory files are followed.
-	// Zero means the default, 5.
+	// Zero means the default, 5; at most 10.
 	ImportDepth int `json:"import_depth,omitempty"`
 }
 
@@ -233,7 +233,12 @@ func (c Config) MemoryImportDepth() int {
 	return c.Memory.ImportDepth
 }
 
-const defaultImportDepth = 5
+const (
+	defaultImportDepth = 5
+	// maxImportDepth bounds memory imports: each level is files read into
+	// every prompt, and a chain deeper than this is a mistake or an attack.
+	maxImportDepth = 10
+)
 
 type ModelConfig struct {
 	Default   string                    `json:"default"`
@@ -1005,8 +1010,9 @@ func (c Config) Validate() error {
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
 	}
-	if c.Memory.ImportDepth < 0 {
-		return fmt.Errorf("memory.import_depth is %d; use 0 for the default of %d, or a positive depth", c.Memory.ImportDepth, defaultImportDepth)
+	if c.Memory.ImportDepth < 0 || c.Memory.ImportDepth > maxImportDepth {
+		return fmt.Errorf("memory.import_depth is %d; use 0 for the default of %d, or a depth up to %d",
+			c.Memory.ImportDepth, defaultImportDepth, maxImportDepth)
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
