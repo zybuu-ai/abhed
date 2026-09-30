@@ -465,6 +465,30 @@ All notable changes to Abhed are recorded here. The format follows
   only turn `memory.auto` off, trusted or not, and auto memory is off unless
   turned on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace
   need trust.
+- Headless runs read stdin. `cat build.log | abhed -p "why did this fail?"`
+  sends the log below the task; with no task, stdin is the task. Flags may
+  follow the task, and `-p` alone takes the task from stdin.
+- A task on the command line opens an interactive session with it:
+  `abhed "fix the tests"` or `abhed -- fix the tests`. A single bare word
+  that is not a command is still refused, now with a hint.
+- `-output-format stream-json`: one event per line, without the streamed
+  fragments unless `-include-partial-messages` is given. `json` and
+  `stream-json` end with a result line: the final reply, the terminal
+  reason, the exit code, turns, duration and token usage.
+- `-input-format stream-json` reads user messages from stdin, one per line,
+  as the turns of one conversation.
+- `-json-schema` (inline or `@file`) delivers a `-p` answer as JSON that
+  matches the schema.
+- `-max-budget-tokens`, `-append-system-prompt[-file]`,
+  `-system-prompt[-file]` and `-verbose`. Replacing the system prompt is
+  refused under a managed configuration; a new `session.started` event
+  records which was used, by SHA-256.
+- Familiar flag spellings: `-permission-mode`, `-allowedTools`,
+  `-disallowedTools` and `-dangerously-skip-permissions`. They bind as
+  Abhed's own flags do; the last asks for `yes` on a terminal, is refused
+  under a managed configuration and without a terminal, and deny rules
+  still apply in the mode it sets.
+
 - `abhed acp`: an editor can list the configured models and switch between
   them mid-session. `session/new` returns a `configOptions` model selector
   (category `model`), and `session/set_config_option` switches it, answering
@@ -623,6 +647,10 @@ All notable changes to Abhed are recorded here. The format follows
   `RecordDecision` and `RefreshAgents`.
 
 ### Changed
+
+- `abhed -p` exits with 128 plus the stop signal's number (143 for SIGTERM,
+  129 for a hang-up) instead of 130 for every signal, as `rpc`, `acp`,
+  `eval` and `resolve` already did. `json` output gains a final result line.
 
 - The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
   system prompt, loop settings and budget in one place, so a surface differs

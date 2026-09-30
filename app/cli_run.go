@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,25 +18,52 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
+	"golang.org/x/term"
 )
 
-func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, format, allowFlag, denyFlag, addDirs string) int {
-	// First, before any setup: a stop signal during start-up ends the run as
-	// an interrupt (130), not by the signal's default action.
+func run(a *App, workspace string, f *cliFlags) int {
+	// First, before any setup: a stop signal during start-up ends the run
+	// with 128 plus its number (130, 143, 129), as a shell reports it, not
+	// by the signal's default action.
 	stopper := cancelOnStop(stopReturns)
 	defer stopper.stop()
 	ctx := stopper.ctx
 
-	cfg, err := loadSession(workspace, a.trust, prompt == "")
+	headless := f.print.on
+	if code := checkHeadlessFlags(f); code != 0 {
+		return code
+	}
+	schema, err := schemaFlag(f.jsonSchema)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
+
+	cfg, err := loadSession(workspace, a.trust, !headless)
 	if err != nil {
 		fail(err)
 	}
 	registerState(cfg, workspace)
-	if modelFlag != "" {
-		cfg.Model.Default = modelFlag
+	if f.modelID != "" {
+		cfg.Model.Default = f.modelID
 	}
-	if cfg, err = applyFlags(cfg, modeFlag, maxTurns, allowFlag, denyFlag, addDirs); err != nil {
+	if f.skipPerms {
+		if err := confirmBypass(cfg, os.Stdin, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 2
+		}
+		f.mode = string(policy.ModeBypass)
+	}
+	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
 		fail(err)
+	}
+	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
+		fail(err)
+	}
+	sysPrompt, err := systemPromptFlags(f, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
 	}
 
 	provider, err := cfg.Provider()
@@ -108,10 +137,9 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 		Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg),
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
-	loopCfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, set.SkillListing, registry.Names())
-
-	headless := prompt != ""
-	jsonOut := format == "json"
+	loopCfg.SystemPrompt = sysPrompt.apply(toolset.SystemPrompt(workspace, adapter, set.SkillListing, registry.Names()))
+	start := map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": provider.Model}
+	sysPrompt.record(start)
 
 	// The CLI uses whatever the config selects. Previously this was hardcoded
 	// to memory, so a Postgres-configured deployment silently lost its CLI
@@ -127,7 +155,8 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	// interactive path replaces os.Stdout once the line editor takes the
 	// terminal, and a writer bound to the original file misses the newline
 	// translation raw mode needs.
-	renderer := ui.NewRenderer(ui.LazyStdout{}, jsonOut)
+	renderer := ui.NewRenderer(ui.LazyStdout{}, f.format != "text")
+	renderer.Reasoning = f.verbose
 
 	var approver agent.Approver
 	if headless {
@@ -151,9 +180,25 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	}
 
 	if headless {
-		return runOnce(ctx, store, renderer, jsonOut, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
+		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start}
+		prompt := f.task()
+		if f.inputFormat == "stream-json" {
+			o.inputs = streamInputs(os.Stdin, os.Stderr)
+		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, stdinIsPipe(), os.Stderr); err != nil {
+			if code, stopped := stopCode(ctx); stopped {
+				return code
+			}
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 2
+		}
+		if prompt == "" && o.inputs == nil {
+			fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
+			return 2
+		}
+		return runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
 	}
-	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions)
+	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions,
+		interactiveStart{first: f.task(), record: start})
 }
 
 func webSearchLabel(cfg config.Config) string {
@@ -281,4 +326,44 @@ func extensionsLabel(cfg config.Config, set *toolset.Set) (string, []string) {
 		line += "NOT RUNNING: " + strings.Join(failed, ", ")
 	}
 	return line + " (one process each, seeing every user's calls)", failed
+}
+
+// checkHeadlessFlags refuses flags that mean something only with -p, or
+// only with another flag, before anything is loaded.
+func checkHeadlessFlags(f *cliFlags) int {
+	bad := func(msg string) int {
+		fmt.Fprintf(os.Stderr, "abhed: %s\n", msg)
+		return 2
+	}
+	switch {
+	case !f.print.on && f.jsonSchema != "":
+		return bad("-json-schema needs -p: a structured answer is for a script")
+	case !f.print.on && f.inputFormat != "text":
+		return bad("-input-format stream-json needs -p")
+	case !f.print.on && f.format != "text":
+		return bad("-output-format " + f.format + " needs -p")
+	case f.partial && f.format != "stream-json":
+		return bad("-include-partial-messages needs -output-format stream-json")
+	}
+	return 0
+}
+
+// confirmBypass asks, on a terminal, before -dangerously-skip-permissions
+// turns approvals off. It is refused under a managed configuration and
+// where there is no terminal to ask on. Deny rules still apply in bypass.
+func confirmBypass(cfg config.Config, in io.Reader, out io.Writer) error {
+	if cfg.Managed {
+		return errors.New("-dangerously-skip-permissions is refused under a managed configuration")
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
+		return errors.New("-dangerously-skip-permissions asks for confirmation on a terminal, and there is none here; -mode bypass sets the mode explicitly")
+	}
+	fmt.Fprint(out, "\n-dangerously-skip-permissions: the agent will run commands and change files without asking.\n"+
+		"Deny rules still apply. Type yes to continue: ")
+	line, err := readAnswer(in)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(line), "yes") {
+		fmt.Fprintln(out)
+		return errors.New("bypass not confirmed; nothing was started")
+	}
+	return nil
 }

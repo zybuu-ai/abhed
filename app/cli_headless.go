@@ -1,10 +1,17 @@
 package app
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -15,33 +22,305 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
+	"golang.org/x/term"
 )
 
-func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonOut bool,
+// headlessOpts are how a -p run reads and writes.
+type headlessOpts struct {
+	format  string // text, json or stream-json
+	partial bool   // stream-json: include agent.delta and reasoning deltas
+	verbose bool
+	schema  json.RawMessage
+	// inputs are the user messages after the first, from -input-format
+	// stream-json; nil for a single task.
+	inputs <-chan string
+	start  map[string]any
+}
+
+// maxStdin bounds the stdin a -p run takes as context.
+const maxStdin = 10 << 20
+
+// headlessTask is the task a -p run is given: the command line's, with
+// piped stdin added as its input. With stdin alone, stdin is the task. A
+// stop signal ends the wait for stdin.
+func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bool, wait io.Writer) (string, error) {
+	if !isPipe {
+		return prompt, nil
+	}
+	type read struct {
+		data []byte
+		err  error
+	}
+	got := make(chan read, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(stdin, maxStdin+1))
+		got <- read{data, err}
+	}()
+	var r read
+	// A pipe whose writer is slow, or never closes, would otherwise look
+	// like a hang.
+	select {
+	case r = <-got:
+	case <-time.After(3 * time.Second):
+		fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+		select {
+		case r = <-got:
+		case <-ctx.Done():
+			return "", context.Cause(ctx)
+		}
+	case <-ctx.Done():
+		return "", context.Cause(ctx)
+	}
+	if r.err != nil {
+		return "", fmt.Errorf("reading stdin: %w", r.err)
+	}
+	if len(r.data) > maxStdin {
+		return "", fmt.Errorf("stdin is larger than %d MiB; pass a path in the task instead", maxStdin>>20)
+	}
+	in := strings.TrimRight(string(r.data), "\n")
+	switch {
+	case strings.TrimSpace(in) == "":
+		return prompt, nil
+	case prompt == "":
+		return in, nil
+	}
+	return prompt + "\n\nInput from stdin:\n" + in, nil
+}
+
+// stdinIsPipe reports whether stdin is a pipe or a file rather than a
+// terminal or a device such as /dev/null.
+func stdinIsPipe() bool {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		return false
+	}
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice == 0
+}
+
+// streamInputs reads -input-format stream-json: one JSON object per line,
+// {"type":"user","message":{"content":...}} with the content a string or a
+// list of text parts. Other lines are reported and skipped.
+func streamInputs(r io.Reader, warn io.Writer) <-chan string {
+	out := make(chan string)
+	go func() {
+		defer close(out)
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64<<10), maxStdin)
+		for n := 1; sc.Scan(); n++ {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			text, err := userMessageText([]byte(line))
+			if err != nil {
+				fmt.Fprintf(warn, "abhed: stdin line %d skipped: %v\n", n, err)
+				continue
+			}
+			out <- text
+		}
+	}()
+	return out
+}
+
+func userMessageText(line []byte) (string, error) {
+	var m struct {
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &m); err != nil {
+		return "", fmt.Errorf("not JSON: %v", err)
+	}
+	if m.Type != "user" {
+		return "", fmt.Errorf("type %q; only user messages are read", m.Type)
+	}
+	raw := m.Message.Content
+	if len(raw) == 0 {
+		raw = m.Content
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil && strings.TrimSpace(s) != "" {
+		return s, nil
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) == nil {
+		var b []string
+		for _, p := range parts {
+			if p.Type == "text" && p.Text != "" {
+				b = append(b, p.Text)
+			}
+		}
+		if len(b) > 0 {
+			return strings.Join(b, "\n"), nil
+		}
+	}
+	return "", errors.New("no text content")
+}
+
+// schemaFlag reads -json-schema: inline JSON, or @path.
+func schemaFlag(v string) (json.RawMessage, error) {
+	if v == "" {
+		return nil, nil
+	}
+	data := []byte(v)
+	if strings.HasPrefix(v, "@") {
+		var err error
+		if data, err = os.ReadFile(v[1:]); err != nil {
+			return nil, fmt.Errorf("-json-schema: %w", err)
+		}
+	}
+	if !json.Valid(data) {
+		return nil, errors.New("-json-schema is not valid JSON")
+	}
+	return json.RawMessage(data), nil
+}
+
+// systemPrompt is what the command line does to the system prompt.
+type systemPrompt struct {
+	appendText, replaceText string
+}
+
+// systemPromptFlags reads the flags that change the system prompt. A
+// replacement is refused under a managed configuration, whose
+// instructions the prompt carries.
+func systemPromptFlags(f *cliFlags, cfg config.Config) (systemPrompt, error) {
+	var sp systemPrompt
+	read := func(flagName, path string) (string, error) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("-%s: %w", flagName, err)
+		}
+		return string(b), nil
+	}
+	sp.appendText = f.appendSystem
+	if f.appendFile != "" {
+		t, err := read("append-system-prompt-file", f.appendFile)
+		if err != nil {
+			return sp, err
+		}
+		sp.appendText = strings.TrimSpace(sp.appendText + "\n\n" + t)
+	}
+	sp.replaceText = f.systemPrompt
+	if f.systemFile != "" {
+		if f.systemPrompt != "" {
+			return sp, errors.New("-system-prompt and -system-prompt-file are both set; use one")
+		}
+		t, err := read("system-prompt-file", f.systemFile)
+		if err != nil {
+			return sp, err
+		}
+		sp.replaceText = t
+	}
+	if strings.TrimSpace(sp.replaceText) != "" && cfg.Managed {
+		return sp, errors.New("-system-prompt is refused under a managed configuration, whose instructions the prompt carries; -append-system-prompt adds to it instead")
+	}
+	return sp, nil
+}
+
+// apply returns the system prompt with the flags applied.
+func (sp systemPrompt) apply(base string) string {
+	out := base
+	if strings.TrimSpace(sp.replaceText) != "" {
+		out = sp.replaceText
+	}
+	if strings.TrimSpace(sp.appendText) != "" {
+		out = strings.TrimRight(out, "\n") + "\n\n" + sp.appendText
+	}
+	return out
+}
+
+// record puts into the session.started payload what the flags did to the
+// system prompt: digests of what they supplied, never the text.
+func (sp systemPrompt) record(into map[string]any) {
+	sum := func(s string) string {
+		h := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(h[:])
+	}
+	into["system_prompt"] = "default"
+	if strings.TrimSpace(sp.replaceText) != "" {
+		into["system_prompt"] = "replaced"
+		into["system_prompt_sha256"] = sum(sp.replaceText)
+	}
+	if strings.TrimSpace(sp.appendText) != "" {
+		into["system_prompt_appended_sha256"] = sum(sp.appendText)
+	}
+}
+
+// recordStart records how the session was started. The CLI recorded
+// nothing before the first message, so a changed system prompt left no
+// trace in the record.
+func recordStart(rec *agent.Recorder, start map[string]any) {
+	if start == nil {
+		return
+	}
+	if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: recording the session start: %v\n", err)
+	}
+}
+
+// resultLine is the last line json and stream-json write: how the run ended.
+type resultLine struct {
+	Type       string          `json:"type"` // "result"
+	Subtype    string          `json:"subtype"`
+	IsError    bool            `json:"is_error"`
+	Result     string          `json:"result"`
+	Structured json.RawMessage `json:"structured_output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	SessionID  string          `json:"session_id"`
+	NumTurns   int             `json:"num_turns"`
+	DurationMS int64           `json:"duration_ms"`
+	ExitCode   int             `json:"exit_code"`
+	Usage      resultUsage     `json:"usage"`
+}
+
+type resultUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	CachedTokens int `json:"cached_tokens"`
+}
+
+func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o headlessOpts,
 	adapter model.Adapter, registry *tools.Registry, pol *policy.Engine,
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
 	appCfg config.Config, prompt string, budget *agent.Budget, extHost *extension.Host) int {
 
+	began := time.Now()
 	sessionID := newConversationID()
 	if err := recordSession(ctx, store, sessionID, appCfg); err != nil {
 		return 1 // a run with no session row would write into another's record
 	}
 	rec := agent.NewRecorder(store, sessionID, "")
 	rec.Redact = openVault().Redactor()
+	streaming := o.format != "text"
+	quietText := !streaming && o.schema != nil
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range events {
-			if jsonOut {
+			if o.verbose && ev.Type == agent.EvModelCall {
+				fmt.Fprintf(os.Stderr, "abhed: model call %s\n", ev.Payload)
+			}
+			switch {
+			case streaming:
+				if o.format == "stream-json" && !o.partial &&
+					(ev.Type == agent.EvAgentDelta || ev.Type == agent.EvAgentReasoningDelta) {
+					continue
+				}
 				b, _ := json.Marshal(ev)
 				fmt.Println(string(b))
-			} else {
+			case !quietText:
 				r.Event(ev)
 			}
 		}
 	}()
+	recordStart(rec, o.start)
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Provider = appCfg.Model.Default
@@ -56,23 +335,95 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
-	reason, err := loop.Run(ctx, prompt)
+
+	var (
+		reason     agent.TerminalReason
+		err        error
+		structured json.RawMessage
+		ran        bool
+	)
+	runOne := func(task string) {
+		ran = true
+		if o.schema != nil {
+			structured, reason, err = agent.RunStructured(ctx, loop, loop.Tools, task, o.schema)
+			return
+		}
+		reason, err = loop.Run(ctx, task)
+	}
+	if prompt != "" {
+		runOne(prompt)
+	}
+	inputs := o.inputs
+	if inputs == nil {
+		closed := make(chan string)
+		close(closed)
+		inputs = closed
+	}
+	for task := range inputs {
+		if err != nil || (ran && reason.ExitCode() != 0) || ctx.Err() != nil {
+			continue // drained, so the reader ends
+		}
+		runOne(task)
+	}
+	if !ran && err == nil {
+		err = errors.New("no task: stdin held no user message")
+	}
 
 	store.Unsubscribe(sessionID, events)
 	<-done
 
+	code := reason.ExitCode()
+	var noResult agent.ErrNoResult
+	switch {
+	case errors.As(err, &noResult):
+		code = max(noResult.Reason.ExitCode(), 1)
+	case err != nil:
+		code = agent.TermError.ExitCode()
+	}
+	// A stop signal ends the run as a shell reports it: 130, 143, 129.
+	if c, stopped := stopCode(ctx); stopped {
+		code = c
+	}
+
+	u := loop.Usage()
+	switch {
+	case streaming:
+		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
+			Result: lastAssistantText(loop.Messages()), Structured: structured,
+			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}}
+		if res.Subtype == "" {
+			res.Subtype = string(agent.TermError)
+		}
+		if err != nil {
+			res.Error = err.Error()
+		}
+		b, _ := json.Marshal(res)
+		fmt.Println(string(b))
+	case quietText:
+		if structured != nil {
+			fmt.Println(string(structured))
+		}
+	default:
+		printUsage(r, u)
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
-		noteIgnoredModel(appCfg)
-		return agent.TermError.ExitCode()
+		fmt.Fprintf(os.Stderr, "abhed: %s\n", err)
 	}
-	if !jsonOut {
-		printUsage(r, loop.Usage())
-	}
-	if reason.ExitCode() != 0 {
+	if code != 0 {
 		noteIgnoredModel(appCfg)
 	}
-	return reason.ExitCode()
+	return code
+}
+
+// lastAssistantText is the model's last non-empty reply.
+func lastAssistantText(msgs []model.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == model.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 func printUsage(r *ui.Renderer, u agent.Usage) {

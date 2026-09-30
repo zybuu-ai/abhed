@@ -321,9 +321,10 @@ func requireHostTier(t *testing.T, ws string) {
 	}
 }
 
-// A stop signal while -p is starting up, held in an MCP connect, ends it as an
-// interrupt, 130, not by the signal's default action.
-func TestPromptStoppedDuringStartupExits130(t *testing.T) {
+// A stop signal while -p is starting up, held in an MCP connect, ends it
+// with 128 plus the signal's number, as a shell reports it, not by the
+// signal's default action.
+func TestPromptStoppedDuringStartupExitsBySignal(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
 			url, _ := stubModel(t, "")
@@ -352,8 +353,8 @@ func TestPromptStoppedDuringStartupExits130(t *testing.T) {
 				t.Fatalf("start-up never reached the MCP server:\n%s", out)
 			}
 			_ = helper.Process.Signal(sig)
-			if code := exitOf(t, helper); code != 130 {
-				t.Fatalf("exited %d, want 130:\n%s", code, out)
+			if code := exitOf(t, helper); code != 128+int(sig) {
+				t.Fatalf("exited %d, want %d:\n%s", code, 128+int(sig), out)
 			}
 		})
 	}

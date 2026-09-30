@@ -51,7 +51,9 @@ abhed
 ```
 
 Type a task. Abhed reads code, runs commands, edits files, and asks before
-anything it is not permitted to do unattended.
+anything it is not permitted to do unattended. A quoted task on the command
+line starts the session with it: `abhed "the tests in pkg/auth are failing"`,
+or `abhed -- the tests in pkg/auth are failing`.
 
 ```
 ⬢ the tests in pkg/auth are failing — find out why and fix it
@@ -111,16 +113,18 @@ ending the session; at the prompt it clears the line. Ctrl-D exits.
 ```bash
 abhed -p "explain what pkg/auth does" -mode plan
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
-abhed -p "add a test for Valid" -output-format json > events.jsonl
+git diff | abhed -p "review this change"
+abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
-Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
-`5` retries exhausted · `130` interrupted.
+`-p` runs one task and exits with a code a script can branch on. The output
+formats, stdin, structured answers, limits and every exit code are in
+[Automation](10-automation.md#headless).
 
-`-output-format` is `text` or `json`, one event per line; any other value is
-refused, as is an unknown `-mode`. A word after the flags must be a command (`abhed -h` lists them,
-`abhed version` prints the version): anything else exits 2 rather than
-opening a session, so pass a prompt with `-p`.
+A single word after the flags must be a command (`abhed -h` lists them,
+`abhed version` prints the version). Anything else exits 2 with a hint
+rather than opening a session: quote a task, put it after `--`, or pass it
+with `-p`.
 
 ## Next
 

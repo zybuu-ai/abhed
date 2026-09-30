@@ -21,7 +21,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	adapter model.Adapter, registry *tools.Registry, pol *policy.Engine,
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
 	appCfg config.Config, provider config.ProviderConfig, workspace string,
-	budget *agent.Budget, extHost *extension.Host) int {
+	budget *agent.Budget, extHost *extension.Host, start interactiveStart) int {
 
 	s := r.Style()
 	sandboxLabel := "none"
@@ -108,6 +108,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
 		rec.Redact = openVault().Redactor()
+		recordStart(rec, start.record)
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
@@ -280,6 +281,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		return 0, false
 	}
 
+	// A task given on the command line is the first line, as if typed.
+	firstCh := make(chan string, 1)
+	if start.first != "" {
+		firstCh <- start.first
+	}
 	prompted := false
 	for {
 		// End of piped input waits for the background work, and for the
@@ -329,6 +335,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				return code
 			}
 			continue
+		case line = <-firstCh:
+			fmt.Printf("%s%s\n", ui.Prompt(s), line)
 		case line = <-lines:
 			prompted = false
 		}
@@ -378,6 +386,13 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			return code
 		}
 	}
+}
+
+// interactiveStart is what the command line gives an interactive session:
+// a first task, and what session.started records.
+type interactiveStart struct {
+	first  string
+	record map[string]any
 }
 
 // turnOutcome is how a turn's run ended.

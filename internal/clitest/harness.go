@@ -279,15 +279,16 @@ func (h *run) startPiped() {
 		h.t.Fatal(err)
 	}
 	h.stdin = in
-	if h.o.Stdin != "" {
-		// Written before the binary starts reading, as a shell pipe would be.
-		go func() {
-			_, _ = io.WriteString(in, h.o.Stdin)
-			if !h.o.KeepStdin {
-				_ = in.Close()
-			}
-		}()
-	}
+	// Written as a shell pipe would be, then closed unless the test keeps
+	// it open to write more.
+	go func() {
+		h.wmu.Lock()
+		defer h.wmu.Unlock()
+		_, _ = io.WriteString(in, h.o.Stdin)
+		if !h.o.KeepStdin {
+			_ = in.Close()
+		}
+	}()
 	h.readers.Add(2)
 	go h.read(outR, &h.stdout)
 	go h.read(errR, &h.stderr)

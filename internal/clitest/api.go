@@ -56,7 +56,7 @@ type Opts struct {
 	// Piped runs with stdin and stdout as pipes instead of a terminal.
 	Piped bool
 	// Stdin, with Piped, is written to the binary's stdin, which is then
-	// closed unless KeepStdin is set.
+	// closed unless KeepStdin is set; Type then writes more.
 	Stdin     string
 	KeepStdin bool
 
