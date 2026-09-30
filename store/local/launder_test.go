@@ -321,3 +321,36 @@ func TestUnverifiedMarkIsRequired(t *testing.T) {
 		t.Fatalf("the export with its mark stripped verifies: %+v", er)
 	}
 }
+
+// A crash between a record's first line and its first head leaves one line
+// and no head: that is noted, not failed, for a session and for the index,
+// and writing goes on. Two lines and no head still fail.
+func TestFirstLineWithoutAHeadIsACrash(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one")
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	_ = os.Remove(s2.headPath("s-1"))
+	if rep, _ := s2.Verify("s-1"); !rep.OK || len(rep.Notes) == 0 {
+		t.Fatalf("one line, no head: %+v", rep)
+	}
+	if err := s2.Acquire("s-1"); err != nil {
+		t.Fatalf("one line, no head, refused: %v", err)
+	}
+	_ = s2.Release("s-1")
+
+	d2 := t.TempDir()
+	s3 := openTest(t, d2)
+	if err := s3.CreateSession(t.Context(), store.SessionRecord{ID: "s-a"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(s3.index.headPath())
+	s4 := openTest(t, d2)
+	if err := s4.CreateSession(t.Context(), store.SessionRecord{ID: "s-b"}); err != nil {
+		t.Fatalf("an index of one line and no head: %v", err)
+	}
+	if rep, _ := s4.VerifyIndex(); !rep.OK {
+		t.Fatalf("index after: %+v", rep)
+	}
+}

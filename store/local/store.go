@@ -366,7 +366,7 @@ func (s *Store) load(id string, lk *os.File, create, unlisted bool) (*session, e
 		rep.Reason = "the last line the head counts is cut short"
 	}
 	if len(sc.raws) > 0 || have {
-		checkHead(&rep, lines, head, have)
+		checkHeadOrFirstLine(&rep, lines, head, have, !exists(s.headPath(id)))
 	}
 	if !rep.OK {
 		return fail(&UnverifiedError{Report: rep})

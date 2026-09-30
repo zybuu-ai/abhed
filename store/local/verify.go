@@ -113,6 +113,22 @@ func checkHead(rep *Report, lines []line, head Head, have bool) {
 	}
 }
 
+// checkHeadOrFirstLine is checkHead, but a record of exactly one line and
+// no head file at all is the crash between its first line and first head.
+func checkHeadOrFirstLine(rep *Report, lines []line, head Head, have, absent bool) {
+	if absent && len(lines) == 1 && rep.OK {
+		rep.Notes = append(rep.Notes, "no head yet: a crash came between the first line and its head")
+		return
+	}
+	checkHead(rep, lines, head, have)
+}
+
+// exists reports whether anything is at path, a link included.
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 // exportTrailer is the last line of an exported session: the head, so a copy
 // can be checked away from the machine that wrote it.
 type exportTrailer struct {
@@ -212,7 +228,7 @@ func (s *Store) Verify(id string) (Report, error) {
 		rep.Notes = append(rep.Notes, fmt.Sprintf("an unfinished last line of %d bytes, which a crash leaves; it is cut off when the session is next opened", len(sc.tail)))
 	}
 	head, have := s.readHead(id)
-	checkHead(&rep, lines, head, have)
+	checkHeadOrFirstLine(&rep, lines, head, have, !exists(s.headPath(id)))
 	if rep.OK {
 		s.checkIndexHeads(&rep, id, lines)
 	}
@@ -287,8 +303,10 @@ func (s *Store) VerifyIndex() (Report, error) {
 	}
 	head, have := readHeadFile(s.index.headPath())
 	switch {
+	case !have && rep.Events == 1 && !exists(s.index.headPath()):
+		rep.Notes = append(rep.Notes, "no head yet: a crash came between the first line and its head")
 	case !have && rep.Events > 0:
-		rep.OK, rep.Reason = false, "the index head file is missing"
+		rep.OK, rep.Reason = false, "the index head file is missing or malformed"
 	case have && head.Lines > rep.Events:
 		rep.OK, rep.FirstBad = false, rep.Events+1
 		rep.Reason = fmt.Sprintf("index lines are missing: its head says it reached line %d", head.Lines)

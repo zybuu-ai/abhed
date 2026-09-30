@@ -237,8 +237,10 @@ func (x *index) check(f *os.File) (int64, string, int64, error) {
 	n := int64(len(x.hashes))
 	head, have := readHeadFile(x.headPath())
 	switch {
-	case !have && n > 0:
-		return damaged(n, "the index head is missing")
+	case !have && (n > 1 || exists(x.headPath())):
+		// One line and no head file is the crash between the first line and
+		// its head, which this append's head settles.
+		return damaged(n, "the index head is missing or malformed")
 	case have && head.Lines > n:
 		return damaged(n+1, fmt.Sprintf("lines are missing: its head says it held %d, it holds %d", head.Lines, n))
 	case have && head.Lines > 0 && x.hashes[head.Lines-1] != head.Hash:
