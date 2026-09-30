@@ -53,7 +53,7 @@ func (b *inputBuf) reset() {
 
 // set replaces the line and puts the cursor at its end.
 func (b *inputBuf) set(s string) {
-	b.line = []rune(s)
+	b.line = []rune(cleanPaste(s)) // a history file on disk is not trusted text
 	b.pos = len(b.line)
 }
 

@@ -508,3 +508,43 @@ func TestAltBracketDoesNotSwallowTyping(t *testing.T) {
 		}
 	}
 }
+
+// A file name from @ completion goes on the line as typed text would: no
+// escape, no control, no paste character.
+func TestMentionCompletionIsFiltered(t *testing.T) {
+	g := newRig(t, 80, 24)
+	g.lr.SetFiles(func() []string { return []string{"evil\U0010FF00\x1b]0;T\x07name‮.go"} })
+	g.typed("@evil")
+	g.settle()
+	g.keys("\t")
+	g.settle()
+	g.out.mu.Lock()
+	wire := g.out.log.String()
+	g.out.mu.Unlock()
+	assertClean(t, "a completed file name", wire)
+	g.keys("\r")
+	got, _ := g.line()
+	if strings.ContainsAny(got, "\x1b\x07‮\U0010FF00") || !strings.Contains(got, "@evil") {
+		t.Fatalf("the line was %q", got)
+	}
+}
+
+// Up then Down brings back a line with a collapsed paste as it was, not its
+// label as text.
+func TestHistoryKeepsACollapsedPaste(t *testing.T) {
+	g := newRig(t, 80, 24)
+	h := &History{}
+	h.Add("an older prompt", false)
+	g.lr.SetHistory(h)
+	body := "p1\np2\np3\np4\np5"
+	g.keys("see \x1b[200~" + body + "\x1b[201~")
+	g.waitText("[Pasted text #1 +5 lines]")
+	g.keys("\x1b[A")
+	g.waitText("an older prompt")
+	g.keys("\x1b[B")
+	g.waitText("[Pasted text #1 +5 lines]")
+	g.keys("\r")
+	if got, _ := g.line(); got != "see "+body {
+		t.Fatalf("sent %q", got)
+	}
+}

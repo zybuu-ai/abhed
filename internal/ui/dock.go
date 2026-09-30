@@ -31,11 +31,14 @@ type dock struct {
 	now           func() time.Time
 	after         func(time.Duration, func())
 
-	buf    inputBuf
-	hist   *History
-	hpos   int
-	saved  string
-	prompt string
+	buf  inputBuf
+	hist *History
+	hpos int
+	// saved is the line being written when Up first left it, pastes and
+	// all, for Down to bring back as it was.
+	saved       snapshot
+	savedPastes []string
+	prompt      string
 
 	menu     []menuItem
 	menuSel  int
@@ -630,7 +633,8 @@ func (d *dock) historyPrev() {
 		return
 	}
 	if d.hpos == len(h) {
-		d.saved = d.buf.String()
+		d.saved = snapshot{append([]rune(nil), d.buf.line...), d.buf.pos}
+		d.savedPastes = d.buf.pastes
 	}
 	d.hpos--
 	d.buf.set(h[d.hpos])
@@ -645,7 +649,7 @@ func (d *dock) historyNext() {
 	}
 	d.hpos++
 	if d.hpos == len(h) {
-		d.buf.set(d.saved)
+		d.buf.line, d.buf.pos, d.buf.pastes = d.saved.line, len(d.saved.line), d.savedPastes
 	} else {
 		d.buf.set(h[d.hpos])
 	}
@@ -807,7 +811,9 @@ func (d *dock) acceptSuggestion() {
 	d.closeMenu()
 	if kind == menuFile {
 		_, start := d.mentionToken()
-		ins := "@" + it.insert
+		// A file's name is the workspace's, and may hold anything: it goes
+		// on the line as typed text would.
+		ins := "@" + strings.ReplaceAll(cleanPaste(it.insert), "\n", " ")
 		if !it.dir {
 			ins += " "
 		}
