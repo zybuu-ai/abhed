@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -225,4 +228,150 @@ func mutatesTool(e *cmdEnv, tool string, args json.RawMessage) bool {
 		return false
 	}
 	return true
+}
+
+func init() {
+	registerSlash(slashCmd{Name: "/add-dir", Args: "<dir>", Help: "let this session reach another directory, read-only or read-write",
+		Group: "mode", Order: 30, Run: slashAddDir})
+}
+
+// Access an added directory is given, as workspace.dir_added records it.
+const (
+	accessRead      = "read"
+	accessReadWrite = "read-write"
+)
+
+// credentialDirs are folders under the home directory that hold keys and
+// tokens; no session is given one.
+var credentialDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", filepath.Join(".config", "gcloud")}
+
+// slashAddDir is /add-dir. It is bound by the managed configuration as the
+// -add-dir flag is, shows the directory with its links resolved, and asks
+// whether the agent may only read there or also change files. Read-only is
+// held by deny rules on edit and write that /clear keeps; either way the
+// directory is recorded as workspace.dir_added.
+func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
+	if len(args) == 0 {
+		return false, errors.New("usage: /add-dir <dir>")
+	}
+	typed := strings.Join(args, " ")
+	applied, err := e.st.appCfg.Apply(config.Overrides{AdditionalDirs: []string{typed}})
+	if err != nil {
+		return false, err
+	}
+	canonical, err := canonicalDir(typed)
+	if err != nil {
+		return false, err
+	}
+	if err := refusedDir(e.st.appCfg, e.st.workspace, canonical); err != nil {
+		return false, err
+	}
+	for _, root := range e.sess.PolicyRoots() {
+		if within(canonical, tools.RealPath(root)) {
+			return false, fmt.Errorf("%s is already reachable, inside %s", canonical, root)
+		}
+	}
+	if e.pol.Session == nil {
+		return false, errors.New("this session keeps no rules of its own, so a directory cannot be added read-only")
+	}
+	body := "resolves to " + canonical
+	if canonical == typed {
+		body = canonical
+	}
+	answer, err := e.ui.Dialog(ctx, ui.DialogSpec{
+		Kind:  ui.DialogChoice,
+		Title: "Let this session reach " + canonical + "?",
+		Body: []ui.Block{{Kind: ui.BlockNotice, Text: body + "\nRead-only keeps edit and write out of it; " +
+			"commands run by bash are asked about as they are anywhere."}},
+		Choices: []ui.Choice{
+			{ID: accessRead, Label: "Yes, read only", Key: 'r'},
+			{ID: accessReadWrite, Label: "Yes, read and write", Key: 'w', Widening: true},
+			{ID: ui.ChoiceNo, Label: "No", Key: 'n'},
+		},
+		Default: ui.ChoiceNo,
+		Why:     "asked by /add-dir",
+	})
+	if err != nil || (answer != accessRead && answer != accessReadWrite) {
+		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "not added"})
+		return false, nil
+	}
+	if answer == accessRead {
+		// The rules go in before the directory, so there is no moment it is writable.
+		glob := filepath.ToSlash(canonical) + "/**"
+		if err := e.pol.Session.Pin("read-only "+canonical, "write("+glob+")", "edit("+glob+")"); err != nil {
+			return false, err
+		}
+	}
+	if err := e.sess.AddRoot(canonical); err != nil {
+		return false, err
+	}
+	e.st.appCfg = applied
+	e.st.recordCLI(agent.EvWorkspaceDirAdded, agent.WorkspaceDirAdded{
+		Path: typed, Canonical: canonical, Access: answer, By: agent.ByUser,
+	})
+	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("added %s (%s) for this session", canonical, answer)})
+	return false, nil
+}
+
+// canonicalDir is dir absolute, with ~ expanded and links resolved.
+func canonicalDir(dir string) (string, error) {
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", dir, err)
+	}
+	info, err := os.Stat(real)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", dir)
+	}
+	return real, nil
+}
+
+// refusedDir says why a directory may not be added: it is Abhed's state or
+// the record, it holds credentials, it holds the home directory, or a state
+// file the configuration names is inside it.
+func refusedDir(cfg config.Config, workspace, dir string) error {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		home = tools.RealPath(home)
+		if within(home, dir) {
+			return fmt.Errorf("refusing %s: it holds your home directory, and with it your keys and Abhed's own state", dir)
+		}
+		for _, d := range append([]string{tools.StateDir}, credentialDirs...) {
+			if p := tools.RealPath(filepath.Join(home, d)); within(dir, p) {
+				return fmt.Errorf("refusing %s: it is inside %s, which holds credentials or Abhed's own state", dir, p)
+			}
+		}
+	}
+	if within(dir, tools.RealPath(filepath.Join(workspace, tools.StateDir))) {
+		return fmt.Errorf("refusing %s: it is inside the workspace's %s, Abhed's own state", dir, tools.StateDir)
+	}
+	if cfg.Record.Dir != "" && within(dir, tools.RealPath(cfg.Record.Dir)) {
+		return fmt.Errorf("refusing %s: it is inside the record directory", dir)
+	}
+	for _, p := range sandboxconfig.StatePaths(cfg, workspace) {
+		if within(tools.RealPath(p), dir) {
+			return fmt.Errorf("refusing %s: Abhed's state file %s is inside it", dir, p)
+		}
+	}
+	return nil
+}
+
+// within reports whether path is dir or inside it; both are absolute and clean.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && filepath.IsLocal(rel) || rel == "."
 }
