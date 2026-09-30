@@ -54,3 +54,25 @@ func TestOutputStyle(t *testing.T) {
 		t.Fatalf("%d choices recorded", n)
 	}
 }
+
+// Memory that happens to contain the style heading loses nothing when a
+// style is chosen or changed: managed memory, last in the prompt, survives.
+func TestOutputStyleKeepsAPromptThatContainsItsHeading(t *testing.T) {
+	st, _, _ := customRig(t)
+	home, _ := os.UserHomeDir()
+	write(t, filepath.Join(home, ".abhed", "styles", "terse.md"), "ANSWER-TERSELY")
+	write(t, filepath.Join(home, ".abhed", "styles", "long.md"), "ANSWER-AT-LENGTH")
+	st.loop.Config.SystemPrompt = "BASE\n\n## Output style (terse)\nfrom ABHED.md\n\n## Managed memory\nMANAGED-KEEP"
+	typeLine(t, st, "/output-style terse")
+	typeLine(t, st, "/output-style long")
+	typeLine(t, st, "/output-style off")
+	if p := st.loop.Config.SystemPrompt; p != "BASE\n\n## Output style (terse)\nfrom ABHED.md\n\n## Managed memory\nMANAGED-KEEP" {
+		t.Fatalf("prompt changed: %q", p)
+	}
+	if err := ensureConversation(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.loop.Config.SystemPrompt, "MANAGED-KEEP") {
+		t.Fatal("applying no style cut the prompt")
+	}
+}

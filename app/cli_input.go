@@ -59,6 +59,9 @@ type inputState struct {
 	turn *commandTurn
 	// style is the output style the person chose, nil for none.
 	style *outputStyle
+	// styleSuffix is what applyStyle last added to styleLoop's prompt.
+	styleLoop   *agent.Loop
+	styleSuffix string
 }
 
 // commandTurn is a message a slash command sends as the person's next turn,

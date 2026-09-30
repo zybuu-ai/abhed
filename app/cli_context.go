@@ -661,19 +661,27 @@ func loadStyles() []outputStyle {
 }
 
 // applyStyle puts the session's style into the conversation's prompt, in
-// place of any earlier one. It runs between turns.
+// place of the one it added before. The prompt is never searched for a
+// marker: what was added is remembered, and only that exact tail is removed.
 func applyStyle(st *cliState) {
-	if st.loop == nil {
+	loop := st.loop
+	if loop == nil {
 		return
 	}
-	p := st.loop.Config.SystemPrompt
-	if i := strings.Index(p, styleMark); i >= 0 {
-		p = p[:i]
+	in := &st.input
+	if in.styleLoop != loop {
+		in.styleLoop, in.styleSuffix = loop, ""
 	}
-	if s := st.input.style; s != nil {
-		p += styleMark + s.name + ", chosen by the person)\n" + s.body + "\n"
+	base := loop.Config.SystemPrompt
+	if in.styleSuffix != "" && strings.HasSuffix(base, in.styleSuffix) {
+		base = strings.TrimSuffix(base, in.styleSuffix)
 	}
-	st.loop.Config.SystemPrompt = p
+	suffix := ""
+	if s := in.style; s != nil {
+		suffix = styleMark + s.name + ", chosen by the person)\n" + s.body + "\n"
+	}
+	loop.Config.SystemPrompt = base + suffix
+	in.styleSuffix = suffix
 }
 
 // slashOutputStyle is /output-style [name|off].
