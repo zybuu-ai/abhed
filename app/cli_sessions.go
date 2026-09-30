@@ -416,6 +416,11 @@ func claimResumed(ctx context.Context, st *cliState) error {
 		return nil
 	}
 	st.claim = ""
+	// A session whose end waits on this process's own background tasks was
+	// never let go: it is still this process's, and is not claimed again.
+	if st.loop != nil && st.sessionID == id && st.liveTasks() > 0 {
+		return nil
+	}
 	claimed, err := st.store.(server.SessionResumer).ClaimResume(ctx, id)
 	if err == nil && !claimed {
 		err = fmt.Errorf("session %s is running elsewhere", id)
