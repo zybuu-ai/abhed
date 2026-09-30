@@ -466,22 +466,31 @@ All notable changes to Abhed are recorded here. The format follows
   - `# note` saves a note to `ABHED.md`, `ABHED.local.md` or
     `~/.abhed/ABHED.md`, chosen each time, redacted and recorded as
     `memory.written`.
+  - Attached files and command output reach the model in blocks whose tag
+    carries a random suffix, labelled as data the person attached, not
+    instructions.
+  - A line that starts with `!` or `#` is no longer sent to the model as a
+    message, in piped input too: a script that sent such lines as text should
+    indent them or put them after other text.
 - Memory: `ABHED.md` files load in the order user, project (`AGENTS.md`
   where a directory has no `ABHED.md`, labelled so), local, rules, auto and
   managed last. `@path` imports follow `memory.import_depth` (default 5, at
   most 10) and stay in the workspace. `rules.dirs` names rule files, which a
   `paths` header scopes. Each conversation records `memory.loaded` with every
-  file's hash. `/memory` lists, shows and adds; `/import <path>` appends a
+  file's hash. Surfaces with no read rules to ask (the server, the SDK, eval)
+  follow no import. `/memory` lists, shows and adds; `/import <path>` appends a
   file the person names to `ABHED.md` after showing it. No other tool's files
   are read otherwise.
 - Auto memory, off unless the person turns it on (`/memory auto on` or
   `memory.auto`; a managed value binds, a workspace may only turn it off).
-  The agent's `memory_write` saves are asked as changes, redacted, shown,
-  recorded as `memory.written` by the agent, and loaded later as the agent's
+  The agent's `memory_write` saves are judged as changes (they ask unless
+  a rule or the mode allows them), redacted, shown, recorded as
+  `memory.written` by the agent, and loaded later, fenced, as the agent's
   notes.
 - Custom slash commands from `/etc/abhed/commands`, `~/.abhed/commands` and
-  `commands.dirs`, and from a workspace's `.abhed/commands` once the person
-  trusts exactly that content (`/commands trust`). `$ARGUMENTS`, `$1`..`$9`,
+  `commands.dirs`, and from a workspace's `.abhed/commands`, or any
+  commands directory inside the workspace, once the person trusts exactly
+  that content (`/commands trust`). `$ARGUMENTS`, `$1`..`$9`,
   `@` files and inline shell lines (each asks) in the body;
   `allowed-tools` narrows the turn's tools and `model` picks a configured
   provider. Built-in names always win. Recorded as `command.invoked`.

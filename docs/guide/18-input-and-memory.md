@@ -26,7 +26,10 @@ with the rule shown, and secrets are redacted. If a mention names a file
 that may not be read, the message is not sent, and you are told why. A
 mention of something that does not exist, such as `@alice`, stays as text.
 
-A file is attached up to 256 KB, and the rest is noted. Each attachment is
+The attached text reaches the model inside a block whose tag carries a
+random suffix, labelled as data you attached, not instructions, so a file
+cannot close the block and go on as if you had written it. A file is
+attached up to 256 KB, and the rest is noted. Each attachment is
 recorded as `input.mention` with the SHA-256 of what was attached.
 
 ## Running a command with !
@@ -65,7 +68,9 @@ as `memory.written`. `/memory add <project|local|user> <note>` does the same
 without the question.
 
 A `!` or `#` line typed while the agent is working waits until the turn
-ends, as a slash command does.
+ends, as a slash command does. This holds for piped input too: a script
+that sends a line starting with `!` or `#` runs it as a command or a note,
+not as a message.
 
 ## Memory
 
@@ -98,11 +103,16 @@ A memory file can pull in another with `@path` on its own or after a space:
 See @docs/conventions.md for style.
 ```
 
-The path is relative to the file that names it. Imports are followed
+The path is relative to the file that names it. Imports are followed only
+where there are read rules to put them to: the interactive CLI and its
+subagents. The server, the SDK and eval read the memory files but follow no
+import. Imports are followed
 `memory.import_depth` levels deep (5 by default, 10 at most), and a file
 already loaded is not loaded again, so a cycle ends. An import from a
 workspace file must stay in the workspace; one from your own or the
-organisation's file may also reach `~/.abhed` or `/etc/abhed`. Text inside a
+organisation's file may also reach `/etc/abhed`. Abhed's own state
+(`.abhed`, `~/.abhed`, its users, secrets and configuration files) is never
+imported. Text inside a
 code fence is not an import, and neither is `@alice`.
 
 ### Rules
@@ -153,13 +163,14 @@ the agent has a `memory_write` tool that saves a `user`, `feedback`,
 `project` or `reference` note to `~/.abhed/projects/<id>/memory/MEMORY.md`.
 Text the agent reads could try to make it save something, so:
 
-- a save is a change, judged and asked as one (allow `memory_write` to stop
-  the question);
+- a save is a change, judged by the policy as one: it asks unless a rule,
+  the mode or an "always" answer allows it;
 - its text is redacted;
 - it is shown as it happens, and recorded as `memory.written` by the agent,
   marked untrusted;
-- later sessions load the notes (the first 200 lines or 25 KB) labelled as
-  the agent's notes, not your instructions.
+- later sessions load the notes (the first 200 lines or 25 KB) in a fenced
+  block labelled as the agent's notes, not your instructions; no line in a
+  note can start a heading.
 
 `MEMORY.md` is yours to edit or delete.
 
@@ -206,13 +217,15 @@ name, source, the file's SHA-256 and your arguments, redacted.
 |---|---|---|
 | Managed | `/etc/abhed/commands` | always; its names cannot be taken |
 | User | `~/.abhed/commands`, and `commands.dirs` | always |
-| Workspace | `.abhed/commands` | only once you trust exactly this content |
+| Workspace | `.abhed/commands`, and any `commands.dirs` entry inside the workspace | only once you trust exactly this content |
 
 A command that came with a repository is instructions to the agent. So the
 workspace's commands are listed but do not run until you trust them:
 `/commands trust` shows each file and its hash and asks. The decision is
 kept in `~/.abhed/command-trust.json` for exactly that content; a change to
-any file needs trust again. Starting with `--trust`, or with the workspace
+any file needs trust again, and leaving the question unanswered decides
+nothing. Only one command's turn waits at a time: a second command typed
+while one waits is refused, and runs when typed again. Starting with `--trust`, or with the workspace
 trust variable set, trusts them for that run; a workspace started untrusted
 never runs them.
 

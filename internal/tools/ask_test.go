@@ -63,6 +63,7 @@ func TestAskValidates(t *testing.T) {
 		askArgs("Which?", "A", "a"),
 		askArgs("Which?", "A", " "),
 		askArgs(strings.Repeat("q", 501), "A", "B"),
+		json.RawMessage(`{"question":"Which?","options":[{"label":"A","description":"` + strings.Repeat("d", 301) + `"},{"label":"B"}]}`),
 	} {
 		if r := a.Run(context.Background(), nil, bad); !r.IsError {
 			t.Errorf("accepted %s", bad)

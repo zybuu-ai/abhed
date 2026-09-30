@@ -1,8 +1,10 @@
 package app
 
 // Terminal end-to-end scenarios for the input track, on the pty harness.
-// Until track E's harness lands, clitest.Start skips each of them; the same
-// behaviour is covered over a pipe by the TestCLI* tests beside them.
+// Until track E's harness lands, clitest.Start skips each of them. Meanwhile
+// the mention symlink case runs over a pipe (TestCLIMentionReachesModelThroughPolicy),
+// and the untrusted workspace command and ! under a deny rule run in process
+// (TestWorkspaceCommandNeedsTrust, TestBangUnderDenyRuleRefusedAndRecorded).
 
 import (
 	"os"

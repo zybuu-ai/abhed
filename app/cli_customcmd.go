@@ -366,7 +366,12 @@ func trustCommands(ctx context.Context, st *cliState, sf ui.Surface) error {
 				"/commands show <name> prints one. The trust covers exactly this content (sha256 " + shortSum(cs.wsSum) + ")."}},
 		Why: "workspace commands · " + cs.wsReason,
 	})
-	trusted := err == nil && choice == ui.ChoiceYes
+	if err != nil {
+		// No answer decides nothing: it is asked again next time.
+		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "not trusted: no answer"})
+		return nil
+	}
+	trusted := choice == ui.ChoiceYes
 	store, serr := commandTrustStore()
 	if serr != nil {
 		return serr

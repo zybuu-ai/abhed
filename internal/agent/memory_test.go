@@ -301,3 +301,18 @@ func TestAutoMemoryCutOnARune(t *testing.T) {
 		t.Fatal("auto memory was cut inside a character")
 	}
 }
+
+// No import reads Abhed's state, from the person's file or the organisation's.
+func TestMemoryImportsNeverReachState(t *testing.T) {
+	ws, home := memoryWorld(t)
+	put(t, filepath.Join(home, ".abhed", "users.json"), "USERS-CANARY")
+	put(t, filepath.Join(home, ".abhed", "notes.md"), "NOTES-CANARY")
+	put(t, filepath.Join(ManagedMemoryDir, "config.json"), "CONFIG-CANARY")
+	put(t, filepath.Join(ManagedMemoryDir, "org.md"), "ORG-OK")
+	put(t, filepath.Join(home, ".abhed", "ABHED.md"), "@users.json @notes.md")
+	put(t, filepath.Join(ManagedMemoryDir, "ABHED.md"), "@config.json @org.md")
+	p := LoadMemory(MemoryOptions{Workspace: ws, Home: home}).Render()
+	if strings.Contains(p, "CANARY") || !strings.Contains(p, "ORG-OK") {
+		t.Fatalf("prompt:\n%s", p)
+	}
+}

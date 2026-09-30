@@ -103,3 +103,17 @@ func TestNoteIsRedacted(t *testing.T) {
 		t.Fatalf("written: %q", data)
 	}
 }
+
+// A note keeps ABHED.md's mode: a shared file stays readable.
+func TestNoteKeepsTheFileMode(t *testing.T) {
+	st, _, _ := noteRig(t, "project")
+	p := filepath.Join(st.sess.Root, "ABHED.md")
+	write(t, p, "x\n")
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addNote(context.Background(), st, nil, "y")
+	if info, err := os.Stat(p); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode %v %v", info.Mode(), err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -290,6 +291,8 @@ func (l *memoryLoader) imports(from, scope, content string, depth int) {
 		p := l.importPath(from, target)
 		e := MemoryEntry{Path: p, Scope: MemoryImport, Label: target, From: from}
 		switch {
+		case isStateImport(p, l.o.Workspace, l.o.Home):
+			e.Skipped = "Abhed's own state is never imported"
 		case depth > l.depth():
 			e.Skipped = fmt.Sprintf("imports stop %d levels deep (memory.import_depth)", l.depth())
 		case !l.importAllowed(from, scope, p):
@@ -306,6 +309,15 @@ func (l *memoryLoader) imports(from, scope, content string, depth int) {
 		}
 		l.file(p, MemoryImport, target, from, depth)
 	}
+}
+
+// isStateImport reports whether an import names Abhed's state: anything in
+// a .abhed directory, a registered state path, or a known state file.
+func isStateImport(p, workspace, home string) bool {
+	if tools.IsState(p, workspace, home) {
+		return true
+	}
+	return slices.Contains(tools.KnownStateFiles(), filepath.Base(p))
 }
 
 // importsOf lists the imports content names, outside code fences.
@@ -344,8 +356,9 @@ func (l *memoryLoader) importAllowed(from, _ string, p string) bool {
 	if inWorkspace(l.o.Workspace, from) {
 		return false
 	}
-	// An operator's file may import from the operator's own directories.
-	for _, root := range []string{filepath.Join(l.o.Home, ".abhed"), ManagedMemoryDir} {
+	// An operator's file may import from the organisation's directory; the
+	// person's ~/.abhed is Abhed's state and never imported.
+	for _, root := range []string{ManagedMemoryDir} {
 		if rel, err := filepath.Rel(root, p); err == nil && filepath.IsLocal(rel) {
 			return true
 		}

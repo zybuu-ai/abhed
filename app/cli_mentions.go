@@ -285,8 +285,9 @@ type mentionIndex struct {
 
 var mentionFiles mentionIndex
 
-// mentionCandidates lists up to limit completions for "@"+prefix, best first.
-func mentionCandidates(ctx context.Context, sess *tools.Session, prefix string, limit int) []string {
+// mentionCandidates lists up to limit completions for "@"+prefix, best
+// first, leaving out what the session's read rules deny when pol is given.
+func mentionCandidates(ctx context.Context, sess *tools.Session, pol *policy.Engine, prefix string, limit int) []string {
 	if sess == nil || limit <= 0 {
 		return nil
 	}
@@ -315,6 +316,15 @@ func mentionCandidates(ctx context.Context, sess *tools.Session, prefix string, 
 		abs := filepath.Join(sess.Root, filepath.FromSlash(strings.TrimSuffix(h.path, "/")))
 		if _, err := sess.Resolve(abs); err != nil {
 			continue
+		}
+		if pol != nil {
+			subject := abs
+			if strings.HasSuffix(h.path, "/") {
+				subject += string(filepath.Separator) // a folder: what is inside it
+			}
+			if pol.Evaluate("read", false, argsJSON(map[string]string{"path": subject})).Decision == policy.Deny {
+				continue
+			}
 		}
 		out = append(out, h.path)
 	}

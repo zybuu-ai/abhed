@@ -227,7 +227,7 @@ func saveNote(ctx context.Context, st *cliState, sf ui.Surface, target, note str
 		if target == noteLocal {
 			name = "ABHED.local.md"
 		}
-		shown, err = appendWorkspaceNote(loop, st.sess, filepath.Join(st.sess.Root, name), note)
+		shown, err = appendWorkspaceNote(ctx, loop, st.sess, filepath.Join(st.sess.Root, name), note)
 	case noteUser:
 		shown, err = appendUserNote(note)
 	default:
@@ -247,13 +247,13 @@ func saveNote(ctx context.Context, st *cliState, sf ui.Surface, target, note str
 
 // appendWorkspaceNote appends a note to a memory file in the workspace as
 // the person's write, and returns its path relative to the workspace.
-func appendWorkspaceNote(loop *agent.Loop, sess *tools.Session, abs, note string) (string, error) {
-	return changeWorkspaceMemory(loop, sess, abs, func(before []byte) []byte { return appendItem(before, note) })
+func appendWorkspaceNote(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs, note string) (string, error) {
+	return changeWorkspaceMemory(ctx, loop, sess, abs, func(before []byte) []byte { return appendItem(before, note) })
 }
 
 // changeWorkspaceMemory rewrites a memory file in the workspace as the
 // person's write, and returns its path relative to the workspace.
-func changeWorkspaceMemory(loop *agent.Loop, sess *tools.Session, abs string, change func([]byte) []byte) (string, error) {
+func changeWorkspaceMemory(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, change func([]byte) []byte) (string, error) {
 	// The confined read refuses a link out of the workspace or into state.
 	existed := true
 	before, err := sess.ReadFile(abs)
@@ -263,30 +263,27 @@ func changeWorkspaceMemory(loop *agent.Loop, sess *tools.Session, abs string, ch
 	if err != nil {
 		return "", err
 	}
-	after := change(before)
 	id := personCallID("note")
-	args := argsJSON(map[string]string{"path": abs, "content": string(after)})
-	_, refused, err := loop.ManualAuthorize("write", id, args)
+	args := argsJSON(map[string]string{"path": abs, "content": string(change(before))})
+	tool, refused, err := loop.ManualAuthorize("write", id, args)
 	if err != nil {
 		return "", err
 	}
 	if refused != nil {
 		return "", errors.New(strings.TrimSpace(refused.Content))
 	}
-	if sess.Checkpoint != nil {
-		sess.Checkpoint(abs, before, existed)
+	// The write tool keeps the file's mode, checkpoints it for /undo, and
+	// refuses content that changed since it was read here.
+	if existed {
+		sess.MarkRead(abs, string(before))
 	}
 	start := time.Now()
-	werr := sess.RestoreFile(abs, after)
-	res := tools.Result{Content: "changed " + sess.Rel(abs)}
-	if werr != nil {
-		res = tools.Result{Content: werr.Error(), IsError: true}
-	}
+	res := tool.Run(ctx, sess, args)
 	if err := loop.ManualObserve(id, "write", res, time.Since(start)); err != nil {
 		return "", err
 	}
-	if werr != nil {
-		return "", werr
+	if res.IsError {
+		return "", errors.New(strings.TrimSpace(res.Content))
 	}
 	return filepath.ToSlash(sess.Rel(abs)), nil
 }
@@ -531,7 +528,7 @@ var autoMemoryQuestion = ui.DialogSpec{
 	Kind:  ui.DialogConfirm,
 	Title: "Let the agent keep notes between sessions (auto memory)?",
 	Body: []ui.Block{{Kind: ui.BlockNotice, Text: "When on, the agent may save short notes for this workspace in ~/.abhed/projects. " +
-		"Every save asks as a change, is shown and recorded, and secrets are redacted. " +
+		"A save is a change, so it asks unless your rules or mode allow it; every save is shown and recorded, and secrets are redacted. " +
 		"Text the agent reads could try to make it save something, so it is off unless you turn it on. " +
 		"/memory auto on|off changes it later."}},
 	Default: ui.ChoiceNo,
@@ -790,7 +787,7 @@ func slashImport(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		return false, nil
 	}
 	section := "\n## Imported from " + filepath.Base(p) + "\n\n" + text + "\n"
-	rel, err := changeWorkspaceMemory(st.loop, st.sess, filepath.Join(st.sess.Root, agent.MemoryFileName), func(before []byte) []byte {
+	rel, err := changeWorkspaceMemory(ctx, st.loop, st.sess, filepath.Join(st.sess.Root, agent.MemoryFileName), func(before []byte) []byte {
 		out := append([]byte(nil), before...)
 		if len(out) > 0 && !strings.HasSuffix(string(out), "\n") {
 			out = append(out, '\n')

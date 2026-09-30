@@ -221,14 +221,24 @@ func TestMentionCandidates(t *testing.T) {
 	write(t, filepath.Join(outside, "leak.go"), "x")
 	_ = os.Symlink(filepath.Join(outside, "leak.go"), filepath.Join(ws, "leak.go"))
 	mentionFiles = mentionIndex{} // no index from another test
-	got := mentionCandidates(context.Background(), sess, "loop", 10)
+	got := mentionCandidates(context.Background(), sess, nil, "loop", 10)
 	if len(got) == 0 || got[0] != "internal/agent/loop.go" {
 		t.Fatalf("fuzzy match: %v", got)
 	}
-	if dirs := mentionCandidates(context.Background(), sess, "intag", 10); len(dirs) == 0 {
+	if dirs := mentionCandidates(context.Background(), sess, nil, "intag", 10); len(dirs) == 0 {
 		t.Fatal("no subsequence match")
 	}
-	for _, c := range mentionCandidates(context.Background(), sess, "", 100) {
+	write(t, filepath.Join(ws, "secret", "key.txt"), "x")
+	pol := policy.New(policy.ModeDefault)
+	pol.Roots = sess.PolicyRoots
+	if err := pol.AddDeny("read(secret/**)"); err != nil {
+		t.Fatal(err)
+	}
+	mentionFiles = mentionIndex{}
+	for _, c := range mentionCandidates(context.Background(), sess, pol, "", 100) {
+		if strings.HasPrefix(c, "secret/") {
+			t.Fatalf("offered %s, which a read rule denies", c)
+		}
 		if strings.Contains(c, ".abhed") || c == "leak.go" {
 			t.Fatalf("offered %s, which a read could not reach", c)
 		}

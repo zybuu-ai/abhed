@@ -259,3 +259,17 @@ func TestCustomCommandOutputIsNotReadAsAMention(t *testing.T) {
 		t.Fatalf("%d mentions", n)
 	}
 }
+
+// An unanswered trust question decides nothing, so it is asked again.
+func TestUnansweredCommandTrustIsNotStored(t *testing.T) {
+	st, _, _ := customRig(t, "")
+	write(t, filepath.Join(st.sess.Root, ".abhed", "commands", "deploy.md"), "DEPLOY")
+	typeLine(t, st, "/commands trust")
+	store, err := commandTrustStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, why := store.Decide(st.sess.Root, st.input.custom.wsSum); why != "new" {
+		t.Fatalf("an unanswered question was stored as %s", why)
+	}
+}

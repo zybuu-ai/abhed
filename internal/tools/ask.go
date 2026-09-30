@@ -45,6 +45,7 @@ const (
 	askMaxOptions  = 6
 	askMaxQuestion = 500
 	askMaxLabel    = 120
+	askMaxDesc     = 300
 )
 
 // NewAsk is an ask tool with no one to ask yet.
@@ -98,6 +99,9 @@ func (a *Ask) Run(ctx context.Context, _ *Session, raw json.RawMessage) Result {
 		l := strings.TrimSpace(o.Label)
 		if l == "" || len(l) > askMaxLabel || seen[strings.ToLower(l)] {
 			return errf("Option %d needs a short label of its own.", i+1)
+		}
+		if len(o.Description) > askMaxDesc {
+			return errf("Option %d's description is longer than %d characters.", i+1, askMaxDesc)
 		}
 		seen[strings.ToLower(l)] = true
 		q.Options[i].Label = l

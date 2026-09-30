@@ -17,8 +17,8 @@ import (
 
 // MemoryWrite lets the agent save a note for later sessions, when the person
 // turned auto memory on (memory.auto). A saved note is a way for text the
-// agent read to persist, so every save changes something (it is judged and
-// asked as a change), is redacted, shown and recorded, and the notes are
+// agent read to persist, so a save is a change (judged by the policy as
+// one), is redacted, shown and recorded, and the notes are
 // loaded later as the agent's own, not as the person's instructions.
 //
 // Notes live in ~/.abhed/projects/<id>/memory/MEMORY.md, one section each;
