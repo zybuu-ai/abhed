@@ -70,17 +70,25 @@ func TestTUILateReplyIsNotTyped(t *testing.T) {
 	}
 }
 
-// A late answer split by the link right after "ESC ]" is still an answer:
-// neither half is typed and its BEL does not open the editor.
+// A late answer split by the link right after "ESC ]", straight after its
+// ESC, or after its first digit, is still an answer: no part is typed and
+// its BEL does not open the editor.
 func TestTUISplitLateReplyIsNotTyped(t *testing.T) {
+	for _, split := range []int{1, 2, 3} {
+		t.Run(strings.Repeat("x", split), func(t *testing.T) { splitLateReply(t, split) })
+	}
+}
+
+func splitLateReply(t *testing.T, split int) {
 	stub, ws := tuiWorkspace(t, "")
 	marker := filepath.Join(ws, "editor-ran")
 	t.Setenv("VISUAL", "touch "+marker)
 	r := startTUI(t, stub, ws, 80, 24)
 	r.quiet(100 * time.Millisecond)
-	r.send("\x1b]")
+	reply := "\x1b]11;rgb:ffff/ffff/ffff\x07"
+	r.send(reply[:split])
 	time.Sleep(80 * time.Millisecond)
-	r.send("11;rgb:ffff/ffff/ffff\x07")
+	r.send(reply[split:])
 	time.Sleep(300 * time.Millisecond)
 	r.send("hello\r")
 	r.waitText("You said: hello")

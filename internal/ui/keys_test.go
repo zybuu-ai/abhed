@@ -188,3 +188,115 @@ func TestSplitReplyAfterIntroducer(t *testing.T) {
 		t.Errorf("a lone Alt+]: %+v", k)
 	}
 }
+
+// scripted answers ready from a list, then with whether chunks remain.
+func scripted(c *chunked, answers ...bool) func(time.Duration) bool {
+	return func(time.Duration) bool {
+		if len(answers) > 0 {
+			a := answers[0]
+			answers = answers[1:]
+			return a
+		}
+		return len(c.parts) > 0
+	}
+}
+
+// drain reads keys to the end of input.
+func drain(kr *keyReader) []key {
+	var ks []key
+	for {
+		k, err := kr.read()
+		if err != nil {
+			return ks
+		}
+		ks = append(ks, k)
+	}
+}
+
+// A reply split straight after its ESC, or after its first digit, is still
+// a reply; the key after it is its own.
+func TestReplySplitAfterEscOrADigit(t *testing.T) {
+	// ESC | ]11;…: the Esc waits, gets nothing and is a key; the rest is
+	// the reply.
+	c := &chunked{parts: []string{"\x1b", "]11;rgb:0000/0000/0000\x07a"}}
+	kr := newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c, false)
+	ks := drain(kr)
+	if len(ks) != 3 || ks[0].code != kEsc || ks[1].code != kReply || ks[2].r != 'a' {
+		t.Fatalf("ESC | ]11;…: %+v", ks)
+	}
+	// ESC ] 1 | 1;…
+	c = &chunked{parts: []string{"\x1b]", "1", "1;rgb:0000/0000/0000\x07a"}}
+	kr = newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c)
+	ks = drain(kr)
+	if len(ks) != 2 || ks[0].code != kReply || ks[0].paste != "]11;rgb:0000/0000/0000" || ks[1].r != 'a' {
+		t.Fatalf("ESC ]1 | 1;…: %+v", ks)
+	}
+	// ESC P 1 | $r…
+	c = &chunked{parts: []string{"\x1bP1", "$r0m\x1b\\a"}}
+	kr = newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c)
+	ks = drain(kr)
+	if len(ks) != 2 || ks[0].code != kReply || ks[1].r != 'a' {
+		t.Fatalf("ESC P1 | $r…: %+v", ks)
+	}
+}
+
+// Esc then "]" typed by a person is Esc then "]"; so is a "]" long after
+// the Esc, whatever follows it.
+func TestEscThenBracketIsTyping(t *testing.T) {
+	c := &chunked{parts: []string{"\x1b", "]a"}}
+	kr := newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c, false)
+	if ks := drain(kr); len(ks) != 3 || ks[0].code != kEsc || ks[1].r != ']' || ks[2].r != 'a' {
+		t.Fatalf("Esc ] a: %+v", ks)
+	}
+	c = &chunked{parts: []string{"\x1b", "]11;x\x07"}}
+	kr = newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c, false)
+	start := time.Now()
+	kr.now = func() time.Time { start = start.Add(time.Second); return start }
+	ks := drain(kr)
+	if len(ks) < 2 || ks[1].r != ']' || ks[1].code == kReply {
+		t.Fatalf("a ] a second after Esc: %+v", ks)
+	}
+}
+
+// An assumed reply that stops without a terminator — input pauses, or it
+// runs past replyMax — was not one: the introducer is the key it was and
+// what followed is typing, none of it lost.
+func TestUnterminatedReplyIsGivenBack(t *testing.T) {
+	typed := func(ks []key) string {
+		var b strings.Builder
+		for _, k := range ks {
+			if k.code == kNone && !k.alt && k.r >= 0x20 {
+				b.WriteRune(k.r)
+			}
+		}
+		return b.String()
+	}
+	// A pause after "12;hello".
+	c := &chunked{parts: []string{"\x1b]", "12;hello", "more"}}
+	kr := newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c, true, false)
+	ks := drain(kr)
+	if len(ks) == 0 || ks[0].r != ']' || !ks[0].alt || ks[0].code == kReply {
+		t.Fatalf("first key: %+v", ks)
+	}
+	if got := typed(ks[1:]); got != "12;hellomore" {
+		t.Fatalf("given back %q", got)
+	}
+	// Past the length cap with no terminator.
+	long := "1;" + strings.Repeat("x", replyMax+10)
+	c = &chunked{parts: []string{"\x1b]", long, "\x07"}}
+	kr = newKeyReader(bufio.NewReaderSize(c, 64*1024))
+	kr.ready = scripted(c)
+	ks = drain(kr)
+	if len(ks) == 0 || ks[0].r != ']' || !ks[0].alt {
+		t.Fatalf("first key past the cap: %+v", ks[:min(3, len(ks))])
+	}
+	if got := typed(ks[1:]); got != long {
+		t.Fatalf("given back %d runes, want %d", len(got), len(long))
+	}
+}

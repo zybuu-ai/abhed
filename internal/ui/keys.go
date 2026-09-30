@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"bytes"
 	"strconv"
 	"strings"
 	"time"
@@ -57,9 +58,13 @@ type keyReader struct {
 	// ready reports whether more input arrives within a duration; nil when
 	// the source cannot be polled, as in tests.
 	ready func(time.Duration) bool
+	// escAt is when a lone Esc was last returned: a reply split straight
+	// after its ESC arrives as "]11;…" shortly after it.
+	escAt time.Time
+	now   func() time.Time
 }
 
-func newKeyReader(br *bufio.Reader) *keyReader { return &keyReader{br: br} }
+func newKeyReader(br *bufio.Reader) *keyReader { return &keyReader{br: br, now: time.Now} }
 
 // escWait is how long a lone Esc waits for the rest of a sequence. Terminals
 // send a sequence in one write, so this only matters over a slow link.
@@ -93,9 +98,18 @@ func (k *keyReader) read() (key, error) {
 		return key{code: kUnknown}, nil
 	}
 	if r != 0x1b {
+		// "]" or "P" soon after a lone Esc may be the rest of a reply the
+		// link split straight after its ESC.
+		if (r == ']' || r == 'P') && !k.escAt.IsZero() && k.now().Sub(k.escAt) < replyWait && k.replyFollows(r) {
+			k.escAt = time.Time{}
+			return k.controlString(r, false)
+		}
+		k.escAt = time.Time{}
 		return key{r: r}, nil
 	}
+	k.escAt = time.Time{}
 	if !k.more() {
+		k.escAt = k.now()
 		return key{code: kEsc}, nil
 	}
 	next, _, err := k.br.ReadRune()
@@ -109,7 +123,7 @@ func (k *keyReader) read() (key, error) {
 		// A terminal's answer arrives whole, in one write; Alt+] or
 		// Alt+Shift+P pressed by a person is those two bytes alone.
 		if k.br.Buffered() > 0 || k.replyFollows(next) {
-			return k.controlString(next)
+			return k.controlString(next, true)
 		}
 	case 'O':
 		return k.ss3()
@@ -132,29 +146,62 @@ const replyWait = 150 * time.Millisecond
 // replyFollows reports whether what arrives within replyWait after "ESC ]"
 // or "ESC P" begins as a terminal's answer does: "digits;" for an OSC, as
 // the colour answer "11;rgb:…" does, and "1$r", "0$r", "1+r", "0+r" or ">|"
-// for a DCS. A reply split by a slow link right after its introducer was
-// otherwise read as Alt+] and then typed into the prompt.
+// for a DCS. A reply split by a slow link right after its introducer, or
+// after its first digit, was otherwise read as Alt+] and then typed into the
+// prompt. It waits again while what has come could still be either.
 func (k *keyReader) replyFollows(kind rune) bool {
-	if (kind != ']' && kind != 'P') || k.ready == nil || !k.ready(replyWait) {
+	if (kind != ']' && kind != 'P') || k.ready == nil {
 		return false
 	}
-	if _, err := k.br.Peek(1); err != nil {
-		return false
-	}
-	head, _ := k.br.Peek(k.br.Buffered())
-	if kind == 'P' {
-		for _, p := range []string{"1$r", "0$r", "1+r", "0+r", ">|"} {
-			if strings.HasPrefix(string(head), p) {
-				return true
+	for n := 0; n < 16; {
+		if k.br.Buffered() <= n {
+			if !k.ready(replyWait) {
+				return false
+			}
+			if _, err := k.br.Peek(n + 1); err != nil {
+				return false
 			}
 		}
-		return false
+		head, _ := k.br.Peek(k.br.Buffered())
+		switch replyShape(kind, head) {
+		case 1:
+			return true
+		case -1:
+			return false
+		}
+		n = len(head)
+	}
+	return false
+}
+
+// replyShape says whether head begins as a reply to kind does: 1 yes, -1
+// no, 0 not known until more arrives.
+func replyShape(kind rune, head []byte) int {
+	if kind == 'P' {
+		shape := -1
+		for _, p := range []string{"1$r", "0$r", "1+r", "0+r", ">|"} {
+			n := min(len(head), len(p))
+			if string(head[:n]) != p[:n] {
+				continue
+			}
+			if n == len(p) {
+				return 1
+			}
+			shape = 0
+		}
+		return shape
 	}
 	i := 0
 	for i < len(head) && head[i] >= '0' && head[i] <= '9' {
 		i++
 	}
-	return i > 0 && i < len(head) && head[i] == ';'
+	switch {
+	case i == len(head):
+		return 0
+	case i > 0 && head[i] == ';':
+		return 1
+	}
+	return -1
 }
 
 // replyMax bounds a terminal reply that is read and set aside.
@@ -164,26 +211,51 @@ const replyMax = 4096
 // or ESC backslash — and reports it as a reply. Such strings are how a
 // terminal answers a query; read as keys, a late colour answer typed
 // "11;rgb:…" into the prompt and its BEL was Ctrl-G, opening the editor.
-func (k *keyReader) controlString(kind rune) (key, error) {
-	var b strings.Builder
-	b.WriteRune(kind)
-	for b.Len() < replyMax {
-		c, _, err := k.br.ReadRune()
-		if err != nil {
-			break
+//
+// A reply arrives in a burst. When input pauses for replyWait, or replyMax
+// bytes pass, before a terminator, it was not a reply: nothing is consumed,
+// the introducer is returned as the key it was (alt: it followed an ESC) and
+// what followed it is read again as typing.
+func (k *keyReader) controlString(kind rune, alt bool) (key, error) {
+	limit := min(replyMax, k.br.Size()-1)
+	n := 0
+	for {
+		if n >= limit {
+			return key{r: kind, alt: alt}, nil
 		}
-		if c == 0x07 {
-			break
-		}
-		if c == 0x1b {
-			if n, _, err := k.br.ReadRune(); err == nil && n != '\\' {
-				_ = k.br.UnreadRune() // a new sequence: this one was cut short
+		if k.br.Buffered() <= n {
+			if k.ready != nil && !k.ready(replyWait) {
+				return key{r: kind, alt: alt}, nil
 			}
-			break
+			if _, err := k.br.Peek(n + 1); err != nil && k.br.Buffered() <= n {
+				// The input ended: what came is a reply cut short.
+				body, _ := k.br.Peek(k.br.Buffered())
+				out := key{code: kReply, paste: string(kind) + string(body)}
+				_, _ = k.br.Discard(len(body))
+				return out, nil
+			}
 		}
-		b.WriteRune(c)
+		buf, _ := k.br.Peek(k.br.Buffered())
+		i := bytes.IndexAny(buf[n:], "\x07\x1b")
+		if i < 0 {
+			n = len(buf)
+			continue
+		}
+		end := n + i
+		out := key{code: kReply, paste: string(kind) + string(buf[:end])}
+		st := buf[end] == 0x1b
+		_, _ = k.br.Discard(end + 1)
+		if st {
+			// ESC backslash ends it; any other ESC starts a new sequence
+			// and cuts this one short.
+			if k.br.Buffered() > 0 || k.ready == nil || k.ready(escWait) {
+				if b, err := k.br.Peek(1); err == nil && b[0] == '\\' {
+					_, _ = k.br.Discard(1)
+				}
+			}
+		}
+		return out, nil
 	}
-	return key{code: kReply, paste: b.String()}, nil //nolint:nilerr // a reply cut off by the end of input is still a reply; the next read reports the end
 }
 
 // csi decodes "ESC [" params final.
