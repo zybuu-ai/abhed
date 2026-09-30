@@ -995,14 +995,22 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// A destination the call leaves to the session is named before policy
 	// judges it, so a rule on it holds and the approval covers only it.
 	var resolved []string
+	var unresolvable error
 	if r, ok := tool.(tools.ArgResolver); ok {
-		if out, which := r.ResolveArgs(l.Session, canon); out != nil {
+		out, which, err := r.ResolveArgs(l.Session, canon)
+		switch {
+		case err != nil:
+			unresolvable = err
+		case out != nil:
 			if again, _, err := tools.CanonicalArgs(tool, out); err == nil {
 				canon, resolved = again, which
 			}
 		}
 	}
 	c.Args, call.Args = canon, canon
+	if unresolvable != nil {
+		return l.refuseUnresolvable(ctx, call, unresolvable)
+	}
 
 	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
@@ -1225,6 +1233,20 @@ func (l *Loop) refuseArgs(ctx context.Context, tool tools.Tool, call model.ToolC
 		Content: fmt.Sprintf("Refused: %s. Nothing was run. Send one JSON object with each argument once, spelled exactly as in the tool's schema.", why),
 		IsError: true,
 	}, ""
+}
+
+// refuseUnresolvable records a call whose arguments cannot be put in the form
+// the tool runs, as the model sent them, and refuses it before any rule reads it.
+func (l *Loop) refuseUnresolvable(ctx context.Context, call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why.Error(), Via: viaOf(ctx),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why.Error(), "step": "args", "by": BySystem,
+	})
+	return false, tools.Result{Content: fmt.Sprintf("Refused: %s. Nothing was run.", why), IsError: true}, ""
 }
 
 // invoke runs an already-authorized tool and records its observation.

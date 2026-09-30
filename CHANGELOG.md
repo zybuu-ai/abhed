@@ -226,6 +226,17 @@ All notable changes to Abhed are recorded here. The format follows
     denied, refused in plan mode or rejected runs no helper.
   - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
     included, are the operator's configuration and work as before.
+  - `k8s_get` and `k8s_apply` put the namespace, the name, and an apply's
+    kind and apiVersion into the request path as the model wrote them, so
+    `namespace: "kube-system/secrets?"` or `name: "../secrets"` reached a
+    resource other than the one the call named and its rules judged, and a
+    deny on Secrets did not hold. Affected: earlier releases. A namespace
+    must now be a namespace name or `*`, a name must be one path segment
+    (no `/`, `?`, `#`, `%`, `..`, whitespace or control character), and a
+    kind and apiVersion must read as such; anything else is refused at step
+    `args` before any rule reads the call or any request is sent. Each
+    segment is also escaped in the path, and a label selector is
+    query-encoded.
   - Permission rules and "always allow" read `k8s_login` by its namespace,
     or by nothing when none was given, not by where the token went. A rule
     naming a cluster, such as `deny k8s_login(prod)`, never fired, and

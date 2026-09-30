@@ -56,9 +56,10 @@ type Prechecker interface {
 // uses, so that policy, the approver and the record judge what the call will
 // do. The loop runs it before policy and runs the tool with what it returns;
 // nil keeps the arguments as they are. resolved names the arguments it set
-// or changed, which the record keeps.
+// or changed, which the record keeps. An error refuses the call before policy
+// reads it: the arguments cannot be put in a form the tool would run.
 type ArgResolver interface {
-	ResolveArgs(sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string)
+	ResolveArgs(sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
 }
 
 // Targeter names where a call sends what it carries, such as the server a

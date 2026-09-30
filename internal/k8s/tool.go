@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -148,13 +150,13 @@ func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cl
 // nor a context, the resource in its canonical plural, and an empty
 // namespace filled with the one the call would use, the manifest's for an
 // apply. It reports which arguments it set or changed.
-func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) (json.RawMessage, []string) {
+func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) (json.RawMessage, []string, error) {
 	if m == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	args, err := tools.DecodeArgs(raw)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
 	str := func(key string) string {
 		v, _ := tools.Lookup(args, key)
@@ -181,9 +183,17 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 		resource = normalizeResource(strings.ToLower(strings.TrimSpace(resource)))
 		set("resource", resource)
 	}
+	if err := checkSegments(str("namespace"), str("name"), resource); err != nil {
+		return nil, nil, err
+	}
 	ns := str("namespace")
-	if apply && str("action") == "apply" && ns == "" {
-		ns = manifestNamespace(str("manifest"))
+	if apply && str("action") == "apply" {
+		if err := checkManifest(str("manifest")); err != nil {
+			return nil, nil, err
+		}
+		if ns == "" {
+			ns = manifestNamespace(str("manifest"))
+		}
 	}
 	if ns == "" && !clusterScoped[resource] {
 		ns = m.defaultNamespace(sess, clusterName, ctxName)
@@ -192,14 +202,59 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 		set("namespace", ns)
 	}
 	if len(changed) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	out, err := json.Marshal(args)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
 	sort.Strings(changed)
-	return out, changed
+	return out, changed, nil
+}
+
+var resourceRe = regexp.MustCompile(`^[a-z0-9]*$`)
+
+// checkSegments refuses a namespace, name or resource that could not stand as
+// one segment of a request path, so a call reaches only what it names.
+func checkSegments(ns, name, resource string) error {
+	if !kubescope.ValidNamespace(ns) {
+		return fmt.Errorf("namespace %q is not a namespace name (lower-case letters, digits and '-', or '*' for all)", ns)
+	}
+	if name != "" && !kubescope.ValidName(name) {
+		return fmt.Errorf("name %q cannot be a resource name: it holds '/', '?', '#', '%%', '..', a backslash, whitespace or a control character", name)
+	}
+	if !resourceRe.MatchString(resource) {
+		return fmt.Errorf("resource %q is not a resource type", resource)
+	}
+	return nil
+}
+
+// checkManifest refuses a manifest whose kind, apiVersion, name or namespace
+// could not stand in a request path. One that does not parse is left to the
+// tool, which says why.
+func checkManifest(manifest string) error {
+	var obj struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	if !json.Valid([]byte(manifest)) {
+		// The tool says why a manifest that does not parse is refused.
+		return nil
+	}
+	_ = json.Unmarshal([]byte(manifest), &obj)
+	switch {
+	case obj.Kind != "" && !kubescope.ValidKind(obj.Kind):
+		return fmt.Errorf("the manifest's kind %q is not a kind", obj.Kind)
+	case obj.APIVersion != "" && !kubescope.ValidAPIVersion(obj.APIVersion):
+		return fmt.Errorf("the manifest's apiVersion %q is not group/version or version", obj.APIVersion)
+	case obj.Metadata.Namespace == "*":
+		return fmt.Errorf("the manifest's namespace cannot be '*'")
+	}
+	return checkSegments(obj.Metadata.Namespace, obj.Metadata.Name, "")
 }
 
 // manifestNamespace is the namespace an apply's manifest names, or "".
@@ -367,7 +422,7 @@ type GetTool struct{ M *Manager }
 
 // ResolveArgs puts the call in the form it runs in, its cluster, resource and
 // namespace named, so policy judges what the call reads.
-func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string) {
+func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
 	return t.M.resolve(sess, raw, false)
 }
 
@@ -448,12 +503,15 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 	if ns == "" || ns == "*" {
 		ns = c.Namespace
 	}
+	if err := checkSegments(ns, a.Name, ""); err != nil || ns == "*" {
+		return errf("logs needs a pod name and a namespace that can stand in a request path: %v", err)
+	}
 	tail := a.Tail
 	if tail <= 0 {
 		tail = 200
 	}
 	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d",
-		ns, a.Name, tail)
+		url.PathEscape(ns), url.PathEscape(a.Name), tail)
 	if a.Container != "" {
 		path += "&container=" + urlEscape(a.Container)
 	}
@@ -473,7 +531,7 @@ type ApplyTool struct{ M *Manager }
 
 // ResolveArgs puts the call in the form it runs in, its cluster and
 // namespace named, so policy judges what the call changes.
-func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string) {
+func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
 	return t.M.resolve(sess, raw, true)
 }
 
@@ -575,6 +633,9 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	if name == "" {
 		return errf("manifest metadata.name is required.")
 	}
+	if !kubescope.ValidKind(kind) || !kubescope.ValidAPIVersion(apiVersion) {
+		return errf("the manifest's kind %q or apiVersion %q cannot stand in a request path.", kind, apiVersion)
+	}
 	ns := a.Namespace
 	if ns == "" {
 		if v, ok := meta["namespace"].(string); ok {
@@ -583,6 +644,10 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 			ns = c.Namespace
 		}
 	}
+	if err := checkSegments(ns, name, ""); err != nil || ns == "*" {
+		return errf("the manifest's name and namespace must each stand as one path segment: %v", err)
+	}
+	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
 	base := apiBase(apiVersion) + "/" + pluralFor(kind)
 	if isNamespaced(kind) {
@@ -764,6 +829,10 @@ var clusterScoped = map[string]bool{
 func resourcePath(c *Cluster, resource, namespace, name string) (string, error) {
 	r := strings.ToLower(strings.TrimSpace(resource))
 	r = normalizeResource(r)
+	if err := checkSegments(namespace, name, r); err != nil {
+		return "", err
+	}
+	name = url.PathEscape(name)
 
 	var base string
 	switch {
@@ -793,6 +862,12 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 	ns := namespace
 	if ns == "" {
 		ns = c.Namespace
+	}
+	if ns != "*" {
+		if !kubescope.ValidNamespace(ns) {
+			return "", fmt.Errorf("namespace %q is not a namespace name", ns)
+		}
+		ns = url.PathEscape(ns)
 	}
 	if ns == "*" {
 		if name != "" {

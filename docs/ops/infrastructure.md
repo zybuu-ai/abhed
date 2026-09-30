@@ -148,6 +148,9 @@ form it runs in, and records it that way:
   the kubeconfig context's default, or for an `apply` the namespace its
   manifest names. An `apply` takes one object; a list is refused.
 
+A namespace that is not a namespace name or `*`, and a name, kind or
+apiVersion that could not stand as one segment of the request path, is
+refused at step `args` before any rule reads the call.
 `action.requested` lists the arguments Abhed set this way in `resolved`. A
 call on every namespace, `namespace: "*"`, is matched by a deny or ask rule
 that would match any namespace, so `k8s_get(*/kube-system/secrets)` also
