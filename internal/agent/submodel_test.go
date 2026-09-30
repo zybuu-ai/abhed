@@ -256,3 +256,35 @@ func TestManagedDefinitionModelBinds(t *testing.T) {
 		t.Fatalf("calls: parent %d, fast %d", len(parent.gotRequests), len(fast.gotRequests))
 	}
 }
+
+// Background children spawned after a model switch run on the model the
+// session switched to, unless the call names one: the switch and the
+// background agree, as the foreground does.
+func TestBackgroundChildAfterSwitchRunsOnTheNewModel(t *testing.T) {
+	f, parent, fast, _ := modelFactory(t, NewBudget(1_000_000, 10, false))
+	l := NewLoop(parent, f.Tools, f.Policy, f.Approver, f.Session, NewRecorder(f.Store, "parent", ""), DefaultConfig())
+	l.Provider = "main"
+	NewBackground(l, BackgroundPolicy{Wake: WakeNotify, MaxLive: 4})
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	next := &subModel{&scriptedAdapter{turns: []scriptedTurn{{text: "next answer"}}}, "next-m"}
+	if err := l.SwitchModel("next", next); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.SpawnBackground(l.asParent(context.Background()), SubagentRequest{Prompt: "x", Description: "after"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the first child to end", func() bool { return l.Background.Live() == 0 })
+	if len(next.gotRequests) != 1 || len(parent.gotRequests) != 0 {
+		t.Fatalf("calls: next %d, parent %d; the child did not follow the switch", len(next.gotRequests), len(parent.gotRequests))
+	}
+	if p := spawnedPayload(t, f, EvSubagentSpawned); p["provider"] != "next" || p["model"] != "next-m" {
+		t.Fatalf("spawned after the switch: %v", p)
+	}
+	if _, err := f.SpawnBackground(l.asParent(context.Background()), SubagentRequest{Prompt: "x", Description: "named", Model: "fast"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the second child to end", func() bool { return l.Background.Live() == 0 })
+	if len(fast.gotRequests) != 1 || len(next.gotRequests) != 1 {
+		t.Fatalf("calls: fast %d, next %d; a named model was not kept", len(fast.gotRequests), len(next.gotRequests))
+	}
+}

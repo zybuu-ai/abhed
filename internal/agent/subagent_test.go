@@ -772,3 +772,26 @@ func TestSubagentAskNamesItsTarget(t *testing.T) {
 		t.Fatalf("subagent.ask does not name the target: %+v", asks[0])
 	}
 }
+
+// A background subagent in its own worktree is still the parent's
+// conversation, as a foreground one is: it sees the parent's login.
+func TestBackgroundWorktreeSubagentInheritsScopedState(t *testing.T) {
+	var saw any
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("probe", map[string]string{})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Tools.Add(scopedProbe{saw: &saw})
+	f.Session.Scoped(scopedProbeKey{}, func() any { return "parent's login" })
+	l := NewLoop(f.Adapter, f.Tools, f.Policy, f.Approver, f.Session, NewRecorder(f.Store, "parent", ""), DefaultConfig())
+	NewBackground(l, BackgroundPolicy{Wake: WakeNotify, MaxLive: 4})
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	if _, err := f.SpawnBackground(l.asParent(context.Background()),
+		SubagentRequest{Prompt: "x", Description: "y", Workspace: tempDir(t)}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the background child to end", func() bool { return l.Background.Live() == 0 })
+	if saw != "parent's login" {
+		t.Fatalf("the background worktree subagent saw %v, not its parent's login", saw)
+	}
+}
