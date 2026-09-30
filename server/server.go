@@ -2752,38 +2752,34 @@ func (s *Server) releaseNodeIfQuiet(live *liveSession) {
 }
 
 // releaseAndLetGo is releaseNodeIfQuiet at the end of a run or of background
-// work, where the caller holds no claim lock: the session is also let go.
+// work, where the caller holds no claim lock. On a store that fences writes
+// on the claim, a session whose row has ended is also let go: marked
+// unclaimed, with the end it has now to go back to, before its claim is
+// released, so its next write claims it again. Both happen under claimMu,
+// so no message starts a run between them.
 func (s *Server) releaseAndLetGo(live *liveSession) {
-	s.releaseNodeIfQuiet(live)
-	live.mu.Lock()
-	released := live.beatStop == nil
-	live.mu.Unlock()
-	if released {
-		s.letGo(live)
-	}
-}
-
-// letGo marks a session whose run ended and whose claim was released as
-// no longer held here, on a store that fences writes on the claim: its next
-// write claims it again first, with the end it has now to go back to. The
-// caller holds no claim lock.
-func (s *Server) letGo(live *liveSession) {
 	if _, fenced := s.under().(*store.Held); !fenced || live.fenced.Load() || live.unclaimed.Load() {
+		s.releaseNodeIfQuiet(live)
 		return
 	}
 	events, err := s.store.Events(live.ID)
 	if end, ok := agent.LastEnd(events); err != nil || !ok || end.Background > 0 {
-		return // the row is still open: nothing to claim it back from
+		s.releaseNodeIfQuiet(live) // the row is still open: nothing to claim it back from
+		return
 	}
 	live.claimMu.Lock()
 	defer live.claimMu.Unlock()
+	live.holdMu.Lock()
+	held := live.held
+	live.holdMu.Unlock()
 	live.mu.Lock()
-	idle := live.ran == nil && live.beatStop == nil
+	idle := live.ran == nil && live.Loop.Background.Owed() == 0
 	live.mu.Unlock()
-	if idle {
+	if idle && !held {
 		live.priorEnd = priorEnd(events, store.SessionRecord{})
 		live.unclaimed.Store(true)
 	}
+	s.releaseNodeIfQuiet(live)
 }
 
 // notRunningHere answers for a session this process is not running: 421 with
