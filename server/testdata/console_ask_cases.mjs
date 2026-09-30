@@ -25,6 +25,19 @@ render({seq:3, type:'subagent.ask', payload:{session:'child', subagent:'clean up
 render({seq:4, type:'subagent.action', payload:{session:'child', call_id:'c1', tool:'bash', decision:'denied', by:'system', request_id:'cev9'}});
 check('a subagent.action settles its card', !cards().some(c => c.isConnected && c.textContent.includes('touch b')));
 
+// A subagent's start and finish read in the turn, before the answer after them.
+render({seq:30, type:'user.message', payload:{text:'fan out'}});
+render({seq:31, type:'action.requested', payload:{call_id:'t1', tool:'task', args:{prompt:'x', description:'probe'}}});
+render({seq:32, type:'subagent.spawned', payload:{session:'k1', description:'probe'}});
+render({seq:33, type:'subagent.returned', payload:{session:'k1', reason:'completed'}});
+render({seq:34, type:'observation', payload:{call_id:'t1', tool:'task', content:'found it'}});
+render({seq:35, type:'agent.message', payload:{text:'THE-ANSWER'}});
+{
+  const all = tx.textContent, answer = all.lastIndexOf('THE-ANSWER');
+  check('subagent notes are drawn before the answer that follows them',
+    answer > 0 && all.lastIndexOf('subagent started: probe') < answer && all.lastIndexOf('subagent finished: completed') < answer);
+}
+
 // A pipeline step's ask names the pipeline asking.
 render({seq:4, type:'subagent.ask', payload:{session:'child', subagent:'runner', request_id:'cev10', call_id:'c4',
   tool:'bash', args:{command:'date -u > stamp.txt'}, via:'skill tide-audit pipeline'}});

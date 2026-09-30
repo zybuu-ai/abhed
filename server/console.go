@@ -1348,8 +1348,9 @@ function render(ev){
       break;
     }
 
-    case 'subagent.spawned': tx.appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
-    case 'subagent.returned': tx.appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+    // In the turn, as its calls are, so they read before the answer that follows them.
+    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
+    case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
 
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.
