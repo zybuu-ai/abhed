@@ -740,10 +740,11 @@ func (p *Postgres) Unsubscribe(sessionID string, ch <-chan agent.Event) {
 }
 
 func (p *Postgres) publish(ev agent.Event) {
+	// Sent under the lock: Unsubscribe closes the channel under it, and a
+	// send racing that close panics. The sends never block, so this is cheap.
 	p.mu.RLock()
-	subs := append([]chan agent.Event(nil), p.subs[ev.SessionID]...)
-	p.mu.RUnlock()
-	for _, ch := range subs {
+	defer p.mu.RUnlock()
+	for _, ch := range p.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block the agent loop on a slow consumer

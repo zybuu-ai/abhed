@@ -222,6 +222,10 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// StreamRecheck is how often an open event or terminal stream is
+	// authorised again. Zero means the default; it can only be shortened, and
+	// anything above maxStreamRecheck is held to it.
+	StreamRecheck time.Duration
 }
 
 // Server holds live sessions and serves the API.
@@ -254,6 +258,11 @@ type Server struct {
 	// "changes at runtime" in one struct is how a field ends up read without
 	// the lock.
 	state *mutable
+
+	// streams are the long-lived responses open now, told to authorise again
+	// when a sign-in changes (stream_auth.go).
+	streamMu sync.Mutex
+	streams  map[*streamGuard]struct{}
 }
 
 type liveSession struct {
@@ -375,6 +384,9 @@ func New(opts Options) *Server {
 	}
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
+	}
+	if local := s.LocalAuth(); local != nil {
+		local.OnChange(func(string) { s.RecheckStreams() })
 	}
 	return s
 }
@@ -699,15 +711,8 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 
 		// Identity comes from the auth layer, which has already verified it.
-		user := "anonymous"
 		id, _ := auth.FromContext(r.Context())
-		if id != nil {
-			user = id.Subject
-			if id.Email != "" {
-				user = id.Email
-			}
-		}
-		tenant := s.tenantFor(r.Context(), id)
+		user, tenant := s.callerOf(r.Context(), id)
 		ctx := context.WithValue(r.Context(), ctxUser, user)
 		ctx = context.WithValue(ctx, ctxTenant, tenant)
 
@@ -759,6 +764,18 @@ func TenantOf(ctx context.Context) string {
 		return v
 	}
 	return "default"
+}
+
+// callerOf is the user and tenant a request acts as, given its identity.
+func (s *Server) callerOf(ctx context.Context, id *auth.Identity) (user, tenant string) {
+	user = "anonymous"
+	if id != nil {
+		user = id.Subject
+		if id.Email != "" {
+			user = id.Email
+		}
+	}
+	return user, s.tenantFor(ctx, id)
 }
 
 // tenantFor applies the configured resolver, or the default rule.
@@ -1870,10 +1887,21 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 
+	// Authorised again while it runs, not only when it opened: every write
+	// below goes through guard.allowed, and a refusal ends the stream.
+	guard := s.guardStream(r, id)
+	defer guard.stop()
+
 	// The store drops events for a subscriber that falls behind rather than
 	// stall the loop. Seeing a full buffer, or a gap in seq, means some may
 	// be gone, and they are read back from the record before going on.
+	// ended is true once the stream is over: the session ended or the
+	// caller is no longer authorised to read it.
 	send := func(batch []agent.Event) (ended bool) {
+		if err := guard.allowed(); err != nil {
+			endStream(w, err)
+			return true
+		}
 		for _, e := range batch {
 			if e.Seq <= lastSeq {
 				continue
@@ -1921,8 +1949,22 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-keepalive.C:
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
+		case <-guard.tick():
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
+		case <-guard.woken():
+			if err := guard.allowed(); err != nil {
+				endStream(w, err)
+				return
+			}
 		}
 	}
 }

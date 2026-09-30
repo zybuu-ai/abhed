@@ -8,6 +8,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A person signed out, removed, taken out of `auth.require_group` or refused
+  by an access check kept receiving every event of a session on a
+  `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
+  terminal on `GET /v1/sessions/{id}/pty/{pty}`, while each new request of
+  theirs was refused. Both streams now rerun the request's own authentication
+  and the session ownership check while they run: at once when local accounts
+  end or change a session on the same server, before any write once the last
+  check is 10 seconds old, and on a timer. A refused stream ends with an
+  `event: refused`. An edition's own sign-in layer can end streams at once
+  with `Server.RecheckStreams`.
+- The in-memory and Postgres event stores could panic the writer when a
+  stream reader left at the moment an event was published.
 - An extension hook's `ask` no longer comes before deny rules and plan mode, where it could turn a refusal into a question a person might accept; a hook's `allow` is no opinion. A hook can now only tighten a decision.
 - Approval prompts now show hidden and control characters instead of letting
   them rewrite what is displayed. A tool call's own text could carry a

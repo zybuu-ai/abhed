@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -47,7 +48,7 @@ type Middleware struct {
 	// Check, when set, runs after a provider, the verifier or a trusted proxy
 	// has identified someone. An error refuses the request, ends the session a
 	// provider holds, and its text is shown to the person, so keep it plain.
-	// A stream is checked when it opens, not while it runs.
+	// A stream runs it again through Recheck for as long as it stays open.
 	Check func(ctx context.Context, id *Identity) error
 }
 
@@ -74,64 +75,119 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		for _, p := range m.Providers {
-			if id, ok := p.Identify(r); ok {
-				if err := m.check(r.Context(), id); err != nil {
-					endSession(w, r, p)
-					noteRefusal(w, r, p, err)
-					m.refuse(w, r, err)
-					return
-				}
-				forgetRefusal(w, r, p)
-				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
-				return
+		id, p, fail, err := m.authenticate(r)
+		switch fail {
+		case failChallenge:
+			m.challenge(w, r, err.Error())
+			return
+		case failToken:
+			// The reason is safe to return: it helps a legitimate client
+			// fix its configuration and tells an attacker nothing they
+			// could not determine by trying.
+			unauthorized(w, err.Error())
+			return
+		case failRefused:
+			if p != nil {
+				endSession(w, r, p)
+				noteRefusal(w, r, p, err)
 			}
-		}
-
-		if m.Verifier != nil {
-			token := bearerToken(r)
-			if token == "" {
-				m.challenge(w, r, "missing bearer token")
-				return
-			}
-			id, err := m.Verifier.Verify(r.Context(), token)
-			if err != nil {
-				// The reason is safe to return: it helps a legitimate client
-				// fix its configuration and tells an attacker nothing they
-				// could not determine by trying.
-				unauthorized(w, err.Error())
-				return
-			}
-			if err := m.check(r.Context(), id); err != nil {
-				m.refuse(w, r, err)
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
+			m.refuse(w, r, err)
 			return
 		}
-
-		if len(m.Providers) > 0 {
-			// Sessions are the whole authentication mechanism here, not a
-			// fallback: no session means not signed in.
-			m.challenge(w, r, "sign in required")
-			return
+		if p != nil {
+			forgetRefusal(w, r, p)
 		}
-
-		if m.TrustHeaders {
-			id := headerIdentity(r)
-			if r.Header.Get("X-Abhed-User") != "" {
-				if err := m.check(r.Context(), id); err != nil {
-					m.refuse(w, r, err)
-					return
-				}
+		// The request as it arrived, so a stream can be authenticated again
+		// by exactly this path for as long as it stays open.
+		orig := r
+		ctx := WithRecheck(WithIdentity(r.Context(), id), func(ctx context.Context) (*Identity, error) {
+			id, _, fail, err := m.authenticate(orig.Clone(ctx))
+			if fail != failNone {
+				return nil, err
 			}
-			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), id)))
-			return
-		}
-
-		next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(),
-			&Identity{Subject: "anonymous", Tenant: "default"})))
+			return id, nil
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// authFailure says how a request that could not be authenticated is answered.
+type authFailure int
+
+const (
+	failNone      authFailure = iota
+	failChallenge             // no credentials: sign in
+	failToken                 // a bearer token that did not verify
+	failRefused               // identified, then turned away by Check
+)
+
+// authenticate identifies the caller the way every request is identified. It
+// writes nothing, so Wrap and a stream's recheck share one definition. p is
+// the provider that recognised the request, if one did.
+func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fail authFailure, err error) {
+	for _, p := range m.Providers {
+		if id, ok := p.Identify(r); ok {
+			if err := m.check(r.Context(), id); err != nil {
+				return nil, p, failRefused, err
+			}
+			return id, p, failNone, nil
+		}
+	}
+
+	if m.Verifier != nil {
+		token := bearerToken(r)
+		if token == "" {
+			return nil, nil, failChallenge, errors.New("missing bearer token")
+		}
+		id, err := m.Verifier.Verify(r.Context(), token)
+		if err != nil {
+			return nil, nil, failToken, err
+		}
+		if err := m.check(r.Context(), id); err != nil {
+			return nil, nil, failRefused, err
+		}
+		return id, nil, failNone, nil
+	}
+
+	if len(m.Providers) > 0 {
+		// Sessions are the whole authentication mechanism here, not a
+		// fallback: no session means not signed in.
+		return nil, nil, failChallenge, errors.New("sign in required")
+	}
+
+	if m.TrustHeaders {
+		id := headerIdentity(r)
+		if r.Header.Get("X-Abhed-User") != "" {
+			if err := m.check(r.Context(), id); err != nil {
+				return nil, nil, failRefused, err
+			}
+		}
+		return id, nil, failNone, nil
+	}
+
+	return &Identity{Subject: "anonymous", Tenant: "default"}, nil, failNone, nil
+}
+
+const recheckKey ctxKey = "abhed.recheck"
+
+// WithRecheck attaches how a request's authentication is run again. Wrap sets
+// it; an outer router that authenticates on this server's behalf sets its own,
+// or its streams are trusted for as long as they stay open.
+func WithRecheck(ctx context.Context, fn func(context.Context) (*Identity, error)) context.Context {
+	return context.WithValue(ctx, recheckKey, fn)
+}
+
+// Recheck authenticates the request behind ctx again, as a new request with
+// the same credentials would be now: a sign-out, a removed account or a Check
+// that now refuses all fail it. A long-lived response calls it while it runs,
+// since the middleware saw it only once. With nothing to rerun it returns the
+// identity already in ctx.
+func Recheck(ctx context.Context) (*Identity, error) {
+	if fn, ok := ctx.Value(recheckKey).(func(context.Context) (*Identity, error)); ok && fn != nil {
+		return fn(ctx)
+	}
+	id, _ := FromContext(ctx)
+	return id, nil
 }
 
 // headerIdentity is the identity a trusted proxy asserted, anonymous and

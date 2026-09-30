@@ -291,7 +291,9 @@ signed out, and a group added or removed applies at once. Removing
 administrator rights through `POST /v1/admin/users/admin` also ends that
 person's sessions, on every server sharing the account store: at once on the
 one that removed them, and within about 2 seconds on the others over
-Postgres.
+Postgres. An event or terminal stream already open is authorised again while
+it runs, and ends when its sign-in would now be refused: at once for a change
+made on the same server, within 10 seconds otherwise.
 
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,

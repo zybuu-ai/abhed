@@ -173,6 +173,28 @@ type LocalAuth struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*browserSession
+
+	changeMu sync.Mutex
+	onChange []func(username string)
+}
+
+// OnChange registers fn to be told when a user's sessions here were ended or
+// their account changed, so whatever holds a stream open for them can check
+// it again at once rather than at its next interval. fn must not block.
+func (l *LocalAuth) OnChange(fn func(username string)) {
+	l.changeMu.Lock()
+	l.onChange = append(l.onChange, fn)
+	l.changeMu.Unlock()
+}
+
+// changed tells every OnChange listener about username; "" means anyone.
+func (l *LocalAuth) changed(username string) {
+	l.changeMu.Lock()
+	fns := slices.Clone(l.onChange)
+	l.changeMu.Unlock()
+	for _, fn := range fns {
+		fn(username)
+	}
 }
 
 func NewLocalAuth(store UserStore, ttl time.Duration, secure bool) *LocalAuth {
@@ -319,6 +341,7 @@ func (l *LocalAuth) restamp(sid, stamp string, undo bool) {
 
 // markMustChange sets the password-change flag on every live session of a user.
 func (l *LocalAuth) markMustChange(username string, on bool) {
+	defer l.changed(username)
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	for _, s := range l.sessions {
@@ -506,6 +529,7 @@ func (l *LocalAuth) lookup(r *http.Request) (string, *browserSession, bool) {
 // forget makes every live session of username re-read its account on its
 // next request, for a change made through this process.
 func (l *LocalAuth) forget(username string) {
+	defer l.changed(username)
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	for _, s := range l.sessions {
@@ -551,14 +575,24 @@ func (l *LocalAuth) EndSession(id string) bool {
 		return false
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	for sid := range l.sessions {
+	for sid, s := range l.sessions {
 		if sessionDigest(sid) == id {
 			delete(l.sessions, sid)
+			l.mu.Unlock()
+			l.changed(subjectOf(s))
 			return true
 		}
 	}
+	l.mu.Unlock()
 	return false
+}
+
+// subjectOf is the username a session belongs to, "" if it has none.
+func subjectOf(s *browserSession) string {
+	if s == nil || s.Identity == nil {
+		return ""
+	}
+	return s.Identity.Subject
 }
 
 // EndRequestSession ends the session the request carries and expires its
@@ -566,8 +600,12 @@ func (l *LocalAuth) EndSession(id string) bool {
 func (l *LocalAuth) EndRequestSession(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(l.CookieName); err == nil {
 		l.mu.Lock()
+		s, found := l.sessions[c.Value]
 		delete(l.sessions, c.Value)
 		l.mu.Unlock()
+		if found {
+			l.changed(subjectOf(s))
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: l.CookieName, Value: "", Path: "/",
@@ -819,6 +857,9 @@ func (l *LocalAuth) endSessions(username, keep string) int {
 	if username == "" {
 		return 0
 	}
+	// Told even when nothing ended here: a stream may be held by a session
+	// another server ended, which this account read now reports.
+	defer l.changed(username)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n := 0
