@@ -330,6 +330,10 @@ All notable changes to Abhed are recorded here. The format follows
   reconciling every open session whose holder's heartbeat is stale.
 - Continuing a session elsewhere reset its token and spawn allowance; the
   budget now goes on from what its record says it spent.
+- With an event tap set (as telemetry sets one), the server looked for the
+  store's durable approvals, session deletion, holders and routing on the
+  tap and found none, so they were off. They are now looked for on the store
+  under the tap, and switch on behind a tap as without one.
 - A server turn continued by a message never refreshed or released this
   node's claim on the session; every run now holds it, with its heartbeat,
   while it or a background task is live.
