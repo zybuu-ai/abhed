@@ -262,7 +262,10 @@ Each server process holds the sessions it runs under a liveness identity (its
 seconds while a run, a background task or a workbench hold is live. Another
 process takes a session over only once that heartbeat is two minutes stale,
 so a live task on one server is never mistaken for a crashed one by another
-sharing the database.
+sharing the database. A server also sweeps at startup: every open session
+whose holder's heartbeat is stale is reconciled then (its lost tasks recorded
+as `lost`, its ends written), so the session list shows it ended and ready to
+continue rather than running.
 
 ## Resuming a finished subagent
 

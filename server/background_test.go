@@ -772,3 +772,44 @@ func TestIdleSubagentAskNeedsItsRequestID(t *testing.T) {
 	live.mu.Unlock()
 	b.ad.release("one")
 }
+
+// At startup, a session a crashed process left open is reconciled once its
+// holder's heartbeat is stale; one whose holder is alive is left alone.
+func TestStartupSweepRecoversOrphans(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	a := newBGServer(t, st, "one", "two")
+	crashed := a.start("bg:one", false)
+	<-a.ended
+	alive := a.start("bg:two", false)
+	<-a.ended
+	st.crash(crashed) // its process stopped heartbeating
+	if n := a.s.RecoverOrphans(context.Background()); n != 0 {
+		t.Fatalf("a process reconciled %d session(s) it is running itself", n)
+	}
+
+	b := newBGServer(t, st)
+	if n := b.s.RecoverOrphans(context.Background()); n != 1 {
+		t.Fatalf("recovered %d, want 1", n)
+	}
+	st.mu.Lock()
+	crashedEnded, aliveEnded := st.ended[crashed], st.ended[alive]
+	st.mu.Unlock()
+	if !crashedEnded || aliveEnded {
+		t.Fatalf("crashed ended %v, alive ended %v", crashedEnded, aliveEnded)
+	}
+	var lost bool
+	for _, r := range payloadsOf(b.events(crashed), agent.EvSubagentReturn) {
+		lost = lost || r["reason"] == string(agent.TermLost)
+	}
+	if !lost || countType(b.events(alive), agent.EvSubagentReturn) != 0 {
+		t.Fatal("the crashed session's task was not recorded lost, or the live one's was touched")
+	}
+	if st.holderOf(crashed) != "" {
+		t.Fatalf("the sweep kept holding a session it ended: %q", st.holderOf(crashed))
+	}
+	if b.s.RecoverOrphans(context.Background()) != 0 {
+		t.Fatal("a second sweep recovered again")
+	}
+	a.ad.release("one")
+	a.ad.release("two")
+}

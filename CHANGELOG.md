@@ -304,7 +304,8 @@ All notable changes to Abhed are recorded here. The format follows
   workbench holds included; the takeover is one conditional update that
   writes the new holder, so of two processes exactly one wins. A hold that
   cannot be recorded now fails the start, message or wake (503 for a
-  message) instead of running unseen.
+  message) instead of running unseen. `abhed serve` also sweeps at startup,
+  reconciling every open session whose holder's heartbeat is stale.
 - Continuing a session elsewhere reset its token and spawn allowance; the
   budget now goes on from what its record says it spent.
 - A server turn continued by a message never refreshed or released this

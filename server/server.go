@@ -2376,6 +2376,49 @@ func (s *Server) recoverOrphan(ctx context.Context, id string, events []agent.Ev
 	return true
 }
 
+// RecoverOrphans reconciles the open sessions whose holder's heartbeat has
+// gone stale: a crashed process's lost tasks are recorded as lost and its
+// ends written, so the list shows them ended and continuable. A session
+// whose holder is alive, here or elsewhere, is left alone. It reports how
+// many it reconciled.
+func (s *Server) RecoverOrphans(ctx context.Context) int {
+	if s.sessions == nil {
+		return 0
+	}
+	if _, ok := s.sessions.(OrphanClaimer); !ok {
+		return 0
+	}
+	recs, err := s.sessions.ListSessions(ctx, 500)
+	if err != nil {
+		s.log.Warn("could not list sessions to recover", "error", err)
+		return 0
+	}
+	n := 0
+	for _, rec := range recs {
+		if rec.EndedAt != nil || ctx.Err() != nil {
+			continue
+		}
+		s.mu.RLock()
+		_, here := s.running[rec.ID]
+		s.mu.RUnlock()
+		if here {
+			continue
+		}
+		events, err := s.store.Events(rec.ID)
+		if err != nil {
+			continue
+		}
+		if s.recoverOrphan(ctx, rec.ID, events) {
+			s.releaseNode(rec.ID) // reconciled and ended: nothing of it runs here
+			n++
+		}
+	}
+	if n > 0 {
+		s.log.Warn("recovered sessions a crashed process left open", "count", n)
+	}
+	return n
+}
+
 // canWake says whether this server may start a wake run for the session now.
 // An owner who is no longer active cannot answer its asks, so their
 // session's children are cancelled rather than left to wait.
@@ -3329,6 +3372,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		MaxHeaderBytes: 1 << 20,
 		// No write timeout: SSE streams are long-lived by design.
 	}
+	// Sessions a crashed process left open are reconciled now, not only
+	// when someone next writes to them.
+	go s.RecoverOrphans(ctx)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
