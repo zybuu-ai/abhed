@@ -191,6 +191,20 @@ var destructivePatterns = []struct {
 // IsDestructive reports whether a command needs confirmation regardless of
 // permission mode. Exported so the policy engine can consult it.
 func IsDestructive(command string) (string, bool) {
+	// The command is read as written and as canonicalised; each only adds a match.
+	canon := CanonicalCommand(command).Text
+	if what, ok := destructiveText(command); ok {
+		return what, true
+	}
+	if canon != command {
+		if what, ok := destructiveText(canon); ok {
+			return what, true
+		}
+	}
+	return hiddenWords(command, canon)
+}
+
+func destructiveText(command string) (string, bool) {
 	// Where case is ignored, the program names are lowered too; that only adds a match.
 	folded := foldProgramNames(command)
 	for _, d := range destructivePatterns {
