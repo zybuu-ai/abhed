@@ -13,13 +13,6 @@ import (
 // appears, after the key before it, and after itself.
 const approvalGuard = 300 * time.Millisecond
 
-// Notices the line-based approver shows in place of an answer: typing is
-// kept as steering, or a decision key was pressed on a line with text.
-const (
-	approvalHeld rune = 0
-	approvalBusy rune = 1
-)
-
 // dialogState is a dialog on screen.
 type dialogState struct {
 	spec     DialogSpec

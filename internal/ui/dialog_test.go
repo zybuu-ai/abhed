@@ -99,8 +99,8 @@ func (dr *dialogRig) answered() (string, bool) {
 func approvalSpec() DialogSpec {
 	return DialogSpec{
 		Kind: DialogApproval, Title: "Edit(hello.txt)", Ask: "Make this edit to hello.txt?",
-		Choices: []Choice{{ID: "yes", Label: "Yes", Key: 'y'}, {ID: "always", Label: "Yes, and don't ask again for edit(hello.txt) this session"},
-			{ID: "no", Label: "No, and tell Abhed what to do instead (esc)", Key: 'n'}},
+		Choices: []Choice{{ID: "yes", Label: "Yes"}, {ID: "always", Label: "Yes, and don't ask again for edit(hello.txt) this session"},
+			{ID: "no", Label: "No, and tell Abhed what to do instead (esc)"}},
 		Cancel: "no",
 	}
 }
@@ -518,5 +518,30 @@ func TestDialogGuardStartsWhenVisible(t *testing.T) {
 	case id := <-answer:
 		t.Fatalf("a 1 straight after the editor answered %q", id)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Approvals are numbers only: a lone letter or Enter, however deliberate,
+// never answers the approval dialog, the destructive second question or a
+// confirm, and a letter key cannot be given to one.
+func TestApprovalsAreNumbersOnly(t *testing.T) {
+	for _, spec := range []DialogSpec{approvalSpec(), ModeConfirm("default", "auto")} {
+		for _, k := range []string{"y", "a", "A", "Y", "n", "\r"} {
+			spec.Ask = "Answer this?"
+			dr := openDialog(t, spec)
+			dr.clock.advance(5 * time.Second)
+			dr.key(k)
+			dr.clock.advance(5 * time.Second)
+			dr.timers.advance(5 * time.Second)
+			if id, ok := dr.answered(); ok && id != ChoiceNo {
+				t.Fatalf("%s: a lone %q answered %q", spec.Title, k, id)
+			}
+		}
+	}
+	for _, kind := range []DialogKind{DialogApproval, DialogConfirm} {
+		spec := DialogSpec{Kind: kind, Choices: []Choice{{ID: "yes", Label: "Yes", Key: 'y'}, {ID: "no", Label: "No"}}}
+		if _, err := spec.Normalized(); err == nil {
+			t.Errorf("a %s dialog with a letter key was accepted", kind)
+		}
 	}
 }

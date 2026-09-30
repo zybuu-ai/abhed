@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -76,73 +77,85 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	}
 
 	s := a.Style
-	fmt.Fprintf(a.Out, "\n%s %s %s\n", s.Yellow("●"), s.Bold(tool), s.Dim(summarizeArgs(tool, args)))
+	// Everything shown comes from the model or the configuration: the
+	// command, the path and the diff are revealed — hidden characters shown
+	// as marked escapes — and the rest keeps text only, so what is approved
+	// is exactly what will run.
+	fmt.Fprintf(a.Out, "\n%s %s %s\n", s.Yellow("●"), s.Bold(sanitize(tool, false)), s.Dim(reveal(summarizeArgs(tool, args))))
 	if via := agent.PipelineOf(ctx); via != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by "+via))
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by "+sanitize(via, false)))
 	}
 	if who := agent.SubagentOf(ctx); who != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by subagent: "+who))
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by subagent: "+sanitize(who, false)))
 	}
 	if res.Reason != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim(res.Reason))
+		why := sanitize(res.Reason, false)
+		if res.Step != "" {
+			why += " · policy step: " + res.Step
+		}
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim(why))
 	}
-
 	if preview := a.preview(tool, args); preview != "" {
 		fmt.Fprintln(a.Out, preview)
 	}
 
-	options := "[a]ccept  [r]eject"
+	// Numbered answers only, and nothing chosen for an empty line: a letter
+	// or Enter alone never approves.
+	choices := []string{"yes"}
+	labels := []string{"Yes"}
 	if scope != "" {
-		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(scope))
+		choices = append(choices, "always")
+		labels = append(labels, "Yes, and don't ask again for "+reveal(scope)+" this session")
 	}
-	fmt.Fprintf(a.Out, "  %s ", options)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
+	choices = append(choices, "no")
+	labels = append(labels, "No")
+	id, err := a.askNumbered(ctx, read, labels, choices)
+	if err != nil || id == "" {
+		return false, err
+	}
+	switch id {
+	case "always":
+		a.Session.Add(scope)
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
+		return true, nil
+	case "yes":
+		if res.Step != "destructive" {
+			return true, nil
 		}
+		fmt.Fprintf(a.Out, "  %s\n", s.Bold("This cannot be undone. Really run it?"))
+		id, err := a.askNumbered(ctx, read, []string{"No, don't run it", "Yes, run it"}, []string{"no", "yes"})
+		return id == "yes", err
+	}
+	return false, nil
+}
 
+// askNumbered prints numbered labels and reads until a number in range is
+// given, returning its id. Anything else — a letter, an empty line — asks
+// again. Input ending or the context ending is no answer.
+func (a *Approver) askNumbered(ctx context.Context, read func() (string, bool), labels, ids []string) (string, error) {
+	s := a.Style
+	for i, l := range labels {
+		fmt.Fprintf(a.Out, "  %d. %s\n", i+1, l)
+	}
+	for {
+		fmt.Fprintf(a.Out, "  %s ", s.Dim(fmt.Sprintf("answer 1-%d:", len(labels))))
+		if err := ctx.Err(); err != nil {
+			fmt.Fprintln(a.Out)
+			return "", err
+		}
 		line, ok := read()
 		if !ok {
-			// Input ended or was cancelled. A cancelled context is an error the
-			// loop must see; an ended input is a refusal, not an error.
+			fmt.Fprintln(a.Out)
 			if err := ctx.Err(); err != nil {
-				fmt.Fprintln(a.Out)
-				return false, err
+				return "", err
 			}
-			// EOF (piped input, no TTY): refuse rather than silently proceeding.
-			fmt.Fprintln(a.Out)
-			return false, nil
+			return "", nil // input ended: nobody can say yes
 		}
-		switch strings.TrimSpace(line) {
-		case "a", "y":
-			// Only an explicit key accepts. Enter alone used to, so a line of
-			// typing that ended in Enter approved whatever was on screen.
+		if n, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && n >= 1 && n <= len(ids) {
 			fmt.Fprintln(a.Out)
-			return true, nil
-		case "r", "n":
-			fmt.Fprintln(a.Out)
-			return false, nil
-		case "A":
-			if scope != "" {
-				a.Session.Add(scope)
-				agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
-				fmt.Fprintln(a.Out)
-				return true, nil
-			}
-			fmt.Fprintf(a.Out, "\n  no scope available; [a]ccept or [r]eject: ")
-		case string(approvalHeld):
-			fmt.Fprintf(a.Out, "\n  %s\n  %s ", s.Dim("typing is kept as a steering message: Enter sends it, Ctrl-U clears it"), options)
-		case string(approvalBusy):
-			fmt.Fprintf(a.Out, "\n  %s\n  %s ", s.Dim("the line is not empty: Ctrl-U clears it, Enter sends it as steering"), options)
-		default:
-			// An unrecognised key just re-shows the choices. In raw mode a
-			// single keypress arrives with no echo, so without this a stray key
-			// looks like nothing happened.
-			fmt.Fprintf(a.Out, "\n  %s ", options)
+			return ids[n-1], nil
 		}
+		fmt.Fprintf(a.Out, "\n  %s\n", s.Dim("answer with a number"))
 	}
 }
 
@@ -180,10 +193,10 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		old, updated := str("old_string"), str("new_string")
 		var b strings.Builder
 		for _, line := range strings.Split(strings.TrimRight(old, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Red("- "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Red("- "+reveal(line)))
 		}
 		for _, line := range strings.Split(strings.TrimRight(updated, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+reveal(line)))
 		}
 		return strings.TrimRight(b.String(), "\n")
 
@@ -196,7 +209,7 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 			shown = lines[:15]
 		}
 		for _, line := range shown {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+reveal(line)))
 		}
 		if len(lines) > 15 {
 			fmt.Fprintf(&b, "  %s\n", s.Dim(fmt.Sprintf("... %d more lines", len(lines)-15)))
@@ -204,7 +217,7 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		return strings.TrimRight(b.String(), "\n")
 
 	case "bash":
-		return fmt.Sprintf("  %s", s.Dim("$ "+str("command")))
+		return fmt.Sprintf("  %s", s.Dim("$ "+reveal(str("command"))))
 	}
 	return ""
 }

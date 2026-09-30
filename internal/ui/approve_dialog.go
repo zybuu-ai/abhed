@@ -168,11 +168,11 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 		}
 	}
 
-	choices := []Choice{{ID: "yes", Label: "Yes", Key: 'y'}}
+	choices := []Choice{{ID: "yes", Label: "Yes"}}
 	if scope := res.Offer(); scope != "" {
 		choices = append(choices, Choice{ID: "always", Label: "Yes, and don't ask again for " + a.showScope(scope) + " this session", Widening: true})
 	}
-	choices = append(choices, Choice{ID: "no", Label: "No, and tell Abhed what to do instead (esc)", Key: 'n'})
+	choices = append(choices, Choice{ID: "no", Label: "No, and tell Abhed what to do instead (esc)"})
 	scope := a.showScope(res.Offer())
 	return DialogSpec{
 		Kind:    DialogApproval,
@@ -204,8 +204,8 @@ func (a *DialogApprover) confirm(ctx context.Context, args json.RawMessage, res 
 		Body:  []Block{viewBlock(&commandBlock{command: reveal(str(args, "command"))})},
 		Ask:   "Really run it?",
 		Choices: []Choice{
-			{ID: "no", Label: "No, don't run it", Key: 'n'},
-			{ID: "yes", Label: "Yes, run it", Key: 'y', Destructive: true},
+			{ID: "no", Label: "No, don't run it"},
+			{ID: "yes", Label: "Yes, run it", Destructive: true},
 		},
 		Default: "no",
 		Cancel:  "no",

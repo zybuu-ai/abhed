@@ -60,8 +60,8 @@ func ModeConfirm(from, to string) DialogSpec {
 		Why:   "in " + to + " mode " + what,
 		Ask:   fmt.Sprintf("Leave %s mode for %s?", from, to),
 		Choices: []Choice{
-			{ID: ChoiceNo, Label: "No, stay in " + from + " mode", Key: 'n'},
-			{ID: ChoiceYes, Label: "Yes, switch to " + to + " mode", Key: 'y', Widening: true},
+			{ID: ChoiceNo, Label: "No, stay in " + from + " mode"},
+			{ID: ChoiceYes, Label: "Yes, switch to " + to + " mode", Widening: true},
 		},
 		Default: ChoiceNo,
 		Cancel:  ChoiceNo,

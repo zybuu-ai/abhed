@@ -117,3 +117,16 @@ func TestRevealShowsHiddenRunes(t *testing.T) {
 		t.Errorf("reveal changed plain text: %q", got)
 	}
 }
+
+// The line mode's output filter holds an escape or a character split across
+// reads until it is whole, so nothing leaks and nothing is garbled.
+func TestStreamFilterAcrossReads(t *testing.T) {
+	in := "héllo \x1b]52;c;U1BPT0Y=\x07wörld \x1b[2J你好\x1b[31mred\x1b[0m\n"
+	for cut := 1; cut < len(in); cut++ {
+		f := &streamFilter{keepSGR: true}
+		got := f.feed([]byte(in[:cut])) + f.feed([]byte(in[cut:])) + f.flush()
+		if got != "héllo wörld 你好\x1b[31mred\x1b[0m\n" {
+			t.Fatalf("cut at %d: %q", cut, got)
+		}
+	}
+}

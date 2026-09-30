@@ -135,7 +135,7 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 	}
 	if d.Kind == DialogConfirm {
 		if len(d.Choices) == 0 {
-			d.Choices = []Choice{{ID: ChoiceYes, Label: "Yes", Key: 'y'}, {ID: ChoiceNo, Label: "No", Key: 'n'}}
+			d.Choices = []Choice{{ID: ChoiceYes, Label: "Yes"}, {ID: ChoiceNo, Label: "No"}}
 		}
 		if d.Default == "" {
 			d.Default = ChoiceNo
@@ -149,6 +149,15 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 		return d, fmt.Errorf("a confirm dialog's default must be %q, not %q", ChoiceNo, d.Default)
 	case d.Kind == DialogApproval && d.Default != "" && d.Default != ChoiceNo:
 		return d, fmt.Errorf("an approval's default must be %q or none, not %q", ChoiceNo, d.Default)
+	}
+	// An approval or a confirmation is answered by its number alone: a
+	// letter is what someone typing meant for the prompt might press.
+	if d.Kind == DialogApproval || d.Kind == DialogConfirm {
+		for _, c := range d.Choices {
+			if c.Key != 0 {
+				return d, fmt.Errorf("a %s dialog is answered by number only; choice %q has the key %q", d.Kind, c.ID, c.Key)
+			}
+		}
 	}
 	ids, keys := map[string]bool{}, map[rune]bool{}
 	var def *Choice
@@ -200,6 +209,9 @@ func (d DialogSpec) choice(id string) (Choice, bool) {
 func (d DialogSpec) match(answer string) (Choice, bool) {
 	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(d.Choices) {
 		return d.Choices[n-1], true
+	}
+	if d.Kind == DialogApproval || d.Kind == DialogConfirm {
+		return Choice{}, false // numbers only
 	}
 	for _, c := range d.Choices {
 		if strings.EqualFold(answer, c.ID) || c.Key != 0 && len([]rune(answer)) == 1 && []rune(answer)[0] == c.Key {

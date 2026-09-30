@@ -168,9 +168,9 @@ func (l *LineSurface) Dialog(ctx context.Context, spec DialogSpec) (string, erro
 		if c.Destructive {
 			what = "cannot be undone"
 		}
-		l.printf("  %s %s; type yes to confirm: ", singleLine(c.Label), what)
+		l.printf("  %s %s. Are you sure?\n  1. No\n  2. Yes, %s\n  answer 1-2: ", singleLine(c.Label), what, singleLine(c.Label))
 		confirm, ok := l.read(ctx)
-		if ok && strings.EqualFold(confirm, "yes") {
+		if ok && strings.TrimSpace(confirm) == "2" {
 			return c.ID, nil
 		}
 		if d.Default != "" {

@@ -84,8 +84,8 @@ numbered answers:
 ```
 
 Press a number, or move with the arrows and press Enter. Nothing is selected
-at first, so Enter alone answers nothing. No key counts for the first 300 ms
-the question is on screen, and a key only counts when it stands alone, with
+at first, so Enter alone answers nothing, and letters never answer. No key
+counts for the first 300 ms the question is on screen, and a key only counts when it stands alone, with
 300 ms of quiet before and after it: typing that was meant for the prompt,
 or a key held down, never answers. "2" allows that scope for the rest of the
 session; `/clear` and `/resume` start another session without it. "3" or Esc

@@ -13,18 +13,23 @@ All notable changes to Abhed are recorded here. The format follows
   question is on screen; a number counts only with 300 ms of quiet on either
   side, so typing or a key held down never answers; Enter needs 300 ms since
   the last arrow; and nothing is selected at first, so Enter alone answers
-  nothing. Only the answers offered can be chosen. A destructive command
-  needs a second Yes, whose default is No.
+  nothing. Approvals are answered by number only, in the dialog and in the
+  line mode alike: no letter approves. Only the answers offered can be
+  chosen. A destructive command needs a second, numbered Yes, whose default
+  is No.
 - Text from the model, from tools, from the workspace (a git branch) and
   from a status line command is drawn with every control and format
   character removed, rune by rune, keeping only text and colour: C0 and C1
   controls, OSC, DCS and other escapes, bidi overrides and isolates,
   zero-width and tag characters. Every row the terminal draws passes
-  through the same filter. In an approval and in a diff nothing is dropped:
+  through the same filter, and so does everything the line mode prints on a
+  terminal (piped input, `TERM=dumb`): its approvals, replies, tool output
+  and what commands print. In an approval and in a diff nothing is dropped:
   hidden characters are shown as marked escapes (`⟨\r⟩`, `⟨U+200B⟩`), so a
   command cannot show one thing and run another. Tests send OSC 52, OSC 0,
   OSC 8, screen erases, C1 sequences and joiner-hidden controls through
-  every field that reaches the screen and find none of them on the wire.
+  every field that reaches the screen, in the dialog and in the line mode,
+  and find none of them on the wire.
 
 - In every release up to and including 1.2.1, a repository could ship a
   `.abhed/config.json` that Abhed applied whole in every mode: the CLI,

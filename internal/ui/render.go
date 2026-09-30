@@ -460,7 +460,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			r.streaming = true
 			r.lineSt = mdState{}
 		}
-		r.pending.WriteString(dl.Text)
+		r.pending.WriteString(sanitize(dl.Text, false))
 		r.flushLines(false)
 
 	case agent.EvAgentMessage:
@@ -476,7 +476,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			return
 		}
 		if strings.TrimSpace(m.Text) != "" {
-			fmt.Fprintf(r.w, "\n%s\n", Markdown(r.s, m.Text))
+			fmt.Fprintf(r.w, "\n%s\n", Markdown(r.s, sanitize(m.Text, false)))
 		}
 
 	case agent.EvAgentReasoning:
@@ -487,7 +487,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &m) != nil || strings.TrimSpace(m.Text) == "" {
 			return
 		}
-		text := strings.TrimSpace(m.Text)
+		text := strings.TrimSpace(sanitize(m.Text, false))
 		r.lastReasoning = text
 		if !r.Reasoning {
 			fmt.Fprintf(r.w, "%s %s\n", s.Dim("▸"),
@@ -507,7 +507,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &a) != nil {
 			return
 		}
-		fmt.Fprintf(r.w, "%s %s %s\n", s.Accent("●"), s.Bold(a.Tool), s.Dim(summarizeArgs(a.Tool, a.Args)))
+		fmt.Fprintf(r.w, "%s %s %s\n", s.Accent("●"), s.Bold(sanitize(a.Tool, false)), s.Dim(reveal(summarizeArgs(a.Tool, a.Args))))
 
 	case agent.EvObservation:
 		var o agent.Observation
@@ -515,7 +515,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			return
 		}
 		if o.IsError {
-			for _, line := range firstLines(o.Content, 8) {
+			for _, line := range firstLines(sanitize(o.Content, false), 8) {
 				fmt.Fprintf(r.w, "  %s %s\n", s.Red("│"), line)
 			}
 			return
@@ -524,19 +524,19 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			return
 		}
 		if o.ExitCode != nil && *o.ExitCode != 0 {
-			for _, line := range firstLines(o.Content, 12) {
+			for _, line := range firstLines(sanitize(o.Content, false), 12) {
 				fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("│"), line)
 			}
 			return
 		}
 		if summary := observationSummary(o); summary != "" {
-			fmt.Fprintf(r.w, "  %s %s\n", s.Dim("└"), s.Dim(summary))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Dim("└"), s.Dim(sanitize(summary, false)))
 		}
 
 	case agent.EvActionDenied:
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
-			fmt.Fprintf(r.w, "  %s %s\n", s.Red("✕"), s.Dim(m["reason"]))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Red("✕"), s.Dim(sanitize(m["reason"], false)))
 		}
 
 	case agent.EvForked:

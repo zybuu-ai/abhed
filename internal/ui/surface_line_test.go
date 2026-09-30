@@ -31,9 +31,9 @@ var approval = DialogSpec{
 	Kind:  DialogApproval,
 	Title: "Run rm -rf build?",
 	Choices: []Choice{
-		{ID: "once", Label: "Yes", Key: 'y'},
-		{ID: "always", Label: "Yes, always bash(rm *)", Key: 'a', Widening: true},
-		{ID: "no", Label: "No", Key: 'n'},
+		{ID: "once", Label: "Yes"},
+		{ID: "always", Label: "Yes, always bash(rm *)", Widening: true},
+		{ID: "no", Label: "No"},
 	},
 	Default: "no",
 	Why:     "step default · no rule · asked by main",
@@ -53,13 +53,15 @@ func TestLineDialogNeverApprovesByItself(t *testing.T) {
 		{"input ended", approval, nil, "", ErrNoAnswer},
 		{"empty takes the safe default", approval, []string{""}, "no", nil},
 		{"confirm defaults to no", DialogSpec{Kind: DialogConfirm, Title: "Switch to auto?"}, []string{""}, ChoiceNo, nil},
-		{"confirm takes y", DialogSpec{Kind: DialogConfirm}, []string{"y"}, ChoiceYes, nil},
+		{"confirm takes its number", DialogSpec{Kind: DialogConfirm}, []string{"1"}, ChoiceYes, nil},
+		{"confirm never takes y", DialogSpec{Kind: DialogConfirm}, []string{"y", "yes", "Y"}, "", ErrNoAnswer},
 		{"no default needs an answer, then input ends", DialogSpec{Kind: DialogChoice, Choices: approval.Choices}, []string{"", ""}, "", ErrNoAnswer},
 		{"by number", approval, []string{"1"}, "once", nil},
-		{"by key, widening confirmed", approval, []string{"a", "yes"}, "always", nil},
-		{"widening unconfirmed takes the safe default", approval, []string{"a", ""}, "no", nil},
+		{"widening confirmed by number", approval, []string{"2", "2"}, "always", nil},
+		{"widening unconfirmed takes the safe default", approval, []string{"2", ""}, "no", nil},
 		{"widening by number, then y, is not a yes", approval, []string{"2", "y"}, "no", nil},
-		{"by id", approval, []string{"NO"}, "no", nil},
+		{"a letter never approves", approval, []string{"y", "a", "A"}, "", ErrNoAnswer},
+		{"an id is not a number", approval, []string{"once", "no", "yes"}, "", ErrNoAnswer},
 		{"garbage three times", approval, []string{"yes please", "0", "4"}, "", ErrNoAnswer},
 		{"garbage then a number", approval, []string{"sure", "3"}, "no", nil},
 	} {
@@ -85,8 +87,8 @@ func TestLineDialogConfirmsDestructiveChoices(t *testing.T) {
 		want    string
 		err     error
 	}{
-		{[]string{"1", "yes"}, "restore", nil},
-		{[]string{"1", "YES"}, "restore", nil},
+		{[]string{"1", "2"}, "restore", nil},
+		{[]string{"1", "yes"}, "cancel", nil},
 		{[]string{"1", ""}, "cancel", nil},
 		{[]string{"1", "y"}, "cancel", nil},
 		{[]string{"1"}, "cancel", nil},
@@ -96,7 +98,7 @@ func TestLineDialogConfirmsDestructiveChoices(t *testing.T) {
 		if got != c.want || !errors.Is(err, c.err) {
 			t.Errorf("%q: got %q, %v", c.answers, got, err)
 		}
-		if !strings.Contains(out.String(), "type yes to confirm") {
+		if !strings.Contains(out.String(), "Are you sure?") {
 			t.Errorf("%q: no confirmation was asked:\n%s", c.answers, out)
 		}
 	}

@@ -90,10 +90,16 @@ and numbered answers.
   of this session. It is offered only when the policy suggests a rule.
 - **3. No, and tell Abhed what to do instead** refuses it and stops the turn.
 
-**Enter alone never approves, and nothing is selected when the question
-appears.** You answer with an explicit 1, 2 or 3, or by moving to a choice
-with ↑ ↓ and then pressing Enter. There is no default answer to fall back on.
-Esc means No. Ctrl-C means No at once.
+**Approvals are answered by number only.** Nothing is selected when the
+question appears, Enter alone never approves, and no letter does — not `y`,
+`a` or any other. You answer with an explicit 1, 2 or 3, or by moving to a
+choice with ↑ ↓ and then pressing Enter. There is no default answer to fall
+back on. Esc means No. Ctrl-C means No at once.
+
+In the line mode (piped input, `TERM=dumb`) the same question is printed
+with its numbered answers, and only a line holding one of those numbers
+answers it; anything else, an empty line included, asks again. The command
+and the diff are shown with hidden characters marked, as in the dialog.
 
 A key counts as an answer only when it is meant as one:
 
@@ -101,10 +107,12 @@ A key counts as an answer only when it is meant as one:
 - nothing is selected at first, so Enter alone answers nothing;
 - a number counts only with 300 ms of quiet before and after it, so a number
   in text you were typing, or a key held down, is not an answer;
-- Enter after an arrow needs 300 ms since the arrow.
+- Enter after an arrow needs 300 ms since the arrow, since the arrow is a
+  key like any other.
 
 A destructive command, such as `rm -rf`, never offers "don't ask again", and a
-Yes is followed by a second question whose Enter answers No. The question, the
+Yes is followed by a second numbered question — 1 No, 2 Yes, run it — whose
+Enter answers No. The question, the
 diff and your answer stay in the transcript, as they are in the record.
 
 ## The footer

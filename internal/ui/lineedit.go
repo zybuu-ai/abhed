@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -585,7 +586,7 @@ func cleanDrafts() {
 // and there are far too many of them to route by hand.
 func (l *LineReader) Capture() func() {
 	if !l.raw {
-		return func() {}
+		return l.captureLines()
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
@@ -657,4 +658,89 @@ func newBufReader(in io.Reader) *bufio.Reader { return bufio.NewReaderSize(in, 6
 func dumbTerminal() bool {
 	t := os.Getenv("TERM")
 	return t == "dumb" || t == "" && runtime.GOOS != "windows"
+}
+
+// captureLines is Capture for the line mode, on a terminal: what the program
+// prints goes to the terminal through the same filter the dock applies, so
+// file contents or model text printed by a command cannot move the cursor,
+// set the clipboard or retitle the window. Piped output is left alone.
+func (l *LineReader) captureLines() func() {
+	if !startedOnTerminal {
+		return func() {}
+	}
+	origOut, origErr := os.Stdout, os.Stderr
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		return func() {}
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		outR.Close()
+		outW.Close()
+		return func() {}
+	}
+	os.Stdout, os.Stderr = outW, errW
+	keepSGR := NewStyle(LazyStdout{}).enabled
+	var wg sync.WaitGroup
+	pump := func(r *os.File, to *os.File) {
+		defer RestoreOnPanic()
+		defer wg.Done()
+		f := &streamFilter{keepSGR: keepSGR}
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				_, _ = to.WriteString(f.feed(buf[:n]))
+			}
+			if err != nil {
+				_, _ = to.WriteString(f.flush())
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go pump(outR, origOut)
+	go pump(errR, origErr)
+	return func() {
+		os.Stdout, os.Stderr = origOut, origErr
+		outW.Close()
+		errW.Close()
+		wg.Wait()
+		outR.Close()
+		errR.Close()
+	}
+}
+
+// streamFilter is sanitize over a stream: an escape or a character split
+// across two reads is held until it is whole.
+type streamFilter struct {
+	keepSGR bool
+	carry   []byte
+}
+
+func (f *streamFilter) feed(p []byte) string {
+	data := append(f.carry, p...)
+	f.carry = nil
+	cut := len(data)
+	// Hold an escape that has not ended, and a character not yet whole.
+	if i := bytes.LastIndexByte(data, 0x1b); i >= 0 && escEnd(string(data), i) >= len(data) && len(data)-i < 4096 {
+		cut = i
+	}
+	for k := cut - 1; k >= 0 && k >= cut-3; k-- {
+		if !utf8.RuneStart(data[k]) {
+			continue
+		}
+		if !utf8.FullRune(data[k:cut]) {
+			cut = k
+		}
+		break
+	}
+	f.carry = append([]byte(nil), data[cut:]...)
+	return sanitize(string(data[:cut]), f.keepSGR)
+}
+
+func (f *streamFilter) flush() string {
+	out := sanitize(string(f.carry), f.keepSGR)
+	f.carry = nil
+	return out
 }
