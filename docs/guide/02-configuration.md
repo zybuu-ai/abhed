@@ -49,6 +49,8 @@ configuration](#trusting-the-workspace-configuration).
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
+| `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](18-input-and-memory.md#memory) |
+| `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](18-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 
 ## Context
@@ -91,7 +93,8 @@ step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
-after compaction. Project conventions belong there.
+after compaction. Project conventions belong there. The full order, imports
+and rules are in [Memory](18-input-and-memory.md#memory).
 
 **Size `context_window` for what the model can actually hold.** A local server
 reports the size it chose at startup; asking for more does not fail loudly, it
