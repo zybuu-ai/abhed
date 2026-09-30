@@ -63,6 +63,10 @@ type cliState struct {
 	statuslineOnce sync.Once
 	statuslineSB   sandbox.Sandbox
 	statuslineErr  error
+	// statuslineCmd is what runs, and statuslinePin the script it names,
+	// checked again before each run.
+	statuslineCmd string
+	statuslinePin sandbox.ReadableFile
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

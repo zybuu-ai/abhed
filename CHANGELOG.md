@@ -468,7 +468,9 @@ All notable changes to Abhed are recorded here. The format follows
   tokens, sandbox, record, branch, background tasks) and its first line is
   shown after each task and in `/status`. It runs under the process
   sandbox with the network off, whatever the session allows, for at most
-  300 ms, and not at all where that sandbox is missing. Only text and
+  300 ms, and not at all where that sandbox is missing. A script it names
+  by path is pinned at the start of the session, refused where the agent
+  could change it or in Abhed's state, and not run once swapped. Only text and
   colour of its output reach the terminal. A workspace's statusline needs
   trust.
 

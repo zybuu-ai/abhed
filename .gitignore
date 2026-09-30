@@ -33,3 +33,5 @@ uploads/
 # Internal notes and raw research are not published
 docs/internal/
 docs/research/
+# A statusline test's home, removed when the test ends.
+app/.statusline-home-*

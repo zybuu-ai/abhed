@@ -154,6 +154,22 @@ func TestProcessSandboxShieldsConfiguredStatePaths(t *testing.T) {
 	}
 }
 
+// pinned makes an executable script at path and pins it.
+func pinned(t *testing.T, path, body string) ReadableFile {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { // #nosec G306 -- a script the test runs
+		t.Fatal(err)
+	}
+	f, err := PinReadable(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 // A file named readable is readable and runnable even inside ~/.abhed,
 // which stays hidden around it.
 func TestReadableFileInsideHiddenState(t *testing.T) {
@@ -161,19 +177,13 @@ func TestReadableFileInsideHiddenState(t *testing.T) {
 	home := workspace(t)
 	t.Setenv("HOME", home)
 	state := filepath.Join(home, stateDir)
-	if err := os.MkdirAll(state, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(state, "status.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho status-ok\n"), 0o700); err != nil { // #nosec G306 -- a script the test runs
-		t.Fatal(err)
-	}
+	f := pinned(t, filepath.Join(state, "status.sh"), "#!/bin/sh\necho status-ok\n")
 	if err := os.WriteFile(filepath.Join(state, "config.json"), []byte(`{"k":"state-secret"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ws := workspace(t)
 	p := DefaultPolicy(ws)
-	p.ReadableFiles = []string{script}
+	p.ReadableFiles = []ReadableFile{f}
 	s := NewProcess(p)
 	if ok, why := s.Available(); !ok {
 		t.Skipf("process sandbox unavailable: %s", why)
@@ -189,20 +199,83 @@ func TestReadableFileInsideHiddenState(t *testing.T) {
 	}
 }
 
-// Under bubblewrap a file named readable is bound read-only, after every
-// mount that could hide it.
-func TestBwrapBindsReadableFilesLast(t *testing.T) {
-	ws := workspace(t)
-	f := filepath.Join(workspace(t), "status.sh")
-	if err := os.WriteFile(f, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a script the test names
+// A pinned file swapped after the check loses its allow: a link to a hidden
+// script does not run it, and a link to the configuration does not read it.
+func TestReadableFileSwappedLosesItsAllow(t *testing.T) {
+	requireNetNS(t)
+	home := workspace(t)
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, stateDir)
+	pinned(t, filepath.Join(state, "hidden.sh"), "#!/bin/sh\necho hidden-ran\n")
+	if err := os.WriteFile(filepath.Join(state, "config.json"), []byte(`{"k":"state-secret"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	script := filepath.Join(home, "bin", "ok.sh")
+	f := pinned(t, script, "#!/bin/sh\necho ok-ran\n")
+	ws := workspace(t)
 	p := DefaultPolicy(ws)
-	p.ReadableFiles = []string{f}
+	p.ReadableFiles = []ReadableFile{f}
+	s := NewProcess(p)
+	if ok, why := s.Available(); !ok {
+		t.Skipf("process sandbox unavailable: %s", why)
+	}
+	if out, _ := runIn(t, s, ws, script); !strings.Contains(out, "ok-ran") {
+		t.Fatalf("the pinned script did not run: %s", out)
+	}
+	for _, target := range []string{filepath.Join(state, "hidden.sh"), filepath.Join(state, "config.json")} {
+		if err := os.Remove(script); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, script); err != nil {
+			t.Fatal(err)
+		}
+		if f.Same() {
+			t.Fatalf("a link to %s passed for the pinned file", target)
+		}
+		out, _ := runIn(t, s, ws, script+" 2>&1; cat "+script+" 2>&1; echo done")
+		if strings.Contains(out, "hidden-ran") || strings.Contains(out, "state-secret") {
+			t.Fatalf("after a swap to %s:\n%s", target, out)
+		}
+	}
+}
+
+// Under bubblewrap a pinned file is bound read-only at its resolved path,
+// after every mount that could hide it, and not at all once swapped for a
+// link, another file or a folder.
+func TestBwrapBindsReadableFilesLast(t *testing.T) {
+	ws := workspace(t)
+	dir := workspace(t)
+	f := pinned(t, filepath.Join(dir, "status.sh"), "#!/bin/sh\n")
+	p := DefaultPolicy(ws)
+	p.ReadableFiles = []ReadableFile{f}
 	s := &Process{policy: p, backend: "bwrap"}
-	args := strings.Join(s.wrap(t.Context(), ws, nil, "/bin/true").Args, " ")
-	bind := "--ro-bind " + f + " " + f
-	if i := strings.Index(args, bind); i < 0 || i < strings.LastIndex(args, "--tmpfs") {
+	bindArgs := func() string { return strings.Join(s.wrap(t.Context(), ws, nil, "/bin/true").Args, " ") }
+	bind := "--ro-bind " + f.Path + " " + f.Path
+	if args := bindArgs(); !strings.Contains(args, bind) || strings.Index(args, bind) < strings.LastIndex(args, "--tmpfs") {
 		t.Fatalf("%s", args)
+	}
+	// Each swap makes its replacement before the original goes, so a
+	// reused inode number cannot pass for the pinned file.
+	swaps := map[string]func(tmp string) error{
+		"a folder": func(tmp string) error { return os.Mkdir(tmp, 0o700) },
+		"a link":   func(tmp string) error { return os.Symlink(dir, tmp) },
+		"another file": func(tmp string) error {
+			return os.WriteFile(tmp, []byte("#!/bin/sh\n"), 0o700) // #nosec G306 -- a script the test names
+		},
+	}
+	for name, swap := range swaps {
+		tmp := f.Path + ".new"
+		if err := swap(tmp); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(f.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, f.Path); err != nil {
+			t.Fatal(err)
+		}
+		if args := bindArgs(); strings.Contains(args, "--ro-bind "+f.Path) {
+			t.Errorf("swapped for %s, still bound:\n%s", name, args)
+		}
 	}
 }

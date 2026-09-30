@@ -40,7 +40,7 @@ func testSandbox(t *testing.T, ws string) sandbox.Sandbox {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Sandbox.MinTier = "none"
-	sb, err := statuslineSandbox(cfg, ws)
+	sb, _, _, err := statuslineSandbox(cfg, ws)
 	if err != nil {
 		t.Skipf("no process sandbox here: %v", err)
 	}
@@ -88,14 +88,14 @@ func TestStatuslineSandboxIsProcessWithNoNetwork(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.AllowNetwork = true
 	cfg.Sandbox.MinTier = "none"
-	if _, err := statuslineSandbox(cfg, ws); err != nil {
+	if _, _, _, err := statuslineSandbox(cfg, ws); err != nil {
 		t.Fatal(err)
 	}
 	if got.p.AllowNetwork || got.p.MinTier != sandbox.TierProcess {
 		t.Fatalf("policy %+v", got.p)
 	}
 	processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return &fakeProcess{p: p} }
-	if sb, err := statuslineSandbox(cfg, ws); err == nil || sb != nil {
+	if sb, _, _, err := statuslineSandbox(cfg, ws); err == nil || sb != nil {
 		t.Fatal("ran with no process sandbox")
 	}
 	// Refused once, said once, and nothing is shown.
@@ -120,7 +120,7 @@ func TestStatuslineHasNoNetwork(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.MinTier = "none"
 	cfg.Sandbox.AllowNetwork = true
-	sb, err := statuslineSandbox(cfg, ws)
+	sb, _, _, err := statuslineSandbox(cfg, ws)
 	if err != nil {
 		t.Skipf("no process sandbox here: %v", err)
 	}
@@ -132,32 +132,55 @@ func TestStatuslineHasNoNetwork(t *testing.T) {
 	}
 }
 
-// The documented example: a script in ~/.abhed, which the process sandbox
-// otherwise hides, runs as the statusline and nothing beside it is read.
-func TestStatuslineScriptInHomeState(t *testing.T) {
+// homeOutsideTemp is a HOME for one test outside every temp and cache
+// area, which a statusline script may not live in: a folder beside the test.
+func homeOutsideTemp(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(".", ".statusline-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = r
+	}
+	t.Setenv("HOME", abs)
+	return abs
+}
+
+func writeScript(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { // #nosec G306 -- the test's script
+		t.Fatal(err)
+	}
+}
+
+// A script in the home directory runs as the statusline, pinned: swapped
+// afterwards for a link to a hidden script or to the configuration, it is
+// not run, and nothing of either is shown.
+func TestStatuslineScriptPinned(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("sh")
 	}
-	home := t.TempDir()
-	if r, err := filepath.EvalSymlinks(home); err == nil {
-		home = r
-	}
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".abhed")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "status.sh"), []byte("#!/bin/sh\ncat \"$HOME/.abhed/secrets.json\" 2>/dev/null; echo from-home\n"), 0o700); err != nil { // #nosec G306 -- the test's script
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "secrets.json"), []byte(`{"K":"do-not-read"}`), 0o600); err != nil {
+	home := homeOutsideTemp(t)
+	state := filepath.Join(home, ".abhed")
+	writeScript(t, filepath.Join(home, "bin", "status.sh"), "#!/bin/sh\ncat \"$HOME/.abhed/secrets.json\" 2>/dev/null; echo from-home\n")
+	writeScript(t, filepath.Join(state, "hidden.sh"), "#!/bin/sh\necho hidden-ran\n")
+	if err := os.WriteFile(filepath.Join(state, "secrets.json"), []byte(`{"K":"do-not-read"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ws := t.TempDir()
 	cfg := config.Default()
 	cfg.Sandbox.MinTier = "none"
-	cfg.Statusline.Command = "~/.abhed/status.sh"
-	sb, err := statuslineSandbox(cfg, ws)
+	cfg.Statusline.Command = "~/bin/status.sh"
+	sb, _, _, err := statuslineSandbox(cfg, ws)
 	if err != nil {
 		t.Skipf("no process sandbox here: %v", err)
 	}
@@ -169,13 +192,83 @@ func TestStatuslineScriptInHomeState(t *testing.T) {
 	old := statuslineTimeout
 	statuslineTimeout = 10 * time.Second
 	t.Cleanup(func() { statuslineTimeout = old })
-	got, err := runStatusline(context.Background(), sb, ws, cfg.Statusline.Command, ui.StatusModel{})
-	if err != nil || got != "from-home" {
-		t.Fatalf("%q %v", got, err)
+	st := &cliState{appCfg: cfg, workspace: ws}
+	if got := st.statusLine(context.Background(), "default"); got != "from-home" {
+		t.Fatalf("%q", got)
 	}
-	for _, c := range []string{"echo hi", "status.sh", "~/.abhed/secrets.json", "~/.abhed/none.sh"} {
-		if f := statuslineScript(c, nil); f != "" {
-			t.Errorf("%q named %s", c, f)
+	for _, target := range []string{filepath.Join(state, "hidden.sh"), filepath.Join(state, "secrets.json")} {
+		link := filepath.Join(home, "bin", "status.sh")
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		got := st.statusLine(context.Background(), "default")
+		if strings.Contains(got, "hidden-ran") || strings.Contains(got, "do-not-read") || strings.Contains(got, "from-home") {
+			t.Fatalf("after a swap to %s: %q", target, got)
+		}
+	}
+	if !st.statuslineWarned {
+		t.Fatal("the swap was not said")
+	}
+}
+
+// A script is refused where the agent could change it or where Abhed keeps
+// its state, by where it is named and where it resolves.
+func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	users := filepath.Join(home, "etc-abhed")
+	for _, p := range []string{
+		filepath.Join(home, ".abhed", "s.sh"), filepath.Join(home, ".abhed", "skills", "x", "s.sh"),
+		filepath.Join(ws, ".abhed", "s.sh"), filepath.Join(users, "s.sh"), filepath.Join(ws, "s.sh"),
+		filepath.Join(home, ".cache", "s.sh"),
+	} {
+		writeScript(t, p, "#!/bin/sh\n")
+		if pin, _, err := statuslineScript(p+" --flag", ws, []string{users}); err == nil || pin.Info != nil {
+			t.Errorf("%s was taken", p)
+		}
+	}
+	tmp, err := os.CreateTemp("", "statusline-*.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tmp.Close()
+	t.Cleanup(func() { _ = os.Remove(tmp.Name()) })
+	if err := os.Chmod(tmp.Name(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := statuslineScript(tmp.Name(), ws, nil); err == nil {
+		t.Errorf("a temp script %s was taken", tmp.Name())
+	}
+	// A link from a fine place into the state resolves there, and is refused.
+	writeScript(t, filepath.Join(home, ".abhed", "inner.sh"), "#!/bin/sh\n")
+	link := filepath.Join(home, "bin", "link.sh")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".abhed", "inner.sh"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := statuslineScript(link, ws, nil); err == nil {
+		t.Error("a link into the state was taken")
+	}
+	ok := filepath.Join(home, "bin", "ok.sh")
+	writeScript(t, ok, "#!/bin/sh\n")
+	pin, rest, err := statuslineScript("~/bin/ok.sh --flag x", ws, []string{users})
+	if err != nil || pin.Path != ok || rest != " --flag x" {
+		t.Fatalf("%+v %q %v", pin, rest, err)
+	}
+	for _, c := range []string{"echo hi", "status.sh", "~/bin/none.sh"} {
+		if pin, _, err := statuslineScript(c, ws, nil); err != nil || pin.Info != nil {
+			t.Errorf("%q: %+v %v", c, pin, err)
 		}
 	}
 }

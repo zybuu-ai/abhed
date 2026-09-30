@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -31,58 +32,101 @@ var processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return sandbox.New
 
 // statuslineSandbox is where the statusline command runs: the process tier
 // with the network off, whatever the session's tier and network setting.
-// Where that tier is missing it is refused rather than run unsandboxed.
-func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, error) {
+// Where that tier is missing it is refused rather than run unsandboxed. It
+// returns the command to run, with a script named by path replaced by the
+// file pinned now, and that pin, whose Info is nil for an inline command.
+func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, string, sandbox.ReadableFile, error) {
+	command := cfg.Statusline.Command
 	p, err := sandboxconfig.Policy(cfg, workspace)
 	if err != nil {
-		return nil, err
+		return nil, "", sandbox.ReadableFile{}, err
 	}
 	p.MinTier = sandbox.TierProcess
 	p.AllowNetwork = false
-	if f := statuslineScript(cfg.Statusline.Command, p.StatePaths); f != "" {
-		p.ReadableFiles = []string{f}
+	pin, rest, err := statuslineScript(command, workspace, p.StatePaths)
+	if err != nil {
+		return nil, "", pin, err
+	}
+	if pin.Info != nil {
+		p.ReadableFiles = []sandbox.ReadableFile{pin}
+		command = shellQuote(pin.Path) + rest
 	}
 	sb := processSandbox(p)
 	if ok, why := sb.Available(); !ok {
-		return nil, fmt.Errorf("not run: it runs only under the process sandbox, which is not available here (%s)", why)
+		return nil, "", pin, fmt.Errorf("not run: it runs only under the process sandbox, which is not available here (%s)", why)
 	}
-	return sb, nil
+	return sb, command, pin, nil
 }
 
-// statuslineScript is the script a statusline command starts with, when it
-// names one by path (~/ or absolute): an executable regular file, which the
-// sandbox then shows read-only wherever it lives. A state file never is.
-func statuslineScript(command string, state []string) string {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return ""
+// statuslineScript pins the script a statusline command starts with, when it
+// names one by path (~/ or absolute) that is an executable file, and returns
+// the rest of the command. The agent must not be able to change what runs,
+// nor the script reach Abhed's state, so a script in the workspace, a temp
+// or cache area the sandbox writes, ~/.abhed, the workspace's .abhed or a
+// state path is refused, by where it is named and where it resolves.
+func statuslineScript(command, workspace string, state []string) (sandbox.ReadableFile, string, error) {
+	trimmed := strings.TrimLeft(command, " \t")
+	first, rest, _ := strings.Cut(trimmed, " ")
+	if rest != "" {
+		rest = " " + rest
 	}
-	path := fields[0]
-	if rest, ok := strings.CutPrefix(path, "~/"); ok {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
+	path := first
+	home, homeErr := os.UserHomeDir()
+	if tail, ok := strings.CutPrefix(path, "~/"); ok {
+		if homeErr != nil {
+			return sandbox.ReadableFile{}, "", nil
 		}
-		path = filepath.Join(home, rest)
+		path = filepath.Join(home, tail)
 	}
 	if !filepath.IsAbs(path) {
-		return ""
+		return sandbox.ReadableFile{}, "", nil
 	}
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return ""
+		return sandbox.ReadableFile{}, "", nil
 	}
-	real, err := filepath.EvalSymlinks(path)
+	pin, err := sandbox.PinReadable(path)
 	if err != nil {
-		return ""
+		return pin, "", fmt.Errorf("not run: %w", err)
 	}
-	for _, sp := range state {
-		if rs, err := filepath.EvalSymlinks(sp); err == nil && rs == real {
-			return ""
+	stateDirs := append([]string{filepath.Join(workspace, tools.StateDir)}, state...)
+	if homeErr == nil {
+		stateDirs = append(stateDirs, filepath.Join(home, tools.StateDir))
+	}
+	writable := append([]string{workspace}, sandbox.WritableAreas()...)
+	for _, p := range []string{path, pin.Path} {
+		if under(p, stateDirs) {
+			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is in Abhed's own state, which a statusline script may not be", config.Printable(first))
+		}
+		if under(p, writable) {
+			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is where the agent can change it (the workspace, a temp or cache area); put the script elsewhere, such as ~/bin", config.Printable(first))
 		}
 	}
-	return path
+	return pin, rest, nil
 }
+
+// under reports whether p is one of dirs or inside one, by its own
+// spelling and each dir's, as given and resolved.
+func under(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		spellings := []string{filepath.Clean(d)}
+		if r, err := filepath.EvalSymlinks(d); err == nil {
+			spellings = append(spellings, r)
+		}
+		for _, s := range spellings {
+			if rel, err := filepath.Rel(s, p); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// shellQuote quotes s for bash.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // runStatusline runs the configured statusline command with the status as
 // JSON on stdin and returns its first line, sanitized. A workspace's
@@ -198,10 +242,15 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	if cmd == "" {
 		return ""
 	}
-	c.statuslineOnce.Do(func() { c.statuslineSB, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace) })
+	c.statuslineOnce.Do(func() {
+		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace)
+	})
 	line, err := "", c.statuslineErr
+	if err == nil && c.statuslinePin.Info != nil && !c.statuslinePin.Same() {
+		err = fmt.Errorf("not run: %s is no longer the file checked at the start of the session", config.Printable(c.statuslinePin.Path))
+	}
 	if err == nil {
-		line, err = runStatusline(ctx, c.statuslineSB, c.workspace, cmd, c.statusModel(mode))
+		line, err = runStatusline(ctx, c.statuslineSB, c.workspace, c.statuslineCmd, c.statusModel(mode))
 	}
 	if err != nil {
 		if !c.statuslineWarned {

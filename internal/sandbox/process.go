@@ -208,14 +208,13 @@ func (s *Process) seatbeltProfile() string {
 	return b.String()
 }
 
-// readableFiles are the policy's readable files as named and as resolved,
-// since Seatbelt checks the path the kernel resolves.
+// readableFiles are the policy's readable files that are still the files
+// pinned; one swapped since is left out, so its allow goes with it.
 func (s *Process) readableFiles() []string {
 	var out []string
 	for _, f := range s.policy.ReadableFiles {
-		out = append(out, f)
-		if real, err := filepath.EvalSymlinks(f); err == nil && real != f {
-			out = append(out, real)
+		if f.Same() {
+			out = append(out, f.Path)
 		}
 	}
 	return out
@@ -320,10 +319,8 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		}
 		// Bound last and read-only, so a file named readable shows even
 		// where a mount above would hide its folder.
-		for _, f := range s.policy.ReadableFiles {
-			if real, err := filepath.EvalSymlinks(f); err == nil {
-				args = append(args, "--ro-bind", real, f)
-			}
+		for _, f := range s.readableFiles() {
+			args = append(args, "--ro-bind", f, f)
 		}
 		args = append(args, argv...)
 

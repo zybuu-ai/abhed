@@ -90,7 +90,7 @@ either into your file, and no answer writes nothing.
 ### A status line of your own
 
 ```json
-{"statusline": {"command": "~/.abhed/status.sh"}}
+{"statusline": {"command": "~/bin/abhed-status.sh"}}
 ```
 
 The command reads the session's status as one JSON object on stdin:
@@ -107,11 +107,24 @@ process sandbox with the network off, whatever the session's tier or
 `sandbox.allow_network`, for at most 300 ms. Where the process sandbox is
 not available it does not run at all: the status line is empty and one
 warning says why. When the command starts with a script named by path (`~/…` or
-absolute), such as the example above, that one file is shown to the sandbox
-read-only wherever it lives, even in `~/.abhed`, which the sandbox otherwise
-hides; it must be an executable file. What the script itself reads must be
-visible to the sandbox too: the workspace and the system directories are,
-while on Linux the rest of your home directory is not. Only
+absolute), such as the example above, that file is checked once, when the
+session starts, and pinned:
+
+- It must be an executable file somewhere the agent cannot change it, such
+  as `~/bin` or `/usr/local/bin`. A script in the workspace, in a temp or
+  toolchain cache folder, in `~/.abhed` (skills included), in the
+  workspace's `.abhed`, or in a configured state path is refused, whether it
+  is named there or a link resolves there. The status line then shows one
+  warning and nothing else.
+- The file it resolves to is what runs, and it is shown to the sandbox
+  read-only; on Linux, where the sandbox does not show your home directory,
+  that one file is bound in.
+- Before each run it must still be the same file. Replaced, or swapped for a
+  link, a folder or another file, it is not run, and the allow goes with it.
+
+What the script itself reads must be visible to the sandbox too: the
+workspace and the system directories are, while on Linux the rest of your
+home directory is not. Only
 text and colour reach the terminal: a sequence that would move the cursor,
 clear the screen, set the title or write the clipboard is dropped. In a
 workspace's configuration it needs trust, like any other process.

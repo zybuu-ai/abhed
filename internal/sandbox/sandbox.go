@@ -16,7 +16,9 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -53,6 +55,39 @@ func (t Tier) Strength() int {
 	}
 }
 
+// ReadableFile is a file pinned when it was checked: Path is resolved, with
+// no symlink in it, and Info is what it was then.
+type ReadableFile struct {
+	Path string
+	Info os.FileInfo
+}
+
+// PinReadable resolves path and pins the regular file it names.
+func PinReadable(path string) (ReadableFile, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ReadableFile{}, err
+	}
+	info, err := os.Lstat(real)
+	if err != nil {
+		return ReadableFile{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return ReadableFile{}, fmt.Errorf("%s is not a regular file", real)
+	}
+	return ReadableFile{Path: real, Info: info}, nil
+}
+
+// Same reports whether the file at Path is still the one pinned: a swap
+// of it, or of a folder above it, for another file or a folder is not.
+func (f ReadableFile) Same() bool {
+	if f.Info == nil {
+		return false
+	}
+	cur, err := os.Lstat(f.Path)
+	return err == nil && cur.Mode().IsRegular() && os.SameFile(cur, f.Info)
+}
+
 // Policy declares what a session's execution environment must provide.
 type Policy struct {
 	// MinTier is refused at startup if no available backend meets it.
@@ -67,8 +102,9 @@ type Policy struct {
 	ReadOnlyPaths []string
 	// ReadableFiles are single files a command may read, and run, even where
 	// they sit in an area the process tier hides, such as a statusline
-	// script in ~/.abhed. The process tier only; each is read-only.
-	ReadableFiles []string
+	// script outside the workspace on Linux. The process tier only; each is
+	// read-only, and dropped unless it is still the file that was pinned.
+	ReadableFiles []ReadableFile
 	// StatePaths are files or folders holding Abhed's state outside .abhed,
 	// such as a configured users file. Commands can neither read nor write
 	// them, as for .abhed.
