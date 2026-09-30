@@ -133,6 +133,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+Two changes need action before upgrading:
+
+- **`request_id` is now required on subagent approvals.** An answer to a
+  subagent's ask that names no `request_id` is refused with 409.
+- **Stop every older node before starting a new one on a shared Postgres.**
+  New nodes reconcile open sessions that older nodes, which keep no holder,
+  may still be running.
+
 - API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
   must name its `request_id`, from the `subagent.ask` event: an answer
   naming none is refused with 409, with or without a run live. The console,
