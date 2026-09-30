@@ -179,9 +179,15 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
-	MaxTurns  int
-	MaxTokens int
-	CompactAt float64 // fraction of the context window
+	// MaxTurns ends a run once the conversation has used this many turns.
+	MaxTurns int
+	// TurnsPerMessage, when positive, gives each message a person sends its
+	// own allowance: a run started by one may use this many more turns, and
+	// MaxTurns is moved to the turns used plus it. Zero keeps MaxTurns for
+	// the whole conversation, as a managed limit must be.
+	TurnsPerMessage int
+	MaxTokens       int
+	CompactAt       float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -504,7 +510,16 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
 	l.setPrompt(m.Text)
+	l.startMessage()
 	return l.run(ctx)
+}
+
+// startMessage gives a new message its own allowance of turns, when the loop
+// counts them per message.
+func (l *Loop) startMessage() {
+	if n := l.Config.TurnsPerMessage; n > 0 {
+		l.Config.MaxTurns = l.turns + n
+	}
 }
 
 // RunQueued continues the conversation with only the queued messages, for a
@@ -515,6 +530,7 @@ func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
 	if !l.hasWork() {
 		return TermCompleted, nil
 	}
+	l.startMessage()
 	return l.run(ctx)
 }
 

@@ -54,6 +54,9 @@ type cliState struct {
 	// overlay is the session's own permission rules, which a new
 	// conversation starts without.
 	overlay *policy.Overlay
+	// turnLimit is the loop's configured turn limit: per message, or for the
+	// whole conversation under a managed one; see turnsPerMessage.
+	turnLimit int
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

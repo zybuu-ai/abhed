@@ -24,6 +24,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	budget *agent.Budget, extHost *extension.Host) int {
 
 	s := r.Style()
+	cfg.TurnsPerMessage = turnsPerMessage(appCfg, cfg.MaxTurns)
 	sandboxLabel := "none"
 	if sb, err := buildSandbox(appCfg, workspace); err == nil {
 		sandboxLabel = string(sb.Tier())
@@ -96,6 +97,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
 		workspace: sess.Root, adapter: adapter, provider: provider, overlay: pol.Session,
+		turnLimit: cfg.MaxTurns,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
@@ -266,7 +268,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
 		if runReason == agent.TermMaxTurns {
-			fmt.Println(s.Dim("  the turn limit counts the whole conversation; /clear starts a new one"))
+			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns)))
 		}
 		fmt.Println()
 

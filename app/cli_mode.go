@@ -37,7 +37,7 @@ func switchMode(cfg config.Config, pol *policy.Engine, arg string) error {
 // auto needs a typed yes, and the managed configuration is asked first.
 func slashMode(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if len(args) == 0 {
-		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: describeModes(e.st.appCfg, e.pol.Mode, e.modes.Offered())})
+		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: describeModes(e.st.appCfg, e.pol.Mode, e.modes.Offered(), e.st.maxTurns())})
 		return false, nil
 	}
 	mode := policy.Mode(args[0])
@@ -73,7 +73,7 @@ const autoExplained = "Auto approves, by rule and without asking: read-only tool
 	"out. Deny rules still refuse in every mode."
 
 // describeModes is what /mode shows with no argument.
-func describeModes(cfg config.Config, current policy.Mode, offered []policy.Mode) string {
+func describeModes(cfg config.Config, current policy.Mode, offered []policy.Mode, maxTurns int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "current mode: %s\n", current)
 	names := make([]string, len(offered))
@@ -86,6 +86,9 @@ func describeModes(cfg config.Config, current policy.Mode, offered []policy.Mode
 	}
 	if cfg.ManagedSets("permissions.mode") {
 		fmt.Fprintf(&b, "\nthe managed configuration sets %s; only it or plan may be chosen", orDefault(cfg.Permissions.Mode, "default"))
+	}
+	if maxTurns > 0 {
+		b.WriteString("\n" + turnLimitSummary(cfg, maxTurns))
 	}
 	return b.String()
 }
@@ -240,4 +243,40 @@ func (a lineAnswers) Await(ctx context.Context) (string, bool) {
 	case <-ctx.Done():
 		return "", false
 	}
+}
+
+// turnsPerMessage is the allowance of turns the interactive CLI gives each
+// message: the configured limit, per message, unless the managed
+// configuration sets limits.max_turns, which then bounds the whole
+// conversation as the organisation wrote it.
+func turnsPerMessage(cfg config.Config, maxTurns int) int {
+	if cfg.ManagedSets("limits.max_turns") || maxTurns <= 0 {
+		return 0
+	}
+	return maxTurns
+}
+
+// turnLimitSummary says which turn limit applies, for /mode.
+func turnLimitSummary(cfg config.Config, maxTurns int) string {
+	if turnsPerMessage(cfg, maxTurns) > 0 {
+		return fmt.Sprintf("turn limit: %d for each message", maxTurns)
+	}
+	return fmt.Sprintf("turn limit: %d for the whole conversation, set by the managed configuration", maxTurns)
+}
+
+// turnLimitNote is said when a run stops at the turn limit.
+func turnLimitNote(cfg config.Config, maxTurns int) string {
+	if turnsPerMessage(cfg, maxTurns) > 0 {
+		return fmt.Sprintf("stopped after %d turns for this message; send \"continue\" to let it go on", maxTurns)
+	}
+	return fmt.Sprintf("the managed configuration allows %d turns for the whole conversation; /clear starts a new one", maxTurns)
+}
+
+// maxTurns is the conversation's turn limit as its loop was configured, or
+// the configured limit before one has opened.
+func (c *cliState) maxTurns() int {
+	if n := c.turnLimit; n > 0 {
+		return n
+	}
+	return c.appCfg.Limits.MaxTurns
 }
