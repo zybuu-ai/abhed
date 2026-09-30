@@ -224,6 +224,7 @@ func (f *footer) runStatusLine() {
 	f.mu.Unlock()
 	input, _ := json.Marshal(f.model())
 	go func() {
+		defer ui.RestoreOnPanic()
 		ctx, cancel := context.WithTimeout(context.Background(), statusLineTimeout)
 		defer cancel()
 		cmd := f.sb.Command(ctx, f.root, f.command)

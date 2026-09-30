@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/term"
@@ -32,6 +33,35 @@ type LineReader struct {
 	close   sync.Once
 	// resize, for a reader over a stream, sets the size it reports.
 	resize func(cols, rows int)
+	// tty is the terminal itself, kept before Capture replaces os.Stdout,
+	// for restoring it after a panic without the dock's lock.
+	tty *os.File
+}
+
+// activeReader is the terminal to restore if the program panics.
+var activeReader atomic.Pointer[LineReader]
+
+// RestoreOnPanic, deferred at the top of a goroutine, puts the terminal back
+// in its ordinary mode before a panic ends the program, then lets the panic
+// go on: a shell left in raw mode, with bracketed paste and the keyboard
+// protocol on, is unusable. It takes no lock, since the panic may have
+// happened while one was held.
+func RestoreOnPanic() {
+	if r := recover(); r != nil {
+		if l := activeReader.Load(); l != nil {
+			l.emergencyRestore()
+		}
+		panic(r)
+	}
+}
+
+func (l *LineReader) emergencyRestore() {
+	if l.tty != nil {
+		_, _ = l.tty.WriteString("\x1b[0m" + modesOff + "\r\n")
+	}
+	if l.state != nil {
+		_ = term.Restore(l.fd, l.state)
+	}
 }
 
 // Terminal modes the dock turns on while it runs, and off when it closes:
@@ -128,7 +158,8 @@ func NewLineReader(prompt string) *LineReader {
 	}
 	d.extEdit = func(text string) (string, error) { return externalEdit(fd, state, text) }
 	go cleanDrafts()
-	l := &LineReader{d: d, fd: fd, state: state, raw: true, done: make(chan struct{})}
+	l := &LineReader{d: d, fd: fd, state: state, raw: true, done: make(chan struct{}), tty: os.Stdout}
+	activeReader.Store(l)
 	d.scr.raw(modesOn)
 	l.start()
 	watchResize(l.done, d.resized)
@@ -168,6 +199,7 @@ func (l *LineReader) start() {
 // tick drives what changes with time: the activity line's spinner and
 // clock, a hint's expiry, and — where no resize signal exists — the size.
 func (l *LineReader) tick() {
+	defer RestoreOnPanic()
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -425,6 +457,7 @@ func (l *LineReader) Close() {
 		return
 	}
 	l.close.Do(func() {
+		activeReader.CompareAndSwap(l, nil)
 		close(l.done)
 		l.d.mu.Lock()
 		l.d.endDialogs()
@@ -570,6 +603,7 @@ func (l *LineReader) Capture() func() {
 
 	var wg sync.WaitGroup
 	pump := func(r *os.File) {
+		defer RestoreOnPanic()
 		defer wg.Done()
 		buf := make([]byte, 32*1024)
 		for {

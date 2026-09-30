@@ -59,6 +59,7 @@ func (c *cliState) follow(store server.EventStore, id string, r *ui.Renderer) {
 	c.rendered.Store(0)
 	done := make(chan struct{})
 	go func() {
+		defer ui.RestoreOnPanic() // a panic drawing an event must not leave the terminal raw
 		defer close(done)
 		for ev := range events {
 			r.Event(ev)

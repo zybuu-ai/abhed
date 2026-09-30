@@ -19,6 +19,7 @@ func watchResize(done <-chan struct{}, f func()) {
 	ch := make(chan os.Signal, 8)
 	signal.Notify(ch, syscall.SIGWINCH)
 	go func() {
+		defer RestoreOnPanic()
 		defer signal.Stop(ch)
 		var settle <-chan time.Time
 		for {

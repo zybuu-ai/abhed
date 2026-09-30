@@ -166,6 +166,7 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 // run reads keys until input ends. Everything it does happens under the
 // lock; handlers that call back into the session run after it is released.
 func (d *dock) run() {
+	defer RestoreOnPanic()
 	for {
 		k, err := d.kr.read()
 		if err != nil {

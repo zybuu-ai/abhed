@@ -174,6 +174,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		ft.refresh(sessionState, pol)
 		r.StartThinking()
 		go func() {
+			defer ui.RestoreOnPanic() // a panic in the turn must not leave the terminal raw
 			reason, err := start(taskCtx, loop)
 			finished <- turnOutcome{reason, err}
 		}()
