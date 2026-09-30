@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -906,8 +905,9 @@ func (b *Background) requeue(ns []Notice) {
 }
 
 // QueueNotices adds notices rebuilt from the record, such as a result that
-// arrived before a restart, for the next delivery. A task's notice already
-// waiting is not queued twice.
+// arrived before a restart, for the next delivery. ns is everything the
+// record owes, in order; what already waits here is its first part, and is
+// not queued twice (a resumed task may owe more than one).
 func (l *Loop) QueueNotices(ns []Notice) {
 	if len(ns) == 0 {
 		return
@@ -916,13 +916,18 @@ func (l *Loop) QueueNotices(ns []Notice) {
 		NewBackground(l, BackgroundPolicy{Wake: WakeOff})
 	}
 	b := l.Background
+	b.mu.Lock()
+	waiting := map[string]int{}
+	for _, q := range b.notices {
+		waiting[q.TaskID]++
+	}
+	b.mu.Unlock()
 	for _, n := range ns {
-		b.mu.Lock()
-		dup := slices.ContainsFunc(b.notices, func(q Notice) bool { return q.TaskID == n.TaskID })
-		b.mu.Unlock()
-		if !dup {
-			b.push(n)
+		if waiting[n.TaskID] > 0 {
+			waiting[n.TaskID]--
+			continue
 		}
+		b.push(n)
 	}
 }
 
@@ -1132,15 +1137,19 @@ func (b *Background) onRunEnd(reason TerminalReason) {
 // reads a child's own record, for its last answer.
 func PendingNotices(events []Event, child func(id string) ([]Event, error)) []Notice {
 	events = Live(events)
-	delivered := map[string]bool{}
+	// A resumed task returns once per run under one id: the n-th return is
+	// paired with the n-th notice, so a later run's result is still owed
+	// after an earlier one was delivered.
+	delivered := map[string]int{}
 	for _, e := range events {
 		if e.Type == EvSubagentNotice {
 			var n Notice
 			if json.Unmarshal(e.Payload, &n) == nil {
-				delivered[n.TaskID] = true
+				delivered[n.TaskID]++
 			}
 		}
 	}
+	returned := map[string]int{}
 	var out []Notice
 	for _, e := range events {
 		if e.Type != EvSubagentReturn {
@@ -1158,14 +1167,18 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 			Provider    string `json:"provider"`
 			Model       string `json:"model"`
 		}
-		if json.Unmarshal(e.Payload, &r) != nil || !r.Background || r.TaskID == "" || delivered[r.TaskID] {
+		if json.Unmarshal(e.Payload, &r) != nil || !r.Background || r.TaskID == "" {
 			continue
 		}
-		delivered[r.TaskID] = true
+		returned[r.TaskID]++
+		run := returned[r.TaskID]
+		if run <= delivered[r.TaskID] {
+			continue
+		}
 		content := ""
 		if child != nil {
 			if evs, err := child(r.Session); err == nil {
-				content = lastAgentMessage(evs)
+				content = answerOfRun(evs, run)
 			}
 		}
 		if strings.TrimSpace(content) == "" {
@@ -1183,6 +1196,26 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 			CallID: "bgn_" + newID(), Content: content})
 	}
 	return out
+}
+
+// answerOfRun is a child's last non-empty answer before the end of its n-th
+// run, or its last answer when the record has fewer ends.
+func answerOfRun(evs []Event, n int) string {
+	last, ends := "", 0
+	for _, e := range evs {
+		switch e.Type {
+		case EvAgentMessage:
+			var m Message
+			if json.Unmarshal(e.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+				last = m.Text
+			}
+		case EvSessionEnded:
+			if ends++; ends == n {
+				return last
+			}
+		}
+	}
+	return lastAgentMessage(evs)
 }
 
 // lastAgentMessage is the last non-empty answer in a record.

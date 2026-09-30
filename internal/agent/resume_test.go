@@ -447,3 +447,34 @@ func TestResumeNeverFallsBackToTheMainTree(t *testing.T) {
 		t.Fatalf("a child recorded in the workspace, by another path to it: %v", err)
 	}
 }
+
+// A task resumed in the background returns twice under one id. With its
+// first result delivered and its second not, a restart still owes the
+// second, with the second run's answer.
+func TestPendingNoticeAfterBackgroundResume(t *testing.T) {
+	r := newResumeRig(t, "")
+	id, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "work", Description: "d", AgentType: "general"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the first notice", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 1 })
+	// The second run's result must not be delivered before the "restart".
+	r.l.runMu.Lock()
+	defer r.l.runMu.Unlock()
+	if _, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "more", Resume: id}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the second return", func() bool {
+		n := 0
+		for _, p := range payloads[map[string]any](r.events(t), EvSubagentReturn) {
+			if p["task_id"] == id {
+				n++
+			}
+		}
+		return n == 2
+	})
+	pend := PendingNotices(r.events(t), r.store.Events)
+	if len(pend) != 1 || pend[0].TaskID != id || !strings.Contains(pend[0].Content, "second answer") {
+		t.Fatalf("owed after a restart: %+v", pend)
+	}
+}

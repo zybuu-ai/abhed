@@ -606,7 +606,8 @@ func TestChildEndAndNoticeAreAtomic(t *testing.T) {
 	noNoticeAfterClosingEnd(t, r.events(t))
 }
 
-// A task's result rebuilt from the record twice is queued once.
+// A task's result rebuilt from the record twice is queued once; a resumed
+// task owing two results has both queued.
 func TestQueueNoticesOncePerTask(t *testing.T) {
 	r := newBGRig(t, WakeOff)
 	n := Notice{TaskID: "t-1", Session: "t-1", CallID: "bgn_1", Content: "x"}
@@ -614,6 +615,10 @@ func TestQueueNoticesOncePerTask(t *testing.T) {
 	r.l.QueueNotices([]Notice{n, {TaskID: "t-2", Session: "t-2", CallID: "bgn_2"}})
 	if got := r.l.Background.Pending(); got != 2 {
 		t.Fatalf("pending %d, want 2", got)
+	}
+	r.l.QueueNotices([]Notice{n, {TaskID: "t-1", Session: "t-1", CallID: "bgn_3", Content: "y"}})
+	if got := r.l.Background.Pending(); got != 3 {
+		t.Fatalf("pending %d, want 3: the resumed task's second result was dropped", got)
 	}
 }
 
