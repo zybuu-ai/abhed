@@ -329,3 +329,22 @@ func TestWorkspaceCannotRaiseWake(t *testing.T) {
 		}
 	}
 }
+
+// A file swapped in between the check on the path and the open is refused:
+// the open file must be the one that was checked.
+func TestAgentFileSwappedAfterCheckRefused(t *testing.T) {
+	dir := t.TempDir()
+	checked := filepath.Join(dir, "a.md")
+	swapped := filepath.Join(dir, "b.md")
+	for _, p := range []string{checked, swapped} {
+		if err := os.WriteFile(p, []byte(reviewerDef), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := openAgent
+	openAgent = func(string) (*os.File, error) { return os.Open(swapped) }
+	defer func() { openAgent = old }()
+	if _, err := ReadAgentFile(checked); err == nil || !strings.Contains(err.Error(), "changed while it was read") {
+		t.Fatalf("a swapped file was read: %v", err)
+	}
+}

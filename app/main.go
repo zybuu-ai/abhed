@@ -35,6 +35,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/eval"
 	"github.com/zybuu-ai/abhed/internal/extension"
@@ -2683,6 +2684,10 @@ func (a *App) doctor(workspace string) int {
 	fmt.Printf("model       %s\n", provider.Model)
 	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
 	printDoctorTrust(os.Stdout, cfg.Workspace)
+	// A managed definition named with another case is silently not read.
+	for _, w := range agentdefs.ManagedCaseWarnings(managed.AgentsDir) {
+		fmt.Printf("agents      ⚠ %s\n", w)
+	}
 	unknown := printUnknown(os.Stdout, cfg)
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
 		label := string(sb.Tier())

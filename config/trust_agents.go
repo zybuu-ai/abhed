@@ -141,7 +141,23 @@ func ReadAgentFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file; a link is not followed")
 	}
-	f, err := os.Open(path) // #nosec G304 -- a workspace definition, checked above and below
+	return ReadAgentOpened(path, openAgent, func(opened os.FileInfo) error {
+		if !os.SameFile(info, opened) {
+			return fmt.Errorf("changed while it was read")
+		}
+		return nil
+	})
+}
+
+// openAgent opens a definition; a variable so a test can swap the file
+// between the check on the path and the open.
+var openAgent = os.Open
+
+// ReadAgentOpened opens path once, applies every rule to that open file (a
+// regular file, one name, check) and reads from it, so what is checked is what
+// is read, whatever happens to the path meanwhile.
+func ReadAgentOpened(path string, open func(string) (*os.File, error), check func(os.FileInfo) error) ([]byte, error) {
+	f, err := open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +166,11 @@ func ReadAgentFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !os.SameFile(info, opened) {
-		return nil, fmt.Errorf("changed while it was read")
+	if !opened.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	if err := check(opened); err != nil {
+		return nil, err
 	}
 	if n := nlink.Of(opened); n > 1 {
 		return nil, fmt.Errorf("has %d names; a definition with a second name is not read", n)

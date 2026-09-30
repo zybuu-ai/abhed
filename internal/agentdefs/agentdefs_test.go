@@ -260,9 +260,9 @@ func TestRefusedManagedNameStaysReserved(t *testing.T) {
 	}
 
 	// A link to a root-owned, unshared file is followed.
-	old := ManagedOwnerOK
-	ManagedOwnerOK = func(os.FileInfo) bool { return true }
-	defer func() { ManagedOwnerOK = old }()
+	old := managedOwnerOK
+	managedOwnerOK = func(os.FileInfo) bool { return true }
+	defer func() { managedOwnerOK = old }()
 	defs, _ = Load(Options{ManagedDir: managed, Dirs: []string{op}})
 	names := map[string]string{}
 	for _, d := range defs {

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 func workspaceAgent(t *testing.T, ws, name, body string) {
@@ -124,5 +125,21 @@ func TestCLIOffersAgentDefinitions(t *testing.T) {
 		if strings.Contains(sent, "repos — the repository's role") != c.repo {
 			t.Fatalf("%v: the workspace's definition offered = %v", c.args, !c.repo)
 		}
+	}
+}
+
+// doctor names a managed definition that is not read because of its case.
+func TestDoctorWarnsManagedCase(t *testing.T) {
+	_, ws := trustWorkspace(t, `{}`)
+	dir := t.TempDir()
+	old := managed.AgentsDir
+	managed.AgentsDir = dir
+	defer func() { managed.AgentsDir = old }()
+	if err := os.WriteFile(filepath.Join(dir, "sec.MD"), []byte("---\ndescription: d\n---\nx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	if !strings.Contains(out, "sec.MD is not read") {
+		t.Fatalf("doctor does not name the managed file:\n%s", out)
 	}
 }

@@ -131,9 +131,14 @@ Highest first:
    host (for example, it names a model that is not configured here, or it is
    too large): every `*.md` file there reserves its name, and the role is then
    unavailable, never replaced. A managed file may be a link, as configuration
-   management installs them, only to a regular file owned by root and writable
-   by nobody else. If `/etc/abhed/agents` exists but cannot be listed, no
-   workspace or operator definition loads at all, only the built-in roles.
+   management installs them, only when every directory and link on the way to
+   it, and the file itself, is owned by root and writable by nobody else; the
+   file is checked as it is opened and read from that same open file. On
+   Windows a managed link is never followed, and its name is still held. If
+   `/etc/abhed/agents` exists but cannot be listed, or is a link that leads
+   nowhere, no workspace or operator definition loads at all, only the
+   built-in roles. Only files ending in `.md` are read; `abhed doctor` names a
+   managed file such as `sec.MD` that is not.
 2. **The workspace:** `.abhed/agents/*.md`, only when you trust that exact
    content (below).
 3. **Yours:** `agents.dirs`, by default `~/.abhed/agents`. With several

@@ -158,10 +158,63 @@ func claimedName(path string, data []byte) string {
 	return strings.TrimSuffix(filepath.Base(path), ".md")
 }
 
-// ManagedOwnerOK decides whether a managed definition reached through a
-// symlink may be followed: the target must be owned by root and writable by
-// nobody else. A variable so a test, which does not run as root, can say.
-var ManagedOwnerOK = rootOwnedNotShared
+// managedOwnerOK decides whether a file, directory or link on the way to a
+// managed definition reached through a symlink is the organisation's: owned
+// by root and, but for a link, writable by nobody else. A variable so a test,
+// which does not run as root, can stand in for the owner.
+var managedOwnerOK = rootOwnedNotShared
+
+// openManaged opens a managed definition's path, following its links. A
+// variable so a test can show the file checked is the file read.
+var openManaged = os.Open
+
+// managedHops bounds the links followed from a managed entry.
+const managedHops = 40
+
+// strictPath walks every directory and link from the filesystem's root to
+// where path leads, as sshd's StrictModes does, and refuses one that is not
+// the organisation's: somebody else able to write any step could point the
+// managed name at a file of their choosing. It returns the resolved path.
+func strictPath(path string) (string, error) {
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+	cur := string(filepath.Separator)
+	if fi, err := os.Lstat(cur); err != nil || !managedOwnerOK(fi) {
+		return "", fmt.Errorf("%s is not the organisation's", cur)
+	}
+	for hops, i := 0, 0; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		next := filepath.Join(cur, parts[i])
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if !managedOwnerOK(fi) {
+			return "", fmt.Errorf("%s may be changed by someone other than root", config.Printable(next))
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if hops++; hops > managedHops {
+				return "", fmt.Errorf("too many links")
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(cur, target)
+			}
+			rest := append(strings.Split(strings.TrimPrefix(filepath.Clean(target), string(filepath.Separator)), string(filepath.Separator)), parts[i+1:]...)
+			parts, i, cur = rest, -1, string(filepath.Separator)
+			continue
+		}
+		if i < len(parts)-1 && !fi.IsDir() {
+			return "", fmt.Errorf("%s is not a directory", config.Printable(next))
+		}
+		cur = next
+	}
+	return cur, nil
+}
 
 // readManaged reads the organisation's directory. Every *.md entry claims
 // its file name, and a file that loads claims its name key too, whether or
@@ -169,6 +222,13 @@ var ManagedOwnerOK = rootOwnedNotShared
 // is reported as unlistable, and the caller fails closed.
 func readManaged(dir string) (files []file, claims map[string]string, unlistable bool, errs []error) {
 	claims = map[string]string{}
+	// A managed directory that is a link leading nowhere is not "no managed
+	// definitions": the organisation's names are unknown, so it fails closed.
+	if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if _, err := os.Stat(dir); err != nil {
+			return nil, claims, true, []error{fmt.Errorf("agent definitions: %s is a link that leads nowhere: %w", config.Printable(dir), err)}
+		}
+	}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, claims, false, nil
@@ -205,18 +265,37 @@ func readManagedFile(path string) ([]byte, error) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		return config.ReadAgentFile(path)
 	}
-	target, err := filepath.EvalSymlinks(path)
+	// Every step to the target must be the organisation's, so that nobody
+	// else can change where the link leads; then the checks are made on the
+	// file as opened, and it is read from that same handle.
+	target, err := strictPath(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("a link is followed only along a path of root's that nobody else may change: %w", err)
 	}
-	tinfo, err := os.Lstat(target)
+	return config.ReadAgentOpened(target, openManaged, func(opened os.FileInfo) error {
+		if !managedOwnerOK(opened) {
+			return fmt.Errorf("a link is followed only to a regular file owned by root and writable by nobody else")
+		}
+		return nil
+	})
+}
+
+// ManagedCaseWarnings names the entries of the managed directory that look
+// like definitions but are not read, such as sec.MD: only *.md loads, and
+// such a file holds no name for the organisation.
+func ManagedCaseWarnings(dir string) []string {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, err
+		return nil
 	}
-	if !tinfo.Mode().IsRegular() || !ManagedOwnerOK(tinfo) {
-		return nil, fmt.Errorf("a link is followed only to a regular file owned by root and writable by nobody else")
+	var out []string
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasSuffix(strings.ToLower(n), ".md") && !strings.HasSuffix(n, ".md") {
+			out = append(out, fmt.Sprintf("%s is not read: only files ending in .md are definitions", config.Printable(filepath.Join(dir, n))))
+		}
 	}
-	return config.ReadAgentFile(target)
+	return out
 }
 
 // readDir reads a directory's *.md files, sorted. A missing directory is not
