@@ -38,6 +38,13 @@ render({seq:35, type:'agent.message', payload:{text:'THE-ANSWER'}});
     answer > 0 && all.lastIndexOf('subagent started: probe') < answer && all.lastIndexOf('subagent finished: completed') < answer);
 }
 
+// An ask with no request id is not drawn as a card anyone could answer.
+{
+  const before = cards().length;
+  render({seq:40, type:'subagent.ask', payload:{session:'child', subagent:'x', call_id:'c40', tool:'bash', args:{command:'touch nid'}}});
+  check('an ask with no request id draws no answerable card', cards().length === before && tx.textContent.includes('no request id'));
+}
+
 // A pipeline step's ask names the pipeline asking.
 render({seq:4, type:'subagent.ask', payload:{session:'child', subagent:'runner', request_id:'cev10', call_id:'c4',
   tool:'bash', args:{command:'date -u > stamp.txt'}, via:'skill tide-audit pipeline'}});

@@ -1592,7 +1592,8 @@ function render(ev){
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   // Its row stays in the chat, so a reopened session shows what was decided.
-  case 'subagent.ask': { const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
+  case 'subagent.ask': { if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
+    const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
     asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
   case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
     if(!ok){ c.node.classList.add('denied'); } c.res.textContent = ok ? 'allowed' : 'denied';
@@ -1660,6 +1661,8 @@ function drawPlan(items){
   add(todoNode);
 }
 function askApproval(p, rid){
+  // An answer names its request; without one the server would apply it to whatever is pending.
+  if(!rid) return;
   const a = el('div', 'ask'); a.dataset.call = p.call_id;
   a.appendChild(el('b', '', 'Allow ' + p.tool + '?')); a.appendChild(el('p', '', (subjectOf(p.tool, p.args) || '') + (p.reason ? '  —  ' + p.reason : '')));
   const btns = el('div', 'btns');

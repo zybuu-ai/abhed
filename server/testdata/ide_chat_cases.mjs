@@ -272,6 +272,12 @@ es = {}; __routes.length = 0; live = false;
 watchIdle(); await tick();
 check('a page with a stream open does not ask', !__routes.includes('GET /v1/sessions'));
 
+// An ask with no request id is not drawn as a card anyone could answer.
+fresh('s23', true);
+render(ev(1, 'subagent.ask', {session:'child', subagent:'x', call_id:'k9', tool:'bash', args:{command:'touch nid'}}));
+askApproval({call_id:'w9', tool:'bash', args:{command:'ls'}}, undefined);
+check('an ask with no request id draws no answerable card', open().length === 0 && __root.textContent.includes('no request id'));
+
 // A pipeline step's ask names the pipeline asking.
 fresh('s19', true);
 render(ev(1, 'action.requested', {call_id:'step_1', tool:'bash', args:{command:'date -u > stamp.txt'}, requires_approval:true, via:'skill tide-audit pipeline'}));

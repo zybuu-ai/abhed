@@ -1355,6 +1355,7 @@ function render(ev){
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.
     case 'subagent.ask': {
+      if(!p.request_id){ tx.appendChild(node('note', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
       hideThinking();
       const id = 'subagent-' + p.request_id;
       const wrap = node('call');
@@ -1610,6 +1611,8 @@ function setPeek(wrap, content){
 
 /* ------------------------------------------------------------------ approvals */
 function approval(p, rid){
+  // An answer names its request; without one the server would apply it to whatever is pending.
+  if(!rid) return;
   const card = node('approve');
   const h = document.createElement('h4');
   h.textContent = 'Approval required — ' + p.tool;
