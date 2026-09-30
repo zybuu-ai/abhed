@@ -7,9 +7,6 @@ import (
 	"unicode/utf8"
 )
 
-// hiddenWarning is shown with a prompt whose text had characters made visible.
-const hiddenWarning = "! this call contains hidden or control characters"
-
 // Visible returns s with every character that could change what a terminal
 // shows, rather than print as itself, written out as a visible escape: C0
 // controls other than newline and tab, DEL, C1 controls, invalid UTF-8, line
@@ -89,17 +86,4 @@ func controlEscape(r rune) string {
 		return `\v`
 	}
 	return fmt.Sprintf(`\x%02x`, r)
-}
-
-// visibleTracker makes each field visible and remembers whether any changed,
-// so a prompt can say it is showing characters the model tried to hide.
-type visibleTracker struct{ hidden bool }
-
-// line escapes newlines too, but a newline alone does not raise the warning:
-// a multi-line command hides nothing once it is shown as \n.
-func (v *visibleTracker) line(s string) string {
-	if HasHidden(s) {
-		v.hidden = true
-	}
-	return VisibleLine(s)
 }
