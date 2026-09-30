@@ -152,7 +152,13 @@ func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	if k.widens(k.get(c), value) {
+	// Judged against the person's own file, not this session: a session
+	// already widened by a flag or a workspace must not make that permanent unasked.
+	own, err := userFileConfig()
+	if err != nil {
+		return err
+	}
+	if k.widens(k.get(own), value) {
 		ans, err := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm,
 			Title: fmt.Sprintf("Set %s to %s in your own configuration?", path, config.Printable(value)),
 			Why:   "this lets the agent do more than it does now"})
@@ -166,6 +172,27 @@ func configSet(ctx context.Context, e *cmdEnv, path, value string) error {
 	}
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("%s set in %s; it applies from the next session", path, config.Printable(file))})
 	return nil
+}
+
+// userFileConfig is the defaults with only the person's own file laid over them.
+func userFileConfig() (config.Config, error) {
+	cfg := config.Default()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return cfg, err
+	}
+	file := filepath.Join(home, ".abhed", "config.json")
+	data, err := os.ReadFile(file) // #nosec G304 -- the person's own ~/.abhed/config.json
+	if errors.Is(err, os.ErrNotExist) {
+		return cfg, nil
+	}
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("%s is not valid JSON, so it was not changed: %w", file, err)
+	}
+	return cfg, nil
 }
 
 // writeUserSetting sets one dotted path in ~/.abhed/config.json, keeping
@@ -202,9 +229,18 @@ func writeUserSetting(path string, v any) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		return file, err
 	}
-	tmp := file + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	// A fresh name each time: a fixed one could be a planted link.
+	tmp, err := os.CreateTemp(filepath.Dir(file), "config.json.*.tmp")
+	if err != nil {
 		return file, err
 	}
-	return file, os.Rename(tmp, file)
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return file, err
+	}
+	if err := tmp.Close(); err != nil {
+		return file, err
+	}
+	return file, os.Rename(tmp.Name(), file)
 }

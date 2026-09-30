@@ -78,6 +78,10 @@ configuration names the fallbacks too.
 `/config set` refuses a setting the managed configuration makes, and asks
 before a change that lets the agent do more: a broader mode, network on, a
 higher or no turn limit, a looser syntax check, or a statusline command.
+"More" is judged against your own file, or the default where it says
+nothing, not against the session: a session already in bypass from a flag,
+or with network on from a trusted workspace, still asks before writing
+either into your file, and no answer writes nothing.
 
 ### A status line of your own
 
