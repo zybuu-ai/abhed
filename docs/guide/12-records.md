@@ -82,8 +82,10 @@ cache.
   explains the trade). The head can then survive while cached lines do not:
   the session reports lines missing, a false alarm of a cut, and is not
   written to again. `abhed -r` goes on from it in a new session after a yes.
-- A crash between a record's first line and its first head leaves one line
-  and no head file; that is noted, not failed, and the next write settles it.
+- A session and the index are created with a head that counts no lines,
+  before their first line. A crash before the first real head leaves that
+  head behind the lines, which is noted, not failed; a missing head file is
+  always damage.
 - If the index fails (a lost or damaged `index.head`, a cut line), no new
   session starts until it is looked at. `abhed record verify` names the line.
   Moving `index.jsonl` and `index.head` aside keeps them as evidence and
@@ -204,8 +206,9 @@ the step, the line and the event where it can, when:
 - the head file is missing, malformed, or names a line the record does not hold;
 - a line the index recorded at the end of a run is gone or different, which
   still shows after the head file was rewritten to match a cut;
-- a session the index lists is missing with no prune recorded, or a file in
-  the records folder is not in the index;
+- a session the index lists is missing with no prune recorded, or a session
+  file in the records folder is not in the index (checked by `verify` with no
+  argument, and for a file named on its own);
 - the index was edited, reordered or cut, or its head no longer matches it.
 
 A record that fails is never written to again. Reading it, verifying it,

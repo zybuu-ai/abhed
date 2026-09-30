@@ -322,36 +322,79 @@ func TestUnverifiedMarkIsRequired(t *testing.T) {
 	}
 }
 
-// A crash between a record's first line and its first head leaves one line
-// and no head: that is noted, not failed, for a session and for the index,
-// and writing goes on. Two lines and no head still fail.
-func TestFirstLineWithoutAHeadIsACrash(t *testing.T) {
+// A crash between a record's first line and its first real head leaves the
+// sentinel head it was created with: that is a head behind the lines, noted,
+// and writing goes on. (The sentinel is on disk before any line.)
+func TestSentinelHeadCoversTheFirstWrite(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	if err := s.CreateSession(t.Context(), store.SessionRecord{ID: "s-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := s.readHead("s-1"); !ok || h != sentinelHead {
+		t.Fatalf("no sentinel head at creation: %+v %v", h, ok)
+	}
+	if h, ok := readHeadFile(s.index.headPath()); !ok || h.Lines == 0 {
+		t.Fatalf("index head: %+v %v", h, ok)
+	}
+	rec := agent.NewRecorder(s, "s-1", "")
+	_, _ = rec.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "one"})
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	_ = s2.writeHead("s-1", sentinelHead) // as a crash before the first real head leaves it
+	if rep, _ := s2.Verify("s-1"); !rep.OK || len(rep.Notes) == 0 {
+		t.Fatalf("sentinel behind one line: %+v", rep)
+	}
+	if err := s2.Acquire("s-1"); err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+}
+
+// The review's probe R3-A: a live session cut to one line with its head
+// deleted fails, is refused for writing, and stays failing.
+func TestCutToOneLineWithoutAHeadFails(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	record(t, s, "s-1", "one", "two", "three", "four")
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	cutLines(t, s2.Path("s-1"), 1, "")
+	_ = os.Remove(s2.headPath("s-1"))
+	mustFail(t, s2, "cut to one line, head deleted")
+	if err := s2.Acquire("s-1"); !errors.Is(err, ErrUnverified) {
+		t.Fatalf("opened: %v", err)
+	}
+	mustFail(t, s2, "after a refused open")
+}
+
+// The review's probe R3-B: the index cut to one line and its head deleted.
+// The index fails, the next session is refused, and the sessions it no
+// longer lists are reported by VerifyAll.
+func TestIndexCutToOneLineWithoutAHeadFails(t *testing.T) {
 	dir := t.TempDir()
 	s := openTest(t, dir)
 	record(t, s, "s-1", "one")
+	record(t, s, "s-2", "two")
+	record(t, s, "s-3", "three")
 	_ = s.Close()
 	s2 := openTest(t, dir)
-	_ = os.Remove(s2.headPath("s-1"))
-	if rep, _ := s2.Verify("s-1"); !rep.OK || len(rep.Notes) == 0 {
-		t.Fatalf("one line, no head: %+v", rep)
+	cutLines(t, s2.index.path(), 1, "")
+	_ = os.Remove(s2.index.headPath())
+	idx, reps, err := s2.VerifyAll()
+	if err != nil || idx.OK {
+		t.Fatalf("the cut index verifies: %+v %v", idx, err)
 	}
-	if err := s2.Acquire("s-1"); err != nil {
-		t.Fatalf("one line, no head, refused: %v", err)
+	unlisted := 0
+	for _, r := range reps {
+		if !r.OK && strings.Contains(r.Reason, "not in its index") {
+			unlisted++
+		}
 	}
-	_ = s2.Release("s-1")
-
-	d2 := t.TempDir()
-	s3 := openTest(t, d2)
-	if err := s3.CreateSession(t.Context(), store.SessionRecord{ID: "s-a"}); err != nil {
-		t.Fatal(err)
+	if unlisted != 2 {
+		t.Fatalf("%d unlisted sessions reported, want 2: %+v", unlisted, reps)
 	}
-	_ = os.Remove(s3.index.headPath())
-	s4 := openTest(t, d2)
-	if err := s4.CreateSession(t.Context(), store.SessionRecord{ID: "s-b"}); err != nil {
-		t.Fatalf("an index of one line and no head: %v", err)
-	}
-	if rep, _ := s4.VerifyIndex(); !rep.OK {
-		t.Fatalf("index after: %+v", rep)
+	if err := s2.CreateSession(t.Context(), store.SessionRecord{ID: "s-4"}); !errors.Is(err, ErrIndexDamaged) {
+		t.Fatalf("an append onto the cut index: %v", err)
 	}
 }
 

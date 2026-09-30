@@ -366,7 +366,7 @@ func (s *Store) load(id string, lk *os.File, create, unlisted bool) (*session, e
 		rep.Reason = cutShort
 	}
 	if len(sc.raws) > 0 || have {
-		checkHeadOrFirstLine(&rep, lines, head, have, !exists(s.headPath(id)))
+		checkHead(&rep, lines, head, have)
 	}
 	if !rep.OK {
 		return fail(&UnverifiedError{Report: rep})
@@ -405,6 +405,14 @@ func (s *Store) load(id string, lk *os.File, create, unlisted bool) (*session, e
 	h.size = info.Size()
 	// The head only ever moves forward, to lines the chain holds.
 	h.synced = head
+	// A new record gets its sentinel head before any line, so from then on a
+	// missing head is damage, never a crash.
+	if (create || unlisted) && len(lines) == 0 && !have {
+		if err := s.writeHead(id, sentinelHead); err != nil {
+			return fail(err)
+		}
+		h.synced = sentinelHead
+	}
 	if h.last.Lines > 0 && (!have || h.last.Lines > head.Lines) {
 		if err := s.writeHead(id, h.last); err != nil {
 			return fail(err)
@@ -431,6 +439,9 @@ func completesChain(sc scanned) bool {
 	}
 	return l.Prev == prev
 }
+
+// sentinelHead is the head a record is created with: no lines yet.
+var sentinelHead = Head{Lines: 0, Seq: 0, Hash: Genesis}
 
 // ErrUnverified is a session whose record fails verification. It is read,
 // never written to; going on from it is a fork into a new session.
@@ -856,7 +867,11 @@ func parseHead(data []byte) (Head, bool) {
 	}
 	var h Head
 	dec := jsonStrict(data)
-	if dec.Decode(&h) != nil || h.Lines <= 0 || !isHash(h.Hash) {
+	if dec.Decode(&h) != nil || h.Lines < 0 || !isHash(h.Hash) {
+		return Head{}, false
+	}
+	// No lines is only ever the sentinel a record is created with.
+	if h.Lines == 0 && (h.Seq != 0 || h.Hash != Genesis) {
 		return Head{}, false
 	}
 	return h, true

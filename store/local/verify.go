@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // scanned is a session file split into its complete lines and a torn tail.
@@ -113,24 +115,8 @@ func checkHead(rep *Report, lines []line, head Head, have bool) {
 	}
 }
 
-// checkHeadOrFirstLine is checkHead, but a record of exactly one line and
-// no head file at all is the crash between its first line and first head.
-func checkHeadOrFirstLine(rep *Report, lines []line, head Head, have, absent bool) {
-	if absent && len(lines) == 1 && rep.OK {
-		rep.Notes = append(rep.Notes, "no head yet: a crash came between the first line and its head")
-		return
-	}
-	checkHead(rep, lines, head, have)
-}
-
 // cutShort is why a record whose head counts an unfinished last line fails.
 const cutShort = "the last line the head counts is cut short"
-
-// exists reports whether anything is at path, a link included.
-func exists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
-}
 
 // exportTrailer is the last line of an exported session: the head, so a copy
 // can be checked away from the machine that wrote it.
@@ -239,7 +225,7 @@ func (s *Store) Verify(id string) (Report, error) {
 			rep.Notes = append(rep.Notes, fmt.Sprintf("an unfinished last line of %d bytes, which a crash leaves; the next writer cuts it off", len(sc.tail)))
 		}
 	}
-	checkHeadOrFirstLine(&rep, lines, head, have, !exists(s.headPath(id)))
+	checkHead(&rep, lines, head, have)
 	if rep.OK {
 		s.checkIndexHeads(&rep, id, lines)
 	}
@@ -314,8 +300,6 @@ func (s *Store) VerifyIndex() (Report, error) {
 	}
 	head, have := readHeadFile(s.index.headPath())
 	switch {
-	case !have && rep.Events == 1 && !exists(s.index.headPath()):
-		rep.Notes = append(rep.Notes, "no head yet: a crash came between the first line and its head")
 	case !have && rep.Events > 0:
 		rep.OK, rep.Reason = false, "the index head file is missing or malformed"
 	case have && head.Lines > rep.Events:
@@ -341,7 +325,9 @@ func (s *Store) VerifyAll() (Report, []Report, error) {
 		return idx, nil, err
 	}
 	var out []Report
+	listed := map[string]bool{}
 	for _, e := range entries {
+		listed[e.ID] = !e.Pruned
 		if e.Pruned {
 			continue
 		}
@@ -350,6 +336,16 @@ func (s *Store) VerifyAll() (Report, []Report, error) {
 			rep = Report{ID: e.ID, Reason: err.Error()}
 		}
 		out = append(out, rep)
+	}
+	// A session file the index does not list shows a cut index, whatever its
+	// heads say.
+	files, _ := filepath.Glob(filepath.Join(s.dir, "*.jsonl"))
+	for _, f := range files {
+		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
+		if id == "index" || listed[id] {
+			continue
+		}
+		out = append(out, Report{ID: id, Reason: "the session's file is in the records folder, but not in its index"})
 	}
 	return idx, out, nil
 }
