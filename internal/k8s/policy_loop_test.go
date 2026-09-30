@@ -334,3 +334,84 @@ func TestPathSegmentsCannotReachAnotherResource(t *testing.T) {
 		t.Fatalf("the selector was not sent encoded: %s", last)
 	}
 }
+
+// An allow on one namespace never covers a cluster-scoped object: deleting a
+// namespace or a node, or applying a ClusterRoleBinding, asks under
+// allow k8s_apply(lab/dev/*) whatever namespace the call names, while a
+// namespaced object in dev is still allowed. A kind whose scope is unknown
+// is refused.
+func TestNamespaceAllowNeverCoversClusterScopedObjects(t *testing.T) {
+	srv, ca, sent := pathLog(t)
+	mgr := NewManager(Config{Kubeconfig: t.TempDir() + "/missing",
+		Clusters: []LoginCluster{{Name: "lab", Server: srv.URL, CAFile: ca}}})
+	reg := tools.NewRegistry(GetTool{M: mgr}, ApplyTool{M: mgr})
+	sess := newSession(t)
+	login, _ := json.Marshal(map[string]string{"cluster": "lab", "token_secret": "T", "namespace": "dev"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}).Run(context.Background(), sess, login); res.IsError {
+		t.Fatal(res.Content)
+	}
+	apply := func(kind, apiVersion, ns string) string {
+		meta := map[string]string{"name": "pwn"}
+		if ns != "" {
+			meta["namespace"] = ns
+		}
+		m, _ := json.Marshal(map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": meta})
+		a, _ := json.Marshal(map[string]string{"action": "apply", "manifest": string(m)})
+		return string(a)
+	}
+	// step reports how the call was settled: the step of its approval or denial.
+	step := func(args string) (string, []string, []agent.Event) {
+		t.Helper()
+		pol := policy.New(policy.ModeDefault)
+		if err := pol.AddAllow("k8s_apply(lab/dev/*)"); err != nil {
+			t.Fatal(err)
+		}
+		ap := &asked{}
+		store := agent.NewMemStore()
+		l := agent.NewLoop(&oneCall{name: "k8s_apply", args: args}, reg, pol, ap, sess,
+			agent.NewRecorder(store, "s", ""), agent.DefaultConfig())
+		before := len(sent())
+		if _, err := l.Run(context.Background(), "go"); err != nil {
+			t.Fatal(err)
+		}
+		evs, _ := store.Events("s")
+		for _, ev := range evs {
+			if ev.Type == agent.EvActionApproved || ev.Type == agent.EvActionDenied {
+				var d map[string]string
+				_ = json.Unmarshal(ev.Payload, &d)
+				return d["step"], sent()[before:], evs
+			}
+		}
+		return "", sent()[before:], evs
+	}
+	for _, args := range []string{
+		`{"action":"delete","resource":"namespaces","name":"kube-system","namespace":"dev"}`,
+		`{"action":"delete","resource":"namespaces","name":"kube-system"}`,
+		`{"action":"delete","resource":"nodes","name":"n1","namespace":"dev"}`,
+		apply("ClusterRoleBinding", "rbac.authorization.k8s.io/v1", ""),
+		apply("ClusterRoleBinding", "rbac.authorization.k8s.io/v1", "dev"),
+	} {
+		got, _, evs := step(args)
+		if got == "allow" {
+			t.Errorf("%s was approved by the rule on namespace dev", args)
+		}
+		var req agent.ActionRequested
+		for _, ev := range evs {
+			if ev.Type == agent.EvActionRequested {
+				_ = json.Unmarshal(ev.Payload, &req)
+			}
+		}
+		if strings.Contains(string(req.Args), `"namespace"`) {
+			t.Errorf("%s: a cluster-scoped call kept a namespace: %s", args, req.Args)
+		}
+	}
+	if got, reqs, _ := step(apply("Widget", "example.com/v1", "dev")); got != "args" || len(reqs) != 0 {
+		t.Errorf("an apply of a kind of unknown scope was not refused: %s %v", got, reqs)
+	}
+	if got, reqs, _ := step(apply("ConfigMap", "v1", "")); got != "allow" || len(reqs) != 1 || !strings.Contains(reqs[0], "/namespaces/dev/configmaps/pwn") {
+		t.Errorf("a namespaced apply in dev was not allowed: %s %v", got, reqs)
+	}
+	if got, _, _ := step(`{"action":"restart","resource":"deployments","name":"web"}`); got != "allow" {
+		t.Errorf("a namespaced restart in dev was not allowed: %s", got)
+	}
+}

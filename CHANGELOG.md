@@ -253,8 +253,11 @@ All notable changes to Abhed are recorded here. The format follows
     the session's only login as its cluster, the resource's plural
     (`Secret` reads `secrets`), and the namespace it would use when it names
     none, the manifest's for an `apply`. A call on every namespace (`*`) is
-    matched by a deny or ask rule on any namespace. One judged as going to
-    the kubeconfig is refused if a login was made in between. See Upgrading.
+    matched by a deny or ask rule on any namespace. A cluster-scoped object
+    (a namespace, a node, a ClusterRoleBinding and the like) reads as
+    `prod/-/ACTION`, so no rule on a namespace covers it, and any namespace
+    the call names is dropped. One judged as going to the kubeconfig is
+    refused if a login was made in between. See Upgrading.
 
 ### Upgrading
 
@@ -427,6 +430,9 @@ All notable changes to Abhed are recorded here. The format follows
   approves anything; write `k8s_login(lab)` or `k8s_apply(lab/*/scale)`.
   Deny and ask rules written that way still apply. A `k8s.clusters` name holding `/`,
   `:`, `*` or `?` is refused when the configuration loads.
+- `k8s_apply` refuses a manifest whose kind's scope Abhed does not know,
+  custom resources included, since a rule could not tell whether it lands in
+  a namespace. Apply those with `kubectl` through `bash`.
 - After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
   the kubeconfig's own credential, not the login. Name the logged-in
   cluster as `cluster` instead. A session logged in to several clusters

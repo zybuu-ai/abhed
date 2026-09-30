@@ -126,3 +126,33 @@ func TestOlderClusterRulesStillDeny(t *testing.T) {
 		}
 	}
 }
+
+// A cluster-scoped object is judged under a namespace no rule for a real one
+// matches, whatever namespace the call names; so is a kind of unknown scope.
+func TestClusterScopedObjectsAreNotInANamespace(t *testing.T) {
+	e := New(ModeDefault)
+	if err := e.AddAllow("k8s_apply(lab/dev/*)", "k8s_get(lab/dev/*)"); err != nil {
+		t.Fatal(err)
+	}
+	manifest := func(kind string) string {
+		b, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": kind, "metadata": map[string]string{"name": "x", "namespace": "dev"}})
+		return string(b)
+	}
+	for _, c := range []struct {
+		tool string
+		args json.RawMessage
+	}{
+		{"k8s_apply", clusterArgs("cluster", "lab", "namespace", "dev", "action", "delete", "resource", "namespaces", "name", "kube-system")},
+		{"k8s_apply", clusterArgs("cluster", "lab", "namespace", "dev", "action", "delete", "resource", "Node", "name", "n1")},
+		{"k8s_apply", clusterArgs("cluster", "lab", "namespace", "dev", "action", "apply", "manifest", manifest("ClusterRoleBinding"))},
+		{"k8s_apply", clusterArgs("cluster", "lab", "namespace", "dev", "action", "apply", "manifest", manifest("Widget"))},
+		{"k8s_get", clusterArgs("cluster", "lab", "namespace", "dev", "resource", "nodes")},
+	} {
+		if d := e.Evaluate(c.tool, true, c.args); d.Decision == Allow {
+			t.Errorf("%s %s was allowed by a rule on namespace dev", c.tool, c.args)
+		}
+	}
+	if d := e.Evaluate("k8s_apply", true, clusterArgs("cluster", "lab", "namespace", "dev", "action", "apply", "manifest", manifest("ConfigMap"))); d.Decision != Allow {
+		t.Errorf("a namespaced apply in dev was not allowed: %s", d.Reason)
+	}
+}

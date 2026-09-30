@@ -148,6 +148,15 @@ form it runs in, and records it that way:
   the kubeconfig context's default, or for an `apply` the namespace its
   manifest names. An `apply` takes one object; a list is refused.
 
+A cluster-scoped object has no namespace: deleting a namespace or a node,
+reading nodes, or applying a ClusterRole, ClusterRoleBinding, CRD, webhook
+configuration or another cluster-scoped kind reads as `cluster/-/...`,
+whatever namespace the call names, and any it names is dropped. So
+`k8s_apply(lab/dev/*)` never covers them; allow them on their own with
+`k8s_apply(lab/-/restart)` or the like, or leave them to ask. An `apply` of a
+kind whose scope Abhed does not know, a custom resource's included, is
+refused; apply it with `kubectl` through `bash`.
+
 A namespace that is not a namespace name or `*`, and a name, kind or
 apiVersion that could not stand as one segment of the request path, is
 refused at step `args` before any rule reads the call.

@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -359,11 +360,29 @@ func clusterSubject(tool string, args json.RawMessage) (string, bool) {
 	if where == "" {
 		where = "context:" + str("context")
 	}
+	// A cluster-scoped object, or a kind whose scope is not known, is judged
+	// under a namespace no rule written for a real one can match.
+	ns := str("namespace")
+	resource := kubescope.Resource(str("resource"))
 	switch tool {
 	case "k8s_get":
-		return where + "/" + str("namespace") + "/" + str("resource"), true
+		if kubescope.ClusterScopedResource(resource) {
+			ns = kubescope.ClusterWide
+		}
+		return where + "/" + ns + "/" + resource, true
 	case "k8s_apply":
-		return where + "/" + str("namespace") + "/" + str("action"), true
+		if str("action") == "apply" {
+			var obj struct {
+				Kind string `json:"kind"`
+			}
+			_ = json.Unmarshal([]byte(str("manifest")), &obj)
+			if namespaced, known := kubescope.KindScope(obj.Kind); !namespaced || !known {
+				ns = kubescope.ClusterWide
+			}
+		} else if kubescope.ClusterScopedResource(resource) {
+			ns = kubescope.ClusterWide
+		}
+		return where + "/" + ns + "/" + str("action"), true
 	}
 	return where, true
 }

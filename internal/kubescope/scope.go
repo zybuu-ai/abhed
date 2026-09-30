@@ -93,3 +93,46 @@ func ValidKind(kind string) bool { return kindRe.MatchString(kind) }
 
 // ValidAPIVersion reports whether apiVersion is group/version or version.
 func ValidAPIVersion(v string) bool { return apiVersionRe.MatchString(v) }
+
+// Resource is a resource's canonical plural: lower-cased and trimmed, with
+// the singular and short forms people type made the plural.
+func Resource(r string) string {
+	r = strings.ToLower(strings.TrimSpace(r))
+	switch r {
+	case "po", "pod":
+		return "pods"
+	case "deploy", "deployment":
+		return "deployments"
+	case "svc", "service":
+		return "services"
+	case "ns", "namespace":
+		return "namespaces"
+	case "no", "node":
+		return "nodes"
+	case "cm", "configmap":
+		return "configmaps"
+	case "sts", "statefulset":
+		return "statefulsets"
+	case "ds", "daemonset":
+		return "daemonsets"
+	case "rs", "replicaset":
+		return "replicasets"
+	case "ing", "ingress":
+		return "ingresses"
+	case "job":
+		return "jobs"
+	case "cj", "cronjob":
+		return "cronjobs"
+	case "ev", "event":
+		return "events"
+	case "pvc":
+		return "persistentvolumeclaims"
+	case "pv":
+		return "persistentvolumes"
+	case "sa":
+		return "serviceaccounts"
+	case "secret":
+		return "secrets"
+	}
+	return r
+}

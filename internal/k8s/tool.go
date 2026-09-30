@@ -180,26 +180,43 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 	}
 	resource := str("resource")
 	if resource != "" {
-		resource = normalizeResource(strings.ToLower(strings.TrimSpace(resource)))
+		resource = kubescope.Resource(strings.ToLower(strings.TrimSpace(resource)))
 		set("resource", resource)
 	}
 	if err := checkSegments(str("namespace"), str("name"), resource); err != nil {
 		return nil, nil, err
 	}
 	ns := str("namespace")
+	clusterWide := kubescope.ClusterScopedResource(resource)
 	if apply && str("action") == "apply" {
 		if err := checkManifest(str("manifest")); err != nil {
 			return nil, nil, err
 		}
-		if ns == "" {
+		kind := manifestKind(str("manifest"))
+		namespaced, known := kubescope.KindScope(kind)
+		if kind != "" && !known {
+			return nil, nil, fmt.Errorf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash", kind)
+		}
+		clusterWide = kind != "" && !namespaced
+		if ns == "" && !clusterWide {
 			ns = manifestNamespace(str("manifest"))
 		}
 	}
-	if ns == "" && !clusterScoped[resource] {
+	switch {
+	case clusterWide:
+		// A cluster-scoped object has no namespace: one the model named is
+		// dropped, so no rule on a namespace reads as covering it.
+		if _, named := tools.Lookup(args, "namespace"); named {
+			delete(args, "namespace")
+			changed = append(changed, "namespace")
+		}
+	case ns == "":
 		ns = m.defaultNamespace(sess, clusterName, ctxName)
-	}
-	if ns != "" {
-		set("namespace", ns)
+		fallthrough
+	default:
+		if ns != "" {
+			set("namespace", ns)
+		}
 	}
 	if len(changed) == 0 {
 		return nil, nil, nil
@@ -255,6 +272,17 @@ func checkManifest(manifest string) error {
 		return fmt.Errorf("the manifest's namespace cannot be '*'")
 	}
 	return checkSegments(obj.Metadata.Namespace, obj.Metadata.Name, "")
+}
+
+// manifestKind is the kind an apply's manifest names, or "".
+func manifestKind(manifest string) string {
+	var obj struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal([]byte(manifest), &obj) != nil {
+		return ""
+	}
+	return obj.Kind
 }
 
 // manifestNamespace is the namespace an apply's manifest names, or "".
@@ -650,7 +678,11 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
 	base := apiBase(apiVersion) + "/" + pluralFor(kind)
-	if isNamespaced(kind) {
+	namespaced, known := kubescope.KindScope(kind)
+	if !known {
+		return errf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash.", kind)
+	}
+	if namespaced {
 		base = apiBase(apiVersion) + "/namespaces/" + ns + "/" + pluralFor(kind)
 	}
 
@@ -821,14 +853,9 @@ var appsResources = map[string]bool{
 	"deployments": true, "statefulsets": true, "daemonsets": true, "replicasets": true,
 }
 
-var clusterScoped = map[string]bool{
-	"nodes": true, "namespaces": true, "persistentvolumes": true,
-	"clusterroles": true, "clusterrolebindings": true, "storageclasses": true,
-}
-
 func resourcePath(c *Cluster, resource, namespace, name string) (string, error) {
 	r := strings.ToLower(strings.TrimSpace(resource))
-	r = normalizeResource(r)
+	r = kubescope.Resource(r)
 	if err := checkSegments(namespace, name, r); err != nil {
 		return "", err
 	}
@@ -852,7 +879,7 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 			resource, strings.Join(knownResources(), ", "))
 	}
 
-	if clusterScoped[r] {
+	if kubescope.ClusterScopedResource(r) {
 		if name != "" {
 			return base + "/" + r + "/" + name, nil
 		}
@@ -879,47 +906,6 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 		return base + "/namespaces/" + ns + "/" + r + "/" + name, nil
 	}
 	return base + "/namespaces/" + ns + "/" + r, nil
-}
-
-// normalizeResource accepts the singular and short forms people type.
-func normalizeResource(r string) string {
-	switch r {
-	case "po", "pod":
-		return "pods"
-	case "deploy", "deployment":
-		return "deployments"
-	case "svc", "service":
-		return "services"
-	case "ns", "namespace":
-		return "namespaces"
-	case "no", "node":
-		return "nodes"
-	case "cm", "configmap":
-		return "configmaps"
-	case "sts", "statefulset":
-		return "statefulsets"
-	case "ds", "daemonset":
-		return "daemonsets"
-	case "rs", "replicaset":
-		return "replicasets"
-	case "ing", "ingress":
-		return "ingresses"
-	case "job":
-		return "jobs"
-	case "cj", "cronjob":
-		return "cronjobs"
-	case "ev", "event":
-		return "events"
-	case "pvc":
-		return "persistentvolumeclaims"
-	case "pv":
-		return "persistentvolumes"
-	case "sa":
-		return "serviceaccounts"
-	case "secret":
-		return "secrets"
-	}
-	return r
 }
 
 func knownResources() []string {
@@ -954,15 +940,6 @@ func pluralFor(kind string) string {
 		return k[:len(k)-1] + "ies"
 	}
 	return k + "s"
-}
-
-func isNamespaced(kind string) bool {
-	switch strings.ToLower(kind) {
-	case "namespace", "node", "persistentvolume", "clusterrole",
-		"clusterrolebinding", "storageclass", "customresourcedefinition":
-		return false
-	}
-	return true
 }
 
 func errf(format string, a ...any) tools.Result {
