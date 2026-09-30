@@ -156,6 +156,7 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 		lastBlank: true,
 	}
 	d.commands = commandList
+	d.scr.plain = !st.enabled
 	d.kr = newKeyReader(newBufReader(in))
 	d.tr.max = 4000
 	return d
@@ -999,7 +1000,7 @@ func (d *dock) flushTail(lines *[]string) {
 // write is output from the program: complete lines are committed, and a
 // trailing partial line is held in the region until its newline arrives.
 func (d *dock) write(p []byte) {
-	text := d.rawTail + sanitize(string(p), true)
+	text := d.rawTail + sanitize(string(p), d.st.enabled)
 	i := strings.LastIndexByte(text, '\n')
 	if i < 0 {
 		d.rawTail = text

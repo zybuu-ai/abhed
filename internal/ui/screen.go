@@ -33,6 +33,9 @@ type screen struct {
 	written int64
 	// buf collects a frame, sent in one write.
 	buf strings.Builder
+	// plain drops even colour from what is drawn: NO_COLOR, or a terminal
+	// without it. Output the program captured may carry colour of its own.
+	plain bool
 	// sync is set once the terminal has said it knows synchronized output
 	// (DEC 2026); only then are frames bracketed with it.
 	sync bool
@@ -101,17 +104,17 @@ func (s *screen) moveTo(r, c int) {
 // render draws rows with the cursor at (cr, cc), sending only the difference
 // from what is on screen.
 func (s *screen) render(rows []string, cr, cc int) {
-	s.draw(clean(rows), cr, cc)
+	s.draw(s.clean(rows), cr, cc)
 	s.flush()
 }
 
 // clean is the render boundary: a row holds text and SGR styling and nothing
 // else, whoever composed it, so no string that slipped past its own
 // sanitizing can move the cursor, set the clipboard or retitle the window.
-func clean(rows []string) []string {
+func (s *screen) clean(rows []string) []string {
 	out := make([]string, len(rows))
 	for i, r := range rows {
-		out[i] = sanitize(r, true)
+		out[i] = sanitize(r, !s.plain)
 	}
 	return out
 }
@@ -328,14 +331,14 @@ func (s *screen) commit(lines []string, rows []string, cr, cc int) {
 	} else {
 		s.buf.WriteString("\r")
 	}
-	for _, l := range clean(lines) {
+	for _, l := range s.clean(lines) {
 		s.buf.WriteString(l)
 		s.buf.WriteString("\x1b[0m\x1b[K\r\n")
 	}
 	s.drawn = false
 	s.rows = s.rows[:0]
 	s.cr, s.cc, s.extent = 0, 0, 0
-	s.draw(clean(rows), cr, cc)
+	s.draw(s.clean(rows), cr, cc)
 	if s.sync {
 		s.buf.WriteString("\x1b[?2026l")
 	}

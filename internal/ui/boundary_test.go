@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/ui/vt"
 )
 
 // hostile carries every way text has been found to reach a terminal raw:
@@ -132,3 +134,31 @@ func TestNothingButTextReachesTheTerminal(t *testing.T) {
 		t.Errorf("the text itself was lost:\n%s", g.term.All())
 	}
 }
+
+// With colour off, nothing drawn carries colour — not even output the
+// program printed with its own.
+func TestNoColorStripsCapturedColour(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	m := &meter{term: vtNew(60, 20)}
+	d := newDock(r, m, Style{})
+	d.size = func() (int, int) { return 60, 20 }
+	d.mu.Lock()
+	d.write([]byte("\x1b[31mred\x1b[0m line\n"))
+	d.statusSet = StatusModel{Line: "\x1b[32mgreen\x1b[0m status"}
+	d.draw()
+	d.mu.Unlock()
+	m.mu.Lock()
+	wire := m.log.String()
+	m.mu.Unlock()
+	if strings.Contains(wire, "\x1b[31m") || strings.Contains(wire, "\x1b[32m") || strings.Contains(wire, "\x1b[2m") {
+		t.Fatalf("colour was drawn with colour off: %q", wire)
+	}
+	if !strings.Contains(wire, "red line") || !strings.Contains(wire, "green status") {
+		t.Fatalf("the text was lost: %q", wire)
+	}
+}
+
+func vtNew(cols, rows int) *vt.Terminal { return vt.New(cols, rows) }

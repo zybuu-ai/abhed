@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,10 +52,11 @@ func TestKeystrokeByteBudgets(t *testing.T) {
 	g2.lr.d.mu.Unlock()
 	g2.keys("y")
 	g2.settle()
-	mean, worst = measure(g2, text)
-	t.Logf("during a turn: mean %.1f B, worst %d B", mean, worst)
-	if mean > 160 {
-		t.Errorf("a key during a turn cost %.0f bytes on average, budget 160", mean)
+	sizes := measureEach(g2, text)
+	p95 := percentile(sizes, 95)
+	t.Logf("during a turn: p95 %d B, worst %d B", p95, sizes[len(sizes)-1])
+	if p95 > 160 {
+		t.Errorf("a key during a turn cost %d bytes at the 95th percentile, budget 160", p95)
 	}
 }
 
@@ -78,4 +80,26 @@ func TestSpinnerFrameBudget(t *testing.T) {
 	if !strings.ContainsAny(g.term.Text(), strings.Join(spinFrames, "")) {
 		t.Fatalf("no spinner on screen:\n%s", g.term.Dump())
 	}
+}
+
+// measureEach sends keys one at a time and returns what each cost, sorted.
+func measureEach(g *rig, keys string) []int {
+	var sizes []int
+	for _, k := range keys {
+		g.settle()
+		g.out.mark()
+		g.keys(string(k))
+		g.settle()
+		sizes = append(sizes, int(g.out.bytes()))
+	}
+	slices.Sort(sizes)
+	return sizes
+}
+
+func percentile(sorted []int, p int) int {
+	if len(sorted) == 0 {
+		return 0
+	}
+	i := (len(sorted)*p + 99) / 100
+	return sorted[min(max(i-1, 0), len(sorted)-1)]
 }
