@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -123,8 +124,24 @@ func bugReport(st *cliState, what string) (title, body string) {
 	m := st.statusModel("")
 	fmt.Fprintf(&b, "- sandbox: %s; record: %s\n", orDefault(m.SandboxTier, "unknown"), m.Record)
 	text := b.String()
+	vault := openVault().Redactor()
+	keys := []string{st.provider.APIKey}
+	if st.provider.APIKeyEnv != "" {
+		keys = append(keys, os.Getenv(st.provider.APIKeyEnv))
+	}
 	redact := func(s string) string {
-		s = string(openVault().Redactor().Redact([]byte(s)))
+		// The redactor matches inside JSON strings, so the text goes in as one.
+		enc, _ := json.Marshal(s)
+		var out string
+		if json.Unmarshal(vault.Redact(enc), &out) != nil {
+			return "(withheld: the secrets store could not be read)"
+		}
+		s = out
+		for _, k := range keys {
+			if len(k) >= 4 {
+				s = strings.ReplaceAll(s, k, "[redacted key]")
+			}
+		}
 		if home, err := os.UserHomeDir(); err == nil && home != "" && home != "/" {
 			s = strings.ReplaceAll(s, home, "~")
 		}

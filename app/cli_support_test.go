@@ -6,6 +6,7 @@ import (
 
 	root "github.com/zybuu-ai/abhed"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 func TestReleaseNotes(t *testing.T) {
@@ -37,5 +38,28 @@ func TestBugReportRedacts(t *testing.T) {
 	if strings.Contains(title+body, home) || strings.Contains(body, "10.1.2.3") || !strings.Contains(body, "abhed 1.2.3") ||
 		!strings.Contains(title, "~/ws") {
 		t.Fatalf("%q\n%s", title, body)
+	}
+}
+
+// A value in the vault and the provider's key from its variable never reach
+// the report, in plain text as typed.
+func TestBugReportRedactsSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(secrets.EnvFile, "")
+	if err := openVault().Set("TOKEN", "vault-canary-value-1"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABHED_TEST_BUG_KEY", "provider-canary-key-9")
+	st := &cliState{appCfg: config.Default(), version: "1.2.3",
+		provider: config.ProviderConfig{Type: "openai-compatible", APIKeyEnv: "ABHED_TEST_BUG_KEY"}}
+	title, body := bugReport(st, "it printed vault-canary-value-1 and provider-canary-key-9")
+	for _, v := range []string{"vault-canary-value-1", "provider-canary-key-9"} {
+		if strings.Contains(title+body, v) {
+			t.Fatalf("%s leaked:\n%s\n%s", v, title, body)
+		}
+	}
+	if !strings.Contains(body, "it printed") {
+		t.Fatalf("the report was withheld whole:\n%s", body)
 	}
 }

@@ -131,4 +131,4 @@ its output is untrusted.
 |---|---|
 | `/doctor` | the configuration, trust, the sandbox, and whether the model answers and calls tools |
 | `/release-notes [VERSION\|all]` | the changelog built into this binary, offline |
-| `/bug [what happened]` | a prefilled issue link, with the version, platform and provider type, and with secrets and your home directory redacted; nothing is sent, and it is opened only if you say so |
+| `/bug [what happened]` | a prefilled issue link, with the version, platform and provider type, and with the secrets store's values, the provider's key and your home directory redacted; nothing is sent, and it is opened only if you say so |
