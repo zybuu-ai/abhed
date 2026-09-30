@@ -144,7 +144,10 @@ func readFile(p string) ([]byte, error) {
 
 // openRegular opens a checked file; a variable so a test can swap the file
 // between the check and the open.
-var openRegular = func(p string) (*os.File, error) {
+var openRegular = openChecked
+
+// openChecked opens without following a last link and without blocking.
+func openChecked(p string) (*os.File, error) {
 	return os.OpenFile(p, os.O_RDONLY|noFollow, 0) // #nosec G304 -- a file the person or operator named, checked first
 }
 
