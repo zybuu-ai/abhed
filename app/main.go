@@ -317,7 +317,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
-		Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+		Bash: tools.Bash{Sandbox: sb.Command,
 			Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
 		Parts: toolset.All,
 		Vault: vault,
@@ -1274,7 +1274,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	vault := openVault()
-	bash := tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+	bash := tools.Bash{Sandbox: sb.Command,
 		Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
@@ -1556,7 +1556,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		// depends on the harness and the task and not on what those reach.
 		set := toolset.Build(ctx, cfg, toolset.Options{
 			Workspace: ws,
-			Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+			Bash: tools.Bash{Sandbox: sb.Command,
 				Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
 			Parts: toolset.Skills | toolset.WebSearch | toolset.WebFetch,
 			Vault: vault,
@@ -2544,7 +2544,7 @@ func (a *App) doctor(workspace string) int {
 	vaultErr := vaultLoads()
 	if vaultErr != nil {
 		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
-	} else if names := vaultNames(openVault()); len(names) > 0 {
+	} else if names := toolset.VaultNames(openVault()); len(names) > 0 {
 		fmt.Printf("secrets     %d stored in %s\n", len(names), openVault().Path())
 	}
 	if reg, _ := toolset.LoadSkills(cfg, warnf); reg.Len() > 0 {
@@ -3037,16 +3037,6 @@ func openVault() *secrets.Store { return secrets.Default() }
 func vaultLoads() error {
 	_, err := openVault().LoadRedactor()
 	return err
-}
-
-// vaultNames lists what the model may ask for. An unreadable store lists
-// nothing: the failure surfaces when a secret is used, with its reason.
-func vaultNames(v *secrets.Store) []string {
-	names, err := v.Names()
-	if err != nil {
-		return nil
-	}
-	return names
 }
 
 // secretCmd manages the store: set NAME (value on stdin or prompted), list, rm NAME.

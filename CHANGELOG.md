@@ -413,6 +413,11 @@ All notable changes to Abhed are recorded here. The format follows
   runs on its own copy of the tool registry, and the `result` tool was added
   to the original, so every run ended with `ErrNoResult`. This dates from
   1.0.0.
+- `bash` in SDK sessions, and so in `abhed rpc`, `abhed acp` and `abhed
+  resolve`, could not use a stored secret: it answered "No secrets are
+  configured on this deployment" and its description named none. It now
+  reads the secrets store by name as the CLI's does, and each name still
+  needs its own `secret(NAME)` allow rule.
 - `abhed resolve` could close its session before it printed the agent's last
   messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
 - `abhed serve` did not start the configured extensions, so their veto did

@@ -246,3 +246,63 @@ func TestSDKApproverScopeIsRedacted(t *testing.T) {
 		t.Fatalf("the approver's decision was not redacted: %q", got)
 	}
 }
+
+// bash on an embedded session reads a stored secret by name, as on the command
+// line: the value reaches the command, never the record, OnEvent or the model,
+// and without its own secret(NAME) rule the call is refused.
+func TestSDKBashUsesAStoredSecretByName(t *testing.T) {
+	vaultWith(t)
+	args, _ := json.Marshal(map[string]any{"command": `echo "k=[$FAKE_TOKEN] n=${#FAKE_TOKEN}"`,
+		"description": "probe", "secrets": []string{"FAKE_TOKEN"}})
+	call, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{
+		"tool_calls": []any{map[string]any{"index": 0, "id": "c-bash", "type": "function",
+			"function": map[string]any{"name": "bash", "arguments": string(args)}}}}}}})
+	for name, allow := range map[string][]string{
+		"with the rule":    {"bash", "secret(FAKE_TOKEN)"},
+		"without the rule": {"bash"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, bodies := scripted(t, string(call))
+			var mu sync.Mutex
+			var stream strings.Builder
+			a, err := abhed.New(context.Background(), abhed.Options{
+				Workspace: t.TempDir(), Mode: "default", Allow: allow,
+				Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
+				OnEvent:  func(ev abhed.Event) { mu.Lock(); stream.Write(ev.Payload); mu.Unlock() },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			if _, err := a.Run(context.Background(), "probe"); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var record strings.Builder
+			for _, ev := range a.Events() {
+				record.Write(ev.Payload)
+			}
+			mu.Lock()
+			whole := stream.String() + record.String() + strings.Join(bodies(), "")
+			mu.Unlock()
+			if strings.Contains(whole, fakeSecret) {
+				t.Fatalf("the stored value left the session:\n%s", whole)
+			}
+			ran := strings.Contains(record.String(), fmt.Sprintf("k=[[secret:FAKE_TOKEN]] n=%d", len(fakeSecret)))
+			if len(allow) == 2 {
+				if !ran {
+					t.Fatalf("bash did not run with the stored secret:\n%s", record.String())
+				}
+				if b := bodies(); !strings.Contains(b[0], "Secrets available by name") || !strings.Contains(b[0], "FAKE_TOKEN") {
+					t.Fatalf("bash's description does not name the stored secret: %s", b[0])
+				}
+				return
+			}
+			if ran || !strings.Contains(record.String(), "secret(FAKE_TOKEN)") {
+				t.Fatalf("bash used a secret with no secret(NAME) rule:\n%s", record.String())
+			}
+		})
+	}
+}
