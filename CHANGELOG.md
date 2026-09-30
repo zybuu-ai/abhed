@@ -11,7 +11,9 @@ All notable changes to Abhed are recorded here. The format follows
 - `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
   spelled long (`rm --recursive --force dir`), was not treated as a command
   with no undo, so bypass mode ran it without asking. Those flags now count
-  wherever they appear before `--`.
+  wherever they appear before `--`, long ones by any prefix GNU rm accepts
+  (`--rec`, `--forc`). An rm argument holding `$` or a backtick, whose value
+  is not known until it runs (`rm $F build`), is asked about too.
 - A person signed out, removed, taken out of `auth.require_group` or refused
   by an access check kept receiving every event of a session on a
   `GET /v1/sessions/{id}/events` stream opened before, and every byte of a

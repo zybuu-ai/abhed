@@ -343,6 +343,16 @@ func TestIsDestructive(t *testing.T) {
 		"rm -- -rf":                    false,
 		"rm -i notes.txt":              false,
 		"echo rm -rf":                  true,
+		"rm --rec build":               true,
+		"rm --forc build":              true,
+		"rm --r build":                 true,
+		"rm --f build":                 true,
+		"rm --verbose build":           false,
+		"F=-rf; rm $F build":           true,
+		"rm ${OPT:--rf} build":         true,
+		"rm `printf -- -rf` build":     true,
+		"rm $(printf -- -rf) build":    true,
+		"rm -- $F":                     false,
 	}
 	for cmd, want := range cases {
 		what, got := IsDestructive(cmd)
