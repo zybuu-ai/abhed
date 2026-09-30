@@ -62,6 +62,9 @@ func shellBenchOpts(t *testing.T, edit func(*config.Config), opt func(*Options))
 	return wb
 }
 
+// openIdle opens a workbench session with no prompt, in tenant.
+//
+//nolint:unparam // the tenant is what a cross-tenant test would vary
 func (wb *workbench) openIdle(tenant string) string {
 	wb.t.Helper()
 	rec := httptest.NewRecorder()
