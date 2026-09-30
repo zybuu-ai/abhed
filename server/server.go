@@ -266,14 +266,10 @@ type Server struct {
 	// searching counts the workspace searches running per session.
 	searching sync.Map
 	store     EventStore
-	// base is the store under any event tap: the optional interfaces
-	// (liveness, fencing, approvals, deletion) are asserted on it, since the
-	// tap wraps only what the loop writes through.
-	base     EventStore
-	sessions SessionRecorder // nil when the store is not durable
-	log      *slog.Logger
-	mu       sync.RWMutex
-	running  map[string]*liveSession
+	sessions  SessionRecorder // nil when the store is not durable
+	log       *slog.Logger
+	mu        sync.RWMutex
+	running   map[string]*liveSession
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
@@ -425,7 +421,6 @@ func New(opts Options) *Server {
 	s := &Server{
 		opts:    opts,
 		store:   tapped,
-		base:    st,
 		log:     opts.Logger,
 		running: make(map[string]*liveSession),
 		holder:  holder,
@@ -450,8 +445,8 @@ func New(opts Options) *Server {
 
 // under is the store under any event tap, where the optional interfaces are.
 func (s *Server) under() EventStore {
-	if s.base != nil {
-		return s.base
+	if t, ok := s.store.(tapStore); ok {
+		return t.EventStore
 	}
 	return s.store
 }
