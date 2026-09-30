@@ -23,7 +23,7 @@ func TestRegistryKeepsTheHelpList(t *testing.T) {
 		{Name: "/diff", Help: "files changed this session"},
 		{Name: "/cost", Help: "tokens, cache hit rate, compactions this session"},
 		{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names"},
-		{Name: "/clear", Help: "start a new conversation and session, keep the workspace"},
+		{Name: "/clear", Args: "[name]", Help: "end this session and start a new one; nothing is deleted"},
 		{Name: "/tasks", Args: "[cancel <id|all>]", Help: "list background tasks, or cancel them"},
 		{Name: "/wake", Args: "[off|notify|auto]", Help: "show or set what a background result does while idle"},
 		{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect"},

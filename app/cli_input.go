@@ -239,7 +239,13 @@ func (a surfaceAsker) AskPerson(ctx context.Context, q tools.Question) (string, 
 		choices = append(choices, ui.Choice{ID: fmt.Sprintf("o%d", i), Label: label, Key: rune(keys[i])})
 	}
 	choices = append(choices, ui.Choice{ID: "none", Label: "None of these; I will say in the chat", Key: 'x'})
-	id, err := surfaceOf(a.st, nil).Dialog(ctx, ui.DialogSpec{
+	// The agent asks during a run, while the steering loop owns the typed
+	// lines: the prompt's line surface cannot take them, so it answers nothing.
+	sf := surfaceOf(a.st, nil)
+	if a.st.surfaceReadsLines {
+		sf = ui.NewLineSurface(ui.LazyStdout{}, ui.Style{}, nil)
+	}
+	id, err := sf.Dialog(ctx, ui.DialogSpec{
 		Kind:    ui.DialogChoice,
 		Title:   q.Question,
 		Choices: choices,

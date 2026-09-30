@@ -483,6 +483,23 @@ func settleTurn(st *cliState, runErr error) {
 	holdUntilNextWrite(st)
 }
 
+// releaseRefused hands back the claim a task took when a hook refused its
+// message: the run never started, so nothing ended it, and the next task
+// could not claim the session again.
+func releaseRefused(st *cliState, reason agent.TerminalReason) {
+	if reason != agent.TermPromptRefused || st.loop == nil {
+		return
+	}
+	if _, durable := st.store.(server.SessionResumer); !durable {
+		return
+	}
+	if rec, ok := st.store.(*local.Store); ok {
+		rec.Unclaim(st.sessionID)
+		return
+	}
+	endAsBefore(st)
+}
+
 // holdUntilNextWrite marks the conversation to be claimed again before its
 // next write: the task's own end released it, and another process may claim it.
 func holdUntilNextWrite(st *cliState) {

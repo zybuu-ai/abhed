@@ -49,6 +49,9 @@ type cliState struct {
 	dynamic []slashSource
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
+	// surfaceReadsLines is set while surface is the prompt's line surface,
+	// which answers from the typed lines the steering loop reads during a run.
+	surfaceReadsLines bool
 	// input is what the input layer keeps across lines; see inputState.
 	input inputState
 	// pending are the person's actions made before a conversation had a

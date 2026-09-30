@@ -169,20 +169,28 @@ func TestRedTeamManagedPolicyWins(t *testing.T) {
 	}
 }
 
-// What is typed goes to the model as text: a leading ! runs nothing and an
-// @ attaches nothing, until they are built to go through policy.
+// What is typed acts as the person, through policy: a destructive ! line
+// asks first and runs nothing on a no, and an @ mention of Abhed's state
+// attaches nothing. Written when ! and @ were plain text; the input track
+// built them to go through policy, and the invariant holds there.
 func TestRedTeamTypedInputRunsAndAttachesNothing(t *testing.T) {
 	c := startCLI(t)
 	victim := filepath.Join(c.ws, "build")
 	if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	body := c.task("!rm -rf build and look at @.abhed/config.json")
+	c.command("!rm -rf build", "Run this command?")
+	c.command("2", "Not run")
 	if _, err := os.Stat(victim); err != nil {
-		t.Fatal("a ! line ran a command")
+		t.Fatal("a ! line ran a destructive command without a yes")
 	}
-	if strings.Contains(body, "openai-compatible") {
-		t.Fatal("an @ mention attached the state directory's config")
+	c.command("look at @.abhed/config.json", "not sent")
+	if c.requests() != 0 {
+		t.Fatal("a refused @ mention still sent a message")
+	}
+	body := c.task("hello")
+	if strings.Contains(body, "openai-compatible") || strings.Contains(body, "rm -rf build") {
+		t.Fatalf("state or a refused command reached the model: %s", body)
 	}
 }
 

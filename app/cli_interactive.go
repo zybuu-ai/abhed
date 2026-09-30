@@ -105,6 +105,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// Commands ask their questions on the typed lines until the terminal UI
 	// provides its own surface.
 	sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines: lines, ended: readErr})
+	sessionState.surfaceReadsLines = true
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
@@ -268,6 +269,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 		if runErr != nil {
 			fmt.Printf("%s %s\n", s.Red("error:"), runErr)
+		}
+		if runErr == nil {
+			releaseRefused(sessionState, runReason)
 		}
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
