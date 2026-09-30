@@ -273,3 +273,28 @@ func TestUnansweredCommandTrustIsNotStored(t *testing.T) {
 		t.Fatalf("an unanswered question was stored as %s", why)
 	}
 }
+
+// When the workspace is the home directory, or holds it, a relative
+// commands.dirs entry is still the workspace's and needs trust; the
+// person's own ~/.abhed/commands still loads.
+func TestRelativeCommandsDirAtHomeNeedsTrust(t *testing.T) {
+	for _, above := range []bool{false, true} {
+		st, store, _ := customRig(t)
+		home := st.sess.Root
+		if above {
+			home = filepath.Join(st.sess.Root, "users", "me")
+		}
+		t.Setenv("HOME", home)
+		st.appCfg.Commands.Dirs = []string{"cmds"}
+		write(t, filepath.Join(st.sess.Root, "cmds", "plant.md"), "PLANTED")
+		userCommand(t, "mine.md", "MINE")
+		typeLine(t, st, "/plant")
+		if st.takeTurn() != nil || len(eventsOf(t, store, agent.EvCommandInvoked)) != 0 {
+			t.Fatalf("above=%v: a relative commands dir ran without trust", above)
+		}
+		typeLine(t, st, "/mine")
+		if turn := st.takeTurn(); turn == nil || turn.msg.Text != "MINE" {
+			t.Fatalf("above=%v: the person's own command did not run: %+v", above, turn)
+		}
+	}
+}

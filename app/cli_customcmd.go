@@ -80,7 +80,10 @@ func loadCustomCommands(st *cliState) {
 		ws = st.sess.Root
 	}
 	home, _ := os.UserHomeDir()
-	var userDirs []string
+	// The workspace is the home directory or holds it: every path under home
+	// is in the workspace, so only a relative entry is taken as the workspace's.
+	atHome := home != "" && ws != "" && customcmd.Inside(ws, home)
+	var userDirs, relative []string
 	if home != "" {
 		userDirs = append(userDirs, filepath.Join(home, ".abhed", "commands"))
 	}
@@ -89,25 +92,31 @@ func loadCustomCommands(st *cliState) {
 		case strings.HasPrefix(d, "~/") && home != "":
 			d = filepath.Join(home, d[2:])
 		case !filepath.IsAbs(d):
-			d = filepath.Join(ws, d)
+			relative = append(relative, filepath.Join(ws, d))
+			continue
 		}
 		userDirs = append(userDirs, d)
 	}
 
 	var trusted []customcmd.File
-	if ws != "" && !isHomeDir(ws, home) { // at home, .abhed/commands is the person's own
+	if ws != "" {
 		// A configured directory inside the workspace came with it, whoever
 		// named it: its commands need the same trust as .abhed/commands.
-		var outside, inside []string
+		inside := relative
+		var outside []string
 		for _, d := range userDirs {
-			if customcmd.Inside(ws, d) {
+			if !atHome && customcmd.Inside(ws, d) {
 				inside = append(inside, d)
 			} else {
 				outside = append(outside, d)
 			}
 		}
 		userDirs = outside
-		files, _, errs := customcmd.ReadWorkspace(ws)
+		var files []customcmd.File
+		var errs []error
+		if !isHomeDir(ws, home) { // at home, .abhed/commands is the person's own
+			files, _, errs = customcmd.ReadWorkspace(ws)
+		}
 		more, moreErrs := customcmd.ReadWorkspaceDirs(ws, inside)
 		files = append(files, more...)
 		errs = append(errs, moreErrs...)
