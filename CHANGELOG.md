@@ -125,6 +125,14 @@ All notable changes to Abhed are recorded here. The format follows
   was not redacted until a restart. Each server session now reads the store
   when it starts. CLI subagents redact with their conversation's reading
   rather than the one taken when the process started.
+- `web_search` sent its query to the search provider as the model wrote
+  it, so a stored secret in the query, whether a prompt injection put it
+  there or the model did, reached the provider's logs although the record
+  showed `[secret:NAME]`. A query that holds a stored value, as written,
+  percent-encoded or in another case, is now refused before any request,
+  naming the secret and never its value, and a store that cannot be read
+  refuses every query, as `web_fetch` does for a URL. Affected: 1.0.0,
+  which added the secrets store, through 1.2.1.
 - An SDK session, and so an `abhed rpc` or `abhed acp` session, redacted
   with the values stored when it started, while `bash` reads the store at
   each call. A secret stored during a long session and allowed by a rule

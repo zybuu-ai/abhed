@@ -160,7 +160,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		fetch = WebFetchTool(cfg, o.Vault)
 	}
 	if o.Parts&WebSearch != 0 {
-		if t, err := WebSearchTool(cfg); err != nil {
+		if t, err := WebSearchTool(cfg, o.Vault); err != nil {
 			warn("web search disabled: %v", err)
 		} else if t != nil {
 			// Results point at web_fetch only where it is offered.

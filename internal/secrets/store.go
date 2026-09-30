@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -446,6 +447,31 @@ func (r *Redactor) Find(s string) (label string, found bool) {
 	for _, p := range r.pairs {
 		if strings.Contains(s, p.needle) {
 			return p.label, true
+		}
+	}
+	return "", false
+}
+
+// FindSent reports whether text holds a stored value in any form it could
+// take on its way to another server: as written, percent-encoded one or more
+// times, and in any case, since a host or a search engine may fold it. A store
+// that could not be loaded holds everything, with an empty label.
+func (r *Redactor) FindSent(text string) (label string, found bool) {
+	forms := []string{text}
+	for s := text; ; {
+		next, err := url.QueryUnescape(s)
+		if err != nil || next == s || len(forms) > 4 {
+			break
+		}
+		forms = append(forms, next)
+		s = next
+	}
+	if p, err := url.PathUnescape(text); err == nil {
+		forms = append(forms, p)
+	}
+	for _, f := range forms {
+		if label, found := r.FindFold(f); found {
+			return label, true
 		}
 	}
 	return "", false
