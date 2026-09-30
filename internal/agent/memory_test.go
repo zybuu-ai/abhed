@@ -295,7 +295,7 @@ func TestAutoMemoryCannotEscapeItsLabel(t *testing.T) {
 func TestAutoMemoryCutOnARune(t *testing.T) {
 	ws, home := memoryWorld(t)
 	auto := filepath.Join(home, "MEMORY.md")
-	put(t, auto, strings.Repeat("é", 20<<10))
+	put(t, auto, strings.Repeat("€", 20<<10)) // three bytes each, so 25 KB falls inside one
 	p := LoadMemory(MemoryOptions{Workspace: ws, Home: home, Auto: auto}).Render()
 	if !utf8.ValidString(p) {
 		t.Fatal("auto memory was cut inside a character")
