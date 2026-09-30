@@ -111,16 +111,20 @@ absolute), such as the example above, that file is checked once, when the
 session starts, and pinned:
 
 - It must be an executable file somewhere the agent cannot change it, such
-  as `~/bin` or `/usr/local/bin`. A script in the workspace, in a temp or
-  toolchain cache folder, in `~/.abhed` (skills included), in the
-  workspace's `.abhed`, or in a configured state path is refused, whether it
-  is named there or a link resolves there. The status line then shows one
-  warning and nothing else.
+  as `~/bin` or `/usr/local/bin`. A script in the workspace, in a folder
+  granted to the agent's tools (`-add-dir`, `additional_dirs`, a skill's
+  folder), in a temp or toolchain cache folder, in `~/.abhed` (skills
+  included), in the workspace's `.abhed`, or in a configured state path is
+  refused, whether it is named there or a link resolves there. The status
+  line then shows the reason, on every redraw, and nothing else.
 - The file it resolves to is what runs, and it is shown to the sandbox
   read-only; on Linux, where the sandbox does not show your home directory,
   that one file is bound in.
-- Before each run it must still be the same file. Replaced, or swapped for a
-  link, a folder or another file, it is not run, and the allow goes with it.
+- Before each run it must still be the same file, unchanged: the same inode,
+  size, modification and change times. Replaced, edited, or swapped for a
+  link, a folder or another file, it is not run, the allow goes with it, and
+  the status line says so; start a new session to use the script as it is
+  now.
 
 What the script itself reads must be visible to the sandbox too: the
 workspace and the system directories are, while on Linux the rest of your

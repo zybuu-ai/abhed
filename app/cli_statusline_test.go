@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -40,7 +42,7 @@ func testSandbox(t *testing.T, ws string) sandbox.Sandbox {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Sandbox.MinTier = "none"
-	sb, _, _, err := statuslineSandbox(cfg, ws)
+	sb, _, _, err := statuslineSandbox(cfg, ws, nil)
 	if err != nil {
 		t.Skipf("no process sandbox here: %v", err)
 	}
@@ -88,14 +90,14 @@ func TestStatuslineSandboxIsProcessWithNoNetwork(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.AllowNetwork = true
 	cfg.Sandbox.MinTier = "none"
-	if _, _, _, err := statuslineSandbox(cfg, ws); err != nil {
+	if _, _, _, err := statuslineSandbox(cfg, ws, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got.p.AllowNetwork || got.p.MinTier != sandbox.TierProcess {
 		t.Fatalf("policy %+v", got.p)
 	}
 	processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return &fakeProcess{p: p} }
-	if sb, _, _, err := statuslineSandbox(cfg, ws); err == nil || sb != nil {
+	if sb, _, _, err := statuslineSandbox(cfg, ws, nil); err == nil || sb != nil {
 		t.Fatal("ran with no process sandbox")
 	}
 	// Refused once, said once, and nothing is shown.
@@ -120,7 +122,7 @@ func TestStatuslineHasNoNetwork(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.MinTier = "none"
 	cfg.Sandbox.AllowNetwork = true
-	sb, _, _, err := statuslineSandbox(cfg, ws)
+	sb, _, _, err := statuslineSandbox(cfg, ws, nil)
 	if err != nil {
 		t.Skipf("no process sandbox here: %v", err)
 	}
@@ -147,6 +149,10 @@ func homeOutsideTemp(t *testing.T) string {
 	}
 	if r, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = r
+	}
+	// A checkout in a temp area has no place a script is allowed.
+	if under(abs, sandbox.WritableAreas()) {
+		t.Skipf("the checkout is in a writable area (%s), where a statusline script is refused", abs)
 	}
 	t.Setenv("HOME", abs)
 	return abs
@@ -180,9 +186,13 @@ func TestStatuslineScriptPinned(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.MinTier = "none"
 	cfg.Statusline.Command = "~/bin/status.sh"
-	sb, _, _, err := statuslineSandbox(cfg, ws)
-	if err != nil {
+	sb, _, _, err := statuslineSandbox(cfg, ws, nil)
+	// Only a missing sandbox skips; a refusal of the script is a failure.
+	if errors.Is(err, errNoProcessSandbox) {
 		t.Skipf("no process sandbox here: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 	if probe, err := runStatusline(context.Background(), sb, ws, "echo probe", ui.StatusModel{}); err != nil || probe != "probe" {
 		t.Skipf("the process sandbox cannot run a command here: %v", err)
@@ -204,13 +214,51 @@ func TestStatuslineScriptPinned(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		got := st.statusLine(context.Background(), "default")
-		if strings.Contains(got, "hidden-ran") || strings.Contains(got, "do-not-read") || strings.Contains(got, "from-home") {
-			t.Fatalf("after a swap to %s: %q", target, got)
+		// Said on every redraw, with what to do about it.
+		for range 2 {
+			got := st.statusLine(context.Background(), "default")
+			if strings.Contains(got, "hidden-ran") || strings.Contains(got, "do-not-read") || strings.Contains(got, "from-home") ||
+				!strings.Contains(got, "start a new session") {
+				t.Fatalf("after a swap to %s: %q", target, got)
+			}
 		}
 	}
-	if !st.statuslineWarned {
-		t.Fatal("the swap was not said")
+}
+
+// A script in a folder the agent's tools may write, added by -add-dir or
+// granted to the session as a skill's folder, is refused, and the refusal
+// is said on every redraw.
+func TestStatuslineScriptRefusedInGrantedFolders(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := homeOutsideTemp(t)
+	ws := t.TempDir()
+	added := filepath.Join(home, "bin2")
+	writeScript(t, filepath.Join(added, "s.sh"), "#!/bin/sh\necho ran\n")
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.AdditionalDirs = []string{added}
+	cfg.Statusline.Command = filepath.Join(added, "s.sh")
+	if _, _, _, err := statuslineSandbox(cfg, ws, nil); err == nil || !strings.Contains(err.Error(), "granted to its tools") {
+		t.Fatalf("an -add-dir script was taken: %v", err)
+	}
+	skill := filepath.Join(home, "skills-elsewhere", "tidy")
+	writeScript(t, filepath.Join(skill, "s.sh"), "#!/bin/sh\necho ran\n")
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AddRoot(skill); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AdditionalDirs = nil
+	cfg.Statusline.Command = filepath.Join(skill, "s.sh")
+	st := &cliState{appCfg: cfg, workspace: ws, sess: sess}
+	for range 3 {
+		if got := st.statusLine(context.Background(), "default"); !strings.Contains(got, "granted to its tools") {
+			t.Fatalf("%q", got)
+		}
 	}
 }
 
@@ -232,7 +280,7 @@ func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
 		filepath.Join(home, ".cache", "s.sh"),
 	} {
 		writeScript(t, p, "#!/bin/sh\n")
-		if pin, _, err := statuslineScript(p+" --flag", ws, []string{users}); err == nil || pin.Info != nil {
+		if pin, _, err := statuslineScript(p+" --flag", ws, []string{users}, nil); err == nil || pin.Info != nil {
 			t.Errorf("%s was taken", p)
 		}
 	}
@@ -245,7 +293,7 @@ func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
 	if err := os.Chmod(tmp.Name(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := statuslineScript(tmp.Name(), ws, nil); err == nil {
+	if _, _, err := statuslineScript(tmp.Name(), ws, nil, nil); err == nil {
 		t.Errorf("a temp script %s was taken", tmp.Name())
 	}
 	// A link from a fine place into the state resolves there, and is refused.
@@ -257,17 +305,17 @@ func TestStatuslineScriptRefusedInStateAndWritableAreas(t *testing.T) {
 	if err := os.Symlink(filepath.Join(home, ".abhed", "inner.sh"), link); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := statuslineScript(link, ws, nil); err == nil {
+	if _, _, err := statuslineScript(link, ws, nil, nil); err == nil {
 		t.Error("a link into the state was taken")
 	}
 	ok := filepath.Join(home, "bin", "ok.sh")
 	writeScript(t, ok, "#!/bin/sh\n")
-	pin, rest, err := statuslineScript("~/bin/ok.sh --flag x", ws, []string{users})
+	pin, rest, err := statuslineScript("~/bin/ok.sh --flag x", ws, []string{users}, nil)
 	if err != nil || pin.Path != ok || rest != " --flag x" {
 		t.Fatalf("%+v %q %v", pin, rest, err)
 	}
 	for _, c := range []string{"echo hi", "status.sh", "~/bin/none.sh"} {
-		if pin, _, err := statuslineScript(c, ws, nil); err != nil || pin.Info != nil {
+		if pin, _, err := statuslineScript(c, ws, nil, nil); err != nil || pin.Info != nil {
 			t.Errorf("%q: %+v %v", c, pin, err)
 		}
 	}

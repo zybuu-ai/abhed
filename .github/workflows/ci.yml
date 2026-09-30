@@ -190,11 +190,18 @@ jobs:
       - name: Every process-sandbox boundary runs under bubblewrap
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           if grep -q -- "--- SKIP" sandbox.log; then
             echo "a boundary test skipped under a privileged runner:"; grep -B3 -- "--- SKIP" sandbox.log; exit 1
           fi
           echo "$(grep -c -- "--- PASS" sandbox.log) boundary tests ran under bubblewrap"
+      # The statusline's pinned script, end to end under bubblewrap: it runs,
+      # and swapped for a link into ~/.abhed it neither runs nor reads.
+      - name: The statusline script is pinned under bubblewrap
+        run: |
+          set -euo pipefail
+          go test ./app/ -run 'TestStatuslineScriptPinned$' -count=1 -v > pin.log 2>&1 || { cat pin.log; exit 1; }
+          grep -q -- "--- PASS: TestStatuslineScriptPinned" pin.log || { echo "the pin test did not run and pass:"; cat pin.log; exit 1; }
       # The kernel does not bound root's processes, and this job runs as root,
       # so the process limit is checked as an unprivileged user.
       - name: The process limit binds an unprivileged user's commands

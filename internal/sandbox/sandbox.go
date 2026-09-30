@@ -79,13 +79,24 @@ func PinReadable(path string) (ReadableFile, error) {
 }
 
 // Same reports whether the file at Path is still the one pinned: a swap
-// of it, or of a folder above it, for another file or a folder is not.
+// of it, or of a folder above it, for another file or a folder is not, nor
+// is the same file changed since.
 func (f ReadableFile) Same() bool {
 	if f.Info == nil {
 		return false
 	}
 	cur, err := os.Lstat(f.Path)
-	return err == nil && cur.Mode().IsRegular() && os.SameFile(cur, f.Info)
+	if err != nil || !cur.Mode().IsRegular() || !os.SameFile(cur, f.Info) {
+		return false
+	}
+	// An inode number can be handed out again once freed, as ext4 does, so
+	// the size and both change times must match as well.
+	if cur.Size() != f.Info.Size() || !cur.ModTime().Equal(f.Info.ModTime()) || cur.Mode() != f.Info.Mode() {
+		return false
+	}
+	c1, ok1 := changeTime(cur)
+	c2, ok2 := changeTime(f.Info)
+	return ok1 == ok2 && c1 == c2
 }
 
 // Policy declares what a session's execution environment must provide.

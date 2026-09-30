@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The deny for Abhed's own state must come after the workspace allow, because
@@ -277,5 +278,30 @@ func TestBwrapBindsReadableFilesLast(t *testing.T) {
 		if args := bindArgs(); strings.Contains(args, "--ro-bind "+f.Path) {
 			t.Errorf("swapped for %s, still bound:\n%s", name, args)
 		}
+	}
+}
+
+// A pinned file rewritten in place, or only changed in its metadata, is no
+// longer the pinned file: a reused inode number alone does not pass.
+func TestReadableFileSameComparesMoreThanTheInode(t *testing.T) {
+	path := filepath.Join(workspace(t), "status.sh")
+	f := pinned(t, path, "#!/bin/sh\necho one\n")
+	if !f.Same() {
+		t.Fatal("the pinned file is not itself")
+	}
+	g := pinned(t, filepath.Join(workspace(t), "other.sh"), "#!/bin/sh\n")
+	// A mode change moves the ctime alone: size and mtime stay.
+	time.Sleep(20 * time.Millisecond)
+	if err := os.Chmod(g.Path, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if g.Same() {
+		t.Error("a changed ctime passed")
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho two, longer\n"), 0o700); err != nil { // #nosec G306 -- the test's script
+		t.Fatal(err)
+	}
+	if f.Same() {
+		t.Error("a file rewritten in place passed")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,10 @@ var statuslineTimeout = 300 * time.Millisecond
 // statuslineMax bounds what is read of its output.
 const statuslineMax = 4 << 10
 
+// errNoProcessSandbox is a statusline not run for want of the process
+// tier, as opposed to one refused for where its script is.
+var errNoProcessSandbox = errors.New("not run: it runs only under the process sandbox, which is not available here")
+
 // processSandbox builds the statusline's backend; a test replaces it.
 var processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return sandbox.NewProcess(p) }
 
@@ -35,7 +40,9 @@ var processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return sandbox.New
 // Where that tier is missing it is refused rather than run unsandboxed. It
 // returns the command to run, with a script named by path replaced by the
 // file pinned now, and that pin, whose Info is nil for an inline command.
-func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, string, sandbox.ReadableFile, error) {
+// granted are the folders the session's tools may write besides the
+// workspace, skill folders included; cfg.AdditionalDirs is added here.
+func statuslineSandbox(cfg config.Config, workspace string, granted []string) (sandbox.Sandbox, string, sandbox.ReadableFile, error) {
 	command := cfg.Statusline.Command
 	p, err := sandboxconfig.Policy(cfg, workspace)
 	if err != nil {
@@ -43,7 +50,7 @@ func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, st
 	}
 	p.MinTier = sandbox.TierProcess
 	p.AllowNetwork = false
-	pin, rest, err := statuslineScript(command, workspace, p.StatePaths)
+	pin, rest, err := statuslineScript(command, workspace, p.StatePaths, append(append([]string{}, cfg.AdditionalDirs...), granted...))
 	if err != nil {
 		return nil, "", pin, err
 	}
@@ -53,7 +60,7 @@ func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, st
 	}
 	sb := processSandbox(p)
 	if ok, why := sb.Available(); !ok {
-		return nil, "", pin, fmt.Errorf("not run: it runs only under the process sandbox, which is not available here (%s)", why)
+		return nil, "", pin, fmt.Errorf("%w (%s)", errNoProcessSandbox, why)
 	}
 	return sb, command, pin, nil
 }
@@ -61,10 +68,11 @@ func statuslineSandbox(cfg config.Config, workspace string) (sandbox.Sandbox, st
 // statuslineScript pins the script a statusline command starts with, when it
 // names one by path (~/ or absolute) that is an executable file, and returns
 // the rest of the command. The agent must not be able to change what runs,
-// nor the script reach Abhed's state, so a script in the workspace, a temp
-// or cache area the sandbox writes, ~/.abhed, the workspace's .abhed or a
-// state path is refused, by where it is named and where it resolves.
-func statuslineScript(command, workspace string, state []string) (sandbox.ReadableFile, string, error) {
+// nor the script reach Abhed's state, so a script in the workspace, a folder
+// granted to the tools, a temp or cache area the sandbox writes, ~/.abhed,
+// the workspace's .abhed or a state path is refused, by where it is named
+// and where it resolves.
+func statuslineScript(command, workspace string, state, granted []string) (sandbox.ReadableFile, string, error) {
 	trimmed := strings.TrimLeft(command, " \t")
 	first, rest, _ := strings.Cut(trimmed, " ")
 	if rest != "" {
@@ -88,13 +96,13 @@ func statuslineScript(command, workspace string, state []string) (sandbox.Readab
 	if home != "" {
 		stateDirs = append(stateDirs, filepath.Join(home, tools.StateDir))
 	}
-	writable := append([]string{workspace}, sandbox.WritableAreas()...)
+	writable := append(append([]string{workspace}, granted...), sandbox.WritableAreas()...)
 	for _, p := range []string{path, pin.Path} {
 		if under(p, stateDirs) {
 			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is in Abhed's own state, which a statusline script may not be", config.Printable(first))
 		}
 		if under(p, writable) {
-			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is where the agent can change it (the workspace, a temp or cache area); put the script elsewhere, such as ~/bin", config.Printable(first))
+			return sandbox.ReadableFile{}, "", fmt.Errorf("not run: %s is where the agent can change it (the workspace, a folder granted to its tools, a temp or cache area); put the script elsewhere, such as ~/bin", config.Printable(first))
 		}
 	}
 	return pin, rest, nil
@@ -237,22 +245,33 @@ func sanitizeStatus(s string) string {
 }
 
 // statusLine is the configured statusline's output for the session now, or
-// "" with no command or when it failed; a failure is said once.
+// "" with no command or when it failed. A refused script, at the start or
+// after a swap, is said on every redraw; no sandbox, or a failing command, once.
 func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	cmd := c.appCfg.Statusline.Command
 	if cmd == "" {
 		return ""
 	}
 	c.statuslineOnce.Do(func() {
-		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace)
+		c.statuslineSB, c.statuslineCmd, c.statuslinePin, c.statuslineErr = statuslineSandbox(c.appCfg, c.workspace, c.grantedDirs())
 	})
-	line, err := "", c.statuslineErr
-	if err == nil && c.statuslinePin.Info != nil && !c.statuslinePin.Same() {
-		err = fmt.Errorf("not run: %s is no longer the file checked at the start of the session", config.Printable(c.statuslinePin.Path))
+	// A missing sandbox is said once, as it holds for the whole session;
+	// a refused script every time, until it is moved.
+	if c.statuslineErr != nil && !errors.Is(c.statuslineErr, errNoProcessSandbox) {
+		return "statusline: " + c.statuslineErr.Error()
 	}
-	if err == nil {
-		line, err = runStatusline(ctx, c.statuslineSB, c.workspace, c.statuslineCmd, c.statusModel(mode))
+	if c.statuslineErr != nil {
+		if c.statuslineWarned {
+			return ""
+		}
+		c.statuslineWarned = true
+		return "statusline: " + c.statuslineErr.Error()
 	}
+	if c.statuslinePin.Info != nil && !c.statuslinePin.Same() {
+		return fmt.Sprintf("statusline: not run: %s has changed since the session started; start a new session to use it as it is now",
+			config.Printable(c.statuslinePin.Path))
+	}
+	line, err := runStatusline(ctx, c.statuslineSB, c.workspace, c.statuslineCmd, c.statusModel(mode))
 	if err != nil {
 		if !c.statuslineWarned {
 			c.statuslineWarned = true
@@ -261,4 +280,14 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 		return ""
 	}
 	return line
+}
+
+// grantedDirs are the folders the session's tools reach besides the
+// workspace: added directories and skill folders.
+func (c *cliState) grantedDirs() []string {
+	var out []string
+	if c.sess != nil {
+		out = append(out, c.sess.PolicyRoots()...)
+	}
+	return append(out, c.set.SkillDirs()...)
 }
