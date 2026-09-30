@@ -3,6 +3,7 @@ package local
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -65,5 +66,39 @@ func TestCanonicalRefusesInvalidUTF8(t *testing.T) {
 		if _, err := canonical([]byte(in)); err == nil {
 			t.Errorf("canonical(%q) accepted", in)
 		}
+	}
+}
+
+// A sealed line whose payload is valid JSON but not canonical fails: keys
+// out of order, or a duplicate key. (The mutant without this check survived.)
+func TestCheckLineRefusesANonCanonicalPayload(t *testing.T) {
+	for _, payload := range []string{`{"b":1,"a":2}`, `{"text":"a","text":"b"}`} {
+		l := line{Seq: 1, ID: "a", SessionID: "s-1", Type: "user.message", Actor: "user", Trust: "trusted",
+			CreatedAt: "2026-09-30T00:00:00Z", Payload: json.RawMessage(payload), Prev: Genesis}
+		raw, err := l.seal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, why := checkLine(raw); why == "" {
+			t.Errorf("payload %s accepted", payload)
+		}
+	}
+}
+
+// Two lines at one seq, each sealed and chained, fail verify. (The mutant
+// without the duplicate check survived.)
+func TestVerifyRefusesARepeatedSeq(t *testing.T) {
+	prev := Genesis
+	var raws [][]byte
+	for i, seq := range []int64{1, 2, 2} {
+		l := line{Seq: seq, ID: fmt.Sprint("e", i), SessionID: "s-1", Type: "user.message", Actor: "user", Trust: "trusted",
+			CreatedAt: "2026-09-30T00:00:00Z", Payload: json.RawMessage(`{"text":"x"}`), Prev: prev}
+		raw, _ := l.seal()
+		raws = append(raws, raw)
+		prev = l.Hash
+	}
+	rep, _ := verifyLines(raws, "s-1")
+	if rep.OK || rep.Line != 3 || rep.FirstBad != 2 {
+		t.Fatalf("a repeated seq: %+v", rep)
 	}
 }
