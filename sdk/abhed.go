@@ -183,6 +183,10 @@ type Agent struct {
 	fwd      *forwarder
 	redact   *secrets.Redactor
 	trust    config.WorkspaceTrust
+	// cfg is the configuration New loaded, the only source of models to
+	// switch to by name; current names the one the loop runs on, under forkMu.
+	cfg     config.Config
+	current string
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
 	// meanwhile waits for the fork to finish.
@@ -362,7 +366,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loop.Budget = budget
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
-	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace}
+	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
+		cfg: cfg, current: cfg.Model.Default}
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -511,8 +516,15 @@ func (a *Agent) SetModel(p Provider) error {
 	if err != nil {
 		return err
 	}
+	// Under forkMu, as SwitchModelNamed is, so the two never interleave.
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
 	// Recorded, so the record names the model that answers from here on.
-	return a.loop.SwitchModel("", next)
+	if err := a.loop.SwitchModel("", next); err != nil {
+		return err
+	}
+	a.current = "" // no configured model is current now
+	return nil
 }
 
 // Flush waits until OnEvent has returned for every event recorded before the

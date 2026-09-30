@@ -382,6 +382,8 @@ The environment variables in step 4 still apply over the managed file: they
 name a deployment's endpoint and credentials, which whoever runs the process
 controls. Nor is the model: `-model` and the console's picker choose among the
 providers any file defines, and the SDK's `Provider` names any endpoint.
+An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
+exception: a managed `model.default` pins them to that model.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say.
