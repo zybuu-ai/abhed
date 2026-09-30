@@ -613,6 +613,8 @@ func (a *Agent) WaitBackground(ctx context.Context) error {
 // prompt, and returns its answer. It is recorded as session.woken by the
 // caller. ErrNothingToWake when no result waits.
 func (a *Agent) Wake(ctx context.Context) (string, error) {
+	// A wake is a run: Fork and a model switch wait for it or refuse.
+	defer a.startRun()()
 	reason, err := a.loop.RunWoken(ctx, agent.Wake{By: "caller"})
 	if err != nil {
 		return "", err
