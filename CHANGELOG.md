@@ -311,6 +311,10 @@ All notable changes to Abhed are recorded here. The format follows
 - A server turn continued by a message never refreshed or released this
   node's claim on the session; every run now holds it, with its heartbeat,
   while it or a background task is live.
+- With input piped in as lines, the line after an approval prompt was taken
+  as its answer whatever it said. Only a line that is exactly `a`, `y`, `r`,
+  `n` or `A` answers now; any other line steers the run (or, with no run
+  live, is a prompt), with a note that the approval still waits.
 
 ### Added
 
@@ -325,11 +329,15 @@ All notable changes to Abhed are recorded here. The format follows
   tasks; editors, rpc and the SDK never wake on their own. New limits
   `limits.max_background_subagents` (4) and `limits.background_max_minutes`
   (60, at most 480). New tools `task_status` and `task_cancel`. An explicit
-  stop cancels every background task; "send now" keeps them.
+  stop cancels every background task, stops a `task` or `tasks` call still
+  starting its tasks, and holds wakes until the next prompted run; "send
+  now" keeps them. A `tasks` call starts all its background tasks or none.
+  A fork is refused while background tasks run.
 - Resuming a finished subagent: `task` takes `resume`, a task id of this
   session's, and continues that subagent's own conversation with a new
   prompt, on the model it ran on, in its worktree, under its role as it is
-  now.
+  now. It never falls back to the main tree, and a managed role's current
+  model pin binds it. A managed `model.default` pins every subagent's model.
 - Server: the session state `background`; `GET /v1/sessions/{id}/tasks`,
   `POST /v1/sessions/{id}/tasks/{task}/cancel` and `POST
   /v1/sessions/{id}/wake`, owner only; the session list's `background` and
