@@ -2306,6 +2306,9 @@ func resumeConversation(ctx context.Context, st *cliState, id string, events []a
 		return fmt.Errorf("session %s is running elsewhere", id)
 	}
 	if !live { // the same conversation keeps its cost and undo log
+		// The last conversation's background tasks end before its logins are
+		// reset, so none of them can log in into the one resumed.
+		st.endBackground()
 		st.fresh()
 	}
 	if err := rebuildFrom(st, id, events); err != nil {
