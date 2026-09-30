@@ -491,7 +491,8 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		raw = "subagent " + sub + ": " + raw
 	}
 	title := ui.VisibleLine(raw)
-	if ui.HasHidden(raw) {
+	// The note covers the whole call: every argument, the reason, scope and asker.
+	if ui.HasHidden(raw) || ui.ArgsHidden(args) || ui.ArgsHidden(shown) || anyHidden(reason, scope, shownScope, sub, agent.PipelineOf(ctx)) {
 		title += " (contains hidden or control characters)"
 	}
 	if scope != "" && shownScope != "" {
@@ -740,4 +741,13 @@ func acpID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func anyHidden(fields ...string) bool {
+	for _, f := range fields {
+		if ui.HasHidden(f) {
+			return true
+		}
+	}
+	return false
 }

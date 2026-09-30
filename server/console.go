@@ -1454,7 +1454,15 @@ function visible(s, lines){
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 
-function hasHidden(s){ return /[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(String(s)); }
+// hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
+function hasHidden(v, depth = 0){
+  if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
+  if(typeof v !== 'string') return false;
+  if(/[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(v)) return true;
+  const t = v.trim();
+  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  return false;
+}
 
 function summarize(tool, args){
   if(!args) return '';
@@ -1632,7 +1640,8 @@ function approval(p, rid){
   try{
     args = JSON.stringify(typeof p.args === 'string' ? JSON.parse(p.args) : p.args, null, 2);
   }catch{ args = String(p.args); }
-  if([p.tool, p.reason, p.subagent, p.via, p.scope, args].some(v => v && hasHidden(v)))
+  // The warning reads the values themselves: stringify would turn a CR or ESC into plain text.
+  if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
     card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this call contains hidden or control characters'}));
   if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: visible(p.reason)}));
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.

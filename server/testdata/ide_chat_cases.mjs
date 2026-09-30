@@ -306,4 +306,18 @@ fresh('s30', true);
   check('a plain call draws no warning', open().length === 2 && !open()[1].textContent.includes('hidden or control characters'));
 }
 
+// The warning reads every value in the call, not only the subject it draws.
+fresh('s31', true);
+{
+  const calls = [
+    ['write', {path:'a.txt', content: Array.from({length:25}, (_, i) => i === 19 ? 'x\u202ey' : 'line').join('\n')}],
+    ['bash', {command:'ls\rrm -rf x', description:'list'}],
+    ['k8s_apply', {action:'apply', manifest:'{"kind":"ConfigMap","data":{"k":"\\u001b[2J"}}'}],
+    ['task', {description:'look', prompt:'a\u200db'}],
+  ];
+  calls.forEach(([tool, args], i) => render(ev(1 + i, 'action.requested', {call_id:'h' + i, tool, args, requires_approval:true})));
+  const warned = open().map(a => a.textContent.includes('hidden or control characters'));
+  check('a hidden character anywhere in the args raises the warning: ' + warned, warned.length === 4 && warned.every(Boolean));
+}
+
 if(!ok) process.exit(1);

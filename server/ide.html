@@ -1351,7 +1351,15 @@ function visible(s, lines){
   return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
-function hasHidden(s){ return /[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(String(s)); }
+// hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
+function hasHidden(v, depth = 0){
+  if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
+  if(typeof v !== 'string') return false;
+  if(/[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(v)) return true;
+  const t = v.trim();
+  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  return false;
+}
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
@@ -1681,7 +1689,7 @@ function askApproval(p, rid){
   // Every field is made visible: the prompt must show exactly what allowing runs.
   const subj = subjectOf(p.tool, p.args) || '';
   a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
-  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, JSON.stringify(p.args || {})].some(v => v && hasHidden(v)))
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
     a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
   const btns = el('div', 'btns');
   const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';

@@ -94,4 +94,17 @@ check('a 409 after the run retires the card', !lateCard.isConnected);
   check('a plain call draws no warning', !!plain && !plain.textContent.includes('hidden or control characters'));
 }
 
+// The warning reads every value in the call, not the JSON text drawn from it.
+{
+  const calls = [
+    ['write', {path:'a.txt', content: Array.from({length:25}, (_, i) => i === 19 ? 'x\u202ey' : 'line').join('\n')}],
+    ['bash', {command:'ls\rrm -rf x', description:'list'}],
+    ['k8s_apply', {action:'apply', manifest:'{"kind":"ConfigMap","data":{"k":"\\u001b[2J"}}'}],
+    ['task', {description:'look', prompt:'a\u200db'}],
+  ];
+  calls.forEach(([tool, args], i) => render({seq:60 + i, id:'ev6' + i, type:'action.requested', payload:{call_id:'h' + i, tool, requires_approval:true, args}}));
+  const warned = calls.map((_, i) => approvals.has('h' + i) && approvals.get('h' + i).textContent.includes('hidden or control characters'));
+  check('a hidden character anywhere in the args raises the warning: ' + warned, warned.every(Boolean));
+}
+
 if(!ok) process.exit(1);

@@ -126,3 +126,96 @@ func TestVisible(t *testing.T) {
 		}
 	}
 }
+
+// promptFor draws the approval prompt for one call and refuses it.
+func promptFor(t *testing.T, tool string, args any) string {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("r\n")
+	if ok, err := a.Approve(context.Background(), tool, raw, policy.Result{}); err != nil || ok {
+		t.Fatalf("got %v, %v; want a refusal", ok, err)
+	}
+	return out.String()
+}
+
+// The warning covers every string in the call, including what no preview draws.
+func TestApproveWarnsOnHiddenCharactersAnywhereInTheCall(t *testing.T) {
+	var long []string
+	for i := 0; i < 25; i++ {
+		long = append(long, "line")
+	}
+	long[19] = "x\u202ey"
+	manifest := `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c"},"data":{"k":"\u001b[2J"}}`
+	cases := []struct {
+		name, tool string
+		args       any
+	}{
+		{"write past the preview", "write", map[string]string{"path": "a.txt", "content": strings.Join(long, "\n")}},
+		{"bash carriage return", "bash", map[string]string{"command": "ls\rrm -rf x", "description": "list"}},
+		{"k8s manifest escape", "k8s_apply", map[string]string{"action": "apply", "manifest": manifest}},
+		{"task prompt joiner", "task", map[string]string{"description": "look", "prompt": "a\u200db"}},
+		{"nested value", "mcp_x", map[string]any{"a": []any{1, map[string]any{"b": "\u2066"}}}},
+		{"key", "mcp_x", map[string]any{"k\u200b": "v"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := promptFor(t, c.tool, c.args); !strings.Contains(got, hiddenWarning) {
+				t.Errorf("no warning: %q", got)
+			}
+		})
+	}
+}
+
+// The tools that had no preview show what they will do, escaped.
+func TestApprovePreviewsClusterSubagentRemoteAndFetch(t *testing.T) {
+	manifest := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"prod"},"spec":{"replicas":3,"note":"a\u202eb"}}`
+	cases := []struct {
+		name, tool string
+		args       any
+		want       []string
+	}{
+		{"k8s apply", "k8s_apply", map[string]string{"action": "apply", "cluster": "lab", "manifest": manifest},
+			[]string{"apply · cluster lab · namespace prod · Deployment/web", `"replicas": 3`, "⟨U+202E⟩"}},
+		{"k8s scale", "k8s_apply", map[string]any{"action": "scale", "resource": "deployments", "name": "web", "namespace": "prod", "replicas": 0},
+			[]string{"scale · namespace prod · deployments/web · replicas 0"}},
+		{"task", "task", map[string]string{"description": "look", "agent_type": "explore", "prompt": "one\ntwo\x1b[2J"},
+			[]string{"subagent: explore", "    one", `two\x1b[2J`}},
+		{"ssh", "ssh", map[string]string{"host": "db1", "command": "uptime\rrm"}, []string{`db1 $ uptime\rrm`}},
+		{"web_fetch", "web_fetch", map[string]string{"url": "https://example.com/a?b=c#\u200d"}, []string{"https://example.com/a?b=c#⟨U+200D⟩"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := promptFor(t, c.tool, c.args)
+			for _, w := range c.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("prompt lacks %q: %q", w, got)
+				}
+			}
+			for _, r := range got {
+				if r == 0x1b || r == '\r' || unicode.Is(unicode.Cf, r) {
+					t.Errorf("raw %U in the prompt: %q", r, got)
+				}
+			}
+		})
+	}
+	// A long prompt and manifest are cut, and say how much is left.
+	got := promptFor(t, "task", map[string]string{"prompt": strings.Repeat("p\n", 30)})
+	if !strings.Contains(got, "... 20 more lines") {
+		t.Errorf("a long task prompt is not cut at 10 lines: %q", got)
+	}
+}
+
+// A cut counts characters, so a multi-byte string is never split mid-rune.
+func TestTruncateIsRuneSafe(t *testing.T) {
+	if got := truncate("日本語テキスト", 3); got != "日本語..." {
+		t.Errorf("truncate = %q", got)
+	}
+	if got := truncate("日本", 3); got != "日本" {
+		t.Errorf("a short string was changed: %q", got)
+	}
+}

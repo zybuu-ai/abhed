@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -151,6 +153,10 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 		asked = append(asked, v.line(res.Reason))
 	}
 	preview := a.preview(&v, tool, args)
+	// The warning covers the whole call, not only the fields drawn above.
+	if ArgsHidden(args) {
+		v.hidden = true
+	}
 	options := "[a]ccept  [r]eject"
 	if scope != "" {
 		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(v.line(scope)))
@@ -276,6 +282,81 @@ func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) 
 
 	case "bash":
 		return fmt.Sprintf("  %s", s.Dim("$ "+v.line(str("command"))))
+
+	case "ssh":
+		return fmt.Sprintf("  %s", s.Dim(v.line(str("host"))+" $ "+v.line(str("command"))))
+
+	case "web_fetch":
+		line := v.line(str("url"))
+		if method := str("method"); method != "" {
+			line = v.line(method) + " " + line
+		}
+		return fmt.Sprintf("  %s", s.Dim(line))
+
+	case "task":
+		kind := str("agent_type")
+		if kind == "" {
+			kind = "general"
+		}
+		return a.block(v, "subagent: "+kind, firstLines(str("prompt"), 10))
+
+	case "k8s_apply":
+		return a.block(v, k8sHead(m, str), k8sBody(str))
 	}
 	return ""
+}
+
+// block draws a dim heading and indented lines, each escaped as one line.
+func (a *Approver) block(v *visibleTracker, head string, lines []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s", a.Style.Dim(v.line(head)))
+	for _, line := range lines {
+		fmt.Fprintf(&b, "\n    %s", a.Style.Dim(v.line(line)))
+	}
+	return b.String()
+}
+
+// k8sHead names what a k8s_apply changes: action, cluster, namespace, kind and name.
+func k8sHead(m map[string]any, str func(string) string) string {
+	action, ns, target := str("action"), str("namespace"), str("resource")+"/"+str("name")
+	if action == "apply" {
+		if mf, err := kubescope.DecodeManifest(str("manifest")); err == nil {
+			target = mf.Kind + "/" + mf.Name
+			if ns == "" {
+				ns = mf.Namespace
+			}
+		}
+	}
+	parts := []string{action}
+	if c := str("cluster"); c != "" {
+		parts = append(parts, "cluster "+c)
+	} else if c := str("context"); c != "" {
+		parts = append(parts, "context "+c)
+	}
+	if ns != "" {
+		parts = append(parts, "namespace "+ns)
+	}
+	if target != "/" {
+		parts = append(parts, target)
+	}
+	if r, ok := m["replicas"].(float64); ok {
+		parts = append(parts, fmt.Sprintf("replicas %v", r))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// k8sBody is the start of the manifest in the canonical form that is sent,
+// indented for reading; a manifest that does not decode is shown as given.
+func k8sBody(str func(string) string) []string {
+	raw := str("manifest")
+	if raw == "" {
+		return nil
+	}
+	if mf, err := kubescope.DecodeManifest(raw); err == nil {
+		var b bytes.Buffer
+		if json.Indent(&b, mf.Canonical, "", "  ") == nil {
+			raw = b.String()
+		}
+	}
+	return firstLines(raw, 15)
 }
