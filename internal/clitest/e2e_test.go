@@ -93,3 +93,18 @@ func writeFile(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+// The harness is usable through the interface alone, and the terminal
+// modes the binary sets are visible.
+func TestInterfaceOnly(t *testing.T) {
+	t.Parallel()
+	var h Harness = Start(t, Opts{Script: `text "ok"`})
+	h.WaitText("Type a task")
+	if h.Screen().Modes().AltScreen {
+		t.Fatal("the line UI is not on the alternate screen")
+	}
+	if !strings.Contains(h.ScreenGolden(), "‹ws›") {
+		t.Fatalf("golden not normalized:\n%s", h.ScreenGolden())
+	}
+	h.Exit(0)
+}

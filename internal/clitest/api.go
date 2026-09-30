@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/clitest/vt"
 )
 
 // Opts configure one run.
@@ -181,6 +182,17 @@ type Harness interface {
 	Started() time.Time
 	// Stub is the scripted model.
 	Stub() *Stub
+
+	// Normalize replaces the run's directories, times, token counts, ids,
+	// hashes and spinner frames with placeholders.
+	Normalize(text string) string
+	// ScreenGolden and AttrsGolden are the normalized screen (after the
+	// scrollback) and its style runs, drawn again with the run directory at
+	// a fixed width; AssertGoldens compares them, and the record golden when
+	// evs is not nil, with testdata/golden/<scenario>/ (-update rewrites).
+	ScreenGolden() string
+	AttrsGolden() string
+	AssertGoldens(scenario string, evs []agent.Event)
 }
 
 // Screen is the emulator's view of the terminal.
@@ -199,6 +211,9 @@ type Screen interface {
 	Cursor() (row, col int)
 	// Title is the last title the binary set.
 	Title() string
+	// Modes are the terminal modes the binary set: bracketed paste,
+	// synchronized output, the alternate screen, cursor visibility.
+	Modes() vt.Modes
 }
 
 // Cell is one character cell.
