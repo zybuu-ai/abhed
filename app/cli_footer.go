@@ -66,11 +66,24 @@ func startFooter(editor *ui.LineReader, r *ui.Renderer, st *cliState, pol *polic
 	// A status line command comes from the user's or a trusted workspace's
 	// configuration: an untrusted workspace's is never loaded (config's
 	// trust rules). It runs under the session's sandbox.
-	if cmd := strings.TrimSpace(st.appCfg.Statusline.Command); cmd != "" && f.sbox != nil {
-		f.command, f.sb = cmd, f.sbox
-	}
+	f.command, f.sb, f.line = statusLineSetup(st.appCfg.Statusline.Command, f.sbox)
 	f.refresh(st, pol)
 	return f
+}
+
+// statusLineSetup decides how a status line command runs: under the
+// session's sandbox, and not at all without one — it is a process the
+// configuration names, and on the host it would run as the person with
+// nothing between it and their files. The notice says why nothing shows.
+func statusLineSetup(command string, sb sandbox.Sandbox) (run string, under sandbox.Sandbox, notice string) {
+	command = strings.TrimSpace(command)
+	switch {
+	case command == "":
+		return "", nil, ""
+	case sb == nil || sb.Tier() == sandbox.TierNone:
+		return "", nil, "statusline.command not run: it runs only under a sandbox, and this session has none"
+	}
+	return command, sb, ""
 }
 
 // modeCycleLine is what Shift-Tab hands the session: the mode changes on the

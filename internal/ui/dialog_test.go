@@ -411,3 +411,73 @@ func TestApprovalHasNoDefault(t *testing.T) {
 		t.Fatal("Esc approved")
 	}
 }
+
+// With no key before it, a number still does not count in the first 300 ms
+// the dialog is on screen: the guard, not the quiet rule, holds it.
+func TestDialogLoneNumberInsideTheGuard(t *testing.T) {
+	for _, at := range []time.Duration{10, 100, 290} {
+		dr := openDialog(t, approvalSpec())
+		dr.clock.advance(at * time.Millisecond)
+		dr.key("1")
+		dr.clock.advance(time.Second)
+		dr.timers.advance(time.Second)
+		if id, ok := dr.answered(); ok {
+			t.Fatalf("a lone 1 at %d ms answered %q", at, id)
+		}
+	}
+}
+
+// After the guard, a key 100 ms before a number, or before Enter, makes it
+// typing, even with silence after.
+func TestDialogNeedsQuietBefore(t *testing.T) {
+	dr := openDialog(t, approvalSpec())
+	dr.clock.advance(time.Second)
+	dr.key("x")
+	dr.clock.advance(100 * time.Millisecond)
+	dr.key("1")
+	dr.clock.advance(time.Second)
+	dr.timers.advance(time.Second)
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("x then 1 answered %q", id)
+	}
+
+	dr2 := openDialog(t, approvalSpec())
+	dr2.clock.advance(time.Second)
+	dr2.key("\x1b[B") // select Yes
+	dr2.clock.advance(time.Second)
+	dr2.key("x")
+	dr2.clock.advance(100 * time.Millisecond)
+	dr2.key("\r")
+	if id, ok := dr2.answered(); ok {
+		t.Fatalf("Enter 100 ms after a key answered %q", id)
+	}
+	dr2.clock.advance(time.Second)
+	dr2.key("\r")
+	if id, _ := dr2.answered(); id != "yes" {
+		t.Fatalf("a deliberate Enter answered %q", id)
+	}
+}
+
+// Esc inside the guard is ignored like every other key.
+func TestDialogEscInsideTheGuard(t *testing.T) {
+	dr := openDialog(t, approvalSpec())
+	dr.clock.advance(100 * time.Millisecond)
+	dr.key("\x1b")
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("Esc inside the guard answered %q", id)
+	}
+}
+
+// A paste is never a choice, whatever it holds.
+func TestDialogPasteIsNeverAChoice(t *testing.T) {
+	for _, body := range []string{"1", "y", "2", "\r"} {
+		dr := openDialog(t, approvalSpec())
+		dr.clock.advance(time.Second)
+		dr.key("\x1b[200~" + body + "\x1b[201~")
+		dr.clock.advance(time.Second)
+		dr.timers.advance(time.Second)
+		if id, ok := dr.answered(); ok {
+			t.Fatalf("a paste of %q answered %q", body, id)
+		}
+	}
+}

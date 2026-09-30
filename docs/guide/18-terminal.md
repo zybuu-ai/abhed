@@ -120,7 +120,9 @@ replaces the second row with the first line a command prints. It gets the
 status as JSON on stdin (`model`, `provider`, `mode`, `context_tokens`,
 `context_percent`, `tokens_in`, `tokens_out`, `background_tasks`,
 `sandbox_tier`, `git_branch`, `cwd` and more), runs under the session's
-sandbox, at most once a second, and is stopped after 2 seconds. Its colours
+sandbox, at most once a second, and is stopped after 2 seconds; only its
+first 4 KB are read. With no sandbox (the `none` tier) it is not run at all,
+and the footer says so. Its colours
 are kept; anything else it prints to move the cursor or retitle the window is
 dropped. A workspace's own `.abhed/config.json` may set it only once you have
 trusted that file (see [workspace trust](../architecture/workspace-trust.md)).

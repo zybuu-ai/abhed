@@ -25,8 +25,7 @@ type dialogState struct {
 	spec     DialogSpec
 	sel      int
 	shownAt  time.Time // when it was first drawn; zero until then
-	lastMove time.Time
-	pending  int // a number key waiting to stand alone, or -1
+	pending  int       // a number key waiting to stand alone, or -1
 	pendingN int
 	note     string
 	done     chan int
@@ -133,7 +132,8 @@ func (d *dock) resolve(i int) {
 // not a number, not an arrow, not Enter. After that, a number or letter
 // must stand alone — no key within approvalGuard before it, and none within
 // approvalGuard after it — and Enter needs approvalGuard since the key before
-// it and since the last arrow. A key held down repeats far faster than that,
+// it, an arrow included. A paste is never a choice. A key held down repeats
+// far faster than that,
 // so a held key never answers, and neither does typing that was meant for
 // the prompt when the dialog appeared.
 //
@@ -162,11 +162,9 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 			st.sel = len(st.spec.Choices)
 		}
 		st.sel = (st.sel + len(st.spec.Choices) - 1) % len(st.spec.Choices)
-		st.lastMove = at
 		st.note = ""
 	case k.code == kDown || k.code == kNone && (k.r == keyCtrlN || k.r == 'j'):
 		st.sel = (st.sel + 1) % len(st.spec.Choices)
-		st.lastMove = at
 		st.note = ""
 	case k.code == kNone && k.r == keyCtrlO:
 		d.openDialogPager(st)
@@ -175,7 +173,8 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 			st.note = "choose with a number, or ↑↓ then Enter"
 			return
 		}
-		if !quiet || at.Sub(st.lastMove) < approvalGuard {
+		// An arrow is a key, so Enter straight after one is not quiet.
+		if !quiet {
 			st.note = "too quick after another key; press Enter again"
 			return
 		}
