@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -1097,6 +1099,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision == policy.Ask {
 		doomed = pc.Precheck(l.Session, call.Args)
 	}
+	if doomed == nil && decision.Decision == policy.Ask {
+		doomed = l.readFirst(ctx, tool, call)
+	}
 	if doomed != nil {
 		decision.Reason = "refused before approval: the call could not succeed"
 	}
@@ -1528,7 +1533,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
 	for i := range calls {
-		decision, res, terminal := l.authorize(ctx, &calls[i])
+		decision, res, terminal := l.authorize(context.WithValue(ctx, turnCallsKey{}, turnCalls{calls, i}), &calls[i])
 		if terminal != "" {
 			results[i] = callOutcome{result: res, terminal: terminal, set: true}
 			l.appendEnded(calls, results, terminal, i+1)
@@ -1839,4 +1844,69 @@ func (l *Loop) effort() model.EffortLevel {
 		return model.EffortLow
 	}
 	return l.Config.Effort
+}
+
+type turnCallsKey struct{}
+
+// turnCalls are the calls of the turn being authorized, and which one it is.
+type turnCalls struct {
+	calls []model.ToolCall
+	index int
+}
+
+// readFirst refuses, before anyone is asked, an edit or write the tool would
+// refuse for want of a read: an existing file not read this session, one
+// changed on disk since, or an edit of a file that is not there. Approving
+// such a call only wastes the person's answer. A turn whose other calls name
+// the same file, or run a command first, may change that by the time this
+// call runs, so the check is left to the tool.
+func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCall) error {
+	_, isEdit := tool.(tools.Edit)
+	if _, isWrite := tool.(tools.Write); !isEdit && !isWrite {
+		return nil
+	}
+	var a struct {
+		Path      string  `json:"path"`
+		OldString *string `json:"old_string"`
+	}
+	if l.Session == nil || json.Unmarshal(call.Args, &a) != nil {
+		return nil
+	}
+	path, err := l.Session.Resolve(a.Path)
+	if err != nil {
+		return nil //nolint:nilerr // the tool's own precheck reports a path it cannot use
+	}
+	if turn, ok := ctx.Value(turnCallsKey{}).(turnCalls); ok {
+		for i, other := range turn.calls {
+			if i == turn.index {
+				continue
+			}
+			if i < turn.index && other.Name == "bash" {
+				return nil
+			}
+			var o struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(other.Args, &o) == nil && o.Path != "" {
+				if p, err := l.Session.Resolve(o.Path); err == nil && p == path {
+					return nil
+				}
+			}
+		}
+	}
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if isEdit && a.OldString != nil && *a.OldString != "" {
+			return fmt.Errorf("File not found: %s. Use glob to locate it, or write() to create it", a.Path)
+		}
+		return nil
+	case err != nil || info.IsDir():
+		return nil
+	case !l.Session.WasRead(path):
+		return fmt.Errorf("Refusing to %s %s: it has not been read this session. Call read(%q) first, then %s it", call.Name, a.Path, a.Path, call.Name)
+	case isEdit && l.Session.ChangedSinceRead(path):
+		return fmt.Errorf("%s changed on disk since you read it. Re-read it before editing", a.Path)
+	}
+	return nil
 }

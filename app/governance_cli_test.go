@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -102,5 +105,34 @@ func TestTurnLimitFollowsTheManagedConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(turnLimitNote(managed, 30), "/clear starts a new one") || !strings.Contains(turnLimitNote(own, 30), "continue") {
 		t.Fatal("the end note does not say how to go on")
+	}
+}
+
+// Through the CLI: an edit of a file not read this session is never put to
+// the person, and the model is told to read it first.
+func TestCLIUnreadEditIsNotAsked(t *testing.T) {
+	var ws atomic.Value
+	c := startCLIConfig(t, func(w io.Writer, n int, _ string) {
+		if n == 1 {
+			sseCall(w, n, "edit", `{"path":`+strconv.Quote(filepath.Join(ws.Load().(string), "main.go"))+`,"old_string":"a","new_string":"b"}`)
+			return
+		}
+		textReply("ok")(w, n)
+	}, func(url string) string {
+		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":8192}}}}`
+	})
+	ws.Store(c.ws)
+	if err := os.WriteFile(filepath.Join(c.ws, "main.go"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.task("change main.go")
+	if strings.Contains(c.out.String(), "[a]ccept") {
+		t.Fatalf("the person was asked to approve an edit that could not succeed:\n%s", c.out.String())
+	}
+	c.mu.Lock()
+	second := c.bodies[1]
+	c.mu.Unlock()
+	if !strings.Contains(second, "has not been read this session") {
+		t.Fatalf("the model was not told to read first: %s", second)
 	}
 }
