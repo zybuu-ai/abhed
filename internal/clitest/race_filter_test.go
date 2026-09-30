@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -82,5 +83,41 @@ func TestRunEnvironmentIsIsolated(t *testing.T) {
 	h.refuseRealServices([]string{"-p", h.stub.URL()}, h.env())
 	if rec.errored != "" {
 		t.Errorf("the stub was refused: %s", rec.errored)
+	}
+}
+
+// stoppingTB ends the goroutine on Fatal, as the testing package does, and
+// notes why.
+type stoppingTB struct {
+	testing.TB
+	fatal string
+}
+
+func (s *stoppingTB) Helper() {}
+func (s *stoppingTB) Fatalf(f string, a ...any) {
+	s.fatal = fmt.Sprintf(f, a...)
+	runtime.Goexit()
+}
+
+// A run that names a real local model service is refused by Start, before
+// the binary runs.
+func TestStartRefusesARealLocalService(t *testing.T) {
+	// A bad flag ends the binary before it loads a configuration, so even
+	// if the refusal broke, nothing would reach the service.
+	safeArgs := []string{"-p", "hi", "-output-format", "not-a-format"}
+	for _, o := range []Opts{
+		{Piped: true, Args: safeArgs, UserConfig: `{"model":{"default":"x","providers":{"x":{"type":"openai-compatible","base_url":"http://localhost:11434/v1","model":"m"}}}}`},
+		{Piped: true, Args: safeArgs, Env: []string{"ABHED_BASE_URL=http://127.0.0.1:4000/v1"}},
+	} {
+		s := &stoppingTB{TB: t}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			start(s, o)
+		}()
+		<-done
+		if !strings.Contains(s.fatal, "real local model service") {
+			t.Fatalf("%+v was started: %q", o, s.fatal)
+		}
 	}
 }

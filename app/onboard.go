@@ -603,7 +603,7 @@ func (o onboarding) confirm(q string) (bool, error) {
 
 // keyPrefixes start the keys of well-known services; no variable name does.
 var keyPrefixes = []string{"sk-", "sk_", "hf_", "gsk_", "AIza", "xai-", "pplx-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
-	"github_pat_", "glpat-", "xoxb-", "xoxp-", "AKIA", "ASIA", "r8_", "nvapi-", "pk_live_", "sk_live_", "rk_live_", "Bearer "}
+	"github_pat_", "glpat-", "lsv2_", "tvly-", "pa-", "jina_", "xoxb-", "xoxp-", "AKIA", "ASIA", "r8_", "nvapi-", "pk_live_", "sk_live_", "rk_live_", "Bearer "}
 
 // looksLikeKey reports whether an answer to "which variable" is more likely
 // a pasted key: a known key prefix, or a long run of mixed characters

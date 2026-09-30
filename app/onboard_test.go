@@ -187,6 +187,11 @@ func TestEndpointWarnsBeforeAKeyGoesOverHTTP(t *testing.T) {
 }
 
 func TestLooksLikeKey(t *testing.T) {
+	for _, key := range []string{"lsv2_pt_0123abcd", "tvly-abc", "pa-abc", "jina_abc"} {
+		if !looksLikeKey(key) {
+			t.Errorf("%s was taken for a name", key)
+		}
+	}
 	for _, name := range []string{"OPENAI_API_KEY", "MY_ENDPOINT_KEY", "ABHED_COMPANY_INTERNAL_GATEWAY_API_KEY", "K", "token"} {
 		if looksLikeKey(name) {
 			t.Errorf("%s was taken for a key", name)

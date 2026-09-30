@@ -485,6 +485,7 @@ func (h *run) refuseRealServices(args, env []string) {
 	}
 	for _, s := range texts {
 		if m := realService.FindString(s); m != "" {
+			_ = os.RemoveAll(h.root) // no cleanup is registered yet
 			h.t.Fatalf("clitest: the run names %s, a real local model service; tests use the stub", m)
 		}
 	}
@@ -505,7 +506,8 @@ func (h *run) env() []string {
 		"XDG_CONFIG_HOME=" + filepath.Join(h.home, ".config"),
 		// Anything that tries to leave the machine meets a closed port, and
 		// a first run looks for Ollama there, never at the real one.
-		// Only the stub's own address goes direct; localhost goes to the closed port.
+		// The proxy catches what leaves the machine. Go never proxies loopback,
+		// so refuseRealServices is what keeps a run off :4000 and :11434.
 		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=127.0.0.1",
 		"OLLAMA_HOST=127.0.0.1:9",
 		managedEnv + "=" + filepath.Join(h.root, "etc", "abhed"),

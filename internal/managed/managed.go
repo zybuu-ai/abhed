@@ -21,7 +21,11 @@ var AgentsDir = "/etc/abhed/agents"
 // release build leaves it empty and never reads the environment for this.
 var testDirEnv string
 
-func init() {
+func init() { applyTestDir() }
+
+// applyTestDir moves the managed paths to the test build's directory, and
+// does nothing in any other build.
+func applyTestDir() {
 	if testDirEnv == "" {
 		return
 	}

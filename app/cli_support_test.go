@@ -63,3 +63,14 @@ func TestBugReportRedactsSecrets(t *testing.T) {
 		t.Fatalf("the report was withheld whole:\n%s", body)
 	}
 }
+
+// The provider's key held in the configuration itself is redacted too.
+func TestBugReportRedactsTheProviderKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(secrets.EnvFile, "")
+	st := &cliState{appCfg: config.Default(), provider: config.ProviderConfig{Type: "openai-compatible", APIKey: "inline-canary-key-7"}}
+	title, body := bugReport(st, "saw inline-canary-key-7")
+	if strings.Contains(title+body, "inline-canary-key-7") || !strings.Contains(body, "[redacted key]") {
+		t.Fatalf("%s\n%s", title, body)
+	}
+}
