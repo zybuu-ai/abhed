@@ -98,13 +98,20 @@ ending the session; at the prompt it clears the line. Ctrl-D exits.
 | `/diff` | what changed this session |
 | `/undo` | revert the last turn's file changes |
 | `/cost` | tokens, cache hit rate, compactions |
-| `/compact` | compact the context now |
+| `/compact [focus]` | compact the context now, keeping what focus names |
+| `/context` | what fills the context window |
+| `/memory` | the memory files in effect; `/memory add`, `/memory auto` |
+| `/init` | have the agent write `ABHED.md` |
+| `/commands` | your custom commands; `/commands trust` reviews the workspace's |
 | `/tree` | the session's steps |
 | `/fork <step>` | rebuild the conversation up to a step and continue from there |
 | `/clear` | start a new conversation and session; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
 | `/resume <id>` | replay a recorded session and continue its conversation |
 | `/export [path]` | write the transcript, HTML by default |
 | `/model [name]` | show or switch the model, keeping the conversation |
+
+`@path` attaches a file, `!cmd` runs a shell command and `# note` saves a
+note to memory; see [Input, memory and commands](18-input-and-memory.md).
 
 ## Without a terminal
 

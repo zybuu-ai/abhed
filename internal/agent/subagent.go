@@ -611,6 +611,7 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		Model:         adapter.Profile().Name,
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
+		MemoryAllow:   ReadAllowed(f.Policy),
 		Tools:         promptTools.Names(),
 	})
 

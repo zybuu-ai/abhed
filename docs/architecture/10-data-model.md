@@ -63,10 +63,10 @@ and adds `file.restored`.
 | `mode.changed` | `from`, `to`, `by`, `via` (`flag`, `slash`, `shift-tab` or `plan-exit`) *(not yet emitted)* | user |
 | `permission.changed` | `op` (`add` or `remove`), `list` (`allow`, `ask` or `deny`), `rule`, `scope` (`session`), `by`; a session rule, which ends with the session *(not yet emitted)* | user |
 | `workspace.dir_added` | `path` as typed, `canonical` with symlinks resolved, `access` (`read` or `read-write`), `by` *(not yet emitted)* | user |
-| `input.mention` | a file attached with `@`: `path`, `range` (`10-20`, absent for the whole file), `sha256`, `bytes`, `truncated`; not the content, which the message carries *(not yet emitted)* | user |
-| `command.invoked` | `name`, `source` (`builtin`, `user`, `workspace`, `managed` or `mcp`, set by the loader, never by the command), `sha256` of a command file's content, `args` redacted *(not yet emitted)* | user |
-| `memory.loaded` | `files`, each `path`, `scope` (`managed`, `user`, `project`, `local`, `subdirectory` or `rule`) and `sha256` *(not yet emitted)* | system |
-| `memory.written` | `path`, `kind` (`user`, `feedback`, `project`, `reference` or `note`), `by` (`user` or `agent`) *(not yet emitted)* | the writer |
+| `input.mention` | a file attached with `@`: `path`, `range` (`10-20`, absent for the whole file), `sha256` of the text attached, `bytes`, `truncated`; not the content, which the message carries | user |
+| `command.invoked` | `name`, `source` (`builtin`, `user`, `workspace`, `managed` or `mcp`, set by the loader, never by the command), `sha256` of a command file's content, `args` redacted; recorded for custom commands, `/init` and `/output-style` | user |
+| `memory.loaded` | `files`, each `path` (relative to the workspace when in it), `scope` (`managed`, `user`, `project`, `local`, `import`, `rule` or `auto`) and `sha256`; once per conversation | system |
+| `memory.written` | `path`, `kind` (`user`, `feedback`, `project`, `reference`, `note` or `import`), `by` (`user` or `agent`); an agent's write is recorded untrusted | the writer |
 | `session.named` | `name` *(not yet emitted)* | user |
 | `session.branched` | in the new session: `from`, the session it was copied from, and `through_seq`, the last event taken *(not yet emitted)* | user |
 | `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, `by` (`user`) *(not yet emitted)* | user |

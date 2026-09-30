@@ -226,3 +226,29 @@ func TestPrefillSavingsMetric(t *testing.T) {
 		t.Fatalf("cache hit rate wrong: %.2f", rate)
 	}
 }
+
+// A manual compaction's focus reaches the summarizer once; an automatic
+// compaction never takes it.
+func TestCompactFocusReachesTheSummarizer(t *testing.T) {
+	a := &summarizerAdapter{window: 100000, summary: "s"}
+	c := NewCompactor(a, 0.90)
+	c.SetFocus("keep the API names")
+	if _, _, err := c.Compact(context.Background(), "auto", "", longMessages(20, 10), 0); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(a.sawPrompt, "keep the API names") {
+		t.Fatal("an automatic compaction took the person's focus")
+	}
+	if _, _, err := c.Compact(context.Background(), "manual", "", longMessages(20, 10), 0); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(a.sawPrompt, "keep, above all else: keep the API names") {
+		t.Fatalf("the focus did not reach the summarizer:\n%s", a.sawPrompt)
+	}
+	if _, _, err := c.Compact(context.Background(), "manual", "", longMessages(20, 10), 0); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(a.sawPrompt, "keep the API names") {
+		t.Fatal("the focus was used twice")
+	}
+}

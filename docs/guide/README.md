@@ -33,6 +33,7 @@ model you point it at, and records everything it does.
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
+| [Input, memory and commands](18-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
 
 Exporting the event log as OpenTelemetry traces and scheduled runs are
 Enterprise Edition features, documented with that edition.

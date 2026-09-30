@@ -453,6 +453,55 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Interactive input acts as the person, through policy and the record. See
+  `docs/guide/18-input-and-memory.md`.
+  - `@path`, `@path:10-20` and `@dir/` attach files, read by the read and
+    glob tools as the person's call: the workspace boundary, links that
+    leave it, Abhed's state, read deny rules and redaction all apply. A
+    refused mention stops the message and says why. Up to 256 KB per file;
+    each is recorded as `input.mention` with its SHA-256.
+  - `!cmd` runs a shell command as the person's bash call, in the sandbox and
+    under deny rules and plan mode; a destructive one asks. Its output joins
+    the next message.
+  - `# note` saves a note to `ABHED.md`, `ABHED.local.md` or
+    `~/.abhed/ABHED.md`, chosen each time, redacted and recorded as
+    `memory.written`.
+  - Attached files and command output reach the model in blocks whose tag
+    carries a random suffix, labelled as data the person attached, not
+    instructions.
+  - A line that starts with `!` or `#` is no longer sent to the model as a
+    message, in piped input too: a script that sent such lines as text should
+    indent them or put them after other text.
+- Memory: `ABHED.md` files load in the order user, project (`AGENTS.md`
+  where a directory has no `ABHED.md`, labelled so), local, rules, auto and
+  managed last. `@path` imports follow `memory.import_depth` (default 5, at
+  most 10) and stay in the workspace. `rules.dirs` names rule files, which a
+  `paths` header scopes. Each conversation records `memory.loaded` with every
+  file's hash. Surfaces with no read rules to ask (the server, the SDK, eval)
+  follow no import. `/memory` lists, shows and adds; `/import <path>` appends a
+  file the person names to `ABHED.md` after showing it. No other tool's files
+  are read otherwise.
+- Auto memory, off unless the person turns it on (`/memory auto on` or
+  `memory.auto`; a managed value binds, a workspace may only turn it off).
+  The agent's `memory_write` saves are judged as changes (they ask unless
+  a rule or the mode allows them), redacted, shown, recorded as
+  `memory.written` by the agent, and loaded later, fenced, as the agent's
+  notes.
+- Custom slash commands from `/etc/abhed/commands`, `~/.abhed/commands` and
+  `commands.dirs`, and from a workspace's `.abhed/commands`, or any
+  commands directory inside the workspace, once the person trusts exactly
+  that content (`/commands trust`). `$ARGUMENTS`, `$1`..`$9`,
+  `@` files and inline shell lines (each asks) in the body;
+  `allowed-tools` narrows the turn's tools and `model` picks a configured
+  provider. Built-in names always win. Recorded as `command.invoked`.
+- `/init` has the agent write `ABHED.md` from the repository; `/context`
+  breaks the context window down by system prompt, memory, tools, MCP tools
+  and messages; `/compact <focus>` tells the summary what to keep.
+- `ask_user`: in an interactive session the agent can ask the person a
+  multiple-choice question. It is not an approval and is never answered for
+  the person.
+- `/output-style` appends a style from `~/.abhed/styles` or
+  `/etc/abhed/styles` to the prompt for the rest of the session.
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and
@@ -464,7 +513,8 @@ All notable changes to Abhed are recorded here. The format follows
   user's file or a workspace's is set aside with a warning. A workspace may
   only turn `memory.auto` off, trusted or not, and auto memory is off unless
   turned on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace
-  need trust.
+  need trust. `commands.dirs`, `rules.dirs`, `memory.auto` and
+  `memory.import_depth` now take effect.
 - `abhed acp`: an editor can list the configured models and switch between
   them mid-session. `session/new` returns a `configOptions` model selector
   (category `model`), and `session/set_config_option` switches it, answering
