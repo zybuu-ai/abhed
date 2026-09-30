@@ -340,7 +340,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
-		Redact: vault.Redactor(),
+		Redact: vault.Session(),
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 	loopCfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, set.SkillListing, registry.Names())
@@ -401,7 +401,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 		return 1 // a run with no session row would write into another's record
 	}
 	rec := agent.NewRecorder(store, sessionID, "")
-	rec.Redact = openVault().Redactor()
+	// Read again as the store changes: bash reads it at each call.
+	rec.Redact = openVault().Session()
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
@@ -529,7 +530,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// record until /clear, and /fork and /resume change what it continues from.
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
-		rec.Redact = openVault().Redactor()
+		// Read again as the store changes: bash reads it at each call.
+		rec.Redact = openVault().Session()
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
@@ -1579,7 +1581,8 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		store := agent.NewMemStore()
 		sessionID := "eval-" + task.ID
 		rec := agent.NewRecorder(store, sessionID, "")
-		rec.Redact = vault.Redactor()
+		red := vault.Session()
+		rec.Redact = red
 
 		loopCfg := agent.DefaultConfig()
 		if task.MaxTurns > 0 {
@@ -1590,7 +1593,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 
 		budget := toolset.Budget(cfg)
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor()}
+			Budget: budget, Config: loopCfg, Workspace: ws, Redact: red}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.Names())
 

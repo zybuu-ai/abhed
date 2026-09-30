@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
+  redacted with the secrets stored when a session started, while bash reads
+  the store at each call. A secret stored or changed during a session, and
+  allowed by a `secret(...)` rule, was handed to bash and its value reached
+  the record and every later model request. These surfaces now follow the
+  store as the SDK, `abhed acp` and `abhed rpc` already did: a value is
+  redacted from the moment it is stored, and stays redacted once changed or
+  removed.
 - `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
   spelled long (`rm --recursive --force dir`), was not treated as a command
   with no undo, so bypass mode ran it without asking. Those flags now count
