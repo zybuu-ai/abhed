@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -86,7 +87,15 @@ type session struct {
 	titled  bool
 	child   bool
 	repair  *agent.RecordRepaired
+	// size is the file's length after the last whole line, and poisoned why
+	// nothing more may be written when a failed write could not be undone.
+	size     int64
+	poisoned error
 }
+
+// writeLine writes one line; a test replaces it to fail part way, as a full
+// disk does.
+var writeLine = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
 
 var (
 	_ Record                  = (*Store)(nil)
@@ -374,6 +383,11 @@ func (s *Store) load(id string, lk *os.File, create bool) (*session, error) {
 	if h.last.Lines == 0 {
 		h.last.Hash = Genesis
 	}
+	info, err := f.Stat()
+	if err != nil {
+		return fail(err)
+	}
+	h.size = info.Size()
 	// The head only ever moves forward, to lines the chain holds.
 	h.synced = head
 	if !have || h.last.Lines > head.Lines {
@@ -521,11 +535,24 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 		h.mu.Unlock()
 		return err
 	}
-	if _, err := h.f.Write(append(raw, '\n')); err != nil {
-		// A partial write is the torn line the next open cuts off.
+	if h.poisoned != nil {
+		h.mu.Unlock()
+		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, h.poisoned)
+	}
+	line := append(raw, '\n')
+	if n, err := writeLine(h.f, line); err != nil || n != len(line) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		// A failed write is undone, so what follows never glues onto half a
+		// line; if it cannot be, nothing more is written to this session.
+		if terr := h.f.Truncate(h.size); terr != nil {
+			h.poisoned = fmt.Errorf("a failed write could not be undone (%v); the session takes no more writes", terr)
+		}
 		h.mu.Unlock()
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
+	h.size += int64(len(line))
 	h.last = Head{Lines: h.last.Lines + 1, Seq: ev.Seq, Hash: l.Hash}
 	h.seqs[ev.Seq] = ev.ID
 	h.events = insertEvent(h.events, ev)
