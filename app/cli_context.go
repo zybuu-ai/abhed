@@ -21,6 +21,7 @@ import (
 
 func init() {
 	registerSlash(slashCmd{Name: "/compact", Args: "[hint]", Help: "compact the context now", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
+	registerSlash(slashCmd{Name: "/context", Help: "what fills the context window, in tokens and percent", Group: "context", Order: 45, ReadOnly: true, Run: slashContext})
 	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
 	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <project|local|user> <note>]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
@@ -361,4 +362,103 @@ func slashInit(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	}
 	st.sendTurn(agent.Message{Text: text}, nil)
 	return false, nil
+}
+
+// contextPart is one share of the context window.
+type contextPart struct {
+	label  string
+	tokens int
+}
+
+// contextBreakdown measures what fills the conversation's context with the
+// model's own counter: the system prompt apart from memory, memory, the
+// built-in tools' definitions, MCP tools' definitions, and the messages.
+func contextBreakdown(st *cliState) ([]contextPart, int) {
+	a := st.adapter
+	if a == nil && st.loop != nil {
+		a = st.loop.Adapter
+	}
+	if a == nil {
+		return nil, 0
+	}
+	count := func(req model.Request) int {
+		n, err := a.CountTokens(req)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	var memory int
+	if mem := sessionMemory.Load(); mem != nil {
+		if text := mem.Render(); text != "" {
+			memory = count(model.Request{System: text})
+		}
+	}
+	parts := []contextPart{{"memory files", memory}}
+	if st.loop != nil {
+		system := max(0, count(model.Request{System: st.loop.Config.SystemPrompt})-memory)
+		var builtin, mcp []model.ToolDef
+		if st.loop.Tools != nil {
+			for _, d := range st.loop.Tools.Definitions() {
+				td := model.ToolDef{Name: d.Name, Description: d.Description, InputSchema: d.InputSchema}
+				if strings.HasPrefix(d.Name, "mcp__") {
+					mcp = append(mcp, td)
+				} else {
+					builtin = append(builtin, td)
+				}
+			}
+		}
+		tools := func(defs []model.ToolDef) int {
+			if len(defs) == 0 {
+				return 0
+			}
+			return count(model.Request{Tools: defs})
+		}
+		parts = []contextPart{
+			{"system prompt", system},
+			{"memory files", memory},
+			{"tools", tools(builtin)},
+			{"MCP tools", tools(mcp)},
+			{"messages", count(model.Request{Messages: st.loop.Messages()})},
+		}
+	}
+	return parts, a.Profile().ContextWindow
+}
+
+// slashContext is /context: how full the context window is, and with what.
+func slashContext(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
+	parts, window := contextBreakdown(e.st)
+	if parts == nil {
+		return false, errors.New("no model is configured")
+	}
+	used := 0
+	for _, p := range parts {
+		used += p.tokens
+	}
+	pct := func(n int) string {
+		if window <= 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%.1f%%", float64(n)*100/float64(window))
+	}
+	rows := [][]string{{"part", "tokens", "of window"}}
+	for _, p := range parts {
+		rows = append(rows, []string{p.label, strconv.Itoa(p.tokens), pct(p.tokens)})
+	}
+	if window > 0 {
+		rows = append(rows, []string{"free", strconv.Itoa(max(0, window-used)), pct(max(0, window-used))})
+	}
+	body := []ui.Block{{Kind: ui.BlockTable, Rows: rows}}
+	note := fmt.Sprintf("%d of %d tokens used (%s).", used, window, pct(used))
+	if window <= 0 {
+		note = fmt.Sprintf("%d tokens used; the model's context window is not known.", used)
+	}
+	if e.st.loop == nil {
+		note += " No conversation yet: the system prompt, tools and messages are counted from the first message."
+	}
+	if at := e.st.appCfg.Context.CompactAt; at > 0 {
+		note += fmt.Sprintf(" It compacts by itself at %.0f%%; /compact [focus] does it now.", at*100)
+	}
+	body = append(body, ui.Block{Kind: ui.BlockNotice, Text: note})
+	return false, e.ui.Panel(ctx, ui.PanelSpec{Title: "Context", Body: body})
 }
