@@ -222,6 +222,11 @@ What `verify` cannot show:
 - **Lines after the last sync.** The head moves at turn boundaries, so lines
   written since then (streamed reply fragments, a tool's events mid-turn) can
   be cut from the end without a trace, and a crash can lose them.
+- **A rollback.** An earlier copy of a live session's file put back with its
+  head, or of the whole records folder (a backup or Time Machine restore),
+  verifies as OK: every line and head in it is genuine. A session that had
+  ended since is still caught, by the end head the index kept for it, unless
+  the index was rolled back too.
 - **A record cut back to its creation.** A session or the index cut to its
   first line, or to nothing, with its creation head written back, looks
   exactly like a crash during its first write. That is the same edit as
