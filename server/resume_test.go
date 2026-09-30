@@ -39,12 +39,17 @@ type durableMem struct {
 	failHold bool
 	// refuseNotices makes every subagent.notice append fail.
 	refuseNotices atomic.Bool
-	// afterStart, when set, runs once a session.started is appended.
+	// afterStart, when set, runs once a session.started is appended, and
+	// onReclaim when ReclaimOwn is asked.
 	afterStart func()
+	onReclaim  func()
 }
 
 // ReclaimOwn takes back an open row held under holder's own id.
 func (d *durableMem) ReclaimOwn(_ context.Context, id, holder string) (bool, error) {
+	if d.onReclaim != nil {
+		d.onReclaim()
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, ok := d.rows[id]; !ok || d.ended[id] || d.holders[id] != holder {

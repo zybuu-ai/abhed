@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1001,4 +1003,46 @@ func TestSweepPagesThroughEveryOpenSession(t *testing.T) {
 	for _, n := range names {
 		a.ad.release(n)
 	}
+}
+
+// The startup sweep, which takes back sessions held under the node's own id,
+// finishes before the server accepts a connection: a session this process
+// starts could otherwise be taken for one of its own from before.
+func TestStartupSweepRunsBeforeServing(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	nodeA := func(_ *config.Config, o *Options) { o.NodeID = "node-a" }
+	a := newBGServerWith(t, st, nodeA, "one")
+	a.start("bg:one", false)
+	<-a.ended // node-a stops here, its session open
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	var reclaimed, acceptedFirst atomic.Bool
+	st.onReclaim = func() {
+		reclaimed.Store(true)
+		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+			_ = c.Close()
+			acceptedFirst.Store(true)
+		}
+	}
+	b := newBGServerWith(t, st, func(c *config.Config, o *Options) { nodeA(c, o); o.Addr = addr })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.s.ListenAndServe(ctx) }()
+	waitUntil(t, "the server to accept", func() bool {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err == nil
+	})
+	cancel()
+	<-done
+	if !reclaimed.Load() || acceptedFirst.Load() {
+		t.Fatalf("reclaimed %v, port accepting during the startup sweep %v", reclaimed.Load(), acceptedFirst.Load())
+	}
+	a.ad.release("one")
 }
