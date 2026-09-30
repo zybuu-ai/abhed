@@ -165,9 +165,10 @@ func (g *slashRegistry) lookup(name string, dynamic []slashSource) (slashCmd, st
 }
 
 // lookalike folds a name so that two a person could mistake for each other
-// fold alike: case, - and _, and 0 and 1 for o and l.
+// fold alike: case, - and _, 0 for o, and 1 and I for l (I is i once lowered,
+// so /heIp folds as /help does).
 func lookalike(name string) string {
-	return strings.NewReplacer("-", "", "_", "", "0", "o", "1", "l").Replace(strings.ToLower(name))
+	return strings.NewReplacer("-", "", "_", "", "0", "o", "1", "l", "i", "l").Replace(strings.ToLower(name))
 }
 
 // admitted is the run-time commands that may run, and those that may not,
