@@ -219,34 +219,6 @@ func TestSDKNoResultMessageIsRedacted(t *testing.T) {
 	}
 }
 
-// The approver's decision, its suggested scope included, is redacted too.
-func TestSDKApproverScopeIsRedacted(t *testing.T) {
-	vaultWith(t)
-	ws, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv, _ := scripted(t, frameCall("write", map[string]string{"path": filepath.Join(ws, "n-"+fakeSecret+".txt"), "content": "x\n"}))
-	var seen []string
-	a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "default",
-		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192},
-		Approve: func(_ context.Context, _ string, _ json.RawMessage, d abhed.Decision) (bool, error) {
-			seen = append(seen, d.Scope, d.Reason)
-			return false, nil
-		}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	if _, err := a.Run(context.Background(), "write it"); err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(seen, "\n")
-	if len(seen) == 0 || !strings.Contains(got, "[secret:FAKE_TOKEN]") || strings.Contains(got, fakeSecret) {
-		t.Fatalf("the approver's decision was not redacted: %q", got)
-	}
-}
-
 // bash on an embedded session reads a stored secret by name, as on the command
 // line: the value reaches the command, never the record, OnEvent or the model,
 // and without its own secret(NAME) rule the call is refused.
@@ -350,5 +322,38 @@ func TestSDKRedactsASecretAddedDuringTheSession(t *testing.T) {
 	}
 	if strings.Contains(whole, late) {
 		t.Fatalf("a secret added during the session left it unredacted:\n%s", whole)
+	}
+}
+
+// A write or edit whose path holds a stored value is refused in every mode,
+// naming the secret: a file name is read by whoever lists the directory.
+func TestSDKRefusesASecretInAFileName(t *testing.T) {
+	vaultWith(t)
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{fakeSecret + ".txt", strings.ToUpper(fakeSecret) + ".txt"} {
+		path := filepath.Join(ws, name)
+		srv, _ := scripted(t, frameCall("write", map[string]string{"path": path, "content": "x"}))
+		a, err := abhed.New(context.Background(), abhed.Options{Workspace: ws, Mode: "bypass",
+			Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: srv.URL, Model: "m", ContextWindow: 8192}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.Run(context.Background(), "write it"); err != nil {
+			t.Fatal(err)
+		}
+		var record strings.Builder
+		for _, ev := range a.Events() {
+			record.Write(ev.Payload)
+		}
+		a.Close()
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("%s was written", name)
+		}
+		if !strings.Contains(record.String(), "stored secret [secret:FAKE_TOKEN]") {
+			t.Fatalf("the refusal does not name the secret:\n%s", record.String())
+		}
 	}
 }

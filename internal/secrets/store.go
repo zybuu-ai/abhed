@@ -314,6 +314,9 @@ func (f *Fresh) Redact(b []byte) []byte { return f.Current().Redact(b) }
 // Span is Current().Span.
 func (f *Fresh) Span() int { return f.Current().Span() }
 
+// FindSent is Current().FindSent.
+func (f *Fresh) FindSent(text string) (string, bool) { return f.Current().FindSent(text) }
+
 // Withholding returns a redactor that withholds every payload.
 func Withholding() *Redactor { return &Redactor{broken: true} }
 

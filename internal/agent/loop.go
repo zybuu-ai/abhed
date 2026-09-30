@@ -1009,6 +1009,8 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// needs an allow rule of its own, in every mode, or the call is refused.
 	if refused := l.secretsRefused(tool, call); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	} else if refused := l.pathSecretRefused(call); refused != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
 
 	// Only an Ask is short-circuited: a deny is still recorded as a deny.
@@ -1611,6 +1613,41 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 		if !allowed {
 			return fmt.Sprintf("secret %s is not permitted: a secret needs its own allow rule, secret(%s), in every mode", name, name)
 		}
+	}
+	return ""
+}
+
+// pathSecretRefused refuses a write or edit whose path holds a stored value: a
+// file's name is seen by whoever can list the directory, and by the record.
+func (l *Loop) pathSecretRefused(call model.ToolCall) string {
+	if call.Name != "write" && call.Name != "edit" {
+		return ""
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
+		return ""
+	}
+	red := l.Recorder.redactor()
+	if red == nil {
+		return ""
+	}
+	const unreadable = "the secrets store could not be read, so the path cannot be checked for a stored value"
+	if f, ok := red.(interface{ FindSent(string) (string, bool) }); ok {
+		if label, found := f.FindSent(a.Path); found {
+			if label == "" {
+				return unreadable
+			}
+			return fmt.Sprintf("the path contains the stored secret %s; a secret is never written into a file name", label)
+		}
+		return ""
+	}
+	quoted, _ := json.Marshal(a.Path)
+	if out := red.Redact(quoted); out == nil {
+		return unreadable
+	} else if string(out) != string(quoted) {
+		return "the path contains a stored secret; a secret is never written into a file name"
 	}
 	return ""
 }
