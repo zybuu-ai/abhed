@@ -121,17 +121,23 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 	parent.Advance(events[len(events)-1].Seq)
 	for _, id := range unreturned(events) {
 		child := NewRecorder(store, id, sessionID)
+		returned := map[string]any{"session": id, "task_id": id, "background": true, "reason": string(TermLost)}
 		if evs, err := store.Events(id); err == nil && len(evs) > 0 {
 			child.Advance(evs[len(evs)-1].Seq)
-			if last := evs[len(evs)-1]; last.Type != EvSessionEnded {
-				if _, err := child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermShutdown, Recovered: true}); err != nil {
+			// The run ended if an end follows its spawn, whatever came after
+			// the end (its own record of the return, say); otherwise its end
+			// is written now. Either way the return names that end.
+			endSeq := runEndSeq(evs)
+			if endSeq == 0 {
+				ev, err := child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermShutdown, Recovered: true})
+				if err != nil {
 					return err
 				}
+				endSeq = ev.Seq
 			}
+			returned["end_seq"] = endSeq
 		}
-		if _, err := parent.Record(EvSubagentReturn, ActorSystem, Trusted, map[string]any{
-			"session": id, "task_id": id, "background": true, "reason": string(TermLost),
-		}); err != nil {
+		if _, err := parent.Record(EvSubagentReturn, ActorSystem, Trusted, returned); err != nil {
 			return err
 		}
 	}
@@ -143,4 +149,19 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 	end.Background, end.Settled, end.Recovered = 0, settled, true
 	_, err := parent.Record(EvSessionEnded, ActorSystem, Trusted, end)
 	return err
+}
+
+// runEndSeq is the seq of the end of a child's last run: an end recorded after
+// its last spawn, or 0 when that run never ended.
+func runEndSeq(evs []Event) int64 {
+	var end int64
+	for _, e := range evs {
+		switch e.Type {
+		case EvSubagentSpawned:
+			end = 0
+		case EvSessionEnded:
+			end = e.Seq
+		}
+	}
+	return end
 }

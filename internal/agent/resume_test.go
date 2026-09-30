@@ -55,6 +55,10 @@ func (m *resumeModel) Complete(_ context.Context, req model.Request) (<-chan mod
 		}
 		c := model.ToolCall{ID: "w1", Name: "write", Args: json.RawMessage(`{"path":"` + filepath.Join(wd, m.write) + `","content":"x"}`)}
 		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case strings.Contains(all, "\nsilent\n"):
+		// Works on, and never answers in text.
+		c := model.ToolCall{ID: "s" + newID(), Name: "read", Args: json.RawMessage(`{"path":"nothing.txt"}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
 	case last.Role == model.RoleUser && last.Content == "third":
 		ch <- model.Chunk{Type: model.ChunkText, Text: "third answer"}
 	case strings.Contains(all, "first answer") && last.Content == "more":
@@ -632,5 +636,84 @@ func TestPendingNoticeBeforeAForegroundResume(t *testing.T) {
 		if i >= len(ends) || p["end_seq"] != ends[i] {
 			t.Fatalf("return %d names end %v; the child's ends are %v", i, p["end_seq"], ends)
 		}
+	}
+}
+
+// A resumed task lost mid-run owes a result that says it gave no answer,
+// not its previous run's answer.
+func TestLostResumedRunHasNoEarlierAnswer(t *testing.T) {
+	r := newResumeRig(t, "")
+	id := r.spawn(t, SubagentRequest{Prompt: "work", Description: "d"}) // "first answer"
+	gate := make(chan struct{})
+	defer close(gate)
+	r.f.Adapter, r.l.Adapter = gated{r.m, gate}, gated{r.m, gate}
+	if _, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "more", Resume: id}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the resumed run under way", func() bool {
+		evs, _ := r.store.Events(id)
+		n := 0
+		for _, e := range evs {
+			if e.Type == EvUserMessage {
+				n++
+			}
+		}
+		return n == 2
+	})
+	// The process "crashes" here; another reconciles what it left.
+	if err := Reconcile(r.store, "parent", r.events(t)); err != nil {
+		t.Fatal(err)
+	}
+	pend := PendingNotices(r.events(t), r.store.Events)
+	if len(pend) != 1 || strings.Contains(pend[0].Content, "first answer") || !strings.Contains(pend[0].Content, "no summary") {
+		t.Fatalf("owed: %+v", pend)
+	}
+}
+
+// A child whose run ended, and recorded its own return, before the crash is
+// not given a second end; its lost return names the end it has.
+func TestReconcileKeepsAnEndedRun(t *testing.T) {
+	store := NewMemStore()
+	child := NewRecorder(store, "c1", "p")
+	_, _ = child.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "c1"})
+	_, _ = child.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "answer A"})
+	end, _ := child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Turns: 1})
+	_, _ = child.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"session": "c1"})
+	parent := NewRecorder(store, "p", "")
+	_, _ = parent.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "go"})
+	_, _ = parent.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "c1", "task_id": "c1", "background": true})
+	_, _ = parent.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Background: 1})
+	evs, _ := store.Events("p")
+	if err := Reconcile(store, "p", evs); err != nil {
+		t.Fatal(err)
+	}
+	cevs, _ := store.Events("c1")
+	ends := 0
+	for _, e := range cevs {
+		if e.Type == EvSessionEnded {
+			ends++
+		}
+	}
+	evs, _ = store.Events("p")
+	ret := payloads[map[string]any](evs, EvSubagentReturn)
+	if ends != 1 || len(ret) != 1 || ret[0]["end_seq"] != float64(end.Seq) {
+		t.Fatalf("child ends %d, return %v", ends, ret)
+	}
+	if pend := PendingNotices(evs, store.Events); len(pend) != 1 || !strings.Contains(pend[0].Content, "answer A") {
+		t.Fatalf("owed: %+v", pend)
+	}
+}
+
+// A resumed run that gives no answer says so, live, rather than handing back
+// its previous run's answer.
+func TestResumedRunWithNoAnswerSaysSo(t *testing.T) {
+	r := newResumeRig(t, "")
+	id := r.spawn(t, SubagentRequest{Prompt: "work", Description: "d"}) // "first answer"
+	out, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "silent", Resume: id, MaxTurns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "first answer") || !strings.Contains(out, "no summary") {
+		t.Fatalf("the resumed run's result: %q", out)
 	}
 }

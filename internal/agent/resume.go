@@ -153,6 +153,7 @@ func (f *SubagentFactory) prepareResume(ctx context.Context, req SubagentRequest
 	}
 	c.sub.Recorder.Advance(events[len(events)-1].Seq)
 	c.sub.SetHistory(msgs, end.Turns)
+	c.before = len(msgs)
 	c.sub.CarryUsage(end)
 
 	spawned["resume"] = true

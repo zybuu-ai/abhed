@@ -1280,13 +1280,17 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 	return out
 }
 
-// answerThrough is a child's last non-empty answer at or before seq, the end
-// of the run a return names.
+// answerThrough is a child's last non-empty answer in the run that ends at
+// seq: after that run's spawn and at or before its end. A run that gave none
+// has none, rather than an earlier run's.
 func answerThrough(evs []Event, seq int64) string {
 	last := ""
 	for _, e := range evs {
 		if e.Seq > seq {
 			break
+		}
+		if e.Type == EvSubagentSpawned {
+			last = ""
 		}
 		if e.Type == EvAgentMessage {
 			var m Message

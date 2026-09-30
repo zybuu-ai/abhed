@@ -459,6 +459,9 @@ type child struct {
 	// it has ended; release lets the task be resumed again.
 	settle  func(context.Context) string
 	release func()
+	// before is how many messages the conversation held before this run: a
+	// resumed run's answer is only one it gives itself.
+	before int
 }
 
 // prepare settles everything a spawn needs and records it. reserve runs just
@@ -713,7 +716,7 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		return "", TermError, fmt.Errorf("subagent failed: %w", err)
 	}
 
-	summary := lastAssistantMessage(c.sub.Messages())
+	summary := lastAssistantMessage(c.sub.Messages()[min(c.before, len(c.sub.Messages())):])
 	if strings.TrimSpace(summary) == "" {
 		summary = fmt.Sprintf("(subagent ended with %s and produced no summary)", reason)
 	}
