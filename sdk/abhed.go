@@ -163,6 +163,11 @@ type Options struct {
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
 	Sandbox bool
+
+	// Store keeps the agent's record. Nil keeps it in memory, where it ends
+	// with the process; OpenLocalRecord gives the durable, chained local
+	// record the command line uses. See store.go.
+	Store Store
 }
 
 // TaskInfo describes one background task.
@@ -191,7 +196,7 @@ type Provider struct {
 type Agent struct {
 	registry *tools.Registry
 	loop     *agent.Loop
-	store    *agent.MemStore
+	store    agent.Store
 	set      *toolset.Set
 	id       string
 	fwd      *forwarder
@@ -327,8 +332,12 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	toolset.Police(set.Extensions, pol, "embedded")
 
-	store := agent.NewMemStore()
 	id := fmt.Sprintf("embedded-%d", time.Now().UnixNano())
+	store, err := recordFor(ctx, opts, id, cfg)
+	if err != nil {
+		set.Close()
+		return nil, err
+	}
 	// Every write goes through the forwarder, so OnEvent misses none, from the
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)
@@ -577,6 +586,7 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	a.releaseRecord()
 }
 
 // Background lists this agent's background tasks. Approve may be called for
