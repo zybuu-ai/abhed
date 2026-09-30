@@ -36,4 +36,26 @@ func TestHookCannotLoosenADecision(t *testing.T) {
 	if got := p.Evaluate("bash", true, bash("make")); got.Decision != Deny || got.Step != "mode" {
 		t.Fatalf("a hook's ask put a plan-mode change to the person: %+v", got)
 	}
+
+	// A destructive command or an ask rule keeps its own, stronger reason.
+	if err := e.AddAsk("bash(make *)"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Evaluate("bash", true, bash("rm -rf /tmp/x")); got.Decision != Ask || got.Step != "destructive" {
+		t.Fatalf("a hook's ask hid the destructive reason: %+v", got)
+	}
+	if got := e.Evaluate("bash", true, bash("make all")); got.Decision != Ask || got.Step != "ask" {
+		t.Fatalf("a hook's ask hid the ask rule: %+v", got)
+	}
+	// No mode skips a hook's ask, not even bypass or an allow rule.
+	for _, m := range []Mode{ModeAcceptEdits, ModeBypass} {
+		b := New(m)
+		if err := b.AddAllow("write(*)"); err != nil {
+			t.Fatal(err)
+		}
+		b.Hooks = []Hook{ask}
+		if got := b.Evaluate("write", true, args(map[string]string{"path": "a.txt", "content": "x"})); got.Decision != Ask || got.Step != "hook" {
+			t.Fatalf("mode %v skipped a hook's ask: %+v", m, got)
+		}
+	}
 }
