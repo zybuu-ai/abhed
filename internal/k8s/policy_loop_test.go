@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -413,5 +414,147 @@ func TestNamespaceAllowNeverCoversClusterScopedObjects(t *testing.T) {
 	}
 	if got, _, _ := step(`{"action":"restart","resource":"deployments","name":"web"}`); got != "allow" {
 		t.Errorf("a namespaced restart in dev was not allowed: %s", got)
+	}
+}
+
+// A manifest is decoded once, strictly: a key repeated in any case, at any
+// depth, or kind, apiVersion, metadata, name or namespace in another case, is
+// refused before any rule reads it and before any request. A struct reader
+// and the API server would otherwise see different kinds.
+func TestManifestKeysAreReadOneWay(t *testing.T) {
+	srv, ca, sent := pathLog(t)
+	mgr := NewManager(Config{Kubeconfig: t.TempDir() + "/missing",
+		Clusters: []LoginCluster{{Name: "lab", Server: srv.URL, CAFile: ca}}})
+	reg := tools.NewRegistry(GetTool{M: mgr}, ApplyTool{M: mgr})
+	sess := newSession(t)
+	login, _ := json.Marshal(map[string]string{"cluster": "lab", "token_secret": "T", "namespace": "dev"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}).Run(context.Background(), sess, login); res.IsError {
+		t.Fatal(res.Content)
+	}
+	for _, m := range []string{
+		`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRoleBinding","Kind":"ConfigMap","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"rbac.authorization.k8s.io/v1","Kind":"ConfigMap","kind":"ClusterRoleBinding","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn","namespace":"dev"},"Metadata":{"name":"pwn","namespace":"kube-system"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn","namespace":"kube-system","Namespace":"dev"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn","Name":"other"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","apiversion":"rbac.authorization.k8s.io/v1","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","kind":"ConfigMap","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn","labels":{"a":"1","a":"2"}}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn"},"data":{"k":"1","K":"2"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn"},"x":[{"y":1,"y":2}]}`,
+		// A case variant alone is also refused: only the API server's spelling is read.
+		`{"apiVersion":"v1","Kind":"ConfigMap","metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","Metadata":{"name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"Name":"pwn"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn","NAMESPACE":"kube-system"}}`,
+		"{\"apiVersion\":\"v1\",\"Kind\":\"ClusterRoleBinding\",\"kind\":\"ConfigMap\",\"metadata\":{\"name\":\"pwn\"}}",
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"pwn"}} {}`,
+	} {
+		args, _ := json.Marshal(map[string]string{"action": "apply", "manifest": m})
+		for _, mode := range []policy.Mode{policy.ModeDefault, policy.ModeBypass} {
+			pol := policy.New(mode)
+			if err := pol.AddAllow("k8s_apply(lab/dev/*)"); err != nil {
+				t.Fatal(err)
+			}
+			ap := &asked{}
+			store := agent.NewMemStore()
+			l := agent.NewLoop(&oneCall{name: "k8s_apply", args: string(args)}, reg, pol, ap, sess,
+				agent.NewRecorder(store, "s", ""), agent.DefaultConfig())
+			before := len(sent())
+			if _, err := l.Run(context.Background(), "go"); err != nil {
+				t.Fatal(err)
+			}
+			evs, _ := store.Events("s")
+			refused := false
+			for _, ev := range evs {
+				refused = refused || (ev.Type == agent.EvActionDenied && strings.Contains(string(ev.Payload), `"step":"args"`))
+			}
+			if !refused || len(ap.args) != 0 || len(sent()) != before {
+				t.Errorf("%s: %s: refused at args %v, asked %v, sent %v", mode, m, refused, ap.args, sent()[before:])
+			}
+		}
+		// Defence in depth: the tool refuses the same when called directly.
+		direct, _ := json.Marshal(map[string]string{"cluster": "lab", "action": "apply", "manifest": m})
+		before := len(sent())
+		if res := (ApplyTool{M: mgr}).Run(context.Background(), sess, direct); !res.IsError || len(sent()) != before {
+			t.Errorf("direct: %s: applied: %s %v", m, res.Content, sent()[before:])
+		}
+	}
+}
+
+// What policy judged is what is sent: the manifest is put in one encoding
+// before the rules read it, and the tool sends exactly those bytes.
+func TestAppliedManifestIsTheOneJudged(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	srv, ca := tlsCluster(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			bodies = append(bodies, string(b))
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	mgr := NewManager(Config{Kubeconfig: t.TempDir() + "/missing",
+		Clusters: []LoginCluster{{Name: "lab", Server: srv.URL, CAFile: ca}}})
+	reg := tools.NewRegistry(GetTool{M: mgr}, ApplyTool{M: mgr})
+	sess := newSession(t)
+	login, _ := json.Marshal(map[string]string{"cluster": "lab", "token_secret": "T", "namespace": "dev"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}).Run(context.Background(), sess, login); res.IsError {
+		t.Fatal(res.Content)
+	}
+	m := `{ "metadata": {"name":"cfg"}, "kind":"ConfigMap", "apiVersion":"v1", "data": {"n": 1.50, "h": "<&>"} }`
+	args, _ := json.Marshal(map[string]string{"action": "apply", "manifest": m})
+	pol := policy.New(policy.ModeDefault)
+	if err := pol.AddAllow("k8s_apply(lab/dev/*)"); err != nil {
+		t.Fatal(err)
+	}
+	store := agent.NewMemStore()
+	l := agent.NewLoop(&oneCall{name: "k8s_apply", args: string(args)}, reg, pol, &asked{}, sess,
+		agent.NewRecorder(store, "s", ""), agent.DefaultConfig())
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("s")
+	var req agent.ActionRequested
+	for _, ev := range evs {
+		if ev.Type == agent.EvActionRequested {
+			_ = json.Unmarshal(ev.Payload, &req)
+		}
+	}
+	var judged struct {
+		Manifest string `json:"manifest"`
+	}
+	_ = json.Unmarshal(req.Args, &judged)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 || bodies[0] != judged.Manifest {
+		t.Fatalf("sent %q, judged %q", bodies, judged.Manifest)
+	}
+	if want := `{"apiVersion":"v1","data":{"h":"<&>","n":1.50},"kind":"ConfigMap","metadata":{"name":"cfg"}}`; judged.Manifest != want {
+		t.Fatalf("judged %q, want %q", judged.Manifest, want)
+	}
+}
+
+// A name is sent as one escaped path segment.
+func TestApplyEscapesTheName(t *testing.T) {
+	srv, ca, sent := pathLog(t)
+	mgr := NewManager(Config{Kubeconfig: t.TempDir() + "/missing",
+		Clusters: []LoginCluster{{Name: "lab", Server: srv.URL, CAFile: ca}}})
+	sess := newSession(t)
+	login, _ := json.Marshal(map[string]string{"cluster": "lab", "token_secret": "T", "namespace": "dev"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}).Run(context.Background(), sess, login); res.IsError {
+		t.Fatal(res.Content)
+	}
+	args, _ := json.Marshal(map[string]string{"cluster": "lab", "namespace": "dev", "action": "apply",
+		"manifest": `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x;y"}}`})
+	if res := (ApplyTool{M: mgr}).Run(context.Background(), sess, args); res.IsError {
+		t.Fatal(res.Content)
+	}
+	got := sent()
+	if got[len(got)-1] != "PATCH /api/v1/namespaces/dev/configmaps/x%3By?fieldManager=abhed&force=true" {
+		t.Fatalf("sent %v", got)
 	}
 }

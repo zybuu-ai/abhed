@@ -189,17 +189,23 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 	ns := str("namespace")
 	clusterWide := kubescope.ClusterScopedResource(resource)
 	if apply && str("action") == "apply" {
-		if err := checkManifest(str("manifest")); err != nil {
+		mf, err := checkManifest(str("manifest"))
+		if err != nil {
 			return nil, nil, err
 		}
-		kind := manifestKind(str("manifest"))
+		kind := ""
+		if mf != nil {
+			// Policy, the approver and the tool read this one encoding.
+			set("manifest", string(mf.Canonical))
+			kind = mf.Kind
+		}
 		namespaced, known := kubescope.KindScope(kind)
 		if kind != "" && !known {
 			return nil, nil, fmt.Errorf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash", kind)
 		}
 		clusterWide = kind != "" && !namespaced
-		if ns == "" && !clusterWide {
-			ns = manifestNamespace(str("manifest"))
+		if ns == "" && !clusterWide && mf != nil {
+			ns = mf.Namespace
 		}
 	}
 	switch {
@@ -246,56 +252,26 @@ func checkSegments(ns, name, resource string) error {
 	return nil
 }
 
-// checkManifest refuses a manifest whose kind, apiVersion, name or namespace
-// could not stand in a request path. One that does not parse is left to the
-// tool, which says why.
-func checkManifest(manifest string) error {
-	var obj struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-		Metadata   struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-		} `json:"metadata"`
+// checkManifest decodes an apply's manifest strictly and refuses one whose
+// kind, apiVersion, name or namespace could not stand in a request path. An
+// empty manifest is left to the tool, which says why it is refused.
+func checkManifest(manifest string) (*kubescope.Manifest, error) {
+	if strings.TrimSpace(manifest) == "" {
+		return nil, nil
 	}
-	if !json.Valid([]byte(manifest)) {
-		// The tool says why a manifest that does not parse is refused.
-		return nil
+	mf, err := kubescope.DecodeManifest(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("%w. Convert YAML to JSON first", err)
 	}
-	_ = json.Unmarshal([]byte(manifest), &obj)
 	switch {
-	case obj.Kind != "" && !kubescope.ValidKind(obj.Kind):
-		return fmt.Errorf("the manifest's kind %q is not a kind", obj.Kind)
-	case obj.APIVersion != "" && !kubescope.ValidAPIVersion(obj.APIVersion):
-		return fmt.Errorf("the manifest's apiVersion %q is not group/version or version", obj.APIVersion)
-	case obj.Metadata.Namespace == "*":
-		return fmt.Errorf("the manifest's namespace cannot be '*'")
+	case mf.Kind != "" && !kubescope.ValidKind(mf.Kind):
+		return nil, fmt.Errorf("the manifest's kind %q is not a kind", mf.Kind)
+	case mf.APIVersion != "" && !kubescope.ValidAPIVersion(mf.APIVersion):
+		return nil, fmt.Errorf("the manifest's apiVersion %q is not group/version or version", mf.APIVersion)
+	case mf.Namespace == "*":
+		return nil, fmt.Errorf("the manifest's namespace cannot be '*'")
 	}
-	return checkSegments(obj.Metadata.Namespace, obj.Metadata.Name, "")
-}
-
-// manifestKind is the kind an apply's manifest names, or "".
-func manifestKind(manifest string) string {
-	var obj struct {
-		Kind string `json:"kind"`
-	}
-	if json.Unmarshal([]byte(manifest), &obj) != nil {
-		return ""
-	}
-	return obj.Kind
-}
-
-// manifestNamespace is the namespace an apply's manifest names, or "".
-func manifestNamespace(manifest string) string {
-	var obj struct {
-		Metadata struct {
-			Namespace string `json:"namespace"`
-		} `json:"metadata"`
-	}
-	if json.Unmarshal([]byte(manifest), &obj) != nil {
-		return ""
-	}
-	return obj.Metadata.Namespace
+	return mf, checkSegments(mf.Namespace, mf.Name, "")
 }
 
 // defaultNamespace is the namespace a call naming none uses: the login's, or
@@ -643,21 +619,18 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	if strings.TrimSpace(a.Manifest) == "" {
 		return errf("apply needs a manifest.")
 	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(a.Manifest), &obj); err != nil {
-		return errf("manifest must be JSON: %v. Convert YAML to JSON first.", err)
+	mf, err := kubescope.DecodeManifest(a.Manifest)
+	if err != nil {
+		return errf("%v. Convert YAML to JSON first.", err)
 	}
-	kind, _ := obj["kind"].(string)
-	apiVersion, _ := obj["apiVersion"].(string)
+	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
 		return errf("manifest needs both apiVersion and kind.")
 	}
 	// One object, in one namespace, is what the approval and the rules judged.
-	if _, list := obj["items"]; list || strings.HasSuffix(kind, "List") {
+	if _, list := mf.Object["items"]; list || strings.HasSuffix(kind, "List") {
 		return errf("apply takes one object per call; apply each item of the %s on its own.", kind)
 	}
-	meta, _ := obj["metadata"].(map[string]any)
-	name, _ := meta["name"].(string)
 	if name == "" {
 		return errf("manifest metadata.name is required.")
 	}
@@ -666,9 +639,7 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	}
 	ns := a.Namespace
 	if ns == "" {
-		if v, ok := meta["namespace"].(string); ok {
-			ns = v
-		} else {
+		if ns = mf.Namespace; ns == "" {
 			ns = c.Namespace
 		}
 	}
@@ -689,8 +660,8 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	// Server-side apply: one PATCH that creates or updates, so there is no
 	// read-modify-write race between checking existence and writing.
 	path := base + "/" + name + "?fieldManager=abhed&force=true"
-	body, _ := json.Marshal(obj)
-	data, err := c.doPatch(ctx, path, body, "application/apply-patch+yaml")
+	// The bytes sent are the canonical encoding the rules and the approver saw.
+	data, err := c.doPatch(ctx, path, mf.Canonical, "application/apply-patch+yaml")
 	if err != nil {
 		return errf("%v", err)
 	}

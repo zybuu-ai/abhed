@@ -147,8 +147,9 @@ All notable changes to Abhed are recorded here. The format follows
   refused on every surface, naming the check and the secret. The path is
   matched as written, in its case, against stored values of 12 characters
   or more, so a short value such as `postgres` does not refuse ordinary
-  files. While the secrets store cannot be loaded, every `write` and `edit`
-  is refused.
+  files; a stored value of 8 to 11 characters can still become a file name
+  in a mode that approves writes without asking. While the secrets store
+  cannot be loaded, every `write` and `edit` is refused.
 - An SDK session, and so an `abhed rpc` or `abhed acp` session, redacted
   with the values stored when it started, while `bash` reads the store at
   each call. A secret stored during a long session and allowed by a rule
@@ -250,6 +251,20 @@ All notable changes to Abhed are recorded here. The format follows
     `args` before any rule reads the call or any request is sent. Each
     segment is also escaped in the path, and a label selector is
     query-encoded.
+  - A `k8s_apply` manifest that repeated a key in another case was judged
+    as one object and applied as another. The rules read the manifest the
+    way a Go struct does, ignoring case and taking the last key, while the
+    tool and the API server read the exact key. So
+    `{"kind":"ClusterRoleBinding","Kind":"ConfigMap",...}` passed
+    `allow k8s_apply(lab/dev/*)` as a ConfigMap, with no prompt, and wrote a
+    ClusterRoleBinding; `metadata` and `namespace` had the same gap. No
+    release is affected: 1.2.1 and earlier did not read the manifest for
+    the rules. The manifest is now decoded once, strictly:
+    a key repeated at any depth, in any case, and `kind`, `apiVersion`,
+    `metadata`, `name` or `namespace` spelled in another case, are refused
+    at step `args` before any rule reads the call or any request is sent.
+    The rules, the approval, the record and the request all use one
+    canonical encoding of it, and the bytes sent are the bytes judged.
   - Permission rules and "always allow" read `k8s_login` by its namespace,
     or by nothing when none was given, not by where the token went. A rule
     naming a cluster, such as `deny k8s_login(prod)`, never fired, and

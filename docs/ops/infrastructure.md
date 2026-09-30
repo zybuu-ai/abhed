@@ -153,7 +153,9 @@ reading nodes, or applying a ClusterRole, ClusterRoleBinding, CRD, webhook
 configuration or another cluster-scoped kind reads as `cluster/-/...`,
 whatever namespace the call names, and any it names is dropped. So
 `k8s_apply(lab/dev/*)` never covers them; allow them on their own with
-`k8s_apply(lab/-/restart)` or the like, or leave them to ask. An `apply` of a
+`k8s_apply(lab/-/restart)` or the like, or leave them to ask. A `*` in the
+namespace place matches `-` too, so `k8s_apply(lab/*/delete)` covers deleting
+a namespace or a node. An `apply` of a
 kind whose scope Abhed does not know, a custom resource's included, is
 refused; apply it with `kubectl` through `bash`.
 
@@ -169,6 +171,13 @@ stops `k8s_get` of secrets in `*`.
 "deny":  ["k8s_login(prod)", "k8s_apply(prod/*)", "k8s_get(*/kube-system/secrets)"],
 "allow": ["k8s_login(lab)", "k8s_apply(lab/*/restart)"]
 ```
+
+An `apply`'s manifest must be JSON, and is decoded once, strictly. A key
+repeated at any depth, even in another case, or `kind`, `apiVersion`,
+`metadata`, `name` or `namespace` spelled in any other case, is refused at
+step `args`. Otherwise the manifest is rewritten in one canonical encoding
+(keys sorted, `resolved` then names `manifest`), and that encoding is what
+the rules judge, the approval shows and the cluster receives.
 
 "Always allow" on a login is offered as `k8s_login(lab)`, and on a write as
 `k8s_apply(lab/demo/delete)`, so a choice made for one cluster never
