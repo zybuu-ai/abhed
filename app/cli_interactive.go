@@ -25,7 +25,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 	s := r.Style()
 	sandboxLabel := "none"
-	if sb, err := buildSandbox(appCfg, workspace); err == nil {
+	sb, sbErr := buildSandbox(appCfg, workspace)
+	if sbErr == nil {
 		sandboxLabel = string(sb.Tier())
 		if !appCfg.Sandbox.AllowNetwork {
 			sandboxLabel += " · no network"
@@ -95,6 +96,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	}
 	// Commands show and ask through the terminal, or a line at a time.
 	sessionState.surface = ui.NewSurface(editor, prompter)
+	ft := startFooter(editor, r, sessionState, pol, workspace, sb)
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
@@ -166,6 +168,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// The turn owns the screen: the reader stays live for steering, but
 		// stops painting a prompt over the output.
 		editor.Quiet(true)
+		ft.turn(true)
+		ft.refresh(sessionState, pol)
 		r.StartThinking()
 		go func() {
 			reason, err := start(taskCtx, loop)
@@ -226,6 +230,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				if msg == "" {
 					continue
 				}
+				if msg == modeCycleLine {
+					ft.cycleMode(sessionState, pol) // takes effect when the turn ends
+					continue
+				}
 				if strings.HasPrefix(msg, "/") {
 					// A command typed mid-run is held, not dropped. Discarding
 					// it loses what the user asked for, and running it now
@@ -249,6 +257,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// What the run recorded is drawn before its usage is printed.
 		sessionState.waitRendered(loop.Recorder.LastAppended())
 		editor.Quiet(false)
+		ft.turn(false)
+		ft.applyPending(sessionState, pol)
 		// The loop's usage covers the whole conversation; this task is the difference.
 		spent := usageSince(before, loop.Usage())
 		sessionState.accumulate(spent)
@@ -272,6 +282,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			if quit := handleCommand(ctx, cmd, r, pol, sess, sessionState); quit {
 				return 0, true
 			}
+			ft.refresh(sessionState, pol)
 		}
 		if ctx.Err() != nil {
 			return 130, true
@@ -345,10 +356,15 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if bare := strings.ToLower(strings.TrimSpace(line)); bare == "exit" || bare == "quit" {
 			line = "/" + bare
 		}
+		if line == modeCycleLine {
+			ft.cycleMode(sessionState, pol)
+			continue
+		}
 		if strings.HasPrefix(line, "/") {
 			if quit := handleCommand(ctx, line, r, pol, sess, sessionState); quit {
 				return 0
 			}
+			ft.refresh(sessionState, pol)
 			continue
 		}
 

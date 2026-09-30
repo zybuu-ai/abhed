@@ -54,8 +54,11 @@ type Renderer struct {
 	// request and a diff is shown once.
 	tools toolState
 
-	// usage is what the footer shows about the model and the session.
-	usage Usage
+	// usage is what the footer shows about the model and the session. It
+	// has its own lock: the dock reads it while drawing, holding the dock's
+	// lock, and the renderer takes the dock's lock while holding its own.
+	usageMu sync.Mutex
+	usage   Usage
 }
 
 // Usage is what the renderer has seen of the model's accounting.
@@ -93,8 +96,8 @@ func (r *Renderer) Attach(l *LineReader) {
 
 // Usage returns what the renderer has seen of the model's accounting.
 func (r *Renderer) Usage() Usage {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.usageMu.Lock()
+	defer r.usageMu.Unlock()
 	return r.usage
 }
 
@@ -163,6 +166,8 @@ func (r *Renderer) Event(ev agent.Event) {
 	case agent.EvModelCall:
 		var c agent.ModelCall
 		if json.Unmarshal(ev.Payload, &c) == nil && c.Error == "" {
+			r.usageMu.Lock()
+			defer r.usageMu.Unlock()
 			if c.Model != "" {
 				r.usage.Model = c.Model
 			}
@@ -175,13 +180,22 @@ func (r *Renderer) Event(ev agent.Event) {
 			r.usage.TokensCached += c.TokensCached
 		}
 		return
+	case agent.EvModelSwitched:
+		var m agent.ModelSwitched
+		if json.Unmarshal(ev.Payload, &m) == nil && m.Model != "" {
+			r.usageMu.Lock()
+			r.usage.Model = m.Model
+			r.usageMu.Unlock()
+		}
 	case agent.EvSessionEnded:
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) == nil && e.ContextTokens > 0 {
+			r.usageMu.Lock()
 			r.usage.ContextTokens = e.ContextTokens
 			if e.ContextWindow > 0 {
 				r.usage.ContextWindow = e.ContextWindow
 			}
+			r.usageMu.Unlock()
 		}
 	}
 	if r.dock != nil {

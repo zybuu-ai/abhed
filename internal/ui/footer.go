@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -126,10 +127,22 @@ func statusLine(s Style, m StatusModel, w int) string {
 		parts = append(parts, loc)
 	}
 	out := ""
-	for _, p := range parts {
+	for i, p := range parts {
 		next := p
 		if out != "" {
 			next = out + " · " + p
+		}
+		if displayWidth(next) > w && i == len(parts)-1 && m.Cwd != "" {
+			// Where the session is gives way from the left: the folder's own
+			// name and the branch are what tell sessions apart.
+			short := "…/" + filepath.Base(m.Cwd)
+			if m.GitBranch != "" {
+				short += " (" + m.GitBranch + ")"
+			}
+			next = short
+			if out != "" {
+				next = out + " · " + short
+			}
 		}
 		if displayWidth(next) > w {
 			break

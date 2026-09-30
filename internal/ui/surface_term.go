@@ -130,3 +130,15 @@ func (l *LineReader) Notify(t Toast) {
 	l.d.draw()
 	l.d.mu.Unlock()
 }
+
+// Send hands line to the session as if it had been typed and submitted,
+// without drawing it or keeping it in the history: how a key the session
+// acts on reaches it, on the session's goroutine.
+func (l *LineReader) Send(line string) {
+	if !l.raw {
+		return
+	}
+	l.d.mu.Lock()
+	l.d.push(readResult{line, nil})
+	l.d.mu.Unlock()
+}
