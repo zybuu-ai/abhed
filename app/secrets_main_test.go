@@ -1,7 +1,9 @@
 package app
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -21,5 +23,10 @@ func TestMain(m *testing.M) {
 	_ = os.Unsetenv("ABHED_SECRETS_FILE")
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	// No test leaves a record or an export in the package's own folder.
+	if left, _ := filepath.Glob("*.jsonl"); len(left) > 0 && code == 0 {
+		fmt.Fprintf(os.Stderr, "a test left record files in the package: %v\n", left)
+		code = 1
+	}
 	os.Exit(code)
 }
