@@ -146,7 +146,7 @@ form it runs in, and records it that way:
   plural it addresses: `Secret`, `secret` and `secrets` all read `secrets`;
 - a call that names no namespace gets the one it would use: the login's or
   the kubeconfig context's default, or for an `apply` the namespace its
-  manifest names.
+  manifest names. An `apply` takes one object; a list is refused.
 
 `action.requested` lists the arguments Abhed set this way in `resolved`. A
 call on every namespace, `namespace: "*"`, is matched by a deny or ask rule

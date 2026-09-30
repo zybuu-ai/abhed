@@ -566,6 +566,10 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	if kind == "" || apiVersion == "" {
 		return errf("manifest needs both apiVersion and kind.")
 	}
+	// One object, in one namespace, is what the approval and the rules judged.
+	if _, list := obj["items"]; list || strings.HasSuffix(kind, "List") {
+		return errf("apply takes one object per call; apply each item of the %s on its own.", kind)
+	}
 	meta, _ := obj["metadata"].(map[string]any)
 	name, _ := meta["name"].(string)
 	if name == "" {

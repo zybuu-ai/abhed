@@ -233,3 +233,26 @@ func TestResolverLeavesAContextAlone(t *testing.T) {
 		t.Fatalf("a call naming a context was given the login's cluster: %s %v", out, which)
 	}
 }
+
+// An apply takes one object, so a list whose items span namespaces is never
+// judged by the namespace of the first.
+func TestApplyRefusesAList(t *testing.T) {
+	srv, ca, seen := authLog(t, "tok")
+	mgr := NewManager(Config{Kubeconfig: t.TempDir() + "/missing",
+		Clusters: []LoginCluster{{Name: "prod", Server: srv.URL, CAFile: ca}}})
+	sess := newSession(t)
+	login, _ := json.Marshal(map[string]string{"cluster": "prod", "token_secret": "T"})
+	if res := (LoginTool{M: mgr, Secret: stored(map[string]string{"T": "tok"})}).Run(context.Background(), sess, login); res.IsError {
+		t.Fatal(res.Content)
+	}
+	for _, m := range []string{
+		`{"apiVersion":"v1","kind":"List","metadata":{"name":"l"},"items":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"a","namespace":"kube-system"}}]}`,
+		`{"apiVersion":"v1","kind":"ConfigMapList","metadata":{"name":"l","namespace":"web"}}`,
+	} {
+		args, _ := json.Marshal(map[string]string{"cluster": "prod", "action": "apply", "manifest": m})
+		before := len(seen())
+		if res := (ApplyTool{M: mgr}).Run(context.Background(), sess, args); !res.IsError || len(seen()) != before {
+			t.Errorf("a list was applied: %s", res.Content)
+		}
+	}
+}
