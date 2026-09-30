@@ -239,7 +239,15 @@ func rmArgForces(a string) bool {
 	case strings.HasPrefix(a, "--"):
 		// getopt_long takes any unambiguous prefix: --rec is --recursive.
 		name, _, _ := strings.Cut(a, "=")
-		return len(name) >= 3 && (strings.HasPrefix("--recursive", name) || strings.HasPrefix("--force", name))
+		if len(name) < 3 {
+			return false
+		}
+		for _, full := range []string{"--recursive", "--force"} {
+			if strings.HasPrefix(full, name) {
+				return true
+			}
+		}
+		return false
 	case strings.HasPrefix(a, "-"):
 		return strings.ContainsAny(a[1:], "rRf")
 	}
