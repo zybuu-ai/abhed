@@ -55,6 +55,8 @@ func (m *resumeModel) Complete(_ context.Context, req model.Request) (<-chan mod
 		}
 		c := model.ToolCall{ID: "w1", Name: "write", Args: json.RawMessage(`{"path":"` + filepath.Join(wd, m.write) + `","content":"x"}`)}
 		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case last.Role == model.RoleUser && last.Content == "third":
+		ch <- model.Chunk{Type: model.ChunkText, Text: "third answer"}
 	case strings.Contains(all, "first answer") && last.Content == "more":
 		ch <- model.Chunk{Type: model.ChunkText, Text: "second answer"}
 	default:
@@ -523,5 +525,112 @@ func TestResumeHonoursAManagedModelPin(t *testing.T) {
 	}
 	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: pinned}); err != nil {
 		t.Fatalf("a task on the pinned model: %v", err)
+	}
+}
+
+// taskReturns counts the returns recorded for a task's session.
+func taskReturns(t *testing.T, r *resumeRig, id string) int {
+	t.Helper()
+	n := 0
+	for _, p := range payloads[map[string]any](r.events(t), EvSubagentReturn) {
+		if p["session"] == id {
+			n++
+		}
+	}
+	return n
+}
+
+// A task first run in the foreground and then resumed in the background owes,
+// after a restart, the background run's answer, not the foreground one's.
+func TestPendingNoticeForegroundThenBackground(t *testing.T) {
+	r := newResumeRig(t, "")
+	id := r.spawn(t, SubagentRequest{Prompt: "work", Description: "d"}) // "first answer"
+	r.l.runMu.Lock()                                                    // the notice stays owed, as across a restart
+	defer r.l.runMu.Unlock()
+	if _, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "more", Resume: id}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the background return", func() bool { return taskReturns(t, r, id) == 2 })
+	pend := PendingNotices(r.events(t), r.store.Events)
+	if len(pend) != 1 || !strings.Contains(pend[0].Content, "second answer") {
+		t.Fatalf("owed: %+v", pend)
+	}
+}
+
+// Background, then foreground, then background again: the owed notice is the
+// last background run's answer.
+func TestPendingNoticeBackgroundForegroundBackground(t *testing.T) {
+	r := newResumeRig(t, "")
+	id, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "work", Description: "d", AgentType: "general"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the first notice", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 1 })
+	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: id}); err != nil { // "second answer"
+		t.Fatal(err)
+	}
+	r.l.runMu.Lock()
+	defer r.l.runMu.Unlock()
+	if _, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "third", Resume: id}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the third return", func() bool { return taskReturns(t, r, id) == 3 })
+	pend := PendingNotices(r.events(t), r.store.Events)
+	if len(pend) != 1 || !strings.Contains(pend[0].Content, "third answer") {
+		t.Fatalf("owed: %+v", pend)
+	}
+}
+
+// A record from before returns named their end finds the answer by the
+// run's place among all the task's returns, foreground ones included.
+func TestPendingNoticeFromAnOlderRecord(t *testing.T) {
+	store := NewMemStore()
+	child := NewRecorder(store, "c1", "p")
+	for _, a := range []string{"answer A", "answer B", "answer C"} {
+		_, _ = child.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: a})
+		_, _ = child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Turns: 1})
+	}
+	parent := NewRecorder(store, "p", "")
+	_, _ = parent.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"session": "c1", "reason": "completed"})
+	_, _ = parent.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"background": true, "task_id": "c1", "session": "c1", "reason": "completed"})
+	_, _ = parent.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"session": "c1", "reason": "completed"})
+	evs, _ := store.Events("p")
+	pend := PendingNotices(evs, store.Events)
+	if len(pend) != 1 || !strings.Contains(pend[0].Content, "answer B") {
+		t.Fatalf("owed: %+v", pend)
+	}
+}
+
+// A background run owed across a restart, then resumed in the foreground:
+// the owed notice is the background run's answer, which the return names by
+// the child's end.
+func TestPendingNoticeBeforeAForegroundResume(t *testing.T) {
+	r := newResumeRig(t, "")
+	r.l.runMu.Lock()
+	defer r.l.runMu.Unlock()
+	id, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "work", Description: "d", AgentType: "general"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the background return", func() bool { return taskReturns(t, r, id) == 1 })
+	waitFor(t, "the task's end", func() bool { ti, _ := r.l.Background.Task(id); return ti.Status != "running" })
+	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: id}); err != nil { // "second answer"
+		t.Fatal(err)
+	}
+	pend := PendingNotices(r.events(t), r.store.Events)
+	if len(pend) != 1 || !strings.Contains(pend[0].Content, "first answer") {
+		t.Fatalf("owed: %+v", pend)
+	}
+	child, _ := r.store.Events(id)
+	var ends []float64
+	for _, e := range child {
+		if e.Type == EvSessionEnded {
+			ends = append(ends, float64(e.Seq))
+		}
+	}
+	for i, p := range payloads[map[string]any](r.events(t), EvSubagentReturn) {
+		if i >= len(ends) || p["end_seq"] != ends[i] {
+			t.Fatalf("return %d names end %v; the child's ends are %v", i, p["end_seq"], ends)
+		}
 	}
 }

@@ -696,6 +696,9 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		"tokens_in":   usage.InputTokens,
 		"tokens_out":  usage.OutputTokens,
 		"model":       c.adapter.Profile().Name,
+		// The child's last event of this run, its end: the answer this
+		// return carries is the last one before it, whatever runs follow.
+		"end_seq": c.sub.Recorder.LastAppended(),
 	}
 	if c.provider != "" {
 		returned["provider"] = c.provider

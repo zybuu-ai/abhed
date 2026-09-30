@@ -1184,12 +1184,16 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 		}
 	}
 	returned := map[string]int{}
+	// runs counts every return of a child's session, foreground ones
+	// included: an old record's answer is found by its run's place.
+	runs := map[string]int{}
 	var out []Notice
 	for _, e := range events {
 		if e.Type != EvSubagentReturn {
 			continue
 		}
 		var r struct {
+			EndSeq      int64  `json:"end_seq"`
 			Background  bool   `json:"background"`
 			TaskID      string `json:"task_id"`
 			Session     string `json:"session"`
@@ -1201,18 +1205,27 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 			Provider    string `json:"provider"`
 			Model       string `json:"model"`
 		}
-		if json.Unmarshal(e.Payload, &r) != nil || !r.Background || r.TaskID == "" {
+		if json.Unmarshal(e.Payload, &r) != nil {
+			continue
+		}
+		if r.Session != "" {
+			runs[r.Session]++
+		}
+		if !r.Background || r.TaskID == "" {
 			continue
 		}
 		returned[r.TaskID]++
-		run := returned[r.TaskID]
-		if run <= delivered[r.TaskID] {
+		if returned[r.TaskID] <= delivered[r.TaskID] {
 			continue
 		}
 		content := ""
 		if child != nil {
 			if evs, err := child(r.Session); err == nil {
-				content = answerOfRun(evs, run)
+				if r.EndSeq > 0 {
+					content = answerThrough(evs, r.EndSeq)
+				} else {
+					content = answerOfRun(evs, runs[r.Session]) // recorded before end_seq was
+				}
 			}
 		}
 		if strings.TrimSpace(content) == "" {
@@ -1228,6 +1241,24 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 			CallID: "bgn_" + newID(), Content: content})
 	}
 	return out
+}
+
+// answerThrough is a child's last non-empty answer at or before seq, the end
+// of the run a return names.
+func answerThrough(evs []Event, seq int64) string {
+	last := ""
+	for _, e := range evs {
+		if e.Seq > seq {
+			break
+		}
+		if e.Type == EvAgentMessage {
+			var m Message
+			if json.Unmarshal(e.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+				last = m.Text
+			}
+		}
+	}
+	return last
 }
 
 // answerOfRun is a child's last non-empty answer before the end of its n-th
