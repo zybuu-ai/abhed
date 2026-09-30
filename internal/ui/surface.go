@@ -62,12 +62,13 @@ type DialogKind string
 
 const (
 	// DialogConfirm is a yes-or-no question. Without Choices it offers
-	// "yes" and "no", and its default is always "no".
+	// "yes" and "no". Its default is always "no": any other is refused.
 	DialogConfirm DialogKind = "confirm"
 	// DialogChoice is one of the given Choices.
 	DialogChoice DialogKind = "choice"
 	// DialogApproval is a tool call waiting on the person. Its answers still
-	// go through the approver's rules; the dialog only collects them.
+	// go through the approver's rules; the dialog only collects them. Its
+	// default is "no" or none, so a bare Enter never approves.
 	DialogApproval DialogKind = "approval"
 )
 
@@ -105,7 +106,9 @@ const (
 
 // Normalized fills in a Confirm dialog's choices and default and checks the
 // guard rules every Surface relies on: IDs and keys are unique, the default
-// is one of the choices, and it is neither destructive nor widening.
+// is one of the choices, and it is neither destructive nor widening. A
+// Confirm dialog's default can only be "no", and an Approval's only "no" or
+// none, so a bare Enter can never say yes to either.
 func (d DialogSpec) Normalized() (DialogSpec, error) {
 	if d.Kind == DialogConfirm {
 		if len(d.Choices) == 0 {
@@ -117,6 +120,12 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 	}
 	if len(d.Choices) == 0 {
 		return d, errors.New("a dialog needs at least one choice")
+	}
+	switch {
+	case d.Kind == DialogConfirm && d.Default != ChoiceNo:
+		return d, fmt.Errorf("a confirm dialog's default must be %q, not %q", ChoiceNo, d.Default)
+	case d.Kind == DialogApproval && d.Default != "" && d.Default != ChoiceNo:
+		return d, fmt.Errorf("an approval's default must be %q or none, not %q", ChoiceNo, d.Default)
 	}
 	ids, keys := map[string]bool{}, map[rune]bool{}
 	var def *Choice

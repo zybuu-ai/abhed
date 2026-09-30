@@ -117,6 +117,11 @@ func TestDialogSpecRefusesUnsafeDefaults(t *testing.T) {
 		{Kind: DialogChoice, Choices: []Choice{{ID: "a"}, {ID: "a"}}},
 		{Kind: DialogChoice, Choices: []Choice{{ID: "a", Key: 'x'}, {ID: "b", Key: 'x'}}},
 		{Kind: DialogConfirm, Choices: []Choice{{ID: ChoiceYes, Widening: true}, {ID: ChoiceNo}}, Default: ChoiceYes},
+		// A bare Enter must never say yes.
+		{Kind: DialogConfirm, Title: "Switch to auto?", Default: ChoiceYes},
+		{Kind: DialogConfirm, Choices: []Choice{{ID: "ok"}, {ID: ChoiceNo}}, Default: "ok"},
+		{Kind: DialogApproval, Choices: approval.Choices, Default: "once"},
+		{Kind: DialogApproval, Choices: []Choice{{ID: "allow"}, {ID: "deny"}}, Default: "allow"},
 	} {
 		l, out := lineSurface("1")
 		if got, err := l.Dialog(context.Background(), d); err == nil || got != "" {
