@@ -19,6 +19,8 @@ type wakeHost struct {
 	wg     sync.WaitGroup
 	loop   *Loop
 	refuse bool
+	// delay is how long the surface takes to start a wake run it was asked for.
+	delay time.Duration
 }
 
 func (h *wakeHost) hooks() BackgroundHooks {
@@ -31,6 +33,7 @@ func (h *wakeHost) hooks() BackgroundHooks {
 			h.wg.Add(1)
 			go func() {
 				defer h.wg.Done()
+				time.Sleep(h.delay)
 				reason, _ := h.loop.RunWoken(context.Background(), Wake{By: "policy", TaskIDs: ids})
 				h.mu.Lock()
 				h.runs = append(h.runs, reason)
