@@ -205,9 +205,9 @@ func IsDestructive(command string) (string, bool) {
 }
 
 // rmForced finds rm's recursive or force flags anywhere among its words, as
-// GNU rm reads them: `rm dir -rf` and `rm --recursive --force dir` included.
+// GNU rm reads them: after operands, and long options by any prefix.
 func rmForced(command string) bool {
-	for _, part := range strings.Split(shellBreaks.Replace(command), "\n") {
+	for _, part := range strings.Split(rmBreaks.Replace(command), "\n") {
 		words := strings.Fields(shellQuotes.Replace(part))
 		for i, w := range words {
 			if strings.TrimSuffix(CommandName(path.Base(w)), ".exe") != "rm" {
@@ -217,14 +217,39 @@ func rmForced(command string) bool {
 				if a == "--" {
 					break
 				}
-				switch {
-				case a == "--recursive" || a == "--force":
-					return true
-				case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "rRf"):
+				if rmArgForces(a) {
 					return true
 				}
 			}
 		}
+	}
+	return false
+}
+
+// rmBreaks splits commands but keeps backticks in their word, so a
+// substitution among rm's arguments is seen as one.
+var rmBreaks = strings.NewReplacer(";", "\n", "&", "\n", "|", "\n", "(", "\n", ")", "\n")
+
+// rmArgForces reports whether one of rm's arguments is, or may expand to, a
+// recursive or force flag. A $ or backtick is a value not known until it runs.
+func rmArgForces(a string) bool {
+	switch {
+	case strings.ContainsAny(a, "$`"):
+		return true
+	case strings.HasPrefix(a, "--"):
+		// getopt_long takes any unambiguous prefix: --rec is --recursive.
+		name, _, _ := strings.Cut(a, "=")
+		if len(name) < 3 {
+			return false
+		}
+		for _, full := range []string{"--recursive", "--force"} {
+			if strings.HasPrefix(full, name) {
+				return true
+			}
+		}
+		return false
+	case strings.HasPrefix(a, "-"):
+		return strings.ContainsAny(a[1:], "rRf")
 	}
 	return false
 }
