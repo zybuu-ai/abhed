@@ -434,15 +434,15 @@ func (m *MemStore) Append(ev Event) error {
 		}
 	}
 	m.events[ev.SessionID] = append(held, ev)
-	subs := append([]chan Event(nil), m.subs[ev.SessionID]...)
-	m.mu.Unlock()
-
-	for _, ch := range subs {
+	// Sent under the lock: Unsubscribe closes the channel under it, and a
+	// send racing that close panics. The sends never block, so this is cheap.
+	for _, ch := range m.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block the loop on a slow consumer
 		}
 	}
+	m.mu.Unlock()
 	return nil
 }
 
