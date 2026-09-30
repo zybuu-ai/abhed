@@ -1,0 +1,51 @@
+package clitest
+
+import (
+	"fmt"
+	"os/exec"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/clitest/vt"
+)
+
+// recordingTB notes what cleanup did to the test, without ending it.
+type recordingTB struct {
+	testing.TB
+	skipped, errored string
+}
+
+func (r *recordingTB) Helper()                   {}
+func (r *recordingTB) Failed() bool              { return r.errored != "" }
+func (r *recordingTB) Logf(string, ...any)       {}
+func (r *recordingTB) Skipf(f string, a ...any)  { r.skipped = fmt.Sprintf(f, a...) }
+func (r *recordingTB) Errorf(f string, a ...any) { r.errored = fmt.Sprintf(f, a...) }
+
+func cleanupAfter(t *testing.T, output string) *recordingTB {
+	t.Helper()
+	rec := &recordingTB{TB: t}
+	h := &run{t: rec, cmd: exec.Command("true"), done: make(chan struct{}), term: vt.New(80, 24, nil),
+		raw: []byte(output), root: t.TempDir()}
+	close(h.done)
+	h.cleanup()
+	return rec
+}
+
+const editorRace = "WARNING: DATA RACE\nWrite at 0x1 by goroutine 7:\n  github.com/zybuu-ai/abhed/internal/ui.(*editor).insert()\n==================\n"
+
+// The line editor's known race is never passed silently: it is a pending
+// skip the CI gate lists, and any other race fails.
+func TestCleanupMarksTheKnownRacePending(t *testing.T) {
+	if *runPending {
+		t.Skip("run without -clitest-run-pending")
+	}
+	if rec := cleanupAfter(t, editorRace); rec.skipped != "clitest: pending (A1): the binary reported the line editor's known data race" {
+		t.Fatalf("known race: skipped %q, errored %q", rec.skipped, rec.errored)
+	}
+	other := "WARNING: DATA RACE\nRead at 0x2 by goroutine 9:\n  github.com/zybuu-ai/abhed/internal/agent.(*Loop).Run()\n==================\n"
+	if rec := cleanupAfter(t, editorRace+other); rec.skipped != "" || rec.errored == "" {
+		t.Fatalf("another race: skipped %q, errored %q", rec.skipped, rec.errored)
+	}
+	if rec := cleanupAfter(t, "no race here"); rec.skipped != "" || rec.errored != "" {
+		t.Fatalf("no race: skipped %q, errored %q", rec.skipped, rec.errored)
+	}
+}

@@ -360,16 +360,20 @@ func (h *run) cleanup() {
 	if h.tty != nil {
 		_ = h.tty.Close()
 	}
-	if out := Strip(h.Output()); !knownRace(out) {
-		// A race in the binary under test is reported whole.
-		if _, report, found := strings.Cut(out, "WARNING: DATA RACE"); found {
-			h.t.Errorf("clitest: the binary reported a data race:\nWARNING: DATA RACE%s", report)
-		}
-	}
+	out := Strip(h.Output())
+	_, report, raced := strings.Cut(out, "WARNING: DATA RACE")
 	if h.t.Failed() {
-		h.t.Logf("clitest: screen at the end:\n%s\n--- output tail ---\n%s", h.Screen().Text(), tail(Strip(h.Output()), 3000))
+		h.t.Logf("clitest: screen at the end:\n%s\n--- output tail ---\n%s", h.Screen().Text(), tail(out, 3000))
 	}
 	_ = os.RemoveAll(h.root)
+	// Last, since a skip ends this function. The line editor's known race
+	// is pending on A1, so the skip gate lists it; any other race fails.
+	if raced && knownRace(out) {
+		Pending(h.t, "A1", "the binary reported the line editor's known data race")
+	}
+	if raced {
+		h.t.Errorf("clitest: the binary reported a data race:\nWARNING: DATA RACE%s", report)
+	}
 }
 
 func tail(s string, n int) string {

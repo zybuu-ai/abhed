@@ -124,6 +124,7 @@ jobs:
           ABHED_CLITEST_PENDING: "A1 A2"
         run: |
           set -euo pipefail
+          python3 scripts/ci/clitest-skips.py --self-test
           go test ./internal/clitest/... -count=1 -json > clitest.json || true
           python3 scripts/ci/clitest-skips.py < clitest.json
 
