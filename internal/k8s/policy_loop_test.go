@@ -533,8 +533,19 @@ func TestAppliedManifestIsTheOneJudged(t *testing.T) {
 	if len(bodies) != 1 || bodies[0] != judged.Manifest {
 		t.Fatalf("sent %q, judged %q", bodies, judged.Manifest)
 	}
-	if want := `{"apiVersion":"v1","data":{"h":"<&>","n":1.50},"kind":"ConfigMap","metadata":{"name":"cfg"}}`; judged.Manifest != want {
+	want := `{"apiVersion":"v1","data":{"h":"<&>","n":1.50},"kind":"ConfigMap","metadata":{"name":"cfg"}}`
+	if judged.Manifest != want {
 		t.Fatalf("judged %q, want %q", judged.Manifest, want)
+	}
+	mu.Unlock()
+	// Called directly, with no resolver ahead of it, the tool still sends the canonical bytes.
+	direct, _ := json.Marshal(map[string]string{"cluster": "lab", "action": "apply", "manifest": m})
+	if res := (ApplyTool{M: mgr}).Run(context.Background(), sess, direct); res.IsError {
+		t.Fatal(res.Content)
+	}
+	mu.Lock()
+	if len(bodies) != 2 || bodies[1] != want {
+		t.Fatalf("direct run sent %q, want %q", bodies[1:], want)
 	}
 }
 

@@ -101,6 +101,17 @@ const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); 
 	}
 }
 
+// The agent's terminal prints a command's escapes rather than obeying them.
+func TestIDEAgentTerminalShowsCommandEscapes(t *testing.T) {
+	harness := `globalThis.__w = [];
+let agentTerm = {term: {write: s => __w.push(s)}}, activeTerm = null, termN = 0;
+const makeTerm = () => agentTerm, selectTerm = () => {};
+`
+	if out, err := runConsoleCases(t, "ide-term", harness, "ide_term_cases.mjs"); err != nil {
+		t.Fatalf("the agent terminal failed:\n%s", out)
+	}
+}
+
 // An approval card and a call row name what the call is about: a web_fetch
 // by its URL, not its arguments as JSON.
 func TestIDENamesACallBySubject(t *testing.T) {
