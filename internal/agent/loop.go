@@ -571,11 +571,11 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return err
 	}
 
-	l.record(EvCompactStarted, ActorSystem, Compaction{
-		BeforeTokens: used, Trigger: "auto",
+	// Started is recorded only once there is something to summarise, so every
+	// compaction.started is followed by its completion.
+	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
-
-	compacted, info, err := l.Compactor.Compact(ctx, "auto", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return err
 	}
