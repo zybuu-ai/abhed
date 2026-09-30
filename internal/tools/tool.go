@@ -295,10 +295,22 @@ type Definition struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+// Hidden is a tool that is registered, and so callable and policed, but not
+// offered to the model until it asks for it: a deferred MCP tool before a
+// tool search loads it.
+type Hidden interface {
+	Hidden() bool
+}
+
+// Definitions are the tools offered to the model, in registration order,
+// leaving out those that are hidden for now.
 func (r *Registry) Definitions() []Definition {
 	out := make([]Definition, 0, len(r.order))
 	for _, n := range r.order {
 		t := r.tools[n]
+		if h, ok := t.(Hidden); ok && h.Hidden() {
+			continue
+		}
 		out = append(out, Definition{
 			Name:        t.Name(),
 			Description: t.Description(),

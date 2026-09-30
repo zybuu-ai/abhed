@@ -234,7 +234,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
 	}
 	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions,
-		interactiveStart{first: f.task(), sandbox: sb, probe: probe, onOpen: func(rec *agent.Recorder) {
+		interactiveStart{first: f.task(), sandbox: sb, probe: probe, set: set, onOpen: func(rec *agent.Recorder) {
 			recordStart(rec, start)
 			if fallback != nil {
 				fallback.SetRecord(recordFallback(rec))

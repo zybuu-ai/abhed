@@ -91,7 +91,12 @@ type Set struct {
 	// Agents are the subagent types a session built from this set offers:
 	// the built-in roles, plus the loaded definitions with the Agents part.
 	Agents *agent.Definitions
+	// extensionTools names the tools extensions provided.
+	extensionTools []string
 }
+
+// ExtensionToolNames are the tools the set's extensions provided.
+func (s *Set) ExtensionToolNames() []string { return s.extensionTools }
 
 // Build assembles the tools for a workspace from cfg. Something configured
 // that cannot start is reported through Warn and left out, as the CLI always
@@ -129,6 +134,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, t := range s.Gateway.Tools() {
 			s.Registry.Add(t)
 		}
+		DeferMCP(s.Registry, DeferThreshold)
 	}
 	// A tool an extension provides goes through policy and the record like
 	// any other: a capability added, never a way around the rules.
@@ -139,6 +145,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		}
 		for _, t := range ts {
 			s.Registry.Add(t)
+			s.extensionTools = append(s.extensionTools, t.Name())
 		}
 	}
 	if o.Parts&RAG != 0 {

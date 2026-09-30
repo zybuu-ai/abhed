@@ -100,7 +100,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
 		workspace: sess.Root, adapter: adapter, provider: provider,
-		sandbox: start.sandbox,
+		sandbox: start.sandbox, set: start.set, registry: registry, version: a.version,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
@@ -403,6 +403,7 @@ type interactiveStart struct {
 	first   string
 	sandbox *lazySandbox
 	probe   *endpointProbe
+	set     *toolset.Set
 	// onOpen runs for each conversation's recorder: it records the start
 	// and binds where a model fallback is recorded.
 	onOpen func(rec *agent.Recorder)

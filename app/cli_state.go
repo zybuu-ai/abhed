@@ -8,6 +8,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
 )
@@ -49,6 +50,11 @@ type cliState struct {
 	surface ui.Surface
 	// sandbox is the session's sandbox, chosen behind the prompt.
 	sandbox *lazySandbox
+	// version is the binary's, for /release-notes and /bug.
+	version string
+	// set and registry are the session's tools, for the panels.
+	set      *toolset.Set
+	registry *tools.Registry
 	// statuslineWarned is set once a failing statusline command was named.
 	statuslineWarned bool
 }

@@ -453,6 +453,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `/agents`, `/skills`, `/mcp` and `/tools` show what the session has and
+  where each came from; `/mcp restart <server>` reconnects one. `/doctor`
+  runs the doctor's checks inside a session, `/release-notes` shows the
+  changelog built into the binary, and `/bug` prints a prefilled issue link
+  with secrets and the home directory redacted, sending nothing.
+- With more than 40 MCP tools, they are offered through a `tool_search`
+  tool and loaded when found, so a large server does not fill the context.
+  Every call is still policed and recorded.
+- `docs/guide/18-cli.md`: the command line, its flags and commands.
+
 - `statusline.command` runs a command of yours for the status line. It reads
   the session's status as JSON on stdin (model, provider, mode, context,
   tokens, sandbox, record, branch, background tasks) and its first line is
