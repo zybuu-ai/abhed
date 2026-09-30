@@ -42,7 +42,7 @@ const (
 	opInsert
 )
 
-func (b *inputBuf) String() string { return string(b.line) }
+func (b *inputBuf) String() string { return b.shown() }
 
 func (b *inputBuf) empty() bool { return len(b.line) == 0 }
 
@@ -87,7 +87,7 @@ func (b *inputBuf) insert(rs []rune) {
 		switch {
 		case r == '\n':
 		case r == '\t':
-		case r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0:
+		case r < 0x20 || r == 0x7f || r >= 0x80 && r < 0xa0 || isPasteRune(r):
 			continue
 		}
 		clean = append(clean, r)
@@ -308,20 +308,67 @@ const (
 	pasteChars = 800
 )
 
+// A large paste is one character on the line: a private-use rune that
+// stands for the paste by its number, drawn as its label, deleted whole and
+// expanded by number when the line is sent. Matching the label's text
+// instead let a paste that contained another's label expand wrongly. Nothing
+// typed or pasted can put these runes on the line.
+const (
+	pasteRuneFirst = 0x10FF00
+	pasteRuneLast  = 0x10FFFD
+)
+
+func isPasteRune(r rune) bool { return r >= pasteRuneFirst && r <= pasteRuneLast }
+
+// pasteOf is the paste a rune on the line stands for, and whether it does.
+func (b *inputBuf) pasteOf(r rune) (string, int, bool) {
+	if !isPasteRune(r) {
+		return "", 0, false
+	}
+	i := int(r - pasteRuneFirst)
+	if i >= len(b.pastes) {
+		return "", 0, false
+	}
+	return b.pastes[i], i + 1, true
+}
+
+// cleanPaste filters a paste as typed text is filtered: newlines kept, tabs
+// made spaces, every other control and every format character dropped, so
+// opening a placeholder or recalling it can never draw an escape.
+func cleanPaste(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	var sb strings.Builder
+	rs := []rune(text)
+	for i, r := range rs {
+		switch {
+		case r == '\n':
+			sb.WriteRune(r)
+		case r == '\t':
+			sb.WriteString("    ")
+		case r == 0x200d && keepJoiner(rs, i):
+			sb.WriteRune(r)
+		case hiddenRune(r) || r == 0x200d || isPasteRune(r):
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
 // paste inserts pasted text. A large paste becomes a placeholder on the line,
 // so a pasted log does not bury the prompt, and it is sent whole, as one
 // message, when the line is submitted.
 func (b *inputBuf) paste(text string) {
-	text = strings.ReplaceAll(text, "\t", "    ")
+	text = cleanPaste(text)
 	if text == "" {
 		return
 	}
 	lines := strings.Count(strings.TrimRight(text, "\n"), "\n") + 1
-	if lines > pasteLines || len([]rune(text)) > pasteChars {
+	if (lines > pasteLines || len([]rune(text)) > pasteChars) && len(b.pastes) <= pasteRuneLast-pasteRuneFirst {
 		b.pastes = append(b.pastes, text)
 		b.pushUndo(opOther)
 		b.lastOp = opOther
-		b.insertRaw([]rune(pasteLabel(len(b.pastes), text)))
+		b.insertRaw([]rune{rune(pasteRuneFirst + len(b.pastes) - 1)})
 		return
 	}
 	b.pushUndo(opOther)
@@ -344,13 +391,11 @@ func pasteLabel(n int, text string) string {
 	return fmt.Sprintf("[Pasted text #%d +%d lines]", n, lines)
 }
 
-// placeholderBefore is the length of the paste placeholder that ends at the
-// cursor, or 0.
+// placeholderBefore reports whether a paste placeholder ends at the cursor.
 func (b *inputBuf) placeholderBefore() int {
-	for i, p := range b.pastes {
-		l := []rune(pasteLabel(i+1, p))
-		if b.pos >= len(l) && string(b.line[b.pos-len(l):b.pos]) == string(l) {
-			return len(l)
+	if b.pos > 0 {
+		if _, _, ok := b.pasteOf(b.line[b.pos-1]); ok {
+			return 1
 		}
 	}
 	return 0
@@ -359,27 +404,49 @@ func (b *inputBuf) placeholderBefore() int {
 // expandPlaceholder replaces the placeholder before the cursor with its text,
 // so the person can edit what they pasted. It reports whether there was one.
 func (b *inputBuf) expandPlaceholder() bool {
-	for i, p := range b.pastes {
-		l := []rune(pasteLabel(i+1, p))
-		if b.pos >= len(l) && string(b.line[b.pos-len(l):b.pos]) == string(l) {
-			b.pushUndo(opOther)
-			b.lastOp = opOther
-			tail := append([]rune(nil), b.line[b.pos:]...)
-			start := b.pos - len(l)
-			b.line = append(append(b.line[:start], []rune(p)...), tail...)
-			b.pos = start + len([]rune(p))
-			return true
+	if b.pos == 0 {
+		return false
+	}
+	p, _, ok := b.pasteOf(b.line[b.pos-1])
+	if !ok {
+		return false
+	}
+	b.pushUndo(opOther)
+	b.lastOp = opOther
+	tail := append([]rune(nil), b.line[b.pos:]...)
+	start := b.pos - 1
+	b.line = append(append(b.line[:start], []rune(p)...), tail...)
+	b.pos = start + len([]rune(p))
+	return true
+}
+
+// shown is the line as the person sees it: placeholders as their labels.
+func (b *inputBuf) shown() string {
+	var sb strings.Builder
+	for _, r := range b.line {
+		if p, n, ok := b.pasteOf(r); ok {
+			sb.WriteString(pasteLabel(n, p))
+			continue
+		}
+		if !isPasteRune(r) {
+			sb.WriteRune(r)
 		}
 	}
-	return false
+	return sb.String()
 }
 
 // expanded is the line with every placeholder replaced by its paste: what is
 // actually sent.
 func (b *inputBuf) expanded() string {
-	s := string(b.line)
-	for i, p := range b.pastes {
-		s = strings.Replace(s, pasteLabel(i+1, p), p, 1)
+	var sb strings.Builder
+	for _, r := range b.line {
+		if p, _, ok := b.pasteOf(r); ok {
+			sb.WriteString(p)
+			continue
+		}
+		if !isPasteRune(r) {
+			sb.WriteRune(r)
+		}
 	}
-	return s
+	return sb.String()
 }

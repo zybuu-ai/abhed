@@ -33,8 +33,13 @@ do in vim. `/vim` again turns it off. The choice is kept.
 **Pastes.** A paste of more than three lines, or more than 800 characters,
 shows as `[Pasted text #1 +25 lines]` and is sent whole, as one message, with
 what you typed around it. Tab with the cursor after the placeholder opens it
-for editing. A terminal that does not mark pastes sends them as fast typing;
-that is recognised by its speed, and treated the same way.
+for editing. A pasted placeholder is one character: Backspace removes all of
+it. Pasted text is kept to what can be typed, so control characters in it
+are dropped. A terminal that does not mark pastes sends them as fast
+typing; that is recognised by its speed and treated the same way, except
+that such a paste ending in a newline is sent at once, since nothing after
+the last Enter tells it from one pressed by hand. Turn on bracketed paste
+in the terminal to avoid that.
 
 **History** is kept per workspace, in `~/.abhed/history/`, readable only by
 you (0600, never opened through a link). A vault secret in a prompt is

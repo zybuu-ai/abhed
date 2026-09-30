@@ -1134,7 +1134,12 @@ func (d *dock) layout(w int) (rows []string, curRow, curCol int) {
 			i = e
 			continue
 		}
+		piece := string(line[i:e])
 		cw := clusterWidth(line[i:e])
+		if p, n, ok := d.buf.pasteOf(line[i]); ok {
+			piece = d.st.Dim(pasteLabel(n, p))
+			cw = displayWidth(piece)
+		}
 		if col+cw > w {
 			rows = append(rows, row.String())
 			row.Reset()
@@ -1144,7 +1149,7 @@ func (d *dock) layout(w int) (rows []string, curRow, curCol int) {
 				curRow, curCol = len(rows), col
 			}
 		}
-		row.WriteString(string(line[i:e]))
+		row.WriteString(piece)
 		col += cw
 		i = e
 	}

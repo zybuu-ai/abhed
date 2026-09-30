@@ -451,3 +451,44 @@ func TestSyncOnlyWhenTheTerminalSaysSo(t *testing.T) {
 		t.Fatal("synchronized output was not used once the terminal said it knows it")
 	}
 }
+
+// A paste is expanded by its number, not by matching its label: a paste
+// that holds another paste's label text is sent as it was pasted.
+func TestPastesExpandByNumber(t *testing.T) {
+	var b inputBuf
+	first := "one\ntwo\nthree\nfour"
+	second := "quoting [Pasted text #1 +4 lines] from before\nb\nc\nd"
+	b.paste(first)
+	b.insert([]rune(" and "))
+	b.paste(second)
+	if got, want := b.expanded(), first+" and "+second; got != want {
+		t.Fatalf("expanded %q, want %q", got, want)
+	}
+	if got := b.shown(); got != "[Pasted text #1 +4 lines] and [Pasted text #2 +4 lines]" {
+		t.Fatalf("shown %q", got)
+	}
+	// Backspace takes a placeholder whole.
+	b.backspace()
+	if got := b.expanded(); got != first+" and " {
+		t.Fatalf("after backspace %q", got)
+	}
+}
+
+// A collapsed paste is filtered as typed text is: opening it with Tab puts
+// no escape on the line or on the screen.
+func TestPasteKeepsNoControls(t *testing.T) {
+	g := newRig(t, 80, 24)
+	g.keys("\x1b[200~a\x1b]0;TITLE\x07\nb\x1b]52;c;eA==\x07\nc‮\nd\x1b[2J\x1b[201~")
+	g.waitText("[Pasted text #1 +4 lines]")
+	g.keys("\t")
+	g.settle()
+	g.out.mu.Lock()
+	wire := g.out.log.String()
+	g.out.mu.Unlock()
+	assertClean(t, "an opened paste", wire)
+	g.keys("\r")
+	got, _ := g.line()
+	if strings.ContainsAny(got, "\x1b\x07‮") {
+		t.Fatalf("the sent line kept controls: %q", got)
+	}
+}
