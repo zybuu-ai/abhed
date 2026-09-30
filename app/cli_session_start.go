@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -232,7 +233,7 @@ func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(str
 	if unverified != "" {
 		// Nothing more is written into a record that fails: going on from it
 		// is a fork into a new session, which names it and why.
-		newID, err := copyBranch(ctx, st.store, st.appCfg, id, events, 0, unverified)
+		newID, err := copyBranch(ctx, st.store, st.appCfg, id, events, 0, unverified, true)
 		if err != nil {
 			return "", nil, err
 		}
@@ -310,7 +311,7 @@ func fromFile(ctx context.Context, st *cliState, path string, say func(string, .
 	if len(events) == 0 {
 		return "", nil, fmt.Errorf("%s holds no events", path)
 	}
-	newID, err := copyBranch(ctx, st.store, st.appCfg, events[0].SessionID, events, 0, unverified)
+	newID, err := copyBranch(ctx, st.store, st.appCfg, events[0].SessionID, events, 0, unverified, true)
 	if err != nil {
 		return "", nil, err
 	}
@@ -429,10 +430,23 @@ func noteMove(st *cliState, s ui.Style, events []agent.Event) {
 	}
 }
 
+// redactPayload replaces stored secrets in a payload, and withholds one
+// whose redaction left invalid JSON.
+func redactPayload(red agent.Redactor, payload json.RawMessage) json.RawMessage {
+	if v := reflect.ValueOf(red); red == nil || v.Kind() == reflect.Pointer && v.IsNil() || len(payload) == 0 {
+		return payload
+	}
+	out := red.Redact(payload)
+	if !json.Valid(out) {
+		return json.RawMessage(`{"withheld":"` + agent.Withheld + `"}`)
+	}
+	return out
+}
+
 // branchInto copies session from's conversation, as it stands through seq
 // (0 for all of it), into a new session and makes that the conversation.
 func branchInto(ctx context.Context, st *cliState, from string, events []agent.Event, through int64) (string, error) {
-	id, err := copyBranch(ctx, st.store, st.appCfg, from, events, through, "")
+	id, err := copyBranch(ctx, st.store, st.appCfg, from, events, through, "", false)
 	if err != nil {
 		return "", err
 	}
@@ -454,7 +468,9 @@ func adoptBranch(st *cliState, id string) error {
 // copyBranch writes a new session holding from's conversation through seq.
 // Its record opens with session.branched naming the source and the last seq
 // taken, then the copied events, renumbered; the source is not touched.
-func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, from string, events []agent.Event, through int64, unverified string) (string, error) {
+// foreign marks a source whose record cannot be vouched for (a file from
+// elsewhere, or one that failed verification): its copies are untrusted.
+func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, from string, events []agent.Event, through int64, unverified string, foreign bool) (string, error) {
 	id := newConversationID()
 	copied := agent.BranchCopy(events, through, id, 2)
 	if len(copied) == 0 {
@@ -475,7 +491,13 @@ func copyBranch(ctx context.Context, es server.EventStore, cfg config.Config, fr
 		agent.SessionBranched{From: from, ThroughSeq: last, Unverified: unverified}); err != nil {
 		return "", err
 	}
+	red := openVault().Redactor()
 	for _, ev := range copied {
+		// Redacted here, before any store: Postgres does not redact on append.
+		ev.Payload = redactPayload(red, ev.Payload)
+		if foreign {
+			ev.Trust = agent.Untrusted
+		}
 		if err := es.Append(ev); err != nil {
 			return "", fmt.Errorf("copy into %s: %w", id, err)
 		}
@@ -542,7 +564,7 @@ func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loo
 	case copied:
 		return seeded(st.store, from)
 	case f.Fork:
-		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0, "")
+		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0, "", false)
 		if err != nil {
 			return "", nil, err
 		}
