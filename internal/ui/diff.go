@@ -140,10 +140,10 @@ func backtrack(a, b []string, trace [][]int, d, off int) []diffOp {
 // fileDiff is a change to one file, shown as hunks with context and line
 // numbers.
 type fileDiff struct {
-	path             string
-	ops              []diffOp
-	added, removed   int
-	created, deleted bool
+	path           string
+	ops            []diffOp
+	added, removed int
+	created        bool
 }
 
 func newFileDiff(path, before, after string, created bool) *fileDiff {

@@ -143,7 +143,7 @@ func (t *Terminal) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.Written += int64(len(p))
-	data := append(t.partial, p...)
+	data := append(append([]byte(nil), t.partial...), p...)
 	t.partial = nil
 	i := 0
 	for i < len(data) {

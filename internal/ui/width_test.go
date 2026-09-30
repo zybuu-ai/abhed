@@ -58,10 +58,10 @@ func TestWrapWordsKeepsWordsWhole(t *testing.T) {
 // Text from a model, a tool or a status command cannot move the cursor,
 // set the clipboard or retitle the window.
 func TestSanitizeStripsControlSequences(t *testing.T) {
-	in := "ok \x1b[31mred\x1b[0m \x1b]52;c;ZXZpbA==\x07\x1b]0;title\x07\x1b[2J\x1b[H\r\x08‮evil"
+	in := "ok \x1b[31mred\x1b[0m \x1b]52;c;ZXZpbA==\x07\x1b]0;title\x07\x1b[2J\x1b[H\r\x08\u202eevil"
 	got := sanitize(in, true)
 	if strings.Contains(got, "]52") || strings.Contains(got, "]0;") || strings.Contains(got, "[2J") ||
-		strings.Contains(got, "[H") || strings.ContainsAny(got, "\r\x08‮") {
+		strings.Contains(got, "[H") || strings.ContainsAny(got, "\r\x08\u202e") {
 		t.Fatalf("got %q", got)
 	}
 	if !strings.Contains(got, "\x1b[31mred\x1b[0m") {

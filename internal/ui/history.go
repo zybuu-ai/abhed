@@ -44,7 +44,7 @@ func LoadHistory(path string) *History {
 	if path == "" {
 		return h
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the user's own history under their home
 	if err != nil {
 		return h
 	}
@@ -73,7 +73,7 @@ func LoadHistory(path string) *History {
 // so a crash leaves the old one whole.
 func (h *History) rewrite() {
 	tmp := h.path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- the user's own history under their home
 	if err != nil {
 		return
 	}

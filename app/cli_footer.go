@@ -254,7 +254,7 @@ func gitBranch(dir string) string {
 			head := filepath.Join(git, "HEAD")
 			if !info.IsDir() {
 				// A worktree: .git names the real git directory.
-				data, err := os.ReadFile(git)
+				data, err := os.ReadFile(git) // #nosec G304 G703 -- the workspace's own .git, read to show its branch
 				if err != nil {
 					return ""
 				}
@@ -264,7 +264,7 @@ func gitBranch(dir string) string {
 				}
 				head = filepath.Join(p, "HEAD")
 			}
-			data, err := os.ReadFile(head)
+			data, err := os.ReadFile(head) // #nosec G304 G703 -- the workspace's own git HEAD, read to show its branch
 			if err != nil {
 				return ""
 			}

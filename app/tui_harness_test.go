@@ -60,28 +60,6 @@ func (r *tuiRun) seenAfterMark(s string) time.Time {
 	return time.Time{}
 }
 
-// nthSeen is when the output first contained s for the nth time, or the
-// zero time.
-func (r *tuiRun) nthSeen(s string, n int) time.Time {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	raw := string(r.raw)
-	i := -1
-	for k := 0; k < n; k++ {
-		j := strings.Index(raw[i+1:], s)
-		if j < 0 {
-			return time.Time{}
-		}
-		i += 1 + j
-	}
-	for _, c := range r.chunks {
-		if c.end >= i+len(s) {
-			return c.at
-		}
-	}
-	return time.Time{}
-}
-
 // tuiWorkspace writes a home config naming a stub model and a workspace with
 // a file to work on, and returns both.
 func tuiWorkspace(t *testing.T, extra string) (*tuiStub, string) {

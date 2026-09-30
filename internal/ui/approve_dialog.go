@@ -51,7 +51,7 @@ func (a *DialogApprover) Approve(ctx context.Context, tool string, args json.Raw
 	switch id {
 	case "yes":
 		if res.Step == "destructive" {
-			ok, err := a.confirm(ctx, tool, args, res)
+			ok, err := a.confirm(ctx, args, res)
 			if err != nil || !ok {
 				a.Reader.Stop()
 				return false, err
@@ -193,7 +193,7 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 
 // confirm is the second question a destructive command needs, with No as
 // the answer Enter gives.
-func (a *DialogApprover) confirm(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
+func (a *DialogApprover) confirm(ctx context.Context, args json.RawMessage, res policy.Result) (bool, error) {
 	id, err := a.Reader.Dialog(ctx, DialogSpec{
 		Kind:  DialogConfirm,
 		Title: "This cannot be undone",

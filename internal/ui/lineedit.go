@@ -51,8 +51,6 @@ var ErrCtrlC = errInterrupted
 // ErrInterrupted reports whether a read ended in Ctrl-C.
 func ErrInterrupted(err error) bool { return errors.Is(err, errInterrupted) }
 
-var errNoTerminal = errors.New("no terminal to ask on")
-
 // NewLineReader prepares stdin for editing where that is possible.
 func NewLineReader(prompt string) *LineReader {
 	fd := int(os.Stdin.Fd())
@@ -414,7 +412,7 @@ func externalEdit(fd int, raw *term.State, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err := f.WriteString(text); err != nil {
 		f.Close()
 		return "", err
@@ -425,7 +423,7 @@ func externalEdit(fd int, raw *term.State, text string) (string, error) {
 	}
 	_, _ = os.Stdout.WriteString(modesOff)
 	fields := strings.Fields(editor)
-	cmd := exec.Command(fields[0], append(fields[1:], f.Name())...) // #nosec G204 -- the person's own editor, on their own file
+	cmd := exec.Command(fields[0], append(fields[1:], f.Name())...) // #nosec G204 G702 -- the person's own editor, on their own file
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	runErr := cmd.Run()
 	if _, err := term.MakeRaw(fd); err != nil {

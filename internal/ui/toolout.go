@@ -390,28 +390,6 @@ func (r *Renderer) toolDenied(d *dock, m map[string]string) {
 	d.commit(&rawBlock{text: "  " + s.Red("⎿  ✕ ") + s.Dim(sanitize(m["reason"], false))})
 }
 
-// resultRows lays out a result under its call: a first line, then more.
-func resultRows(s Style, head string, more []string, style func(string) string) string {
-	var b strings.Builder
-	b.WriteString("  " + s.Dim("⎿  ") + head)
-	for _, l := range more {
-		b.WriteString("\n     " + style(l))
-	}
-	return b.String()
-}
-
-func restLines(s string, n int) []string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	if len(lines) <= 1 {
-		return nil
-	}
-	lines = lines[1:]
-	if len(lines) > n {
-		lines = append(lines[:n], fmt.Sprintf("… +%d lines", len(lines)-n))
-	}
-	return lines
-}
-
 func observationSummary(o agent.Observation) string {
 	switch o.Tool {
 	case "glob", "grep":

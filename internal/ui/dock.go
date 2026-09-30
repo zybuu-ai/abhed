@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -87,7 +88,6 @@ type dock struct {
 	// a terminal that does not bracket it.
 	burstKeys  int
 	burstStart snapshot
-	dirty      bool
 
 	results chan readResult
 	stops   chan struct{}
@@ -199,7 +199,7 @@ func (d *dock) push(r readResult) {
 
 func (d *dock) readLine() (string, error) {
 	r := <-d.results
-	if r.err == io.EOF {
+	if errors.Is(r.err, io.EOF) {
 		d.push(r) // every later read ends too
 	}
 	return r.line, r.err

@@ -96,7 +96,7 @@ func (k *keyReader) read() (key, error) {
 	}
 	next, _, err := k.br.ReadRune()
 	if err != nil {
-		return key{code: kEsc}, nil
+		return key{code: kEsc}, nil //nolint:nilerr // the Esc was a key; the next read reports the end
 	}
 	switch next {
 	case '[':
@@ -122,7 +122,7 @@ func (k *keyReader) csi() (key, error) {
 	for i := 0; i < 32; i++ {
 		c, _, err := k.br.ReadRune()
 		if err != nil {
-			return key{code: kUnknown}, nil
+			return key{code: kUnknown}, nil //nolint:nilerr // a cut-off sequence is a key not known; the next read reports the end
 		}
 		if c >= 0x40 && c <= 0x7e {
 			final = c
@@ -253,7 +253,7 @@ func applyMod(k *key, mod int) {
 func (k *keyReader) ss3() (key, error) {
 	c, _, err := k.br.ReadRune()
 	if err != nil {
-		return key{code: kUnknown}, nil
+		return key{code: kUnknown}, nil //nolint:nilerr // a cut-off sequence is a key not known; the next read reports the end
 	}
 	switch c {
 	case 'A':
@@ -305,7 +305,7 @@ func (k *keyReader) paste() (key, error) {
 	text := strings.TrimSuffix(b.String(), pasteEnd[:len(pasteEnd)-1])
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	return key{code: kPaste, paste: text}, nil
+	return key{code: kPaste, paste: text}, nil //nolint:nilerr // a paste cut off by the end of input is still what was pasted
 }
 
 // Control codes, as the decoder reports them in key.r.

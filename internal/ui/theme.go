@@ -135,7 +135,7 @@ func LoadPrefs() (theme string, vim bool) {
 	if p == "" {
 		return "", false
 	}
-	data, err := os.ReadFile(p)
+	data, err := os.ReadFile(p) // #nosec G304 -- the user's own preferences under their home
 	if err != nil {
 		return "", false
 	}
@@ -171,7 +171,7 @@ func xterm256(n int) (r, g, b float64) {
 		{127, 127, 127}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {92, 92, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}}
 	switch {
 	case n < 16:
-		c := base[n]
+		c := base[n] // #nosec G602 -- n is below 16 here
 		return c[0] / 255, c[1] / 255, c[2] / 255
 	case n < 232:
 		n -= 16

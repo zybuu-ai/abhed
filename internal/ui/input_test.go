@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -275,7 +276,7 @@ func TestCtrlC(t *testing.T) {
 	g.waitText("Press Ctrl-C again to exit")
 	g.keys("\x03")
 	g.line() // the interrupt
-	if _, err := g.line(); err != io.EOF {
+	if _, err := g.line(); !errors.Is(err, io.EOF) {
 		t.Fatalf("second Ctrl-C: %v, want EOF", err)
 	}
 }
@@ -319,7 +320,7 @@ func splitKeys(s string) []string {
 		if s[i] == 0x1b && i+1 < len(s) {
 			j := i + 2
 			if s[i+1] == '[' {
-				for j < len(s) && !(s[j] >= 0x40 && s[j] <= 0x7e) {
+				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
 					j++
 				}
 				j++

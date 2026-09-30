@@ -349,7 +349,7 @@ func (r *Renderer) endReply(d *dock, text string) {
 		}
 		return
 	}
-	rest := append(r.held, r.ms.end(r.s, d.streamWidth())...)
+	rest := append(append([]string(nil), r.held...), r.ms.end(r.s, d.streamWidth())...)
 	r.held = nil
 	d.streamRows(r.sb, r.leadFrom(rest, r.shown), nil)
 	src := text

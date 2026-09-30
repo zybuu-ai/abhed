@@ -61,13 +61,6 @@ func TestTUIWriteShowsTheNewFile(t *testing.T) {
 	}
 }
 
-// approveLegacy answers the line-based approval with a deliberate key.
-func approveLegacy(r *tuiRun) {
-	r.waitText("[a]ccept")
-	time.Sleep(400 * time.Millisecond)
-	r.send("a")
-}
-
 // Audit #10: a successful command showed only "exit 0", with no preview and
 // no way to see the output. Its first and last lines show, with the count
 // between, and Ctrl-O shows all of it.
