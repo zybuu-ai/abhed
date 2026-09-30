@@ -285,3 +285,39 @@ func TestDeletedSessionFileIsNotRecreated(t *testing.T) {
 		}
 	}
 }
+
+// The review's probe C: a record that fails only through the index (cut
+// behind a head rewritten to match) is exported marked unverified; the
+// copy fails on the mark, and with the mark stripped it still fails.
+func TestUnverifiedMarkIsRequired(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	rec := record(t, s, "s-1", "one", "two")
+	_, _ = rec.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})
+	_ = s.Close()
+	s2 := openTest(t, dir)
+	cutLines(t, s2.Path("s-1"), 2, "")
+	data, _ := os.ReadFile(s2.Path("s-1"))
+	var l line
+	_ = json.Unmarshal(bytes.Split(data, []byte("\n"))[1], &l)
+	_ = s2.writeHead("s-1", Head{Lines: 2, Seq: l.Seq, Hash: l.Hash})
+	mustFail(t, s2, "cut behind a matching head")
+	var b bytes.Buffer
+	if _, err := s2.Export("s-1", &b, ExportOptions{Unverified: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "e.jsonl")
+	_ = os.WriteFile(out, b.Bytes(), 0o600)
+	if er, _ := VerifyFile(out); er.OK {
+		t.Fatalf("the marked export verifies: %+v", er)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(b.Bytes(), []byte("\n")), []byte("\n"))
+	var tr exportTrailer
+	_ = json.Unmarshal(lines[len(lines)-1], &tr)
+	tr.Verified, tr.Unverified = nil, ""
+	last, _ := encode(tr)
+	_ = os.WriteFile(out, append(bytes.Join(append(lines[:len(lines)-1], last), []byte("\n")), '\n'), 0o600)
+	if er, _ := VerifyFile(out); er.OK {
+		t.Fatalf("the export with its mark stripped verifies: %+v", er)
+	}
+}

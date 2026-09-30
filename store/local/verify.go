@@ -161,6 +161,10 @@ func verifyData(data []byte, session string) Report {
 		if rep.OK && trailer.Session != rep.ID {
 			rep.OK, rep.Reason = false, fmt.Sprintf("the trailer names session %s, not %s", trailer.Session, rep.ID)
 		}
+		if rep.OK && trailer.Format >= 2 && trailer.Verified == nil {
+			rep.OK, rep.FirstBad = false, rep.Head.Seq
+			rep.Reason = "the trailer does not say whether the record verified when it was exported"
+		}
 		if rep.OK && trailer.Verified != nil && !*trailer.Verified {
 			rep.OK, rep.FirstBad = false, rep.Head.Seq
 			rep.Reason = "it was exported from a record that failed verification: " + trailer.Unverified

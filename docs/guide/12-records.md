@@ -233,7 +233,9 @@ note that lines cut from its end would not show.
 
 A record that fails verification is not exported unless you pass
 `-unverified`; the export is then marked, in the trailer or at the top of an
-HTML or text export, and verifying the copy fails.
+HTML or text export, and verifying the copy fails. A trailer without the mark
+fails too. Like the trailer itself, the mark is not proof against whoever
+holds the file, who can rewrite both.
 
 An export never writes through a link, never over a file with a second name,
 and never into Abhed's state other than `~/.abhed/exports`. A relative
