@@ -277,6 +277,9 @@ type Loop struct {
 	stepRun sync.RWMutex
 	depth   int // how deep this loop is among subagents; 0 for a top-level loop
 
+	// plans holds a plan exit_plan proposed, for the person's decision.
+	plans planState
+
 	// dropEffort is set once a turn has spent its whole output budget on
 	// reasoning without acting; later calls ask for low effort, where the
 	// provider offers the choice, so the next turn reaches a tool call.
@@ -783,7 +786,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	req := model.Request{
 		System:      l.Config.SystemPrompt,
 		Messages:    l.messages,
-		Tools:       toolDefs(l.Tools),
+		Tools:       l.offeredDefs(),
 		MaxTokens:   l.Config.MaxTokens,
 		Temperature: l.Config.Temperature,
 		Effort:      l.effort(),
@@ -1052,6 +1055,10 @@ func truncateKey(k string) string {
 func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
 	tool, found := l.Tools.Get(call.Name)
+	if found && !l.offered(tool) {
+		// A tool of another mode is not there for the model, whatever it recalls.
+		found = false
+	}
 	if !found {
 		// Recorded like any refused call, so the record accounts for every
 		// call the model made, not only those naming a real tool.
@@ -1072,7 +1079,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		})
 		return false, tools.Result{
 			Content: fmt.Sprintf("Unknown tool %q. Available tools: %s.",
-				call.Name, strings.Join(l.Tools.Names(), ", ")),
+				call.Name, strings.Join(l.offeredNames(), ", ")),
 			IsError: true,
 		}, ""
 	}

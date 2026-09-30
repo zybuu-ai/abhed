@@ -117,6 +117,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
+		loop.EnablePlanExit()
 		loop.SetAdapter(sessionState.adapter)
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
@@ -377,11 +378,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 			sessionState.open(id)
 		}
-		task := line
-		if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
-			return loop.Run(ctx, task)
-		}); quit {
-			return code
+		// A plan proposed in the turn is decided at its end; an approved one
+		// goes on as the next message.
+		for task := line; task != ""; task = decidePlan(ctx, sessionState, pol, sessionState.surface) {
+			if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				return loop.Run(ctx, task)
+			}); quit {
+				return code
+			}
 		}
 	}
 }

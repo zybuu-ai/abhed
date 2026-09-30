@@ -280,3 +280,61 @@ func (c *cliState) maxTurns() int {
 	}
 	return c.appCfg.Limits.MaxTurns
 }
+
+// The answers to a proposed plan. Auto and bypass are never among them.
+const (
+	planAcceptEdits = "accept-edits"
+	planAskEach     = "ask-each"
+	planKeep        = "keep-planning"
+)
+
+// decidePlan puts a plan the agent proposed with exit_plan to the person,
+// at the turn boundary, and returns what the conversation goes on with: the
+// approval of the plan, or "" to wait for the person. The default keeps
+// planning; accepting moves to accept-edits or default mode through the
+// ModeController, within the managed configuration, and never to auto.
+func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface ui.Surface) string {
+	if st.loop == nil {
+		return ""
+	}
+	plan, ok := st.loop.TakePlan()
+	if !ok {
+		return ""
+	}
+	modes := &cliModes{st: st, pol: pol}
+	var choices []ui.Choice
+	for _, c := range []struct {
+		id, label string
+		key       rune
+		mode      policy.Mode
+	}{
+		{planAcceptEdits, "Yes, and accept edits", 'a', policy.ModeAcceptEdits},
+		{planAskEach, "Yes, ask before each change", 'y', policy.ModeDefault},
+	} {
+		if _, err := st.appCfg.Apply(config.Overrides{Mode: string(c.mode)}); err == nil {
+			choices = append(choices, ui.Choice{ID: c.id, Label: c.label, Key: c.key})
+		}
+	}
+	choices = append(choices, ui.Choice{ID: planKeep, Label: "No, keep planning (tell it what to change)", Key: 'n'})
+	answer, err := surface.Dialog(ctx, ui.DialogSpec{
+		Kind:    ui.DialogChoice,
+		Title:   "Proceed with this plan?",
+		Body:    []ui.Block{{Kind: ui.BlockMarkdown, Text: plan.Text}},
+		Choices: choices,
+		Default: planKeep,
+		Why:     "proposed by the agent with exit_plan; it changes nothing until you answer",
+	})
+	to := map[string]policy.Mode{planAcceptEdits: policy.ModeAcceptEdits, planAskEach: policy.ModeDefault}[answer]
+	if err != nil || to == "" {
+		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "still in plan mode; say what to change"})
+		return ""
+	}
+	st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)})
+	if err := modes.Set(ctx, to, agent.ViaPlanExit); err != nil {
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode was not changed: " + err.Error()})
+		return ""
+	}
+	surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
+	return fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
+}
