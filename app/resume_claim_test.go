@@ -384,7 +384,7 @@ func TestForkOrCompactThenQuitLeavesTheSessionResumable(t *testing.T) {
 // Every task in interactive() ends through settleTurn, which ends a failed
 // turn and claims the session again before the next write.
 func TestInteractiveSettlesEveryTask(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+	src, err := os.ReadFile("cli_interactive.go")
 	if err != nil {
 		t.Fatal(err)
 	}

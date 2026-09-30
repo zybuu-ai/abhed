@@ -1,0 +1,315 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/agentdefs"
+	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/store"
+)
+
+// doctor verifies the endpoint actually works before the user debugs it
+// through a failing agent run.
+func (a *App) doctor(workspace string) int {
+	cfg, err := a.loadConfig(workspace)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		var ed *EditionError
+		if errors.As(err, &ed) {
+			return 2
+		}
+		return 1
+	}
+	provider, err := cfg.Provider()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("%s %s\n\n", ui.NewStyle(os.Stdout).Accent(ui.Glyph),
+		ui.NewStyle(os.Stdout).Bold("abhed doctor"))
+	fmt.Printf("workspace   %s\n", workspace)
+	fmt.Printf("provider    %s (%s)\n", cfg.Model.Default, provider.Type)
+	fmt.Printf("endpoint    %s\n", provider.BaseURL)
+	fmt.Printf("model       %s\n", provider.Model)
+	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
+	printDoctorTrust(os.Stdout, cfg.Workspace)
+	// A managed definition named with another case is silently not read.
+	for _, w := range agentdefs.ManagedCaseWarnings(managed.AgentsDir) {
+		fmt.Printf("agents      ⚠ %s\n", w)
+	}
+	unknown := printUnknown(os.Stdout, cfg)
+	if sb, err := buildSandbox(cfg, workspace); err == nil {
+		label := string(sb.Tier())
+		if sb.Tier() == sandbox.TierNone {
+			label += "  ⚠"
+		}
+		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
+		for _, w := range limitWarnings(cfg, sb.Tier()) {
+			fmt.Printf("            ⚠ %s\n", w)
+		}
+	} else {
+		fmt.Printf("sandbox     UNAVAILABLE — %v\n", err)
+	}
+	if files := agent.DiscoverMemoryFiles(workspace); len(files) > 0 {
+		fmt.Printf("memory      %s\n", strings.Join(files, ", "))
+	}
+	if mw, err := a.buildAuth(context.Background(), cfg, workspace); err != nil {
+		fmt.Printf("auth        %s\n            UNAVAILABLE — %v\n", authLabel(cfg, nil), err)
+	} else {
+		fmt.Printf("auth        %s\n", authLabel(cfg, mw))
+		// A provider that can prove itself does so here, so a misconfigured
+		// issuer is a doctor finding rather than the first user's error page.
+		for _, p := range mw.Providers {
+			if c, ok := p.(auth.Checker); ok {
+				if err := c.Check(context.Background()); err != nil {
+					fmt.Printf("            %s UNAVAILABLE — %v\n", p.Name(), err)
+				} else {
+					fmt.Printf("            %s ready\n", p.Name())
+				}
+			}
+		}
+	}
+	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
+	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
+	vaultErr := vaultLoads()
+	if vaultErr != nil {
+		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
+	} else if names := vaultNames(openVault()); len(names) > 0 {
+		fmt.Printf("secrets     %d stored in %s\n", len(names), openVault().Path())
+	}
+	if reg, _ := toolset.LoadSkills(cfg, warnf); reg.Len() > 0 {
+		fmt.Printf("skills      %d loaded: %s\n", reg.Len(),
+			strings.Join(reg.Names(), ", "))
+	}
+	if cfg.K8s.Enabled {
+		writes := "read-only"
+		if cfg.K8s.AllowWrites {
+			writes = "reads + writes (every write needs approval)"
+		}
+		fmt.Printf("kubernetes  %s\n", writes)
+		if c, err := k8s.Open(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig,
+			Context: cfg.K8s.Context, Namespace: cfg.K8s.Namespace,
+			Token: os.Getenv("ABHED_K8S_TOKEN")}); err != nil {
+			fmt.Printf("            UNAVAILABLE — %v\n", err)
+		} else {
+			fmt.Printf("            context %s\n            namespace %s · server %s\n",
+				c.Name, c.Namespace, c.Server)
+			if c.Insecure() {
+				fmt.Printf("            ⚠ the kubeconfig skips TLS verification for this cluster\n")
+			}
+		}
+		for _, lc := range toolset.LoginClusters(cfg) {
+			warn := ""
+			if lc.InsecureSkipTLSVerify {
+				warn = "  ⚠ TLS verification disabled"
+			}
+			fmt.Printf("k8s login   %s → %s%s\n", lc.Name, lc.Server, warn)
+		}
+	}
+	if cfg.SSH.Enabled && len(cfg.SSH.Hosts) > 0 {
+		for _, h := range cfg.SSH.Hosts {
+			warn := ""
+			if h.InsecureSkipHostKeyCheck {
+				warn = "  ⚠ host key verification disabled"
+			}
+			fmt.Printf("ssh host    %s → %s@%s%s\n", h.Name, h.User, h.Addr, warn)
+		}
+	}
+	for _, c := range cfg.RAG.Corpora {
+		if c.Enabled {
+			fmt.Printf("rag corpus  %s → %s\n", c.Name, c.URL)
+		}
+	}
+	fmt.Printf("storage     %s\n", storageLabel(cfg))
+	if cfg.Storage.Driver == "postgres" {
+		st, closeFn, err := openStore(context.Background(), cfg)
+		if err != nil {
+			fmt.Printf("            UNAVAILABLE — %v\n", err)
+		} else {
+			if pg, ok := st.(*store.Postgres); ok {
+				printStoreStatus(pg)
+			}
+			closeFn()
+		}
+	}
+	if cfg.Retrieval.Enabled {
+		if ix, err := toolset.OpenIndex(context.Background(), cfg, workspace); err == nil {
+			d, t, v, _ := ix.Stats()
+			fmt.Printf("index       %d chunks · %d terms · %d vectors\n", d, t, v)
+		} else {
+			fmt.Printf("index       UNAVAILABLE — %v\n", err)
+		}
+	}
+	if servers := cfg.MCP.Servers; len(servers) > 0 {
+		gw := mcp.NewGateway()
+		gw.Connect(context.Background(), toolset.MCPConfigs(cfg))
+		status := gw.Status()
+		gw.Close()
+		if len(status) > 0 {
+			fmt.Printf("mcp         %s\n", strings.Join(status, ", "))
+		} else {
+			fmt.Printf("mcp         %d configured, none connected\n", len(servers))
+		}
+	}
+	fmt.Println()
+
+	adapter := buildAdapter(provider)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	fmt.Print("checking endpoint... ")
+	stream, err := adapter.Complete(ctx, model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "Reply with the single word: ok"}},
+		// Generous for a one-word answer, because a hybrid-reasoning model
+		// spends this budget on its thinking phase FIRST. gemma4:26b returned
+		// empty content and finish_reason=length at 32 tokens — a healthy
+		// model reported as broken.
+		MaxTokens: 512,
+	})
+	if err != nil {
+		fmt.Printf("FAILED\n  %v\n", err)
+		fmt.Println("\nCheck that the endpoint is reachable and the model name is correct.")
+		return 1
+	}
+	var got strings.Builder
+	for c := range stream {
+		if c.Type == model.ChunkText {
+			got.WriteString(c.Text)
+		}
+		if c.Type == model.ChunkError {
+			fmt.Printf("FAILED\n  %v\n", c.Err)
+			return 1
+		}
+	}
+	answer := strings.TrimSpace(got.String())
+	if answer == "" {
+		// Distinguish "said nothing" from "said something unexpected": the
+		// first usually means the token budget went to reasoning, which is a
+		// configuration problem, not a broken endpoint.
+		fmt.Printf("ok\n  response was empty — if this model reasons before " +
+			"answering, raise context.max_tokens\n")
+	} else {
+		fmt.Printf("ok\n  response: %q\n", answer)
+	}
+
+	// Tool calling is the capability the agent actually depends on.
+	fmt.Print("checking tool calling... ")
+	stream, err = adapter.Complete(ctx, model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "List files matching *.go using the glob tool."}},
+		Tools: []model.ToolDef{{
+			Name:        "glob",
+			Description: "Find files matching a glob pattern.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`),
+		}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		fmt.Printf("FAILED\n  %v\n", err)
+		return 1
+	}
+	calls := 0
+	for c := range stream {
+		if c.Type == model.ChunkToolCall {
+			calls++
+			fmt.Printf("ok\n  called %s with %s\n", c.ToolCall.Name, c.ToolCall.Args)
+		}
+	}
+	if calls == 0 {
+		fmt.Println("FAILED")
+		fmt.Println("  The model did not emit a tool call. Abhed requires tool-calling support.")
+		fmt.Println("  Check that the serving stack has a tool-call parser enabled for this model.")
+		return 1
+	}
+
+	// The sandbox is checked by running something through it, not by asking
+	// whether it is configured. Inside a hardened container bubblewrap could
+	// not mount /proc and every command failed; doctor said "process — via
+	// bwrap" and nothing else, because it never tried. Now it tries.
+	fmt.Print("checking sandbox exec... ")
+	if sb, err := buildSandbox(cfg, workspace); err != nil {
+		// A session would not start either, so this is not ready.
+		fmt.Printf("FAILED\n  %v\n", err)
+		return 1
+	} else {
+		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		out, err := sb.Command(sctx, workspace, "echo abhed-sandbox-ok").CombinedOutput()
+		cancel()
+		if err != nil || !strings.Contains(string(out), "abhed-sandbox-ok") {
+			fmt.Println("FAILED")
+			fmt.Printf("  tier %s could not run a command: %v\n", sb.Tier(), err)
+			if msg := strings.TrimSpace(string(out)); msg != "" {
+				fmt.Printf("  %s\n", msg)
+			}
+			fmt.Println("  The agent's bash tool would fail the same way. Fix the sandbox before relying on it.")
+			return 1
+		}
+		fmt.Printf("ok\n  ran a command under the %s tier\n", sb.Tier())
+	}
+
+	if vaultErr != nil {
+		fmt.Println("\nNot ready: the secrets store cannot be loaded (see above), so no session will start.")
+		return 1
+	}
+	return doctorVerdict(os.Stdout, unknown)
+}
+
+// limitWarnings names the configured limits the tier in force does not apply:
+// memory is bounded on the container and vm tiers only, processes on all but
+// none, and not for root on the process tier. A memory limit no file set, the
+// default, is not warned about.
+func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
+	var out []string
+	if m := cfg.Sandbox.MaxMemoryMB; m > 0 && cfg.Sets("sandbox.max_memory_mb") && tier.Strength() < sandbox.TierContainer.Strength() {
+		out = append(out, fmt.Sprintf("sandbox.max_memory_mb (%d) is not applied on the %s tier; only the container and vm tiers bound memory", m, tier))
+	}
+	switch {
+	case cfg.Sandbox.MaxProcs > 0 && tier == sandbox.TierNone:
+		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied on the none tier", cfg.Sandbox.MaxProcs))
+	case cfg.Sandbox.MaxProcs > 0 && tier == sandbox.TierProcess && runningAsRoot():
+		out = append(out, fmt.Sprintf("sandbox.max_procs (%d) is not applied: this runs as root, whose processes the kernel does not bound", cfg.Sandbox.MaxProcs))
+	}
+	return out
+}
+
+// runningAsRoot is replaced in tests.
+var runningAsRoot = func() bool { return os.Getuid() == 0 }
+
+// doctorVerdict ends a doctor run whose checks all passed: ready, unless the
+// configuration has keys nothing reads.
+func doctorVerdict(w io.Writer, unknown bool) int {
+	if unknown {
+		fmt.Fprintln(w, "\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
+		return 1
+	}
+	fmt.Fprintln(w, "\nReady.")
+	return 0
+}
+
+// printUnknown lists the configuration's unknown keys and reports whether there were any.
+func printUnknown(w io.Writer, cfg config.Config) bool {
+	for i, u := range cfg.Unknown {
+		label := "            "
+		if i == 0 {
+			label = "config      "
+		}
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, u)
+	}
+	return len(cfg.Unknown) > 0
+}

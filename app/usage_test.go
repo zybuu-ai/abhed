@@ -57,7 +57,7 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 // The usage table and Main's dispatch name the same subcommands, so neither
 // can gain one the other lacks.
 func TestUsageMatchesMainsDispatch(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	f, err := parser.ParseFile(token.NewFileSet(), "cli_flags.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
