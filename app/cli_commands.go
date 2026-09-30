@@ -75,6 +75,8 @@ type cmdEnv struct {
 	sess *tools.Session
 	// modes is how a command changes the permission mode.
 	modes ModeController
+	// input expands text a command sends as a message.
+	input InputExpander
 	// dynamic are the run-time command sources, after the built-ins.
 	dynamic []slashSource
 }
@@ -199,7 +201,7 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 	s := r.Style()
 	fields := strings.Fields(line)
 	env := &cmdEnv{ui: st.surface, r: r, st: st, pol: pol, sess: sess, dynamic: st.dynamic,
-		modes: &cliModes{st: st, pol: pol}}
+		modes: &cliModes{st: st, pol: pol}, input: plainInput{}}
 	if env.ui == nil {
 		env.ui = ui.NewLineSurface(ui.LazyStdout{}, s, nil)
 	}
