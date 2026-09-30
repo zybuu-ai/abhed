@@ -360,6 +360,10 @@ func (h *run) cleanup() {
 	if h.tty != nil {
 		_ = h.tty.Close()
 	}
+	if out := Strip(h.Output()); strings.Contains(out, "WARNING: DATA RACE") && !knownRace(out) {
+		// A race in the binary under test is reported whole.
+		h.t.Errorf("clitest: the binary reported a data race:\n%s", out[strings.Index(out, "WARNING: DATA RACE"):])
+	}
 	if h.t.Failed() {
 		h.t.Logf("clitest: screen at the end:\n%s\n--- output tail ---\n%s", h.Screen().Text(), tail(Strip(h.Output()), 3000))
 	}
@@ -577,6 +581,10 @@ func (h *run) WaitQuiet(quiet, max time.Duration) {
 	h.WaitSettled(time.Time{}, quiet, max)
 }
 
+// Settle waits until the binary has stopped writing for 80 ms (at most
+// 5 s), so the next keys do not arrive while it draws.
+func (h *run) Settle() { h.WaitQuiet(80*time.Millisecond, 5*time.Second) }
+
 // WaitSettled waits until something has been written after since and then
 // nothing for quiet, or max passes.
 func (h *run) WaitSettled(since time.Time, quiet, limit time.Duration) {
@@ -683,9 +691,33 @@ func (h *run) Record() Record {
 // it exits with code.
 func (h *run) Exit(code int) {
 	h.t.Helper()
-	if got := h.closeAndWait(20 * time.Second); got != code {
+	got := h.closeAndWait(20 * time.Second)
+	if got == raceExit && got != code && knownRace(Strip(h.Output())) {
+		Pending(h.t, "A1", "the race detector stopped the binary on the line editor's known race")
+	}
+	if got != code {
 		h.t.Fatalf("clitest: exit code %d, want %d\n%s", got, code, tail(Strip(h.Output()), 3000))
 	}
+}
+
+// raceExit is the status a -race binary exits with after reporting a race.
+const raceExit = 66
+
+// knownRace reports whether every race the binary reported is the line
+// editor's, whose state its input and output goroutines share without a
+// lock (Track A, A1). Any other race fails the test.
+func knownRace(out string) bool {
+	blocks := strings.Split(out, "WARNING: DATA RACE")[1:]
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, b := range blocks {
+		b, _, _ = strings.Cut(b, "==================")
+		if !strings.Contains(b, "internal/ui.(*editor).") {
+			return false
+		}
+	}
+	return true
 }
 
 // Wait waits for the binary to end on its own and returns its exit code.

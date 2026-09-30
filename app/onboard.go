@@ -129,12 +129,37 @@ type endpointProbe struct {
 	mu   sync.Mutex
 	down error
 	at   time.Time
+	// first is closed when the first dial, started by start, has ended.
+	first chan struct{}
+	once  sync.Once
+}
+
+// start dials once in the background.
+func (e *endpointProbe) start(ctx context.Context) {
+	e.once.Do(func() {
+		go func() {
+			_ = e.run(ctx)
+			close(e.first)
+		}()
+	})
+}
+
+// firstResult waits up to limit for the first dial and returns what it
+// found: nil when the endpoint answered or the dial is still going.
+func (e *endpointProbe) firstResult(limit time.Duration) error {
+	select {
+	case <-e.first:
+	case <-time.After(limit):
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.down
 }
 
 // newEndpointProbe dials the provider's address in the background.
 func newEndpointProbe(p config.ProviderConfig) *endpointProbe {
-	e := &endpointProbe{addr: dialAddr(p.BaseURL)}
-	return e
+	return &endpointProbe{addr: dialAddr(p.BaseURL), first: make(chan struct{})}
 }
 
 // dialAddr is the host:port of a base URL, "" when it has none.

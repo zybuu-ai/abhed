@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -56,17 +57,22 @@ func TestEndpointProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	up := &endpointProbe{addr: addr}
+	up := &endpointProbe{addr: addr, first: make(chan struct{})}
 	if err := up.run(context.Background()); err != nil || up.check(context.Background()) != nil {
 		t.Fatalf("an open port was reported down: %v", err)
 	}
 	_ = ln.Close()
-	down := &endpointProbe{addr: addr}
+	down := &endpointProbe{addr: addr, first: make(chan struct{})}
 	if err := down.run(context.Background()); err == nil {
 		t.Skip("the closed port still accepted a connection")
 	}
 	if err := down.check(context.Background()); !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Fatalf("check: %v", err)
+	}
+	started := &endpointProbe{addr: addr, first: make(chan struct{})}
+	started.start(context.Background())
+	if err := started.firstResult(5 * time.Second); !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("first result: %v", err)
 	}
 }
 

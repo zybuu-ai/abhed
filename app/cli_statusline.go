@@ -18,6 +18,10 @@ import (
 // every redraw of the status and must never hold the session.
 const statuslineTimeout = 300 * time.Millisecond
 
+// errSandboxNotChosen is a status line skipped because the sandbox it must
+// run under is still being chosen; the next one runs it.
+var errSandboxNotChosen = errors.New("the sandbox is still being chosen")
+
 // statuslineMax bounds what is read of its output.
 const statuslineMax = 4 << 10
 
@@ -35,7 +39,7 @@ func runStatusline(ctx context.Context, sb *lazySandbox, cwd, command string, m 
 	select {
 	case <-sb.done:
 	case <-time.After(time.Second):
-		return "", errors.New("the sandbox is still being chosen")
+		return "", errSandboxNotChosen
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
@@ -147,6 +151,9 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 		return ""
 	}
 	line, err := runStatusline(ctx, c.sandbox, c.workspace, cmd, c.statusModel(mode))
+	if errors.Is(err, errSandboxNotChosen) {
+		return ""
+	}
 	if err != nil {
 		if !c.statuslineWarned {
 			c.statuslineWarned = true

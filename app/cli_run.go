@@ -82,11 +82,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 
 	// Checked off the start-up path; a model call fails at once while the
 	// endpoint is known to be down.
-	// The interactive session runs the check itself, to say what it found.
+	// The session says what it found before it takes the terminal.
 	probe := newEndpointProbe(provider)
-	if headless {
-		go func() { _ = probe.run(ctx) }()
-	}
+	probe.start(ctx)
 	var adapter model.Adapter = gatedAdapter{Adapter: buildAdapter(provider), probe: probe}
 	// A fallback only ever moves to another configured provider, recorded.
 	chain, warns := fallbackChain(cfg, f.fallbackModel)

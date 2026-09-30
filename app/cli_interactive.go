@@ -31,13 +31,12 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
 		sandboxLabel, storageLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits."))
-	// The endpoint check started with the session; a server that is down is
-	// named as soon as it is known, not at the first task.
-	go func() {
-		if err := start.probe.run(ctx); err != nil {
-			fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
-		}
-	}()
+	// The endpoint check started with the session. A server that is down is
+	// named now, before the line editor takes the terminal; one still being
+	// dialled is left to the first task, which fails at once if it is down.
+	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
+		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
+	}
 
 	// Input is read on its own goroutine so a line typed while the agent is
 	// working can steer it. Reading inline meant the prompt was simply not

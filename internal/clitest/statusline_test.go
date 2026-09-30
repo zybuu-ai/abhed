@@ -15,13 +15,20 @@ const statuslineConfig = `{"sandbox":{"min_tier":"none"},"statusline":{"command"
 // shown after each task, with no escape but colour reaching the terminal.
 func TestStatuslineFromUserConfig(t *testing.T) {
 	t.Parallel()
-	h := StartRun(t, Opts{UserConfig: statuslineConfig, Cols: 120, Script: `text "done"`})
+	h := StartRun(t, Opts{UserConfig: statuslineConfig, Cols: 120, Script: "text \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\""})
 	h.WaitText("Type a task")
-	h.Type("hi\r")
-	h.WaitText(`"provider":"stub"`)
+	// The first line may come before the sandbox is chosen, and is skipped.
+	for i := 1; i <= 5 && !strings.Contains(Strip(h.Output()), `"provider":"stub"`); i++ {
+		h.Settle()
+		h.Type("hi\r")
+		h.WaitScreen(func(Screen) bool { return strings.Count(Strip(h.Output()), " turns · ") >= i }, DefaultTimeout)
+		h.Settle()
+	}
+	h.WaitOutput(`"provider":"stub"`)
 	if h.Screen().Title() == "pwned" {
 		t.Fatal("the statusline set the terminal title")
 	}
+	h.Settle()
 	h.Type("/status\r")
 	h.WaitText("statusline")
 	h.Exit(0)
@@ -36,6 +43,7 @@ func TestStatuslineFromUntrustedWorkspaceIgnored(t *testing.T) {
 	h.WaitText("Trust this file?")
 	h.Type("d\n")
 	h.WaitText("Type a task")
+	h.Settle()
 	h.Type("hi\r")
 	h.WaitText("done")
 	h.WaitText("turns")

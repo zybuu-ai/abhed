@@ -174,6 +174,9 @@ type Harness interface {
 	// WaitQuiet waits until nothing is written for quiet, at most max;
 	// WaitSettled first waits for a write after since.
 	WaitQuiet(quiet, max time.Duration)
+	// Settle waits for the binary to stop writing, before typing the next
+	// command.
+	Settle()
 	WaitSettled(since time.Time, quiet, max time.Duration)
 	// Output is every byte written; Stdout and Stderr are the streams of a
 	// piped run.

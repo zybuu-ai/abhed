@@ -63,3 +63,11 @@ func writeRec(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+func TestKnownRace(t *testing.T) {
+	editor := "WARNING: DATA RACE\nWrite at 0x1 by goroutine 3:\n  github.com/zybuu-ai/abhed/internal/ui.(*editor).insert()\n==================\n"
+	other := "WARNING: DATA RACE\nWrite at 0x1 by goroutine 3:\n  github.com/zybuu-ai/abhed/app.run()\n==================\n"
+	if !knownRace(editor+editor) || knownRace(editor+other) || knownRace("no race") {
+		t.Fatal("knownRace")
+	}
+}
