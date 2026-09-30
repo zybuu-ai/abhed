@@ -34,7 +34,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if code := checkHeadlessFlags(f); code != 0 {
 		return code
 	}
-	schema, err := schemaFlag(f.jsonSchema)
+	schema, err := schemaFlag(f.jsonSchema, workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -167,20 +168,37 @@ func userMessageText(line []byte) (string, error) {
 	return "", errors.New("no text content")
 }
 
-// schemaFlag reads -json-schema: inline JSON, or @path.
-func schemaFlag(v string) (json.RawMessage, error) {
+// maxSchema bounds a -json-schema file: a schema is small, and @/dev/zero
+// must not hang the run.
+const maxSchema = 1 << 20
+
+// schemaFlag reads -json-schema: inline JSON, or @path, relative to the
+// workspace. It must be a JSON object, as a schema is.
+func schemaFlag(v, workspace string) (json.RawMessage, error) {
 	if v == "" {
 		return nil, nil
 	}
 	data := []byte(v)
 	if strings.HasPrefix(v, "@") {
-		var err error
-		if data, err = os.ReadFile(v[1:]); err != nil {
+		path := v[1:]
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workspace, path)
+		}
+		f, err := os.Open(path) // #nosec G304 -- a file the person named on the command line
+		if err != nil {
 			return nil, fmt.Errorf("-json-schema: %w", err)
 		}
+		defer f.Close()
+		if data, err = io.ReadAll(io.LimitReader(f, maxSchema+1)); err != nil {
+			return nil, fmt.Errorf("-json-schema: %w", err)
+		}
+		if len(data) > maxSchema {
+			return nil, fmt.Errorf("-json-schema: %s is larger than 1 MiB", path)
+		}
 	}
-	if !json.Valid(data) {
-		return nil, errors.New("-json-schema is not valid JSON")
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return nil, errors.New("-json-schema is not a JSON object")
 	}
 	return json.RawMessage(data), nil
 }

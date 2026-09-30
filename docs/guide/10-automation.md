@@ -62,7 +62,8 @@ the exit code below. The result line is written once, as the run ends.
 
 ### Structured answers
 
-`-json-schema` takes a JSON Schema, inline or as `@path`, and makes the
+`-json-schema` takes a JSON Schema, inline or as `@path` (relative to the
+workspace, `-C`, and at most 1 MiB; a schema must be a JSON object), and makes the
 answer a JSON value that matches it ([Structured output](13-structured-output.md)).
 With `-output-format text`, stdout is only that JSON; with `json` or
 `stream-json` it is the result line's `structured_output`.
