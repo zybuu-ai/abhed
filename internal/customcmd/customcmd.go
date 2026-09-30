@@ -134,8 +134,15 @@ func ReadDir(dir string) ([]File, []error) {
 	return out, errs
 }
 
-// readFile reads a regular file with one name, checked on the open file.
+// readFile reads a command file: a regular file with one name.
 func readFile(p string) ([]byte, error) {
+	return ReadRegular(p, MaxFileBytes)
+}
+
+// ReadRegular reads a regular file with one name and at most max bytes. The
+// last component is opened without following a link, and the open file must
+// be the one checked, so a swap between the check and the read is refused.
+func ReadRegular(p string, max int64) ([]byte, error) {
 	info, err := os.Lstat(p)
 	if err != nil {
 		return nil, err
@@ -143,7 +150,7 @@ func readFile(p string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("not a regular file; a link is not followed")
 	}
-	f, err := os.Open(p) // #nosec G304 -- a command file in a directory the operator chose
+	f, err := os.OpenFile(p, os.O_RDONLY|noFollow, 0) // #nosec G304 -- a file the person or operator named, checked here
 	if err != nil {
 		return nil, err
 	}
@@ -156,14 +163,14 @@ func readFile(p string) ([]byte, error) {
 		return nil, errors.New("changed while it was read")
 	}
 	if n := nlink.Of(opened); n > 1 {
-		return nil, fmt.Errorf("has %d names; a command with a second name is not read", n)
+		return nil, fmt.Errorf("has %d names; a file with a second name is not read", n)
 	}
-	data, err := io.ReadAll(io.LimitReader(f, MaxFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > MaxFileBytes {
-		return nil, fmt.Errorf("larger than %d KiB", MaxFileBytes>>10)
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("larger than %d KiB", max>>10)
 	}
 	return data, nil
 }

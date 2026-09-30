@@ -747,25 +747,23 @@ func slashImport(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if tools.IsState(p, st.sess.Root, home) {
 		return false, fmt.Errorf("%s is Abhed's own state; it is not imported", args[0])
 	}
-	info, err := os.Lstat(p)
-	if err != nil {
+	if err := ensureConversation(ctx, st); err != nil {
 		return false, err
 	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("%s is not a regular file; a link is not followed", args[0])
+	// The read rules hold for the person as for the agent; a refusal is recorded.
+	readArgs := argsJSON(map[string]string{"path": p})
+	if d := st.loop.Policy.Evaluate("read", false, readArgs); d.Decision == policy.Deny {
+		if err := st.loop.ManualRefused("read", personCallID("import"), readArgs, d); err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("%s is not imported: %s", args[0], d.Reason)
 	}
-	if info.Size() > importMax {
-		return false, fmt.Errorf("%s is larger than %d KB", args[0], importMax>>10)
-	}
-	data, err := os.ReadFile(p) // #nosec G304 -- the one file the person named, checked above
+	data, err := customcmd.ReadRegular(p, importMax)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%s is not imported: %w", args[0], err)
 	}
 	if tools.IsBinary(data) {
 		return false, fmt.Errorf("%s is not text", args[0])
-	}
-	if err := ensureConversation(ctx, st); err != nil {
-		return false, err
 	}
 	text := redactFor(st.loop, strings.TrimSpace(string(data)))
 	choice, err := sf.Dialog(ctx, ui.DialogSpec{

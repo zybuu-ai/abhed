@@ -51,3 +51,22 @@ func TestImportRefusesStateAndLinks(t *testing.T) {
 		t.Fatalf("imported state or a link: %q", data)
 	}
 }
+
+// A read deny rule holds for /import: the file is not read, and the
+// refusal is recorded.
+func TestImportOfDeniedPathRefused(t *testing.T) {
+	st, store, sf := customRig(t, "yes")
+	st.loop.Tools = tools.NewRegistry(tools.Write{})
+	st.loop.Policy.Roots = st.sess.PolicyRoots
+	if err := st.loop.Policy.AddDeny("read(secret/**)"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(st.sess.Root, "secret", "token.md"), "TOKEN-CANARY")
+	typeLine(t, st, "/import secret/token.md")
+	if data, _ := os.ReadFile(filepath.Join(st.sess.Root, "ABHED.md")); strings.Contains(string(data), "CANARY") || len(sf.asked) != 0 {
+		t.Fatalf("imported a denied file: %q", data)
+	}
+	if len(eventsOf(t, store, agent.EvActionDenied)) != 1 {
+		t.Fatal("the refusal is not recorded")
+	}
+}

@@ -151,3 +151,23 @@ func TestTrustStore(t *testing.T) {
 		t.Fatalf("store mode: %v %v", info, err)
 	}
 }
+
+func TestReadRegularRefusesLinksAndSize(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f.md")
+	if err := os.WriteFile(p, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := ReadRegular(p, 5); err != nil || string(data) != "12345" {
+		t.Fatalf("%q %v", data, err)
+	}
+	if _, err := ReadRegular(p, 4); err == nil {
+		t.Fatal("read past the cap")
+	}
+	if err := os.Symlink(p, filepath.Join(dir, "l.md")); err != nil {
+		t.Skip(err)
+	}
+	if _, err := ReadRegular(filepath.Join(dir, "l.md"), 5); err == nil {
+		t.Fatal("read through a link")
+	}
+}
