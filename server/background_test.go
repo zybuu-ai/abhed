@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1045,4 +1046,22 @@ func TestStartupSweepRunsBeforeServing(t *testing.T) {
 		t.Fatalf("reclaimed %v, port accepting during the startup sweep %v", reclaimed.Load(), acceptedFirst.Load())
 	}
 	a.ad.release("one")
+}
+
+// A durable store other than Postgres is used unfenced, and the server says
+// so when it starts.
+func TestUnfencedDurableStoreWarns(t *testing.T) {
+	var logged strings.Builder
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, Store: st,
+		Logger: slog.New(slog.NewTextHandler(&logged, nil))})
+	if !strings.Contains(logged.String(), "does not fence appends") {
+		t.Fatalf("no warning for an unfenced store:\n%s", logged.String())
+	}
+	logged.Reset()
+	New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{}, Store: agent.NewMemStore(),
+		Logger: slog.New(slog.NewTextHandler(&logged, nil))})
+	if strings.Contains(logged.String(), "does not fence appends") {
+		t.Fatal("a memory store was warned about")
+	}
 }

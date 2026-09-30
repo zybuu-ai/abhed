@@ -406,6 +406,11 @@ func New(opts Options) *Server {
 				srv.leaseRefused(id)
 			}
 		})
+	} else if _, durable := st.(SessionResumer); durable {
+		// Another durable store is used as it is: sessions are held and
+		// heartbeated, but its appends are not fenced on the lease.
+		opts.Logger.Warn("the event store does not fence appends on a session's lease; " +
+			"a process that lost a session could still write to its record until its next heartbeat")
 	}
 	// The tap wraps only what the loop writes through. Optional interfaces
 	// (session recording, deletion, access records) are asserted on the
