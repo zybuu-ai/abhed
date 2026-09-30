@@ -110,7 +110,10 @@ there.
 - **Only what is offered.** On a server, only a provider sessions may run on
   (the console's list); a built-in provider the configuration never named is
   not one. An untrusted workspace file cannot add a provider, so it cannot add
-  a model for a role either.
+  a model for a role either. A managed configuration that sets
+  `model.default` pins subagents to that model as it pins the session's: it
+  is the only one offered, and a definition or call naming another is
+  refused.
 - **No fallback.** A model that is not configured, has no key, or cannot be
   built refuses the start: "model fast is not available: ...; available: a,
   b". Nothing runs, no spawn is counted, and the parent's model is never used

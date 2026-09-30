@@ -104,7 +104,7 @@ func AgentRoots(cfg config.Config) []string {
 func OfferedModels(cfg config.Config) []string {
 	var out []string
 	for name := range cfg.Model.Providers {
-		if cfg.Offered(name) {
+		if cfg.Offered(name) && !pinnedAway(cfg, name) {
 			out = append(out, name)
 		}
 	}
@@ -112,15 +112,25 @@ func OfferedModels(cfg config.Config) []string {
 	return out
 }
 
+// pinnedAway reports a provider other than the one a managed model.default
+// pins every model choice to.
+func pinnedAway(cfg config.Config, name string) bool {
+	return cfg.ManagedSets("model.default") && name != cfg.Model.Default
+}
+
 // ModelResolver is a subagent factory's model choice over the configuration:
 // a name is looked up among the offered, configured providers and never
-// treated as an endpoint. Its key comes from this process's environment, as
+// treated as an endpoint. A managed model.default pins it, as it pins the
+// session's own model. Its key comes from this process's environment, as
 // the session's own does. An untrusted workspace file cannot add a provider,
 // so it cannot add a name here.
 func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 	offered := OfferedModels(cfg)
 	return func(name string) (model.Adapter, error) {
 		avail := strings.Join(offered, ", ")
+		if pinnedAway(cfg, name) {
+			return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
+		}
 		if !slices.Contains(offered, name) {
 			return nil, fmt.Errorf("it is not a configured provider; available: %s", avail)
 		}
