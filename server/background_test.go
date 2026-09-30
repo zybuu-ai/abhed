@@ -718,3 +718,57 @@ func TestDeleteAndDrainStopTheHeartbeat(t *testing.T) {
 		b.ad.release("one")
 	}
 }
+
+// A background subagent's ask waiting with no run live is answered only by a
+// request naming its request_id; an approve naming none is refused and the
+// ask keeps waiting.
+func TestIdleSubagentAskNeedsItsRequestID(t *testing.T) {
+	b := newBGServer(t, nil, "one")
+	id := b.start("bg:one", false)
+	<-b.ended
+	live := b.live(id)
+	got := make(chan bool, 1)
+	go func() {
+		ctx := agent.WithRequestID(agent.WithSubagent(context.Background(), "one"), "ev-child-1")
+		ok, _ := live.Approve(ctx, "bash", json.RawMessage(`{"command":"x"}`), policyAsk())
+		got <- ok
+	}()
+	waitUntil(t, "the ask", func() bool { return b.state(id) == "waiting_approval" })
+	rid := "ev-child-1"
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code != http.StatusConflict {
+		t.Fatalf("an approve naming no request answered an idle subagent's ask: %d %s", rec.Code, rec.Body)
+	}
+	select {
+	case <-got:
+		t.Fatal("the ask was answered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true,"request_id":"`+rid+`"}`); rec.Code >= 300 {
+		t.Fatalf("its own request id: %d %s", rec.Code, rec.Body)
+	}
+	if !<-got {
+		t.Fatal("the answer by request id was not applied")
+	}
+
+	// With a run live, a subagent's ask is the run's to answer, as before:
+	// a client naming no request still answers it.
+	live.mu.Lock()
+	live.ran = make(chan struct{})
+	live.mu.Unlock()
+	go func() {
+		ctx := agent.WithRequestID(agent.WithSubagent(context.Background(), "one"), "ev-child-2")
+		ok, _ := live.Approve(ctx, "bash", json.RawMessage(`{"command":"y"}`), policyAsk())
+		got <- ok
+	}()
+	waitUntil(t, "the second ask", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code >= 300 {
+		t.Fatalf("a live run's subagent ask with no request id: %d %s", rec.Code, rec.Body)
+	}
+	if !<-got {
+		t.Fatal("the answer was not applied")
+	}
+	live.mu.Lock()
+	live.ran = nil
+	live.mu.Unlock()
+	b.ad.release("one")
+}

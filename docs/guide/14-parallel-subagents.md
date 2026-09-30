@@ -237,7 +237,8 @@ the session's one token budget.
 
 An ask from a background task goes to whoever the session asks, one at a time
 with the agent's own. With no run live: the console's pending approval
-(answered only by the session's owner, by its request id; refused after 30
+(answered only by the session's owner, by its request id: an approve naming
+no `request_id` is refused with 409 and does not answer it; refused after 30
 minutes; the console and workbench keep it answerable after the run ends,
 until its own outcome or the closing end); the
 terminal, where only a line that is exactly a decision key (`a`, `y`, `r`,
