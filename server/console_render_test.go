@@ -52,7 +52,7 @@ func TestConsoleAsksForASubagent(t *testing.T) {
 El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
 const tx = new El('div'); tx.id='tx';
 globalThis.__root = tx;
-const els = { tx };
+const els = { tx, stop: new El('button') };
 globalThis.$ = id => els[id] || null;
 let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', bgLive=false;
 const calls = new Map();

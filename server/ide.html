@@ -1597,7 +1597,7 @@ function render(ev){
   case 'session.woken': add(el('div', 'sys', 'woke to act on background results')); break;
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   case 'subagent.ask': { const id = 'subagent-' + p.request_id;
-    asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
+    asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live || bgLive) offerAsks(); break; }
   case 'subagent.action': if(p.request_id) settleAsk('subagent-' + p.request_id, p.decision === 'allowed' ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break;
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
@@ -1605,10 +1605,14 @@ function render(ev){
     if(b && !b.delivered){ const kept = !$('q').value || $('q').value === b.text;
       failed(b, (p.reason || 'the run ended first') + (kept ? '; its text is back in the message box' : ''), 'Not delivered'); }
     break; }
-  case 'session.ended': { if(p.settled){ bgLive = false; add(el('div', 'sys', 'background work finished')); break; }
+  // The run's own asks end with it; a background subagent's ask outlives the
+  // run while background work is owed, settled by its outcome or the closing end.
+  case 'session.ended': { if(p.settled){ bgLive = false; for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · background work ended');
+      add(el('div', 'sys', 'background work finished')); break; }
     bgLive = (p.background || 0) > 0;
-    endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; asks.clear(); setLive(false);
-    for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
+    const kept = id => bgLive && String(id).startsWith('subagent-');
+    endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; for(const id of [...asks.keys()]) if(!kept(id)) asks.delete(id); setLive(false);
+    for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns') && !kept(a.dataset.call)) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
     add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
     loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); break; }
   }
