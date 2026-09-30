@@ -73,7 +73,7 @@ func (c *cliState) say(b ui.Block) {
 		c.surface.Append(b)
 		return
 	}
-	fmt.Printf("  %s\n", b.Text)
+	fmt.Printf("  %s\n", ui.VisibleLine(b.Text))
 }
 
 // slashHooks is /hooks: each configured extension with the layer it came

@@ -308,7 +308,7 @@ func (r *Renderer) Event(ev agent.Event) {
 		r.pause()
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
-			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(m["reason"]))
+			fmt.Fprintf(r.w, "  %s %s\n", r.s.Red("✕"), r.s.Dim(VisibleLine(m["reason"])))
 		}
 
 	case agent.EvForked:
