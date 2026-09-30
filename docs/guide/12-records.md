@@ -77,7 +77,18 @@ cache.
 
 - If the process dies, nothing it wrote is lost.
 - If the machine crashes or loses power, the events since the last boundary
-  can be lost; after a power cut, so can what the drive itself had cached.
+  can be lost; after a power cut, so can what the drive itself had cached
+  ([SQLite's `fullfsync`](https://sqlite.org/pragma.html#pragma_fullfsync)
+  explains the trade). The head can then survive while cached lines do not:
+  the session reports lines missing, a false alarm of a cut, and is not
+  written to again. `abhed -r` goes on from it in a new session after a yes.
+- A crash between a record's first line and its first head leaves one line
+  and no head file; that is noted, not failed, and the next write settles it.
+- If the index fails (a lost or damaged `index.head`, a cut line), no new
+  session starts until it is looked at. `abhed record verify` names the line.
+  Moving `index.jsonl` and `index.head` aside keeps them as evidence and
+  starts a new index; a session file from the old one goes on with
+  `abhed -r <file>`, copied into a new session.
 - An unfinished last line left by a crash is cut off when the session is next
   opened for writing, but only when the head does not count it. The cut is
   recorded as a `record.repaired` event that says how many bytes went. A whole

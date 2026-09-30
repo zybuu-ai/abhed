@@ -34,7 +34,7 @@ uploads/
 docs/internal/
 docs/research/
 
-# Session records and exports: a person's own work, never part of the
-# product. A test that writes one into the tree is a bug.
-*.jsonl
+# Session records and exports a test or a run could leave in the tree.
+/app/*.jsonl
+/*.jsonl
 abhed-session-*.html

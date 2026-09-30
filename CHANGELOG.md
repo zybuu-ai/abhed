@@ -221,6 +221,17 @@ All notable changes to Abhed are recorded here. The format follows
   it asks first. An export is refused for a record that fails verification.
 - `/undo` records each file it puts back as `file.restored`, and is held to
   deny rules on `write`.
+- On macOS the local record syncs with `fsync`, as SQLite does by default,
+  not the drive-cache flush Go's `File.Sync` asks for there. After a power
+  cut, a session's head can then have survived while lines the drive had
+  cached did not: the session reports lines missing and is not written to
+  again. `abhed -r <session>` goes on from it, after a yes, in a new session
+  that names it; the original stays as it is, or `abhed record prune`
+  removes it with a tombstone. If the index's head is lost the same way, no
+  new session starts until the index is looked at: `abhed record verify`
+  names the line; moving `index.jsonl` and `index.head` aside keeps them as
+  evidence and starts a new index, and a session file from the old one goes
+  on with `abhed -r <file>`, copied into a new session.
 - `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
   asks in default mode, is refused in plan mode, and is refused where nobody
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
