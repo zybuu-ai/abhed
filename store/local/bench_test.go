@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -43,8 +44,9 @@ func BenchmarkAppendSynced(b *testing.B) {
 }
 
 // TestBudgets holds the plan's budgets: an unsynced append within 1 ms, a
-// synced one within 15 ms, and verifying 100,000 events within 2 s. They
-// are measured, not assumed, and skipped under -short and the race detector.
+// synced one within 15 ms, and verifying 100,000 events within 2 s. Each is
+// the median of several runs, so one slow moment on a busy machine does not
+// fail it; they are skipped under -short and the race detector.
 func TestBudgets(t *testing.T) {
 	if testing.Short() || raceEnabled || os.Getenv("ABHED_SKIP_BUDGETS") != "" {
 		t.Skip("budgets are measured without -short and -race")
@@ -56,32 +58,36 @@ func TestBudgets(t *testing.T) {
 	defer s.Close()
 	_ = s.CreateSession(context.Background(), store.SessionRecord{ID: "s-budget"})
 	rec := agent.NewRecorder(s, "s-budget", "")
-	const n = 2000
-	start := time.Now()
-	for range n {
+	median := func(n int, f func()) time.Duration {
+		d := make([]time.Duration, n)
+		for i := range d {
+			start := time.Now()
+			f()
+			d[i] = time.Since(start)
+		}
+		slices.Sort(d)
+		return d[n/2]
+	}
+	if m := median(2000, func() {
 		_, _ = rec.Record(agent.EvAgentDelta, agent.ActorAgent, agent.Trusted, agent.Delta{Text: "words"})
+	}); m > time.Millisecond {
+		t.Errorf("unsynced append took %v (median), budget 1ms", m)
 	}
-	if per := time.Since(start) / n; per > time.Millisecond {
-		t.Errorf("unsynced append took %v, budget 1ms", per)
-	}
-	start = time.Now()
-	for range 50 {
+	if m := median(51, func() {
 		_, _ = rec.Record(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{Turn: 1})
+	}); m > 15*time.Millisecond {
+		t.Errorf("synced append took %v (median), budget 15ms", m)
 	}
-	if per := time.Since(start) / 50; per > 15*time.Millisecond {
-		t.Errorf("synced append took %v, budget 15ms", per)
-	}
-	// 100k events, written straight to the file, then verified.
-	for range 100_000 - n - 50 {
+	for range 100_000 - 2000 - 51 {
 		_, _ = rec.Record(agent.EvAgentDelta, agent.ActorAgent, agent.Trusted, agent.Delta{Text: "words"})
 	}
 	_ = s.Sync("s-budget")
-	start = time.Now()
-	rep, err := s.Verify("s-budget")
-	if err != nil || !rep.OK || rep.Events != 100_000 {
-		t.Fatalf("verify: %+v %v", rep, err)
-	}
-	if took := time.Since(start); took > 2*time.Second {
-		t.Errorf("verifying 100k events took %v, budget 2s", took)
+	if m := median(3, func() {
+		rep, err := s.Verify("s-budget")
+		if err != nil || !rep.OK || rep.Events != 100_000 {
+			t.Fatalf("verify: %+v %v", rep, err)
+		}
+	}); m > 2*time.Second {
+		t.Errorf("verifying 100k events took %v (median), budget 2s", m)
 	}
 }

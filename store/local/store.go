@@ -881,7 +881,7 @@ func writeAtomic(path string, data []byte) error {
 	if _, err := tmp.Write(data); err != nil {
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := syncFile(tmp); err != nil {
 		return err
 	}
 	if err := tmp.Close(); err != nil {
