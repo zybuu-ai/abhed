@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,10 @@ type bgModelServer struct {
 	childDelay   time.Duration
 	childCommand string
 	calls        atomic.Int64
+	// prompted records the prompts the parent was sent.
+	prompted sync.Map
+	// parentCommand is run by the parent for a prompt starting "run".
+	parentCommand string
 }
 
 func (b *bgModelServer) start(t *testing.T) string {
@@ -48,6 +53,9 @@ func (b *bgModelServer) start(t *testing.T) string {
 			}
 		}
 		last := req.Messages[len(req.Messages)-1]
+		if last.Role == "user" {
+			b.prompted.Store(last.Content, true)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		text := func(s string) {
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", s)
@@ -69,6 +77,8 @@ func (b *bgModelServer) start(t *testing.T) string {
 			text("child result")
 		case last.Role == "tool" && strings.HasPrefix(last.ToolCallID, "bgn_"):
 			text("noted")
+		case last.Role == "user" && strings.HasPrefix(last.Content, "run") && b.parentCommand != "":
+			call("bash", `{"command":`+strconv.Quote(b.parentCommand)+`}`)
 		case last.Role == "user" && strings.HasPrefix(last.Content, "go"):
 			call("task", `{"prompt":"child","description":"child","background":true}`)
 		default:
@@ -185,5 +195,104 @@ func TestCLIPipedIdleAskAnsweredByLine(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "made-by-child.txt")); err != nil {
 		t.Fatalf("the answered ask did not run: %v\n%s", err, out.String())
+	}
+}
+
+// At idle, only a line that is exactly a decision key answers a background
+// task's waiting ask. Any other line goes to the model as a prompt, with a
+// note that the approval still waits; it is never taken as the answer.
+func TestCLIIdleLineIsAPromptUnlessADecision(t *testing.T) {
+	m := &bgModelServer{childCommand: "touch made-by-child.txt"}
+	ws := bgWorkspace(t, m.start(t), "")
+	cmd := mainHelper([]string{"-C", ws})
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out syncBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	waitOut := func(what string) {
+		t.Helper()
+		for deadline := time.Now().Add(20 * time.Second); !strings.Contains(out.String(), what); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("never saw %q:\n%s", what, out.String())
+			}
+		}
+	}
+	_, _ = io.WriteString(in, "go\n")
+	waitOut("[a]ccept")
+	_, _ = io.WriteString(in, "yes please, and check the logs\n")
+	waitOut("an approval is still waiting")
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := m.prompted.Load("yes please, and check the logs"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the line never reached the model as a prompt:\n%s", out.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(ws, "made-by-child.txt")); err == nil {
+		t.Fatal("a line that is not a decision key answered the ask")
+	}
+	_, _ = io.WriteString(in, "a\n")
+	_ = in.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("never exited:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(ws, "made-by-child.txt")); err != nil {
+		t.Fatalf("the decision key did not answer the ask: %v\n%s", err, out.String())
+	}
+}
+
+// During a run too, only a decision key answers the agent's waiting ask; any
+// other piped line steers the run and says the approval still waits.
+func TestCLIRunLineSteersUnlessADecision(t *testing.T) {
+	m := &bgModelServer{parentCommand: "touch made-by-parent.txt"}
+	ws := bgWorkspace(t, m.start(t), "")
+	cmd := mainHelper([]string{"-C", ws})
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out syncBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	waitOut := func(what string) {
+		t.Helper()
+		for deadline := time.Now().Add(20 * time.Second); !strings.Contains(out.String(), what); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("never saw %q:\n%s", what, out.String())
+			}
+		}
+	}
+	_, _ = io.WriteString(in, "run it\n")
+	waitOut("[a]ccept")
+	_, _ = io.WriteString(in, "and keep it short\n")
+	waitOut("it steers the run")
+	if _, err := os.Stat(filepath.Join(ws, "made-by-parent.txt")); err == nil {
+		t.Fatal("a line that is not a decision key answered the ask")
+	}
+	_, _ = io.WriteString(in, "a\n")
+	_ = in.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("never exited:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(ws, "made-by-parent.txt")); err != nil {
+		t.Fatalf("the decision key did not answer the ask: %v\n%s", err, out.String())
 	}
 }

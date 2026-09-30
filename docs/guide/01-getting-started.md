@@ -85,6 +85,12 @@ sent with Enter. Ctrl-C refuses the request and stops the turn; a second
 Ctrl-C, if the turn has not stopped, ends the session, recorded as
 `user_interrupt`.
 
+With input piped in as lines, the same holds line by line: only a line that
+is exactly `a`, `y`, `r`, `n` or `A` answers a waiting approval. Any other
+line is never taken as the answer because of where it falls: during a run it
+steers the run, and with no run live (a background task's ask) it is sent to
+the model as a prompt. Either way a note says the approval is still waiting.
+
 ## The prompt
 
 Arrow keys move and recall history; Home, End, Ctrl-A, Ctrl-E, Ctrl-U, Ctrl-K

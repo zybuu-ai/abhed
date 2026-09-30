@@ -650,11 +650,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				// waiting and refuse rather than hang the turn forever.
 				prompter.Close()
 			case msg := <-lines:
-				// A line typed while an approval is waiting is the answer to it,
-				// not a steering message. Deliver it there first.
-				if prompter.Deliver(msg) {
+				// A decision key typed while an approval is waiting is the
+				// answer to it; any other line steers, and says the approval
+				// still waits, so a line meant for the agent is never taken
+				// as an answer by where it falls.
+				if ui.Decision(msg) && prompter.Deliver(msg) {
 					continue
 				}
+				noteStillWaiting(prompter, msg, "it steers the run")
 				if msg == "" {
 					continue
 				}
@@ -763,11 +766,13 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		case line = <-lines:
 			prompted = false
 		}
-		// An approval a background task is waiting on takes the line, when
-		// input is piped and so arrives as lines.
-		if prompter.Deliver(line) {
+		// An approval a background task is waiting on takes a line that is
+		// exactly a decision key, when input arrives as lines. Any other line
+		// is a prompt, with a note that the approval still waits.
+		if ui.Decision(line) && prompter.Deliver(line) {
 			continue
 		}
+		noteStillWaiting(prompter, line, "it was sent as a prompt")
 		if line == "" {
 			continue
 		}
@@ -3317,4 +3322,13 @@ func extensionsLabel(cfg config.Config, set *toolset.Set) (string, []string) {
 		line += "NOT RUNNING: " + strings.Join(failed, ", ")
 	}
 	return line + " (one process each, seeing every user's calls)", failed
+}
+
+// noteStillWaiting says, for a line that did not answer a waiting approval,
+// that the approval still waits and what became of the line.
+func noteStillWaiting(p *ui.Prompter, line, became string) {
+	if !p.Waiting() || strings.TrimSpace(line) == "" {
+		return
+	}
+	fmt.Printf("  an approval is still waiting (a accepts, r rejects, A always allows); %s\n", became)
 }

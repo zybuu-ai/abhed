@@ -237,7 +237,9 @@ with the agent's own. With no run live: the console's pending approval
 (answered only by the session's owner, by its request id; refused after 30
 minutes; the console and workbench keep it answerable after the run ends,
 until its own outcome or the closing end); the
-terminal; in an editor, held until your next prompt opens, then asked first,
+terminal, where only a line that is exactly a decision key (`a`, `y`, `r`,
+`n`, `A`) answers it, and any other line is a prompt, with a note that the
+approval still waits; in an editor, held until your next prompt opens, then asked first,
 and refused after 30 minutes; and refused where nobody can be asked.
 
 `task_status` reports this session's tasks, or one with its summary once
