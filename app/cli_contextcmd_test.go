@@ -81,3 +81,17 @@ func TestCLIContext(t *testing.T) {
 		t.Fatalf("/context:\n%s", c.out.String())
 	}
 }
+
+// End to end: /compact <focus> puts the focus in the summarizer's request.
+func TestCLICompactFocus(t *testing.T) {
+	c := startCLI(t)
+	for i := 0; i < 6; i++ {
+		c.task("step")
+	}
+	c.command("/compact keep the FOCUS-MARK names", "compacted")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !strings.Contains(c.bodies[len(c.bodies)-1], "keep, above all else: keep the FOCUS-MARK names") {
+		t.Fatalf("the focus did not reach the summarizer: %s", c.bodies[len(c.bodies)-1])
+	}
+}

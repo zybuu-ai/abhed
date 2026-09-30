@@ -20,7 +20,7 @@ import (
 )
 
 func init() {
-	registerSlash(slashCmd{Name: "/compact", Args: "[hint]", Help: "compact the context now", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
+	registerSlash(slashCmd{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names", Group: "context", Order: 50, Run: legacy("/compact", slashCompact)})
 	registerSlash(slashCmd{Name: "/context", Help: "what fills the context window, in tokens and percent", Group: "context", Order: 45, ReadOnly: true, Run: slashContext})
 	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
 	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <project|local|user> <note>]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
@@ -39,7 +39,14 @@ func slashCompact(ctx context.Context, fields []string, r *ui.Renderer,
 		fmt.Printf("  %s not continued: %v\n", s.Red("✕"), err)
 		return false
 	}
+	// The focus is taken by this compaction's summary, or dropped with it.
+	if st.loop.Compactor != nil {
+		st.loop.Compactor.SetFocus(strings.Join(fields[1:], " "))
+	}
 	info, err := st.loop.Compact(ctx)
+	if st.loop.Compactor != nil {
+		st.loop.Compactor.SetFocus("")
+	}
 	release()
 	if err != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), err)
