@@ -619,12 +619,12 @@ func memoryFromFiles(workspace string, files []string, allow func(string) error)
 }
 
 // autoMemoryBody is the auto memory as the prompt carries it: every line
-// that starts with # escaped, the notes' own headings too, so nothing inside
-// can open a section.
+// that starts with # or an auto-memory tag escaped, the notes' own headings
+// too, so nothing inside can open a section or pass for the fence.
 func autoMemoryBody(content string) string {
 	lines := strings.Split(content, "\n")
 	for i, l := range lines {
-		if t := strings.TrimLeft(l, " \t"); strings.HasPrefix(t, "#") {
+		if t := strings.TrimLeft(l, " \t"); strings.HasPrefix(t, "#") || strings.HasPrefix(t, "</auto-memory-") || strings.HasPrefix(t, "<auto-memory-") {
 			lines[i] = "\\" + t
 		}
 	}
