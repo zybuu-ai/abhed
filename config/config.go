@@ -841,6 +841,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
 	warnSetAside(cfg.SetAside)
+	warnNotYetInEffect(cfg)
 	warnNeverAllows(cfg.Permissions.Allow)
 	if !o.Quiet {
 		warnUntrusted(cfg.Workspace)

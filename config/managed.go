@@ -22,6 +22,7 @@ func LoadManaged() (Config, error) {
 	}
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
+	warnNotYetInEffect(cfg)
 	return cfg, nil
 }
 

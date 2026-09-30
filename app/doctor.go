@@ -55,6 +55,7 @@ func (a *App) doctor(workspace string) int {
 		fmt.Printf("agents      ⚠ %s\n", w)
 	}
 	unknown := printUnknown(os.Stdout, cfg)
+	unknown = printNotInEffect(os.Stdout, cfg) || unknown
 	if sb, err := buildSandbox(cfg, workspace); err == nil {
 		label := string(sb.Tier())
 		if sb.Tier() == sandbox.TierNone {
@@ -292,7 +293,7 @@ func limitWarnings(cfg config.Config, tier sandbox.Tier) []string {
 var runningAsRoot = func() bool { return os.Getuid() == 0 }
 
 // doctorVerdict ends a doctor run whose checks all passed: ready, unless the
-// configuration has keys nothing reads.
+// configuration has keys nothing reads, or acts on yet.
 func doctorVerdict(w io.Writer, unknown bool) int {
 	if unknown {
 		fmt.Fprintln(w, "\nNot ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
@@ -300,6 +301,20 @@ func doctorVerdict(w io.Writer, unknown bool) int {
 	}
 	fmt.Fprintln(w, "\nReady.")
 	return 0
+}
+
+// printNotInEffect lists the settings the files made that this version does
+// not act on yet, and reports whether there were any.
+func printNotInEffect(w io.Writer, cfg config.Config) bool {
+	keys := cfg.NotYetInEffect()
+	for i, k := range keys {
+		label := "            "
+		if i == 0 {
+			label = "config      "
+		}
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, config.NotYetInEffectMessage(k))
+	}
+	return len(keys) > 0
 }
 
 // printUnknown lists the configuration's unknown keys and reports whether there were any.

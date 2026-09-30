@@ -453,6 +453,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
+  `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
+  `memory.import_depth`, `record.dir`, `record.retention_days` and
+  `hooks.disabled`. They are accepted so a file that sets them stays valid,
+  but this version does not act on them yet: setting one prints "set but not
+  yet in effect in this version", and `abhed doctor` reports it and does not
+  call the configuration ready. Who may set each is already enforced.
+  `cli.mode_cycle`, `record.*` and `hooks.disabled` are managed only: the
+  user's file or a workspace's is set aside with a warning. A workspace may
+  only turn `memory.auto` off, trusted or not, and auto memory is off unless
+  turned on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace
+  need trust.
 - `abhed acp`: an editor can list the configured models and switch between
   them mid-session. `session/new` returns a `configOptions` model selector
   (category `model`), and `session/set_config_option` switches it, answering

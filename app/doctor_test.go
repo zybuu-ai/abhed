@@ -199,3 +199,25 @@ func TestDoctorFailsWhenTheSandboxCannotBeBuilt(t *testing.T) {
 		t.Fatalf("the doctor did not fail on the sandbox (%d):\n%s", code, out)
 	}
 }
+
+// doctor names each setting that is accepted but not acted on yet, and does
+// not call the configuration ready while one is set.
+func TestDoctorNamesSettingsNotYetInEffect(t *testing.T) {
+	var b strings.Builder
+	if printNotInEffect(&b, config.Default()) || b.Len() != 0 {
+		t.Fatalf("the defaults were reported: %q", b.String())
+	}
+	cfg := config.Default()
+	cfg.SetKeys = []string{"hooks.disabled", "record.retention_days", "model.default"}
+	if !printNotInEffect(&b, cfg) {
+		t.Fatal("nothing was reported")
+	}
+	for _, want := range []string{"hooks.disabled is set but not yet in effect in this version", "record.retention_days is set but not yet in effect"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, b.String())
+		}
+	}
+	if strings.Contains(b.String(), "model.default") {
+		t.Errorf("a setting in effect was reported:\n%s", b.String())
+	}
+}
