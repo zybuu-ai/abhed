@@ -78,6 +78,7 @@ type cliFlags struct {
 	mode            string
 	permissionMode  string
 	modelID         string
+	fallbackModel   string
 	workdir         string
 	addDirs         string
 	maxTurns        int
@@ -116,6 +117,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass")
 	fs.StringVar(&f.permissionMode, "permission-mode", "", "same as -mode; also takes acceptEdits and bypassPermissions")
 	fs.StringVar(&f.modelID, "model", "", "provider name from config")
+	fs.StringVar(&f.fallbackModel, "fallback-model", "", "comma-separated configured providers to move to, in order, when the model is unreachable or refuses access")
 	fs.StringVar(&f.workdir, "C", "", "workspace directory (default: current)")
 	fs.StringVar(&f.addDirs, "add-dir", "", "comma-separated extra directories the agent may read and write")
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "override the turn limit")

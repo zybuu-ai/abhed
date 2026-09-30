@@ -47,6 +47,8 @@ type cliState struct {
 	dynamic []slashSource
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
+	// sandbox is the session's sandbox, chosen behind the prompt.
+	sandbox *lazySandbox
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

@@ -453,6 +453,24 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `/model` with no name offers the configured models with their model id,
+  context window and whether they are local; a managed `model.default` is
+  not switched. `/effort low|medium|high|on|off|default` sets the reasoning
+  effort, or thinking on and off, where the provider supports it.
+- A fallback model: `model.fallback` and `-fallback-model` name configured
+  providers to move to, in order, when the model is unreachable or refuses
+  access (401, 403, 404, 429, 5xx). The move is recorded as
+  `model.fallback`. Only offered providers are used, and a managed
+  `model.default` is left only when the managed configuration names the
+  fallbacks too.
+- `/status`: model, mode, sandbox, record, session, context, turn limit and
+  its semantics, token budget, background tasks, workspace trust, and the
+  managed settings. `/usage` (and `/cost`) adds prefill saving and a
+  breakdown by subagent and tool source.
+- `/config` shows each setting and where it comes from; `/config set` writes
+  a setting into your own `~/.abhed/config.json`. A change that lets the
+  agent do more asks first, and a managed setting is refused.
+
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and

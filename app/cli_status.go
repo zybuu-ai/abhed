@@ -11,29 +11,12 @@ import (
 )
 
 func init() {
-	registerSlash(slashCmd{Name: "/cost", Help: "tokens, cache hit rate, compactions this session", Group: "status", Order: 40, ReadOnly: true, Run: legacy("/cost", slashCost)})
+	registerSlash(slashCmd{Name: "/usage", Aliases: []string{"/cost"}, Help: "tokens, cache hit rate, prefill saving, and by subagent and tool source", Group: "status", Order: 40, ReadOnly: true, Run: slashUsage})
+	registerSlash(slashCmd{Name: "/status", Help: "model, mode, sandbox, record, trust and limits at a glance", Group: "status", Order: 30, ReadOnly: true, Run: slashStatus})
+	registerSlash(slashCmd{Name: "/config", Args: "[set <key> <value>]", Help: "your settings and where each comes from; set changes your own file", Group: "status", Order: 35, Run: slashConfig})
 	registerSlash(slashCmd{Name: "/hawkeye", Args: "[path]", Help: "what this session did: tokens, policy decisions, findings", Group: "status", Order: 160, Run: legacy("/hawkeye", slashHawkeye)})
 	registerSlash(slashCmd{Name: "/think", Help: "show or collapse the model's reasoning", Group: "status", Order: 170, Run: legacy("/think", slashThink)})
 	registerSlash(slashCmd{Name: "/cwd", Help: "show the workspace root", Group: "status", Order: 180, ReadOnly: true, Run: legacy("/cwd", slashCwd)})
-}
-
-// slashCost is /cost.
-func slashCost(ctx context.Context, fields []string, r *ui.Renderer,
-	pol *policy.Engine, sess *tools.Session, st *cliState, s ui.Style) bool {
-	u := st.total
-	if u.InputTokens == 0 {
-		fmt.Println(s.Dim("  no usage yet this session"))
-		return false
-	}
-	fmt.Printf("  turns          %d\n", u.Turns)
-	fmt.Printf("  tokens in      %d\n", u.InputTokens)
-	fmt.Printf("  tokens out     %d\n", u.OutputTokens)
-	fmt.Printf("  cached         %d (%.0f%%)\n", u.CachedTokens, u.CacheHitRate()*100)
-	if savings := u.PrefillSavings(); savings > 0 {
-		fmt.Printf("  prefill saving %.1fx\n", savings)
-	}
-	fmt.Printf("  compactions    %d\n", u.Compactions)
-	return false
 }
 
 // slashHawkeye is /hawkeye.

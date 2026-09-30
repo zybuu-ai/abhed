@@ -243,6 +243,9 @@ const (
 type ModelConfig struct {
 	Default   string                    `json:"default"`
 	Providers map[string]ProviderConfig `json:"providers"`
+	// Fallback names configured providers, in order, to move to when the
+	// default is unreachable or refuses access. The move is recorded.
+	Fallback []string `json:"fallback,omitempty"`
 }
 
 type ProviderConfig struct {

@@ -88,6 +88,22 @@ func run(a *App, workspace string, f *cliFlags) int {
 		go func() { _ = probe.run(ctx) }()
 	}
 	var adapter model.Adapter = gatedAdapter{Adapter: buildAdapter(provider), probe: probe}
+	// A fallback only ever moves to another configured provider, recorded.
+	chain, warns := fallbackChain(cfg, f.fallbackModel)
+	for _, w := range warns {
+		warnf("%s", w)
+	}
+	var fallback *fallbackAdapter
+	if len(chain) > 0 {
+		fallback = newFallbackAdapter(cfg.Model.Default, adapter, chain, func(name string) (model.Adapter, error) {
+			p, err := cfg.ProviderNamed(name)
+			if err != nil {
+				return nil, err
+			}
+			return newAdapter(p)
+		})
+		adapter = fallback
+	}
 	sess, err := tools.NewSession(workspace)
 	if err != nil {
 		fail(err)
@@ -200,7 +216,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 
 	if headless {
 		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start,
-			providerName: cfg.Model.Default, provider: provider}
+			providerName: cfg.Model.Default, provider: provider, fallback: fallback}
 		prompt := f.task()
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
@@ -218,7 +234,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions)
 	}
 	return interactive(ctx, a, store, renderer, adapter, registry, pol, approver, sess, loopCfg, cfg, provider, workspace, budget, set.Extensions,
-		interactiveStart{first: f.task(), record: start, sandbox: sb, probe: probe})
+		interactiveStart{first: f.task(), sandbox: sb, probe: probe, onOpen: func(rec *agent.Recorder) {
+			recordStart(rec, start)
+			if fallback != nil {
+				fallback.SetRecord(recordFallback(rec))
+			}
+		}})
 }
 
 func webSearchLabel(cfg config.Config) string {

@@ -100,6 +100,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
 		workspace: sess.Root, adapter: adapter, provider: provider,
+		sandbox: start.sandbox,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
@@ -112,7 +113,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
 		rec.Redact = openVault().Redactor()
-		recordStart(rec, start.record)
+		start.onOpen(rec)
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
@@ -396,9 +397,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 // a first task, and what session.started records.
 type interactiveStart struct {
 	first   string
-	record  map[string]any
 	sandbox *lazySandbox
 	probe   *endpointProbe
+	// onOpen runs for each conversation's recorder: it records the start
+	// and binds where a model fallback is recorded.
+	onOpen func(rec *agent.Recorder)
 }
 
 // turnOutcome is how a turn's run ended.

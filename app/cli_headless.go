@@ -38,6 +38,8 @@ type headlessOpts struct {
 	// provider names the model, for an error that says what to do.
 	providerName string
 	provider     config.ProviderConfig
+	// fallback, when set, records its moves in this run's record.
+	fallback *fallbackAdapter
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
@@ -324,6 +326,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		}
 	}()
 	recordStart(rec, o.start)
+	if o.fallback != nil {
+		o.fallback.SetRecord(recordFallback(rec))
+	}
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Provider = appCfg.Model.Default
