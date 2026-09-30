@@ -29,6 +29,9 @@ func inExports(path string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
+// exportSwap runs between the check and the open; a test swaps the path there.
+var exportSwap = func(string) {}
+
 // openExport opens where an export is written. It never follows a link at
 // the last step, never writes over a file that has another name, and never
 // writes into Abhed's state, the record above all; the exports folder is
@@ -55,6 +58,7 @@ func openExport(path string, roots ...string) (*os.File, error) {
 	case nlink.Of(info) > 1:
 		return nil, fmt.Errorf("%s has another name (a hard link); an export does not write over it", abs)
 	}
+	exportSwap(abs)
 	f, err := os.OpenFile(abs, flags, 0o600) // #nosec G304 -- checked above, and opened without following a link
 	if err != nil {
 		return nil, fmt.Errorf("write %s: %w", abs, err)
