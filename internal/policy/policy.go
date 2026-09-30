@@ -52,6 +52,9 @@ type Result struct {
 	// for a person; this is what lets a reviewer count how often each stage
 	// is doing the work.
 	Step string
+	// Rule is the rule that decided, as written, for the deny, ask and allow
+	// steps; "" when no rule did.
+	Rule string
 }
 
 // Offer is the scope a person may "always allow", and the only one a
@@ -75,6 +78,8 @@ type Rule struct {
 	// nfc is pattern in Unicode NFC, which deny and ask path rules also match
 	// against NFC subjects; nil for a pattern with no non-ASCII character.
 	nfc *regexp.Regexp
+	// session marks a rule a person added for this session; see Overlay.
+	session bool
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -189,7 +194,8 @@ func foldName(command string) string {
 
 // rulesSeeParts reports whether a deny or ask rule with a pattern applies to tool.
 func (e *Engine) rulesSeeParts(tool string) bool {
-	for _, rules := range [][]Rule{e.Deny, e.Ask} {
+	deny, ask, _ := e.rules()
+	for _, rules := range [][]Rule{deny, ask} {
 		for _, r := range rules {
 			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
 				return true
@@ -254,7 +260,17 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
-// Hook runs before rule evaluation and can short-circuit the decision.
+// named is how a reason names the rule: a session rule says so.
+func (r Rule) named() string {
+	if r.session {
+		return "session rule " + r.raw
+	}
+	return "rule " + r.raw
+}
+
+// Hook runs before rule evaluation. A Deny from it is final; an Ask applies
+// once the deny rules and plan mode have had their say; an Allow, or nil, is
+// no opinion. A hook can tighten a decision and never loosen one.
 type Hook func(tool string, args json.RawMessage) *Result
 
 type Engine struct {
@@ -263,10 +279,17 @@ type Engine struct {
 	Ask   []Rule
 	Allow []Rule
 	Hooks []Hook
+	// EngineHooks are hooks made for the engine evaluating, so one copied for
+	// a subagent, with more roots, judges with those.
+	EngineHooks []func(*Engine) Hook
 
 	// Managed marks the engine as org-controlled: bypass mode is refused and
 	// local config cannot escalate past it (docs P7, §10 precedence).
 	Managed bool
+
+	// Session holds the rules a person added for this session, evaluated
+	// after the configured ones in each list. Nil adds none.
+	Session *Overlay
 
 	// Roots returns the workspace and added directories, so a path rule
 	// written relative to one matches. Nil matches paths only as given.
@@ -301,10 +324,10 @@ func addAll(dst *[]Rule, patterns []string) error {
 // tool and not others. Something that cannot show each call to the engine,
 // such as an interactive shell, cannot honour such a rule and must not run.
 func (e *Engine) Screens(tool string) bool {
-	if len(e.Hooks) > 0 {
+	if len(e.Hooks)+len(e.EngineHooks) > 0 {
 		return true
 	}
-	for _, r := range e.Deny {
+	for _, r := range e.DenyRules() {
 		if r.tool == tool || r.tool == "*" {
 			return true
 		}
@@ -423,7 +446,8 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 
 // pathRules reports whether any deny, ask or allow rule for tool has a pattern.
 func (e *Engine) pathRules(tool string) bool {
-	for _, rules := range [][]Rule{e.Deny, e.Ask, e.Allow} {
+	deny, ask, allow := e.rules()
+	for _, rules := range [][]Rule{deny, ask, allow} {
 		for _, r := range rules {
 			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
 				return true
@@ -451,13 +475,27 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		subjects, allowSubjects = e.pathSubjects(subject)
 	}
 
-	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
-	for _, h := range e.Hooks {
-		if res := h(tool, args); res != nil {
-			if res.Step == "" {
-				res.Step = "hook"
-			}
+	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
+	// hook's refusal is final; its ask waits for the deny rules and plan mode
+	// below, so a hook can never turn a refusal into a question.
+	var hookAsk *Result
+	hooks := e.Hooks
+	for _, bind := range e.EngineHooks {
+		hooks = append(hooks[:len(hooks):len(hooks)], bind(e))
+	}
+	for _, h := range hooks {
+		res := h(tool, args)
+		if res == nil || res.Decision == Allow {
+			continue
+		}
+		if res.Step == "" {
+			res.Step = "hook"
+		}
+		if res.Decision != Ask {
 			return *res
+		}
+		if hookAsk == nil {
+			hookAsk = res
 		}
 	}
 
@@ -468,9 +506,10 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 2. Deny rules — absolute, survive every mode including bypass.
-	for _, r := range e.Deny {
+	denyRules, askRules, allowRules := e.rules()
+	for _, r := range denyRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Deny, Reason: fmt.Sprintf("denied by rule %s", r), Scope: "", Step: "deny"}
+			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw}
 		}
 	}
 
@@ -478,6 +517,10 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// anything could put it to a person who might accept it.
 	if e.Mode == ModePlan && mutates {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
+	}
+
+	if hookAsk != nil {
+		return *hookAsk
 	}
 
 	// 2b. Destructive commands always confirm, in every mode. There is no
@@ -496,9 +539,9 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 
 	// 3. Ask rules — force a prompt even if a later allow would match, so they
 	// offer no scope: a remembered one would stop them asking.
-	for _, r := range e.Ask {
+	for _, r := range askRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: "", Step: "ask"}
+			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw}
 		}
 	}
 
@@ -535,9 +578,9 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 5. Allow rules.
-	for _, r := range e.Allow {
+	for _, r := range allowRules {
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
-			return Result{Decision: Allow, Reason: fmt.Sprintf("matched allow rule %s", r), Scope: "", Step: "allow"}
+			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw}
 		}
 	}
 

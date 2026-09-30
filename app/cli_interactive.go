@@ -24,6 +24,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	budget *agent.Budget, extHost *extension.Host) int {
 
 	s := r.Style()
+	cfg.TurnsPerMessage = turnsPerMessage(appCfg, cfg.MaxTurns)
 	sandboxLabel := "none"
 	if sb, err := buildSandbox(appCfg, workspace); err == nil {
 		sandboxLabel = string(sb.Tier())
@@ -95,11 +96,15 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// Session-level state the slash commands operate on.
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
-		workspace: sess.Root, adapter: adapter, provider: provider,
+		workspace: sess.Root, adapter: adapter, provider: provider, overlay: pol.Session,
+		turnLimit: cfg.MaxTurns, hooks: extHost, pol: pol,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
+	// Commands ask their questions on the typed lines until the terminal UI
+	// provides its own surface.
+	sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines: lines, ended: readErr})
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
@@ -112,6 +117,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
+		loop.EnablePlanExit()
 		loop.SetAdapter(sessionState.adapter)
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
@@ -139,6 +145,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.endBackground()
 		sessionState.loop, sessionState.sessionID = loop, id
 		sessionState.follow(store, id, r)
+		sessionState.attachHooks(loop)
+		sessionState.flushPending()
 		return loop
 	}
 	defer sessionState.endBackground()
@@ -262,7 +270,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
 		if runReason == agent.TermMaxTurns {
-			fmt.Println(s.Dim("  the turn limit counts the whole conversation; /clear starts a new one"))
+			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns)))
 		}
 		fmt.Println()
 
@@ -379,10 +387,23 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if !ok {
 			continue
 		}
-		if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+		// The first message carries its @ mentions (input). A plan proposed in
+		// a turn is decided at its end; an approved one goes on as the next
+		// message (governance).
+		run := func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
 			return loop.RunMessage(ctx, task)
-		}); quit {
-			return code
+		}
+		for {
+			if code, quit := runTurn(run); quit {
+				return code
+			}
+			next := decidePlan(ctx, sessionState, pol, sessionState.surface)
+			if next == "" {
+				break
+			}
+			run = func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				return loop.Run(ctx, next)
+			}
 		}
 	}
 }

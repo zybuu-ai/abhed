@@ -37,7 +37,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args (always a JSON object, the canonical arguments every step and the tool read; `{}` on a call refused at step `args`); `raw_args`, the refused arguments as text; `dropped_args`, keys a built-in tool did not declare and dropped; `via` when something issued it for the agent, such as `skill research pipeline` for a skill pipeline's step (recorded in the record of the loop whose `skill` call ran the pipeline) | agent |
-| `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
+| `action.approved` / `.denied` | the step that decided (`step`), `reason`, `by`; `rule`, the rule as written, when a deny, ask or allow rule decided; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |
@@ -52,17 +52,23 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `session.ended` | terminal reason, totals; `background`, the background tasks still running at a run's end (the session is not over while there are some: in Postgres its row stays open); `settled`, the closing end once they have all ended; `recovered`, written by reconciliation after a crash. Terminal reason `wake_limit` ends a wake run (exit code 0) | system |
 | `conversation.forked` | `through_seq`; the conversation goes on from that step, and the steps between it and the marker are abandoned: kept in the record for audit, left out of every rebuild (`/fork`, `/tree`, `/resume`, a continued session) | user |
 
-**Reserved for the interactive CLI.** These types and their payloads are
+**The interactive CLI's own events.** These types and their payloads are
 defined (`internal/agent/event_cli.go`) so the work that records them shares
-one shape. None is emitted yet; each row says *(not yet emitted)* until the
-change that records it removes the note. Rewind reuses `conversation.forked`
+one shape. The interactive CLI records those without a note; a row marked
+*(not yet emitted)* is defined for work still to come, and the change that
+records it removes the note. A change made before a conversation has a record,
+such as a mode chosen before the first message, is recorded when the
+conversation opens, ahead of that message. A conversation opened after
+`/clear` or `/resume` first restates what it inherits: the mode, as
+`mode.changed` with `via: carried`, and each added directory as
+`workspace.dir_added`, so each record stands alone. Rewind reuses `conversation.forked`
 and adds `file.restored`.
 
 | Type | Payload | Emitted by |
 |---|---|---|
-| `mode.changed` | `from`, `to`, `by`, `via` (`flag`, `slash`, `shift-tab` or `plan-exit`) *(not yet emitted)* | user |
-| `permission.changed` | `op` (`add` or `remove`), `list` (`allow`, `ask` or `deny`), `rule`, `scope` (`session`), `by`; a session rule, which ends with the session *(not yet emitted)* | user |
-| `workspace.dir_added` | `path` as typed, `canonical` with symlinks resolved, `access` (`read` or `read-write`), `by` *(not yet emitted)* | user |
+| `mode.changed` | `from`, `to`, `by`, `via` (`flag`, `slash`, `shift-tab`, `plan-exit`, or `carried`: a conversation opened after `/clear` or `/resume` restating the mode it inherits) | user |
+| `permission.changed` | `op` (`add` or `remove`), `list` (`allow`, `ask` or `deny`), `rule`, `scope` (`session`), `by`; a session rule, which ends with the session | user |
+| `workspace.dir_added` | `path` as typed, `canonical` with symlinks resolved, `access` (`read` or `read-write`), `by` | user |
 | `input.mention` | a file attached with `@`: `path`, `range` (`10-20`, absent for the whole file), `sha256` of the text attached, `bytes`, `truncated`; not the content, which the message carries | user |
 | `command.invoked` | `name`, `source` (`builtin`, `user`, `workspace`, `managed` or `mcp`, set by the loader, never by the command), `sha256` of a command file's content, `args` redacted; recorded for custom commands, `/init` and `/output-style` | user |
 | `memory.loaded` | `files`, each `path` (relative to the workspace when in it), `scope` (`managed`, `user`, `project`, `local`, `import`, `rule` or `auto`) and `sha256`; once per conversation | system |
@@ -70,10 +76,10 @@ and adds `file.restored`.
 | `session.named` | `name` *(not yet emitted)* | user |
 | `session.branched` | in the new session: `from`, the session it was copied from, and `through_seq`, the last event taken *(not yet emitted)* | user |
 | `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, `by` (`user`) *(not yet emitted)* | user |
-| `plan.proposed` | `text`, the plan the agent submitted in plan mode *(not yet emitted)* | agent |
-| `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass` *(not yet emitted)* | user |
+| `plan.proposed` | `text`, the plan the agent submitted in plan mode | agent |
+| `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass` | user |
 | `model.fallback` | `from`, `to`, `reason`; a move to a configured fallback model *(not yet emitted)* | system |
-| `hook.fired` | `extension`, `event`, `verdict` (`block`, `ask` or `annotate`; a hook never allows) *(not yet emitted)* | system |
+| `hook.fired` | `extension`, `event`, `verdict` (`block`, `ask` or `annotate`; a hook never allows) | system |
 | `record.repaired` | `reason`, `truncated_bytes`; a torn last line cut off when the local record was opened *(not yet emitted)* | system |
 
 **Who settled a call** is in `by` on every `action.approved` and `action.denied`:

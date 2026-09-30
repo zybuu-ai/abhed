@@ -178,3 +178,35 @@ func TestImportDepthCap(t *testing.T) {
 		t.Fatalf("depth %d, %v", cfg.MemoryImportDepth(), err)
 	}
 }
+
+// hooks.disabled leaves an extension only the tools it provides: no hook
+// event reaches it, and one with nothing else to do is not started.
+func TestHooksDisabledKeepsOnlyTools(t *testing.T) {
+	cfg := Default()
+	cfg.Extensions = []ExtensionConfig{
+		{Name: "all", Command: "x"},
+		{Name: "guard", Command: "x", Events: []string{"tool_call", "user_prompt_submit"}},
+		{Name: "both", Command: "x", Events: []string{"tool_call", "list_tools", "invoke_tool"}, Match: []string{"bash(git *)"}, Async: true},
+	}
+	on := cfg.ExtensionSpecs()
+	if len(on) != 3 || on[2].Match[0] != "bash(git *)" || !on[2].Async {
+		t.Fatalf("with hooks on: %+v", on)
+	}
+	cfg.Hooks.Disabled = true
+	off := cfg.ExtensionSpecs()
+	var names []string
+	for _, s := range off {
+		names = append(names, s.Name)
+		for _, ev := range s.Events {
+			if ev != "list_tools" && ev != "invoke_tool" {
+				t.Fatalf("%s still takes %s", s.Name, ev)
+			}
+		}
+		if len(s.Events) == 0 {
+			t.Fatalf("%s takes every event", s.Name)
+		}
+	}
+	if !slices.Equal(names, []string{"all", "both"}) {
+		t.Fatalf("started %v", names)
+	}
+}

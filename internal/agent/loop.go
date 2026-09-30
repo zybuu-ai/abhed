@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -179,9 +181,15 @@ func unanswered(ctx context.Context, held bool) string {
 }
 
 type Config struct {
-	MaxTurns  int
-	MaxTokens int
-	CompactAt float64 // fraction of the context window
+	// MaxTurns ends a run once the conversation has used this many turns.
+	MaxTurns int
+	// TurnsPerMessage, when positive, gives each message a person sends its
+	// own allowance: a run started by one may use this many more turns, and
+	// MaxTurns is moved to the turns used plus it. Zero keeps MaxTurns for
+	// the whole conversation, as a managed limit must be.
+	TurnsPerMessage int
+	MaxTokens       int
+	CompactAt       float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -212,6 +220,10 @@ type Loop struct {
 	// Offloader moves old tool results out of the window and into the
 	// record before compaction is needed. Nil leaves the window alone.
 	Offloader *Offloader
+	// Hooks, when set, are the operator's hooks at the points policy does not
+	// see: a message submitted, a call about to be asked, the end of a run.
+	// They may refuse or observe; nothing they say approves anything.
+	Hooks Hooks
 	// Monitor, when set, judges each call policy would allow or ask about
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
@@ -269,6 +281,9 @@ type Loop struct {
 	stepRun sync.RWMutex
 	depth   int // how deep this loop is among subagents; 0 for a top-level loop
 
+	// plans holds a plan exit_plan proposed, for the person's decision.
+	plans planState
+
 	// dropEffort is set once a turn has spent its whole output budget on
 	// reasoning without acting; later calls ask for low effort, where the
 	// provider offers the choice, so the next turn reaches a tool call.
@@ -294,6 +309,43 @@ type Loop struct {
 	steer   []QueuedMessage
 	steerMu sync.Mutex
 }
+
+// Hooks are the operator's hooks the loop consults itself. Tool calls reach
+// them through policy; these are the other points. A refusal is the reason,
+// and "" lets the thing go ahead.
+type Hooks interface {
+	// PromptSubmitted is asked before a person's message is recorded and sent.
+	PromptSubmitted(ctx context.Context, sessionID, text string) (refused string)
+	// PermissionRequested is asked before a call is put to the person; pol is
+	// the engine judging it, whose roots place relative match rules.
+	PermissionRequested(ctx context.Context, pol *policy.Engine, sessionID, tool string, args json.RawMessage, reason string) (refused string)
+	// Observe tells hooks of something they may only watch: HookTurnEnd,
+	// HookSubagentEnd or HookNotification, with the tool it concerns, if any.
+	Observe(ctx context.Context, event, sessionID, tool, detail string)
+}
+
+// Events Hooks.Observe is told of.
+const (
+	HookTurnEnd      = "turn_end"
+	HookSubagentEnd  = "subagent_end"
+	HookNotification = "notification"
+)
+
+// childHooks are a parent's hooks as a subagent sees them: its calls are
+// screened and announced, but its task is not a person's message and its
+// end is reported by the parent as subagent_end.
+type childHooks struct{ Hooks }
+
+func (childHooks) PromptSubmitted(context.Context, string, string) string { return "" }
+
+func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
+	if event == HookNotification {
+		c.Hooks.Observe(ctx, event, sessionID, tool, detail)
+	}
+}
+
+// TermPromptRefused is a run that never started: a hook refused the message.
+const TermPromptRefused TerminalReason = "prompt_refused"
 
 // QueuedMessage is a message waiting for the next turn boundary. Its ID is
 // carried on the user.message that delivers it, so a client can match the two.
@@ -372,6 +424,12 @@ func (l *Loop) takeSteering() []QueuedMessage {
 // deliverQueued records and applies every waiting message, oldest first.
 func (l *Loop) deliverQueued() error {
 	for _, q := range l.takeSteering() {
+		if why := l.promptRefused(context.Background(), q.Text); why != "" {
+			l.record(EvMessageDropped, ActorSystem, DroppedMessage{
+				QueueID: q.ID, ClientID: q.ClientID, Text: q.Text, QueuedAt: q.At, Reason: why,
+			})
+			continue
+		}
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
@@ -499,12 +557,24 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error
 	if err := l.deliverQueued(); err != nil {
 		return TermError, err
 	}
+	if l.promptRefused(ctx, m.Text) != "" {
+		return TermPromptRefused, nil
+	}
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: m.Text, ClientID: m.ClientID}); err != nil {
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
 	l.setPrompt(m.Text)
+	l.startMessage()
 	return l.run(ctx)
+}
+
+// startMessage gives a new message its own allowance of turns, when the loop
+// counts them per message.
+func (l *Loop) startMessage() {
+	if n := l.Config.TurnsPerMessage; n > 0 {
+		l.Config.MaxTurns = l.turns + n
+	}
 }
 
 // RunQueued continues the conversation with only the queued messages, for a
@@ -515,6 +585,7 @@ func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
 	if !l.hasWork() {
 		return TermCompleted, nil
 	}
+	l.startMessage()
 	return l.run(ctx)
 }
 
@@ -765,7 +836,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	req := model.Request{
 		System:      l.Config.SystemPrompt,
 		Messages:    l.messages,
-		Tools:       toolDefs(l.Tools),
+		Tools:       l.offeredDefs(),
 		MaxTokens:   l.Config.MaxTokens,
 		Temperature: l.Config.Temperature,
 		Effort:      l.effort(),
@@ -1034,6 +1105,10 @@ func truncateKey(k string) string {
 func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
 	tool, found := l.Tools.Get(call.Name)
+	if found && !l.offered(tool) {
+		// A tool of another mode is not there for the model, whatever it recalls.
+		found = false
+	}
 	if !found {
 		// Recorded like any refused call, so the record accounts for every
 		// call the model made, not only those naming a real tool.
@@ -1054,7 +1129,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		})
 		return false, tools.Result{
 			Content: fmt.Sprintf("Unknown tool %q. Available tools: %s.",
-				call.Name, strings.Join(l.Tools.Names(), ", ")),
+				call.Name, strings.Join(l.offeredNames(), ", ")),
 			IsError: true,
 		}, ""
 	}
@@ -1080,6 +1155,11 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	var doomed error
 	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision == policy.Ask {
 		doomed = pc.Precheck(l.Session, call.Args)
+	}
+	if doomed == nil && decision.Decision == policy.Ask {
+		if why := l.readFirst(ctx, tool, call); why != "" {
+			doomed = errors.New(why)
+		}
 	}
 	if doomed != nil {
 		decision.Reason = "refused before approval: the call could not succeed"
@@ -1121,9 +1201,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	answer := &Answer{}
 	switch decision.Decision {
 	case policy.Deny:
-		l.record(EvActionDenied, ActorSystem, map[string]string{
+		l.record(EvActionDenied, ActorSystem, withRule(map[string]string{
 			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
-		})
+		}, decision))
 		// Feed the denial back so the model can choose another approach.
 		return false, tools.Result{
 			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
@@ -1131,6 +1211,12 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}, ""
 
 	case policy.Ask:
+		if why := l.permissionRefused(ctx, call, decision); why != "" {
+			l.record(EvActionDenied, ActorSystem, map[string]string{
+				"call_id": call.ID, "reason": why, "step": "hook", "by": ByPolicy,
+			})
+			return false, tools.Result{Content: fmt.Sprintf("Denied: %s. Choose a different approach.", why), IsError: true}, ""
+		}
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
 		approved, err := l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
@@ -1183,9 +1269,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 
 	// by says who let it through: the policy on its own, a person asked, or
 	// what the approver reported in their place.
-	approvedBy := map[string]string{
+	approvedBy := withRule(map[string]string{
 		"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
-	}
+	}, decision)
 	if decision.Decision == policy.Ask {
 		approvedBy["by"] = ByReviewer
 		if answer.By != "" {
@@ -1199,6 +1285,15 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	}
 	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
+}
+
+// withRule adds the rule that decided, when one did, so an approval or
+// denial by policy names what made it.
+func withRule(p map[string]string, d policy.Result) map[string]string {
+	if d.Rule != "" {
+		p["rule"] = d.Rule
+	}
+	return p
 }
 
 // WithheldLookalikeArgs stands in for the arguments of an unknown call
@@ -1299,6 +1394,9 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 
 	start := time.Now()
 	result := tool.Run(l.asParent(ctx), l.Session, call.Args)
+	if _, isTask := tool.(Task); isTask {
+		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
+	}
 	// A secret's value is stripped from the result before the model and the
 	// record see it, so the model never holds a value it could echo elsewhere.
 	if red := l.Recorder.redactor(); red != nil {
@@ -1378,7 +1476,45 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	}
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
+	l.observe(context.Background(), HookTurnEnd, "", string(reason))
 	return reason
+}
+
+// promptRefused asks the hooks about a person's message, and why they
+// refused it, or "".
+func (l *Loop) promptRefused(ctx context.Context, text string) string {
+	if l.Hooks == nil {
+		return ""
+	}
+	return l.Hooks.PromptSubmitted(ctx, l.sessionID(), text)
+}
+
+// permissionRefused asks the hooks about a call about to be put to the
+// person, and tells them the person is needed.
+func (l *Loop) permissionRefused(ctx context.Context, call model.ToolCall, decision policy.Result) string {
+	if l.Hooks == nil {
+		return ""
+	}
+	if why := l.Hooks.PermissionRequested(ctx, l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
+		return why
+	}
+	l.Hooks.Observe(ctx, HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
+	return ""
+}
+
+// observe tells the hooks of something they may only watch.
+func (l *Loop) observe(ctx context.Context, event, tool, detail string) {
+	if l.Hooks != nil {
+		l.Hooks.Observe(ctx, event, l.sessionID(), tool, detail)
+	}
+}
+
+// sessionID is the id of the session the loop records, or "".
+func (l *Loop) sessionID() string {
+	if l.Recorder == nil {
+		return ""
+	}
+	return l.Recorder.sessionID
 }
 
 // contextSize measures the conversation as it now stands, which is what the
@@ -1512,7 +1648,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
 	for i := range calls {
-		decision, res, terminal := l.authorize(ctx, &calls[i])
+		decision, res, terminal := l.authorize(context.WithValue(ctx, turnCallsKey{}, turnCalls{calls, i}), &calls[i])
 		if terminal != "" {
 			results[i] = callOutcome{result: res, terminal: terminal, set: true}
 			l.appendEnded(calls, results, terminal, i+1)
@@ -1669,7 +1805,7 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
 	// Rules only, never the mode: bypass and auto approve calls, not secrets.
 	for _, name := range a.Secrets {
-		for _, r := range l.Policy.Deny {
+		for _, r := range l.Policy.DenyRules() {
 			if r.Matches("secret", name) {
 				return fmt.Sprintf("secret %s is denied by rule %s", name, r)
 			}
@@ -1823,4 +1959,65 @@ func (l *Loop) effort() model.EffortLevel {
 		return model.EffortLow
 	}
 	return l.Config.Effort
+}
+
+type turnCallsKey struct{}
+
+// turnCalls are the calls of the turn being authorized, and which one it is.
+type turnCalls struct {
+	calls []model.ToolCall
+	index int
+}
+
+// readFirst is why an edit or write the tool would refuse for want of a read
+// is refused before anyone is asked, or "". When another call in the turn
+// names the file, or a command runs first, the tool decides.
+func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCall) string {
+	_, isEdit := tool.(tools.Edit)
+	if _, isWrite := tool.(tools.Write); !isEdit && !isWrite {
+		return ""
+	}
+	var a struct {
+		Path      string  `json:"path"`
+		OldString *string `json:"old_string"`
+	}
+	if l.Session == nil || json.Unmarshal(call.Args, &a) != nil {
+		return ""
+	}
+	// A path the session cannot use is the tool's own precheck to report.
+	path, resolveErr := l.Session.Resolve(a.Path)
+	if resolveErr != nil {
+		return ""
+	}
+	if turn, ok := ctx.Value(turnCallsKey{}).(turnCalls); ok {
+		for i, other := range turn.calls {
+			if i == turn.index {
+				continue
+			}
+			if i < turn.index && other.Name == "bash" {
+				return ""
+			}
+			var o struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(other.Args, &o) == nil && o.Path != "" {
+				if p, err := l.Session.Resolve(o.Path); err == nil && p == path {
+					return ""
+				}
+			}
+		}
+	}
+	info, statErr := os.Stat(path)
+	switch {
+	case errors.Is(statErr, fs.ErrNotExist):
+		if isEdit && a.OldString != nil && *a.OldString != "" {
+			return fmt.Sprintf("File not found: %s. Use glob to locate it, or write() to create it", a.Path)
+		}
+	case statErr != nil || info.IsDir():
+	case !l.Session.WasRead(path):
+		return fmt.Sprintf("Refusing to %s %s: it has not been read this session. Call read(%q) first, then %s it", call.Name, a.Path, a.Path, call.Name)
+	case isEdit && l.Session.ChangedSinceRead(path):
+		return fmt.Sprintf("%s changed on disk since you read it. Re-read it before editing", a.Path)
+	}
+	return ""
 }

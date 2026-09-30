@@ -197,52 +197,111 @@ func (s *Session) Fork() *Session {
 // AddRoot grants access to another directory. Called from config or a CLI
 // flag at startup; there is deliberately no tool that reaches this.
 func (s *Session) AddRoot(dir string) error {
-	abs, err := filepath.Abs(dir)
+	_, err := s.AddRootAs(dir, "")
+	return err
+}
+
+// AddRootAs is AddRoot that returns the root added, and refuses when dir no
+// longer resolves to want, a path checked earlier; "" checks nothing.
+func (s *Session) AddRootAs(dir, want string) (string, error) {
+	abs, err := s.CheckRoot(dir)
 	if err != nil {
-		return fmt.Errorf("resolve %s: %w", dir, err)
+		return "", err
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	} else {
-		return fmt.Errorf("%s: %w", dir, err)
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return fmt.Errorf("%s: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
-	}
-	// Refuse roots that would defeat the boundary entirely. Granting "/" or a
-	// home directory is almost never what someone means, and it silently puts
-	// credentials, SSH keys and browser profiles in reach of any injected
-	// instruction in a file the agent reads.
-	if abs == "/" {
-		return fmt.Errorf("refusing to add / as a workspace root: " +
-			"that removes the boundary entirely. Add the specific project directory")
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(home); err == nil {
-			home = resolved
-		}
-		if abs == home {
-			return fmt.Errorf("refusing to add your home directory as a workspace "+
-				"root: it puts ~/.ssh, ~/.aws and browser profiles in reach of "+
-				"anything the agent reads. Add the project directory instead (%s/...)", home)
-		}
+	if want != "" && abs != want {
+		return "", fmt.Errorf("%s now leads to %s, not the %s that was checked; nothing was added", dir, abs, want)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.Roots {
 		if existing == abs {
-			return nil
+			return abs, nil
 		}
 	}
 	s.Roots = append(s.Roots, abs)
 	if raw, err := filepath.Abs(dir); err == nil {
 		s.rawRoots = append(s.rawRoots, filepath.Clean(raw))
 	}
-	return nil
+	return abs, nil
+}
+
+// credentialDirs are folders under the home directory that hold keys and
+// tokens; none may be a root.
+var credentialDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", filepath.Join(".config", "gcloud")}
+
+// CheckRoot resolves dir and says why it may not be a root: it is /, it
+// holds the home directory, it is inside a credential folder, it is a .abhed
+// folder, or the home directory's state or a registered state file is in it.
+func (s *Session) CheckRoot(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", dir, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	} else {
+		return "", fmt.Errorf("%s: %w", dir, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", dir)
+	}
+	// Refuse roots that would defeat the boundary entirely. Granting "/" or a
+	// home directory is almost never what someone means, and it silently puts
+	// credentials, SSH keys and browser profiles in reach of any injected
+	// instruction in a file the agent reads.
+	if abs == "/" {
+		return "", fmt.Errorf("refusing to add / as a workspace root: " +
+			"that removes the boundary entirely. Add the specific project directory")
+	}
+	if strings.EqualFold(filepath.Base(abs), StateDir) {
+		return "", fmt.Errorf("refusing to add %s: a %s folder is Abhed's own state", abs, StateDir)
+	}
+	var stateDirs []string
+	if home, err := os.UserHomeDir(); err == nil {
+		home = RealPath(home)
+		if abs == home {
+			return "", fmt.Errorf("refusing to add your home directory as a workspace "+
+				"root: it puts ~/.ssh, ~/.aws and browser profiles in reach of "+
+				"anything the agent reads. Add the project directory instead (%s/...)", home)
+		}
+		if isWithin(home, abs) {
+			return "", fmt.Errorf("refusing to add %s: it holds your home directory, and with it your keys and Abhed's own state", abs)
+		}
+		for _, d := range credentialDirs {
+			if c := RealPath(filepath.Join(home, d)); isWithin(abs, c) {
+				return "", fmt.Errorf("refusing to add %s: it is inside %s, which holds credentials", abs, c)
+			}
+		}
+		stateDirs = append(stateDirs, filepath.Join(home, StateDir))
+	}
+	// The workspace's own .abhed is not counted: Resolve guards it under every
+	// root, and a folder holding the workspace, as in a monorepo, is fine.
+	var state []string
+	for _, d := range stateDirs {
+		state = append(state, RealPath(d))
+		for _, f := range knownStateFiles {
+			state = append(state, RealPath(filepath.Join(d, f)))
+		}
+	}
+	for _, p := range registeredState() {
+		state = append(state, RealPath(p))
+	}
+	for _, p := range state {
+		if isWithin(p, abs) {
+			return "", fmt.Errorf("refusing to add %s: Abhed's own state (%s) is inside it", abs, p)
+		}
+	}
+	return abs, nil
+}
+
+// isWithin reports whether path is dir or inside it; both absolute and clean.
+func isWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && (rel == "." || filepath.IsLocal(rel))
 }
 
 // allowedRoots returns every directory this session may reach.

@@ -87,9 +87,9 @@ type droppedSlash struct {
 
 // cmdEnv is what a command runs against.
 type cmdEnv struct {
-	// ui is where a command shows and asks things. Until the terminal UI
-	// sets cliState.surface it is a line surface with no answers, so any
-	// question is refused rather than hanging the prompt.
+	// ui is where a command shows and asks things: cliState.surface, which
+	// the interactive CLI answers from typed lines until the terminal UI
+	// replaces it; with none, a line surface that answers nothing.
 	ui   ui.Surface
 	r    *ui.Renderer
 	st   *cliState
@@ -165,9 +165,11 @@ func (g *slashRegistry) lookup(name string, dynamic []slashSource) (slashCmd, st
 }
 
 // lookalike folds a name so that two a person could mistake for each other
-// fold alike: case, - and _, and 0 and 1 for o and l.
+// fold alike: case; - _ . and : dropped; rn for m, vv for w, 0 for o, and 1
+// and I for l (I is i once lowered, so /heIp folds as /help does).
 func lookalike(name string) string {
-	return strings.NewReplacer("-", "", "_", "", "0", "o", "1", "l").Replace(strings.ToLower(name))
+	return strings.NewReplacer("rn", "m", "vv", "w", "-", "", "_", "", ".", "", ":", "",
+		"0", "o", "1", "l", "i", "l").Replace(strings.ToLower(name))
 }
 
 // admitted is the run-time commands that may run, and those that may not,

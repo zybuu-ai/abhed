@@ -6,7 +6,9 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
@@ -49,6 +51,23 @@ type cliState struct {
 	surface ui.Surface
 	// input is what the input layer keeps across lines; see inputState.
 	input inputState
+	// pending are the person's actions made before a conversation had a
+	// record, recorded when the next one opens; see recordCLI.
+	pending []pendingEvent
+	// overlay is the session's own permission rules, which a new
+	// conversation starts without.
+	overlay *policy.Overlay
+	// turnLimit is the loop's configured turn limit: per message, or for the
+	// whole conversation under a managed one; see turnsPerMessage.
+	turnLimit int
+	// hooks are the session's extensions; hookRecorder is the record of the
+	// open conversation, where a hook that fires is recorded.
+	hooks        *extension.Host
+	hookRecorder atomic.Pointer[agent.Recorder]
+	// pol is the session's engine; addedDirs are the directories /add-dir
+	// added. A new conversation's record restates both; see carryState.
+	pol       *policy.Engine
+	addedDirs []agent.WorkspaceDirAdded
 }
 
 // follow draws the conversation's events as they are recorded, for as long as
@@ -86,6 +105,11 @@ func (c *cliState) fresh() {
 	if c.scopes != nil {
 		c.scopes.Reset()
 	}
+	// Rules added "for this session" end with it, and so does the record of
+	// adding one that no conversation has held yet.
+	c.overlay.Clear()
+	c.dropPending(agent.EvPermissionChanged)
+	c.carryState()
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.sess.Checkpoint = c.undo.Record

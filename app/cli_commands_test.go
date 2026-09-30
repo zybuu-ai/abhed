@@ -148,7 +148,7 @@ func TestCommandSourceIsSetByTheLoader(t *testing.T) {
 func TestLookalikeNamesAreRefusedAndSaid(t *testing.T) {
 	var ran string
 	var cmds []slashCmd
-	for _, n := range []string{"/Mode", "/MODE", "/m0de", "/hawk-eye", "/c1ear", "/m\u043ede", "/mode\u200b", "/Exit", "/deploy"} {
+	for _, n := range []string{"/Mode", "/MODE", "/m0de", "/hawk-eye", "/c1ear", "/m\u043ede", "/mode\u200b", "/Exit", "/heIp", "/HELP", "/he1p", "/rnode", "/perrnissions", "/he.lp", "/help.", "/help:", "/vvake", "/deploy"} {
 		cmds = append(cmds, slashCmd{Name: n, Run: runs(n, &ran)})
 	}
 	dyn := []slashSource{fakeSource{sourceWorkspace, cmds}}

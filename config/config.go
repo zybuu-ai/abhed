@@ -84,6 +84,8 @@ type Config struct {
 	// SetAside are settings a file made that its layer may not make, such
 	// as a managed-only key in the user's file; each was left out.
 	SetAside []SetAsideKey `json:"-"`
+	// ruleLayers names the layer each permission rule came from; see RuleLayer.
+	ruleLayers map[string]string
 }
 
 // CLIConfig tunes the interactive command line.
@@ -317,6 +319,11 @@ type ExtensionConfig struct {
 	Events    []string          `json:"events,omitempty"`
 	TimeoutMS int               `json:"timeout_ms,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
+	// Match narrows tool_call and permission_request to the calls a rule
+	// matches, e.g. bash(git *).
+	Match []string `json:"match,omitempty"`
+	// Async sends the events that only observe without waiting.
+	Async bool `json:"async,omitempty"`
 }
 
 // CustomProviderConfig adds a model provider from configuration.
@@ -823,6 +830,7 @@ func Load(workspace string) (Config, error) {
 // LoadWith is Load with the caller's say over the workspace file.
 func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg := Default()
+	cfg.noteRuleLayer(LayerDefault)
 
 	var userFile string
 	if home, err := os.UserHomeDir(); err == nil {
@@ -831,17 +839,20 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 			return cfg, err
 		}
 		setAside(&cfg, userFile)
+		cfg.noteRuleLayer(LayerUser)
 	}
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
 	cfg.Workspace = st
 	if err != nil {
 		return cfg, err
 	}
+	cfg.noteRuleLayer(LayerWorkspace)
 
 	// Managed config is applied last and marks the engine as org-controlled.
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
+	cfg.noteRuleLayer(LayerManaged)
 
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)

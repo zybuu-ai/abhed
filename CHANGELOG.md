@@ -8,6 +8,22 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A `tool_call` or `permission_request` extension that crashes or times out
+  now fails closed: the call it failed on is refused, and while it is not
+  running every call it would have screened is asked. It was skipped before,
+  so its veto silently stopped applying.
+- `-add-dir`, `additional_dirs` and `/add-dir` refuse a credential folder such
+  as `~/.ssh`, a folder that holds the home directory, and one that holds
+  `~/.abhed` or a configured state file, and any `.abhed` folder itself;
+  before, only `/` and the home directory itself were refused. A folder
+  that holds the workspace, as a monorepo's root does, is still allowed.
+  `/add-dir` adds only the folder it checked and showed, so a path swapped for
+  a link while the person answers is refused.
+- An extension that answered `ask` about a call a deny rule or plan mode
+  refuses turned the refusal into a question, which a person could then
+  approve: hooks were evaluated first, and their ask ended the evaluation.
+  A hook's ask now applies only after the deny rules and plan mode. Its
+  refusal is still final, and an `allow` in its reply approves nothing.
 - In every release up to and including 1.2.1, a repository could ship a
   `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
   `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
@@ -210,6 +226,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
+- A `tool_call` extension that has stopped (crashed, hung or was closed)
+  now makes each call it would have screened ask, where it was skipped
+  before; in a headless run, which cannot ask, those calls are refused.
+  `/hooks` and the serve banner show which one stopped.
+- The interactive CLI counts `limits.max_turns` per message unless the
+  managed configuration sets it.
 - `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
   asks in default mode, is refused in plan mode, and is refused where nobody
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
@@ -502,11 +524,53 @@ All notable changes to Abhed are recorded here. The format follows
   the person.
 - `/output-style` appends a style from `~/.abhed/styles` or
   `/etc/abhed/styles` to the prompt for the rest of the session.
+- CLI governance: every change of permission mode goes through one
+  controller and is recorded as `mode.changed`, with how it was made (`flag`,
+  `slash`, `shift-tab`, `plan-exit`). The Shift-Tab cycle is default,
+  accept-edits and plan, and never reaches auto or bypass; a managed
+  `cli.mode_cycle` can only take modes out of it. `/mode auto` asks first,
+  with no as the default, and is refused over a managed mode. `/mode` alone
+  says what auto approves, by rule, and what still asks.
+- Plan mode ends in a plan the person decides on. The agent presents it with
+  the new `exit_plan` tool, offered only in plan mode, which records
+  `plan.proposed` and changes nothing. The CLI asks: yes and accept edits,
+  yes and ask before each change, or keep planning, the default. Auto and
+  bypass are never offered. The answer is recorded as `plan.decided`, and an
+  accepted plan moves the mode, recorded as `mode.changed` via `plan-exit`.
+- `/permissions` lists the rules in force with the layer each came from
+  (managed, user, workspace, flag, default, session). `/permissions
+  allow|ask|deny <rule>` adds a rule for this session only, recorded as
+  `permission.changed`; `/clear` and `/resume` end it. A session allow is
+  asked about, twice when it approves every call to a tool, is refused where
+  the managed configuration sets the permissions, and is evaluated after the
+  configured allow rules, so it cannot lift a deny rule, a destructive
+  command, an ask rule or plan mode. `/permissions explain <tool> <what>` is a
+  dry run that names the decision, step, rule and reason.
+- `/add-dir <dir>` adds a directory for the session, read-only or read-write,
+  after showing it with its links resolved. It is bound by a managed
+  `additional_dirs` as `-add-dir` is, refuses Abhed's state, the record,
+  credential folders and any folder holding the home directory, and is
+  recorded as `workspace.dir_added`.
+- Hooks: extensions can take `user_prompt_submit` and `permission_request`,
+  which may block and never approve, and `turn_end`, `subagent_end` and
+  `notification`, which only observe, in the interactive CLI. `match` narrows
+  `tool_call` and `permission_request` to calls a permission rule matches, as
+  a deny rule would match them, and `async` sends
+  observe-only events without waiting. A subagent's calls go through the
+  parent's `permission_request` hooks. A `user_prompt_submit` hook that has
+  stopped fails open, and the CLI says so. Each hook that blocks, forces an ask
+  or annotates is recorded as `hook.fired`. `/hooks` lists the extensions
+  with their layer, events, matcher and status. A managed `hooks.disabled`
+  now takes effect: extensions keep only the tools they provide.
+- `policy.Result` names the rule that decided (`Rule`), and `action.approved`
+  and `action.denied` record it as `rule` when a deny, ask or allow rule
+  decided.
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
   `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and
-  `hooks.disabled`. They are accepted so a file that sets them stays valid,
-  but this version does not act on them yet: setting one prints "set but not
+  `hooks.disabled`. They are accepted so a file that sets them stays valid.
+  `cli.mode_cycle` and `hooks.disabled` are in effect (below); for the rest
+  this version does not act on them yet: setting one prints "set but not
   yet in effect in this version", and `abhed doctor` reports it and does not
   call the configuration ready. Who may set each is already enforced.
   `cli.mode_cycle`, `record.*` and `hooks.disabled` are managed only: the
@@ -674,6 +738,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- The interactive CLI's `limits.max_turns` applies to each message, so a long
+  conversation no longer runs out for good; a message that reaches it says
+  how to go on. A managed `limits.max_turns` still bounds the whole
+  conversation. Headless runs and the server are unchanged.
+- An edit or write the tool would refuse for want of a read (an existing file
+  not read this session, one changed since, an edit of a missing file) is now
+  refused before the approval prompt, with the reason, so an approval is
+  never spent on a call that cannot succeed.
 - The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
   system prompt, loop settings and budget in one place, so a surface differs
   from the CLI only where it says why. The server now applies
