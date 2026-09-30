@@ -1184,9 +1184,7 @@ func PendingNotices(events []Event, child func(id string) ([]Event, error)) []No
 		if strings.TrimSpace(content) == "" {
 			content = fmt.Sprintf("(subagent ended with %s and produced no summary)", r.Reason)
 		}
-		if len(content) > MaxSummaryChars {
-			content = content[:MaxSummaryChars] + "\n\n[summary truncated]"
-		}
+		content = truncateSummary(content)
 		if r.Reason != string(TermCompleted) {
 			content += fmt.Sprintf("\n\n[subagent ended early: %s]", r.Reason)
 		}

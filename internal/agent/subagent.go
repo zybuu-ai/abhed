@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -411,6 +412,19 @@ type SessionCreator interface {
 // return value defeats the mechanism.
 const MaxSummaryChars = 8000
 
+// truncateSummary cuts a summary longer than MaxSummaryChars bytes on a rune
+// boundary, so the record's JSON keeps the same text the conversation has.
+func truncateSummary(s string) string {
+	if len(s) <= MaxSummaryChars {
+		return s
+	}
+	cut := MaxSummaryChars
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n\n[summary truncated]"
+}
+
 func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (string, error) {
 	c, err := f.prepare(ctx, req, nil, nil)
 	if err != nil {
@@ -701,7 +715,7 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		summary = fmt.Sprintf("(subagent ended with %s and produced no summary)", reason)
 	}
 	if len(summary) > MaxSummaryChars {
-		summary = summary[:MaxSummaryChars] + "\n\n[summary truncated]"
+		summary = truncateSummary(summary)
 	}
 	returned["summary_chars"] = len(summary)
 	_, _ = c.sub.Recorder.Record(EvSubagentReturn, ActorAgent, Trusted, returned)

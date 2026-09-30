@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -686,5 +687,40 @@ func TestBackgroundAskNamesItsTask(t *testing.T) {
 	spawned := payloads[map[string]any](r.events(t), EvSubagentSpawned)
 	if len(spawned) != 1 || appr.tasks[0] == "" || appr.tasks[0] != spawned[0]["task_id"] {
 		t.Fatalf("the ask named task %q; spawned %v", appr.tasks[0], spawned)
+	}
+}
+
+// A long summary is cut on a rune boundary: the record keeps the text the
+// conversation has, so Fork rebuilds it exactly.
+func TestSummaryCutOnARuneBoundary(t *testing.T) {
+	prompt := "x" + strings.Repeat("é", 5000)
+	r := newBGRig(t, WakeNotify, prompt)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release(prompt)
+	waitFor(t, "the closing end", func() bool { e, _ := LastEnd(r.events(t)); return e.Settled })
+	n := payloads[Notice](r.events(t), EvSubagentNotice)
+	if len(n) != 1 || !utf8.ValidString(n[0].Content) || !strings.Contains(n[0].Content, "[summary truncated]") {
+		t.Fatalf("notice: %d, valid %v", len(n), len(n) == 1 && utf8.ValidString(n[0].Content))
+	}
+	messagesEqualFork(t, r)
+	if got := truncateSummary(strings.Repeat("é", MaxSummaryChars)); !utf8.ValidString(got) {
+		t.Fatal("truncateSummary cut a rune")
+	}
+}
+
+// A result rebuilt from the record is cut on a rune boundary too.
+func TestPendingNoticeCutOnARuneBoundary(t *testing.T) {
+	store := NewMemStore()
+	child := NewRecorder(store, "c1", "p")
+	_, _ = child.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "x" + strings.Repeat("é", MaxSummaryChars)})
+	_, _ = child.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Turns: 1})
+	parent := NewRecorder(store, "p", "")
+	_, _ = parent.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"background": true, "task_id": "c1", "session": "c1", "reason": "completed"})
+	evs, _ := store.Events("p")
+	pend := PendingNotices(evs, store.Events)
+	if len(pend) != 1 || !utf8.ValidString(pend[0].Content) || !strings.Contains(pend[0].Content, "[summary truncated]") {
+		t.Fatalf("owed: %d, valid %v", len(pend), len(pend) == 1 && utf8.ValidString(pend[0].Content))
 	}
 }
