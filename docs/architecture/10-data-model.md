@@ -58,12 +58,15 @@ one shape. The interactive CLI records those without a note; a row marked
 *(not yet emitted)* is defined for work still to come, and the change that
 records it removes the note. A change made before a conversation has a record,
 such as a mode chosen before the first message, is recorded when the
-conversation opens, ahead of that message. Rewind reuses `conversation.forked`
+conversation opens, ahead of that message. A conversation opened after
+`/clear` or `/resume` first restates what it inherits: the mode, as
+`mode.changed` with `via: carried`, and each added directory as
+`workspace.dir_added`, so each record stands alone. Rewind reuses `conversation.forked`
 and adds `file.restored`.
 
 | Type | Payload | Emitted by |
 |---|---|---|
-| `mode.changed` | `from`, `to`, `by`, `via` (`flag`, `slash`, `shift-tab` or `plan-exit`) | user |
+| `mode.changed` | `from`, `to`, `by`, `via` (`flag`, `slash`, `shift-tab`, `plan-exit`, or `carried`: a conversation opened after `/clear` or `/resume` restating the mode it inherits) | user |
 | `permission.changed` | `op` (`add` or `remove`), `list` (`allow`, `ask` or `deny`), `rule`, `scope` (`session`), `by`; a session rule, which ends with the session | user |
 | `workspace.dir_added` | `path` as typed, `canonical` with symlinks resolved, `access` (`read` or `read-write`), `by` | user |
 | `input.mention` | a file attached with `@`: `path`, `range` (`10-20`, absent for the whole file), `sha256`, `bytes`, `truncated`; not the content, which the message carries *(not yet emitted)* | user |

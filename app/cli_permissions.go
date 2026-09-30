@@ -310,9 +310,9 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		return false, err
 	}
 	e.st.appCfg = applied
-	e.st.recordCLI(agent.EvWorkspaceDirAdded, agent.WorkspaceDirAdded{
-		Path: typed, Canonical: canonical, Access: answer, By: agent.ByUser,
-	})
+	added := agent.WorkspaceDirAdded{Path: typed, Canonical: canonical, Access: answer, By: agent.ByUser}
+	e.st.addedDirs = append(e.st.addedDirs, added)
+	e.st.recordCLI(agent.EvWorkspaceDirAdded, added)
 	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("added %s (%s) for this session", canonical, answer)})
 	return false, nil
 }

@@ -348,3 +348,26 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 	surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
 	return fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 }
+
+// viaCarried marks a mode.changed that restates, in a new conversation's
+// record, a mode chosen in an earlier conversation of the session.
+const viaCarried = "carried"
+
+// carryState replaces what is held for the next conversation with the state
+// it inherits: the mode, if not the configured one, and each added
+// directory, whose access also says whether it is read-only. Changes made
+// after this are held on top, so the record says each once.
+func (c *cliState) carryState() {
+	c.pending = slices.DeleteFunc(c.pending, func(p pendingEvent) bool {
+		return p.typ == agent.EvModeChanged || p.typ == agent.EvWorkspaceDirAdded
+	})
+	var carried []pendingEvent
+	if start := policy.Mode(orDefault(c.appCfg.Permissions.Mode, "default")); c.pol != nil && c.pol.Mode != start {
+		carried = append(carried, pendingEvent{agent.EvModeChanged, agent.ModeChanged{
+			From: string(start), To: string(c.pol.Mode), By: agent.ByUser, Via: viaCarried}})
+	}
+	for _, d := range c.addedDirs {
+		carried = append(carried, pendingEvent{agent.EvWorkspaceDirAdded, d})
+	}
+	c.pending = append(carried, c.pending...)
+}

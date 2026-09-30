@@ -62,6 +62,10 @@ type cliState struct {
 	// open conversation, where a hook that fires is recorded.
 	hooks        *extension.Host
 	hookRecorder atomic.Pointer[agent.Recorder]
+	// pol is the session's engine; addedDirs are the directories /add-dir
+	// added. A new conversation's record restates both; see carryState.
+	pol       *policy.Engine
+	addedDirs []agent.WorkspaceDirAdded
 }
 
 // follow draws the conversation's events as they are recorded, for as long as
@@ -103,6 +107,7 @@ func (c *cliState) fresh() {
 	// adding one that no conversation has held yet.
 	c.overlay.Clear()
 	c.dropPending(agent.EvPermissionChanged)
+	c.carryState()
 	if c.sess != nil {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.sess.Checkpoint = c.undo.Record

@@ -97,7 +97,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState := &cliState{
 		store: store, appCfg: appCfg, sess: sess,
 		workspace: sess.Root, adapter: adapter, provider: provider, overlay: pol.Session,
-		turnLimit: cfg.MaxTurns, hooks: extHost,
+		turnLimit: cfg.MaxTurns, hooks: extHost, pol: pol,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session

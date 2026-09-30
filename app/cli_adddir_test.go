@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -246,5 +247,40 @@ func TestAddDirReadOnlyHoldsForAnyName(t *testing.T) {
 		if _, err := slashAddDir(context.Background(), env, []string{dir}); err == nil || len(surface.asked) != 0 {
 			t.Errorf("%s: added (%v) or asked", name, err)
 		}
+	}
+}
+
+// A new conversation's record states what it inherits from earlier ones in
+// the session: the mode and each added directory with its access, once
+// each, before anything changed since.
+func TestNewConversationRecordsWhatItInherits(t *testing.T) {
+	t.Setenv("HOME", realDir(t))
+	env, _, first := permEnv(t, config.Default(), accessRead)
+	dir := realDir(t)
+	if _, err := slashAddDir(context.Background(), env, []string{dir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.modes.Set(context.Background(), policy.ModePlan, agent.ViaSlash); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(first()); n != 2 {
+		t.Fatalf("the first conversation recorded %d events", n)
+	}
+	// /clear, then a mode change before the next conversation opens.
+	env.st.loop = nil
+	env.st.fresh()
+	if err := env.modes.Set(context.Background(), policy.ModeAcceptEdits, agent.ViaSlash); err != nil {
+		t.Fatal(err)
+	}
+	store := env.st.store.(*agent.MemStore)
+	env.st.loop = &agent.Loop{Recorder: agent.NewRecorder(store, "s2", ""), Policy: env.pol, Session: env.sess}
+	env.st.flushPending()
+	second, _ := store.Events("s2")
+	if got := modeChanges(t, second); !slices.Equal(got, []string{"default>plan/carried", "plan>accept-edits/slash"}) {
+		t.Fatalf("mode changes %v", got)
+	}
+	dirs := eventsOf[agent.WorkspaceDirAdded](t, second, agent.EvWorkspaceDirAdded)
+	if len(dirs) != 1 || dirs[0].Canonical != dir || dirs[0].Access != accessRead {
+		t.Fatalf("directories %+v", dirs)
 	}
 }

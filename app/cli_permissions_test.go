@@ -224,7 +224,7 @@ func TestClearedRuleIsNotRecordedInTheNextConversation(t *testing.T) {
 	if got := permissionChanges(t, events()); len(got) != 0 {
 		t.Fatalf("a cleared rule was recorded: %v", got)
 	}
-	if got := modeChanges(t, events()); !slices.Equal(got, []string{"default>plan/slash"}) {
-		t.Fatalf("the mode, which /clear keeps, was not recorded: %v", got)
+	if got := modeChanges(t, events()); !slices.Equal(got, []string{"default>plan/carried"}) {
+		t.Fatalf("the mode, which /clear keeps, was not recorded once: %v", got)
 	}
 }

@@ -175,7 +175,7 @@ func recordedEnv(t *testing.T, cfg config.Config, start policy.Mode, answers ...
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &cliState{appCfg: cfg, store: store, sess: sess, workspace: sess.Root}
+	st := &cliState{appCfg: cfg, store: store, sess: sess, workspace: sess.Root, pol: pol}
 	st.loop = &agent.Loop{Recorder: agent.NewRecorder(store, "s1", ""), Policy: pol, Session: sess}
 	st.sessionID = "s1"
 	surface := &scriptedSurface{answers: answers}
