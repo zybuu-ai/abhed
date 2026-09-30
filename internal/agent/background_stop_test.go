@@ -418,3 +418,49 @@ func TestIdleDeliveryGivesUpAndSettles(t *testing.T) {
 		t.Fatalf("%d notices at the next run, want 1", n)
 	}
 }
+
+// A wake decided before a Stop is refused even once a prompted run has
+// lifted the Stop's hold in between: the stop count moved since the
+// decision, and the results wait for the next idle delivery.
+func TestWakeRefusedWhenAStopCameBetween(t *testing.T) {
+	r := newBGRig(t, WakeAuto)
+	b := r.l.Background
+	b.mu.Lock()
+	b.waking, b.wakeEpoch = true, b.epoch // the decision
+	b.epoch++                             // a Stop
+	b.stopped = false                     // and a prompted run since
+	b.notices = []Notice{{TaskID: "t1", CallID: "bgn_1", Content: "x"}}
+	b.mu.Unlock()
+	if _, err := r.l.RunWoken(context.Background(), Wake{By: "policy"}); !errors.Is(err, ErrNothingToWake) {
+		t.Fatalf("a wake decided before a Stop ran: %v", err)
+	}
+	if b.Pending() != 1 {
+		t.Fatal("the results were not left for the next delivery")
+	}
+}
+
+// After a Stop and then a prompted run, a result wakes the session again.
+func TestWakeWorksAgainAfterStopAndAPrompt(t *testing.T) {
+	r := newBGRig(t, WakeAuto, "one", "two")
+	r.l.Background.policy.MaxWakesPerHour = 4
+	hostFor(r, true)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the children's calls", func() bool { return r.m.childrenInCall() == 2 })
+	r.l.Background.CancelAll(TermUserInterrupt)
+	waitFor(t, "the stopped results", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 2 })
+	r.m.mu.Lock()
+	for _, n := range []string{"one", "two"} {
+		r.m.gates[n] = make(chan struct{})
+	}
+	r.m.mu.Unlock()
+	if _, err := r.l.Run(context.Background(), "go"); err != nil { // a prompted run, starting new tasks
+		t.Fatal(err)
+	}
+	waitFor(t, "the new children's calls", func() bool { return r.m.childrenInCall() == 4 })
+	r.m.release("one")
+	r.m.release("two")
+	waitFor(t, "a wake", func() bool { return len(payloads[SessionWoken](r.events(t), EvSessionWoken)) == 1 })
+
+}
