@@ -154,3 +154,20 @@ func TestLocalOwnerActive(t *testing.T) {
 		}
 	}
 }
+
+// A wake run that stopped at its cap with a person's message queued after
+// its last look runs again for the message, as a completed run does.
+func TestWakeLimitWithQueuedMessageRunsOn(t *testing.T) {
+	b := newBGServer(t, nil)
+	id := b.start("hello", false)
+	<-b.ended
+	live := b.live(id)
+	live.Loop.QueueMessage(agent.Message{Text: "and this"})
+	if !live.settle(context.Background(), agent.TermWakeLimit, nil) {
+		t.Fatal("a wake run's end left the person's message queued")
+	}
+	live.Loop.QueueMessage(agent.Message{Text: "x"})
+	if live.settle(context.Background(), agent.TermUserInterrupt, nil) {
+		t.Fatal("an interrupted run ran on")
+	}
+}

@@ -2323,7 +2323,9 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, err error) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err == nil && ctx.Err() == nil && reason == agent.TermCompleted && len(l.Loop.Queued()) > 0 {
+	// A wake run stopped at its cap leaves a message queued after it last
+	// looked as a completed run does: it runs now.
+	if err == nil && ctx.Err() == nil && (reason == agent.TermCompleted || reason == agent.TermWakeLimit) && len(l.Loop.Queued()) > 0 {
 		return true
 	}
 	l.State = "done"

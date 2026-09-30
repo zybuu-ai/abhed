@@ -380,6 +380,9 @@ func (l *Loop) deliverQueued() error {
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
 		l.setPrompt(q.Text)
+		// A wake run that takes a person's message is theirs from now on,
+		// with a prompted run's turns, not the wake's cap.
+		l.wakeCap = 0
 	}
 	return nil
 }
@@ -557,7 +560,9 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 			return l.finish(TermMaxTurns), nil
 		}
 		// A wake run is short: the session goes on, and so do its children.
-		if l.wakeCap > 0 && l.turns >= l.wakeCap {
+		// A person's message waiting is not left behind: it is delivered
+		// below, and makes this a run they asked for.
+		if l.wakeCap > 0 && l.turns >= l.wakeCap && len(l.Queued()) == 0 {
 			return l.finish(TermWakeLimit), nil
 		}
 		// At the turn boundary, not mid-turn: cutting a turn short would leave

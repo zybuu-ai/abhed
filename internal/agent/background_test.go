@@ -34,6 +34,8 @@ type bgModel struct {
 	// hold, when set, keeps a "slow" or "fail" turn until closed; a "fail"
 	// turn then fails its model call.
 	hold chan struct{}
+	// noticeHold, when set, keeps the parent's answer to a result until closed.
+	noticeHold chan struct{}
 }
 
 // childrenInCall is how many children have reached their model call.
@@ -87,6 +89,9 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 			i++
 		}
 	case last.Role == model.RoleTool && strings.HasPrefix(last.ToolCallID, "bgn_"):
+		if m.noticeHold != nil {
+			<-m.noticeHold
+		}
 		m.mu.Lock()
 		m.saw = append(m.saw, last.Content)
 		more := m.workOnNotice
@@ -97,6 +102,9 @@ func (m *bgModel) Complete(ctx context.Context, req model.Request) (<-chan model
 		} else {
 			ch <- model.Chunk{Type: model.ChunkText, Text: "noted"}
 		}
+	case last.Role == model.RoleUser && last.Content == "work":
+		c := model.ToolCall{ID: "w" + newID(), Name: "read", Args: json.RawMessage(`{"path":"nothing.txt"}`)}
+		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
 	case last.Role == model.RoleUser && last.Content == "fail":
 		<-m.hold
 		return nil, errors.New("the provider is down")

@@ -197,7 +197,7 @@ boundary. When the session is idle, what happens is the **wake** mode,
 |---|---|
 | `off` | cannot happen: the run that started a task waits for it |
 | `notify` (default) | recorded and shown; the agent acts on it with your next message |
-| `auto` | recorded, then a short wake run (`session.woken`), at most `subagents.wake_max_turns` turns and `subagents.max_wakes_per_hour` an hour; it ends `wake_limit`, and the session goes on |
+| `auto` | recorded, then a short wake run (`session.woken`), at most `subagents.wake_max_turns` turns and `subagents.max_wakes_per_hour` an hour; it ends `wake_limit`, and the session goes on. A message you send during it steers it, and from then on it is your run, with a prompted run's turns |
 
 The mode in effect is the tightest of the managed configuration, yours, the
 workspace's (which may only tighten), the session's own switch, and what the

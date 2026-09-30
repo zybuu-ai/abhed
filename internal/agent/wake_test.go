@@ -362,3 +362,36 @@ func TestCloseCancelsAndSettles(t *testing.T) {
 		t.Fatal("a child started after Close")
 	}
 }
+
+// A person's message queued during a wake run is delivered in it, and the run
+// is theirs from then on: it does not stop at the wake's cap with the message
+// left waiting.
+func TestWakeRunTakesAPersonsMessage(t *testing.T) {
+	r := newBGRig(t, WakeAuto, "a")
+	r.l.Background.policy.MaxWakesPerHour = 4
+	r.l.Background.policy.WakeMaxTurns = 1
+	r.m.workOnNotice = true // the result asks for more work than one turn
+	r.m.noticeHold = make(chan struct{})
+	h := hostFor(r, true)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	r.m.release("a")
+	waitFor(t, "woken", func() bool { return len(payloads[SessionWoken](r.events(t), EvSessionWoken)) == 1 })
+	r.l.QueueMessage(Message{Text: "work"}) // more than the wake's one turn
+	close(r.m.noticeHold)
+	h.wg.Wait()
+	h.mu.Lock()
+	runs := append([]TerminalReason(nil), h.runs...)
+	h.mu.Unlock()
+	if len(runs) != 1 || runs[0] == TermWakeLimit || len(r.l.Queued()) != 0 {
+		t.Fatalf("wake runs %v, still queued %d", runs, len(r.l.Queued()))
+	}
+	var said bool
+	for _, m := range payloads[Message](r.events(t), EvUserMessage) {
+		said = said || m.Text == "work"
+	}
+	if !said {
+		t.Fatal("the person's message was never delivered")
+	}
+}
