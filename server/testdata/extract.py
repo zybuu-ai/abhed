@@ -35,6 +35,7 @@ sets = {
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
     'state': ['function shownState(s){','function paintOpenPill(){'],
+    'mode': ['async function loadMode(){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.

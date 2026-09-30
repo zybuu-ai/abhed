@@ -439,6 +439,10 @@ All notable changes to Abhed are recorded here. The format follows
   configured on this deployment" and its description named none. It now
   reads the secrets store by name as the CLI's does, and each name still
   needs its own `secret(NAME)` allow rule.
+- The console's mode selector always started on `default`, and a server
+  lets a client choose only its configured mode or `plan`, so on a server
+  configured with another mode the first message was refused (403). It now
+  starts on the configured mode and offers only it and `plan`.
 - `abhed resolve` could close its session before it printed the agent's last
   messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
 - `abhed serve` did not start the configured extensions, so their veto did

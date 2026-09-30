@@ -806,6 +806,24 @@ async function health(){
  *
  * Only shown when there is a real choice. A select with one option tells the
  * user they can pick something when they cannot. */
+// The mode selector starts on the server's configured mode. A session may
+// start in that mode or in plan, and the server refuses any other, so those
+// are the choices offered.
+async function loadMode(){
+  let caps; try{ caps = await api('/v1/capabilities'); }catch{ return; }
+  const m = caps && caps.permissions && caps.permissions.mode;
+  if(!m) return;
+  const sel = $('mode');
+  if(!Array.from(sel.options).some(o => o.value === m)){
+    const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o);
+  }
+  for(const o of Array.from(sel.options)){
+    o.disabled = o.value !== m && o.value !== 'plan';
+    o.title = o.disabled ? 'This server runs in ' + m + ' mode; a session may start in it or in plan' : '';
+  }
+  sel.value = m;
+}
+
 let providers = [];
 // The provider the open chat's record last named, so a switch note can say what it left.
 let recProvider = null;
@@ -2294,7 +2312,7 @@ function hideThinking(){
   el.remove();
 }
 
-drawExamples(); whoami(); capabilities(); health(); refresh(); loadProviders();
+drawExamples(); whoami(); capabilities(); health(); refresh(); loadProviders(); loadMode();
 setInterval(health, 10000);
 setInterval(refresh, 5000);
 </script>

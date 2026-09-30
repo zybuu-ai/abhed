@@ -106,6 +106,29 @@ globalThis.$ = id => els[id] || null;
 	}
 }
 
+// The console's mode selector starts on the server's configured mode, which
+// with plan is all a session may start in: it once loaded on default, which a
+// server configured otherwise refuses.
+func TestConsoleModeFollowsTheServer(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+let sel;
+globalThis.reset = () => {
+  sel = {value: 'default', options: [], appendChild(o){ this.options.push(o); return o; }};
+  for(const v of ['default', 'plan', 'accept-edits', 'auto']) sel.options.push({value: v, textContent: v, disabled: false});
+};
+reset();
+globalThis.__caps = null;
+const $ = id => id === 'mode' ? sel : null;
+const api = async path => { if(path !== '/v1/capabilities' || !__caps) throw new Error('no'); return __caps; };
+`
+	if out, err := runConsoleCases(t, "mode", harness, "mode_cases.mjs"); err != nil {
+		t.Fatalf("the console's mode selector failed:\n%s", out)
+	}
+	if !strings.Contains(consoleHTML, "loadProviders(); loadMode();") {
+		t.Error("the console does not load the server's mode when it starts")
+	}
+}
+
 // The rail's pill is repainted when the open session's end renders, not only
 // on the next list poll, which a drain never lets succeed.
 func TestConsoleEndRepaintsTheOpenPill(t *testing.T) {
