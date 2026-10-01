@@ -116,6 +116,14 @@ func TestVisible(t *testing.T) {
 		{"sep\u2028", "sep⟨U+2028⟩", "sep⟨U+2028⟩"},
 		{"bad\xffbyte", `bad\xffbyte`, `bad\xffbyte`},
 		{"héllo ✓", "héllo ✓", "héllo ✓"},
+		{"fill\u3164\u115f\u1160\uffa0\u2800cgj\u034f", "fill⟨U+3164⟩⟨U+115F⟩⟨U+1160⟩⟨U+FFA0⟩⟨U+2800⟩cgj⟨U+034F⟩", "fill⟨U+3164⟩⟨U+115F⟩⟨U+1160⟩⟨U+FFA0⟩⟨U+2800⟩cgj⟨U+034F⟩"},
+		{"vs a\ufe0f ❤\ufe0f 1\ufe0f", "vs a⟨U+FE0F⟩ ❤\ufe0f 1\ufe0f", "vs a⟨U+FE0F⟩ ❤\ufe0f 1\ufe0f"},
+		{"a       b", "a       b", "a       b"},
+		{"git status" + strings.Repeat(" ", 32) + "&& tar", "git status⟨32 spaces⟩&& tar", "git status⟨32 spaces⟩&& tar"},
+		{"a\t\tb \t c", "a⟨2 tabs⟩b⟨2 spaces, 1 tab⟩c", "a⟨2 tabs⟩b⟨2 spaces, 1 tab⟩c"},
+		{strings.Repeat(" ", 8) + "x", "⟨8 spaces⟩x", "⟨8 spaces⟩x"},
+		{"if x:\n        y", "if x:\n        y", `if x:\n        y`},
+		{"x\n" + strings.Repeat(" ", 40) + "y", "x\n⟨40 spaces⟩y", `x\n⟨40 spaces⟩y`},
 	}
 	for _, c := range cases {
 		if got := Visible(c.in); got != c.want {
@@ -217,5 +225,19 @@ func TestTruncateIsRuneSafe(t *testing.T) {
 	}
 	if got := truncate("日本", 3); got != "日本" {
 		t.Errorf("a short string was changed: %q", got)
+	}
+}
+
+// A run of spaces cannot push the tail of a command past the edge of the prompt.
+func TestApprovePromptMarksLongBlankRuns(t *testing.T) {
+	out := promptFor(t, "bash", map[string]string{"command": "git status --short" + strings.Repeat(" ", 260) + "&& tar czf p.tgz internal"})
+	if !strings.Contains(out, "git status --short⟨260 spaces⟩&& tar czf p.tgz internal") || !strings.Contains(out, hiddenWarning) {
+		t.Fatalf("long run not marked or not warned: %q", out)
+	}
+	if strings.Contains(out, "     ") {
+		t.Fatalf("the run is still drawn raw: %q", out)
+	}
+	if plain := promptFor(t, "bash", map[string]string{"command": "printf '%s\\n' a  b"}); strings.Contains(plain, hiddenWarning) {
+		t.Fatalf("a short run warned: %q", plain)
 	}
 }

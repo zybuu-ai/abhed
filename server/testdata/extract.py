@@ -34,7 +34,7 @@ sets = {
     'ask': ['function node(cls, text){','function md(text){','function lastStreamedBubble(){','function wordCount(s){',
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
-          'function shortPath(p){','function kv(k, v){','function visible(s, lines){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
+          'function shortPath(p){','function kv(k, v){','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
     'state': ['function shownState(s){','function paintOpenPill(){'],
     'mode': ['async function loadMode(){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
@@ -42,7 +42,7 @@ sets = {
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
     # From ide.html: sending, the run's live state and the approval prompt.
-    'ide-chat': ['const el = (tag, cls, text) => {','function visible(s, lines){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
+    'ide-chat': ['const el = (tag, cls, text) => {','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
           'function subagentRow(id, p, at){','async function watchIdle(){'],

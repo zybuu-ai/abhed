@@ -459,7 +459,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .approve p{margin:0 0 9px;font-size:12px;color:var(--ink-2)}
 .approve p.hidden-warn{color:var(--danger);font-weight:600}
 .approve pre{font-family:var(--mono);font-size:11px;background:var(--sunken);
-  border-radius:5px;padding:9px;overflow-x:auto;margin:0 0 10px;color:var(--ink-2)}
+  border-radius:5px;padding:9px;margin:0 0 10px;color:var(--ink-2);
+  white-space:pre-wrap;overflow-wrap:anywhere}
 .approve .row{display:flex;gap:8px}
 .approve button{border-radius:5px;padding:5px 13px;font-size:12px;
   font-weight:600;cursor:pointer;border:1px solid var(--line)}
@@ -1447,18 +1448,29 @@ function kv(k, v){
   return s;
 }
 
-// visible writes out control and format characters (CR, ESC, zero-width, bidi)
-// as ⟨U+XXXX⟩, so a call's own text cannot reorder or hide part of it on the page.
+// visible writes out control and format characters (CR, ESC, zero-width, bidi) and ones that
+// draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
+// spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
 function visible(s, lines){
-  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
+  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+    // Eight columns inside a line (a tab counts eight); indentation only from 32.
+    const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
+    return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
+  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+// argsJSON draws a call's arguments with every key and string made visible first,
+// so a newline inside a value keeps the indentation rule and stringify adds no escapes to hide.
+function argsJSON(v){
+  return JSON.stringify(v, (k, x) => typeof x === 'string' ? visible(x, true)
+    : x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).map(([a, b]) => [visible(a), b])) : x, 2);
 }
 
 // hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
 function hasHidden(v, depth = 0){
   if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
   if(typeof v !== 'string') return false;
-  if(/[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(v)) return true;
+  if(visible(v, true) !== v) return true;
   const t = v.trim();
   if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
   return false;
@@ -1638,8 +1650,8 @@ function approval(p, rid){
   // Every field is made visible: the card must show exactly what approving runs.
   let args;
   try{
-    args = JSON.stringify(typeof p.args === 'string' ? JSON.parse(p.args) : p.args, null, 2);
-  }catch{ args = String(p.args); }
+    args = argsJSON(typeof p.args === 'string' ? JSON.parse(p.args) : p.args);
+  }catch{ args = visible(String(p.args), true); }
   // The warning reads the values themselves: stringify would turn a CR or ESC into plain text.
   if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
     card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this call contains hidden or control characters'}));
@@ -1651,7 +1663,7 @@ function approval(p, rid){
   if(p.via) card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Asked by ' + visible(p.via) + '.'}));
 
   const pre = document.createElement('pre');
-  pre.textContent = visible(args, true);
+  pre.textContent = args;
   card.appendChild(pre);
 
   const row = node('row');

@@ -8,6 +8,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The /console approval card drew a call's arguments in a box that
+  scrolled sideways, so a run of spaces pushed the tail of a command, such
+  as `&& tar czf ...`, out of view, and approving ran it. The card now wraps,
+  and on the card, /ide's prompt and the terminal prompt a run of eight or
+  more columns of spaces or tabs inside a line is shown as a count such as
+  `⟨260 spaces⟩` and raises the hidden-characters warning. Indentation after
+  a newline is left as it is up to 32 columns. Characters that draw nothing
+  (Hangul fillers, braille blank, U+034F, a U+FE0F not after a symbol) are
+  now written out as `⟨U+XXXX⟩` like other hidden characters, and /ide shows
+  an argument the warning is about when its prompt does not draw it.
 - The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
   redacted with the secrets stored when a session started, while bash reads
   the store at each call. A secret stored or changed during a session, and

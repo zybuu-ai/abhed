@@ -286,6 +286,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .ask{border:1px solid var(--warn);background:var(--warn-bg);border-radius:6px;padding:9px 10px;flex:none}
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
 .ask p.hidden-warn{color:var(--bad);font-weight:600}
+.ask p.hidden-field{font:11.5px/1.5 var(--mono)}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -1345,17 +1346,28 @@ function trim(){
 }
 // An absolute path is mostly prefix. The end of it is what a person reads.
 function tail(p){ const parts = p.split('/').filter(Boolean); return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : p; }
-// visible writes out control and format characters (CR, ESC, zero-width, bidi)
-// as ⟨U+XXXX⟩, so a call's own text cannot reorder or hide part of it on the page.
+// visible writes out control and format characters (CR, ESC, zero-width, bidi) and ones that
+// draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
+// spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
 function visible(s, lines){
-  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, c => c === '\t' || (lines && c === '\n') ? c
+  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+    // Eight columns inside a line (a tab counts eight); indentation only from 32.
+    const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
+    return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
+  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+// argsJSON draws a call's arguments with every key and string made visible first,
+// so a newline inside a value keeps the indentation rule and stringify adds no escapes to hide.
+function argsJSON(v){
+  return JSON.stringify(v, (k, x) => typeof x === 'string' ? visible(x, true)
+    : x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).map(([a, b]) => [visible(a), b])) : x, 2);
 }
 // hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
 function hasHidden(v, depth = 0){
   if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
   if(typeof v !== 'string') return false;
-  if(/[\u0000-\u0008\u000b-\u001f\p{Cf}\u007f-\u009f\u2028\u2029]/u.test(v)) return true;
+  if(visible(v, true) !== v) return true;
   const t = v.trim();
   if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
   return false;
@@ -1689,8 +1701,12 @@ function askApproval(p, rid){
   // Every field is made visible: the prompt must show exactly what allowing runs.
   const subj = subjectOf(p.tool, p.args) || '';
   a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
-  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v))){
     a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
+    // A field the line above does not draw is shown too, so the warning points at something.
+    if(p.args && typeof p.args === 'object') for(const [k, x] of Object.entries(p.args))
+      if(x !== subj && (hasHidden(k) || hasHidden(x))) a.appendChild(el('p', 'hidden-field', visible(k) + ': ' + (typeof x === 'string' ? visible(x) : argsJSON(x))));
+  }
   const btns = el('div', 'btns');
   const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';
     b.addEventListener('click', async () => { const q = asks.get(p.call_id); if(!q || q.rid !== rid) return; btns.querySelectorAll('button').forEach(x => { x.disabled = true; });

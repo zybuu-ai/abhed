@@ -107,4 +107,24 @@ check('a 409 after the run retires the card', !lateCard.isConnected);
   check('a hidden character anywhere in the args raises the warning: ' + warned, warned.every(Boolean));
 }
 
+// A run of spaces cannot push the tail of a command out of the card: it is
+// counted, the card warns, and indentation after a newline is left alone.
+{
+  render({seq:70, id:'ev70', type:'action.requested', payload:{call_id:'w70', tool:'bash', requires_approval:true,
+    args:{command:'git status --short' + ' '.repeat(260) + '&& tar czf pwned.tgz internal', description:'status'}}});
+  const card = approvals.get('w70'), pre = card ? card.textContent : '';
+  check('a long run of spaces is counted in the card', pre.includes('git status --short\u27e8260 spaces\u27e9&& tar czf pwned.tgz internal') && !pre.includes('     '));
+  check('a long run of spaces raises the warning', !!card && card.textContent.includes('hidden or control characters'));
+  render({seq:71, id:'ev71', type:'action.requested', payload:{call_id:'w71', tool:'bash', requires_approval:true, args:{command:'a\t\tb'}}});
+  check('a run of tabs is counted and warned', approvals.get('w71').textContent.includes('a\u27e82 tabs\u27e9b') && approvals.get('w71').textContent.includes('hidden or control'));
+  render({seq:72, id:'ev72', type:'action.requested', payload:{call_id:'w72', tool:'bash', requires_approval:true,
+    args:{command:"python3 - <<'EOF'\nfor x in y:\n        print(x)\nEOF"}}});
+  const py = approvals.get('w72');
+  check('indentation inside a heredoc is drawn as it is, with no warning',
+    py.textContent.includes('\\n        print(x)') && !py.textContent.includes('hidden or control'));
+  render({seq:73, id:'ev73', type:'action.requested', payload:{call_id:'w73', tool:'bash', requires_approval:true, args:{command:'echo \u3164\u2800 a\ufe0f \u2764\ufe0f'}}});
+  const fill = approvals.get('w73').textContent;
+  check('characters that draw nothing are shown: ' + fill, fill.includes('\u27e8U+3164\u27e9\u27e8U+2800\u27e9') && fill.includes('a\u27e8U+FE0F\u27e9') && fill.includes('\u2764\ufe0f'));
+}
+
 if(!ok) process.exit(1);

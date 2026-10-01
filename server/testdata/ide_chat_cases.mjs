@@ -320,4 +320,17 @@ fresh('s31', true);
   check('a hidden character anywhere in the args raises the warning: ' + warned, warned.length === 4 && warned.every(Boolean));
 }
 
+// A run of spaces is counted on the prompt, and a field the prompt does not
+// draw is shown when it is what carries the hidden characters.
+fresh('s32', true);
+{
+  render(ev(1, 'action.requested', {call_id:'w1', tool:'bash', args:{command:'git status --short' + ' '.repeat(260) + '&& tar czf p.tgz internal'}, requires_approval:true}));
+  const t = open()[0] ? open()[0].textContent : '';
+  check('a long run of spaces is counted on the prompt and warned',
+    t.includes('git status --short⟨260 spaces⟩&& tar czf p.tgz internal') && t.includes('hidden or control characters'));
+  render(ev(2, 'action.requested', {call_id:'w2', tool:'bash', args:{command:'ls', description:'list‮ files'}, requires_approval:true}));
+  const d = open()[1] ? open()[1].textContent : '';
+  check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
+}
+
 if(!ok) process.exit(1);
