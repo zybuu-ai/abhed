@@ -307,3 +307,20 @@ func TestResultNamesTheDecidingStep(t *testing.T) {
 		t.Errorf("hook: step = %q, want hook", got.Step)
 	}
 }
+
+// Stopping the session's own background work is allowed without asking, but
+// the record does not call it a read.
+func TestSessionControlIsNotCalledReadOnly(t *testing.T) {
+	for _, mode := range []Mode{ModeDefault, ModePlan, ModeAuto} {
+		e := New(mode)
+		for _, tool := range []string{"shell_kill", "task_cancel"} {
+			res := e.Evaluate(tool, false, json.RawMessage(`{"shell_id":"sh_1"}`))
+			if res.Decision != Allow || strings.Contains(res.Reason, "read-only") || !strings.Contains(res.Reason, "session control") {
+				t.Fatalf("%s in %s: %+v", tool, mode, res)
+			}
+		}
+		if res := e.Evaluate("read", false, json.RawMessage(`{"path":"a"}`)); !strings.Contains(res.Reason, "read-only tool") {
+			t.Fatalf("read in %s: %+v", mode, res)
+		}
+	}
+}
