@@ -2794,7 +2794,7 @@ func (s *Server) checkOwner(live *liveSession) {
 }
 
 // ownerActive asks Options.OwnerActive, or the local accounts when there
-// are any: the owner's account must still exist.
+// are any: the owner's account must still exist. live.User is an owner key.
 func (s *Server) ownerActive(live *liveSession) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2810,7 +2810,8 @@ func (s *Server) ownerActive(live *liveSession) bool {
 		return false // unknown is not active: no run starts on their behalf
 	}
 	for _, u := range users {
-		if u.Username == live.User || u.Email != "" && u.Email == live.User {
+		// Sessions are owned by the owner key, as Identity.Owner makes it.
+		if auth.LocalOwner(u.Username) == live.User {
 			return true
 		}
 	}

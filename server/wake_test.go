@@ -157,9 +157,47 @@ func TestLocalOwnerActive(t *testing.T) {
 	cfg.Auth.Mode = "local"
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{}),
 		Auth: &auth.Middleware{Providers: []auth.Provider{local}}})
-	for user, want := range map[string]bool{"alice": true, "alice@example.com": true, "bob": false} {
+	// Sessions carry owner keys, as Identity.Owner makes them; never a bare name or email.
+	for user, want := range map[string]bool{auth.LocalOwner("alice"): true, auth.LocalOwner("Alice"): true,
+		"alice": false, "alice@example.com": false, auth.LocalOwner("bob"): false} {
 		if got := s.ownerActive(&liveSession{User: user}); got != want {
 			t.Fatalf("%s active = %v", user, got)
+		}
+	}
+}
+
+// On serve with local accounts, a signed-in owner's background task outlives
+// the turn and its result wakes the session.
+func TestLocalAccountBackgroundSurvivesAndWakes(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Subagents.Wake = "auto"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	if err := local.CreateUser(context.Background(), auth.User{Username: "bob"}, "correct-horse-1"); err != nil {
+		t.Fatal(err)
+	}
+	ad := newBGAdapter("one")
+	st := agent.NewMemStore()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{}), Store: st,
+		Auth: &auth.Middleware{Providers: []auth.Provider{local}, PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
+	g := &gateRig{h: s.Handler(), local: local}
+	bob := g.signIn(t, "bob")
+	rec := g.do(bob, "POST", "/v1/sessions", `{"prompt":"bg:one"}`)
+	var created createResponse
+	if json.Unmarshal(rec.Body.Bytes(), &created) != nil || created.SessionID == "" {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	id := created.SessionID
+	b := &bgServer{t: t, s: s, h: s.Handler(), ad: ad, store: st}
+	waitUntil(t, "the turn to end with the task running", func() bool { return b.state(id) == "background" })
+	if owner := b.live(id).User; owner != auth.LocalOwner("bob") {
+		t.Fatalf("owner = %q", owner)
+	}
+	ad.release("one")
+	waitUntil(t, "the wake run", func() bool { return countType(b.events(id), agent.EvSessionWoken) == 1 })
+	for _, r := range payloadsOf(b.events(id), agent.EvSubagentReturn) {
+		if r["reason"] == string(agent.TermOwnerInactive) {
+			t.Fatalf("the task was cancelled as owner_inactive: %v", r)
 		}
 	}
 }
