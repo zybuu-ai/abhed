@@ -69,16 +69,13 @@ func (f *footer) refresh(st *cliState, pol *policy.Engine) {
 		Mode:        string(pol.Mode),
 		ModeLocked:  st.appCfg.ManagedSets("permissions.mode"),
 		Network:     st.appCfg.Sandbox.AllowNetwork,
-		Record:      ui.RecordMemory,
+		Record:      st.recordStatus(),
 		GitBranch:   gitBranch(f.root),
 		Cwd:         homeRel(f.root),
 		SessionName: st.sessionID,
 	}
 	if st.adapter != nil {
 		m.Model = st.adapter.Profile().Name
-	}
-	if st.appCfg.Storage.Driver == "postgres" {
-		m.Record = ui.RecordUnverified
 	}
 	m.SandboxTier, m.Network = st.sandbox.tierNow(m.Network)
 	var bg *agent.Background

@@ -99,8 +99,12 @@ The command reads the session's status as one JSON object on stdin:
 {"model":"qwen3-coder:30b","provider":"local","mode":"default","mode_locked":false,
  "context_tokens":5120,"context_percent":8,"tokens_in":20480,"tokens_out":900,
  "background_tasks":0,"waiting_ask":false,"sandbox_tier":"process","network":false,
- "record":"memory","git_branch":"main","cwd":"~/src/app"}
+ "record":"local","git_branch":"main","cwd":"~/src/app"}
 ```
+
+`record` is the store the session writes to: `local` for the local record,
+`unverified` for Postgres, which this process has not verified, and `memory`
+when nothing outlives the process.
 
 On a terminal its first line replaces the footer's second row, run again at
 most once a second as the session changes; in a piped session it is printed
