@@ -316,7 +316,9 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 }
 
 // A password typed ahead of read -s, before the shell has run the line that
-// turns echo off, is withheld; so is one typed once echo is off.
+// turns echo off, is withheld; so is one typed once echo is off. The lines
+// typed ahead end in Ctrl-J: one that lands while bash's line editor still
+// has the terminal keeps a bare CR, and read would wait on it for ever.
 func TestShellWithholdsAPasswordTypedAheadOfThePrompt(t *testing.T) {
 	wb := shellBench(t, nil)
 	start := wb.startShell()
@@ -324,15 +326,24 @@ func TestShellWithholdsAPasswordTypedAheadOfThePrompt(t *testing.T) {
 		step{keys: `stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"` + "\r", until: "READY"},
 		step{keys: "hunter22\r", until: "got 8"},
 		step{keys: `read -s pw; echo "also ${#pw}"` + "\r", nowait: true},
-		step{keys: "hunter33\r", until: "also 8"},
+		step{keys: "hunter33\n", until: "also 8"},
+		// Typed while the line before read -s still runs, with echo on: the
+		// terminal shows it, and the record's copy of the output must not.
+		step{keys: `echo BU""SY; end=$((SECONDS+2)); while ((SECONDS < end)); do :; done; read -s pw; echo "late ${#pw}"` + "\r", until: "BUSY"},
+		step{keys: "hunter44\n", until: "late 8"},
 		step{keys: "exit\r"})
-	if !strings.Contains(out, "got 8") || !strings.Contains(out, "also 8") {
+	if !strings.Contains(out, "got 8") || !strings.Contains(out, "also 8") || !strings.Contains(out, "late 8") {
 		t.Fatalf("the reads did not take the input:\n%s", out)
+	}
+	if !strings.Contains(out, "hunter44") {
+		t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
 	}
 	time.Sleep(2 * termline.EchoWait)
 	for _, e := range wb.events() {
-		if strings.Contains(string(e.Payload), "hunter22") || strings.Contains(string(e.Payload), "hunter33") {
-			t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+		for _, pw := range []string{"hunter22", "hunter33", "hunter44"} {
+			if strings.Contains(string(e.Payload), pw) {
+				t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+			}
 		}
 	}
 }

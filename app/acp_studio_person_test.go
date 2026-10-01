@@ -418,10 +418,22 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	typeLine(`stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "READY") })
 	typeLine("hunter22\r", func(s string) bool { return strings.Contains(s, "got 8") })
 	// Typed ahead: the password is sent before read -s has turned echo off.
+	// It ends in Ctrl-J: a bare CR that lands while bash's line editor still
+	// has the terminal is not turned into a newline, and read waits for one.
 	at := r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": `read -s pw; echo "also ${#pw}"` + "\r"}, nil)
-	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "hunter33\r"}, nil)
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "hunter33\n"}, nil)
 	waitShell(at, func(s string) bool { return strings.Contains(s, "also 8") && prompted(s) })
+	// Typed while the line before read -s still runs, with echo on: the
+	// terminal shows it, and the record's copy of the output must not.
+	typeLine(`echo BU""SY; end=$((SECONDS+2)); while ((SECONDS < end)); do :; done; read -s pw; echo "late ${#pw}"`+"\r",
+		func(s string) bool { return strings.Contains(s, "BUSY") })
+	typeLine("hunter44\n", func(s string) bool {
+		if strings.Contains(s, "late 8") && !strings.Contains(s, "hunter44") {
+			t.Fatal("the terminal did not echo the line typed ahead, so nothing was tried")
+		}
+		return strings.Contains(s, "late 8") && prompted(s)
+	})
 	at = r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
 	r.cl.waitFor(at, "the shell's exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
@@ -443,7 +455,7 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 		t.Fatalf("terminal.input: %v", inputs)
 	}
 	for _, ev := range r.events(id) {
-		if strings.Contains(string(ev.Payload), "hunter22") || strings.Contains(string(ev.Payload), "hunter33") {
+		if strings.Contains(string(ev.Payload), "hunter22") || strings.Contains(string(ev.Payload), "hunter33") || strings.Contains(string(ev.Payload), "hunter44") {
 			t.Fatalf("the unechoed line reached the record: %s %s", ev.Type, ev.Payload)
 		}
 	}

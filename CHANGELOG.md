@@ -10,6 +10,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A password typed ahead of `read -s` in the workbench shell or Studio's
+  interactive terminal was recorded without its text as a line, but when it
+  arrived after bash had handed the terminal back with echo on and before
+  `read -s` turned echo off, the terminal echoed it, and the latest output
+  that the shell's end records kept it in clear. Whether it did depended on
+  timing, so a slower machine leaked it more often. Every line recorded
+  without its text is now also taken out of that output, as `[withheld]`.
 - The console and `/ide` drew a tool call's output with its bidi, isolate,
   joiner, zero-width and control characters applied, so a background task's
   description echoed in "Started in background" could reorder or hide part

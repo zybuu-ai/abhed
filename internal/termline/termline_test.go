@@ -122,3 +122,31 @@ func TestPlainTextStripsControl(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// A line withheld from the record is taken out of the output that is
+// recorded too: typed ahead of read -s, the terminal echoed it before echo
+// went off, and the shell's latest output would otherwise carry it.
+func TestScrubTakesWithheldLinesOutOfOutput(t *testing.T) {
+	c := NewCapture("u1", func(agent.TerminalInput) {})
+	for _, keys := range []string{"hunter33\r", "ok\r"} {
+		chunks := c.Keys([]byte(keys))
+		e := chunks[len(chunks)-1].Enter
+		e.Known, e.Ahead = true, true
+		c.Entered(e)
+	}
+	c.Flush()
+	got := c.Scrub("$ read -s pw\nhunter33\nalso 8\nok\nlooks ok\n$ ")
+	if strings.Contains(got, "hunter33") || got != "$ read -s pw\n[withheld]\nalso 8\n[withheld]\nlooks ok\n$ " {
+		t.Fatalf("scrubbed: %q", got)
+	}
+	// A line the terminal showed as typed is kept, in the record and the output.
+	c = NewCapture("u1", func(agent.TerminalInput) {})
+	c.Keys([]byte("g"))
+	c.Output([]byte("git status"))
+	e := c.Keys([]byte("it status\r"))[0].Enter
+	e.Known = true
+	c.Entered(e)
+	if got := c.Scrub("git status\n"); got != "git status\n" {
+		t.Fatalf("an echoed line was scrubbed: %q", got)
+	}
+}

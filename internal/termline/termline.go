@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,10 @@ const (
 	maxPending = 64
 	// withheldEcho is why a line's text is not in the record.
 	withheldEcho = "the terminal did not show this line as typed, so its text is not recorded"
+	// maxHeld bounds the withheld lines kept to scrub from recorded output.
+	maxHeld = 256
+	// scrubbed stands in recorded output for a withheld line's text.
+	scrubbed = "[withheld]"
 )
 
 // Entered is one line, at the Enter that submitted it.
@@ -90,6 +95,10 @@ type Capture struct {
 	dropped int
 	record  func(agent.TerminalInput)
 	callID  string
+	// held are the texts of lines withheld from the record. The terminal may
+	// still have echoed one, as when it was typed ahead of read -s turning
+	// echo off, so Scrub takes them out of any output that is recorded.
+	held []string
 	// Hidden, when set, says whether a line is being read unshown now; a
 	// pasted line judged while it is, is withheld.
 	Hidden func() bool
@@ -233,6 +242,7 @@ func (c *Capture) Entered(e *Entered) {
 	c.mu.Lock()
 	if len(c.pending) >= maxPending {
 		c.dropped++
+		c.hold(e.Line)
 		c.mu.Unlock()
 		return
 	}
@@ -275,6 +285,9 @@ func (c *Capture) judge(e *Entered) {
 		in := agent.TerminalInput{CallID: c.callID, Line: e.Line, Edited: e.Edited}
 		if !e.Echoed() || (e.Whole && c.Hidden != nil && c.Hidden()) {
 			in = agent.TerminalInput{CallID: c.callID, Withheld: withheldEcho}
+			c.mu.Lock()
+			c.hold(e.Line)
+			c.mu.Unlock()
 		}
 		c.record(in)
 	}
@@ -282,6 +295,42 @@ func (c *Capture) judge(e *Entered) {
 		c.record(agent.TerminalInput{CallID: c.callID,
 			Withheld: fmt.Sprintf("%d more lines came faster than they could be followed, and are not recorded", dropped)})
 	}
+}
+
+// hold keeps a withheld line's text for Scrub. Called with c.mu held.
+func (c *Capture) hold(line string) {
+	if strings.TrimSpace(line) == "" || slices.Contains(c.held, line) {
+		return
+	}
+	if len(c.held) >= maxHeld {
+		c.held = c.held[1:]
+	}
+	c.held = append(c.held, line)
+}
+
+// Scrub takes the text of every line withheld so far out of text, output
+// about to be recorded. A line of probeMin bytes or more goes wherever it
+// stands; a shorter one only where it stands alone on a line, so a one-letter
+// answer does not take every such letter out of the output. Lines still
+// waiting to be judged are judged first by Flush, which the caller runs.
+func (c *Capture) Scrub(text string) string {
+	c.mu.Lock()
+	held := slices.Clone(c.held)
+	c.mu.Unlock()
+	// Longest first, so a line that contains another is taken whole.
+	slices.SortFunc(held, func(a, b string) int { return len(b) - len(a) })
+	for _, h := range held {
+		if len(h) >= probeMin {
+			text = strings.ReplaceAll(text, h, scrubbed)
+		}
+	}
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if t := strings.TrimSpace(l); t != "" && slices.Contains(held, t) {
+			lines[i] = scrubbed
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Echoed reports whether the terminal showed the line as it was typed: the

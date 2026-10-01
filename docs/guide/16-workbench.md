@@ -339,8 +339,12 @@ What a shell changes about the checks, stated plainly:
   see echoed before the Enter (so keys a program took without an Enter, as
   `read -s -n` does, never prefix a recorded line), for an edited line, and for a short line where it could not ask the
   terminal. Keys typed ahead while a command still runs are shown by the
-  terminal as they arrive, so a password typed ahead of its prompt is in the
-  recorded output, as it was on screen.
+  terminal as they arrive, so a password typed ahead of its prompt can be on
+  screen. A line recorded without its text is also taken out of the output
+  the record keeps, written `[withheld]` wherever it appears (a line under four
+  characters only where it stands alone on a line). Keys typed while another
+  program has the terminal are not lines to the server, so what the terminal
+  showed of them stays in the recorded output, as it was on screen.
   Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
   in canonical mode too, so from then on every line is recorded without its
   text; it is still screened.

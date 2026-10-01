@@ -524,6 +524,11 @@ loop:
 			run.note(note)
 		}
 	}
+	// Every line still waiting is judged before the output is taken, so a
+	// withheld line's echo is scrubbed from it.
+	if run.capture != nil {
+		run.capture.Flush()
+	}
 	run.mu.Lock()
 	run.exit = code
 	text := plainText(run.record)
@@ -534,7 +539,7 @@ loop:
 	// "exit" on the stream means the observation is already there.
 	how := "on a terminal"
 	if run.capture != nil {
-		run.capture.Flush()
+		text = run.capture.Scrub(text)
 		how = "interactive terminal"
 		if by := run.endedBy.Load(); by != nil {
 			how += ", " + *by

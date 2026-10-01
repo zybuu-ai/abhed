@@ -170,6 +170,9 @@ func (c *acpConn) waitShell(t *acpTerminal) {
 	sh.mu.Lock()
 	text := termline.PlainText(sh.tail)
 	sh.mu.Unlock()
+	// A withheld line the terminal echoed anyway, as one typed ahead of
+	// read -s, is not kept in the output either.
+	text = sh.capture.Scrub(text)
 	res := tools.Result{Content: fmt.Sprintf("exit %d · interactive Abhed terminal; the latest output follows\n%s", code, text),
 		ExitCode: &code, Tier: sh.tier}
 	_ = t.session.parts.Loop.ManualObserve(sh.id, "bash", res, time.Since(sh.started))
