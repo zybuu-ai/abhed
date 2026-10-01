@@ -31,4 +31,10 @@ check('a quote, emphasis and a soft break', t.includes('blockquote') && t.includ
 root = md('```\nno end ' + HOSTILE);
 check('an unclosed fence runs to the end, as text', root.textContent === 'no end ' + HOSTILE && !markupSet(root));
 
+// Hidden characters in a reply are written out as code points, as on a tool card; code keeps its layout.
+const RLO = String.fromCharCode(0x202e), ZW = String.fromCharCode(0x200b);
+root = md('see notes' + RLO + 'dm.txt' + ZW + '\n```\n        indented' + RLO + '\n```');
+check('a reply shows bidi and zero-width characters as code points', !root.textContent.includes(RLO) && !root.textContent.includes(ZW) &&
+  root.textContent.includes('notes⟨U+202E⟩dm.txt⟨U+200B⟩') && root.textContent.includes('        indented⟨U+202E⟩'));
+
 process.exit(ok ? 0 : 1);

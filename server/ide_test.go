@@ -507,3 +507,29 @@ const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:
 		t.Fatalf("the workbench's panels failed:\n%s", out)
 	}
 }
+
+// Every place the workbench draws a file name, and the live reply and
+// reasoning, writes hidden characters out through reveal.
+func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
+	for fn, wants := range map[string][]string{
+		"function drawTabs(){":             {"el('span', 'nm', reveal(t.label))", "b.title = reveal(", "'Close ' + reveal(t.label)"},
+		"function crumbs(path, meta){":     {"reveal(p)"},
+		"function flushStream(){":          {"appendData(reveal(pendThink, true))", "appendData(reveal(pendText, true))"},
+		"async function loadChanges(){":    {"reveal(f.path)"},
+		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true)"},
+	} {
+		start := strings.Index(ideHTML, fn)
+		if start < 0 {
+			t.Fatalf("%s is missing", fn)
+		}
+		body := ideHTML[start : start+strings.Index(ideHTML[start:], "\n}\n")]
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does not reveal: want %q", fn, want)
+			}
+		}
+	}
+	if !strings.Contains(ideHTML, "confirm('Delete ' + reveal(e.path)") {
+		t.Error("the delete dialog draws the path raw")
+	}
+}
