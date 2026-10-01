@@ -120,6 +120,9 @@ type Policy struct {
 	// such as a configured users file. Commands can neither read nor write
 	// them, as for .abhed.
 	StatePaths []string
+	// WriteProtected are paths inside the workspace a command may read but
+	// not write, such as an editor's own settings there.
+	WriteProtected []string
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int

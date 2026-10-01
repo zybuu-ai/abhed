@@ -264,7 +264,7 @@ func TestACPReportsWorkspaceTrust(t *testing.T) {
 			Meta struct {
 				Abhed struct {
 					WorkspaceTrust config.WorkspaceTrust `json:"workspaceTrust"`
-				} `json:"abhed"`
+				} `json:"zybuu.ai/abhed"`
 			} `json:"_meta"`
 		}
 		_ = json.Unmarshal(m.Result, &res)

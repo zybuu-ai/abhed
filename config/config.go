@@ -69,6 +69,8 @@ type Config struct {
 	Record RecordConfig `json:"record,omitempty"`
 	// Hooks governs the extension hooks.
 	Hooks HooksConfig `json:"hooks,omitempty"`
+	// Studio governs what Abhed Studio may offer beside the agent.
+	Studio StudioConfig `json:"studio,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -137,6 +139,13 @@ type RecordConfig struct {
 }
 
 // HooksConfig governs the extension hooks.
+// StudioConfig is what the organisation allows Abhed Studio beside the agent.
+type StudioConfig struct {
+	// DisableHostTerminal removes Studio's own host shell, which is neither
+	// sandboxed nor recorded. Managed only.
+	DisableHostTerminal bool `json:"disable_host_terminal,omitempty"`
+}
+
 type HooksConfig struct {
 	// Disabled switches every hook off. Managed only; only true means anything.
 	Disabled bool `json:"disabled,omitempty"`
@@ -156,10 +165,11 @@ func (k SetAsideKey) String() string {
 // managedOnly are the settings only the managed configuration may make. The
 // same key in the user's file or a trusted workspace's is set aside.
 var managedOnly = map[string]string{
-	"cli.mode_cycle":        "only the managed configuration narrows the Shift-Tab modes",
-	"record.dir":            "only the managed configuration moves the record",
-	"record.retention_days": "only the managed configuration sets how long the record is kept",
-	"hooks.disabled":        "only the managed configuration switches hooks off, since that removes their vetoes",
+	"cli.mode_cycle":               "only the managed configuration narrows the Shift-Tab modes",
+	"record.dir":                   "only the managed configuration moves the record",
+	"record.retention_days":        "only the managed configuration sets how long the record is kept",
+	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
+	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
 }
 
 // ManagedOnly reports whether only the managed configuration may make the
@@ -180,6 +190,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.RetentionDays = 0
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
+	case "studio.disable_host_terminal":
+		c.Studio.DisableHostTerminal = false
 	}
 }
 
@@ -720,6 +732,9 @@ type SandboxConfig struct {
 	// TerminalIdleMinutes ends a workbench shell nobody has watched for this
 	// long. Zero means 30.
 	TerminalIdleMinutes int `json:"terminal_idle_minutes,omitempty"`
+	// WriteProtected are workspace paths commands may not write, set by the
+	// surface that runs the session, never by a file.
+	WriteProtected []string `json:"-"`
 }
 
 type LimitsConfig struct {

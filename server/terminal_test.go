@@ -26,6 +26,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -303,7 +304,7 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 	if !strings.Contains(out, "got 8") {
 		t.Fatalf("the prompt did not take the input:\n%s", out)
 	}
-	time.Sleep(2 * echoWait)
+	time.Sleep(2 * termline.EchoWait)
 	for _, e := range wb.events() {
 		if strings.Contains(string(e.Payload), "hunter22") {
 			t.Fatalf("an unechoed line reached the record: %s %s", e.Type, e.Payload)
@@ -794,94 +795,6 @@ func TestTerminalEnvironmentKeepsTheHost(t *testing.T) {
 	env := withTerm(nil)
 	if !slices.Contains(env, "PATH="+os.Getenv("PATH")) || env[len(env)-1] != "TERM=xterm-256color" {
 		t.Fatalf("env: %v", env)
-	}
-}
-
-// The capture rebuilds a line from the keys typed, and says when it could not.
-func TestLineCaptureRebuildsTypedLines(t *testing.T) {
-	for keys, want := range map[string]struct {
-		line   string
-		edited bool
-	}{
-		"ls -la\r":                       {"ls -la", false},
-		"ls -lx\x7fa\r":                  {"ls -la", true},
-		"rm -rf x\x15echo hi\r":          {"echo hi", false},
-		"\x1b[200~git status\x1b[201~\r": {"git status", false},
-		"gi\tstatus\r":                   {"gistatus", true},
-		"\x1b[A\r":                       {"", true},
-		"echo one two\x17three\r":        {"echo one three", true},
-	} {
-		c := newLineCapture("u1", nil)
-		chunks := c.keys([]byte(keys))
-		e := chunks[len(chunks)-1].enter
-		if e == nil || e.line != want.line || e.edited != want.edited || !e.whole {
-			t.Errorf("%q: got %+v, want %q edited=%v", keys, e, want.line, want.edited)
-		}
-	}
-	c := newLineCapture("u1", nil)
-	c.output([]byte("\x1b[?1049h"))
-	if chunks := c.keys([]byte(":wq\r")); !chunks[0].enter.alt {
-		t.Error("a full-screen program's keys were taken for a shell line")
-	}
-}
-
-// When the capture cannot be sure a line was shown as typed, it keeps the line
-// without its text.
-func TestLineCaptureWithholdsWhenUnsure(t *testing.T) {
-	typed := func(keys string, echo string, known, secret bool) *enteredLine {
-		c := newLineCapture("u1", nil)
-		for i := range keys[:len(keys)-1] {
-			c.keys([]byte{keys[i]})
-			if i == 0 { // the terminal shows the given text once, as the line is typed
-				c.output([]byte(echo))
-			}
-		}
-		e := c.keys([]byte{keys[len(keys)-1]})[0].enter
-		e.known, e.secret = known, secret
-		return e
-	}
-	for name, tc := range map[string]struct {
-		e    *enteredLine
-		want bool
-	}{
-		"echoed long line":        {typed("git status\r", "git status", false, false), true},
-		"not echoed":              {typed("hunter22\r", "\r\n", true, false), false},
-		"password mode":           {typed("git status\r", "git status", true, true), false},
-		"short, terminal asked":   {typed("ls\r", "ls", true, false), true},
-		"short, terminal unknown": {typed("ls\r", "ls", false, false), false},
-		"edit at the Enter":       {typed("abcdX\x7fr\r", "abcdX", true, false), false},
-		"only the end shown":      {typed("hunter22echo hi there\r", "echo hi there", true, false), false},
-		"all but one key shown":   {typed("echo hi there\r", "echo hi the", true, false), false},
-	} {
-		if got := tc.e.echoed(); got != tc.want {
-			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)
-		}
-	}
-}
-
-// A switch to the alternate screen split across two reads is still seen.
-func TestLineCaptureSeesASplitScreenSwitch(t *testing.T) {
-	c := newLineCapture("u1", nil)
-	c.output([]byte("vim\x1b[?10"))
-	c.output([]byte("49h~"))
-	if !c.alt {
-		t.Fatal("a switch split across reads was missed")
-	}
-}
-
-// A flood of lines cannot turn into a flood of events.
-func TestLineCaptureBoundsWhatWaits(t *testing.T) {
-	var got []agent.TerminalInput
-	var mu sync.Mutex
-	c := newLineCapture("u1", func(in agent.TerminalInput) { mu.Lock(); got = append(got, in); mu.Unlock() })
-	for _, k := range c.keys([]byte(strings.Repeat("abcdef\r", 500))) {
-		c.entered(k.enter)
-	}
-	c.flush()
-	mu.Lock()
-	defer mu.Unlock()
-	if len(got) != maxPending+1 || !strings.Contains(got[len(got)-1].Withheld, "436 more lines") {
-		t.Fatalf("%d events, last %+v", len(got), got[len(got)-1])
 	}
 }
 

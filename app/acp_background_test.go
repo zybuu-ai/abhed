@@ -29,11 +29,7 @@ func TestACPIdleAskHeldUntilPrompt(t *testing.T) {
 		t.Fatal("the editor was asked with no prompt turn open")
 	}
 	// A prompt opens, as prompt() does.
-	s.mu.Lock()
-	s.cancel = func() {}
-	close(s.turnOpen)
-	s.turnOpen = nil
-	s.mu.Unlock()
+	s.beginTurn(context.Background(), func() {})
 	select {
 	case ok := <-done:
 		if !ok || asked.Load() != 1 {

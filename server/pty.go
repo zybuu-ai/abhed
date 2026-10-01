@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -384,7 +383,7 @@ func (p *ptyRun) pump() {
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			if p.capture != nil {
-				p.capture.output(chunk)
+				p.capture.Output(chunk)
 				// The first output is the shell's prompt, and the foreground
 				// group then is the shell's own.
 				if p.local && p.shellPgrp.Load() == 0 {
@@ -504,7 +503,7 @@ loop:
 	// "exit" on the stream means the observation is already there.
 	how := "on a terminal"
 	if run.capture != nil {
-		run.capture.flush()
+		run.capture.Flush()
 		how = "interactive terminal"
 		if by := run.endedBy.Load(); by != nil {
 			how += ", " + *by
@@ -530,15 +529,6 @@ loop:
 		delete(live.ptys, run.id)
 		live.mu.Unlock()
 	})
-}
-
-// ansiSeq matches CSI, OSC and DCS sequences, charset selections, the
-// single-character escapes, and the control bytes that only move a cursor.
-var ansiSeq = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]|\x1b[P\\]^_][^\x1b\x07]*(\x07|\x1b\\\\)|\x1b[()*+][A-Za-z0-9]|\x1b[=>78cMDEH]|[\r\x00-\x08\x0b-\x0c\x0e-\x1a\x1c-\x1f]")
-
-// plainText strips terminal control sequences so the record reads as text.
-func plainText(b []byte) string {
-	return string(ansiSeq.ReplaceAll(b, nil))
 }
 
 // ptyFor finds one of the caller's running commands. A terminal lives in this
@@ -701,46 +691,46 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 	run.inputMu.Lock()
 	defer run.inputMu.Unlock()
-	keys := run.capture.keys(data)
+	keys := run.capture.Keys(data)
 	if len(keys) > maxLinesPerInput {
 		return errTooManyLines
 	}
 	// Keys a program reads are not the start of the shell's next line.
 	defer func() {
 		if run.programHasTerminal() {
-			run.capture.abandon()
+			run.capture.Abandon()
 		}
 	}()
 	for _, k := range keys {
-		e := k.enter
+		e := k.Enter
 		if e != nil {
 			run.ask(e)
 		}
-		if e == nil || e.program || e.line == "" {
-			if _, err := run.tty.Write(k.data); err != nil {
+		if e == nil || e.Program || e.Line == "" {
+			if _, err := run.tty.Write(k.Data); err != nil {
 				return err
 			}
 			if e != nil {
-				run.capture.entered(e)
+				run.capture.Entered(e)
 			}
 			continue
 		}
-		refused, err := live.Loop.ManualScreen("u"+newSessionID(), e.line)
+		refused, err := live.Loop.ManualScreen("u"+newSessionID(), e.Line)
 		if err != nil {
 			refused = &tools.Result{Content: "Denied: the line could not be recorded"}
 		}
 		if refused == nil {
-			if _, err := run.tty.Write(k.data); err != nil {
+			if _, err := run.tty.Write(k.Data); err != nil {
 				return err
 			}
-			run.capture.entered(e)
+			run.capture.Entered(e)
 			continue
 		}
 		run.say(refused.Content)
 		// A line pasted whole has not reached the shell at all, and an empty
 		// line brings its prompt back. One typed earlier is in its buffer.
 		discard := []byte{'\r'}
-		if !e.whole {
+		if !e.Whole {
 			discard = []byte{0x03}
 		}
 		if _, err := run.tty.Write(discard); err != nil {
@@ -755,11 +745,11 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 // container's, the engine's CLI holds it raw, and the alternate screen is the
 // only sign of a full-screen program.
 func (p *ptyRun) ask(e *enteredLine) {
-	e.program = e.alt
+	e.Program = e.Alt
 	if !p.local {
 		return
 	}
-	e.program = false
+	e.Program = false
 	fg, canonical, ok := ttyNow(p.tty)
 	if !ok {
 		return
@@ -767,7 +757,7 @@ func (p *ptyRun) ask(e *enteredLine) {
 	// A line read in canonical mode is not one typed at bash's prompt: a
 	// password prompt, or keys typed ahead while a builtin ran. Its text is
 	// withheld.
-	e.known, e.secret, e.program = true, canonical, p.isProgram(fg)
+	e.Known, e.Secret, e.Program = true, canonical, p.isProgram(fg)
 }
 
 // isProgram reports whether fg, the foreground process group, is not the shell's.

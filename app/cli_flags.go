@@ -209,6 +209,18 @@ func Main(args []string, opts ...Option) int {
 	}
 
 	if f.showVer || (len(f.sub) > 0 && f.sub[0] == "version") {
+		// --json is the handshake's block, for an editor checking the engine first.
+		if rest := f.sub; len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+			ws, err := resolveWorkspace(f.workdir)
+			if err == nil {
+				err = versionJSON(os.Stdout, buildOf(a.version, a.edition), ws, a.trust)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+			return 0
+		}
 		fmt.Println("abhed", a.version, a.edition)
 		return 0
 	}
@@ -283,6 +295,9 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)
 	case "doctor":
+		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+			return a.doctorJSON(os.Stdout, workspace)
+		}
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
@@ -296,7 +311,7 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return resolveCmd(workspace, rest[1:], a.trust)
 	case "acp":
 		// The Agent Client Protocol over stdio, for editors that speak it.
-		return acpCmd(workspace, a.version, a.trust)
+		return acpCmd(workspace, buildOf(a.version, a.edition), a.trust)
 	case "rpc":
 		// Line-delimited JSON on stdin and stdout, so a caller in any language
 		// can drive Abhed as a subprocess without running a server.

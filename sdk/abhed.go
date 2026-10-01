@@ -40,6 +40,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/embedded"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -303,6 +304,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		tools.AddStatePath(filepath.Join(opts.ConfigDir, tools.StateDir))
 	}
 	bash := tools.Bash{}
+	cfg.Sandbox.WriteProtected = append(cfg.Sandbox.WriteProtected, embedded.From(ctx).Protect...)
 	if opts.Sandbox || cfg.ManagedSets("sandbox") {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {
@@ -336,8 +338,12 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	toolset.Police(set.Extensions, pol, "embedded")
 
-	id := fmt.Sprintf("embedded-%d", time.Now().UnixNano())
-	store, err := recordFor(ctx, opts, id, cfg)
+	x := embedded.From(ctx)
+	id := x.ID
+	if id == "" {
+		id = fmt.Sprintf("embedded-%d", time.Now().UnixNano())
+	}
+	store, err := recordFor(ctx, opts, id, cfg, x)
 	if err != nil {
 		set.Close()
 		return nil, err
@@ -424,10 +430,16 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+		return a.lastMessage(), &EndedError{Reason: reason}
 	}
 	return a.lastMessage(), nil
 }
+
+// EndedError is a run that ended for another reason than completing its
+// work, such as the turn limit; Reason is the terminal reason recorded.
+type EndedError struct{ Reason TerminalReason }
+
+func (e *EndedError) Error() string { return fmt.Sprintf("abhed: ended as %s", e.Reason) }
 
 // RunJSON runs a prompt whose answer must be a JSON value matching schema,
 // and decodes it into out.
@@ -471,7 +483,7 @@ func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.Ra
 	}
 	raw = redactJSON(a.redact, raw)
 	if reason != agent.TermCompleted {
-		return raw, fmt.Errorf("abhed: ended as %s", reason)
+		return raw, &EndedError{Reason: reason}
 	}
 	return raw, nil
 }
@@ -634,7 +646,7 @@ func (a *Agent) Wake(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted && reason != agent.TermWakeLimit {
-		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+		return a.lastMessage(), &EndedError{Reason: reason}
 	}
 	return a.lastMessage(), nil
 }

@@ -197,8 +197,15 @@ func rewindConversation(ctx context.Context, st *cliState, seq int64) error {
 // agent is about to change a file: the content in the record's blobs, and
 // checkpoint.saved naming it, so undo and rewind survive the process.
 func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, error) {
+	return checkpointSaverFor(func() *agent.Loop { return st.loop }, st.store)
+}
+
+// checkpointSaverFor saves checkpoints for the conversation loop names, in
+// the record es keeps: blobs where it has them, a hash where it does not.
+func checkpointSaverFor(loopOf func() *agent.Loop, es agent.Store) func(agent.Checkpoint) (agent.Checkpoint, error) {
 	return func(cp agent.Checkpoint) (agent.Checkpoint, error) {
-		if st.loop == nil {
+		loop := loopOf()
+		if loop == nil {
 			return cp, nil
 		}
 		if info, err := os.Lstat(cp.Path); err == nil && info.Mode().IsRegular() {
@@ -207,15 +214,15 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 		// A file policy keeps from being read, or one that holds keys, is
 		// not copied into the record: its checkpoint says so, and it is not
 		// offered for restore.
-		if why := noCheckpoint(st.loop, cp.Path); cp.Existed && why != "" {
+		if why := noCheckpoint(loop, cp.Path); cp.Existed && why != "" {
 			cp.Skipped, cp.Before = why, nil
-			ev, err := st.loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
+			ev, err := loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
 				agent.CheckpointSaved{Path: cp.Path, Turn: cp.Turn, Mode: uint32(cp.Mode), Skipped: why})
 			cp.Seq = ev.Seq
 			return cp, err
 		}
 		if cp.Existed {
-			if rec, ok := st.store.(*local.Store); ok {
+			if rec, ok := es.(*local.Store); ok {
 				sha, err := rec.Blobs().Put(cp.Before)
 				if err != nil {
 					return cp, err
@@ -225,7 +232,7 @@ func checkpointSaver(st *cliState) func(agent.Checkpoint) (agent.Checkpoint, err
 				cp.Blob = hashHex(cp.Before)
 			}
 		}
-		ev, err := st.loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
+		ev, err := loop.Recorder.Record(agent.EvCheckpoint, agent.ActorSystem, agent.Trusted,
 			agent.CheckpointSaved{Path: cp.Path, SHA256: cp.Blob, Turn: cp.Turn, Mode: uint32(cp.Mode)})
 		if err != nil {
 			return cp, err

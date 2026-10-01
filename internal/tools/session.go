@@ -43,6 +43,10 @@ type Session struct {
 	// tool gets it by construction — a new tool cannot forget to call it.
 	Checkpoint func(path string, before []byte, existed bool)
 
+	// Guard, when set, may refuse a change edit or write is about to make to
+	// path, such as a file a person has unsaved edits to; nil allows all.
+	Guard func(path string) error
+
 	// Syntax is what edit and write do with a change that breaks a file's
 	// syntax. The zero value refuses it.
 	Syntax SyntaxMode
@@ -146,6 +150,14 @@ func (s *Session) CloseScoped() {
 	sc.m, sc.closed = map[any]any{}, true
 	sc.mu.Unlock()
 	closeAll(vals)
+}
+
+// guard asks Guard about a change to path.
+func (s *Session) guard(path string) error {
+	if s.Guard == nil {
+		return nil
+	}
+	return s.Guard(path)
 }
 
 // snapshot captures a file's current content before it is modified. Called by

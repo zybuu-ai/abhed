@@ -1,6 +1,6 @@
 //go:build darwin
 
-package server
+package termline
 
 import "golang.org/x/sys/unix"
 

@@ -37,12 +37,46 @@ const (
 	EvRecordRepaired EventType = "record.repaired"
 )
 
+// Events the editor protocol records about the person's own actions in Abhed
+// Studio (docs/architecture/studio-acp-contract.md).
+const (
+	// EvApprovalScopeGranted is an "always allow" a person chose; see ScopeGranted.
+	EvApprovalScopeGranted EventType = "approval.scope_granted"
+	// EvManualEdit is a person's own save of a file; see ManualEdit.
+	EvManualEdit EventType = "manual.edit"
+	// EvTaskCancelled is a person stopping one background task; see TaskCancelled.
+	EvTaskCancelled EventType = "task.cancelled"
+)
+
+// ScopeGranted is the payload of approval.scope_granted.
+type ScopeGranted struct {
+	Scope string `json:"scope"`
+	By    string `json:"by"`
+}
+
+// ManualEdit is the payload of manual.edit: a save the person made in their
+// editor, recorded, not judged, since it is their own file on their machine.
+type ManualEdit struct {
+	Path         string `json:"path"`
+	BeforeSHA256 string `json:"before_sha256,omitempty"`
+	AfterSHA256  string `json:"after_sha256,omitempty"`
+	Patch        string `json:"patch,omitempty"`
+	By           string `json:"by"`
+}
+
+// TaskCancelled is the payload of task.cancelled.
+type TaskCancelled struct {
+	TaskID string `json:"task_id"`
+	By     string `json:"by"`
+}
+
 // How a mode change was made, as ModeChanged.Via records it.
 const (
 	ViaFlag     = "flag"
 	ViaSlash    = "slash"
 	ViaShiftTab = "shift-tab"
 	ViaPlanExit = "plan-exit"
+	ViaStudio   = "studio"
 )
 
 // ModeChanged is the payload of mode.changed.

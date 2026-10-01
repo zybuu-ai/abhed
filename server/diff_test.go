@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/linediff"
 )
 
 // applyUnified rebuilds the new text from the old text and a diff, checking
@@ -13,7 +15,7 @@ import (
 // passes describes the change exactly; nothing else about it needs trusting.
 func applyUnified(t *testing.T, before, diff string) string {
 	t.Helper()
-	old := splitLines(before)
+	old := linediff.SplitLines(before)
 	var out strings.Builder
 	at := 0
 	lines := strings.Split(strings.TrimSuffix(diff, "\n"), "\n")
@@ -118,7 +120,7 @@ func TestUnifiedDiffKeepsDistantEditsInSeparateHunks(t *testing.T) {
 // a correct diff, and it must not take the memory an unbounded search would.
 func TestUnifiedDiffOfARewriteIsStillCorrect(t *testing.T) {
 	var a, b []string
-	for i := 0; i < 3*maxEditDistance; i++ {
+	for i := 0; i < 3*linediff.MaxEditDistance; i++ {
 		a = append(a, "old "+strconv.Itoa(i))
 		b = append(b, "new "+strconv.Itoa(i))
 	}

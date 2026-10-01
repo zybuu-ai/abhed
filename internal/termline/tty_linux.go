@@ -1,6 +1,6 @@
 //go:build linux
 
-package server
+package termline
 
 import "golang.org/x/sys/unix"
 

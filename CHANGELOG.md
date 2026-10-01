@@ -8,6 +8,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Over ACP, the agent can no longer change an editor's own files in the
+  workspace: the file tools refuse `.vscode/**`, `.devcontainer/**`,
+  `.git/config`, `.git/hooks/**` and `*.code-workspace`, and the sandbox keeps
+  the agent's commands from writing them. An edit or write to a file the
+  editor reports as having unsaved changes (`_abhed/buffers/dirty`) is refused.
+- `session/new` refuses an `_meta` field it does not know instead of ignoring
+  it, and the MCP servers an editor names are not started; the reply lists
+  them in `mcpServersRefused`.
+- A held ask a person reviews from Abhed Studio is bound to its request like
+  any other: an option id offered for another request is refused, and an
+  ask still open when the review closes or the person stops is refused,
+  never approved.
+
 - A `tool_call` or `permission_request` extension that crashes or times out
   now fails closed: the call it failed on is refused, and while it is not
   running every call it would have screened is asked. It was skipped before,
@@ -571,6 +584,30 @@ Two changes need action before upgrading:
 
 ### Added
 
+- The engine side of the Abhed Studio contract
+  (docs/architecture/studio-acp-contract.md, `apiLevel` 1). `abhed acp`
+  keeps sessions in the local record, so `session/list`, `session/load`
+  (a replay that runs nothing again), `session/resume` and `session/close`
+  work, with the chain verified first; a record that fails opens read-only,
+  to be forked. `initialize` names the engine, its edition and every area it
+  serves in `agentCapabilities._meta["zybuu.ai/abhed"]`, and
+  `abhed version --json` prints the same block. New `_abhed/*` methods serve
+  rename, fork and compact; the event stream; verify, export and HawkEYE;
+  modes (`session/set_mode`); the policy view and a dry-run explain; trust
+  inspection; background tasks (list, cancel, review of held asks); the
+  sandboxed Abhed terminal, line by line or as an interactive shell judged
+  and recorded line by line; manual edits; per-hunk review and undo;
+  steering and the queue; and the doctor (also `abhed doctor --json`).
+  Every action a person takes through them is recorded `by: user`. What is
+  not served yet is listed in the contract's §11.
+- `available_commands_update` lists the built-in commands, your custom
+  commands, a trusted workspace's, and skills; running one is recorded as
+  `command.invoked`.
+- Permission requests carry the rule that asked, the pipeline step that made
+  the call, and for an edit or write the diff it would make, redacted.
+- The managed key `studio.disable_host_terminal` removes Abhed Studio's host
+  terminal, which is neither sandboxed nor recorded.
+
 - Interactive input acts as the person, through policy and the record. See
   `docs/guide/18-input-and-memory.md`.
   - `@path`, `@path:10-20` and `@dir/` attach files, read by the read and
@@ -989,6 +1026,12 @@ Two changes need action before upgrading:
   `RecordDecision` and `RefreshAgents`.
 
 ### Changed
+
+- `abhed acp` writes the workspace trust report under
+  `_meta["zybuu.ai/abhed"]`; the older `_meta.abhed` key is still read on
+  input for one more release. Stop reasons now come from the run's
+  terminal reason: `max_budget` is `max_tokens`, an interrupt is
+  `cancelled`, and an error is no longer read from its text.
 
 - The interactive CLI's `limits.max_turns` applies to each message, so a long
   conversation no longer runs out for good; a message that reaches it says

@@ -589,6 +589,7 @@ var workspaceRules = map[string]fieldRule{
 	"cli":                 {nil, "only the managed configuration sets it"},
 	"record":              {nil, "only the managed configuration sets it"},
 	"hooks":               {nil, "only the managed configuration sets it"},
+	"studio":              {nil, "only the managed configuration sets it"},
 
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},
 	"model":            {nil, "a provider and its base_url receive the code"},

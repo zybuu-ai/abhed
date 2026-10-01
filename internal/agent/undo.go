@@ -332,6 +332,16 @@ func (u *UndoLog) Pending() int {
 	return len(turns)
 }
 
+// Checkpoints are the checkpoints held, oldest first, without taking them.
+func (u *UndoLog) Checkpoints() []Checkpoint {
+	if u == nil {
+		return nil
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]Checkpoint(nil), u.stack...)
+}
+
 // Changed lists the files this session has modified, backing /diff.
 func (u *UndoLog) Changed() []string {
 	if u == nil {
