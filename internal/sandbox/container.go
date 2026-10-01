@@ -309,3 +309,26 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+// ForwardEnv passes the named variables, already set in cmd.Env, into a
+// container command. `-e NAME` makes the engine read the value from its own
+// environment, so no value appears in its arguments. Other commands are left
+// alone: their cmd.Env already reaches the shell.
+func ForwardEnv(cmd *exec.Cmd, names []string) {
+	at := -1
+	for i, a := range cmd.Args {
+		if a == Image {
+			at = i
+			break
+		}
+	}
+	if at < 1 || len(names) == 0 {
+		return
+	}
+	extra := make([]string, 0, 2*len(names))
+	for _, n := range names {
+		extra = append(extra, "-e", n)
+	}
+	args := append(append(append([]string{}, cmd.Args[:at]...), extra...), cmd.Args[at:]...)
+	cmd.Args = args
+}

@@ -722,6 +722,7 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A command run in the container sandbox did not receive the secrets named in `secrets`, so it ran with them empty. They are now passed to the container by name; the value never appears in the container engine's arguments.
 - The in-memory and Postgres event stores could panic the writer when a
   stream reader left at the moment an event was published.
 - /ide offered every permission mode, though a session may start only in

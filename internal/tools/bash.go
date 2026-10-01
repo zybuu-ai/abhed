@@ -336,6 +336,14 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 			return errf("%v", err)
 		}
 		cmd.Env = append(cmd.Env, env...)
+		names := make([]string, 0, len(env))
+		for _, kv := range env {
+			if k, _, ok := strings.Cut(kv, "="); ok {
+				names = append(names, k)
+			}
+		}
+		// A container sees only what is forwarded to it by name.
+		sandbox.ForwardEnv(cmd, names)
 	}
 
 	output, err := newBashOutput(cmd)
