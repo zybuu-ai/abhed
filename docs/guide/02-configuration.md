@@ -262,8 +262,13 @@ sent on its own. The call reads the person's last message, the agent's final
 reply and the names of the tools used, as the record holds them (stored
 secrets redacted), and asks for one line of at most 80 characters in the
 person's language. Its reply is cleaned of control and format characters, and
-dropped if it is empty, a `/` command, a `!` shell line, or would repeat a
-stored secret (checked on the whole reply, before it is cut). The call is
+dropped if it is empty, a `/` command, a `!` shell line, would repeat a
+stored secret (checked on the whole reply, before it is cut), or tells you or
+the agent to ignore, bypass or override a policy, an approval, a rule, the
+sandbox or safety, or suggests something destructive (delete, `rm -rf`,
+force-push, drop, wipe, disable, …): better none than a risky one. A
+suggestion is the model's text, which what the agent read can shape; it is
+never sent unless you choose to send it. The call is
 made after the turn has ended, so nothing waits for it; the next prompt, a
 wake, typing or closing the session cancels it. The record keeps the
 suggestion as `suggestion.offered` after the run's `session.ended`, then the

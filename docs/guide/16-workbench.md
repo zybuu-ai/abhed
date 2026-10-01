@@ -90,7 +90,8 @@ ends: the event stream stays open for it. Tab in the empty box puts
 it in the box to edit or send; it is never sent for you. Typing, sending or
 opening another session takes it away. The console's message box does the
 same. The suggestion is the model's text, so it is shown with every control
-and format character written out, as tool output is.
+and format character written out, as tool output is, and none is offered
+that urges past a safeguard or towards something destructive.
 `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
 

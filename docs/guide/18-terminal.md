@@ -44,7 +44,9 @@ in the terminal to avoid that.
 
 **A suggested next prompt.** When a turn completes, the input shows a dimmed
 guess at what you may ask next, such as *Run the tests*. Tab, or → on the
-empty line, puts it in the input to edit or send; it is never sent for you,
+empty line, puts it in the input to edit or send. It is the model's text, and
+none is offered that urges past a safeguard or towards something destructive
+([Configuration](02-configuration.md#suggestions)); it is never sent for you,
 and Enter on an empty line still sends nothing. Typing anything dismisses it,
 and the next turn replaces it. It comes from one small model call after the
 turn has ended, so the prompt is back at once and the suggestion appears a

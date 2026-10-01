@@ -8,6 +8,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -361,7 +363,7 @@ func CleanSuggestion(s string) string {
 		return ""
 	}
 	// A suggestion is something to say, never a command or a shell line.
-	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "!") {
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "!") || riskySuggestion(s) {
 		return ""
 	}
 	if r := []rune(s); len(r) > SuggestMaxChars {
@@ -372,6 +374,47 @@ func CleanSuggestion(s string) string {
 		s = strings.TrimRight(cut, " ,;:")
 	}
 	return s
+}
+
+// Words that make a suggestion risky to offer: model text, perhaps injected,
+// that urges past a safeguard or towards something destructive. Better none.
+var (
+	suggestDestructive = map[string]bool{"delete": true, "deletes": true, "deleting": true, "erase": true,
+		"wipe": true, "wiping": true, "destroy": true, "purge": true, "drop": true, "truncate": true,
+		"rm": true, "rmdir": true, "disable": true, "disabling": true, "shred": true, "mkfs": true}
+	suggestOverride = map[string]bool{"ignore": true, "ignoring": true, "bypass": true, "override": true,
+		"skip": true, "disregard": true, "circumvent": true, "evade": true, "dodge": true}
+	suggestGuarded = map[string]bool{"policy": true, "policies": true, "approval": true, "approvals": true,
+		"rule": true, "rules": true, "sandbox": true, "safety": true, "safe": true, "guard": true,
+		"guards": true, "guardrail": true, "guardrails": true, "permission": true, "permissions": true,
+		"restriction": true, "restrictions": true, "confirmation": true, "check": true, "checks": true,
+		"hook": true, "hooks": true, "deny": true, "instructions": true, "security": true}
+	suggestPairs = [][2]string{{"force", "push"}, {"push", "force"}, {"push", "f"}, {"reset", "hard"},
+		{"git", "clean"}, {"without", "asking"}, {"auto", "approve"}, {"don", "ask"}, {"no", "verify"}}
+)
+
+// riskySuggestion reports text that tells the person or the agent to get
+// past a safeguard, or to do something destructive, in any case or width.
+func riskySuggestion(s string) bool {
+	words := strings.FieldsFunc(strings.ToLower(norm.NFKC.String(s)), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	override, guarded := false, false
+	for i, w := range words {
+		if suggestDestructive[w] {
+			return true
+		}
+		override = override || suggestOverride[w]
+		guarded = guarded || suggestGuarded[w]
+		if i > 0 {
+			for _, p := range suggestPairs {
+				if words[i-1] == p[0] && w == p[1] {
+					return true
+				}
+			}
+		}
+	}
+	return override && guarded
 }
 
 // clipHead keeps the first n characters of s.
