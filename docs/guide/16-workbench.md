@@ -268,8 +268,8 @@ process tier, a container with a terminal on the container tier), in the
 workspace root. Variables, aliases, functions, history, tab completion, `vim`
 and the like work as in any shell, within what the tier allows. The first lines
 of each tab say what contains it, for example
-`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`, and
-the prompt names the tier: `(sandbox: process) repo $`. On the `none` tier the
+`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`; the
+prompt itself is the shell's own. On the `none` tier the
 banner says in red that commands run directly on the host, and so does the
 status bar.
 
