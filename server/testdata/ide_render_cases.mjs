@@ -37,4 +37,18 @@ render(ev(30, 'subagent.notice', 'system', {task_id:'t1', description:'scan logs
 render(ev(31, 'session.ended', 'system', {reason:'completed', background:0, settled:true}));
 check('a background result is drawn with its summary', text().includes('background: scan logs finished (completed, 1 turn)') && text().includes('three errors'));
 check('the closing end is drawn as background work finishing', text().includes('background work finished'));
+// Background text is the model's or a command's: bidi and zero-width characters are written out, as on an ask card.
+const RLO = String.fromCharCode(0x202e), ZW = String.fromCharCode(0x200b);
+__added.length = 0;
+render(ev(40, 'subagent.spawned', 'system', {task_id:'t2', description:'scan' + RLO + 'gol', background:true}));
+const bar = $('s-bg');
+const barOk = bar.textContent.includes('⟨U+202E⟩') && !bar.textContent.includes(RLO) && bar.title.includes('⟨U+202E⟩') && !bar.title.includes(RLO);
+render(ev(41, 'subagent.returned', 'system', {reason:'done' + ZW}));
+render(ev(42, 'subagent.notice', 'system', {task_id:'t2', description:'scan' + RLO + 'gol', status:'completed' + ZW, content:'line one\nok' + RLO + 'txt.exe'}));
+render(ev(43, 'session.woken', 'system', {by:'policy', task_ids:['t2']}));
+const shown = text() + bar.title;
+check('background names, results and reasons show bidi and zero-width as code points',
+  !shown.includes(RLO) && !shown.includes(ZW) && text().includes('subagent started: scan⟨U+202E⟩gol') &&
+  text().includes('finished (completed⟨U+200B⟩') && text().includes('line one\nok⟨U+202E⟩txt.exe') &&
+  text().includes('continuing with results from scan⟨U+202E⟩gol') && barOk);
 if(!ok) process.exit(1);

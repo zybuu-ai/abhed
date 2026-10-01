@@ -50,4 +50,16 @@ const bgOk = bgText.includes('scan logs finished (completed, 3 turns)') && bgTex
   bgText.includes('background work finished') && tx.querySelectorAll('.said.user').length === 0;
 console.log((bgOk ? 'PASS' : 'FAIL') + '  a background result, a wake and the closing end are drawn as such');
 ok = bgOk && ok;
+// Background text is the model's or a command's: bidi and zero-width characters are written out.
+const RLO = String.fromCharCode(0x202e), ZW = String.fromCharCode(0x200b);
+tx.childNodes.length = 0; turnEl = null;
+render({seq:140, type:'subagent.spawned', payload:{task_id:'t9', description:'scan' + RLO + 'gol', background:true}});
+render({seq:141, type:'subagent.returned', payload:{reason:'done' + ZW}});
+render({seq:142, type:'subagent.notice', payload:{task_id:'t9', description:'scan' + RLO + 'gol', status:'completed', content:'ok' + RLO + 'txt.exe'}});
+render({seq:143, type:'session.woken', payload:{by:'policy', task_ids:['t9']}});
+const hidden = tx.textContent;
+const hiddenOk = !hidden.includes(RLO) && !hidden.includes(ZW) && hidden.includes('subagent started: scan⟨U+202E⟩gol') &&
+  hidden.includes('ok⟨U+202E⟩txt.exe') && hidden.includes('done⟨U+200B⟩') && hidden.includes('continuing with results from scan⟨U+202E⟩gol');
+console.log((hiddenOk ? 'PASS' : 'FAIL') + '  background names, results and reasons show bidi and zero-width as code points');
+ok = hiddenOk && ok;
 process.exit(ok?0:1);

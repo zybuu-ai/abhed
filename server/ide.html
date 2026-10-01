@@ -1633,17 +1633,18 @@ function render(ev){
   case 'compaction.started': if(live) waiting('Compacting context'); break;
   case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
-  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || '')));
+  // Task names, results and reasons are the model's or a command's text: shown, never obeyed (bidi, zero-width).
+  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + visible(p.description || '')));
     if(p.background && p.task_id){ bgTasks.set(p.task_id, {name: p.description || p.task_id, state:'running'}); drawBg(); } break;
-  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + visible(p.reason || ''))); break;
   // A background task's result: the subagent's summary, never the person's words.
   case 'subagent.notice': { const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
-    add(el('div', 'sys bgnotice', 'background: ' + (p.description || p.task_id || '') + ' finished (' + (p.status || p.reason || '') + turns + '); result added to the conversation'));
-    if(p.content) add(el('div', 'sys bgbody', p.content));
+    add(el('div', 'sys bgnotice', 'background: ' + visible(p.description || p.task_id || '') + ' finished (' + visible(p.status || p.reason || '') + turns + '); result added to the conversation'));
+    if(p.content) add(el('div', 'sys bgbody', visible(p.content, true)));
     if(p.task_id){ bgTasks.set(p.task_id, {name: p.description || (bgTasks.get(p.task_id) || {}).name || p.task_id, state: p.status || p.reason || 'done'}); drawBg(); } break; }
   // A turn the session started itself for finished background work: drawn live like any other.
   case 'session.woken': { const names = (p.task_ids || []).map(id => (bgTasks.get(id) || {}).name || id);
-    add(el('div', 'sys woke', p.by === 'caller' ? 'continuing with background results, as asked' : 'continuing with results from ' + (names.length ? names.join(', ') : 'background tasks')));
+    add(el('div', 'sys woke', p.by === 'caller' ? 'continuing with background results, as asked' : 'continuing with results from ' + (names.length ? names.map(n => visible(n)).join(', ') : 'background tasks')));
     streaming = streamBody = null; if(!live){ if(bgLive) setLive(true); recheckSoon(); } if(live) waiting('Thinking'); break; }
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   // Its row stays in the chat, so a reopened session shows what was decided.
@@ -1696,7 +1697,7 @@ async function recheck(id){
 function drawBg(){
   const n = $('s-bg'), running = [...bgTasks.values()].filter(t => t.state === 'running');
   n.hidden = !running.length; n.textContent = running.length ? '◷ ' + running.length + ' background: ' + running.map(t => visible(t.name)).join(', ') : '';
-  n.title = [...bgTasks.values()].map(t => t.name + ' · ' + t.state).join('\n');
+  n.title = [...bgTasks.values()].map(t => visible(t.name) + ' · ' + visible(t.state)).join('\n');
 }
 // subagentRow is the chat's row for a subagent's call put to an approver or
 // refused, made the first time the record names it.
