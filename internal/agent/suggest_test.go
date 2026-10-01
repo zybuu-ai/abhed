@@ -22,9 +22,10 @@ import (
 // suggestStub answers each call with the next reply; a reply with err fails
 // the call, and onCall runs as the call is made.
 type suggestStub struct {
-	mu      sync.Mutex
-	replies []stubReply
-	reqs    []model.Request
+	mu       sync.Mutex
+	replies  []stubReply
+	reqs     []model.Request
+	sampling model.Sampling
 }
 
 type stubReply struct {
@@ -38,7 +39,7 @@ type stubReply struct {
 
 func (s *suggestStub) Name() string { return "stub" }
 func (s *suggestStub) Profile() model.Profile {
-	return model.Profile{Name: "stub-model", ContextWindow: 100000}
+	return model.Profile{Name: "stub-model", ContextWindow: 100000, Sampling: s.sampling}
 }
 func (s *suggestStub) CountTokens(model.Request) (int, error) { return 0, nil }
 
@@ -499,5 +500,35 @@ func TestAskDuringSuggestionOffersNone(t *testing.T) {
 	}
 	if offered, _ := suggestions(t, store); len(offered) != 0 {
 		t.Fatalf("offered %+v while an ask waits", offered)
+	}
+}
+
+// A reasoning model gets room to think before its line, and its thinking is
+// turned off where the provider can do that; else the least effort is asked.
+func TestSuggestionRequestLeavesRoomToThink(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sampling model.Sampling
+		effort   model.EffortLevel
+		think    bool
+		want     model.EffortLevel
+	}{
+		{"think off", model.Sampling{Think: true, Effort: true}, model.EffortHigh, true, model.EffortNone},
+		{"effort low", model.Sampling{Effort: true}, model.EffortHigh, false, model.EffortLow},
+		{"neither", model.Sampling{}, model.EffortNone, false, model.EffortNone},
+	} {
+		stub := &suggestStub{sampling: tc.sampling, replies: []stubReply{{text: "Done."}, {text: "Next"}}}
+		l, _ := suggestLoop(t, stub)
+		l.Config.Effort = tc.effort
+		if _, err := l.Run(context.Background(), "hi"); err != nil {
+			t.Fatal(err)
+		}
+		l.WaitSuggestion(context.Background())
+		reqs := stub.requests()
+		req := reqs[len(reqs)-1]
+		off := req.Params.Think != nil && !*req.Params.Think
+		if req.MaxTokens < 1024 || off != tc.think || req.Effort != tc.want {
+			t.Errorf("%s: max %d, think off %v, effort %q", tc.name, req.MaxTokens, off, req.Effort)
+		}
 	}
 }

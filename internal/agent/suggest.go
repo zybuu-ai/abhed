@@ -21,6 +21,9 @@ const PurposeSuggestion = "suggestion"
 // SuggestMaxChars caps a suggestion, in characters.
 const SuggestMaxChars = 80
 
+// suggestMaxTokens leaves a reasoning model room to think before its one line.
+const suggestMaxTokens = 1024
+
 // SuggestionOffered is what the person may ask next, as one short line.
 type SuggestionOffered struct {
 	Text string `json:"text"`
@@ -92,9 +95,14 @@ func (l *Loop) planSuggestion(ctx context.Context) *suggestJob {
 	req := model.Request{
 		System:    suggestSystem,
 		Messages:  []model.Message{{Role: model.RoleUser, Content: input}},
-		MaxTokens: 256,
+		MaxTokens: suggestMaxTokens,
 	}
-	if l.Config.Effort != model.EffortNone {
+	// Thinking off where the provider can turn it off; else the least effort.
+	switch prof := a.Profile().Sampling; {
+	case prof.Think:
+		off := false
+		req.Params.Think = &off
+	case l.Config.Effort != model.EffortNone:
 		req.Effort = model.EffortLow
 	}
 	return &suggestJob{sg: sg, adapter: a, req: req, timeout: timeout, turn: l.turns}
