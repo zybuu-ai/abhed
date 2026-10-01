@@ -384,4 +384,17 @@ fresh('s40', false);
   check('the woken turn ends like any other', live === false);
 }
 
+// The sender's own bubble draws what was typed through the helper, and keeps
+// the raw text to put back in the box if the send fails.
+fresh('s41', false);
+{
+  const typed = 'fix\u202etxt.exe\u001b[2J\n    indented\tline';
+  const mine = userBubble(typed, 'pending'); sent.push(mine);
+  render(ev(1, 'user.message', {text: typed, client_id: mine.cid}));
+  const shown = __root.textContent;
+  check('the sender\'s bubble reveals hidden characters', shown.includes('fix⟨U+202E⟩txt.exe⟨U+001B⟩[2J\n    indented\tline') && !shown.includes('\u202e') && !shown.includes('\u001b'));
+  check('the sender\'s bubble is the one claimed', __root.childNodes.length === 1 && __root.childNodes[0] === mine);
+  check('the bubble keeps the raw text for a retry', mine.text === typed);
+}
+
 if(!ok) process.exit(1);

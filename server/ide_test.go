@@ -196,7 +196,7 @@ const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], a
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
 const tx = () => __root, qbox = new El('div'), add = n => __root.appendChild(n);
 let cid = 0; const bubble = (cls, who, text) => { const m = new El('div'); m.className = 'msg ' + cls; m.textContent = text || ''; return m; };
-const userBubble = (text, state) => { const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = 'c' + (++cid); return b; };
+const newCid = () => 'c' + (++cid);
 globalThis.__connected = []; let signInGone = false, leaving = false;
 const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = id => { __connected.push(id); };
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};

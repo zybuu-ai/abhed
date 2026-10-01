@@ -1500,7 +1500,7 @@ function md(text){
 // Every message carries an id of the page's own, echoed on the user.message
 // that records it, so matching never depends on the recorded text.
 const newCid = () => 'c-' + Array.from(crypto.getRandomValues(new Uint8Array(9)), x => x.toString(16).padStart(2, '0')).join('');
-function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = newCid(); return b; }
+function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', reveal(text, true)); b.text = text; b.cid = newCid(); return b; }
 function drawQueued(b){
   const old = b.querySelector('.qbar'); if(old) old.remove();
   const bar = el('div', 'qbar');

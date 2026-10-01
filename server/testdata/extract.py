@@ -47,7 +47,7 @@ sets = {
     'ide-md': ['const el = (tag, cls, text) => {','function reveal(s, lines){','function mdInline(parent, s){','function md(text){'],
     # From ide.html: sending, the run's live state and the approval prompt.
     'ide-chat': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
-          'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
+          'function userBubble(text, state){','function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
           'function subagentRow(id, p, at){','function drawBg(){','async function watchIdle(){','function offerNext(t){','function takeNext(e){'],
     'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
