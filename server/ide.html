@@ -1174,7 +1174,7 @@ function resetSession(){
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
-  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session'; if(caps && $('mode').selectedOptions[0] && $('mode').selectedOptions[0].disabled) limitModes(caps.permissions.mode);
+  modeForNewSession();
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
@@ -2269,6 +2269,12 @@ $('agent').addEventListener('keydown', e => {
   stopArmed = setTimeout(() => { stopArmed = 0; setLive(live); }, 2500);
 });
 $('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
+// A new session starts in the configured mode, not the open session's; the person may pick another.
+function modeForNewSession(){
+  const sel = $('mode'); sel.disabled = false; sel.title = 'Permission mode for the next session';
+  if(caps) limitModes(caps.permissions.mode);
+  $('s-mode').textContent = 'mode ' + sel.value;
+}
 // A session may start in the server's mode or narrow to plan: offer only those.
 function limitModes(m){
   const sel = $('mode');

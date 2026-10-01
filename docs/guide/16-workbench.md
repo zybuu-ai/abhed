@@ -419,9 +419,10 @@ what holds the workspace, the policy and the sandbox. You do not need to ask
 the agent anything to get one: when there is no session, the page opens a
 *workbench session*, which has no prompt and waits. It is owned, listed and
 recorded like any other (its record starts with `session.started`), and the
-first message you send goes to it. **New session** lets you choose the
-permission mode before the next one starts; once a session is open its mode is
-shown and fixed.
+first message you send goes to it. **New session** starts in the configured
+permission mode, not the mode of the session that was open, and lets you
+choose another before it starts; once a session is open its mode is shown and
+fixed.
 
 After a restart, the terminal reopens the session it was on from its record. If
 that is not possible (the session was not closed cleanly, or is being continued
