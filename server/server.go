@@ -1005,7 +1005,7 @@ var errBadMode = errors.New("mode may only narrow permissions; a client may requ
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	idle := req.Workbench && strings.TrimSpace(req.Prompt) == ""
@@ -2368,7 +2368,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
@@ -3031,7 +3031,7 @@ func (s *Server) setWake(w http.ResponseWriter, r *http.Request) {
 		Wake string `json:"wake"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	if err := live.Loop.Background.SetWake(agent.WakeMode(req.Wake), agent.ByUser); err != nil {
@@ -3073,7 +3073,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req approveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
@@ -3267,8 +3267,7 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		Invite   string `json:"invite,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid request"})
+		badBody(w, err, "invalid request")
 		return
 	}
 	// Three admission modes. Open registration on a public URL hands a
@@ -3894,6 +3893,16 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 // WriteError writes the {"error": msg} shape the console expects.
 func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
+}
+
+// badBody answers a body that failed to decode: 413 when it was over the
+// size cap, and otherwise 400 with msg.
+func badBody(w http.ResponseWriter, err error, msg string) {
+	if tooBig := new(http.MaxBytesError); errors.As(err, &tooBig) {
+		WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the request body is larger than %d bytes", tooBig.Limit))
+		return
+	}
+	WriteError(w, http.StatusBadRequest, msg)
 }
 
 // ListenAndServe starts the HTTP server.

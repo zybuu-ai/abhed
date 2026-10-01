@@ -65,7 +65,7 @@ func (s *Server) setUserAdmin(w http.ResponseWriter, r *http.Request) {
 		Admin    bool   `json:"admin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request")
+		badBody(w, err, "invalid request")
 		return
 	}
 	if req.Username == "" {

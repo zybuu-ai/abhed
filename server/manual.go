@@ -76,7 +76,7 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSaveBytes)
 	var req saveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "the file is too large to save from the workbench, or the request is malformed")
+		badBody(w, err, "the request is malformed")
 		return
 	}
 	v, err := s.openView()
