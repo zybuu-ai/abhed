@@ -159,10 +159,10 @@ Type a task, or /help. Esc interrupts, Ctrl-C twice exits.
 │   1. Yes
 │   2. Yes, and don't ask again for edit(auth.go) this session
 │   3. No, and tell Abhed what to do instead (esc)
-╰─ number or ↑↓ then enter · esc to decline
+╰─ press a number to answer · esc to decline
 ```
 
-At an approval, press a number, or an arrow then Enter; Esc declines and stops
+At an approval, press a number to answer; Esc declines and stops
 the turn. A key counts only after the question has been on screen for 300 ms
 and with 300 ms of quiet around it, so typing or a held key never answers; see
 [The terminal](docs/guide/20-terminal.md). Ctrl-C stops the turn and refuses the

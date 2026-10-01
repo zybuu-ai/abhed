@@ -465,7 +465,7 @@ would allow such calls when one is offered:
 │   1. Yes
 │   2. Yes, and don't ask again for bash(git commit *) this session
 │   3. No, and tell Abhed what to do instead (esc)
-╰─ number or ↑↓ then enter · esc to decline
+╰─ press a number to answer · esc to decline
 ```
 
 For a command with no rule offered, such as `go test ./pkg/auth/`, the

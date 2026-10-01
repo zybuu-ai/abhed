@@ -110,11 +110,11 @@ numbered answers:
 │   1. Yes
 │   2. Yes, and don't ask again for write(notes.txt) this session
 │   3. No, and tell Abhed what to do instead (esc)
-╰─ number or ↑↓ then enter · esc to decline
+╰─ press a number to answer · esc to decline
 ```
 
-Press a number, or move with the arrows and press Enter. Nothing is selected
-at first, so Enter alone answers nothing, and letters never answer. No key
+Press a number to answer. Nothing is selected at first, Enter never
+approves, and letters never answer. No key
 counts for the first 300 ms the question is on screen, and a key only counts when it stands alone, with
 300 ms of quiet before and after it: typing that was meant for the prompt,
 or a key held down, never answers. "2" allows that scope for the rest of the

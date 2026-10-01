@@ -295,7 +295,8 @@ func (st *dialogState) rows(d *dock, w, maxRows int) []string {
 	if last < len(st.spec.Choices) {
 		tail = append(tail, bar+s.Dim(fmt.Sprintf("  ↓ %d more", len(st.spec.Choices)-last)))
 	}
-	hint := "number or ↑↓ then enter · esc to decline"
+	// Only a number answers: Enter on a highlighted Yes answers nothing.
+	hint := "press a number to answer · esc to decline"
 	if st.note != "" {
 		hint = st.note
 	}
