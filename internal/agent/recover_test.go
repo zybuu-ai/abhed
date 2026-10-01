@@ -106,3 +106,31 @@ func TestCarriedSpend(t *testing.T) {
 		t.Fatal("a continued session got a fresh spawn allowance")
 	}
 }
+
+// A suggestion's model.call and offer come after the run's end. They are not
+// the run, so a completed run that owed background work is not rewritten as
+// cut short, and one that owed nothing is not an orphan.
+func TestReconcileKeepsACompletedRunBeforeASuggestion(t *testing.T) {
+	for _, bg := range []int{1, 0} {
+		st := NewMemStore()
+		p := NewRecorder(st, "p", "")
+		_, _ = p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "go"})
+		_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1})
+		_, _ = p.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: "done"})
+		_, _ = p.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, Turns: 1, Background: bg, Suggesting: true})
+		_, _ = p.Record(EvSuggestionOffered, ActorSystem, Trusted, SuggestionOffered{Text: "next", Turn: 1})
+		_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1, Purpose: PurposeSuggestion})
+		evs, _ := st.Events("p")
+		if bg == 0 && Orphaned(evs) {
+			t.Fatal("a completed run followed by its suggestion is seen as orphaned")
+		}
+		if err := Reconcile(st, "p", evs); err != nil {
+			t.Fatal(err)
+		}
+		evs, _ = st.Events("p")
+		end, _ := LastEnd(evs)
+		if end.Reason != TermCompleted || end.Turns != 1 {
+			t.Fatalf("background %d: the completed run's end became %+v", bg, end)
+		}
+	}
+}

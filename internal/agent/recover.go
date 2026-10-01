@@ -66,15 +66,27 @@ func lastEndSeq(events []Event) int64 {
 }
 
 // lastRunSeq is the last event a run writes: its messages, calls and model
-// calls. Background work after an end does not count.
+// calls. Background work after an end does not count, nor does a suggestion,
+// whose model.call and offer are written after the run's end.
 func lastRunSeq(events []Event) int64 {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
-		case EvUserMessage, EvAgentMessage, EvModelCall, EvActionRequested, EvObservation, EvSessionWoken:
+		case EvModelCall:
+			if !suggestionCall(events[i]) {
+				return events[i].Seq
+			}
+		case EvUserMessage, EvAgentMessage, EvActionRequested, EvObservation, EvSessionWoken:
 			return events[i].Seq
 		}
 	}
 	return 0
+}
+
+func suggestionCall(e Event) bool {
+	var p struct {
+		Purpose string `json:"purpose"`
+	}
+	return json.Unmarshal(e.Payload, &p) == nil && p.Purpose == PurposeSuggestion
 }
 
 // unreturned are the background children spawned with no return recorded.
