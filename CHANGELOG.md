@@ -120,7 +120,7 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
-The first eighteen items change how an existing setup behaves; read them
+The first nineteen items change how an existing setup behaves; read them
 before upgrading.
 
 1. **Answers are numbers only, for piped and scripted input too.** 1.2.2's
@@ -235,6 +235,9 @@ before upgrading.
     create any `.git`, `.vscode` or `.devcontainer`**, so `git init` and
     `git clone` inside the workspace fail. Run them in a terminal outside
     the editor, or clone outside the workspace and open that folder.
+19. **MCP tools are registered only with plain names**: letters, digits, `_`,
+    `.` and `-`, at most 64 characters. A server tool named otherwise is left
+    out, with a warning on standard error naming the server and the tool.
 
 Also:
 

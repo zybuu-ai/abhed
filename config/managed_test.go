@@ -241,8 +241,8 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 			if !cfg.AllowLocked() || !cfg.Workspace.Trusted {
 				t.Fatalf("locked %v trusted %v", cfg.AllowLocked(), cfg.Workspace.Trusted)
 			}
-			if len(cfg.Permissions.Allow) != 0 || cfg.Sets("permissions.allow") {
-				t.Fatalf("file allow rules survived the lock: %v", cfg.Permissions.Allow)
+			if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) || cfg.Sets("permissions.allow") {
+				t.Fatalf("allow %v; want exactly the built-in rules", cfg.Permissions.Allow)
 			}
 			userFile := filepath.Join(home, ".abhed", "config.json")
 			for rule, file := range map[string]string{"bash(rm*)": userFile, "bash(*)": cfg.Workspace.File} {

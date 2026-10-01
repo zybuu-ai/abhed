@@ -139,9 +139,23 @@ func dropLockedAllow(c *Config, userFile, workspaceFile string) {
 			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
 	}
 	if len(kept) < len(c.Permissions.Allow) {
-		c.Permissions.Allow = kept
+		// The files' list had replaced the built-in rules; put those back.
+		c.Permissions.Allow = dedupe(append(slices.Clone(Default().Permissions.Allow), kept...))
 		c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
 	}
+}
+
+// dedupe keeps the first of each rule, in order.
+func dedupe(rules []string) []string {
+	seen := map[string]bool{}
+	out := rules[:0]
+	for _, r := range rules {
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Offered reports whether a provider is one to offer for choosing: the default,

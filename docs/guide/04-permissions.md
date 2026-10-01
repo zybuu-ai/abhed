@@ -91,8 +91,10 @@ permissions without its own `permissions.allow`.
   asked about twice.
 - An allow rule is refused when the managed configuration sets any
   `permissions` setting. A "Yes, and don't ask again" answer to a prompt is
-  not a rule: it is offered only for the one narrow scope a prompt names, on
-  the short list below, and still applies under a managed configuration.
+  not a rule: it covers only the scope the prompt names (for `bash`, one of
+  the short list below; for a file, that one path; for `web_fetch`, the site;
+  for another tool, every call to that tool) for the rest of the session, and
+  still applies under a managed configuration.
 - Session rules are evaluated after the configured ones in each list, so a
   session allow approves only what would otherwise ask: it cannot lift a deny
   rule, a destructive command, an ask rule or plan mode. It does not allow a
