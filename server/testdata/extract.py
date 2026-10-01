@@ -48,7 +48,7 @@ sets = {
     'ide-chat': ['const el = (tag, cls, text) => {','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
-          'function subagentRow(id, p, at){','async function watchIdle(){'],
+          'function subagentRow(id, p, at){','function drawBg(){','async function watchIdle(){'],
     'ide-conn': ['function setConn(on){','function connLost(retrying){','async function connProbe(){','function connIdle(){','function signInEnded(why){',
           'function connect(id){','async function api(path, opts){','function attach(t, id, reattach){'],
     # From ide.html: the explorer's tree and its name input.
@@ -60,7 +60,7 @@ sets = {
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function tail(p){','function subjectOf(tool, args){',
           'function logEvent(ev, p){','async function loadHawkeye(){'],
-    'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function hasHidden(v, depth = 0){','function render(ev){','function subagentRow(id, p, at){'],
+    'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function hasHidden(v, depth = 0){','function render(ev){','function subagentRow(id, p, at){','function drawBg(){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
     'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',

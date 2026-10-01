@@ -109,3 +109,24 @@ func TestRPCTasksCancelWake(t *testing.T) {
 		t.Fatalf("a second wake: %v", r)
 	}
 }
+
+// Started in auto, a result after the prompt's answer starts a wake run on
+// its own: its events, then a woken line with its answer.
+func TestRPCAutoWakes(t *testing.T) {
+	m := &bgModelServer{childDelay: 300 * time.Millisecond}
+	ws := bgWorkspace(t, m.start(t), "")
+	c := startRPCConv(t, ws)
+	if r := c.send("1", `{"id":"1","method":"start","wake":"auto"}`); r["type"] != "ready" {
+		t.Fatalf("start: %v", r)
+	}
+	if r := c.send("2", `{"id":"2","method":"prompt","prompt":"go"}`); r["type"] != "answer" || r["answer"] != "done" {
+		t.Fatalf("prompt: %v", r)
+	}
+	c.until(func(m map[string]any) bool {
+		ev, _ := m["event"].(map[string]any)
+		return ev != nil && ev["type"] == "session.woken"
+	})
+	if r := c.until(func(m map[string]any) bool { return m["type"] == "woken" }); r["answer"] != "noted" {
+		t.Fatalf("woken: %v", r)
+	}
+}

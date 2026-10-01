@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// At the prompt, a background result is drawn when it arrives, with no
-// task running: the subscription is the conversation's, not a turn's. A
-// wake mode a file chose holds: notify does not wake.
+// In notify, a background result is drawn at the prompt when it arrives,
+// with no task running: the subscription is the conversation's, not a turn's.
+// A wake mode a file chose holds: notify does not wake.
 func TestCLIIdleNoticeRendered(t *testing.T) {
 	m := &bgModelServer{childDelay: 800 * time.Millisecond}
 	ws := bgWorkspace(t, m.start(t), `,"subagents":{"wake":"notify"}`)
@@ -59,11 +59,11 @@ func TestCLIExitCancelsAsSessionClosed(t *testing.T) {
 	}
 }
 
-// With wake auto, an idle result starts a wake run through the same driver
-// as a task, while nothing is typed.
+// By default an idle result starts a wake run through the same driver as
+// a task, while nothing is typed.
 func TestCLIAutoWake(t *testing.T) {
 	m := &bgModelServer{childDelay: 800 * time.Millisecond}
-	ws := bgWorkspace(t, m.start(t), `,"subagents":{"wake":"auto"}`)
+	ws := bgWorkspace(t, m.start(t), "")
 	r := startOnPty(t, []string{"-C", ws})
 	r.waitFor("Type a task", 1)
 	r.send("go\r")

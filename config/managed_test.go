@@ -181,3 +181,20 @@ func TestApplyWithoutManagedIsUnchanged(t *testing.T) {
 		t.Errorf("overrides not applied: %+v", got.Permissions)
 	}
 }
+
+// Wake defaults to auto, and a managed notify holds over a user's auto.
+func TestManagedWakeHoldsOverUser(t *testing.T) {
+	withManaged(t, `{}`)
+	if cfg, err := Load(t.TempDir()); err != nil || cfg.Subagents.Wake != "auto" {
+		t.Fatalf("default wake %q, %v", cfg.Subagents.Wake, err)
+	}
+	withManaged(t, `{"subagents": {"wake": "notify"}}`)
+	writeConfig(t, os.Getenv("HOME"), `{"subagents": {"wake": "auto"}}`)
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Subagents.Wake != "notify" || !cfg.ManagedSets("subagents.wake") {
+		t.Fatalf("wake %q with a managed notify", cfg.Subagents.Wake)
+	}
+}

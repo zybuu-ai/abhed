@@ -299,6 +299,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .todo .in_progress{color:var(--accent);font-weight:600}
 .sys{font:11.5px var(--mono);color:var(--muted);text-align:center;padding:2px 0;flex:none}
 .sys.bad{color:var(--bad)}
+.sys.woke{color:var(--accent)}
 #composer{flex:none;border-top:1px solid var(--line);padding:9px 10px;position:relative}
 #q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
 #crow{display:flex;align-items:center;gap:8px;margin-top:7px;min-width:0}
@@ -460,7 +461,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 
   <footer id="status">
     <span id="s-conn" class="off">● offline</span>
-    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span>
+    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span><span id="s-bg" hidden></span>
     <span class="sp"></span>
     <span id="s-ctx" hidden>context<span id="meter"><i></i></span><span id="s-ctxn"></span></span>
     <span id="s-tok"></span>
@@ -506,6 +507,7 @@ function signInEnded(why){
 
 /* ---------------------------------------------------------------- state */
 let bgLive = false; // the open session still has background tasks, with no run
+const bgTasks = new Map(); // task_id -> {name, state}, from the record
 let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let caps = null, streaming = null, streamBody = null, todoNode = null, thinkBlock = null;
 const calls = new Map();            // call_id -> {node, res, tool, subject, args, out}
@@ -1163,7 +1165,7 @@ function resetSession(){
   if(es){ es.close(); es = null; }
   cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
   current = null; live = false; lastSeq = endedSeq = 0; recProvider = null; clearTimeout(recheckTimer); streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
-  queued.clear(); sent.length = 0; asks.clear(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
+  queued.clear(); sent.length = 0; asks.clear(); bgTasks.clear(); drawBg(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
@@ -1628,13 +1630,18 @@ function render(ev){
   case 'compaction.started': if(live) waiting('Compacting context'); break;
   case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
-  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
+  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || '')));
+    if(p.background && p.task_id){ bgTasks.set(p.task_id, {name: p.description || p.task_id, state:'running'}); drawBg(); } break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
   // A background task's result: the subagent's summary, never the person's words.
   case 'subagent.notice': { const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
     add(el('div', 'sys bgnotice', 'background: ' + (p.description || p.task_id || '') + ' finished (' + (p.status || p.reason || '') + turns + '); result added to the conversation'));
-    if(p.content) add(el('div', 'sys bgbody', p.content)); break; }
-  case 'session.woken': add(el('div', 'sys', 'woke to act on background results')); break;
+    if(p.content) add(el('div', 'sys bgbody', p.content));
+    if(p.task_id){ bgTasks.set(p.task_id, {name: p.description || (bgTasks.get(p.task_id) || {}).name || p.task_id, state: p.status || p.reason || 'done'}); drawBg(); } break; }
+  // A turn the session started itself for finished background work: drawn live like any other.
+  case 'session.woken': { const names = (p.task_ids || []).map(id => (bgTasks.get(id) || {}).name || id);
+    add(el('div', 'sys woke', p.by === 'caller' ? 'continuing with background results, as asked' : 'continuing with results from ' + (names.length ? names.join(', ') : 'background tasks')));
+    streaming = streamBody = null; if(!live){ if(bgLive) setLive(true); recheckSoon(); } if(live) waiting('Thinking'); break; }
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   // Its row stays in the chat, so a reopened session shows what was decided.
   case 'subagent.ask': { if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
@@ -1681,6 +1688,12 @@ async function recheck(id){
   setLive(running);
   if(running || read){ if(!es) connect(id); if(running) return; }
   for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
+}
+// drawBg shows the open session's background tasks still running in the status bar.
+function drawBg(){
+  const n = $('s-bg'), running = [...bgTasks.values()].filter(t => t.state === 'running');
+  n.hidden = !running.length; n.textContent = running.length ? '◷ ' + running.length + ' background: ' + running.map(t => visible(t.name)).join(', ') : '';
+  n.title = [...bgTasks.values()].map(t => t.name + ' · ' + t.state).join('\n');
 }
 // subagentRow is the chat's row for a subagent's call put to an approver or
 // refused, made the first time the record names it.

@@ -190,12 +190,81 @@ func TestSDKApproveCalledAfterRunReturned(t *testing.T) {
 	}
 }
 
-// An embedded agent never wakes on its own: auto is refused.
-func TestSDKBackgroundAutoRefused(t *testing.T) {
+// A Background that is not off, notify or auto is refused.
+func TestSDKBackgroundUnknownRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(), ConfiguredTools: true, Background: "auto",
+	_, err := abhed.New(context.Background(), abhed.Options{Workspace: t.TempDir(), ConfiguredTools: true, Background: "sometimes",
 		Provider: &abhed.Provider{Type: "openai-compatible", BaseURL: "http://127.0.0.1:9", Model: "m", ContextWindow: 8192}})
 	if err == nil {
-		t.Fatal("Background auto was accepted")
+		t.Fatal("Background sometimes was accepted")
+	}
+}
+
+// eventLog collects the types and payloads OnEvent receives.
+type eventLog struct {
+	mu  sync.Mutex
+	evs []abhed.Event
+}
+
+func (l *eventLog) add(ev abhed.Event) { l.mu.Lock(); l.evs = append(l.evs, ev); l.mu.Unlock() }
+
+func (l *eventLog) has(typ agent.EventType, text string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, ev := range l.evs {
+		if ev.Type == typ && strings.Contains(string(ev.Payload), text) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(15 * time.Second); !cond(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+// In auto a result that arrives after Run returned starts a wake run with
+// nobody asking: OnEvent gets session.woken naming the task, then the reply.
+func TestSDKAutoWakesOnItsOwn(t *testing.T) {
+	release := make(chan struct{})
+	var log eventLog
+	a := bgAgent(t, bgModel(t, release, ""), "auto", nil, log.add)
+	defer a.Close()
+	if answer, err := a.Run(context.Background(), "go"); err != nil || answer != "done" {
+		t.Fatalf("Run: %q %v", answer, err)
+	}
+	id := a.Background()[0].ID
+	close(release)
+	waitFor(t, "the woken turn's reply", func() bool { return log.has(agent.EvAgentMessage, "noted") })
+	if !log.has(agent.EvSessionWoken, `"by":"policy"`) || !log.has(agent.EvSessionWoken, id) {
+		t.Fatal("the wake was not recorded as the session's own, naming the task")
+	}
+}
+
+// A stop after the result arrived, before its wake, holds the wake.
+func TestSDKAutoStopHoldsWake(t *testing.T) {
+	release := make(chan struct{})
+	var log eventLog
+	a := bgAgent(t, bgModel(t, release, ""), "auto", nil, log.add)
+	defer a.Close()
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.WaitBackground(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a.CancelTasks()
+	waitFor(t, "the notice", func() bool { return log.has(agent.EvSubagentNotice, "skipped:stopped") })
+	time.Sleep(200 * time.Millisecond)
+	if log.has(agent.EvSessionWoken, "") {
+		t.Fatal("a wake ran after the stop")
 	}
 }

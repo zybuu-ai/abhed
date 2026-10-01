@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -154,6 +155,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if ws == "" {
 				ws = workspace
 			}
+			// made is the agent New returns; a wake starts only after a run of it.
+			var made *abhed.Agent
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: trust, AllowDefaultModel: true,
 				Allow: req.Allow, Deny: req.Deny,
@@ -165,8 +168,28 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				ConfiguredLimits: true,
 				// Stdout is the protocol; what the tool set skipped goes to stderr.
 				Warn: warnf,
-				// off (the default) or notify: rpc never starts a run on its own.
+				// off (the default), notify, or auto: a result between
+				// prompts starts a wake run, answered with a woken line.
 				Background: req.Wake,
+				HostWake: func(_ []string, run func(context.Context) (string, error)) bool {
+					go func() {
+						done := stopper.busy()
+						defer done()
+						answer, err := run(ctx)
+						if errors.Is(err, agent.ErrNothingToWake) {
+							return
+						}
+						flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
+						_ = made.Flush(flushed)
+						cancelFlush()
+						r := rpcResponse{Type: "woken", Answer: answer}
+						if err != nil {
+							r.Error = err.Error()
+						}
+						emit(r)
+					}()
+					return true
+				},
 				// Events are forwarded as they happen so a caller can render
 				// progress rather than waiting for the final answer.
 				OnEvent: func(ev agent.Event) {
@@ -174,6 +197,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				},
 			}
 			na, err := abhed.New(ctx, opts)
+			made = na
 			cur = q.sess
 			mu.Lock()
 			if err != nil {
@@ -355,8 +379,8 @@ type rpcRequest struct {
 	Mode      string   `json:"mode,omitempty"`
 	Allow     []string `json:"allow,omitempty"`
 	Deny      []string `json:"deny,omitempty"`
-	// Wake, on start, is off (the default) or notify; TaskID names a
-	// background task for cancel_task.
+	// Wake, on start, is off (the default), notify or auto; TaskID names
+	// a background task for cancel_task.
 	Wake   string `json:"wake,omitempty"`
 	TaskID string `json:"task_id,omitempty"`
 }

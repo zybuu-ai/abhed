@@ -161,9 +161,15 @@ type Options struct {
 	// (the default) joins them, so Run returns when the work is done, as it
 	// always has; "notify" lets them outlive a Run, their results recorded
 	// and delivered to OnEvent as they arrive, for the next Run or an
-	// explicit Wake. The configuration may only tighten it. An embedded agent
-	// never starts a run on its own.
+	// explicit Wake; "auto" does too, and a result that arrives while no run
+	// is in progress starts a wake run on its own, its events to OnEvent.
+	// The configuration may only tighten it.
 	Background string
+
+	// HostWake, with Background "auto", hosts each wake run: it is called
+	// with the finished tasks' ids and the run to start, and reports whether
+	// it started it. Nil runs it on the agent's own goroutine.
+	HostWake func(taskIDs []string, run func(ctx context.Context) (string, error)) bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
@@ -217,6 +223,8 @@ type Agent struct {
 	// meanwhile waits for the fork to finish.
 	forkMu  sync.Mutex
 	running int
+	// wakes are the wake runs this agent started on its own, by cancel.
+	wakes wakeRuns
 }
 
 // New builds an agent.
@@ -373,15 +381,14 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	approver := approverFor(opts.Approve, red)
 	registry := set.Registry
 	budget := toolset.Budget(cfg)
-	// An embedded agent never wakes on its own: notify at most, and off
-	// unless the caller asks, so Run keeps returning when the work is done.
+	// Off unless the caller asks, so Run keeps returning when the work is done.
 	mode, err := agent.ParseWakeMode(opts.Background)
 	if opts.Background == "" {
 		mode, err = agent.WakeOff, nil
 	}
-	if err != nil || mode == agent.WakeAuto {
+	if err != nil {
 		set.Close()
-		return nil, fmt.Errorf("abhed: Background is off or notify, not %q", opts.Background)
+		return nil, fmt.Errorf("abhed: Background is off, notify or auto, not %q", opts.Background)
 	}
 	bgCfg := cfg
 	bgCfg.Subagents.Wake = string(mode.Tighter(wakeOf(cfg)))
@@ -417,7 +424,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
-	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeNotify))
+	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
 	loop.Budget = budget
@@ -425,6 +432,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
 		cfg: cfg, current: cfg.Model.Default}
+	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -626,6 +634,7 @@ var errClosed = errors.New("abhed: the agent is closed; no more events are deliv
 // Background tasks still running are cancelled as session_closed first, and
 // Close waits a bounded time for them to record their end.
 func (a *Agent) Close() {
+	a.endWakes()
 	a.loop.Background.Close(agent.TermSessionClosed)
 	a.fwd.close()
 	a.set.Close()
@@ -646,8 +655,13 @@ func (a *Agent) CancelTask(id string) error {
 }
 
 // CancelTasks stops every running background task, as a person's stop, and
-// reports how many.
-func (a *Agent) CancelTasks() int { return a.loop.Background.CancelAll(agent.TermUserInterrupt) }
+// reports how many. A wake run in progress stops too, and no other starts
+// until the next Run.
+func (a *Agent) CancelTasks() int {
+	n := a.loop.Background.CancelAll(agent.TermUserInterrupt)
+	a.stopWake()
+	return n
+}
 
 // WaitBackground waits until no background task is running, or ctx ends.
 func (a *Agent) WaitBackground(ctx context.Context) error {
@@ -679,7 +693,7 @@ func (a *Agent) Wake(ctx context.Context) (string, error) {
 	return a.lastMessage(), nil
 }
 
-// wakeOf is the configured wake mode: notify when unset, and off, the
+// wakeOf is the configured wake mode: auto when unset, and off, the
 // tightest, when the setting cannot be read.
 func wakeOf(cfg config.Config) agent.WakeMode {
 	m, err := agent.ParseWakeMode(cfg.Subagents.Wake)

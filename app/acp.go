@@ -145,6 +145,9 @@ type acpSession struct {
 	// trustSHA is the workspace file's hash when the session opened.
 	trustSHA string
 	closed   bool
+	// woken is set while a turn the session started itself runs, and
+	// closed when it ends; a prompt waits for it.
+	woken chan struct{}
 }
 
 // reviewWindow lets a background task's held asks reach the editor with no
@@ -164,6 +167,25 @@ type reviewWindow struct {
 func (s *acpSession) beginTurn(ctx context.Context, cancel context.CancelFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.beginTurnLocked(ctx, cancel)
+}
+
+// claimTurn opens a prompt turn unless one runs: it returns the woken turn
+// to wait for, or busy for a prompt's.
+func (s *acpSession) claimTurn(ctx context.Context, cancel context.CancelFunc) (wait <-chan struct{}, busy bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.woken != nil:
+		return s.woken, false
+	case s.cancel != nil:
+		return nil, true
+	}
+	s.beginTurnLocked(ctx, cancel)
+	return nil, false
+}
+
+func (s *acpSession) beginTurnLocked(ctx context.Context, cancel context.CancelFunc) {
 	s.cancel, s.turn = cancel, ctx
 	s.ranIdless = nil // a result the last turn never recorded will not come
 	if w := s.window; w != nil {
@@ -625,9 +647,10 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		ConfiguredLimits: true,
 		// Stdout is the protocol; what the tool set skipped goes to stderr.
 		Warn: warnf,
-		// Background tasks outlive a turn and report as they finish; the
-		// editor is never started on its own, so notify is the most.
-		Background: "notify",
+		// Background tasks outlive a turn; a result that arrives between
+		// prompts opens a turn of its own, streamed as session updates.
+		Background: "auto",
+		HostWake:   func(ids []string, run func(context.Context) (string, error)) bool { return c.wakeTurn(s, ids, run) },
 		OnEvent:    func(ev abhed.Event) { c.forward(s, ev) },
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)
@@ -738,19 +761,23 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		defer c.busy()()
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	s.mu.Lock()
-	running := s.cancel != nil
-	s.mu.Unlock()
-	if running {
-		cancel()
-		c.reply(msg.ID, nil, refusal(errBusy, "a prompt is already running in this session; steer it or wait"))
-		return
+	// A turn the session woke for runs to its end, or session/cancel, first.
+	for {
+		wait, busy := s.claimTurn(ctx, cancel)
+		if busy {
+			cancel()
+			c.reply(msg.ID, nil, refusal(errBusy, "a prompt is already running in this session; steer it or wait"))
+			return
+		}
+		if wait == nil {
+			break
+		}
+		<-wait
 	}
-	s.beginTurn(ctx, cancel)
-	defer func() {
-		cancel()
-		s.endTurn()
-	}()
+	// The turn ends before its reply, so the next prompt never finds it open.
+	var endOnce sync.Once
+	end := func() { endOnce.Do(func() { cancel(); s.endTurn() }) }
+	defer end()
 
 	text := promptText(p.Prompt)
 	// The workspace file changed since the session opened: it restarts under
@@ -778,6 +805,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	if reason != "" {
 		metaOf(res)["reason"] = reason
 	}
+	end()
 	c.reply(msg.ID, res, nil)
 }
 

@@ -562,6 +562,23 @@ Two changes need action before upgrading:
 
 ### Changed
 
+- A background task that finishes while the session is idle now wakes the
+  agent: `subagents.wake` defaults to `auto` (it was `notify`), so the agent
+  continues with the result on its own instead of waiting for your next
+  message. The usual limits hold: `subagents.max_wakes_per_hour`,
+  `subagents.wake_max_turns`, a stop holds wakes until your next message,
+  asks still come to you, and only the session's own tasks wake it. Set
+  `"wake": "notify"` for the old behaviour; the managed configuration can
+  hold it there. The console and workbench draw the woken turn live, marked
+  "continuing with results from <task>", with its asks offered, and the
+  workbench lists running background tasks in its status bar.
+- Abhed Studio and other ACP editors wake too: a woken turn streams as
+  session updates between `_abhed/wake/started` and `_abhed/wake/ended`, and
+  a prompt sent meanwhile waits for it. rpc takes `start.wake: "auto"` and
+  answers a woken run with a `woken` line; the SDK takes `Background: "auto"`
+  and `HostWake`, and `CancelTasks` ends a wake run in progress. rpc and the
+  SDK still default to joining their tasks.
+
 - Approvals and the line mode write a hidden character in one form wherever
   it is shown: `⟨\r⟩`, `⟨\e⟩`, `⟨U+200B⟩`, and a byte that is not UTF-8 as
   `⟨\xff⟩`, where 1.2.2's line prompt wrote `\r` and `\x1b`. A tab is drawn

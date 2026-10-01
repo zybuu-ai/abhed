@@ -682,7 +682,7 @@ func tighterWake(dst, ws *Config) bool {
 	v, ok := wakeRank[ws.Subagents.Wake]
 	cur := dst.Subagents.Wake
 	if cur == "" {
-		cur = "notify"
+		cur = "auto"
 	}
 	if !ok || v > wakeRank[cur] {
 		return false

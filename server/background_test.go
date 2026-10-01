@@ -69,6 +69,9 @@ func (a *bgAdapter) Complete(ctx context.Context, req model.Request) (<-chan mod
 	case last.Role == model.RoleTool && strings.HasPrefix(last.ToolCallID, "bgn_") && a.askOnWake:
 		c := model.ToolCall{ID: "w" + last.ToolCallID, Name: "bash", Args: json.RawMessage(`{"command":"touch woke.txt"}`)}
 		ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &c}
+	case last.Role == model.RoleTool && strings.HasPrefix(last.ToolCallID, "bgn_"):
+		// A background result is answered by naming what it said.
+		ch <- model.Chunk{Type: model.ChunkText, Text: "acting on: " + last.Content}
 	default:
 		if last.Role == model.RoleTool {
 			time.Sleep(a.slow) // the run stays live a while after the start
@@ -97,6 +100,9 @@ func newBGServerWith(t *testing.T, st EventStore, tune func(*config.Config, *Opt
 	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
+	// These tests follow a result delivered while idle, so they run notify;
+	// a test of waking says so with its tune.
+	cfg.Subagents.Wake = "notify"
 	ad := newBGAdapter(names...)
 	if st == nil {
 		st = agent.NewMemStore()
