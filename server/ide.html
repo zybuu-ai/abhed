@@ -827,13 +827,13 @@ function replaceAll(t, text){ t.model.pushEditOperations([], [{range:t.model.get
 async function acceptText(t, text){
   try{ await api('/v1/sessions/' + current + '/accept', {method:'POST', body: JSON.stringify({path:t.path, content:text})});
     if(t.orig) t.orig.setValue(text); crumbs(t.path, 'accepted · baseline moved'); changesSoon(300); }
-  catch(e){ crumbs(t.path, 'not accepted — ' + e.message); }
+  catch(e){ crumbs(t.path, 'not accepted — ' + visible(e.message)); }
 }
 async function rejectAll(t){
   if(!t.existed){
     // The file was created by this session: rejecting it all is removing it.
     try{ await api('/v1/sessions/' + current + '/delete', {method:'POST', body: JSON.stringify({path:t.path})}); closeTab(t.id); changesSoon(300); refreshDir(parentOf(t.path)); }
-    catch(e){ crumbs(t.path, 'not removed — ' + e.message); }
+    catch(e){ crumbs(t.path, 'not removed — ' + visible(e.message)); }
     return;
   }
   replaceAll(t, t.orig.getValue()); await save(t);
@@ -846,7 +846,7 @@ async function save(t){
     const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.model.getValue(), base:t.base})});
     t.base = r.hash; t.saved = version; t.dirty = t.model.getAlternativeVersionId() !== version; drawTabs();
     crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
-  }catch(e){ crumbs(t.path, 'not saved — ' + e.message); }
+  }catch(e){ crumbs(t.path, 'not saved — ' + visible(e.message)); }
   t.saving = false;
 }
 const saveActive = () => save(activeTab());
@@ -869,7 +869,7 @@ async function loadTree(path, into, depth){
   if(!current){ clear(into); into.appendChild(el('div', 'empty', 'Start or open a session to browse its workspace.')); return; }
   dirs.set(path, {into, depth});
   let res; try{ res = await api('/v1/sessions/' + current + '/tree?path=' + encodeURIComponent(path)); }
-  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', reveal(e.message))); return; }
+  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', visible(e.message))); return; }
   if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; }
   clear(into);
   for(const e of res.entries){
@@ -1076,7 +1076,7 @@ function drawCaps(){
   const r = el('div', 'rules');
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
   line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
-  line('deny', c.permissions.deny.join('   ') || '—'); line('ask', c.permissions.ask.join('   ') || '—'); line('allow', c.permissions.allow.join('   ') || '—');
+  line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
   t.appendChild(r);
   t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
@@ -1234,7 +1234,7 @@ async function switchModel(){
     const s = sessionList.find(x => x.id === current); if(s){ s.provider = r.provider; s.model = r.model; }
   }catch(e){
     // Refused (mid-turn, or not recorded): say why, and show the model still in use.
-    add(el('div', 'sys bad', 'Model not switched: ' + e.message)); sel.value = sel.dataset.prev;
+    add(el('div', 'sys bad', 'Model not switched: ' + visible(e.message))); sel.value = sel.dataset.prev;
   }finally{ sel.disabled = false; }
 }
 $('mdlpick').addEventListener('change', switchModel);
@@ -1260,7 +1260,7 @@ async function createWorkbench(note){
     const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode, provider})});
     sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode, provider, model: modelOf(provider)});
     openSession(r.session_id, 'idle', {note});
-  }catch(e){ noTerminal('Could not open a workbench session: ' + e.message); }
+  }catch(e){ noTerminal('Could not open a workbench session: ' + visible(e.message)); }
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
 
@@ -1536,7 +1536,7 @@ async function unqueue(b){
   if(!b.qid || !current) return false;
   b.busy = true; drawQueued(b);
   try{ await api('/v1/sessions/' + current + '/queue/' + encodeURIComponent(b.qid), {method:'DELETE'}); }
-  catch(e){ b.busy = false; if(!b.delivered){ b.qnote = 'Not withdrawn — ' + e.message; drawQueued(b); } return false; }
+  catch(e){ b.busy = false; if(!b.delivered){ b.qnote = 'Not withdrawn — ' + visible(e.message); drawQueued(b); } return false; }
   forget(b); b.remove(); return true;
 }
 // Send now: withdraw it from the queue, stop the running step, and send it
@@ -1569,7 +1569,7 @@ async function sendNow(b){
         (kept ? '; its text is back in the message box' : ''));
       return;
     }
-    failed(b, e.message);
+    failed(b, visible(e.message));
   }
 }
 
@@ -1766,7 +1766,7 @@ function askApproval(p, rid){
         if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
         // Only the server running the session can check the answer against its request.
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
-        a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
+        a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : visible(e.message))); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'));
   // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
@@ -1826,7 +1826,7 @@ function drawTermTabs(){
     const b = el('div', 'ttab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t === activeTerm)); b.tabIndex = 0;
     const nm = el('span', 'nm', reveal(t.name)); if(t.kind !== 'agent') nm.title = 'Double-click to rename'; b.appendChild(nm);
     if(t.run) b.appendChild(el('span', 'live', '●'));
-    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.name);
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + reveal(t.name));
     x.addEventListener('click', e => { e.stopPropagation(); closeTerm(t); });
     b.appendChild(x);
     b.addEventListener('click', () => { if(activeTerm !== t) selectTerm(t); });
@@ -2276,7 +2276,7 @@ async function send(){
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value, provider, model: modelOf(provider)}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
-  }catch(e){ if(current === id){ failed(b, e.message); if(!busy) waiting(false); } }
+  }catch(e){ if(current === id){ failed(b, visible(e.message)); if(!busy) waiting(false); } }
 }
 $('stop').addEventListener('click', async () => { if(current) try{ await api('/v1/sessions/' + current + '/interrupt', {method:'POST'}); }catch{} });
 // Esc stops the run only when pressed twice: once to ask, once to confirm.
@@ -2420,7 +2420,7 @@ $('switchuser').addEventListener('click', postSignOut);
 (async () => {
   welcome();
   try{ caps = await api('/v1/capabilities'); setConn(true); }
-  catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + e.message)); return; }
+  catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + visible(e.message))); return; }
   stat.window = caps.model.context_window; drawCaps();
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');

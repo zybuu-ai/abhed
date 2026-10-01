@@ -16,8 +16,9 @@ All notable changes to Abhed are recorded here. The format follows
   the agent's terminal tab, the refusals, reasons and notes Abhed writes
   into a line terminal and the directory in its prompt, file names
   (Explorer, tabs, search, the command palette and the `@` list), file and
-  diff lines, search results, session titles, the running label and MCP,
-  skill and extension names now show those characters as `⟨U+XXXX⟩`,
+  diff lines, search results, session titles, the running label, MCP,
+  skill and extension names, the permission rules in `/ide`'s Tools panel
+  and the server's error notes now show those characters as `⟨U+XXXX⟩`,
   keeping newlines, tabs and indentation.
 - `/ide` drew a model error with the model's own invalid tool arguments
   quoted as given, so an RLO in them reversed the row. It is now written out

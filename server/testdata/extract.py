@@ -63,8 +63,8 @@ sets = {
           'function logEvent(ev, p){','async function loadHawkeye(){'],
     'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function bubble(cls, who, text){','function render(ev){','function subagentRow(id, p, at){','function drawBg(){','function offerNext(t){'],
     # The model picker, from console.go and from ide.html.
-    'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
-    'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
+    'model': ['function visible(s, lines){','function reveal(s, lines){','function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
+    'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
           'function showSessionModel(s){','async function switchModel(){'],
     # From ide.html: an opened call's arguments and output, and the plan.
     'ide-call': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function fillCall(c){','function clip(text){','function drawPlan(items){'],

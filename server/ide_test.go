@@ -585,9 +585,22 @@ func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
 		{"ide", ideHTML, "b.appendChild(el('span', 'name mono', '@' + reveal(p)));"},
 		{"ide", ideHTML, "'Hooks: ' + (visible(e.events.join(', ')) || 'all events')"},
 		{"ide", ideHTML, "if(!t.model) note(visible(e.message));"},
+		{"ide", ideHTML, "line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');"},
+		{"ide", ideHTML, "x.setAttribute('aria-label', 'Close ' + reveal(t.name));"},
 	} {
 		if !strings.Contains(c.src, c.want) {
 			t.Errorf("%s no longer draws this through the helper: %s", c.page, c.want)
+		}
+	}
+	// Every error message is drawn through the helper; only a regular
+	// expression's test reads one raw.
+	message := regexp.MustCompile(`\b(?:e|err)\.message`)
+	drawn := regexp.MustCompile(`(?:visible|reveal)\((?:err && )?(?:e|err)\.message|\.test\(e\.message\)`)
+	for page, src := range map[string]string{"console": consoleHTML, "ide": ideHTML} {
+		for _, line := range strings.Split(src, "\n") {
+			if len(message.FindAllString(line, -1)) != len(drawn.FindAllString(line, -1)) {
+				t.Errorf("%s draws an error message raw: %s", page, strings.TrimSpace(line))
+			}
 		}
 	}
 }

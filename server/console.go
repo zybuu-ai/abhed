@@ -867,7 +867,7 @@ async function loadProviders(){
       if(lastNoteText() !== text) note(text);
     }catch(e){
       // Refused (mid-turn, or not recorded): say why, and show the model still in use.
-      note('Model not switched: ' + String(e.message || e));
+      note('Model not switched: ' + visible(e.message || e));
       sel.value = sel.dataset.prev;
     }finally{
       sel.disabled = false;
@@ -1079,7 +1079,7 @@ async function deleteSession(id, onFail){
     if(current === id) newChat();
     return true;
   }catch(err){
-    note('Could not delete this chat: ' + (err && err.message || err));
+    note('Could not delete this chat: ' + visible(err && err.message || err));
     onFail && onFail();
     return false;
   }
@@ -1762,7 +1762,7 @@ function approval(p, rid){
         return;
       }
       // Too many answers waiting is busy, not refused: the request may still wait.
-      card.appendChild(node('note', /too many answers/i.test(e.message) ? 'Busy, try again' : e.message));
+      card.appendChild(node('note', /too many answers/i.test(e.message) ? 'Busy, try again' : visible(e.message)));
       buttons.forEach(b => { b.disabled = false; });
     }
   };
@@ -1844,7 +1844,7 @@ async function send(){
       showThinking('waiting for the model');
     }
   }catch(e){
-    $('tx').appendChild(node('note', e.message));
+    $('tx').appendChild(node('note', visible(e.message)));
   }finally{
     $('go').disabled = false;
     $('q').focus();
