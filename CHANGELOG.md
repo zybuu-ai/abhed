@@ -427,6 +427,10 @@ All notable changes to Abhed are recorded here. The format follows
   `storage.single_role` server runs both at start. An old node left running
   during a rolling upgrade writes sessions under the old owners after the
   migration, and those sessions are then reachable by no one.
+- A relative `auth.users_file` now resolves against the workspace for
+  `serve`, `user` and `migrate`, not against the directory each was started
+  in. A deployment that relied on the start directory should give the path
+  in full.
 - Version 5 makes usernames and emails unique without regard to case, on
   Postgres. If two existing accounts already share one, `abhed migrate`
   names them and stops, and runs once all but one have another email or are

@@ -1718,7 +1718,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	for _, l := range s.running {
 		// Tenant isolation is enforced here AND at the data layer: a boundary
 		// that exists in only one place is not a boundary (docs/ops §4). The
-		// user check is the same rule s.session() applies to a single session,
+		// user check is the same rule s.session(r.Context(), ) applies to a single session,
 		// applied to the list — they must agree, or the list advertises
 		// sessions that then 404.
 		if !ownsSession(l.Tenant, l.User, tenant, user) {
@@ -1750,7 +1750,7 @@ type sessionStateResponse struct {
 // tenant's sessions. Anyone else is told it does not exist.
 func (s *Server) sessionState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+	if live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); ok {
 		live.mu.Lock()
 		out := sessionStateResponse{ID: id, State: live.State, Reason: listedReason(live.State, live.Reason), Turns: live.Turns}
 		live.mu.Unlock()
@@ -1779,7 +1779,7 @@ func (s *Server) sessionState(w http.ResponseWriter, r *http.Request) {
 // failing closed, so an unknown id can never be mistaken for an owned one.
 func (s *Server) mayAccess(r *http.Request, id string) bool {
 	tenant, user := TenantOf(r.Context()), UserOf(r.Context())
-	if _, ok := s.session(id, tenant, user); ok {
+	if _, ok := s.session(r.Context(), id, tenant, user); ok {
 		return true
 	}
 	if s.sessions == nil {
@@ -1903,7 +1903,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	// durable store — that is the whole point of event sourcing. Looking only
 	// at the in-memory map meant every session from before a restart returned
 	// 404, so clicking one in the UI showed a blank pane.
-	live, running := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, running := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !running {
 		// Not running is not the same as not ours. Ownership is checked
 		// against the stored record before any event is streamed, or a
@@ -2138,7 +2138,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
 
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	resumedHere := false
 	if !ok {
 		// Not running here is not the end of it. A finished session is
@@ -2333,7 +2333,7 @@ func (s *Server) notRunningHere(w http.ResponseWriter, r *http.Request, id strin
 
 // listQueue returns the messages waiting for the session's next turn boundary.
 func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
-	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		s.notRunningHere(w, r, r.PathValue("id"))
 		return
@@ -2348,7 +2348,7 @@ func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
 // cancelQueued withdraws a queued message before the loop reads it. Once it
 // has been delivered it cannot be withdrawn, and the answer is 404.
 func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
-	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		s.notRunningHere(w, r, r.PathValue("id"))
 		return
@@ -2365,7 +2365,7 @@ func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		s.notRunningHere(w, r, r.PathValue("id"))
 		return
@@ -2396,7 +2396,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
@@ -2996,22 +2996,25 @@ func (s *Server) router() (SessionRouter, bool) {
 	return r, ok
 }
 
-func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
+func (s *Server) session(ctx context.Context, id, tenant, user string) (*liveSession, bool) {
 	s.mu.RLock()
 	live, found := s.running[id]
 	owned := found && ownsSession(live.Tenant, live.User, tenant, user)
 	s.mu.RUnlock()
-	if !owned || !s.stillOwned(live, id) {
+	if !owned || !s.stillOwned(ctx, live, id) {
 		return nil, false
 	}
 	return live, true
 }
 
+// stillOwnedWait bounds stillOwned's read of the session row.
+const stillOwnedWait = 5 * time.Second
+
 // stillOwned checks a held session's owner against its stored row, which an
 // account's removal in another process moves to unclaimed while this one
 // still holds the old owner. A disagreement adopts the row's owner. Without
 // a durable store, or before the row exists, memory is all there is.
-func (s *Server) stillOwned(live *liveSession, id string) bool {
+func (s *Server) stillOwned(ctx context.Context, live *liveSession, id string) bool {
 	g, ok := s.sessions.(sessionGetter)
 	if !ok {
 		return true
@@ -3022,7 +3025,11 @@ func (s *Server) stillOwned(live *liveSession, id string) bool {
 	if held == "" || held == auth.Anonymous {
 		return true
 	}
-	rec, err := g.GetSession(context.Background(), id)
+	// The request's own deadline, and at most a few seconds: a store that
+	// does not answer in time refuses, as one that errs does.
+	ctx, cancel := context.WithTimeout(ctx, stillOwnedWait)
+	defer cancel()
+	rec, err := g.GetSession(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return true
 	}

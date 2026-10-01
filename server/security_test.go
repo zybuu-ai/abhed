@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -404,7 +405,7 @@ func TestReleaseSessionsUnclaimsLiveSessions(t *testing.T) {
 	if n := s.ReleaseSessions("default", "local:bob"); n != 1 {
 		t.Fatalf("released %d, want 1", n)
 	}
-	if _, ok := s.session("a", "default", "local:bob"); ok {
+	if _, ok := s.session(context.Background(), "a", "default", "local:bob"); ok {
 		t.Error("a new bob still owns the old bob's session")
 	}
 	if s.running["a"].User != "unclaimed:local:bob" || s.running["b"].User != "local:bob" || s.running["c"].User != "local:carol" {
