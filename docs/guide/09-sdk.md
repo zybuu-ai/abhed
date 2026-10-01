@@ -201,7 +201,7 @@ returns `abhed.ErrUntrustedModel` rather than run on a different model; set
 | `SyntaxCheck` | replaces `tools.syntax_check` (`refuse`, `report`, `off`) | if the file sets it, only as strict or stricter (`off` < `report` < `refuse`) |
 | `MaxTurns` | replaces the default turn limit | if the file sets `limits.max_turns`, at most that; zero uses it |
 | `ConfiguredLimits` | when `MaxTurns` is zero, the files' `limits.max_turns` binds, as for the CLI; off, it does not | the same, the managed value still the ceiling |
-| `Allow` | added to `permissions.allow` | refused if the file sets `permissions.allow` |
+| `Allow` | added to `permissions.allow` | refused if the file sets any `permissions` setting (mode, deny, ask or allow) |
 | `Suggest` | after each completed `Run`, one small model call offers a next prompt as a `suggestion.offered` event, delivered after `Run` returns (the next `Run` or `Close` cancels it), unless `suggest.enabled` is false; off by default | a managed `suggest.enabled: false` binds |
 | `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
 | `Extensions` | added to the configured ones | added; an extension can only veto |
