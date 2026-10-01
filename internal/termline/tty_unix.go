@@ -29,3 +29,20 @@ func TTYNow(master *os.File) (fg int, canonical bool, ok bool) {
 	}
 	return fg, t.Lflag&unix.ICANON != 0, true
 }
+
+// Hidden reports whether something is reading a line the terminal does not
+// show: canonical mode with echo off, as read -s and password prompts set.
+func Hidden(master *os.File) bool {
+	rc, err := master.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var t *unix.Termios
+	var terr error
+	if err := rc.Control(func(fd uintptr) {
+		t, terr = unix.IoctlGetTermios(int(fd), getTermios) // #nosec G115 -- a file descriptor fits an int
+	}); err != nil || terr != nil {
+		return false
+	}
+	return t.Lflag&unix.ICANON != 0 && t.Lflag&unix.ECHO == 0
+}

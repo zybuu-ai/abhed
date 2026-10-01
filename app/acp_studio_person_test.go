@@ -280,9 +280,15 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	}
 	typeLine("echo hi-$((40+2))\r", func(s string) bool { return strings.Contains(s, "hi-42") && prompted(s) })
 	typeLine("curl example.com\r", func(s string) bool { return strings.Contains(s, "Denied") })
-	typeLine(`read -s pw; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "read -s") })
+	// Echo is off before READY shows, so the password is typed into it.
+	typeLine(`stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "READY") })
 	typeLine("hunter22\r", func(s string) bool { return strings.Contains(s, "got 8") })
+	// Typed ahead: the password is sent before read -s has turned echo off.
 	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": `read -s pw; echo "also ${#pw}"` + "\r"}, nil)
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "hunter33\r"}, nil)
+	waitShell(at, func(s string) bool { return strings.Contains(s, "also 8") && prompted(s) })
+	at = r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
 	r.cl.waitFor(at, "the shell's exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
 	time.Sleep(2 * termline.EchoWait)
@@ -303,7 +309,7 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 		t.Fatalf("terminal.input: %v", inputs)
 	}
 	for _, ev := range r.events(id) {
-		if strings.Contains(string(ev.Payload), "hunter22") {
+		if strings.Contains(string(ev.Payload), "hunter22") || strings.Contains(string(ev.Payload), "hunter33") {
 			t.Fatalf("the unechoed line reached the record: %s %s", ev.Type, ev.Payload)
 		}
 	}
