@@ -231,6 +231,10 @@ Also:
 
 ### Fixed
 
+- In `/ide`'s line terminal, a key typed behind a destructive line was kept
+  after the line was confirmed and glued onto the next one, so `y` then `ls`
+  ran `yls`. Confirming now drops what was typed behind the line and the
+  lines queued after it, as declining does.
 - On a server with Postgres, a workbench hold on a session the server had
   started was released two minutes after the first manual write, not the
   last, so a repeated `session.ended` landed in the middle of terminal or

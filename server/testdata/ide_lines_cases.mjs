@@ -80,13 +80,29 @@ check('declining clears what was typed behind the line', __sent.length === 2 && 
 linesData(t, 'ls\r'); await tick();
 check('the next line runs as typed, nothing glued to it', __sent.length === 3 && __sent[2].command === 'ls');
 
-// Type-ahead that was not entered survives the prompt.
+// Confirming drops what was typed behind the line too: a y typed in the burst is not
+// glued onto the next line ("yls"), and a line entered behind it does not run.
 ({out, t} = term());
-__sent.length = 0; __replies.push(CONFIRM, {id:'u4', cwd:'.'});
-linesData(t, 'rm -rf x\r'); t.line = 'git st'; await tick();
-check('type-ahead is set aside at the prompt', t.confirm && t.line === '');
+__sent.length = 0; __attached = null; __replies.push(CONFIRM, {id:'u4', cwd:'.'}, {id:'u4b', cwd:'.'});
+linesData(t, 'rm -rf x\ry'); await tick();
+check('type-ahead is set aside at the prompt', t.confirm === 'rm -rf x' && t.line === '');
 await guard(); linesData(t, '2'); linesData(t, '\r'); await tick();
-check('type-ahead comes back after the answer', t.line === 'git st');
+check('confirming runs the line and clears what was typed behind it', __sent.length === 2 && __sent[1].confirmed === true && t.line === '' && t.ahead === '' && t.queue.length === 0);
+t.run = null; t.busy = false;
+linesData(t, 'ls\r'); await tick();
+check('after confirming, the next line runs as typed, nothing glued to it', __sent.length === 3 && __sent[2].command === 'ls');
+// A burst line entered behind it ("y" then Enter) and text not entered ("zz") are dropped on
+// either answer: neither runs as a command nor is glued onto the next line.
+for(const answer of ['2', '1']){
+  ({out, t} = term());
+  __sent.length = 0; __attached = null; __replies.push(CONFIRM, answer === '2' ? {id:'u4c', cwd:'.'} : {denied:'Not run: not confirmed', cwd:'.'}, {id:'u4d', cwd:'.'});
+  linesData(t, 'rm -rf x\ry\rzz'); await tick();
+  await guard(); linesData(t, answer); linesData(t, '\r'); await tick();
+  t.run = null; t.busy = false;
+  linesData(t, 'ls\r'); await tick();
+  check('answering ' + answer + ' drops a burst line and un-entered text: ' + JSON.stringify(__sent.map(b => b.command)),
+    __sent.length === 3 && __sent.every(b => b.command !== 'y') && __sent[2].command === 'ls');
+}
 
 // An ordinary line runs on Enter, as before.
 ({out, t} = term());

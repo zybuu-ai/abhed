@@ -2131,10 +2131,10 @@ function confirmData(t, d){
       const n = ch === '\x03' ? '1' : t.line.trim();
       if(n !== '1' && n !== '2'){ t.term.write('\r\n'); askConfirm(t); return; }
       const cmd = t.confirm, yes = n === '2';
-      // A declined line drops what was typed behind it, entered or not, as Ctrl-C does.
-      t.confirm = null; t.line = yes ? t.ahead || '' : ''; t.ahead = '';
+      // Either answer drops what was typed behind the line, entered or not: it was typed
+      // before the question was answered, and a stray y must not be glued onto the next line.
+      t.confirm = null; t.line = ''; t.ahead = ''; t.queue = [];
       t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
-      if(!yes) t.queue = [];
       runLine(t, cmd, yes ? 'confirmed' : 'declined'); return;
     }
     if(ch === '\x7f'){ if(t.line){ t.line = t.line.slice(0, -1); t.term.write('\b \b'); } continue; }
