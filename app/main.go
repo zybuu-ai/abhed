@@ -2194,10 +2194,20 @@ func ownedHere(ctx context.Context, st *cliState, id string) error {
 	// for a user who happens to be named like the subagent rows are.
 	// A session the owner migration moved to the same-named account is still this user's.
 	mine := owner.User == cliUser() || owner.User == auth.LocalOwner(cliUser())
+	// An unclaimed or nobody row is no one's, whatever $USER says.
+	if ownsNoOne(owner.User) || ownsNoOne(rec.User) {
+		mine = false
+	}
 	if owner.User == store.SubagentUser || !mine || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
+}
+
+// ownsNoOne reports whether owner is an unclaimed or nobody key, in any case.
+func ownsNoOne(owner string) bool {
+	o := strings.ToLower(strings.TrimSpace(owner))
+	return strings.HasPrefix(o, auth.UnclaimedPrefix) || strings.HasPrefix(o, auth.NobodyPrefix)
 }
 
 // claimResumed claims a resumed session as its first task starts: only one
