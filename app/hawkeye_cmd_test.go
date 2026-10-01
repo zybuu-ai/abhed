@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
@@ -69,5 +70,51 @@ func TestHawkeyeReadsJSONLinesAndExports(t *testing.T) {
 	}
 	if _, code := hawkeyeOn(t, junk); code != 1 {
 		t.Fatalf("lines that are not events: exit %d, want 1", code)
+	}
+}
+
+// hawkeyeIn runs abhed hawkeye on target in workspace ws.
+func hawkeyeIn(t *testing.T, ws, target string) (string, int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	code := hawkeyeCmd(ws, []string{target}, config.TrustGranted)
+	os.Stdout = old
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	return string(out), code
+}
+
+// HawkEYE finds a session by id in the local record, and reads an export of
+// it, checked against the head its last line carries; a changed copy fails.
+func TestHawkeyeReadsTheLocalRecord(t *testing.T) {
+	g := newSessRig(t)
+	c := g.start()
+	g.ask(c, "Remember the codeword ZEBRA-41.")
+	c.command("/export s.jsonl", "wrote ")
+	exit(c)
+	id := g.sessions()[0].ID
+	t.Setenv("HOME", g.home)
+
+	out, code := hawkeyeIn(t, g.ws, id)
+	if code == 1 || !strings.Contains(out, "HawkEYE · "+id) || !strings.Contains(out, "record: verified") {
+		t.Fatalf("by id: exit %d\n%s", code, out)
+	}
+	export := filepath.Join(g.ws, "s.jsonl")
+	out, code = hawkeyeIn(t, g.ws, export)
+	if code == 1 || !strings.Contains(out, "HawkEYE · "+id) || !strings.Contains(out, "record: verified against its head") {
+		t.Fatalf("export: exit %d\n%s", code, out)
+	}
+	data, _ := os.ReadFile(export)
+	tampered := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(tampered, []byte(strings.Replace(string(data), "ZEBRA-41", "ZEBRA-42", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code = hawkeyeIn(t, g.ws, tampered); code != 3 || !strings.Contains(out, "FAILED verification") {
+		t.Fatalf("a changed export: exit %d\n%s", code, out)
 	}
 }

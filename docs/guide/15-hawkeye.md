@@ -25,7 +25,11 @@ abhed hawkeye -o report.html session.json
 abhed -p "fix the tests" -output-format json > events.jsonl
 abhed hawkeye events.jsonl
 
-# By id, against a durable store
+# On an export of the local record, checked against the head on its last line
+/export session.jsonl
+abhed hawkeye session.jsonl
+
+# By id, in the local record (~/.abhed/records) or Postgres when configured
 abhed hawkeye s-k4dq7x2m
 
 # From the server
@@ -37,8 +41,9 @@ GET /v1/sessions/{id}/hawkeye?format=html  # the page
 The endpoint answers to the same ownership check as replay: another user or
 tenant gets a 404, because a report carries every tool result in the session.
 
-`abhed hawkeye` exits **3** when the record has a gap in it, so a pipeline can
-refuse a record that is not whole.
+`abhed hawkeye` exits **3** when the record has a gap in it, or when a session
+from the local record or a `.jsonl` export of it fails verification, so a
+pipeline can refuse a record that is not whole.
 
 ## What the report contains
 
