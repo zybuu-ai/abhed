@@ -26,7 +26,7 @@ PENDING = re.compile(r"^ {4,}[\w./-]+\.go:\d+: clitest: pending \(([A-Za-z0-9]+)
 
 def check(lines, allowed):
     """Returns (ok, message) for the go test -json lines."""
-    output, skipped, failed = {}, [], 0
+    output, skipped, failed = {}, [], []
     passed = {}
     pkg_fail, pkg_ran = set(), set()
     for line in lines:
@@ -54,10 +54,16 @@ def check(lines, allowed):
         elif action == "pass":
             passed[pkg] = passed.get(pkg, 0) + 1
         elif action == "fail":
-            failed += 1
+            failed.append(key)
 
     bad = []
-    for pkg in sorted(pkg_fail):
+    # A package fails when one of its tests does; name the tests, and blame
+    # the package itself only when none failed.
+    for key in failed:
+        text = "".join(output.get(key, []))
+        rest = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith(("=== ", "--- "))]
+        bad.append(f"{key[0]} {key[1]} failed: {rest[-1] if rest else '(no output)'}")
+    for pkg in sorted(pkg_fail - {k[0] for k in failed}):
         bad.append(f"{pkg}: the package did not build, or failed outside a test")
     for pkg in sorted(pkg_ran - pkg_fail):
         if not passed.get(pkg):
@@ -76,8 +82,8 @@ def check(lines, allowed):
         return False, "clitest tests skipped or failed for a reason CI does not accept:\n" + "\n".join("  " + b for b in bad)
     if total == 0:
         return False, "no clitest test ran"
-    msg = f"{total} clitest tests passed, {failed} failed, {len(skipped)} pending on {sorted(allowed) or 'nothing'}"
-    return failed == 0, msg
+    msg = f"{total} clitest tests passed, {len(skipped)} pending on {sorted(allowed) or 'nothing'}"
+    return True, msg
 
 
 def self_test():
@@ -104,6 +110,8 @@ def self_test():
             json.dumps({"Action": "build-fail", "ImportPath": "q [q.test]"})], {"editor"}, False),
         ("a package where no test ran", [ev("pass", "TestA", pkg="q"), ev("pass", pkg="q"), ev("pass")], set(), False),
         ("nothing at all", [], set(), False),
+        ("a failed test", [ev("pass", "TestA"), ev("output", "TestB", "    x_test.go:3: boom\n"),
+            ev("fail", "TestB"), ev("fail")], {"editor"}, False),
     ]
     good = True
     for name, lines, allowed, want in cases:
