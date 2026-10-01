@@ -169,9 +169,8 @@ func (l *Loop) WaitSuggestion(ctx context.Context) {
 	}
 }
 
-// makeSuggestion makes the call and records it once the conversation is
-// free: the suggestion, if still wanted, then its model.call, last.
-// It never fails a run: a refused write is not kept as the loop's error.
+// makeSuggestion records, once the conversation is free, the suggestion if
+// still wanted, then its model.call; a refused write fails no run.
 func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *suggestJob) {
 	defer close(p.done)
 	defer p.cancel()
@@ -233,9 +232,8 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	_, _ = l.Recorder.Record(EvModelCall, ActorSystem, Trusted, mc)
 }
 
-// suggestionText is the model's reply as a suggestion, or "". A reply the
-// redactor would change is none: checked whole, before cleaning cuts it, so a
-// secret longer than the cap cannot pass as its first characters.
+// suggestionText is the reply as a suggestion, or "": one the redactor would
+// change is none, checked whole before cleaning cuts a long secret short.
 func (l *Loop) suggestionText(sg *Suggester, text string) string {
 	red := l.Recorder.redactor()
 	if red != nil && redactedText(red.Redact, text) != text {

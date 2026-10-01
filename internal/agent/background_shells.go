@@ -264,11 +264,8 @@ func (b *Background) sessionID() string {
 	return b.loop.sessionID()
 }
 
-// redactRead redacts a read across read boundaries: output that may be the
-// start of a secret is held back until the next read, or the end. At a gap
-// (dropped or skipped output) the held text and the first span-1 bytes after
-// it are not shown, since a secret cut by the gap could leave a part in
-// either; they are counted as skipped. The caller holds readMu.
+// redactRead holds back output that may start a secret until the next read;
+// at a gap, text a cut secret could leave a part in is skipped. Holds readMu.
 func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (string, int64) {
 	var red Redactor
 	if b.loop != nil {

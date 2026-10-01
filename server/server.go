@@ -2125,11 +2125,8 @@ func ownsSession(recTenant, recUser, tenant, user string) bool {
 	return recUser == user
 }
 
-// streamEnd finds the end after which a session makes no more events: one
-// that owes nothing (no background child running, no result undelivered, no
-// wake starting). A run's end that owes some keeps the stream open for the
-// results and the closing end. An end a suggestion follows keeps it open
-// until the suggestion's model.call, which is recorded last.
+// streamEnd finds the end after which a session makes no more events: one that
+// owes no background work, and whose suggestion, if any, has its model.call.
 type streamEnd struct{ suggestion bool }
 
 // closes reports whether the stream ends after e; running reports a run live now.
