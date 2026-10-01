@@ -474,10 +474,12 @@ counts as an answer is in [The terminal](18-terminal.md#approvals).
 
 Text in the prompt comes from the model, so it is shown as written, not
 obeyed. A carriage return, escape sequence, backspace, zero-width or bidi
-character is printed as an escape such as `\r`, `\x1b` or `⟨U+200D⟩`, and the
-prompt adds `! this call contains hidden or control characters`. The console
-and the IDE do the same on their approval cards, and an editor over `acp` gets
-the same escapes in the permission request's title.
+character is printed as a marked escape such as `⟨\r⟩`, `⟨\e⟩` or `⟨U+200D⟩`, a
+long run of spaces or tabs as a count such as `⟨32 spaces⟩`, and the prompt
+warns that the call has hidden characters before the answers. The console and
+the IDE do the same on their approval cards (a carriage return there reads
+`⟨U+000D⟩`), and an editor over `acp` gets the same escapes in the permission
+request's title, marked `(contains hidden or control characters)`.
 
 The record names the scope on the approval that chose it (`granted_scope`),
 and in the console and the API the person who answered (`approver`); a call a
