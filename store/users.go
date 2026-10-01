@@ -147,16 +147,46 @@ func (p *Postgres) List(ctx context.Context) ([]*auth.User, error) {
 }
 
 func (p *Postgres) Delete(ctx context.Context, username string) error {
+	_, err := p.RemoveUser(ctx, username)
+	return err
+}
+
+// RemoveUser deletes an account and, in the same transaction, moves the
+// sessions it owned in its tenant to auth.UnclaimedOwner, so an account made
+// later under the same name does not inherit them. It returns how many moved.
+func (p *Postgres) RemoveUser(ctx context.Context, username string) (int64, error) {
 	if err := p.MigrateUsers(ctx); err != nil {
-		return err
+		return 0, err
 	}
-	tag, err := p.pool.Exec(ctx, `DELETE FROM users WHERE username = $1`,
-		strings.ToLower(username))
+	name := strings.ToLower(username)
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if tag.RowsAffected() == 0 {
-		return auth.ErrNoSuchUser
+	defer func() { _ = tx.Rollback(ctx) }()
+	var tenant string
+	err = tx.QueryRow(ctx, `SELECT tenant FROM users WHERE username = $1 FOR UPDATE`, name).Scan(&tenant)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, auth.ErrNoSuchUser
 	}
-	return nil
+	if err != nil {
+		return 0, err
+	}
+	// Row-level security shows one tenant: the account's, for this transaction only.
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant); err != nil {
+		return 0, err
+	}
+	owner := auth.LocalOwner(name)
+	tag, err := tx.Exec(ctx, `UPDATE sessions SET user_id = $1 WHERE tenant_id = $2 AND user_id = $3`,
+		auth.UnclaimedOwner(owner), tenant, owner)
+	if err != nil {
+		return 0, fmt.Errorf("unclaim sessions of %s: %w", name, err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM users WHERE username = $1`, name); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

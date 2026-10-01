@@ -70,6 +70,21 @@ type UserStore interface {
 	Delete(ctx context.Context, username string) error
 }
 
+// SessionReleasingUserStore is a store that also keeps sessions, and on
+// removing an account moves the ones it owned to UnclaimedOwner in one step.
+type SessionReleasingUserStore interface {
+	RemoveUser(ctx context.Context, username string) (int64, error)
+}
+
+// RemoveUser deletes an account and returns how many of its sessions the
+// store moved to UnclaimedOwner; a store that keeps no sessions moves none.
+func RemoveUser(ctx context.Context, store UserStore, username string) (int64, error) {
+	if r, ok := store.(SessionReleasingUserStore); ok {
+		return r.RemoveUser(ctx, username)
+	}
+	return 0, store.Delete(ctx, username)
+}
+
 // RevokingUserStore is a store that can raise User.Revocations in one step, so
 // a sign-out everywhere never writes back the rest of a stale account.
 type RevokingUserStore interface {

@@ -194,13 +194,15 @@ func Recheck(ctx context.Context) (*Identity, error) {
 // without groups when it named no user.
 func headerIdentity(r *http.Request) *Identity {
 	id := &Identity{
-		Subject: headerOr(r, "X-Abhed-User", "anonymous"),
+		Subject: headerOr(r, "X-Abhed-User", Anonymous),
 		Email:   r.Header.Get("X-Abhed-Email"),
 		Tenant:  headerOr(r, "X-Abhed-Tenant", "default"),
 	}
 	if proxied(r) {
-		// The proxy is the only way in and vouches for both headers.
+		// The proxy is the only way in and vouches for both headers. Its
+		// subject is only what it sent, never the no-identity placeholder.
 		id.Provider, id.EmailVerified = ProviderProxy, true
+		id.Subject = r.Header.Get("X-Abhed-User")
 	}
 	if groups := r.Header.Get("X-Abhed-Groups"); groups != "" && r.Header.Get("X-Abhed-User") != "" {
 		id.Groups = strings.Split(groups, ",")

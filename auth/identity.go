@@ -39,13 +39,24 @@ const (
 // Anonymous is the owner of every request when authentication is off.
 const Anonymous = "anonymous"
 
+// Subagent is the owner a CLI subagent's session row is written under; the
+// row's parent says whose it is.
+const Subagent = "agent"
+
+// UnclaimedPrefix begins the owner of a session no identity owns any more.
+const UnclaimedPrefix = "unclaimed:"
+
+// reservedOwners are the bare owners with a meaning of their own. Only the
+// no-identity and subagent cases produce them; a subject equal to one is namespaced.
+var reservedOwners = []string{Anonymous, Subagent}
+
 // NobodyPrefix begins the owner of an identity that names no subject. It
 // owns nothing: ownership checks refuse it rather than match it.
 const NobodyPrefix = "nobody:"
 
 // reservedPrefixes are the namespaces owners are built in. A subject from a
 // proxy or an unnamed provider that starts with one is namespaced again.
-var reservedPrefixes = []string{"local:", "unclaimed:", "oidc:", "github:", "proxy:",
+var reservedPrefixes = []string{"local:", UnclaimedPrefix, "oidc:", "github:", "proxy:",
 	"subject:", "schedule:", NobodyPrefix}
 
 // Owner is the principal that owns what this identity creates: sessions,
@@ -77,12 +88,9 @@ func (id *Identity) Owner() string {
 		if id.EmailVerified && ownerEmail(id.Email) {
 			return strings.ToLower(id.Email)
 		}
-		if id.Subject == "" || id.Subject == Anonymous {
-			// An email the proxy sent that cannot own is not anonymous.
-			if id.Email != "" {
-				return NobodyPrefix + ProviderProxy
-			}
-			return Anonymous
+		if id.Subject == "" {
+			// A proxy vouched for someone; an email that cannot own is no one.
+			return NobodyPrefix + ProviderProxy
 		}
 		return external(ProviderProxy, id.Subject)
 	}
@@ -98,6 +106,11 @@ func (id *Identity) Owner() string {
 // external is a bare subject as an owner, moved under ns when it would
 // otherwise read as another namespace's principal.
 func external(ns, subject string) string {
+	for _, w := range reservedOwners {
+		if strings.EqualFold(strings.TrimSpace(subject), w) {
+			return ns + ":" + subject
+		}
+	}
 	for _, p := range reservedPrefixes {
 		if len(subject) >= len(p) && strings.EqualFold(subject[:len(p)], p) {
 			return ns + ":" + subject
@@ -117,6 +130,10 @@ func FoldEmailOwner(owner string) string {
 	}
 	return owner
 }
+
+// UnclaimedOwner is what owner's sessions become when owner is removed: a
+// key no identity produces, which an administrator can move back by hand.
+func UnclaimedOwner(owner string) string { return UnclaimedPrefix + owner }
 
 // LocalOwner is the owner of a local account's sessions.
 func LocalOwner(username string) string {

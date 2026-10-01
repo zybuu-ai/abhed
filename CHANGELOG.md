@@ -47,6 +47,29 @@ All notable changes to Abhed are recorded here. The format follows
     invite and open sign-up, and an administrator's account creation.
   Existing session rows move to their account's new owner once, by `abhed
   migrate`; see Upgrading.
+- A trusted proxy that named its user `anonymous` (`X-Abhed-User:
+  anonymous`) was the owner a request has when authentication is off, which
+  owns every session in the tenant: it listed, replayed and answered the
+  approvals of everyone's sessions there. A proxy user or unnamed-provider
+  subject spelled like an owner with a meaning of its own (`anonymous`,
+  `agent`, the owner of the CLI's subagent rows, in any case) is now an
+  ordinary user, `proxy:anonymous` or `subject:agent`. Only a request that
+  names no one is `anonymous`. A local account of that name was already
+  `local:anonymous`.
+- A request that names no one who can own a session (a proxy's email that is
+  not an address, a provider that sent no subject) is refused with 401 on
+  every `/v1/` route, rather than creating sessions it could never open.
+- A local account made under the name of one that was removed inherited the
+  removed account's agent sessions, since both owned them as
+  `local:<username>`. Removing an account (`abhed user remove`, or an
+  edition's administrator) now moves the sessions it owned in its tenant to
+  `unclaimed:local:<username>` in the same transaction as the delete, and the
+  server's running ones with them. No identity owns an unclaimed session; an
+  operator gives one back with
+  `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:local:<username>'`
+  as the owning role. Sessions kept only in memory, on a server other than
+  the one the account was removed through, keep their owner until that
+  server restarts.
 - A person signed out, removed, taken out of `auth.require_group` or refused
   by an access check kept receiving every event of a session on a
   `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
@@ -375,6 +398,17 @@ All notable changes to Abhed are recorded here. The format follows
     by `oidc:<subject>`, so its sessions from before stay under its email.
   - Rows owned by `anonymous` and the CLI's subagent rows (`agent`) never
     move, even to an account of that name.
+  - The default policy reads the configuration `abhed migrate` runs with.
+    If anything other than local accounts has ever signed people in to this
+    database, pass `--owners=unclaim`, whatever `auth.mode` says now.
+  - Rows written by a proxy or unnamed-provider subject that begins with a
+    reserved prefix (`local:`, `unclaimed:`, `oidc:` and the like), or is
+    `anonymous` or `agent` in any case, are not migrated. That caller now
+    owns new sessions under `proxy:` or `subject:`; its old rows stay under
+    the old key, and an operator moves them by hand if they are wanted.
+  - A key no account in the row's tenant names, but an account in another
+    tenant does, is left alone and logged: a custom tenant resolver may have
+    written that account's rows outside its `users.tenant`.
   Under `local-only`, a session the CLI recorded under an OS user name that
   is also an account's name moves to that account, and the CLI still resumes
   it. The event record is append-only and keeps the approver names it was
