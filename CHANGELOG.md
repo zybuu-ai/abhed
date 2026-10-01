@@ -135,6 +135,10 @@ Two changes need action before upgrading:
 
 ### Fixed
 
+- On a server with Postgres, a workbench hold on a session the server had
+  started was released two minutes after the first manual write, not the
+  last, so a repeated `session.ended` landed in the middle of terminal or
+  review work. Every manual write now extends the hold.
 - With more than 40 MCP tools, models never found them: `tool_search` named
   no server and no tool. Its description now lists the servers and their
   tool names (names only, plain characters, about 2.5 KB at most, the rest
