@@ -413,9 +413,9 @@ func (h *run) cleanup() {
 	}
 	_ = os.RemoveAll(h.root)
 	// Last, since a skip ends this function. The line editor's known race
-	// is pending on A1, so the skip gate lists it; any other race fails.
+	// is pending on "editor", so the skip gate lists it; any other race fails.
 	if raced && knownRace(out) {
-		Pending(h.t, "A1", "the binary reported the line editor's known data race")
+		Pending(h.t, "editor", "the binary reported the line editor's known data race")
 	}
 	if raced {
 		h.t.Errorf("clitest: the binary reported a data race:\nWARNING: DATA RACE%s", report)
@@ -760,7 +760,7 @@ func (h *run) Record() Record {
 	h.t.Helper()
 	r, err := readRecord(h.home)
 	if errors.Is(err, errNoRecord) {
-		Pending(h.t, "C1", err.Error())
+		Pending(h.t, "record", err.Error())
 		h.t.Fatalf("clitest: %v", err)
 	}
 	if err != nil {
@@ -775,7 +775,7 @@ func (h *run) Exit(code int) {
 	h.t.Helper()
 	got := h.closeAndWait(20 * time.Second)
 	if got == raceExit && got != code && knownRace(Strip(h.Output())) {
-		Pending(h.t, "A1", "the race detector stopped the binary on the line editor's known race")
+		Pending(h.t, "editor", "the race detector stopped the binary on the line editor's known race")
 	}
 	if got != code {
 		h.t.Fatalf("clitest: exit code %d, want %d\n%s", got, code, tail(Strip(h.Output()), 3000))
@@ -787,7 +787,7 @@ const raceExit = 66
 
 // knownRace reports whether every race the binary reported is the line
 // editor's, whose state its input and output goroutines share without a
-// lock (Track A, A1). Any other race fails the test.
+// lock. Any other race fails the test.
 func knownRace(out string) bool {
 	blocks := strings.Split(out, "WARNING: DATA RACE")[1:]
 	if len(blocks) == 0 {

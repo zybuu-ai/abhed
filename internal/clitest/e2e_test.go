@@ -113,7 +113,7 @@ func TestInterfaceOnly(t *testing.T) {
 // between the input and output goroutines without a lock, which the race
 // detector reports in the -race build.
 func TestTypingWhileOutputArrives(t *testing.T) {
-	Pending(t, "A1", "the line editor's state is shared by its input and output goroutines without a lock")
+	Pending(t, "editor", "the line editor's state is shared by its input and output goroutines without a lock")
 	t.Parallel()
 	h := StartRun(t, Opts{Script: "delay 50ms\ntext \"line one\\n\"\ndelay 50ms\ntext \"line two\\n\"\ndelay 50ms\ntext \"line three\\n\""})
 	h.WaitText("Type a task")

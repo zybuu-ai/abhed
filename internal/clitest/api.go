@@ -2,7 +2,7 @@
 // scripted model, for end-to-end tests of the interactive CLI: what reaches
 // the screen, how many bytes it took, how fast, and what the record holds.
 //
-// This file is the API every track writes its tests against; harness.go,
+// This file is the API the tests are written against; harness.go,
 // stub.go, record.go, golden.go and budget.go implement it, and vt is the
 // terminal emulator the screen comes from.
 //
@@ -23,8 +23,8 @@
 // The environment is built from nothing, so no variable of the person
 // running the tests reaches the binary.
 //
-// A test that waits on another track's work calls Pending with the plan
-// item; CI accepts a skip only for the items listed in ABHED_CLITEST_PENDING
+// A test that waits on unfinished work calls Pending with a short name
+// for it; CI accepts a skip only for the items listed in ABHED_CLITEST_PENDING
 // in the workflow, so a test that stops running fails the build.
 //
 // In the strings of Args, Env, UserConfig and Managed, {{MODEL_URL}} is the
@@ -162,7 +162,7 @@ type Harness interface {
 	Requests() []Request
 
 	// Record is the session's record, read and verified. Until the local
-	// record exists it marks the test pending on C1.
+	// record exists it marks the test pending on "record".
 	Record() Record
 	// Exit closes input, waits for the binary to end and fails the test
 	// unless it exits with code.
