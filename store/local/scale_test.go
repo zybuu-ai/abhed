@@ -13,9 +13,11 @@ import (
 
 // With 2,000 sessions in the index, creating one more stays within 5 ms
 // (median), and looking one up does not re-read the whole index each time.
+// Like TestBudgets, it is skipped under -short, the race detector and
+// coverage, whose instrumented builds are not what the budgets are about.
 func TestIndexScales(t *testing.T) {
-	if testing.Short() || raceEnabled || os.Getenv("ABHED_SKIP_BUDGETS") != "" {
-		t.Skip("budgets are measured without -short and -race")
+	if testing.Short() || raceEnabled || testing.CoverMode() != "" || os.Getenv("ABHED_SKIP_BUDGETS") != "" {
+		t.Skip("budgets are measured without -short, -race and -cover")
 	}
 	s := openTest(t, t.TempDir())
 	for i := range 2000 {
