@@ -502,11 +502,12 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	ans, err := o.ask("Write this to ~/.abhed/config.json? (Y/n)", "y")
+	// Nothing is chosen for Enter; input that ends writes nothing.
+	n, err := askNumbered(o.in, o.out, "Write this to ~/.abhed/config.json?", []string{"No (don't write)", "Yes, write it"})
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(strings.ToLower(ans), "n") {
+	if n == 0 {
 		fmt.Fprintln(out, "Nothing written.")
 		return nil
 	}

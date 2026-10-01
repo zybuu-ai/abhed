@@ -80,7 +80,7 @@ func TestEndpointDownIsFriendly(t *testing.T) {
 }
 
 // With no configuration, a first run finds Ollama, checks the model can call
-// tools, asks once about auto memory (No by default) and writes only the
+// tools, asks once about auto memory (1 No, 2 yes) and writes only the
 // person's own configuration, which the session then uses.
 func TestFirstRunWithOllama(t *testing.T) {
 	t.Parallel()
@@ -90,9 +90,9 @@ func TestFirstRunWithOllama(t *testing.T) {
 	h.Type("\r")
 	h.WaitOutput("it can.")
 	h.WaitText("memory notes")
-	h.Type("\r")
+	h.Type("1\r")
 	h.WaitText("Write this to")
-	h.Type("\r")
+	h.Type("2\r")
 	h.WaitOutput("Wrote ")
 	h.WaitOutput("Type a task")
 	h.Type("hello\r")
@@ -140,9 +140,9 @@ func TestFirstRunEndpointNeverStoresAKey(t *testing.T) {
 	h.Type("\r")
 	h.WaitOutput("it can.")
 	h.WaitText("memory notes")
-	h.Type("y\r")
+	h.Type("2\r")
 	h.WaitText("Write this to")
-	h.Type("\r")
+	h.Type("2\r")
 	h.WaitOutput("Type a task")
 	h.Exit(0)
 	data, _ := os.ReadFile(filepath.Join(h.Home(), ".abhed", "config.json"))

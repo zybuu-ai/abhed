@@ -42,8 +42,9 @@ anywhere, it offers to set one up:
   sessions, `1` No or `2` Yes: a note the agent writes is a way for text
   planted in a file to persist. These questions take a number only; Enter or
   a letter asks again, and input that ends writes nothing.
-- It writes only your own `~/.abhed/config.json` (mode 0600), and only after
-  you confirm. `s` skips it and writes nothing.
+- It writes only your own `~/.abhed/config.json` (mode 0600), and only on
+  `2` Yes, write it; `1` No writes nothing, as does input that ends. `s`
+  skips the setup and writes nothing.
 
 Or, in the directory you want the agent to work in:
 

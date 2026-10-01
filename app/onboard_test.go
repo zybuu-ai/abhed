@@ -225,3 +225,37 @@ func TestEndpointHTTPKeyNeedsTheYesNumber(t *testing.T) {
 		t.Fatalf("ended input went ahead:\n%s", b.String())
 	}
 }
+
+// Writing the configuration takes 2: Enter or a letter asks again, 1 and
+// input that ends write nothing.
+func TestFirstRunWriteNeedsTheYesNumber(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "127.0.0.1:9")
+	const upTo = "e\nhttp://127.0.0.1:9/v1\n\nm\n1\n"
+	for _, tc := range []struct {
+		answers string
+		written bool
+		err     bool
+	}{
+		{upTo + "\ny\n2\n", true, false},
+		{upTo + "1\n", false, false},
+		{upTo + "\n", false, true},
+	} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		var out strings.Builder
+		err := firstRun(context.Background(), strings.NewReader(tc.answers), &out)
+		if (err != nil) != tc.err {
+			t.Fatalf("%q: %v\n%s", tc.answers, err, out.String())
+		}
+		_, statErr := os.Stat(filepath.Join(home, ".abhed", "config.json"))
+		if (statErr == nil) != tc.written {
+			t.Fatalf("%q: written %v\n%s", tc.answers, statErr == nil, out.String())
+		}
+		if !strings.Contains(out.String(), "Write this to ~/.abhed/config.json?\n  1. No (don't write)\n  2. Yes, write it\nanswer 1-2: ") {
+			t.Fatalf("%q:\n%s", tc.answers, out.String())
+		}
+		if tc.written && strings.Count(out.String(), "Write this to") != 3 {
+			t.Fatalf("Enter or a letter was taken as an answer:\n%s", out.String())
+		}
+	}
+}

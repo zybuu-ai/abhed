@@ -86,6 +86,10 @@ Two changes need action before upgrading:
 - First-run setup asks its three yes-or-no questions by number too (memory
   notes, a key over plain http, a key variable that is not set): `1` No,
   `2` Yes, where it took `y`/`n` and Enter for No.
+- First-run setup's last question, whether to write `~/.abhed/config.json`,
+  is numbered as well: `1` No (don't write), `2` Yes, write it. It took
+  Enter as yes; Enter or a letter now asks again, and input that ends writes
+  nothing.
 - API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
   must name its `request_id`, from the `subagent.ask` event: an answer
   naming none is refused with 409, with or without a run live. The console,
