@@ -86,13 +86,17 @@ does. `"off"`, the default, joins it: `Run` returns when the work, the
 task's included, is done, as it always has, and cancelling `Run`'s context
 stops everything. `"notify"` lets a task outlive `Run`: its result is recorded
 and reaches `OnEvent` as a `subagent.notice` when it ends, and the next `Run`,
-or `Wake`, sees it. An embedded agent never starts a run on its own, so
-`"auto"` is refused.
+or `Wake`, sees it. `"auto"` does too, and a result that arrives while no run
+is in progress starts a wake run on its own, its events to `OnEvent`.
+`HostWake`, when set, is given that run to start on the host's own terms
+(the editor integration opens a turn for it); nil runs it on the agent's own
+goroutine. `CancelTasks` also ends a wake run in progress and holds the next
+until `Run`.
 
 | Method | |
 |---|---|
 | `Background()` | the tasks, with status, model, turns and, when done, the summary |
-| `CancelTask(id)`, `CancelTasks()` | stop one, or all, as a person's stop |
+| `CancelTask(id)`, `CancelTasks()` | stop one, or all, as a person's stop; `CancelTasks` ends a wake run too |
 | `WaitBackground(ctx)` | wait until none is running |
 | `Wake(ctx)` | run the agent on the results waiting, recorded as `session.woken` by the caller; `ErrNothingToWake` when none waits |
 

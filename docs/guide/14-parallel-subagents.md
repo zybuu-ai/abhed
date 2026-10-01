@@ -214,8 +214,12 @@ boundary. When the session is idle, what happens is the **wake** mode,
 | Mode | A result arrives while the session is idle |
 |---|---|
 | `off` | cannot happen: the run that started a task waits for it |
-| `notify` (default) | recorded and shown; the agent acts on it with your next message |
-| `auto` | recorded, then a short wake run (`session.woken`), at most `subagents.wake_max_turns` turns and `subagents.max_wakes_per_hour` an hour; it ends `wake_limit`, and the session goes on. A message you send during it steers it, and from then on it is your run, with a prompted run's turns |
+| `notify` | recorded and shown; the agent acts on it with your next message |
+| `auto` (default) | recorded, then a short wake run (`session.woken`, naming the tasks), at most `subagents.wake_max_turns` turns and `subagents.max_wakes_per_hour` an hour; it ends `wake_limit`, and the session goes on. A message you send during it steers it, and from then on it is your run, with a prompted run's turns |
+
+Results that arrive together are delivered together, after a two-second
+settle. Only the session's own tasks finishing start a wake: nothing else,
+no timer or outside event, runs the agent without you.
 
 The mode in effect is the tightest of the managed configuration, yours, the
 workspace's (which may only tighten), the session's own switch, and what the
@@ -225,9 +229,9 @@ surface can host:
 |---|---|---|
 | CLI, interactive | `auto` | results are drawn at the prompt; a wake waits while you are typing; `/tasks`, `/tasks cancel <id\|all>`, `/wake` |
 | CLI, `-p`; `abhed eval`; unattended server runs and schedules | `off` | the run, its exit code and `OnEnd` wait for the tasks |
-| `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; `POST /v1/sessions/{id}/wake` switches it |
-| `abhed acp` | `notify` | a task has a card of its own, completed by its result |
-| `abhed rpc`, SDK | `notify`, default `off` | an explicit `wake` or `Wake` runs the agent on a result |
+| `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; the woken turn streams live, marked "continuing with results from <task>"; the workbench's status bar lists the tasks still running; `POST /v1/sessions/{id}/wake` switches it |
+| `abhed acp` | `auto` | a task has a card of its own, completed by its result; a woken turn streams as session updates between `_abhed/wake/started` and `_abhed/wake/ended`, and a prompt sent meanwhile waits for it |
+| `abhed rpc`, SDK | `auto`, default `off` | `off` joins the tasks; in `auto` a woken run's events stream and rpc answers it with a `woken` line; an explicit `wake` or `Wake` runs the agent on a result |
 
 A wake run has no more authority than a prompted one: the same policy,
 approver and "Always allow" scopes. It starts only when the last run

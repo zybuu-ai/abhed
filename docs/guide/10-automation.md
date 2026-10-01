@@ -173,8 +173,10 @@ send(method="prompt", prompt="fix the failing tests")
 | `quit` | close; running background tasks end as `session_closed` |
 
 `start` takes `wake`: `off` (the default), so `prompt` answers when the work,
-background tasks included, is done; or `notify`, so they outlive the prompt
-and their results arrive as event lines. rpc never starts a run on its own.
+background tasks included, is done; `notify`, so they outlive the prompt and
+their results arrive as event lines; or `auto`, which also runs the agent on
+a result that arrives between prompts: its events stream, then a line
+`{"type":"woken","answer":…}`. A `prompt` sent meanwhile waits for it.
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
@@ -348,7 +350,12 @@ it cannot grant trust over the wire; pass the reported `sha256` to `abhed trust 
 opens for the life of the process, not only the one it was started in. See [Workspace
 trust](../architecture/workspace-trust.md).
 
-Background tasks run in `notify` mode. Each gets a `tool_call` card named
+Background tasks run in the configured wake mode, `auto` by default: a
+result that arrives between prompts opens a turn of its own, announced by
+`_abhed/wake/started` and closed by `_abhed/wake/ended`, its updates sent as
+a prompt's are, starting with a "Continuing with results from <task>" chunk.
+Its asks go to the editor like a prompt's; a `session/prompt` sent while it
+runs waits for it, and `session/cancel` ends it. Each task gets a `tool_call` card named
 `bg-<task id>`, open while it runs and completed (or failed) by its result,
 whether or not a prompt turn is open. A background task's ask needs an open
 prompt turn, since that is when an editor can be asked: between turns the

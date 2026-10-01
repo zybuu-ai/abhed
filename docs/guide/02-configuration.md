@@ -131,7 +131,7 @@ finishes. Zero means no cap.
   "background_max_minutes": 60
 },
 "subagents": {
-  "wake": "notify",
+  "wake": "auto",
   "max_wakes_per_hour": 4,
   "wake_max_turns": 8
 }
@@ -139,12 +139,14 @@ finishes. Zero means no cap.
 
 `max_background_subagents` bounds a session's background tasks alive at once,
 across its runs; zero allows none. `background_max_minutes` is each task's
-lifetime, at most 480. `wake` is `off`, `notify` (the default) or `auto`:
+lifetime, at most 480. `wake` is `off`, `notify` or `auto` (the default):
 what a result arriving while the session is idle does. `auto` runs the agent
 on it, up to `wake_max_turns` turns and `max_wakes_per_hour` times an hour
-(zero never wakes). A surface may allow less: `-p`, eval and unattended runs
-are always `off`, and editors, rpc and the SDK never wake on their own. An
-untrusted workspace file may only lower these limits and tighten `wake`. See
+(zero never wakes); `notify` only records it for your next message. A
+surface may allow less: `-p`, eval and unattended runs are always `off`, and
+rpc and the SDK join their tasks unless the caller asks for more. The managed
+configuration can hold it at `notify` or `off`, and an untrusted workspace
+file may only lower these limits and tighten `wake`. See
 [Parallel subagents](14-parallel-subagents.md#background-tasks).
 
 ## Agents
