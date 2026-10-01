@@ -794,6 +794,11 @@ Also:
 
 ### Changed
 
+- In `/ide`'s terminal, answers typed into a running command are now taken
+  out of the recorded output, not only passwords: each output line sharing
+  four characters with an answer is recorded as `[withheld]`, and an answer
+  edited as it was typed withholds the whole output. The person still sees
+  everything live.
 - In the terminal, Esc and Ctrl-C now say what they left: Esc ends the turn
   and keeps background shells and tasks ("Interrupted · background shells
   kept"), Ctrl-C stops them too ("… stopped"). Both still end as

@@ -384,7 +384,10 @@ next (variables, `export` and aliases are lost; the folder moves only as
 follows). Keys typed into a running command are not recorded; a line typed
 while it reads lines (or anywhere on the container tier) is taken out of the
 command's recorded output as the shell's are, so a password typed ahead of a
-`read -s` is not kept. Only a line that is just
+`read -s` is not kept. This covers every answer typed into a command, not
+only passwords: each output line sharing four characters with an answer is
+recorded as `[withheld]`, and an answer edited as it was typed withholds the
+command's whole output. Only a line that is just
 `cd <folder>`, with one folder and nothing else, moves the terminal: the
 folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
 `'web app'`, `$'web app'`, and `price\ \$5` for a `$` in the name, as Tab
