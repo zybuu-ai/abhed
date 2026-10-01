@@ -8,6 +8,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The /console approval card drew a call's arguments in a box that
+  scrolled sideways, so a run of spaces pushed the tail of a command, such
+  as `&& tar czf ...`, out of view, and approving ran it. The card now wraps,
+  and on the card, /ide's prompt and the terminal prompt a run of eight or
+  more columns of spaces or tabs inside a line is shown as a count such as
+  `⟨260 spaces⟩` and raises the hidden-characters warning. Indentation after
+  a newline is left as it is up to 32 columns. Characters that draw nothing
+  (Hangul fillers, braille blank, U+034F, a U+FE0F not after a symbol) are
+  now written out as `⟨U+XXXX⟩` like other hidden characters, and /ide shows
+  an argument the warning is about when its prompt does not draw it.
+- Bidi and zero-width characters in a tool call were drawn raw in the /ide
+  Events and HawkEYE panels, the HawkEYE HTML report and `abhed hawkeye`,
+  so a right-to-left override made `;fs- mr` read as `rm -sf`. These views
+  now write them out as `⟨U+XXXX⟩`, as the approval prompts do. The JSON
+  report keeps the record's text as it is.
 - The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
   redacted with the secrets stored when a session started, while bash reads
   the store at each call. A secret stored or changed during a session, and
@@ -660,6 +675,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- /ide offered every permission mode, though a session may start only in
+  the server's mode or in plan, and after the server refused one the status
+  bar still named it. The selector now offers only those two, as /console
+  does, and a refusal puts it and the status bar back on the server's mode.
+- A second /ide tab on a session whose run had ended asked the server every
+  four seconds whether a new run had started, so a turn another tab began
+  and finished in between was not drawn until a later one. The session
+  state now carries its turn count, and a tab that sees it move reads the
+  missed turn back from the record. It also asks every two seconds.
+- /console kept a card answered in another tab open, with live buttons,
+  after the run ended when its stream had gone. A 409 on an answer now
+  reopens the stream, whose replay settles or retires the card, as /ide
+  already did.
 - `abhed serve` on Postgres could leave an event, such as a parallel
   subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
   took their seq before writing, so a later seq could commit first; the

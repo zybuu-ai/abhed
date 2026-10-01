@@ -469,3 +469,39 @@ func TestSettingsListsTheToolsSessionsGet(t *testing.T) {
 		}
 	}
 }
+
+// The /ide mode selector offers only the server's mode and plan, and a refused
+// send puts the selector and the status bar back on the mode a session gets.
+func TestIDEOffersOnlyAllowedModes(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+Object.defineProperty(El.prototype, 'options', { get(){ return this.childNodes; } });
+const sel = new El('select'); const $ = () => sel;
+for(const m of ['default', 'plan', 'accept-edits', 'auto']){ const o = new El('option'); o.value = m; sel.appendChild(o); }
+`
+	if out, err := runConsoleCases(t, "ide-modes", harness, "ide_modes_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's mode selector failed:\n%s", out)
+	}
+	for _, want := range []string{"limitModes(caps.permissions.mode); $('s-mode').textContent = 'mode ' + caps.permissions.mode; } throw e; }", "limitModes(caps.permissions.mode);\n  await loadProviders();"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("ide.html no longer has %q", want)
+		}
+	}
+}
+
+// The Events and HawkEYE panels show a record's hidden characters rather than obey them.
+func TestIDEPanelsShowHiddenCharacters(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+Object.defineProperty(El.prototype, 'childElementCount', { get(){ return this.childNodes.filter(c => c.nodeType === 1).length; } });
+Object.defineProperty(El.prototype, 'firstElementChild', { get(){ return this.childNodes.find(c => c.nodeType === 1) || null; } });
+El.prototype.remove = function(){ const p = this.parentNode; if(p) p.childNodes.splice(p.childNodes.indexOf(this), 1); };
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); return c; };
+Object.defineProperty(El.prototype, 'firstChild', { get(){ return this.childNodes[0] || null; } });
+const nodes = {}; const $ = id => nodes[id] || (nodes[id] = new El('div'));
+const EVT_MAX = 500; let evtN = 0, current = 's1';
+const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:{turns:1, tokens_in:1}, offloads:[],
+  policy:{allowed:1, denied:0, by_step:{'default\u2066':1}}, findings:[{severity:'warn', title:'t\u200b', detail:';fs- mr\u202e', seq:3}]});
+`
+	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's panels failed:\n%s", out)
+	}
+}
