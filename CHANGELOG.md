@@ -9,19 +9,26 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - Over ACP, the agent can no longer change an editor's own files in the
-  workspace: the file tools refuse `.vscode/**`, `.devcontainer/**`, `.git`,
-  `.git/config`, `.git/hooks/**` and `*.code-workspace`, in any case and
-  through links, and the config and hooks of the git folder a `.git` file
-  names. The sandbox keeps the agent's commands from writing those that exist
-  and from renaming `.git`, `.vscode` or `.devcontainer`, at the workspace's
-  given and resolved paths. On macOS it also keeps them from creating these
-  paths; on Linux (bubblewrap) and in containers a command can still create a
-  missing `.vscode`, `.devcontainer` or `.git`, and on every platform a new
-  `*.code-workspace`. An edit or write to a file the editor reports as having
-  unsaved changes (`_abhed/buffers/dirty`) is refused.
-- In Studio's interactive terminal, a line entered before the shell is back
-  at its prompt, as a password typed ahead of `read -s`, is recorded
-  withheld rather than as text.
+  workspace: the file tools refuse `.vscode/**`, `.devcontainer/**` and
+  `*.code-workspace`, and any `.git` with its `config` and `hooks/**` at any
+  depth, so a nested repository's too, in any case and through links, and the
+  config and hooks of the git folder a `.git` file names. They refuse to
+  create any of these as well as to change them. The sandbox keeps the
+  agent's commands from writing those that exist, and from renaming `.git`,
+  `.vscode` or `.devcontainer`, at the workspace's given and resolved paths.
+  Nested repositories are found when the session starts, up to six folders
+  deep and 64 repositories, `node_modules` left out. On macOS commands also
+  cannot create these paths, nor any `.git`, `.git/config` or `.git/hooks` at
+  any depth, so a repository cloned or initialised later is held too, and
+  `git init` or `git clone` inside the workspace is refused there. On Linux
+  (bubblewrap) and in containers a command can still create a missing
+  `.vscode`, `.devcontainer` or `.git`, or a repository the search did not
+  find; on every platform a command can create a new `*.code-workspace`. An
+  edit or write to a file the editor reports as having unsaved changes
+  (`_abhed/buffers/dirty`) is refused.
+- In Studio's interactive terminal and the web IDE's, a line entered before
+  the shell is back at its prompt, as a password typed ahead of `read -s`, is
+  recorded withheld rather than as text.
 - `session/new` refuses an `_meta` field it does not know instead of ignoring
   it, and the MCP servers an editor names are not started; the reply lists
   them in `mcpServersRefused`.

@@ -86,7 +86,8 @@ func parts(p string) []string {
 
 // holders are the folders inside the workspace that hold a write-protected
 // path, such as .git for .git/hooks. Renaming one would carry the protected
-// path out from under its rule, so each is pinned in place.
+// path out from under its rule, so each is pinned in place: up to the nearest
+// .git, or else every folder up to the workspace.
 func holders(workspaces, protected []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -96,9 +97,15 @@ func holders(workspaces, protected []string) []string {
 			if !ok || len(rest) < 2 {
 				continue
 			}
-			dir := ws
-			for _, name := range rest[:len(rest)-1] {
-				dir = filepath.Join(dir, name)
+			from := 0
+			for i := len(rest) - 2; i >= 0; i-- {
+				if strings.EqualFold(rest[i], ".git") {
+					from = i
+					break
+				}
+			}
+			for i := from; i < len(rest)-1; i++ {
+				dir := filepath.Join(append([]string{ws}, rest[:i+1]...)...)
 				if !seen[dir] {
 					seen[dir] = true
 					out = append(out, dir)
@@ -107,6 +114,32 @@ func holders(workspaces, protected []string) []string {
 		}
 	}
 	return out
+}
+
+// regexQuote escapes a path for a seatbelt regex.
+func regexQuote(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		if strings.ContainsRune(`\.^$|?*+()[]{}"`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// anyCase is a regex matching s in any case, as APFS names compare.
+func anyCase(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		lo, up := strings.ToLower(string(r)), strings.ToUpper(string(r))
+		if lo == up {
+			b.WriteString(regexQuote(string(r)))
+			continue
+		}
+		b.WriteString("[" + lo + up + "]")
+	}
+	return b.String()
 }
 
 // insideAny reports whether p is under one of roots.

@@ -180,3 +180,52 @@ func TestSeatbeltProfileNamesBothForms(t *testing.T) {
 		}
 	}
 }
+
+// With ProtectGit, seatbelt holds every git folder's config and hooks, and
+// each .git, at any depth and in any case, including repositories made later.
+func TestProcessSandboxProtectsNestedRepositories(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("only seatbelt names paths by pattern; the other tiers hold the nested repositories listed")
+	}
+	ws := workspace(t)
+	if err := os.MkdirAll(filepath.Join(ws, "sub", ".git", "hooks"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	_, _ = runIn(t, s, ws, "touch sub/.git/hooks/pre-commit; echo x > sub/.GIT/config; mv sub/.git sub/g2; mkdir -p new/.Git/HOOKS; printf 'gitdir: x\\n' > other.git; mkdir d; printf 'gitdir: ../x\\n' > d/.git")
+	for _, f := range []string{"sub/.git/hooks/pre-commit", "sub/.git/config", "sub/g2", "new/.Git", "d/.git"} {
+		if _, err := os.Lstat(filepath.Join(ws, filepath.FromSlash(f))); err == nil {
+			t.Errorf("the command made %s", f)
+		}
+	}
+	if out, err := runIn(t, s, ws, "touch sub/.git/HEAD sub/main.go"); err != nil {
+		t.Fatalf("the rest of a nested repository is not writable: %v %s", err, out)
+	}
+}
+
+// A nested repository's holder is its .git, not the folders above it, so
+// those can still be renamed.
+func TestHoldersStopAtTheNearestGit(t *testing.T) {
+	ws := "/ws"
+	got := holders([]string{ws}, []string{"/ws/a/b/.git/hooks", "/ws/.git/config", "/ws/store/x.git/hooks"})
+	want := []string{"/ws/a/b/.git", "/ws/.git", "/ws/store", "/ws/store/x.git"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("holders %v, want %v", got, want)
+	}
+}
+
+// The pattern is the workspace quoted, with .git, config and hooks in any case.
+func TestSeatbeltGitPatternQuotesTheWorkspace(t *testing.T) {
+	p := DefaultPolicy("/w.s+x")
+	p.ProtectGit = true
+	profile := NewProcess(p).seatbeltProfile()
+	if !strings.Contains(profile, `(regex #"^/w\.s\+x/(.+/)?\.[gG][iI][tT]/([cC][oO][nN][fF][iI][gG]|[hH][oO][oO][kK][sS])(/|$)")`) {
+		t.Fatalf("%s", profile)
+	}
+	if strings.Contains(NewProcess(DefaultPolicy("/w")).seatbeltProfile(), "regex #\"^/w/") {
+		t.Fatal("the pattern is there without ProtectGit")
+	}
+}

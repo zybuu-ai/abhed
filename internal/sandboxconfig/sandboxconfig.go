@@ -38,6 +38,7 @@ func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.
 	p.AllowNetwork = cfg.Sandbox.AllowNetwork
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	p.WriteProtected = cfg.Sandbox.WriteProtected
+	p.ProtectGit = cfg.Sandbox.ProtectGit
 	p.StatePaths = StatePaths(cfg, workspace)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -400,9 +401,58 @@ func protectedPaths(ws string) []string {
 		for _, dir := range gitDirs(root) {
 			out = append(out, filepath.Join(dir, "config"), filepath.Join(dir, "hooks"))
 		}
+		out = append(out, nestedGit(root)...)
 	}
 	slices.Sort(out)
 	return slices.Compact(out)
+}
+
+// Bounds on the search for git repositories nested in a workspace.
+const (
+	nestedDepth   = 6
+	nestedRepos   = 64
+	nestedEntries = 20000
+)
+
+// nestedGit are the config and hooks of the git repositories nested in root
+// when the session starts, within the bounds above; a repository made later
+// is held by pattern on macOS only.
+func nestedGit(root string) []string {
+	var out []string
+	repos, seen := 0, 0
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == root {
+			return nil //nolint:nilerr // an unreadable folder is passed by
+		}
+		if seen++; seen > nestedEntries || repos >= nestedRepos {
+			return filepath.SkipAll
+		}
+		name := d.Name()
+		if !d.IsDir() && !strings.EqualFold(name, ".git") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		depth := len(strings.Split(rel, string(filepath.Separator)))
+		switch {
+		case strings.EqualFold(name, ".git"):
+			if dir := filepath.Dir(p); dir != root {
+				repos++
+				if d.IsDir() {
+					out = append(out, filepath.Join(p, "config"), filepath.Join(p, "hooks"))
+				}
+				for _, g := range gitDirs(dir) {
+					out = append(out, filepath.Join(g, "config"), filepath.Join(g, "hooks"))
+				}
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		case strings.EqualFold(name, tools.StateDir), name == "node_modules", depth >= nestedDepth:
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
 }
 
 // codeWorkspace reports whether name is a VS Code workspace file, in any case.
@@ -455,11 +505,17 @@ func readPointer(p, prefix string) string {
 // editorFile reports whether path is one of the editor's own files in one of
 // roots, or the .git that holds some of them. Links are followed and names
 // compared without case, as APFS and NTFS compare them.
-func editorFile(path string, roots []string) bool {
+func editorFile(path string, roots, protected []string) bool {
 	forms := sandbox.PathForms(path)
 	for _, p := range forms {
 		if codeWorkspace(filepath.Base(p)) {
 			return true
+		}
+		// Those found at the start, such as a git folder a nested .git file names.
+		for _, q := range protected {
+			if _, ok := sandbox.Within(p, q); ok {
+				return true
+			}
 		}
 	}
 	for _, root := range roots {
@@ -469,15 +525,32 @@ func editorFile(path string, roots []string) bool {
 					return true
 				}
 			}
-			for _, dir := range gitDirs(r) {
-				for _, d := range sandbox.PathForms(dir) {
-					for _, p := range forms {
-						if rest, ok := sandbox.Within(p, d); ok && (len(rest) == 0 || gitOwn(rest)) {
-							return true
-						}
+			for _, p := range forms {
+				if rest, ok := sandbox.Within(p, r); ok && namedByGitFile(r, rest, forms) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// namedByGitFile reports whether a path is the git folder, config or hooks a
+// .git file in root or a folder on the way to the path names.
+func namedByGitFile(root string, rest, forms []string) bool {
+	dir := root
+	for i := 0; i <= len(rest); i++ {
+		for _, g := range gitDirs(dir) {
+			for _, d := range sandbox.PathForms(g) {
+				for _, p := range forms {
+					if r, ok := sandbox.Within(p, d); ok && (len(r) == 0 || gitOwn(r)) {
+						return true
 					}
 				}
 			}
+		}
+		if i < len(rest) {
+			dir = filepath.Join(dir, rest[i])
 		}
 	}
 	return false
@@ -488,11 +561,15 @@ func editorRest(rest []string) bool {
 	if len(rest) == 0 {
 		return false
 	}
-	switch {
-	case strings.EqualFold(rest[0], ".vscode"), strings.EqualFold(rest[0], ".devcontainer"):
+	if strings.EqualFold(rest[0], ".vscode") || strings.EqualFold(rest[0], ".devcontainer") {
 		return true
-	case strings.EqualFold(rest[0], ".git"):
-		return len(rest) == 1 || gitOwn(rest[1:])
+	}
+	// Any .git, at any depth, and its config and hooks: the editor's git runs
+	// in nested repositories too.
+	for i, part := range rest {
+		if strings.EqualFold(part, ".git") && (i == len(rest)-1 || gitOwn(rest[i+1:])) {
+			return true
+		}
 	}
 	return false
 }
@@ -505,7 +582,7 @@ func gitOwn(rest []string) bool {
 // dirtyGuard refuses an agent's edit or write to a file the person has
 // unsaved changes to in Studio, or to one of the editor's own files.
 func (s *acpSession) dirtyGuard(path string, roots []string) error {
-	if editorFile(path, append(s.roots(), roots...)) {
+	if editorFile(path, append(s.roots(), roots...), s.protected) {
 		return errEditorFile
 	}
 	s.mu.Lock()

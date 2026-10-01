@@ -182,6 +182,13 @@ func (s *Process) seatbeltProfile() string {
 	for _, p := range holders(s.workspaces(), protected) {
 		fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", p)
 	}
+	if s.policy.ProtectGit {
+		// Every .git at any depth, and its config and hooks, in any case.
+		for _, ws := range s.workspaces() {
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s/(%s|%s)(/|$)\"))\n", regexQuote(ws), anyCase(".git"), anyCase("config"), anyCase("hooks"))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s$\"))\n", regexQuote(ws), anyCase(".git"))
+		}
+	}
 	for _, p := range s.statePaths() {
 		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)

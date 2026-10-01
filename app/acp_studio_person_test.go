@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -308,6 +309,39 @@ func TestRuleEditorFilesByCaseLinkAndRename(t *testing.T) {
 	}
 	if _, err := os.Stat(at(".git2")); err == nil {
 		t.Error("the agent's command moved .git")
+	}
+}
+
+// §2.6 holds in a repository nested in the workspace, since the editor's git
+// runs there too; on macOS also in one the agent makes during the session.
+func TestRuleNestedRepositoryIsTheEditors(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits","allow":["bash(touch *)","bash(mkdir *)"]}`)
+	r.write("sub/.git/config", "orig")
+	r.write("sub/.git/hooks/README", "hooks")
+	at := func(rel string) string { return filepath.Join(r.ws, filepath.FromSlash(rel)) }
+	r.model.script(
+		callTool("c1", "write", map[string]any{"path": at("sub/.git/hooks/pre-commit"), "content": "#!/bin/sh\n"}),
+		callTool("c2", "write", map[string]any{"path": at("sub/.GIT/config"), "content": "[core]\n"}),
+		callTool("c3", "bash", map[string]any{"command": "touch " + at("sub/.git/hooks/post-commit")}),
+		callTool("c4", "bash", map[string]any{"command": "mkdir -p " + at("later/.git/hooks")}),
+		callTool("c5", "bash", map[string]any{"command": "touch " + at("sub/ok.txt")}),
+		say("done"))
+	id := r.open()
+	r.prompt(id, "try it")
+	gone := []string{"sub/.git/hooks/pre-commit", "sub/.git/hooks/post-commit"}
+	if runtime.GOOS == "darwin" {
+		gone = append(gone, "later/.git")
+	}
+	for _, f := range gone {
+		if _, err := os.Stat(at(f)); err == nil {
+			t.Errorf("the agent made %s", f)
+		}
+	}
+	if r.read("sub/.git/config") != "orig" {
+		t.Error("the agent changed sub/.git/config")
+	}
+	if _, err := os.Stat(at("sub/ok.txt")); err != nil {
+		t.Fatal("the sandboxed command did not run, so nothing was tried")
 	}
 }
 

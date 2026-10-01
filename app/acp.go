@@ -142,6 +142,8 @@ type acpSession struct {
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.
 	dirty map[string]bool
+	// protected are the editor's files found when the session started.
+	protected []string
 	// trustSHA is the workspace file's hash when the session opened.
 	trustSHA string
 	closed   bool
@@ -659,7 +661,8 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Suggest: true,
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
-	settings := embedded.Settings{Protect: protectedPaths(o.cwd)}
+	s.protected = protectedPaths(o.cwd)
+	settings := embedded.Settings{Protect: s.protected, ProtectGit: true}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {

@@ -557,7 +557,7 @@ func (c *acpConn) reviewDecide(msg rpcMessage, accept bool) {
 		s.record(agent.EvChangeAccepted, payload)
 	} else {
 		// A protected file stays protected, for the person's reject as for the agent.
-		if editorFile(path, s.roots()) {
+		if editorFile(path, s.roots(), s.protected) {
 			c.reply(msg.ID, nil, refusal(errPolicy, "%s", errEditorFile.Error()))
 			return
 		}
@@ -702,7 +702,7 @@ func (c *acpConn) restoreTurn(s *acpSession, turn int) ([]any, error) {
 		return data, err == nil
 	}
 	restore := func(path string, data []byte, existed bool, mode os.FileMode) error {
-		if editorFile(path, s.roots()) {
+		if editorFile(path, s.roots(), s.protected) {
 			return errEditorFile
 		}
 		if !existed {

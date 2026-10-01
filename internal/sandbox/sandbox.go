@@ -123,6 +123,10 @@ type Policy struct {
 	// WriteProtected are paths inside the workspace a command may read but
 	// not write, such as an editor's own settings there.
 	WriteProtected []string
+	// ProtectGit write-protects the config and hooks of every git folder in
+	// the workspace, and each .git, at any depth. Seatbelt names them by
+	// pattern; the other tiers hold only those listed in WriteProtected.
+	ProtectGit bool
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int

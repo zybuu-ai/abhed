@@ -50,7 +50,7 @@ func TestEditorFileByCaseAndLink(t *testing.T) {
 		for _, root := range []string{ws, real} {
 			for _, base := range []string{ws, real} {
 				p := filepath.Join(base, filepath.FromSlash(path))
-				if got := editorFile(p, []string{root}); got != want {
+				if got := editorFile(p, []string{root}, nil); got != want {
 					t.Errorf("editorFile(%s, root %s) = %v, want %v", p, root, got, want)
 				}
 			}
@@ -69,7 +69,7 @@ func TestEditorFileUnderARootInAnotherCase(t *testing.T) {
 	if other == real {
 		t.Skip("no letters to change")
 	}
-	if !editorFile(filepath.Join(real, ".vscode", "tasks.json"), []string{other}) {
+	if !editorFile(filepath.Join(real, ".vscode", "tasks.json"), []string{other}, nil) {
 		t.Fatal("a root in another case let .vscode through")
 	}
 }
@@ -98,7 +98,7 @@ func TestEditorFileFollowsAGitFile(t *testing.T) {
 		"main.git/worktrees/w":                  true,
 		"main.git/description":                  false,
 	} {
-		if got := editorFile(filepath.Join(ws, path), []string{ws}); got != want {
+		if got := editorFile(filepath.Join(ws, path), []string{ws}, nil); got != want {
 			t.Errorf("%s: %v, want %v", path, got, want)
 		}
 	}
@@ -153,5 +153,47 @@ func TestEditorGuardHoldsInTheToolSessionsRoots(t *testing.T) {
 	s := &acpSession{cwd: ws}
 	if err := s.dirtyGuard(filepath.Join(wt, ".vscode", "tasks.json"), []string{wt}); !errors.Is(err, errEditorFile) {
 		t.Fatalf("a worktree's .vscode: %v", err)
+	}
+}
+
+// A repository nested in the workspace has its .git, config and hooks held
+// at any depth, and a .git file there points at a git folder that is too.
+func TestEditorFileInANestedRepository(t *testing.T) {
+	ws := t.TempDir()
+	real, _ := filepath.EvalSymlinks(ws)
+	for _, d := range []string{"sub/.git/hooks", "a/b/c/.Git/Hooks", "store/sub2.git/hooks", "sub2", "node_modules/x/.git/hooks"} {
+		if err := os.MkdirAll(filepath.Join(real, filepath.FromSlash(d)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(real, "sub2", ".git"), []byte("gitdir: ../store/sub2.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]bool{
+		"sub/.git/config":                true,
+		"sub/.GIT/HOOKS/pre-commit":      true,
+		"sub/.git":                       true,
+		"new/repo/.git":                  true,
+		"a/b/c/.Git/Hooks/post-checkout": true,
+		"store/sub2.git/hooks/pre-push":  true,
+		"store/sub2.git/config":          true,
+		"sub/.git/HEAD":                  false,
+		"sub/main.go":                    false,
+		"store/sub2.git/HEAD":            false,
+	} {
+		if got := editorFile(filepath.Join(ws, filepath.FromSlash(path)), []string{ws}, protectedPaths(ws)); got != want {
+			t.Errorf("%s: %v, want %v", path, got, want)
+		}
+	}
+	got := protectedPaths(ws)
+	for _, want := range []string{"sub/.git/hooks", "sub/.git/config", "a/b/c/.Git/hooks", "store/sub2.git/hooks", "store/sub2.git/config"} {
+		if !slices.Contains(got, filepath.Join(real, filepath.FromSlash(want))) {
+			t.Errorf("protectedPaths lacks %s: %v", want, got)
+		}
+	}
+	for _, p := range got {
+		if strings.Contains(p, "node_modules") {
+			t.Errorf("searched node_modules: %s", p)
+		}
 	}
 }
