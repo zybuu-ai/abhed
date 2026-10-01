@@ -16,6 +16,9 @@ All notable changes to Abhed are recorded here. The format follows
   file names, file and diff lines, search results, session titles and MCP,
   skill and extension names now show those characters as `⟨U+XXXX⟩`,
   keeping newlines, tabs and indentation.
+- `/ide` drew a model error with the model's own invalid tool arguments
+  quoted as given, so an RLO in them reversed the row. It is now written out
+  like any other record text.
 - A managed file that set `permissions` but not `permissions.allow` still let
   `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
   while `/permissions allow` refused them. Every path now refuses an allow

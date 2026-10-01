@@ -68,4 +68,10 @@ render(ev(63, 'action.denied', 'system', {call_id:'a7', step:'deny', reason:'no'
 const why = __added.map(n => n.textContent).join('\n');
 check('a decision\'s reason and scope show hidden characters: ' + JSON.stringify(why),
   !why.includes(R) && !why.includes(J) && why.includes('ls⟨U+200D⟩') && why.includes('always allowing bash:ls⟨U+202E⟩ — ok⟨U+202E⟩') && why.includes('— no⟨U+202E⟩pe'));
+// A model error quotes the model's own invalid arguments: an RLO in them must not reverse the row.
+__added.length = 0;
+render(ev(70, 'model.call', 'system', {turn:1, model:'m', error:'model produced invalid JSON arguments for bash: {"description": "bd2' + R + 'gpj.exe' + String.fromCharCode(0x200b) + '"}'}));
+const merr = text();
+check('a model error shows hidden characters: ' + JSON.stringify(merr),
+  !merr.includes(R) && merr.includes('model error: model produced invalid JSON arguments for bash: {"description": "bd2⟨U+202E⟩gpj.exe⟨U+200B⟩"}'));
 if(!ok) process.exit(1);

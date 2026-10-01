@@ -98,6 +98,7 @@ const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}
 const hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => { __changes++; };
 const fillCall = () => {}, drawPlan = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
 const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); };
+const stat = {turns:0, tin:0, tout:0, ctx:0, window:0}, drawStatus = () => {};
 `
 	if out, err := runConsoleCases(t, "ide-render", harness, "ide_render_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's chat render failed:\n%s", out)

@@ -1633,7 +1633,7 @@ function render(ev){
   // A suggestion's call is counted, but is no turn and says nothing of the context.
   case 'model.call': if(p.purpose){ stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; drawStatus(); break; }
     if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
-    if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
+    if(p.error) add(el('div', 'sys bad', 'model error: ' + visible(p.error))); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
   case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
