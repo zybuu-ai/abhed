@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The console and `/ide` drew a tool call's output with its bidi, isolate,
+  joiner, zero-width and control characters applied, so a background task's
+  description echoed in "Started in background" could reorder or hide part
+  of the line in the call's peek and output. Every call's output, peek and
+  header, replies and reasoning, decision reasons, the agent's terminal tab,
+  file names, file and diff lines, search results, session titles and MCP,
+  skill and extension names now show those characters as `⟨U+XXXX⟩`,
+  keeping newlines, tabs and indentation.
 - A managed file that set `permissions` but not `permissions.allow` still let
   `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
   while `/permissions allow` refused them. Every path now refuses an allow

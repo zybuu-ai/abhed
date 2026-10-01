@@ -62,4 +62,44 @@ const hiddenOk = !hidden.includes(RLO) && !hidden.includes(ZW) && hidden.include
   hidden.includes('ok⟨U+202E⟩txt.exe') && hidden.includes('done⟨U+200B⟩') && hidden.includes('continuing with results from scan⟨U+202E⟩gol');
 console.log((hiddenOk ? 'PASS' : 'FAIL') + '  background names, results and reasons show bidi and zero-width as code points');
 ok = hiddenOk && ok;
+// A tool call's output, its peek and a reply are untrusted text: bidi, isolates, joiners,
+// zero-width and BEL are written out wherever they are drawn, and newlines, tabs and
+// indentation are kept. The description echoed in "Started in background" is one such output.
+const HID = ['\u202e', '\u2066', '\u2069', '\u200d', '\u200b', '\u0007'];
+const SPOOF = 'Started in background: t7 · scan\u202egol\u2066x\u2069 a\u200db\u200bc\u0007';
+const raw = s => HID.some(c => s.includes(c));
+tx.childNodes.length = 0; turnEl = null; calls.clear();
+render({seq:150, type:'action.requested', payload:{call_id:'c7', tool:'task', args:{description:'scan\u202egol'}}});
+render({seq:151, type:'observation', payload:{call_id:'c7', tool:'task', content:SPOOF + '\n    indented\tline\n'}});
+const call = calls.get('c7');
+const peek = call.querySelector('.peek').textContent, out = call.querySelector('.out').textContent;
+const outOk = !raw(peek) && !raw(out) && peek.includes('scan⟨U+202E⟩gol⟨U+2066⟩x⟨U+2069⟩ a⟨U+200D⟩b⟨U+200B⟩c⟨U+0007⟩') &&
+  out.includes('scan⟨U+202E⟩gol⟨U+2066⟩x⟨U+2069⟩ a⟨U+200D⟩b⟨U+200B⟩c⟨U+0007⟩\n    indented\tline\n');
+console.log((outOk ? 'PASS' : 'FAIL') + '  a call\'s output and peek show hidden characters as code points and keep their layout');
+if(!outOk) console.log('        peek=' + JSON.stringify(peek) + ' out=' + JSON.stringify(out));
+ok = outOk && ok;
+// A denial's reason and a subagent's ask header are drawn the same way.
+render({seq:152, type:'action.requested', payload:{call_id:'c8', tool:'bash', args:{command:'ls'}}});
+render({seq:153, type:'action.denied', payload:{call_id:'c8', reason:'policy\u202eyes'}});
+render({seq:154, type:'subagent.ask', payload:{request_id:'r1', tool:'bash\u200b', subagent:'sub\u202e', args:{path:'rm\u2066 x'}}});
+const asked = tx.textContent;
+const askOk = !raw(asked) && asked.includes('denied — policy⟨U+202E⟩yes') && asked.includes('bash⟨U+200B⟩') &&
+  asked.includes('subagent sub⟨U+202E⟩') && asked.includes('rm⟨U+2066⟩ x');
+console.log((askOk ? 'PASS' : 'FAIL') + '  a denial reason and a subagent ask header show hidden characters');
+if(!askOk) console.log('        ' + JSON.stringify(asked));
+ok = askOk && ok;
+// Replies and reasoning, streamed or whole, are model text and drawn the same way, once.
+for(const [label, evs] of [
+  ['streamed', [{seq:160, type:'agent.delta', payload:{text:'one\u202eowt'}}, {seq:161, type:'agent.delta', payload:{text:' \u200d'}},
+    {seq:162, type:'agent.reasoning', payload:{text:'why\u2069'}}, {seq:163, type:'agent.message', payload:{text:'one\u202eowt \u200d'}}]],
+  ['whole', [{seq:170, type:'agent.reasoning', payload:{text:'why\u2069'}}, {seq:171, type:'agent.message', payload:{text:'one\u202eowt \u200d'}}]]]){
+  tx.childNodes.length = 0; turnEl = null; streamEl = null; streamBody = null;
+  for(const ev of evs) render(ev);
+  const said = tx.querySelectorAll('.said:not(.user)');
+  const t = tx.textContent;
+  const replyOk = said.length === 1 && !raw(t) && said[0].textContent.includes('one⟨U+202E⟩owt ⟨U+200D⟩') && t.includes('why⟨U+2069⟩');
+  console.log((replyOk ? 'PASS' : 'FAIL') + '  a ' + label + ' reply and its reasoning show hidden characters, in one bubble');
+  if(!replyOk) console.log('        ' + JSON.stringify(t));
+  ok = replyOk && ok;
+}
 process.exit(ok?0:1);

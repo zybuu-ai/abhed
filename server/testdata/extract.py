@@ -10,6 +10,7 @@
 #   extract.py ide.html ide-conn      the connection indicator
 #   extract.py ide.html ide-lines     the line-by-line terminal
 #   extract.py ide.html ide-term      the agent's terminal tab
+#   extract.py ide.html ide-call      an opened call and the plan
 #   extract.py console.go model       the model picker (ide-model: the workbench's)
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1]).read_text()
@@ -38,9 +39,9 @@ sets = {
           'function shortPath(p){','function kv(k, v){','function noticeCard(p){','function visible(s, lines){','function reveal(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){','function recheckSoon(){','function offerNext(t){'],
     # The console's event stream and its reconnect.
     'conn': ['function connect(id){'],
-    'state': ['function shownState(s){','function paintOpenPill(){','function listBadges(s){'],
+    'state': ['function visible(s, lines){','function reveal(s, lines){','function shownState(s){','function paintOpenPill(){','function listBadges(s){'],
     'mode': ['async function loadMode(){'],
-    'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
+    'workbench': ['function node(cls, text){','function visible(s, lines){','function reveal(s, lines){','function fmtSize(n){','function wbShow(name, meta){',
           'function showFile(f){','function viewDiff(f){','function diffClass(line){'],
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function reveal(s, lines){','function mdInline(parent, s){','function md(text){'],
@@ -65,10 +66,12 @@ sets = {
     'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
     'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
           'function showSessionModel(s){','async function switchModel(){'],
+    # From ide.html: an opened call's arguments and output, and the plan.
+    'ide-call': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function fillCall(c){','function clip(text){','function drawPlan(items){'],
     # From ide.html: the agent's read-only terminal tab.
     'ide-term': ['function visible(s, lines){','function reveal(s, lines){','function logTerminal(cmd, p, who){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
-    'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',
+    'ide-lines': ['function visible(s, lines){','function reveal(s, lines){','const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',
           'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','const CONFIRM_GUARD = ','const askConfirm = ','function confirmData(t, d){'],
 }
 seen=set(); out=[]

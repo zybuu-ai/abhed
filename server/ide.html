@@ -688,7 +688,7 @@ function drawTabs(){
 function crumbs(path, meta){
   $('crumbs').hidden = !path; const c = $('crumb'); clear(c);
   if(path) path.split('/').forEach((p, i, all) => { if(i) c.appendChild(el('span', 'sep codicon codicon-chevron-right')); c.appendChild(el('span', i === all.length - 1 ? 'leaf' : '', reveal(p))); });
-  $('crumb-meta').textContent = meta || ''; if(!path) $('crumb-pos').textContent = '';
+  $('crumb-meta').textContent = reveal(meta || ''); if(!path) $('crumb-pos').textContent = '';
 }
 
 // Open tabs come back after a reload: which files, and which one was in front.
@@ -869,7 +869,7 @@ async function loadTree(path, into, depth){
   if(!current){ clear(into); into.appendChild(el('div', 'empty', 'Start or open a session to browse its workspace.')); return; }
   dirs.set(path, {into, depth});
   let res; try{ res = await api('/v1/sessions/' + current + '/tree?path=' + encodeURIComponent(path)); }
-  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', e.message)); return; }
+  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', reveal(e.message))); return; }
   if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; }
   clear(into);
   for(const e of res.entries){
@@ -975,7 +975,7 @@ async function deleteEntry(e){
   await refreshDir(parentOf(e.path));
 }
 let treeMsgTimer = null;
-function treeError(e){ const n = $('tree-msg'); n.textContent = e.message; n.hidden = false; clearTimeout(treeMsgTimer); treeMsgTimer = setTimeout(() => { n.hidden = true; }, 8000); }
+function treeError(e){ const n = $('tree-msg'); n.textContent = visible(e.message); n.hidden = false; clearTimeout(treeMsgTimer); treeMsgTimer = setTimeout(() => { n.hidden = true; }, 8000); }
 async function copyPath(p){ try{ await navigator.clipboard.writeText(p); }catch{} }
 
 // A right-click menu over the tree, with each entry's actions.
@@ -1022,7 +1022,7 @@ async function runSearch(){
   sum.textContent = 'Searching…';
   const flags = Object.entries(sopt).filter(([, on]) => on).map(([k]) => '&' + k + '=1').join('');
   let r; try{ r = await api('/v1/sessions/' + current + '/search?q=' + encodeURIComponent(q) + flags); }
-  catch(e){ if(seq === searchSeq){ clear(box); sum.textContent = e.message; } return; }
+  catch(e){ if(seq === searchSeq){ clear(box); sum.textContent = visible(e.message); } return; }
   if(seq !== searchSeq) return;
   clear(box);
   const why = {matches:'the result limit', files:'the file limit', time:'the time limit'}[r.why] || 'a limit';
@@ -1035,10 +1035,10 @@ async function runSearch(){
     const list = el('div'); box.appendChild(head); box.appendChild(list);
     head.addEventListener('click', () => { list.hidden = !list.hidden; head.firstChild.className = 'tw codicon codicon-chevron-' + (list.hidden ? 'right' : 'down'); });
     for(const m of f.matches){
-      const row = el('button', 'row smatch'); row.type = 'button'; row.title = f.path + ':' + m.line + ':' + m.col;
+      const row = el('button', 'row smatch'); row.type = 'button'; row.title = reveal(f.path) + ':' + m.line + ':' + m.col;
       const line = el('span', 'name');
       let before = m.text.slice(0, m.from).replace(/^\s+/, ''); if(before.length > 40) before = '…' + before.slice(-40);
-      line.appendChild(document.createTextNode(before)); line.appendChild(el('mark', '', m.text.slice(m.from, m.to))); line.appendChild(document.createTextNode(m.text.slice(m.to)));
+      line.appendChild(document.createTextNode(reveal(before))); line.appendChild(el('mark', '', reveal(m.text.slice(m.from, m.to)))); line.appendChild(document.createTextNode(reveal(m.text.slice(m.to))));
       row.appendChild(line); row.addEventListener('click', () => openFile(f.path, {line:m.line, col:m.col, end:m.end}));
       list.appendChild(row);
     }
@@ -1053,7 +1053,7 @@ function findInFiles(){
 
 async function loadChanges(){
   const box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
-  let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
+  let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); return; }
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
@@ -1084,9 +1084,9 @@ function drawCaps(){
     if(!by[k].length) return;
     const g = el('div', 'group', title); g.appendChild(el('span', 'n', String(by[k].length))); t.appendChild(g);
     for(const o of by[k]){
-      const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', o.name));
+      const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(o.name)));
       top.appendChild(el('span', 'pill ' + (o.mutates ? 'mut' : 'ro'), o.mutates ? 'asks first' : 'read-only'));
-      card.appendChild(top); if(o.description) card.appendChild(el('p', '', o.description)); t.appendChild(card);
+      card.appendChild(top); if(o.description) card.appendChild(el('p', '', visible(o.description, true))); t.appendChild(card);
     }
   });
 
@@ -1096,16 +1096,16 @@ function drawCaps(){
     items.forEach(i => x.appendChild(draw(i)));
   };
   sect('Extensions', c.extensions, e => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', e.name)); top.appendChild(el('span', 'pill on', 'active'));
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); top.appendChild(el('span', 'pill on', 'active'));
     card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (e.events.join(', ') || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', m.name)); top.appendChild(el('span', 'pill on', m.status)); card.appendChild(top); return card;
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status))); card.appendChild(top); return card;
   }, 'No MCP servers connected. Add one under', 'mcp.servers');
   sect('Skills', c.skills, s => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', s.name));
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(s.name)));
     if(s.has_pipeline) top.appendChild(el('span', 'pill', 'pipeline')); card.appendChild(top);
-    if(s.description) card.appendChild(el('p', '', s.description)); return card;
+    if(s.description) card.appendChild(el('p', '', visible(s.description, true))); return card;
   }, 'No skills loaded. Put a SKILL.md under', '.abhed/skills/<name>/');
 }
 
@@ -1113,7 +1113,7 @@ function drawCaps(){
 async function loadHawkeye(){
   const box = $('hawkeye'), prob = $('p-problems');
   if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
-  let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
+  let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); return; }
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
   [['Outcome', visible(r.outcome)],['Model', visible((r.models || []).join(' → ')) || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
@@ -1178,7 +1178,7 @@ function resetSession(){
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
-const sessionLabel = s => s.prompt || 'Workbench session';
+const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';
 
 /* ---------------------------------------------------------------- model picker */
 // Shown only when more than one provider is configured. It names the model the
@@ -1614,10 +1614,10 @@ function render(ev){
     if(p.requires_approval){ asks.set(p.call_id, {p, rid: ev.id, shown:false}); if(live) offerAsks(); }
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
+    if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
     settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? c.tool : 'tool')); break; }
   case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
-    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }
+    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + ' — ' + (p.reason || '')))); }
     settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
   case 'observation': {
     const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
@@ -1661,9 +1661,9 @@ function render(ev){
     asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live || bgLive) offerAsks(); break; }
   case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
     if(!ok){ c.node.classList.add('denied'); } c.res.textContent = ok ? 'allowed' : 'denied';
-    c.node.appendChild(el('div', 'why', (ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
-      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')));
-    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break; }
+    c.node.appendChild(el('div', 'why', visible((ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
+      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : ''))));
+    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + visible(p.reason) : '')); break; }
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
@@ -1678,7 +1678,7 @@ function render(ev){
     const kept = id => bgLive && String(id).startsWith('subagent-');
     endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; for(const id of [...asks.keys()]) if(!kept(id)) asks.delete(id); setLive(false);
     for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns') && !kept(a.dataset.call)) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
-    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
+    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + visible(p.reason || '') + ' · ' + (p.turns || 0) + ' turns'));
     loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); break; }
   }
 }
@@ -1724,6 +1724,8 @@ function fillCall(c){
 }
 // Long output shows its head until asked for the rest.
 function clip(text){
+  // A call's output is untrusted: bidi, zero-width and control characters are written out.
+  text = reveal(text, true);
   const lines = text.split('\n'); if(lines.length <= 24 && text.length <= 2000) return el('pre', '', text);
   const pre = el('pre', '', lines.slice(0, 24).join('\n').slice(0, 2000) + '\n…'), more = el('button', 'more', 'show all ' + lines.length + ' lines');
   more.type = 'button'; more.addEventListener('click', () => { pre.textContent = text; more.remove(); });
@@ -1733,7 +1735,7 @@ function clip(text){
 // state of the work is always the last thing above the composer.
 function drawPlan(items){
   if(!todoNode) todoNode = el('div', 'todo'); clear(todoNode); todoNode.appendChild(el('h4', '', 'Plan'));
-  items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', i.text)); todoNode.appendChild(r); });
+  items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', visible(i.text || ''))); todoNode.appendChild(r); });
   add(todoNode);
 }
 function askApproval(p, rid){
@@ -1920,7 +1922,7 @@ async function startTerm(t, opts){
   catch(e){
     if(!terms.includes(t)) return;
     if(e.status === 409 && opts.auto && t.session === current){ createWorkbench('The last session could not be reopened on this server, so this is a new one.'); return; }
-    t.term.write('\r\n\x1b[31m' + e.message + '\x1b[0m\r\n\x1b[2mpress Enter to try again\x1b[0m\r\n'); t.dead = true; return;
+    t.term.write('\r\n\x1b[31m' + visible(e.message) + '\x1b[0m\r\n\x1b[2mpress Enter to try again\x1b[0m\r\n'); t.dead = true; return;
   }
   if(!terms.includes(t) || t.session !== current){ if(r.interactive) fetch(ptyURL(t, '/' + r.id), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); return; }
   t.term.reset(); banner(t, r, opts.note);
@@ -2104,7 +2106,7 @@ async function runLine(t, cmd, answer){
   t.busy = true;
   const body = {command:cmd, cols:t.term.cols, rows:t.term.rows}; if(answer) body[answer] = true;
   let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
-  catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
+  catch(e){ t.busy = false; t.term.write('\x1b[31m' + visible(e.message) + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
   if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\n'); askConfirm(t); return; }
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
@@ -2145,8 +2147,8 @@ function confirmData(t, d){
 function logTerminal(cmd, p, who){
   if(who === 'you') return; // the person's own commands are already on their terminal
   if(!agentTerm){ const keep = activeTerm; agentTerm = makeTerm('agent', 'agent'); agentTerm.term.write('\x1b[2mCommands the agent ran, with their output. Read only.\x1b[0m\r\n'); if(keep) selectTerm(keep); }
-  const out = (p.content || '').slice(0, 8000);
-  // The command is the model's text: escapes in it must print, not drive the terminal.
+  const out = reveal((p.content || '').slice(0, 8000), true);
+  // The command and its output are untrusted: escapes in them must print, not drive the terminal.
   agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }

@@ -996,7 +996,7 @@ function sessionRow(s){
 
   const q = document.createElement('div');
   q.className = 'q';
-  q.textContent = s.prompt || '(no prompt recorded)';
+  q.textContent = s.prompt ? reveal(s.prompt) : '(no prompt recorded)';
 
   const m = document.createElement('div');
   m.className = 'm';
@@ -1209,7 +1209,7 @@ function render(ev){
         streamEl.appendChild(streamBody);
         (turnEl || tx).appendChild(streamEl);
       }
-      streamBody.appendData(p.text || '');
+      streamBody.appendData(reveal(p.text || '', true));
       break;
     }
 
@@ -1219,7 +1219,8 @@ function render(ev){
         // The deltas already rendered this. Reconcile against the
         // authoritative text in case a fragment was dropped on reconnect,
         // then close the bubble.
-        if((p.text || '') !== streamBody.data) streamBody.data = p.text || '';
+        const whole = reveal(p.text || '', true);
+        if(whole !== streamBody.data) streamBody.data = whole;
         // The deltas streamed plain text; render it now that it is whole.
         const holder = document.createElement('div');
         holder.className = 'md';
@@ -1235,7 +1236,8 @@ function render(ev){
       // would otherwise print the whole reply twice. Adopt the bubble the
       // deltas built rather than trusting a variable to still be set.
       const streamed = lastStreamedBubble();
-      if(streamed && streamed.body.data.trim() === (p.text || '').trim()){
+      const shown = reveal(p.text || '', true);
+      if(streamed && streamed.body.data.trim() === shown.trim()){
         // Same text: replace the streamed plain draft with the rendered form.
         // Markdown cannot be applied to a fragment, so the deltas stream raw
         // and the finished answer is formatted here.
@@ -1245,9 +1247,9 @@ function render(ev){
         streamed.body.replaceWith(holder);
         break;
       }
-      if(streamed && (p.text || '').startsWith(streamed.body.data.trim().slice(0, 200))
+      if(streamed && shown.startsWith(streamed.body.data.trim().slice(0, 200))
          && streamed.body.data.trim() !== ''){
-        streamed.body.data = p.text || '';
+        streamed.body.data = shown;
         break;
       }
       const b = node('said');
@@ -1275,7 +1277,7 @@ function render(ev){
       const size = node('', wordCount(p.text) + ' words');
       size.style.cssText = 'margin-left:auto;font-size:10px';
       hdr.append(caret, label, size);
-      const body = node('body', p.text || '');
+      const body = node('body', reveal(p.text || '', true));
       think.append(hdr, body);
       hdr.setAttribute('role','button');
       hdr.setAttribute('tabindex','0');
@@ -1339,7 +1341,8 @@ function render(ev){
         // never instruction. Saying so in the UI keeps that visible.
         body.appendChild(node('tag','untrusted data'));
       }
-      body.appendChild(document.createTextNode(clip(p.content || '', 4000)));
+      // Tool output is untrusted: bidi, zero-width and control characters are written out.
+      body.appendChild(document.createTextNode(clip(reveal(p.content || '', true), 4000)));
       wrap.appendChild(body);
 
       if(live) showThinking('working');
@@ -1369,7 +1372,7 @@ function render(ev){
       resolveApproval(p.call_id, 'rejected', 'no');
       const wrap = calls.get(p.call_id) || turnEl || newTurn();
       wrap.classList.add('err');
-      wrap.appendChild(node('out err', 'denied — ' + (p.reason || 'no reason given')));
+      wrap.appendChild(node('out err', 'denied — ' + visible(p.reason || 'no reason given')));
       break;
     }
 
@@ -1399,7 +1402,7 @@ function render(ev){
       const id = 'subagent-' + p.request_id;
       const wrap = node('call');
       const hdr = node('hdr');
-      hdr.append(node('tool', p.tool), node('arg', 'subagent ' + (p.subagent || '') + ' · ' + summarize(p.tool, p.args)));
+      hdr.append(node('tool', visible(p.tool)), node('arg', 'subagent ' + visible(p.subagent || '') + ' · ' + visible(summarize(p.tool, p.args))));
       wrap.appendChild(hdr);
       (turnEl || newTurn()).appendChild(wrap);
       calls.set(id, wrap);
@@ -1460,7 +1463,7 @@ function render(ev){
       stats.ctxWindow = p.context_window || stats.ctxWindow;
 
       const n = node('note');
-      n.append(kv('ended', p.reason), kv('turns', p.turns));
+      n.append(kv('ended', visible(p.reason || '')), kv('turns', p.turns));
 
       // Context first, because it is the number that answers "how much room is
       // left". tokens_in beside it is a running total across every turn, so it
@@ -1492,11 +1495,16 @@ function kv(k, v){
 // draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
 // spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
 function visible(s, lines){
-  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+  return reveal(String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
     // Eight columns inside a line (a tab counts eight); indentation only from 32.
     const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
     return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
-  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+  }), lines);
+}
+// reveal is visible without the spacing rule, for text whose layout is its own: replies,
+// reasoning, a call's output, files and diffs. Tool output is untrusted, so all of it is drawn this way.
+function reveal(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1559,6 +1567,8 @@ function lastStreamedBubble(){
 // untrusted content, and a reply that read a hostile file must not be able to
 // put markup into this page.
 function md(text){
+  // Model text: control and format characters are written out before any markup is built.
+  text = reveal(String(text || ''), true);
   const esc = s => s.replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -1676,7 +1686,7 @@ function setPeek(wrap, content){
   const el = wrap.querySelector('.peek');
   if(!el) return;
   const first = String(content).split('\n').map(l => l.trim()).find(l => l) || '';
-  el.textContent = first ? '· ' + clip(first, 80).split('\n')[0] : '';
+  el.textContent = first ? '· ' + visible(clip(first, 80).split('\n')[0]) : '';
 }
 
 /* ------------------------------------------------------------------ approvals */
@@ -1984,9 +1994,10 @@ $('q').addEventListener('input', autogrow);
 /* ---------------------------------------------------------------- drawer */
 function openDrawer(name, kind, body, numbered){
   leaveWorkbench();
-  $('dname').textContent = name;
-  $('dkind').textContent = kind || '';
+  $('dname').textContent = visible(name);
+  $('dkind').textContent = visible(kind || '');
   const pre = document.createElement('pre');
+  body = reveal(body, true);
   if(numbered){
     // read() returns numbered lines; keep the gutter separate so the code
     // itself stays selectable and copyable.
@@ -2072,7 +2083,7 @@ function listBadges(s){
   const out = [];
   if(s.background){ const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'background ' + s.background; out.push(b); }
   if(s.pending_ask){ const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'approval waiting';
-    b.title = (s.pending_ask.subagent ? 'subagent ' + s.pending_ask.subagent + ': ' : '') + s.pending_ask.tool; out.push(b); }
+    b.title = visible((s.pending_ask.subagent ? 'subagent ' + s.pending_ask.subagent + ': ' : '') + s.pending_ask.tool); out.push(b); }
   return out;
 }
 
@@ -2101,7 +2112,7 @@ function wbRow(depth, twisty, name){
   b.type = 'button'; b.className = 'wb-row';
   b.style.paddingLeft = (10 + depth * 12) + 'px';
   const tw = document.createElement('span'); tw.className = 'tw'; tw.textContent = twisty;
-  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name;
+  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = reveal(name);
   b.append(tw, nm);
   return b;
 }
@@ -2116,14 +2127,14 @@ async function loadDir(path, host, depth){
   const session = current;
   let listing;
   try{ listing = await api(wbURL('tree', path)); }
-  catch(e){ host.appendChild(node('wb-note', e.message)); return; }
+  catch(e){ host.appendChild(node('wb-note', visible(e.message))); return; }
   if(session !== current || !host.isConnected) return;
   if(!listing.entries.length && depth === 0) host.appendChild(node('wb-note', 'The workspace is empty.'));
   for(const e of listing.entries){
     const row = wbRow(depth, e.dir ? '▸' : '', e.name);
     host.appendChild(row);
     if(!e.dir){
-      row.title = e.path + ' · ' + fmtSize(e.size);
+      row.title = reveal(e.path) + ' · ' + fmtSize(e.size);
       row.onclick = () => { wbSelect(row); viewFile(e.path); };
       continue;
     }
@@ -2161,7 +2172,7 @@ function wbShow(name, meta){
   const back = document.createElement('button');
   back.type = 'button'; back.className = 'ghost wb-back'; back.textContent = '← Back';
   back.onclick = () => $('wb').classList.remove('viewing');
-  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; nm.title = name;
+  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = nm.title = reveal(name);
   const mt = document.createElement('span'); mt.textContent = meta || '';
   bar.append(back, nm, mt);
   const view = node('wb-view');
@@ -2176,7 +2187,7 @@ async function viewFile(path){
   try{ f = await api(wbURL('file', path)); }
   catch(e){
     const view = wbShow(path, '');
-    if(view) view.appendChild(node('wb-note', e.message));
+    if(view) view.appendChild(node('wb-note', visible(e.message)));
     return;
   }
   if(session === current) showFile(f);
@@ -2199,7 +2210,7 @@ function showFile(f){
   lines.forEach((line, i) => {
     const g = document.createElement('span');
     g.className = 'ln'; g.textContent = String(i + 1);
-    pre.append(g, document.createTextNode(line + '\n'));
+    pre.append(g, document.createTextNode(reveal(line) + '\n'));
   });
   view.appendChild(pre);
 }
@@ -2210,9 +2221,9 @@ async function loadChanges(){
   if(!side) return;
   let res;
   try{ res = await api(wbURL('changes')); }
-  catch(e){ side.textContent = ''; side.appendChild(node('wb-note', e.message)); return; }
+  catch(e){ side.textContent = ''; side.appendChild(node('wb-note', visible(e.message))); return; }
   if(session !== current || !side.isConnected) return;
-  const selected = (side.querySelector('.wb-row[aria-current]') || {}).title;
+  const selected = ((side.querySelector('.wb-row[aria-current]') || {}).dataset || {}).path;
   side.textContent = '';
   if(!res.available){
     side.appendChild(node('wb-note', 'Changes are kept while a session is live on this ' +
@@ -2226,7 +2237,7 @@ async function loadChanges(){
   for(const f of res.files){
     const mark = {added:'A', deleted:'D'}[f.status] || 'M';
     const row = wbRow(0, mark, f.path);
-    row.title = f.path;
+    row.title = reveal(f.path); row.dataset.path = f.path;
     const ct = document.createElement('span'); ct.className = 'ct';
     const plus = document.createElement('span'); plus.className = 'plus'; plus.textContent = '+' + f.added;
     const minus = document.createElement('span'); minus.className = 'minus'; minus.textContent = '−' + f.removed;
@@ -2250,7 +2261,7 @@ function viewDiff(f){
   f.diff.replace(/\n$/, '').split('\n').forEach((line, i) => {
     // The two header lines are told apart by position: a removed line that
     // itself starts with "--" looks exactly like one.
-    box.appendChild(node(i < 2 ? 'meta' : diffClass(line), line));
+    box.appendChild(node(i < 2 ? 'meta' : diffClass(line), reveal(line)));
   });
   view.appendChild(box);
 }

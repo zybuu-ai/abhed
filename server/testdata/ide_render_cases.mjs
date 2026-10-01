@@ -58,4 +58,14 @@ const runningShell = $('s-bg').textContent;
 render(ev(51, 'shell.ended', 'system', {shell_id:'sh_1', call_id:'c1', state:'exited', exit_code:0}));
 check('a background shell is in the status bar while it runs', $('s-bg').hidden === true && runningShell.includes('1 background: dev server') &&
   $('s-bg').textContent === '' && $('s-bg').title.includes('dev server · exited'));
+// A decision's reason and scope sit under the call they settle, and are drawn written out too.
+__added.length = 0;
+const R = String.fromCharCode(0x202e), J = String.fromCharCode(0x200d);
+render(ev(60, 'action.requested', 'agent', {call_id:'a6', tool:'bash', args:{command:'ls' + J}}));
+render(ev(61, 'action.approved', 'system', {call_id:'a6', step:'rule', granted_scope:'bash:ls' + R, reason:'ok' + R}));
+render(ev(62, 'action.requested', 'agent', {call_id:'a7', tool:'bash', args:{command:'rm'}}));
+render(ev(63, 'action.denied', 'system', {call_id:'a7', step:'deny', reason:'no' + R + 'pe'}));
+const why = __added.map(n => n.textContent).join('\n');
+check('a decision\'s reason and scope show hidden characters: ' + JSON.stringify(why),
+  !why.includes(R) && !why.includes(J) && why.includes('ls⟨U+200D⟩') && why.includes('always allowing bash:ls⟨U+202E⟩ — ok⟨U+202E⟩') && why.includes('— no⟨U+202E⟩pe'));
 if(!ok) process.exit(1);

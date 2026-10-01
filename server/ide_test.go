@@ -115,6 +115,26 @@ const makeTerm = () => agentTerm, selectTerm = () => {};
 	}
 }
 
+// An opened call's output is untrusted and drawn with hidden characters written
+// out, as the plan is: eval round 2 found a background task's description echoed
+// in "Started in background" drawn with its bidi and zero-width characters applied.
+func TestIDEShowsHiddenCharactersInCallOutput(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+globalThis.__added = [];
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.removeChild = function(n){ this.childNodes.splice(this.childNodes.indexOf(n), 1); n.parentNode = null; return n; };
+El.prototype.remove = function(){ const p = this.parentNode; if(p) p.removeChild(this); };
+El.prototype.insertBefore = function(n, ref){ const i = this.childNodes.indexOf(ref); n.parentNode = this; if(i < 0) this.childNodes.push(n); else this.childNodes.splice(i, 0, n); return n; };
+let todoNode = null;
+const add = n => { __added.push(n); };
+`
+	if out, err := runConsoleCases(t, "ide-call", harness, "ide_call_cases.mjs"); err != nil {
+		t.Fatalf("an opened call drew hidden characters:\n%s", out)
+	}
+}
+
 // An approval card and a call row name what the call is about: a web_fetch
 // by its URL, not its arguments as JSON.
 func TestIDENamesACallBySubject(t *testing.T) {
@@ -537,5 +557,28 @@ func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
 	}
 	if !strings.Contains(ideHTML, "confirm('Delete ' + reveal(e.path)") {
 		t.Error("the delete dialog draws the path raw")
+	}
+}
+
+// Where no page harness reaches, the source must still draw untrusted text through
+// visible() or reveal(): the console's drawer, and the workbench's tool cards,
+// search results, session titles and breadcrumb note.
+func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
+	for _, c := range []struct{ page, src, want string }{
+		{"console", consoleHTML, "  body = reveal(body, true);\n  if(numbered){"},
+		{"console", consoleHTML, "$('dname').textContent = visible(name);"},
+		{"console", consoleHTML, "q.textContent = s.prompt ? reveal(s.prompt) : '(no prompt recorded)';"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(o.name)));"},
+		{"ide", ideHTML, "card.appendChild(el('p', '', visible(o.description, true)));"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status)));"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(s.name)));"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(e.name)));"},
+		{"ide", ideHTML, "el('mark', '', reveal(m.text.slice(m.from, m.to)))"},
+		{"ide", ideHTML, "const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';"},
+		{"ide", ideHTML, "$('crumb-meta').textContent = reveal(meta || '');"},
+	} {
+		if !strings.Contains(c.src, c.want) {
+			t.Errorf("%s no longer draws this through the helper: %s", c.page, c.want)
+		}
 	}
 }
