@@ -1317,8 +1317,10 @@ async function watchIdle(){
   let st; try{ st = await api('/v1/sessions/' + id + '/state'); }catch{ return; }
   if(current !== id || live || es || !st) return;
   if(st.state === 'running' || st.state === 'waiting_approval'){ setLive(true); connect(id); }
+  // A turn that started and ended between two asks still changes the count: read it back.
+  else if(st.turns !== undefined && st.turns !== idleTurns.get(id)){ idleTurns.set(id, st.turns); connect(id); }
 }
-const idleWatch = setInterval(watchIdle, 4000);
+const idleTurns = new Map(), idleWatch = setInterval(watchIdle, 2000);
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');

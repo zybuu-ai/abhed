@@ -1728,6 +1728,8 @@ type sessionStateResponse struct {
 	ID     string `json:"id"`
 	State  string `json:"state"` // running | waiting_approval | idle | done
 	Reason string `json:"reason,omitempty"`
+	// Turns lets a page following an idle session see a turn it missed.
+	Turns int `json:"turns,omitempty"`
 }
 
 // sessionState answers one session's state to its owner, so a page open on a
@@ -1737,7 +1739,7 @@ func (s *Server) sessionState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
 		live.mu.Lock()
-		out := sessionStateResponse{ID: id, State: live.State, Reason: listedReason(live.State, live.Reason)}
+		out := sessionStateResponse{ID: id, State: live.State, Reason: listedReason(live.State, live.Reason), Turns: live.Turns}
 		live.mu.Unlock()
 		WriteJSON(w, http.StatusOK, out)
 		return

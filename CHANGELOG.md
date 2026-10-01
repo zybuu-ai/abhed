@@ -670,6 +670,11 @@ All notable changes to Abhed are recorded here. The format follows
   the server's mode or in plan, and after the server refused one the status
   bar still named it. The selector now offers only those two, as /console
   does, and a refusal puts it and the status bar back on the server's mode.
+- A second /ide tab on a session whose run had ended asked the server every
+  four seconds whether a new run had started, so a turn another tab began
+  and finished in between was not drawn until a later one. The session
+  state now carries its turn count, and a tab that sees it move reads the
+  missed turn back from the record. It also asks every two seconds.
 - `abhed serve` on Postgres could leave an event, such as a parallel
   subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
   took their seq before writing, so a later seq could commit first; the
