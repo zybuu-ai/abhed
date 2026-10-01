@@ -23,8 +23,11 @@ var errNoRecord = errors.New("the run kept no local record (store/local writes i
 //
 // Verified here means the chain links: seq counts up from the first line,
 // every line has a hash, each prev is the hash of the line before, and a
-// head file, when there is one, names the last line. Recomputing each
-// hash is the record's own verify, which a test runs as a command.
+// head file, when there is one, names a line the record holds. The head may
+// be behind the last line, as the record's own verify allows: it moves only
+// at a sync point, so a read while the binary appends finds it there.
+// Recomputing each hash is the record's own verify, which a test runs as a
+// command.
 func readRecord(home string) (Record, error) {
 	dir := filepath.Join(home, ".abhed", "records")
 	var files []string
@@ -55,6 +58,7 @@ func ReadRecordFile(path string) (Record, error) {
 	ok := true
 	var prevHash string
 	var lastSeq int64
+	hashAt := map[int64]string{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for n := 0; sc.Scan(); n++ {
@@ -72,6 +76,7 @@ func ReadRecordFile(path string) (Record, error) {
 			ok = false
 		}
 		prevHash, lastSeq = link.Hash, ev.Seq
+		hashAt[ev.Seq] = link.Hash
 		rec.Events = append(rec.Events, ev)
 	}
 	if err := sc.Err(); err != nil {
@@ -90,7 +95,7 @@ func ReadRecordFile(path string) (Record, error) {
 				h.Hash = f[1]
 			}
 		}
-		if h.Seq != lastSeq || h.Hash != prevHash {
+		if at, held := hashAt[h.Seq]; !held || at != h.Hash {
 			ok = false
 		}
 	}

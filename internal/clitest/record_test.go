@@ -35,9 +35,19 @@ func TestReadRecordLinks(t *testing.T) {
 		}
 	}
 	writeRec(t, path, good)
-	writeRec(t, filepath.Join(dir, "head", "s-1"), "1 h1\n")
-	if r, _ := ReadRecordFile(path); r.Verified {
-		t.Error("a head file naming another line verified")
+	// The head moves at sync points, so one behind the last line verifies, as
+	// the record's own verify allows; one naming a line the record does not
+	// hold, or past its end, does not.
+	for head, want := range map[string]bool{
+		`{"lines":2,"seq":2,"hash":"h2"}`: true,
+		"1 h1\n":                          true,
+		"1 hX\n":                          false,
+		`{"lines":3,"seq":3,"hash":"h3"}`: false,
+	} {
+		writeRec(t, filepath.Join(dir, "head", "s-1"), head)
+		if r, _ := ReadRecordFile(path); r.Verified != want {
+			t.Errorf("head %q: verified %v, want %v", head, r.Verified, want)
+		}
 	}
 }
 

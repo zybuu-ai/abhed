@@ -163,6 +163,7 @@ func TestInvariantMentionsBangAndCommandsGoThroughPolicy(t *testing.T) {
 		h.Type(step.line)
 		h.Key(clitest.Enter)
 		h.WaitText(step.want)
+		idle(h)
 		h.Settle()
 	}
 	h.Type("!rm -rf build")
@@ -261,6 +262,7 @@ func TestInvariantRecordIsAppendOnly(t *testing.T) {
 		h.Type(step.line)
 		h.Key(clitest.Enter)
 		h.WaitText(step.want)
+		idle(h)
 		h.Settle()
 	}
 	r := h.Record()

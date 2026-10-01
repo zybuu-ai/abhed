@@ -24,6 +24,15 @@ func start(t *testing.T, o clitest.Opts) clitest.Harness {
 	return h
 }
 
+// idle waits until no turn runs. A reply's text shows before its turn has
+// ended, and the record's head moves only at a turn's boundaries, so a record
+// read before then does not verify yet.
+func idle(h clitest.Harness) {
+	h.WaitScreen(func(s clitest.Screen) bool {
+		return s.Contains("? for shortcuts") && !s.Contains("esc to interrupt")
+	}, clitest.DefaultTimeout)
+}
+
 // guard is a dialog's quiet: a key pressed sooner after it appears, or
 // after the key before it, is not an answer.
 const guard = 400 * time.Millisecond
