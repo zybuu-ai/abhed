@@ -35,7 +35,7 @@ func TestStopHelper(t *testing.T) {
 	case "eval":
 		os.Exit(evalCmd(ws, filepath.Join(ws, "corpus"), filepath.Join(ws, "report.json"), ""))
 	case "acp":
-		os.Exit(acpCmd(ws, "test", ""))
+		os.Exit(acpCmd(ws, acpBuild{Version: "test", Edition: "ce"}, ""))
 	case "p":
 		os.Exit(Main([]string{"-C", ws, "-p", "go"}))
 	}

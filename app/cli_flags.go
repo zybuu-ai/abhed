@@ -80,6 +80,18 @@ func Main(args []string, opts ...Option) int {
 	}
 
 	if *showVer || fs.Arg(0) == "version" {
+		// --json is the handshake's block, for an editor checking the engine first.
+		if rest := fs.Args(); len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+			ws, err := resolveWorkspace(*workdir)
+			if err == nil {
+				err = versionJSON(os.Stdout, buildOf(a.version, a.edition), ws, a.trust)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+			return 0
+		}
 		fmt.Println("abhed", a.version, a.edition)
 		return 0
 	}
@@ -139,7 +151,7 @@ func Main(args []string, opts ...Option) int {
 		return resolveCmd(workspace, rest[1:], a.trust)
 	case "acp":
 		// The Agent Client Protocol over stdio, for editors that speak it.
-		return acpCmd(workspace, a.version, a.trust)
+		return acpCmd(workspace, buildOf(a.version, a.edition), a.trust)
 	case "rpc":
 		// Line-delimited JSON on stdin and stdout, so a caller in any language
 		// can drive Abhed as a subprocess without running a server.

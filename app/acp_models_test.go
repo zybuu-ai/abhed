@@ -141,15 +141,24 @@ func acpOpen(t *testing.T, cl *acpClient, ws string) acpNewSession {
 }
 
 // selectedModels is the options of the one model selector, as "name=description".
+// The mode selector (§5.1) is the session's other option.
 func selectedModels(t *testing.T, opts []acpModelOption) (current string, listed []string) {
 	t.Helper()
-	if len(opts) != 1 || opts[0].ID != "model" || opts[0].Category != "model" || opts[0].Type != "select" || opts[0].Name == "" {
+	var models []acpModelOption
+	for _, o := range opts {
+		if o.Category == "model" {
+			models = append(models, o)
+		} else if o.ID != "mode" || o.Category != "mode" {
+			t.Fatalf("config options: %+v, want a model and a mode selector", opts)
+		}
+	}
+	if len(models) != 1 || models[0].ID != "model" || models[0].Type != "select" || models[0].Name == "" {
 		t.Fatalf("config options: %+v, want one select of category model", opts)
 	}
-	for _, o := range opts[0].Options {
+	for _, o := range models[0].Options {
 		listed = append(listed, o.Value+"="+o.Name+"="+o.Description)
 	}
-	return opts[0].CurrentValue, listed
+	return models[0].CurrentValue, listed
 }
 
 func switchedTo(a *abhed.Agent) []string {
