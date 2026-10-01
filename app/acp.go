@@ -659,7 +659,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Suggest: true,
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
-	settings := embedded.Settings{Protect: protectedPaths(o.cwd)}
+	settings := embedded.Settings{Protect: protectedPaths(o.cwd), Surface: "acp"}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {

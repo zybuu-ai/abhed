@@ -438,6 +438,15 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
+	// A surface's new session says how it started, as the command line's does.
+	if x.Surface != "" && !x.Resume {
+		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
+			"model": adapter.Profile().Name, "mode": string(pol.Mode)}
+		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
+			set.Close()
+			return nil, fmt.Errorf("abhed: recording the session start: %w", err)
+		}
+	}
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
 		cfg: cfg, current: cfg.Model.Default}
 	a.hookWake(opts.HostWake)

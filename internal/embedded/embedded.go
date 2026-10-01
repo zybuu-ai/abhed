@@ -23,6 +23,9 @@ type Settings struct {
 	User string
 	// Protect are workspace paths the agent's commands may read but not write.
 	Protect []string
+	// Surface names the entry point (acp, rpc); a new session records it in
+	// its session.started, with the mode it runs in.
+	Surface string
 }
 
 type settingsKey struct{}
