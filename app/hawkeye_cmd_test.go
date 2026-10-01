@@ -118,3 +118,34 @@ func TestHawkeyeReadsTheLocalRecord(t *testing.T) {
 		t.Fatalf("a changed export: exit %d\n%s", code, out)
 	}
 }
+
+// HawkEYE reads a -p run's own json and stream-json output: the result line
+// at the end says how the run ended and is no event.
+func TestHawkeyeSkipsTheResultLine(t *testing.T) {
+	g := newSessRig(t)
+	for _, format := range []string{"json", "stream-json"} {
+		out, err := g.cmd("-p", "hello", "-output-format", format).Output()
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		if !strings.Contains(string(out), `"type":"result"`) {
+			t.Fatalf("%s: no result line:\n%s", format, out)
+		}
+		events, err := parseEvents(out)
+		if err != nil || len(events) == 0 {
+			t.Fatalf("%s: %v", format, err)
+		}
+		for _, ev := range events {
+			if ev.Type == "result" || ev.Seq == 0 {
+				t.Fatalf("%s: the result line was read as an event: %+v", format, ev)
+			}
+		}
+		path := filepath.Join(t.TempDir(), "run.jsonl")
+		if err := os.WriteFile(path, out, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if rep, code := hawkeyeOn(t, path); code == 1 || strings.Contains(rep, "153722867") {
+			t.Fatalf("%s: exit %d\n%s", format, code, rep)
+		}
+	}
+}

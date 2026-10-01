@@ -35,7 +35,7 @@ func parseEvents(data []byte) ([]agent.Event, error) {
 		if err != nil {
 			return nil, err
 		}
-		if isRecordTrailer(raw) {
+		if isRecordTrailer(raw) || isResultLine(raw) {
 			continue
 		}
 		var ev agent.Event
@@ -55,6 +55,17 @@ func isRecordTrailer(raw json.RawMessage) bool {
 		Head json.RawMessage `json:"abhed_record_head"`
 	}
 	return json.Unmarshal(raw, &t) == nil && len(t.Head) > 0
+}
+
+// isResultLine reports whether raw is the result line a -p run writes last
+// in json and stream-json output: how the run ended, not an event.
+func isResultLine(raw json.RawMessage) bool {
+	var l struct {
+		Type string          `json:"type"`
+		ID   json.RawMessage `json:"id"`
+		Seq  json.RawMessage `json:"seq"`
+	}
+	return json.Unmarshal(raw, &l) == nil && l.Type == "result" && l.ID == nil && l.Seq == nil
 }
 
 // hawkeyeCmd reports on a finished session: from an exported events file, or
