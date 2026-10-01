@@ -68,11 +68,11 @@ func (p *Prompter) Waiting() bool {
 	return p.waiting != nil
 }
 
-// Decision reports whether a line is exactly one of an approval's keys, and
-// so may answer one. Any other line is never taken as an answer by position.
+// Decision reports whether a line is exactly one of an approval's numbered
+// answers, 1, 2 or 3, and so may answer one. Any other line never does.
 func Decision(line string) bool {
 	switch strings.TrimSpace(line) {
-	case "a", "y", "r", "n", "A":
+	case "1", "2", "3":
 		return true
 	}
 	return false

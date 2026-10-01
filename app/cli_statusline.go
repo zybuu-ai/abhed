@@ -249,9 +249,24 @@ func sanitizeStatus(s string) string {
 // "" with no command or when it failed. A refused script, at the start or
 // after a swap, is said on every redraw; no sandbox, or a failing command, once.
 func (c *cliState) statusLine(ctx context.Context, mode string) string {
-	cmd := c.appCfg.Statusline.Command
-	if cmd == "" {
-		return ""
+	sb, command, notice := c.statuslineReady()
+	if sb == nil {
+		return notice
+	}
+	line, err := runStatusline(ctx, sb, c.workspace, command, c.statusModel(mode))
+	if err != nil {
+		return c.statuslineFailed(err)
+	}
+	return line
+}
+
+// statuslineReady judges the statusline, again when the session's folders
+// have changed, and returns where and what to run, or no sandbox and the
+// notice to show in its place. It reads the session, so it runs on the
+// session's goroutine.
+func (c *cliState) statuslineReady() (sandbox.Sandbox, string, string) {
+	if c.appCfg.Statusline.Command == "" {
+		return nil, "", ""
 	}
 	c.statuslineMu.Lock()
 	defer c.statuslineMu.Unlock()
@@ -264,28 +279,32 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	// A missing sandbox is said once, as it holds for the whole session;
 	// a refused script every time, until it is moved.
 	if c.statuslineErr != nil && !errors.Is(c.statuslineErr, errNoProcessSandbox) {
-		return "statusline: " + c.statuslineErr.Error()
+		return nil, "", "statusline: " + c.statuslineErr.Error()
 	}
 	if c.statuslineErr != nil {
 		if c.statuslineWarned {
-			return ""
+			return nil, "", ""
 		}
 		c.statuslineWarned = true
-		return "statusline: " + c.statuslineErr.Error()
+		return nil, "", "statusline: " + c.statuslineErr.Error()
 	}
 	if c.statuslinePin.Info != nil && !c.statuslinePin.Same() {
-		return fmt.Sprintf("statusline: not run: %s has changed since the session started; start a new session to use it as it is now",
+		return nil, "", fmt.Sprintf("statusline: not run: %s has changed since the session started; start a new session to use it as it is now",
 			config.Printable(c.statuslinePin.Path))
 	}
-	line, err := runStatusline(ctx, c.statuslineSB, c.workspace, c.statuslineCmd, c.statusModel(mode))
-	if err != nil {
-		if !c.statuslineWarned {
-			c.statuslineWarned = true
-			return "statusline: " + err.Error()
-		}
+	return c.statuslineSB, c.statuslineCmd, ""
+}
+
+// statuslineFailed is what a failed run shows: the reason the first time,
+// nothing after. It is safe from any goroutine.
+func (c *cliState) statuslineFailed(err error) string {
+	c.statuslineMu.Lock()
+	defer c.statuslineMu.Unlock()
+	if c.statuslineWarned {
 		return ""
 	}
-	return line
+	c.statuslineWarned = true
+	return "statusline: " + err.Error()
 }
 
 // grantedDirs are the folders the session's tools reach besides the

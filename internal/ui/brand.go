@@ -3,7 +3,10 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // Abhed's mark is an isometric A: a solid frame with an orange strand running up
@@ -77,10 +80,21 @@ func Banner(s Style, version, model, workspace, sandbox, storage string) string 
 			width = n
 		}
 	}
+	// Each fact fits beside the mark on one row: a long workspace path
+	// wrapping under the mark broke its shape (it keeps its end, the part
+	// that tells folders apart).
+	room := bannerWidth() - width - 6
 	for i, row := range markRows {
 		right := ""
 		if i < len(rows) {
 			right = rows[i]
+		}
+		if room > 10 && displayWidth(right) > room {
+			if i == 4 {
+				right = s.Dim("work     ") + "…" + tailWidth(relPath("", workspace), room-10)
+			} else {
+				right = truncateWidth(right, room)
+			}
 		}
 		var mark strings.Builder
 		for _, seg := range row {
@@ -115,4 +129,23 @@ func Rule(s Style, label string, width int) string {
 		head += strings.Repeat("─", n)
 	}
 	return s.Dim(head)
+}
+
+// bannerWidth is the terminal's width, or 100 when it cannot be read.
+func bannerWidth() int {
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		return w
+	}
+	return 100
+}
+
+// tailWidth keeps the last w columns of s.
+func tailWidth(s string, w int) string {
+	rs := []rune(s)
+	for i := range rs {
+		if runesWidth(rs[i:]) <= w {
+			return string(rs[i:])
+		}
+	}
+	return ""
 }

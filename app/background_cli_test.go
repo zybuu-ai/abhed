@@ -183,12 +183,12 @@ func TestCLIPipedIdleAskAnsweredByLine(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	_, _ = io.WriteString(in, "go\n")
-	for deadline := time.Now().Add(20 * time.Second); !strings.Contains(out.String(), "[a]ccept"); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(20 * time.Second); !strings.Contains(out.String(), "answer 1-"); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the child's ask never showed:\n%s", out.String())
 		}
 	}
-	_, _ = io.WriteString(in, "a\n")
+	_, _ = io.WriteString(in, "1\n") // approvals are answered by number
 	_ = in.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()

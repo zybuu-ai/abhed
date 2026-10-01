@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +11,6 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
-	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -123,16 +120,7 @@ func (c *cliState) statusModel(mode string) ui.StatusModel {
 	if c.appCfg.Storage.Driver == "postgres" {
 		m.Record = ui.RecordUnverified
 	}
-	if c.sandbox != nil {
-		if c.sandbox.Resolved() {
-			m.SandboxTier = string(c.sandbox.Tier())
-		} else {
-			m.SandboxTier = string(c.sandbox.floor)
-		}
-		if m.SandboxTier == string(sandbox.TierNone) {
-			m.Network = true
-		}
-	}
+	m.SandboxTier, m.Network = c.sandbox.tierNow(m.Network)
 	m.BackgroundTasks = c.liveTasks()
 	if c.store != nil && c.sessionID != "" {
 		if events, err := c.store.Events(c.sessionID); err == nil {
@@ -158,22 +146,6 @@ func contextUse(events []agent.Event) (int, int) {
 		return p.TokensIn, 0
 	}
 	return 0, 0
-}
-
-// gitBranch reads the workspace's branch from .git/HEAD, without running git.
-func gitBranch(ws string) string {
-	data, err := os.ReadFile(filepath.Join(ws, ".git", "HEAD")) // #nosec G304 -- the workspace's .git/HEAD, read for the branch name
-	if err != nil {
-		return ""
-	}
-	ref := strings.TrimSpace(string(data))
-	if b, ok := strings.CutPrefix(ref, "ref: refs/heads/"); ok {
-		return b
-	}
-	if len(ref) >= 7 {
-		return ref[:7]
-	}
-	return ""
 }
 
 // slashStatus is /status.

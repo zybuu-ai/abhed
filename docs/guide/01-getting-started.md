@@ -85,33 +85,41 @@ or `abhed -- the tests in pkg/auth are failing`.
 ⬢ the tests in pkg/auth are failing — find out why and fix it
 ```
 
-While it works, **you can keep typing.** A line sent mid-run steers it at the
-next step rather than interrupting, so the files it has already read and the
-results it has already gathered are kept:
+While it works, **you can keep typing.** The input box stays at the bottom of
+the screen. A message sent mid-run steers it at the next step rather than
+interrupting, so the files it has already read and the results it has already
+gathered are kept; it shows under the reply as queued until the agent takes
+it. A slash command typed mid-run is queued and runs when the turn finishes.
+Esc stops the turn and keeps the session.
+
+The reply streams as it is written, formatted as it arrives. Tool calls show
+as one line each, with the first and last lines of their output and, for an
+edit, the diff; Ctrl-O opens the whole transcript with every output in full.
+
+When it needs approval it stops and shows the change, why it asks, and
+numbered answers:
 
 ```
-⬢ actually, only look at token.go
-  steering — applied at the next step
+╭─ Write(notes.txt)
+│ changing a file needs approval in default mode · policy step: default
+│   ⎿  Created notes.txt with 1 line
+│      1 + hello
+│ Create notes.txt?
+│   1. Yes
+│   2. Yes, and don't ask again for write(notes.txt) this session
+│   3. No, and tell Abhed what to do instead (esc)
+╰─ number or ↑↓ then enter · esc to decline
 ```
 
-A slash command typed mid-run is queued and runs when the turn finishes.
-
-When it needs approval it stops and shows the change:
-
-```
-● write notes.txt
-  + hello
-  [a]ccept  [r]eject  [A]lways allow write(notes.txt)
-```
-
-Press `a` or `y` to accept, `r` or `n` to reject, `A` to allow that scope for
-the rest of the session; `/clear` and `/resume` start another session without
-it. A key answers only on its own, on an empty line, with 300 ms of quiet
-before and after it (600 ms after `A`); Enter alone never accepts. Anything
-else, "Actually no" included, is typing: it is kept as a steering message and
-sent with Enter. Ctrl-C refuses the request and stops the turn; a second
-Ctrl-C, if the turn has not stopped, ends the session, recorded as
-`user_interrupt`.
+Press a number, or move with the arrows and press Enter. Nothing is selected
+at first, so Enter alone answers nothing, and letters never answer. No key
+counts for the first 300 ms the question is on screen, and a key only counts when it stands alone, with
+300 ms of quiet before and after it: typing that was meant for the prompt,
+or a key held down, never answers. "2" allows that scope for the rest of the
+session; `/clear` and `/resume` start another session without it. "3" or Esc
+refuses and stops the turn, so you can say what to do instead. A destructive
+command offers no "always", and asks a second time, with No as the default.
+The question, the diff and your answer stay in the transcript.
 
 With input piped in as lines, the same holds line by line: only a line that
 is exactly `a`, `y`, `r`, `n` or `A` answers a waiting approval. Any other
@@ -123,9 +131,14 @@ Every answer prints which ask it answered (`accepted: bash touch made.txt
 
 ## The prompt
 
-Arrow keys move and recall history; Home, End, Ctrl-A, Ctrl-E, Ctrl-U, Ctrl-K
-and Ctrl-W do what they do in a shell. Ctrl-C stops the running turn without
-ending the session; at the prompt it clears the line. Ctrl-D exits.
+Enter sends; Shift+Enter, Alt+Enter, Ctrl-J, or a backslash then Enter start
+a new line. A paste of more than a few lines shows as `[Pasted text #1 +25
+lines]` and is sent whole, as one message; Tab after it opens it for editing.
+Up and Ctrl-R reach the prompts you sent in this workspace, in this session
+and earlier ones. Shift-Tab steps through the default, accept-edits and plan
+modes; the footer always shows which is on. Ctrl-C clears the line, stops a
+running turn, and at an empty prompt pressed twice exits. Every key is in
+[The terminal](18-terminal.md).
 
 | Command | |
 |---|---|

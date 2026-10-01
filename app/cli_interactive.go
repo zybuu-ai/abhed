@@ -30,15 +30,6 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	if !appCfg.Sandbox.AllowNetwork {
 		sandboxLabel += " · no network"
 	}
-	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
-		sandboxLabel, storageLabel(appCfg)))
-	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits."))
-	// The endpoint check started with the session. A server that is down is
-	// named now, before the line editor takes the terminal; one still being
-	// dialled is left to the first task, which fails at once if it is down.
-	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
-		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
-	}
 
 	// Input is read on its own goroutine so a line typed while the agent is
 	// working can steer it. Reading inline meant the prompt was simply not
@@ -51,32 +42,32 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// stdin is not a terminal, since raw mode on a pipe corrupts the input.
 	editor := ui.NewLineReader(ui.Prompt(s))
 	defer editor.Close()
+	setupTerminal(editor, r, workspace)
 	// Raw mode turns off the terminal's own newline translation, so every
 	// print in the program would otherwise staircase down the screen.
 	restoreStreams := editor.Capture()
 	defer restoreStreams()
+	// The banner is drawn once the terminal has said what its background
+	// is, in the theme that suits it, and joins the transcript.
+	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
+		sandboxLabel, storageLabel(appCfg)))
+	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
+	// The endpoint check started with the session. A server that is down is
+	// named now; one still being dialled is left to the first task.
+	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
+		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
+	}
 
 	// Approval input rides the one stdin reader the editor owns. Without this
 	// the approver opened a second reader on stdin, racing the editor for each
 	// keystroke and waiting for a "\n" raw mode never sends. Prepare also
 	// pauses the thinking indicator so its animation does not overwrite the
-	// prompt — the reason the [a]ccept/[r]eject line was never visible.
+	// prompt.
 	prompter := ui.NewPrompter()
 	defer prompter.Close()
 	if ap, ok := approver.(*ui.Approver); ok {
 		ap.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
 			wasThinking := r.PauseThinking()
-			if editor.Raw() {
-				// Raw TTY: answer with a single keypress.
-				read, end := editor.ApprovalKeys(ctx)
-				cleanup := func() {
-					end()
-					if wasThinking {
-						r.StartThinking()
-					}
-				}
-				return read, cleanup
-			}
 			// Piped stdin: the answer arrives as a line on the lines channel,
 			// handed over by the steering loop's prompter.Deliver.
 			read := func() (string, bool) { return prompter.Await(ctx) }
@@ -87,6 +78,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 			return read, cleanup
 		}
+		// On a terminal the question is the dock's guarded dialog.
+		approver = dialogApprover(ap, editor, r, sess)
 	}
 
 	lines := make(chan string)
@@ -103,14 +96,20 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		workspace: sess.Root, adapter: adapter, provider: provider, overlay: pol.Session,
 		turnLimit: cfg.MaxTurns, hooks: extHost, pol: pol,
 		sandbox: start.sandbox, set: start.set, registry: registry, version: a.version,
+		checkpoint: r.Checkpoint,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
 	}
-	// Commands ask their questions on the typed lines until the terminal UI
-	// provides its own surface.
-	sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines: lines, ended: readErr})
-	sessionState.surfaceReadsLines = true
+	// Commands show and ask through the terminal; without one they ask on
+	// the typed lines, which the steering loop reads during a run.
+	if editor.Raw() {
+		sessionState.surface = ui.NewSurface(editor, nil)
+	} else {
+		sessionState.surface = ui.NewLineSurface(ui.LazyStdout{}, s, lineAnswers{lines: lines, ended: readErr})
+		sessionState.surfaceReadsLines = true
+	}
+	ft := startFooter(editor, r, sessionState, pol, workspace)
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
@@ -191,8 +190,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// The turn owns the screen: the reader stays live for steering, but
 		// stops painting a prompt over the output.
 		editor.Quiet(true)
+		ft.turn(true)
+		ft.refresh(sessionState, pol)
 		r.StartThinking()
 		go func() {
+			defer ui.RestoreOnPanic() // a panic in the turn must not leave the terminal raw
 			reason, err := start(taskCtx, loop)
 			finished <- turnOutcome{reason, err}
 		}()
@@ -204,6 +206,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	steering:
 		for {
 			select {
+			case <-editor.Stops():
+				// Esc stops the turn and keeps the session: unlike Ctrl-C it
+				// never counts toward exiting.
+				cancelTask()
 			case <-interruptCh:
 				// Ctrl-C stops the turn, and a pending approval with it: its
 				// wait ends on the cancelled context, so the call is refused.
@@ -260,6 +266,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				if msg == "" {
 					continue
 				}
+				if msg == modeCycleLine {
+					ft.cycleMode(sessionState, pol) // takes effect when the turn ends
+					continue
+				}
 				if isCommandLine(msg) {
 					// A command typed mid-run is held, not dropped. Discarding
 					// it loses what the user asked for, and running it now
@@ -273,10 +283,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					continue
 				}
 				loop.Steer(msg)
-				wasOn := r.PauseThinking()
-				fmt.Printf("  %s\n", s.Dim("steering — applied at the next step"))
-				if wasOn {
-					r.StartThinking()
+				if !editor.Raw() { // on a terminal the dock shows it, queued
+					fmt.Printf("  %s\n", s.Dim("steering — applied at the next step"))
 				}
 			}
 		}
@@ -285,6 +293,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// What the run recorded is drawn before its usage is printed.
 		sessionState.waitRendered(loop.Recorder.LastAppended())
 		editor.Quiet(false)
+		ft.turn(false)
+		ft.applyPending(sessionState, pol)
 		// The loop's usage covers the whole conversation; this task is the difference.
 		spent := usageSince(before, loop.Usage())
 		sessionState.accumulate(spent)
@@ -297,10 +307,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			releaseRefused(sessionState, runReason)
 		}
 		settleTurn(sessionState, runErr)
-		printUsage(r, spent)
-		// A configured statusline, until the terminal UI draws a footer.
-		if line := sessionState.statusLine(ctx, string(pol.Mode)); line != "" {
-			fmt.Printf("%s\n", s.Dim(line))
+		if !editor.Raw() { // on a terminal the footer carries both
+			printUsage(r, spent)
+			if line := sessionState.statusLine(ctx, string(pol.Mode)); line != "" {
+				fmt.Printf("%s\n", s.Dim(line))
+			}
 		}
 		if runReason == agent.TermMaxTurns {
 			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns)))
@@ -314,6 +325,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			if quit := dispatchLine(ctx, cmd, r, pol, sess, sessionState); quit {
 				return 0, true
 			}
+			ft.refresh(sessionState, pol)
 		}
 		if ctx.Err() != nil {
 			return 130, true
@@ -413,10 +425,15 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if bare := strings.ToLower(strings.TrimSpace(line)); bare == "exit" || bare == "quit" {
 			line = "/" + bare
 		}
+		if line == modeCycleLine {
+			ft.cycleMode(sessionState, pol)
+			continue
+		}
 		if isCommandLine(line) {
 			if quit := dispatchLine(ctx, line, r, pol, sess, sessionState); quit {
 				return 0
 			}
+			ft.refresh(sessionState, pol)
 			continue
 		}
 
@@ -524,7 +541,7 @@ func noteStillWaiting(p *ui.Prompter, line, became string) {
 	if !p.Waiting() || strings.TrimSpace(line) == "" {
 		return
 	}
-	fmt.Printf("  an approval is still waiting (a accepts, r rejects, A always allows); %s\n", became)
+	fmt.Printf("  an approval is still waiting: answer with its number, 1, 2 or 3; %s\n", became)
 }
 
 // runErrorLine is what a turn's error prints, "" for none. A wake the

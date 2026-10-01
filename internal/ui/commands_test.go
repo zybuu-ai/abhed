@@ -10,8 +10,9 @@ import (
 // help text was a hand-maintained string, so a command could exist in help and
 // be uncompletable, or completable and undocumented.
 func TestEveryCommandIsReachableFromTheMenu(t *testing.T) {
+	setTestCommands(t)
 	help := HelpText(NewStyle(os.Stdout))
-	for _, c := range Commands {
+	for _, c := range CommandList() {
 		if !strings.Contains(help, c.Name) {
 			t.Errorf("%s is missing from /help", c.Name)
 		}
@@ -20,8 +21,8 @@ func TestEveryCommandIsReachableFromTheMenu(t *testing.T) {
 		}
 	}
 	// A bare slash offers everything: that is what makes the menu discoverable.
-	if n := len(MatchCommands("/")); n != len(Commands) {
-		t.Errorf("a bare / offered %d of %d commands", n, len(Commands))
+	if n := len(MatchCommands("/")); n != len(CommandList()) {
+		t.Errorf("a bare / offered %d of %d commands", n, len(CommandList()))
 	}
 	// Not a command, so no menu.
 	if got := MatchCommands("ls /tmp"); got != nil {
@@ -29,7 +30,20 @@ func TestEveryCommandIsReachableFromTheMenu(t *testing.T) {
 	}
 }
 
+// setTestCommands gives the package a command list, as the registry does
+// when a session starts.
+func setTestCommands(t *testing.T) {
+	t.Helper()
+	old := CommandList()
+	SetCommands([]Command{
+		{"/mode", "<name>", "default | accept-edits | plan | auto"}, {"/compact", "[hint]", "compact the context now"},
+		{"/cost", "", "tokens"}, {"/clear", "", "start a new conversation"}, {"/quit", "", "exit"}, {"/help", "", "this list"},
+	})
+	t.Cleanup(func() { SetCommands(old) })
+}
+
 func TestCommonPrefixCompletesAsFarAsItCan(t *testing.T) {
+	setTestCommands(t)
 	cases := []struct{ in, want string }{
 		{"/q", "/quit"},       // unique
 		{"/co", "/co"},        // /compact and /cost share only the stem

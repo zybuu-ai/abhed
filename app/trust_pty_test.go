@@ -28,7 +28,9 @@ type ptyRun struct {
 
 func startOnPty(t *testing.T, args []string) *ptyRun {
 	t.Helper()
-	cmd := mainHelper(args)
+	// A terminal that can move the cursor, whatever the machine running the
+	// tests has in TERM: without one the CLI reads lines, as on a pipe.
+	cmd := mainHelper(args, "TERM=xterm-256color")
 	tty, err := pty.Start(cmd)
 	if err != nil {
 		t.Skipf("no pty: %v", err)

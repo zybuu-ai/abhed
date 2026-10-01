@@ -230,15 +230,14 @@ type surfaceAsker struct {
 
 func (a surfaceAsker) AskPerson(ctx context.Context, q tools.Question) (string, error) {
 	choices := make([]ui.Choice, 0, len(q.Options)+1)
-	keys := "abcdefgh"
 	for i, o := range q.Options {
 		label := o.Label
 		if o.Description != "" {
 			label += " — " + o.Description
 		}
-		choices = append(choices, ui.Choice{ID: fmt.Sprintf("o%d", i), Label: label, Key: rune(keys[i])})
+		choices = append(choices, ui.Choice{ID: fmt.Sprintf("o%d", i), Label: label})
 	}
-	choices = append(choices, ui.Choice{ID: "none", Label: "None of these; I will say in the chat", Key: 'x'})
+	choices = append(choices, ui.Choice{ID: "none", Label: "None of these; I will say in the chat"})
 	// The agent asks during a run, while the steering loop owns the typed
 	// lines: the prompt's line surface cannot take them, so it answers nothing.
 	sf := surfaceOf(a.st, nil)

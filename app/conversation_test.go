@@ -381,12 +381,12 @@ func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"made\"}}]}\n\n")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
 	})
-	asked := func() int { return strings.Count(c.out.String(), "[A]lways allow") }
+	asked := func() int { return strings.Count(c.out.String(), "2. Yes, and don't ask again") }
 	finished := func() int { return strings.Count(c.out.String(), " in / ") }
 
 	fmt.Fprintln(c.stdin, "Make the folder.")
 	c.waitFor(func(string) bool { return asked() == 1 }, "the approval")
-	fmt.Fprintln(c.stdin, "A")
+	fmt.Fprintln(c.stdin, "2") // don't ask again this session
 	c.waitFor(func(string) bool { return finished() == 1 }, "the first task to finish")
 
 	c.command("/clear", "context cleared")
@@ -395,6 +395,6 @@ func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
 	if asked() != 2 {
 		t.Fatalf("a scope from the cleared session approved the call:\n%s", c.out.String())
 	}
-	fmt.Fprintln(c.stdin, "r")
+	fmt.Fprintln(c.stdin, "3") // no
 	c.waitFor(func(string) bool { return finished() == 2 }, "the second task to finish")
 }

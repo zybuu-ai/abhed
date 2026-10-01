@@ -137,25 +137,36 @@ abhed
 ```
 
 ```
-abhed 0.1.0-dev  Qwen/Qwen3-32B · /home/you/repo
-Type a task, or /help for commands. Ctrl-C interrupts, Ctrl-D exits.
+  ABHED   model Qwen/Qwen3-32B · work ~/repo · sandbox process
+Type a task, or /help. Esc interrupts, Ctrl-C twice exits.
 
-› fix the failing auth tests
-● grep "auth.*test"      └ 3 files
-● read auth_test.go      └ 84 line(s)
-● bash run tests         └ exit 1
-  │ --- FAIL: TestLogin_Expired
-● edit auth.go
-  ╭ 87  - return nil, err
-  ╰ 87  + return nil, ErrTokenMissing
-  [a]ccept  [r]eject  [A]lways allow edit(auth.go)
+▲ fix the failing auth tests
+
+● Grep("auth.*test")
+  ⎿  3 line(s)
+● Read(auth_test.go)
+  ⎿  84 line(s)
+● Bash(go test ./pkg/auth/)
+  ⎿  Exit 1 · 1.2s
+     --- FAIL: TestLogin_Expired
+╭─ Edit(auth.go)
+│ changing a file needs approval in default mode · policy step: default
+│   ⎿  Updated auth.go with 1 addition and 1 removal
+│      86     }
+│      87 -   return nil, err
+│      87 +   return nil, ErrTokenMissing
+│ Make this edit to auth.go?
+│   1. Yes
+│   2. Yes, and don't ask again for edit(auth.go) this session
+│   3. No, and tell Abhed what to do instead (esc)
+╰─ number or ↑↓ then enter · esc to decline
 ```
 
-At an approval, `a` or `y` accepts, `r` or `n` rejects and `A` allows the scope
-for the session. A key counts only on an empty line with 300 ms of quiet before
-and after it (600 ms after `A`), and Enter alone never accepts; see
-[Getting started](docs/guide/01-getting-started.md). Ctrl-C stops the turn and
-refuses the approval; a second Ctrl-C, if the turn has not stopped, exits 130.
+At an approval, press a number, or an arrow then Enter; Esc declines and stops
+the turn. A key counts only after the question has been on screen for 300 ms
+and with 300 ms of quiet around it, so typing or a held key never answers; see
+[The terminal](docs/guide/18-terminal.md). Ctrl-C stops the turn and refuses the
+approval; a second Ctrl-C, if the turn has not stopped, exits 130.
 
 ### Headless
 

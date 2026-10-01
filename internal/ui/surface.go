@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"unicode"
 )
 
@@ -56,6 +55,11 @@ type Block struct {
 	Rows [][]string
 	// Path is the file a diff or tool output is about, relative to the workspace.
 	Path string
+
+	// view, when set, is how the terminal draws the block: a diff with line
+	// numbers, a command, a tool's result. The fields above still say what
+	// it is, for the line surface.
+	view block
 }
 
 // DialogKind is the shape of a Dialog.
@@ -77,7 +81,7 @@ const (
 type Choice struct {
 	ID    string // returned when chosen
 	Label string
-	// Key is a single key that picks it on a terminal, 0 for none.
+	// Key is kept for the API and must be 0: every dialog is answered by number.
 	Key rune
 	// Destructive choices cannot be undone. They are never the default and
 	// need a second, explicit confirmation.
@@ -97,6 +101,16 @@ type DialogSpec struct {
 	Default string
 	// Why says who is asking and on what grounds: step · rule · reason · asked by.
 	Why string
+
+	// Ask is the question itself, above the choices.
+	Ask string
+	// Cancel is the choice Esc and Ctrl-C take: "no", or the last, if unset.
+	Cancel string
+	// Outcome, when set, is what stays in the transcript for the chosen ID,
+	// in place of the choice's label.
+	Outcome func(id string) string
+	// NoRecord leaves nothing in the transcript; the caller writes its own.
+	NoRecord bool
 }
 
 // Confirm choice IDs.
@@ -111,9 +125,16 @@ const (
 // Confirm dialog's default can only be "no", and an Approval's only "no" or
 // none, so a bare Enter can never say yes to either.
 func (d DialogSpec) Normalized() (DialogSpec, error) {
+	// The kind decides which default is allowed, so a dialog without a
+	// known one could skip the check below.
+	switch d.Kind {
+	case DialogConfirm, DialogChoice, DialogApproval:
+	default:
+		return d, fmt.Errorf("a dialog needs a known kind, not %q", d.Kind)
+	}
 	if d.Kind == DialogConfirm {
 		if len(d.Choices) == 0 {
-			d.Choices = []Choice{{ID: ChoiceYes, Label: "Yes", Key: 'y'}, {ID: ChoiceNo, Label: "No", Key: 'n'}}
+			d.Choices = []Choice{{ID: ChoiceYes, Label: "Yes"}, {ID: ChoiceNo, Label: "No"}}
 		}
 		if d.Default == "" {
 			d.Default = ChoiceNo
@@ -127,6 +148,13 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 		return d, fmt.Errorf("a confirm dialog's default must be %q, not %q", ChoiceNo, d.Default)
 	case d.Kind == DialogApproval && d.Default != "" && d.Default != ChoiceNo:
 		return d, fmt.Errorf("an approval's default must be %q or none, not %q", ChoiceNo, d.Default)
+	}
+	// Every dialog is answered by its number alone: a letter is what
+	// someone typing meant for the prompt might press.
+	for _, c := range d.Choices {
+		if c.Key != 0 {
+			return d, fmt.Errorf("a %s dialog is answered by number only; choice %q has the key %q", d.Kind, c.ID, c.Key)
+		}
 	}
 	ids, keys := map[string]bool{}, map[rune]bool{}
 	var def *Choice
@@ -173,16 +201,11 @@ func (d DialogSpec) choice(id string) (Choice, bool) {
 	return Choice{}, false
 }
 
-// match finds the choice an answer names: its number in the list, its key or
-// its ID.
+// match finds the choice an answer names: its number in the list, and
+// nothing else, so no letter or word answers a dialog.
 func (d DialogSpec) match(answer string) (Choice, bool) {
 	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(d.Choices) {
 		return d.Choices[n-1], true
-	}
-	for _, c := range d.Choices {
-		if strings.EqualFold(answer, c.ID) || c.Key != 0 && len([]rune(answer)) == 1 && []rune(answer)[0] == c.Key {
-			return c, true
-		}
 	}
 	return Choice{}, false
 }

@@ -450,18 +450,27 @@ instructions is reported, not obeyed.
 
 ## When it asks
 
-The prompt names the tool and the full arguments, and offers the rule that
+The question names the tool and shows the full command or the diff, says why
+it is asked and which step of the policy decided, and offers the rule that
 would allow such calls when one is offered:
 
 ```
-  git commit -m "Add the parser"
-  [a]ccept  [r]eject  [A]lways allow bash(git commit *)
+╭─ Bash(git commit -m "Add the parser")
+│ running a command needs approval in default mode · policy step: default
+│ $ git commit -m "Add the parser"
+│ Run this command?
+│   1. Yes
+│   2. Yes, and don't ask again for bash(git commit *) this session
+│   3. No, and tell Abhed what to do instead (esc)
+╰─ number or ↑↓ then enter · esc to decline
 ```
 
-For a command with no rule offered, such as `go test ./pkg/auth/`, the prompt
-has accept and reject only: approve it once, or write the rule yourself. The
-same holds for a call that matched an ask rule and for a destructive command,
-which must be asked about every time.
+For a command with no rule offered, such as `go test ./pkg/auth/`, the
+question has Yes and No only: approve it once, or write the rule yourself.
+The same holds for a call that matched an ask rule and for a destructive
+command, which must be asked about every time and needs a second Yes. When a
+skill's pipeline or a subagent asked, the question says which. How a key
+counts as an answer is in [The terminal](18-terminal.md#approvals).
 
 The record names the scope on the approval that chose it (`granted_scope`),
 and in the console and the API the person who answered (`approver`); a call a

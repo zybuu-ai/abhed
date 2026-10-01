@@ -322,7 +322,7 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 			choices = append(choices, ui.Choice{ID: c.id, Label: c.label, Key: c.key})
 		}
 	}
-	choices = append(choices, ui.Choice{ID: planKeep, Label: "No, keep planning (tell it what to change)", Key: 'n'})
+	choices = append(choices, ui.Choice{ID: planKeep, Label: "No, keep planning (tell it what to change)"})
 	answer, err := surface.Dialog(ctx, ui.DialogSpec{
 		Kind:    ui.DialogChoice,
 		Title:   "Proceed with this plan?",

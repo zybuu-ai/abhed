@@ -24,6 +24,31 @@ All notable changes to Abhed are recorded here. The format follows
   approve: hooks were evaluated first, and their ask ended the evaluation.
   A hook's ask now applies only after the deny rules and plan mode. Its
   refusal is still final, and an `allow` in its reply approves nothing.
+- The interactive approval can no longer be answered by a key pressed as it
+  appears. No key, arrows and Enter included, counts for the first 300 ms the
+  question is on screen; a number counts only with 300 ms of quiet on either
+  side, so typing or a key held down never answers; Enter needs 300 ms since
+  the last arrow; and nothing is selected at first, so Enter alone answers
+  nothing. Approvals are answered by number only, in the dialog and in the
+  line mode alike: no letter approves. Only the answers offered can be
+  chosen. A destructive command needs a second, numbered Yes, whose default
+  is No.
+- Text from the model, from tools, from the workspace (a git branch) and
+  from a status line command is drawn with every control and format
+  character removed, rune by rune, keeping only text and colour: C0 and C1
+  controls, OSC, DCS and other escapes, bidi overrides and isolates,
+  zero-width and tag characters. Conceal (SGR 8) is dropped from colour, and in
+  what programs print, so is a colour that sets the text to its background's
+  colour when both are explicit: printed text cannot be made invisible. Every row the terminal draws passes
+  through the same filter, and so does everything the line mode prints on a
+  terminal (piped input, `TERM=dumb`): its approvals, replies, tool output
+  and what commands print. In an approval and in a diff nothing is dropped:
+  hidden characters are shown as marked escapes (`⟨\r⟩`, `⟨U+200B⟩`), so a
+  command cannot show one thing and run another. Tests send OSC 52, OSC 0,
+  OSC 8, screen erases, C1 sequences and joiner-hidden controls through
+  every field that reaches the screen, in the dialog and in the line mode,
+  and find none of them on the wire.
+
 - In every release up to and including 1.2.1, a repository could ship a
   `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
   `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
@@ -700,7 +725,8 @@ Two changes need action before upgrading:
 - `statusline.command` runs a command of yours for the status line. It reads
   the session's status as JSON on stdin (model, provider, mode, context,
   tokens, sandbox, record, branch, background tasks) and its first line is
-  shown after each task and in `/status`. It runs under the process
+  shown in the footer on a terminal, after each task in piped sessions,
+  and in `/status`. It runs under the process
   sandbox with the network off, whatever the session allows, for at most
   300 ms, and not at all where that sandbox is missing. A script it names
   by path is pinned at the start of the session, refused where the agent
@@ -727,21 +753,43 @@ Two changes need action before upgrading:
   agent do more than your own file does asks first, even when the session
   already does it, and a managed setting is refused.
 
-- Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
-  `commands.dirs`, `rules.dirs`, `memory.auto`,
-  `memory.import_depth`, `record.dir`, `record.retention_days` and
-  `hooks.disabled`. They are accepted so a file that sets them stays valid.
-  All but `statusline` are now in effect (above); this version does not act
-  on `statusline` yet: setting it prints "set but not
-  yet in effect in this version", and `abhed doctor` reports it and does not
-  call the configuration ready. Who may set each is already enforced.
-  `cli.mode_cycle`, `record.*` and `hooks.disabled` are managed only: the
-  user's file or a workspace's is set aside with a warning. A workspace may
-  only turn `memory.auto` off, trusted or not, and auto memory is off unless
-  turned on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace
-  need trust. `commands.dirs`, `rules.dirs`, `memory.auto` and
-  `memory.import_depth` now take effect.
-  need trust.
+- The interactive CLI is rebuilt around an input box that stays on screen
+  while the agent works ([The terminal](docs/guide/18-terminal.md)):
+  - Replies stream as they are written, formatted as they arrive: headings,
+    lists, emphasis, tables, and highlighted code blocks that stay blocks
+    when they arrive in pieces. Prose wraps between words.
+  - Multi-line messages (Shift+Enter, Alt+Enter, Ctrl-J, `\` then Enter);
+    a large paste is one placeholder and one message; history is kept per
+    workspace, with Ctrl-R search; shell editing keys, undo, `$EDITOR` with
+    Ctrl-G, and optional vim editing (`/vim`).
+  - Accented letters, CJK, emoji and flags are typed, measured and deleted
+    as the characters they are.
+  - Tool calls show the first and last lines of their output, and edits and
+    writes a diff with line numbers and context, in every mode; Ctrl-O shows
+    the whole transcript with everything in full. Paths are relative to the
+    workspace.
+  - Approvals are a numbered dialog that shows the change, why it is asked,
+    the policy step, and who asked; it stays in the transcript with the
+    answer.
+  - A footer shows the permission mode, the model, how full the context
+    is, the session's tokens, background tasks and the git branch;
+    `statusline.command` replaces its second row with a command's output.
+  - Shift-Tab steps through default, accept-edits and plan, never auto or
+    bypass.
+  - Dark, light, high-contrast and colour-blind themes, chosen from the
+    terminal's background or with `/theme`.
+  - The Surface the slash commands draw and ask through is the terminal:
+    blocks, guarded dialogs, pickers and full-screen panels.
+
+- Configuration keys for the interactive CLI, all in effect (above):
+  `statusline.command`, `cli.mode_cycle`, `commands.dirs`, `rules.dirs`,
+  `memory.auto`, `memory.import_depth`, `record.dir`,
+  `record.retention_days` and `hooks.disabled`. `cli.mode_cycle`,
+  `record.*` and `hooks.disabled` are managed only: the user's file or a
+  workspace's is set aside with a warning. A workspace may only turn
+  `memory.auto` off, trusted or not, and auto memory is off unless turned
+  on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace need
+  trust.
 - A first run on a terminal with no configuration offers to set one up: a
   local Ollama model, or an OpenAI-compatible endpoint by URL and the name
   of the variable holding its key (an answer that looks like a key is
@@ -957,6 +1005,17 @@ Two changes need action before upgrading:
 - `abhed -p` exits with 128 plus the stop signal's number (143 for SIGTERM,
   129 for a hang-up) instead of 130 for every signal, as `rpc`, `acp`,
   `eval` and `resolve` already did. `json` output gains a final result line.
+- The interactive CLI:
+  - Esc stops a running turn and never swallows the next key; Ctrl-C clears
+    the line, then stops a turn, and at an empty prompt pressed twice exits.
+  - On a terminal the per-reply usage line and the "steering" notices are
+    gone: the footer and the input box carry them. Piped sessions print
+    them as before.
+  - Redraws send only what changed: typing at the end of the line is one
+    byte a key where the whole prompt was redrawn before, and a resize
+    redraws the screen at the new width rather than leaving the old one's
+    rows behind.
+  - The startup banner keeps each fact on one row at narrow widths.
 
 - The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
   system prompt, loop settings and budget in one place, so a surface differs

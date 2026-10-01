@@ -194,9 +194,9 @@ func addNote(ctx context.Context, st *cliState, r *ui.Renderer, note string) {
 		Title: "Save this note to which memory?",
 		Body:  []ui.Block{{Kind: ui.BlockNotice, Text: note}},
 		Choices: []ui.Choice{
-			{ID: noteProject, Label: "Project memory (ABHED.md, shared with the repository)", Key: 'p'},
-			{ID: noteLocal, Label: "Local project memory (ABHED.local.md, yours)", Key: 'l'},
-			{ID: noteUser, Label: "User memory (~/.abhed/ABHED.md, every workspace)", Key: 'u'},
+			{ID: noteProject, Label: "Project memory (ABHED.md, shared with the repository)"},
+			{ID: noteLocal, Label: "Local project memory (ABHED.local.md, yours)"},
+			{ID: noteUser, Label: "User memory (~/.abhed/ABHED.md, every workspace)"},
 		},
 		Default: noteProject,
 	})

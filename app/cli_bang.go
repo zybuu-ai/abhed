@@ -87,8 +87,8 @@ func personBash(ctx context.Context, st *cliState, sf ui.Surface, cmd, descripti
 			Title: "Run this command?",
 			Body:  []ui.Block{{Kind: ui.BlockToolOut, Text: cmd}},
 			Choices: []ui.Choice{
-				{ID: ui.ChoiceYes, Label: "Yes, run it", Key: 'y', Destructive: true},
-				{ID: ui.ChoiceNo, Label: "No", Key: 'n'},
+				{ID: ui.ChoiceYes, Label: "Yes, run it", Destructive: true},
+				{ID: ui.ChoiceNo, Label: "No"},
 			},
 			Why: "destructive · " + confirm + " · asked by policy",
 		})

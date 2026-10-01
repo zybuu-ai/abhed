@@ -109,13 +109,13 @@ func slashRewind(ctx context.Context, fields []string, r *ui.Renderer,
 		}
 	}
 	choices := []ui.Choice{
-		{ID: rewindChat, Label: "Conversation only", Key: 'c'},
-		{ID: "cancel", Label: "Cancel", Key: 'n'},
+		{ID: rewindChat, Label: "Conversation only"},
+		{ID: "cancel", Label: "Cancel"},
 	}
 	if st.undo.Peek(point.Seq) > 0 {
 		choices = append([]ui.Choice{
-			{ID: rewindBoth, Label: "Code and conversation", Key: 'b'},
-			{ID: rewindFiles, Label: "Code only", Key: 'f'},
+			{ID: rewindBoth, Label: "Code and conversation"},
+			{ID: rewindFiles, Label: "Code only"},
 		}, choices...)
 	}
 	answer, err := st.ui().Dialog(ctx, ui.DialogSpec{Kind: ui.DialogChoice, Default: "cancel", Choices: choices,

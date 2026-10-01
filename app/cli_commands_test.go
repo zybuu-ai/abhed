@@ -50,7 +50,7 @@ func TestRegistryKeepsTheHelpList(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("the registry changed the command list:\n got %v\nwant %v", got, want)
 	}
-	if !slices.Equal(ui.Commands, builtinSlash.uiCommands(nil)) {
+	if !slices.Equal(ui.CommandList(), builtinSlash.uiCommands(nil)) {
 		t.Fatal("the ui shows a list other than the registry's")
 	}
 }

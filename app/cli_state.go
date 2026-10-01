@@ -101,6 +101,9 @@ type cliState struct {
 	// checked again before each run.
 	statuslineCmd string
 	statuslinePin sandbox.ReadableFile
+	// checkpoint wraps the undo log's hook, so the renderer sees each file
+	// as it was before a change and can draw its diff.
+	checkpoint func(next func(string, []byte, bool)) func(string, []byte, bool)
 }
 
 // follow draws the conversation's events as they are recorded, for as long as
@@ -110,6 +113,7 @@ func (c *cliState) follow(store server.EventStore, id string, r *ui.Renderer) {
 	c.rendered.Store(0)
 	done := make(chan struct{})
 	go func() {
+		defer ui.RestoreOnPanic() // a panic drawing an event must not leave the terminal raw
 		defer close(done)
 		for ev := range events {
 			r.Event(ev)
@@ -147,6 +151,9 @@ func (c *cliState) fresh() {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.undo.Persist = checkpointSaver(c)
 		c.sess.Checkpoint = c.undo.Record
+		if c.checkpoint != nil {
+			c.sess.Checkpoint = c.checkpoint(c.undo.Record)
+		}
 		// Logins and connected hosts belong to the conversation that made them.
 		c.sess.ResetScoped()
 	}

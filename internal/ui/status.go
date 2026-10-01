@@ -46,8 +46,12 @@ type StatusModel struct {
 	SessionName string       `json:"session_name,omitempty"`
 	GitBranch   string       `json:"git_branch,omitempty"`
 
-	// Custom is the statusline command's output, sanitized to text and SGR
-	// styles, when one is configured; the footer shows it in place of its
-	// own. It is not part of what the command reads.
-	Custom string `json:"-"`
+	// Cwd is the workspace as the footer shows it, ~ for home.
+	Cwd string `json:"cwd,omitempty"`
+	// PendingMode is a mode chosen while a turn runs; it applies when the
+	// turn ends, since the running turn reads the policy.
+	PendingMode string `json:"pending_mode,omitempty"`
+	// Line is a status line command's output; when set it replaces the
+	// footer's second row. It is the command's output, not its input.
+	Line string `json:"-"`
 }

@@ -121,6 +121,19 @@ func (l *lazySandbox) Label() string {
 	return string(l.floor) + " or stronger (checking)"
 }
 
+// tierNow is the tier as far as it is known, without waiting: the answer
+// when it is in, else the floor. Without a sandbox the network is open.
+func (l *lazySandbox) tierNow(network bool) (string, bool) {
+	if l == nil {
+		return "", network
+	}
+	tier := string(l.floor)
+	if l.Resolved() {
+		tier = string(l.Tier())
+	}
+	return tier, network || tier == string(sandbox.TierNone)
+}
+
 // endpointProbe checks, off the start-up path, whether anything answers at
 // the model's address, so a server that is down is named at once and a
 // task fails in under a second rather than after the retries.

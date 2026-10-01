@@ -284,9 +284,9 @@ func slashAddDir(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		Body: []ui.Block{{Kind: ui.BlockNotice, Text: body + "\nRead-only keeps edit and write out of it; " +
 			"commands run by bash are asked about as they are anywhere."}},
 		Choices: []ui.Choice{
-			{ID: accessRead, Label: "Yes, read only", Key: 'r'},
-			{ID: accessReadWrite, Label: "Yes, read and write", Key: 'w', Widening: true},
-			{ID: ui.ChoiceNo, Label: "No", Key: 'n'},
+			{ID: accessRead, Label: "Yes, read only"},
+			{ID: accessReadWrite, Label: "Yes, read and write", Widening: true},
+			{ID: ui.ChoiceNo, Label: "No"},
 		},
 		Default: ui.ChoiceNo,
 		Why:     "asked by /add-dir",

@@ -19,32 +19,10 @@ type Command struct {
 	Help string
 }
 
-// Commands is the full set, in the order /help prints them. It is the
-// built-in list until the command registry replaces it through SetCommands;
-// read it through commandList, since the registry may change it while the
-// line editor is completing.
-var Commands = []Command{
-	{"/mode", "<name>", "default | accept-edits | plan | auto"},
-	{"/undo", "", "revert the last turn's file changes"},
-	{"/diff", "", "files changed this session"},
-	{"/cost", "", "tokens, cache hit rate, compactions this session"},
-	{"/compact", "[hint]", "compact the context now"},
-	{"/clear", "", "start a new conversation and session, keep the workspace"},
-	{"/tasks", "[cancel <id|all>]", "list background tasks, or cancel them"},
-	{"/wake", "[off|notify|auto]", "show or set what a background result does while idle"},
-	{"/memory", "", "show the ABHED.md files in effect"},
-	{"/model", "[name]", "show or switch the model, keeping the conversation"},
-	{"/sessions", "", "list recent sessions (durable store)"},
-	{"/resume", "<id>", "replay a past session and continue its conversation"},
-	{"/tree", "", "show the session's steps, with the numbers /fork takes"},
-	{"/fork", "[step]", "rebuild the conversation up to a step and continue from it"},
-	{"/export", "[path]", "write the transcript (.html by default, .json for events)"},
-	{"/hawkeye", "[path]", "what this session did: tokens, policy decisions, findings"},
-	{"/think", "", "show or collapse the model's reasoning"},
-	{"/cwd", "", "show the workspace root"},
-	{"/help", "", "this list"},
-	{"/quit", "", "exit"},
-}
+// commands is the list /help, completion and the menu show, in /help's
+// order. The command registry is its only source: it sets the list through
+// SetCommands, and this package only displays it.
+var commands []Command
 
 var commandsMu sync.RWMutex
 
@@ -53,15 +31,18 @@ var commandsMu sync.RWMutex
 func SetCommands(cs []Command) {
 	commandsMu.Lock()
 	defer commandsMu.Unlock()
-	Commands = slices.Clone(cs)
+	commands = slices.Clone(cs)
 }
 
 // commandList is the current list, safe to range over while it is replaced.
 func commandList() []Command {
 	commandsMu.RLock()
 	defer commandsMu.RUnlock()
-	return Commands
+	return commands
 }
+
+// CommandList is the list SetCommands last gave.
+func CommandList() []Command { return slices.Clone(commandList()) }
 
 // HelpText renders the command list for /help.
 func HelpText(s Style) string {
