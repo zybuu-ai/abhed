@@ -131,7 +131,8 @@ func TestSessionRuleRemoval(t *testing.T) {
 	}
 }
 
-// The listing names each rule's layer, managed rules as locked.
+// The listing names each rule's layer, managed rules as locked, and the
+// allow rules the managed permissions left out.
 func TestPermissionsListsRulesByLayer(t *testing.T) {
 	managedConfig(t, `{"permissions":{"deny":["bash(curl *)"]}}`)
 	home := t.TempDir()
@@ -139,7 +140,7 @@ func TestPermissionsListsRulesByLayer(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".abhed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(`{"permissions":{"allow":["bash(go build*)"]}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(`{"permissions":{"ask":["bash(go build*)"],"allow":["bash(go run*)"]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.LoadWith(t.TempDir(), config.LoadOptions{Quiet: true})
@@ -154,10 +155,15 @@ func TestPermissionsListsRulesByLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := surface.text()
-	for _, want := range []string{"managed (locked) | deny | bash(curl *)", "user | allow | bash(go build*)", "session | deny | bash(make)"} {
+	for _, want := range []string{"managed (locked) | deny | bash(curl *)", "user | ask | bash(go build*)", "session | deny | bash(make)",
+		"allow rules left out because the managed configuration sets the permissions: bash(go run*) (" + filepath.Join(home, ".abhed", "config.json") + ")"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
+	}
+	// The user's allow rule is left out under the managed permissions.
+	if strings.Contains(out, "| allow | bash(go run*)") {
+		t.Fatalf("a dropped allow rule is listed as in force:\n%s", out)
 	}
 }
 

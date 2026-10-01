@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -115,6 +116,33 @@ func (c Config) ManagedSets(path string) bool {
 // AllowLocked reports whether no caller may add allow rules: the managed
 // configuration sets a permissions key, whichever one. Every surface asks this.
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
+
+// dropLockedAllow sets aside the allow rules the user's and the workspace's
+// files added when the managed file locks allow rules without listing its own.
+func dropLockedAllow(c *Config, userFile, workspaceFile string) {
+	if !c.AllowLocked() || c.ManagedSets("permissions.allow") {
+		return
+	}
+	var kept []string
+	for _, r := range c.Permissions.Allow {
+		file := userFile
+		switch c.RuleLayer("allow", r) {
+		case LayerUser:
+		case LayerWorkspace:
+			file = workspaceFile
+		default:
+			kept = append(kept, r)
+			continue
+		}
+		delete(c.ruleLayers, "allow\x00"+strings.TrimSpace(r))
+		c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: "permissions.allow", Value: r,
+			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
+	}
+	if len(kept) < len(c.Permissions.Allow) {
+		c.Permissions.Allow = kept
+		c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+	}
+}
 
 // Offered reports whether a provider is one to offer for choosing: the default,
 // one not built in, or a built-in one a configuration file names.

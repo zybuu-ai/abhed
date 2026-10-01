@@ -114,3 +114,43 @@ func TestManagedPermissionsRefuseTheAllowFlag(t *testing.T) {
 		t.Fatalf("-allow under managed permissions: %v", err)
 	}
 }
+
+// A -p run under a managed file that sets the permissions but no allow list
+// asks for, and so refuses, a write a trusted workspace's allow rule would
+// have approved; without the managed file the same rule approves it.
+func TestManagedLockDropsWorkspaceAllowInARun(t *testing.T) {
+	for _, c := range []struct {
+		name, managed string
+		written       bool
+	}{
+		{"managed deny only", `{"permissions":{"deny":["bash(curl*)"]}}`, false},
+		{"managed mode only", `{"permissions":{"mode":"default"}}`, false},
+		{"no managed file", "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv, sent := writeModel(t, "approved.txt")
+			managedConfig(t, c.managed)
+			ws, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := `{"permissions":{"allow":["write"]},
+				"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+			if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
+			Main([]string{"-C", ws, "-p", "go"})
+			if !sent.Load() {
+				t.Fatal("the model never made the write call")
+			}
+			_, err = os.Stat(filepath.Join(ws, "approved.txt"))
+			if written := err == nil; written != c.written {
+				t.Fatalf("written %v, want %v: the workspace's allow rule decided the call", written, c.written)
+			}
+		})
+	}
+}

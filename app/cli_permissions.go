@@ -103,6 +103,15 @@ func permissionsView(cfg config.Config, pol *policy.Engine) []ui.Block {
 	if len(ignored) > 0 {
 		out = append(out, ui.Block{Kind: ui.BlockNotice, Text: "ignored from the untrusted workspace file: " + strings.Join(ignored, "; ")})
 	}
+	var dropped []string
+	for _, k := range cfg.SetAside {
+		if k.Key == "permissions.allow" && k.Value != "" {
+			dropped = append(dropped, config.Printable(k.Value)+" ("+config.Printable(k.File)+")")
+		}
+	}
+	if len(dropped) > 0 {
+		out = append(out, ui.Block{Kind: ui.BlockNotice, Text: "allow rules left out because the managed configuration sets the permissions: " + strings.Join(dropped, "; ")})
+	}
 	out = append(out, ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(pol.Mode) +
 		". Deny rules win in every mode; session rules end with /clear or /resume."})
 	return out

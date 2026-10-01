@@ -165,12 +165,18 @@ type HooksConfig struct {
 
 // SetAsideKey is a setting a file made that was left out, and why.
 type SetAsideKey struct {
-	File   string
-	Key    string
+	File string
+	Key  string
+	// Value is the entry left out of a list, such as one allow rule; empty
+	// when the whole setting was.
+	Value  string
 	Reason string
 }
 
 func (k SetAsideKey) String() string {
+	if k.Value != "" {
+		return fmt.Sprintf("%s sets %s %s, which is ignored: %s", Printable(k.File), k.Key, Printable(k.Value), k.Reason)
+	}
 	return fmt.Sprintf("%s sets %s, which is ignored: %s", Printable(k.File), k.Key, k.Reason)
 }
 
@@ -228,7 +234,7 @@ func warnSetAside(keys []SetAsideKey) {
 	warnedMu.Lock()
 	defer warnedMu.Unlock()
 	for _, k := range keys {
-		if id := "aside\x00" + k.File + "\x00" + k.Key; !warned[id] {
+		if id := "aside\x00" + k.File + "\x00" + k.Key + "\x00" + k.Value; !warned[id] {
 			warned[id] = true
 			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
 		}
@@ -899,6 +905,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	dropLockedAllow(&cfg, userFile, cfg.Workspace.File)
 
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)

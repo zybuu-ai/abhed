@@ -23,10 +23,12 @@ All notable changes to Abhed are recorded here. The format follows
   quoted as given, so an RLO in them reversed the row. It is now written out
   like any other record text.
 - A managed file that set `permissions` but not `permissions.allow` still let
-  `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules. Every
-  path, including the new `-allowedTools` and `/permissions allow`, now
-  refuses an allow rule when the managed file sets any `permissions`
-  setting.
+  `-allow`, the SDK's `Options.Allow`, rpc's `start`, and the allow lists in
+  `~/.abhed/config.json` and a trusted workspace's `.abhed/config.json` add
+  allow rules. Every path, including the new `-allowedTools` and
+  `/permissions allow`, now refuses an allow rule when the managed file sets
+  any `permissions` setting, and the two files' allow rules are left out
+  with a warning naming each rule and its file.
 - Over ACP, the agent can no longer change an editor's own files in the
   workspace; this affects ACP editors in 1.2.2 and earlier. The file tools
   refuse `.vscode/**`, `.devcontainer/**` and `*.code-workspace`, and any
@@ -216,7 +218,12 @@ before upgrading.
     `start` with allow rules are refused. In 1.2.2, `-allow`,
     `Options.Allow` and rpc `start` were refused only when the file set
     `permissions.allow`; `-allowedTools` and `/permissions allow` are new in
-    1.2.3. Put the rules in the managed file's `permissions.allow` instead.
+    1.2.3. Allow rules in `~/.abhed/config.json` and a workspace's
+    `.abhed/config.json` are also dropped, each with a warning naming the
+    rule and its file; the built-in allow rules stay. Put the rules in the
+    managed file's `permissions.allow` instead. A person's "Yes, and don't
+    ask again" answer to a prompt is not a rule and still applies for the
+    session.
 18. **On macOS, commands in an ACP editor's workspace (Abhed Studio) cannot
     create any `.git`, `.vscode` or `.devcontainer`**, so `git init` and
     `git clone` inside the workspace fail. Run them in a terminal outside

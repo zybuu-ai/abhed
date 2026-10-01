@@ -78,7 +78,10 @@ the next message. To keep planning, say what to change.
 `/permissions` lists every rule in force with where it came from:
 `managed (locked)`, `user`, `workspace` (or `workspace (untrusted: tightens
 only)`), `flag`, `default`, and `session` for the rules added below. Settings
-an untrusted workspace file made that were ignored are named under it.
+an untrusted workspace file made that were ignored are named under it, and so
+are allow rules from `~/.abhed/config.json` or a workspace's
+`.abhed/config.json` left out because the managed configuration sets the
+permissions without its own `permissions.allow`.
 
 `/permissions allow|ask|deny <rule>` adds a rule for this session only:
 
@@ -87,7 +90,9 @@ an untrusted workspace file made that were ignored are named under it.
   approves every call to a tool (`bash`, `bash(*)`, `write(**)`, `*`) is
   asked about twice.
 - An allow rule is refused when the managed configuration sets any
-  `permissions` setting.
+  `permissions` setting. A "Yes, and don't ask again" answer to a prompt is
+  not a rule: it is offered only for the one narrow scope a prompt names, on
+  the short list below, and still applies under a managed configuration.
 - Session rules are evaluated after the configured ones in each list, so a
   session allow approves only what would otherwise ask: it cannot lift a deny
   rule, a destructive command, an ask rule or plan mode. It does not allow a

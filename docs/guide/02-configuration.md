@@ -466,6 +466,13 @@ such as `permissions.deny`, replaces the lower files' list; so does a map
 entry, such as one provider under `model.providers`. Its presence makes the
 policy engine managed: `bypass` mode is refused wherever it comes from.
 
+When the managed file sets any `permissions` setting but not
+`permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted
+workspace's `.abhed/config.json` add are left out, and Abhed warns at startup
+naming each rule and its file; the built-in allow rules stay. Put rules the
+organisation accepts in the managed `permissions.allow`. When the managed file
+sets `permissions.allow`, exactly its list applies.
+
 What a caller sets over the files, the CLI's flags and the SDK's `Options`,
 may tighten what the managed file set and never loosen it:
 
@@ -474,7 +481,7 @@ may tighten what the managed file set and never loosen it:
 | `permissions.mode` | choose `plan` or the managed mode; `bypass` is refused even when the file does not set a mode |
 | `tools.syntax_check` | make it stricter only (`off` < `report` < `refuse`) |
 | `limits.max_turns` | lower it |
-| `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` flag, `/permissions allow`, `Options.Allow`, rpc `start`) |
+| `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` flag, `/permissions allow`, `Options.Allow`, rpc `start`); the user's and workspace's files' allow rules are dropped with a warning |
 | `additional_dirs` | add nothing |
 | `permissions.deny` | add rules; the managed ones stay |
 

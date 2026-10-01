@@ -253,10 +253,15 @@ func policyView(s *acpSession) map[string]any {
 				"applied": false, "ignoredBecause": "workspace-untrusted"})
 		}
 	}
+	// Allow rules a file added that the managed configuration's lock left out.
 	for _, k := range cfg.SetAside {
-		if strings.HasPrefix(k.Key, "permissions.") {
-			rules = append(rules, map[string]any{"decision": strings.TrimPrefix(k.Key, "permissions."), "rule": k.Key,
-				"layer": "user", "applied": false, "ignoredBecause": "managed-override"})
+		if list, ok := strings.CutPrefix(k.Key, "permissions."); ok && k.Value != "" {
+			layer := "user"
+			if k.File == cfg.Workspace.File {
+				layer = "workspace"
+			}
+			rules = append(rules, map[string]any{"decision": list, "rule": redacted(k.Value),
+				"layer": layer, "applied": false, "ignoredBecause": "managed-override"})
 		}
 	}
 	for _, b := range builtinRules {
