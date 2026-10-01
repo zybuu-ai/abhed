@@ -514,6 +514,11 @@ type TaskInfo struct {
 	Turns       int       `json:"turns,omitempty"`
 	Started     time.Time `json:"started"`
 	Summary     string    `json:"summary,omitempty"`
+	// Kind is "" for a subagent; another kind (a shell) sets its own, with
+	// its exit code and last line of output once it has them.
+	Kind     string `json:"kind,omitempty"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	LastLine string `json:"last_line,omitempty"`
 }
 
 func (t *bgTask) info() TaskInfo {

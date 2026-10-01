@@ -25,7 +25,7 @@ func TestRegistryKeepsTheHelpList(t *testing.T) {
 		{Name: "/usage", Help: "tokens, cache hit rate, prefill saving, and by subagent and tool source"},
 		{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names"},
 		{Name: "/clear", Args: "[name]", Help: "end this session and start a new one; nothing is deleted"},
-		{Name: "/tasks", Args: "[cancel <id|all>]", Help: "list background tasks, or cancel them"},
+		{Name: "/tasks", Args: "[view|kill <n> | cancel <id|all>]", Help: "list subagents and background tasks, view or stop one"},
 		{Name: "/wake", Args: "[off|notify|auto]", Help: "show or set what a background result does while idle"},
 		{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect"},
 		{Name: "/model", Args: "[name]", Help: "show or switch the model, keeping the conversation"},

@@ -9,15 +9,16 @@ import (
 )
 
 // At the prompt, a background result is drawn when it arrives, with no
-// task running: the subscription is the conversation's, not a turn's.
+// task running: the subscription is the conversation's, not a turn's. A
+// wake mode a file chose holds: notify does not wake.
 func TestCLIIdleNoticeRendered(t *testing.T) {
 	m := &bgModelServer{childDelay: 800 * time.Millisecond}
-	ws := bgWorkspace(t, m.start(t), "")
+	ws := bgWorkspace(t, m.start(t), `,"subagents":{"wake":"notify"}`)
 	r := startOnPty(t, []string{"-C", ws})
 	r.waitFor("Type a task", 1)
 	r.send("go\r")
 	r.waitFor("still running", 1)
-	r.waitFor("background: child finished (completed", 1)
+	r.waitFor(`result of "child" added to the conversation (completed`, 1)
 	r.waitFor("background work finished", 1)
 }
 
@@ -35,7 +36,7 @@ func TestCLIDoubleCtrlCAtPromptCancelsChildren(t *testing.T) {
 	r.waitFor("Ctrl-C again within 2 s to cancel them", 1)
 	r.send("\x03")
 	r.waitFor("cancelled 1 background task(s)", 1)
-	r.waitFor("background: child finished (cancelled", 1)
+	r.waitFor(`result of "child" added to the conversation (cancelled`, 1)
 }
 
 // Leaving the session cancels its background tasks and says how many.
@@ -84,9 +85,26 @@ func TestCLINoWakeWhileTyping(t *testing.T) {
 	r.waitFor("still running", 1)
 	time.Sleep(300 * time.Millisecond)
 	r.send("half a thought")
-	r.waitFor("background: child finished (completed", 1)
+	r.waitFor(`result of "child" added to the conversation (completed`, 1)
 	time.Sleep(3 * time.Second) // past the settle window, when a wake would start
 	if strings.Contains(r.text(), "woke to act") {
 		t.Fatalf("woke while a message was being typed:\n%s", r.text())
+	}
+}
+
+// With no wake mode chosen, the terminal acts on an idle result itself:
+// the result reaches the conversation and a short run follows, once.
+func TestCLIWakesByDefault(t *testing.T) {
+	m := &bgModelServer{childDelay: 800 * time.Millisecond}
+	ws := bgWorkspace(t, m.start(t), "")
+	r := startOnPty(t, []string{"-C", ws})
+	r.waitFor("Type a task", 1)
+	r.send("go\r")
+	r.waitFor(`Agent "child" finished`, 1)
+	r.waitFor("woke to act on background results", 1)
+	r.waitFor("noted", 1)
+	time.Sleep(time.Second)
+	if strings.Count(r.text(), "woke to act") != 1 {
+		t.Fatalf("woke more than once:\n%s", r.text())
 	}
 }

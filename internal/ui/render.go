@@ -387,7 +387,7 @@ func noticeText(n agent.Notice) string {
 	if n.Turns > 0 {
 		turns = fmt.Sprintf(", %d turn%s", n.Turns, map[bool]string{true: "", false: "s"}[n.Turns == 1])
 	}
-	return fmt.Sprintf("background: %s finished (%s%s); result added to the conversation",
+	return fmt.Sprintf("result of %q added to the conversation (%s%s)",
 		sanitize(orStr(n.Description, n.TaskID), false), sanitize(n.Status, false), turns)
 }
 

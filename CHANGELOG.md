@@ -175,6 +175,27 @@ Two changes need action before upgrading:
 
 ### Added
 
+- The terminal lists the conversation's work under the input: `main`, then
+  each subagent (foreground and background) and background job, nested under
+  what started it, with its type, title, what it is doing now, how long it
+  has run and its input tokens; `●` running, `✓` done, `✕` failed, `○`
+  cancelled, and `↓ N more` past five. With nothing typed, ↓ and ↑ select a
+  row (↑ from `main` is still history; Ctrl-P/Ctrl-N always are), Enter opens
+  its record read-only and Esc goes back to `main`. A message typed with a
+  running subagent selected goes to it as your message, recorded in its own
+  record; one that cannot take messages says so and the message goes to
+  `main`. A background subagent or job that ends leaves one line in the
+  transcript (`● Agent "…" finished · 5m 27s`, `● Background task "…"
+  completed (exit code 0)`). `/tasks` (also `/bashes`) numbers all of it,
+  with `/tasks view <n>` and `/tasks kill <n>`. The line mode (`TERM=dumb`,
+  piped input) has the notices and `/tasks`, no panel.
+- In the interactive terminal, unless a configuration file sets
+  `subagents.wake`, a background result that arrives while the session is
+  idle now starts a short wake run (`auto`), within
+  `subagents.wake_max_turns` and `subagents.max_wakes_per_hour`; an explicit
+  stop still blocks it until your next message, and a file that sets
+  `notify` or `off` keeps it. The note that a result was delivered now reads
+  `result of "…" added to the conversation (completed, 1 turn)`.
 - The engine side of the Abhed Studio contract
   (docs/architecture/studio-acp-contract.md, `apiLevel` 1). `abhed acp`
   keeps sessions in the local record, so `session/list`, `session/load`

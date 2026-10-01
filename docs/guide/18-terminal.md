@@ -78,6 +78,59 @@ shown whatever the mode, including accept-edits and auto, and stays in the
 transcript. The model's reasoning is one line, `✻ Thought · 120 words`; Ctrl-O
 or `/think` shows it.
 
+## Subagents and background work
+
+When the agent starts a subagent, in the foreground or the background, or a
+background job runs, a list appears under the input:
+
+```text
+  ↑/↓ to select · Enter to view
+
+❯ ● main                                                 1m 12s · 41k tokens in
+  ● general   Review the parser change · read src/parse.go   48s · 12k tokens in
+  └ ● explore Find every caller · thinking                   20s · 3.1k tokens in
+  ✓ shell     go test ./...                                  31s
+  ↓ 2 more
+```
+
+`main` is the conversation. Each other row is a subagent or a job, nested
+under what started it: its type, its title, what it is doing now (the last
+tool it called, or thinking), how long it has run and the input tokens its
+model calls took. `●` is running, `✓` done, `✕` failed, `○` cancelled. A row
+stays for two minutes after it ends; `/tasks` lists everything.
+
+| Keys | |
+|---|---|
+| ↓ / ↑ | with nothing typed, select a row; ↑ from `main` is history, as are Ctrl-P and Ctrl-N always |
+| Enter | on an empty line, open the selected row's record, read-only: its calls, their output and its messages |
+| Esc | close the record; on the list, go back to `main` |
+
+With a running subagent selected the input says `Message @<type>…`: what you
+send goes to that subagent as your message, taken at its next step and
+recorded in its own record. A row that cannot take messages (one that has
+ended, or a job) says so, and what you send goes to `main`. Commands and `!`
+lines always go to `main`. A subagent's approvals are asked in the usual
+numbered dialog; nothing is approved for it.
+
+When a background subagent or job ends, one line says so:
+
+```text
+● Agent "Review the parser change" finished · 5m 27s
+● Background task "go test ./..." completed (exit code 0)
+```
+
+Its result reaches the conversation as well. While the session is idle the
+agent acts on it in a short wake run, unless a configuration file sets
+`subagents.wake` to `notify` or `off` (see
+[Background tasks](14-parallel-subagents.md#background-tasks)).
+
+`/tasks` (or `/bashes`) numbers the conversation's subagents and background
+jobs; `/tasks view <n>` shows one's record and `/tasks kill <n>` stops a
+background one. A foreground subagent ends with its turn: Esc stops it.
+
+In the line mode there is no list: the lines that say a task ended, and
+`/tasks`, work the same.
+
 ## Approvals
 
 When a call needs you, the question takes the place of the input box: the
