@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -501,9 +500,14 @@ func (c recordCtx) confirm(yes bool, question string) bool {
 		fmt.Fprintln(c.err, "abhed: prune asks for confirmation; with no terminal, pass -yes")
 		return false
 	}
-	fmt.Fprintf(c.err, "%s [y/N] ", question)
-	line, _ := bufio.NewReader(c.in).ReadString('\n')
-	return strings.EqualFold(strings.TrimSpace(line), "y") || strings.EqualFold(strings.TrimSpace(line), "yes")
+	return confirmNumbered(c.in, c.err, question, "Yes, prune")
+}
+
+// confirmNumbered asks a numbered No/Yes with No first and nothing chosen;
+// only the Yes number goes ahead, and input that ends refuses.
+func confirmNumbered(in io.Reader, out io.Writer, question, yes string) bool {
+	n, err := askNumbered(in, out, question, []string{"No (keep)", yes})
+	return err == nil && n == 1
 }
 
 // parseAge reads 90d, 12h or any Go duration.

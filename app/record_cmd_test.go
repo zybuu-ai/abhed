@@ -256,3 +256,29 @@ func TestRecordVerifyOneChecksTheIndex(t *testing.T) {
 		t.Fatalf("one session over a damaged index: %d %s", code, out)
 	}
 }
+
+// The prune and push confirmations go ahead only on their Yes number: Enter,
+// letters and other numbers ask again, and input that ends refuses.
+func TestConfirmNumbered(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"2\n", true},
+		{"1\n", false},
+		{"\n\ny\nyes\n3\n0\n2\n", true},
+		{"y\n", false},
+		{"Y\nyes\n", false},
+		{"", false},
+		{"\n1\n", false},
+	}
+	for _, c := range cases {
+		var out bytes.Buffer
+		if got := confirmNumbered(strings.NewReader(c.in), &out, "Prune it?", "Yes, prune"); got != c.want {
+			t.Errorf("%q: got %v, want %v\n%s", c.in, got, c.want, out.String())
+		}
+		if !strings.Contains(out.String(), "1. No (keep)\n  2. Yes, prune\nanswer 1-2: ") {
+			t.Errorf("%q: not numbered with No first:\n%s", c.in, out.String())
+		}
+	}
+}

@@ -269,7 +269,8 @@ fetches keep using ssh.
 Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
-the terminal. No mode opens a pull request on its own. A run that changes
+the terminal by number: `1` No (keep) or `2` Yes, push, with nothing
+chosen for Enter. No mode opens a pull request on its own. A run that changes
 nothing pushes nothing, removes its worktree and its branch, and exits 2; if
 it left ignored files, the worktree and branch are kept for them. The run is
 asked not to commit, but a commit it made on its branch, on top of where it

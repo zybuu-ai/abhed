@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -223,9 +222,8 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 		return fail(fmt.Errorf("opening a pull request on %s/%s is denied: %s", ref.Owner, ref.Repo, verdict.Reason))
 	case verdict.Decision == policy.Allow && verdict.Step == "allow", *yes:
 	case term.IsTerminal(int(os.Stdin.Fd())):
-		fmt.Fprintf(os.Stderr, "Push %s (%s) and open a pull request against %s on %s? [y/N] ", work.Branch, sha, target, ref.Host)
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y") {
+		q := fmt.Sprintf("Push %s (%s) and open a pull request against %s on %s?", work.Branch, sha, target, ref.Host)
+		if !confirmNumbered(os.Stdin, os.Stderr, q, "Yes, push") {
 			fmt.Fprintf(os.Stderr, "abhed: not pushed; the change is on branch %s\n", work.Branch)
 			return 4
 		}

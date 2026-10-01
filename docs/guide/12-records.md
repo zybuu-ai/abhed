@@ -272,7 +272,7 @@ redacted, because the record it comes from is.
 ## Pruning
 
 ```
-abhed record prune <session>        asks first; -yes to skip the question
+abhed record prune <session>        asks first (1 No, 2 Yes); -yes to skip the question
 abhed record prune -older-than 90d
 ```
 

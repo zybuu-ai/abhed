@@ -111,22 +111,16 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 	if err != nil {
 		return false, err
 	}
+	labels := make([]string, len(spec.Choices))
+	for i, c := range spec.Choices {
+		labels[i] = c.Label
+	}
 	for {
-		fmt.Fprintf(out, "\n%s\n", question)
-		for i, c := range spec.Choices {
-			fmt.Fprintf(out, "  %d. %s\n", i+1, c.Label)
-		}
-		fmt.Fprintf(out, "answer 1-%d: ", len(spec.Choices))
-		line, err := readAnswer(in)
+		n, err := askNumbered(in, out, question, labels)
 		if err != nil {
-			fmt.Fprintln(out)
 			return false, errNoAnswer
 		}
-		n, err := strconv.Atoi(strings.TrimSpace(line))
-		if err != nil || n < 1 || n > len(spec.Choices) {
-			continue
-		}
-		switch spec.Choices[n-1].ID {
+		switch spec.Choices[n].ID {
 		case "trust":
 			fmt.Fprintln(out, "Trusted. A later change to the file will be asked about again.")
 			return true, nil
@@ -227,6 +221,27 @@ func showFile(out io.Writer, st config.WorkspaceTrust) {
 		return
 	}
 	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.PrintableText(string(bytes.TrimRight(data, "\n"))))
+}
+
+// askNumbered asks until a line names one of the numbered labels and returns
+// its index. Nothing is chosen for Enter or a letter; input that ends refuses.
+func askNumbered(in io.Reader, out io.Writer, question string, labels []string) (int, error) {
+	for {
+		fmt.Fprintf(out, "\n%s\n", question)
+		for i, l := range labels {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, l)
+		}
+		fmt.Fprintf(out, "answer 1-%d: ", len(labels))
+		line, err := readAnswer(in)
+		if err != nil {
+			fmt.Fprintln(out)
+			return 0, err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(line))
+		if err == nil && n >= 1 && n <= len(labels) {
+			return n - 1, nil
+		}
+	}
 }
 
 // readAnswer reads one line a byte at a time, so nothing past it is taken

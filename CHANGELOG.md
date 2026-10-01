@@ -80,6 +80,9 @@ Two changes need action before upgrading:
   that ends unanswered refuses. An approval is `1` Yes, `2` the session-wide
   Yes when one is offered, and the last number No; the trust question is `1`
   don't trust, `2` trust, `3` view the file.
+- The confirmations of `abhed record prune` and of the push in `abhed resolve`
+  are numbered too, where they asked `[y/N]`: `1` No (keep), `2` Yes. `y` and
+  Enter ask again, and input that ends refuses; `-yes` and `-y` still skip them.
 - API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
   must name its `request_id`, from the `subagent.ask` event: an answer
   naming none is refused with 409, with or without a run live. The console,
