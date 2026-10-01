@@ -42,6 +42,9 @@ tools already offered reach the new connection.
 
 ## Many tools
 
+A server tool is registered only when its name is letters, digits, `_`, `.`
+and `-`, up to 64 characters; any other is left out with a warning.
+
 With more than 40 MCP tools across the servers, the model is not given each
 one. It gets a `tool_search` tool instead, whose description lists each
 server and its tool names (names only; a name with anything but letters,

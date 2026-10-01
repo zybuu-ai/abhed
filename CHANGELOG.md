@@ -24,13 +24,13 @@ All notable changes to Abhed are recorded here. The format follows
   quoted as given, so an RLO in them reversed the row. It is now written out
   like any other record text.
 - An MCP server's tool names were taken as given, so a name holding an RLO
-  or other hidden characters reached the prompt, the approval card and its
-  "always allow" scope (1.2.2 and earlier). A remote tool is now registered
+  or other hidden characters reached the prompt and the "always allow"
+  scope as given (1.2.2 and earlier; the approval card already escaped it). A remote tool is now registered
   only when its name is letters, digits, `_`, `.` and `-`, up to 64, the rule
   `tool_search` already lists names by; any other is left out with a
   warning naming the server and the escaped name.
 - A managed file that set `permissions` but not `permissions.allow` still let
-  `-allow`, the SDK's `Options.Allow`, rpc's `start`, and the allow lists in
+  (as 1.2.2 documented; now tightened) `-allow`, the SDK's `Options.Allow`, rpc's `start`, and the allow lists in
   `~/.abhed/config.json` and a trusted workspace's `.abhed/config.json` add
   allow rules. Every path, including the new `-allowedTools` and
   `/permissions allow`, now refuses an allow rule when the managed file sets
@@ -228,7 +228,11 @@ before upgrading.
     1.2.3. Allow rules in `~/.abhed/config.json` and a workspace's
     `.abhed/config.json` are also dropped, each with a warning naming the
     rule and its file; the built-in allow rules stay. Put the rules in the
-    managed file's `permissions.allow` instead. A person's "Yes, and don't
+    managed file's `permissions.allow` instead. A call those rules approved
+    now asks, and in `-p`, rpc and scheduled runs, with no one to ask, it is
+    refused. When any file rule is dropped, all the built-in allow rules come
+    back, even ones the file had left out; an ask or deny rule, not a shorter
+    allow list, keeps a built-in rule from applying. A person's "Yes, and don't
     ask again" answer to a prompt is not a rule and still applies for the
     session.
 18. **On macOS, commands in an ACP editor's workspace (Abhed Studio) cannot
@@ -238,6 +242,7 @@ before upgrading.
 19. **MCP tools are registered only with plain names**: letters, digits, `_`,
     `.` and `-`, at most 64 characters. A server tool named otherwise is left
     out, with a warning on standard error naming the server and the tool.
+    MCP allows longer names; a tool named past 64 characters is left out.
 
 Also:
 
