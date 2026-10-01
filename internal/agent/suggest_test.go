@@ -473,3 +473,31 @@ func TestSuggestionEventIsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// An ask put to the person while the suggestion is being made stops it:
+// none is offered beside the ask.
+func TestAskDuringSuggestionOffersNone(t *testing.T) {
+	gate := make(chan struct{})
+	defer close(gate)
+	stub := &suggestStub{replies: []stubReply{{text: "Done."}, {text: "Beside the ask", gate: gate}}}
+	l, store := suggestLoop(t, stub)
+	l.Suggest.Timeout = time.Minute
+	if _, err := l.Run(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	for len(stub.requests()) < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	q := l.askQueue(context.Background())
+	q <- struct{}{}
+	defer func() { <-q }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	l.WaitSuggestion(ctx)
+	if ctx.Err() != nil {
+		t.Fatal("an ask did not stop the suggestion call")
+	}
+	if offered, _ := suggestions(t, store); len(offered) != 0 {
+		t.Fatalf("offered %+v while an ask waits", offered)
+	}
+}

@@ -23,5 +23,9 @@ live = false; box.value = 'typing';
 render({seq: 5, type: 'suggestion.offered', payload: {text: 'Late'}});
 box.value = '';
 check('one arriving over typing is not offered', box.placeholder === 'Ask anything');
+box.value = '';
+render({seq: 6, type: 'suggestion.offered', payload: {text: 'Then this'}});
+render({seq: 7, type: 'subagent.ask', payload: {tool: 'bash'}});
+check('an ask takes it away', box.placeholder === 'Ask anything');
 
 if(!ok) process.exit(1);

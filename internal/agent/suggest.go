@@ -175,24 +175,22 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	defer close(p.done)
 	defer p.cancel()
 	sg := j.sg
-	if sg.Hold != nil {
-		// The person typing is writing the next prompt: the call stops.
-		go func() {
-			tick := time.NewTicker(50 * time.Millisecond)
-			defer tick.Stop()
-			for {
-				select {
-				case <-ctx.Done():
+	// Typing the next prompt, or an ask put to the person, stops the call.
+	go func() {
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if l.suggestionHeld(sg) {
+					p.cancel()
 					return
-				case <-tick.C:
-					if sg.Hold() {
-						p.cancel()
-						return
-					}
 				}
 			}
-		}()
-	}
+		}
+	}()
 	cctx, cancel := context.WithTimeout(ctx, j.timeout)
 	start := time.Now()
 	text, usage, err := suggestCall(cctx, j.adapter, j.req)
@@ -223,13 +221,18 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	l.usage.ColdPrefillTokens += usage.InputTokens - usage.CachedInputTokens
 	l.usageMu.Unlock()
 	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
-	stale := err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || (sg.Hold != nil && sg.Hold())
+	stale := err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || l.suggestionHeld(sg)
 	if !stale {
 		if offer := l.suggestionText(sg, text); offer != "" {
 			_, _ = l.Recorder.Record(EvSuggestionOffered, ActorSystem, Trusted, SuggestionOffered{Text: offer, Turn: j.turn})
 		}
 	}
 	_, _ = l.Recorder.Record(EvModelCall, ActorSystem, Trusted, mc)
+}
+
+// suggestionHeld reports the person typing, or an ask waiting on them.
+func (l *Loop) suggestionHeld(sg *Suggester) bool {
+	return (sg.Hold != nil && sg.Hold()) || len(l.askQueue(context.Background())) > 0
 }
 
 // suggestionText is the reply as a suggestion, or "": one the redactor would

@@ -70,6 +70,7 @@ func (d *dock) ask(ctx context.Context, spec DialogSpec) (string, error) {
 		return spec.Choices[st.cancelIndex()].ID, io.EOF
 	}
 	d.dlg = st
+	d.next = "" // no offered prompt beside a question
 	d.scr.raw("\x1b[?25l")
 	d.draw()
 	// The guard runs from the moment the choices reach the screen — not

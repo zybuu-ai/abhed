@@ -36,5 +36,9 @@ check('one arriving over typing is not offered', q.placeholder === 'Describe a c
 live = true;
 render(ev(5, 'suggestion.offered', {text: 'Stale'}));
 check('one arriving during a run is not offered', q.placeholder === 'Describe a change');
+live = false; q.value = '';
+render(ev(6, 'suggestion.offered', {text: 'Then this'}));
+render(ev(7, 'subagent.ask', {tool: 'bash'}));
+check('an ask takes it away', q.placeholder === 'Describe a change');
 
 if(!ok) process.exit(1);

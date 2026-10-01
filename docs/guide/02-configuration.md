@@ -277,7 +277,9 @@ tokens and budget.
 
 None is made for `-p`, `abhed rpc`, a scheduled or unattended run, or an
 embedded agent unless it sets `Options.Suggest`; nor after an error or a
-stop, during a wake, while an approval waits, or while the person is typing.
+stop, during a wake, while an approval waits, or while the person is typing;
+an ask that arrives while it is being made stops it, and one that arrives
+after it was offered takes it away.
 
 ## Storage
 
