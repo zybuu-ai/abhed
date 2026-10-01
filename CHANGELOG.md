@@ -106,6 +106,11 @@ Two changes need action before upgrading:
   `/hooks` and the serve banner show which one stopped.
 - The interactive CLI counts `limits.max_turns` per message unless the
   managed configuration sets it.
+- `subagents.wake` now defaults to `auto`: a background result that arrives
+  while the session is idle starts a short run of its own. A managed
+  configuration that does not set `subagents.wake` gets the new default.
+  Admins who relied on the old behaviour should pin `"subagents": {"wake":
+  "notify"}` in the managed file before upgrading.
 - The command line now keeps sessions in a local record under
   `~/.abhed/records` when `storage.driver` is not `postgres`, where before
   they were kept in memory and lost when it exited. Nothing to do: the
