@@ -89,7 +89,10 @@ func TestTerminalCommandTakesInputAndIsRecorded(t *testing.T) {
 	for {
 		recorded := false
 		for _, e := range wb.events() {
-			if e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "hi abhed") && strings.Contains(string(e.Payload), "on a terminal") {
+			// A line typed while the command reads lines may be a password
+			// typed ahead, so the output lines holding it are withheld.
+			if e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "[withheld]") &&
+				!strings.Contains(string(e.Payload), "abhed") && strings.Contains(string(e.Payload), "on a terminal") {
 				recorded = true
 			}
 		}

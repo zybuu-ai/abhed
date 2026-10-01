@@ -374,6 +374,44 @@ func TestShellWithholdsAnEditedPasswordTypedAhead(t *testing.T) {
 	}
 }
 
+// A password typed ahead while another program has the terminal, as sleep
+// does before read -s, is echoed by the terminal and read by the shell
+// after. It is not a shell line, so it is not recorded, but the output the
+// record keeps must not hold it either.
+func TestShellWithholdsAPasswordTypedAheadWhileAProgramRuns(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `echo BU""SY; sleep 2; read -s pw; echo "late ${#pw}"` + "\r", until: "BUSY"},
+		step{keys: "hunter55\n", until: "late 8"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "late 8") || !strings.Contains(out, "hunter55") {
+		t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
+	}
+	time.Sleep(2 * termline.EchoWait)
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "hunter55") {
+			t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+		}
+	}
+}
+
+// The same in lines mode: a single command's input is not recorded, and a
+// password it echoed before read -s turned echo off is not kept in its output.
+func TestCommandWithholdsAPasswordTypedAhead(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startPTY(`echo BU""SY; sleep 1; read -s pw; echo "late ${#pw}"`)
+	out, _ := wb.ptyOutput(start.ID, "hunter66\n")
+	if !strings.Contains(out, "late 8") || !strings.Contains(out, "hunter66") {
+		t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
+	}
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "hunter66") {
+			t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+		}
+	}
+}
+
 // Keys a program reads without an Enter (read -s -n) are the front of the
 // next line the capture sees. That line was recorded in clear, secret and
 // all, because only its tail was looked for in the echo; now the whole line

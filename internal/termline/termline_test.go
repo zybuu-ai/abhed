@@ -185,9 +185,30 @@ func TestScrubFailsClosed(t *testing.T) {
 	if got := c.Scrub("x\n  ab\t\nab cd\n"); got != "x\n[withheld]\nab cd\n" {
 		t.Fatalf("short line: %q", got)
 	}
-	// An edited command at bash's own prompt is not a secret, and the output stays.
-	c = entered("git sta\tus\r", true, false, false)
-	if got := c.Scrub("git status\nOn branch main\n"); got != "git status\nOn branch main\n" {
-		t.Fatalf("an edited command at the prompt took the output: %q", got)
+	// An edited command at bash's own prompt is not a secret, and the output
+	// stays: asked (process and none tiers), or not (the container tier, where
+	// the prompt was back before it).
+	for _, known := range []bool{true, false} {
+		c = entered("git sta\tus\r", known, false, false)
+		if got := c.Scrub("git status\nOn branch main\n"); got != "git status\nOn branch main\n" {
+			t.Fatalf("an edited command at the prompt took the output (known=%v): %q", known, got)
+		}
+	}
+	// Typed ahead while another program had the terminal in canonical mode
+	// (sleep before read -s): not recorded, but held and scrubbed.
+	c = NewCapture("u1", func(in agent.TerminalInput) { t.Fatalf("a program's line was recorded: %+v", in) })
+	e := c.Keys([]byte("hunter55\n"))[0].Enter
+	e.Known, e.Secret, e.Program = true, true, true
+	c.Entered(e)
+	if got := c.Scrub("BUSY\nhunter55\nlate 8\n"); got != "BUSY\n[withheld]\nlate 8\n" {
+		t.Fatalf("a line typed ahead into a program was kept: %q", got)
+	}
+	// A program reading raw keys (an editor, a REPL) is left alone.
+	c = NewCapture("u1", func(agent.TerminalInput) {})
+	e = c.Keys([]byte("print(1)\r"))[0].Enter
+	e.Known, e.Program = true, true
+	c.Entered(e)
+	if got := c.Scrub(">>> print(1)\n1\n"); got != ">>> print(1)\n1\n" {
+		t.Fatalf("a REPL's input was scrubbed: %q", got)
 	}
 }

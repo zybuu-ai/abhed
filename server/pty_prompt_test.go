@@ -3,6 +3,7 @@
 package server
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 
@@ -45,6 +46,20 @@ func TestWorkbenchLineTypedAheadOfThePrompt(t *testing.T) {
 	run.prompt.Output([]byte("\r\n"), true, false)
 	if !asked() {
 		t.Fatal("a line before the prompt came back was taken as typed at it")
+	}
+}
+
+// Where asking the terminal fails, a line cannot be confirmed as typed at the
+// prompt with echo on, so it counts as typed ahead.
+func TestWorkbenchLineIsAheadWhenTheAskFails(t *testing.T) {
+	ttyNow = func(*os.File) (int, bool, bool) { return 0, false, false }
+	t.Cleanup(func() { ttyNow = termline.TTYNow })
+	run := &ptyRun{local: true, prompt: termline.NewPrompt()}
+	run.prompt.Output([]byte("$ "), true, false)
+	e := &enteredLine{Line: "hunter22", Whole: true}
+	run.ask(e)
+	if !e.Ahead || e.Echoed() {
+		t.Fatalf("a line was trusted although the terminal could not be asked: %+v", e)
 	}
 }
 

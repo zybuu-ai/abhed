@@ -3,6 +3,7 @@
 package app
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 
@@ -54,6 +55,20 @@ func TestShellLineTypedAheadOfThePrompt(t *testing.T) {
 	sh.follow([]byte("got 8\r\n$ "))
 	if asked() {
 		t.Fatal("the prompt's return was missed")
+	}
+}
+
+// Where asking the terminal fails, a line cannot be confirmed as typed at the
+// prompt with echo on, so it counts as typed ahead.
+func TestShellLineIsAheadWhenTheAskFails(t *testing.T) {
+	ttyNow = func(*os.File) (int, bool, bool) { return 0, false, false }
+	t.Cleanup(func() { ttyNow = termline.TTYNow })
+	sh := &acpShell{local: true, prompt: termline.NewPrompt()}
+	sh.prompt.Output([]byte("$ "), true, false)
+	e := &termline.Entered{Line: "hunter22", Whole: true}
+	sh.ask(e)
+	if !e.Ahead || e.Echoed() {
+		t.Fatalf("a line was trusted although the terminal could not be asked: %+v", e)
 	}
 }
 

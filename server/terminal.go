@@ -1,8 +1,6 @@
 package server
 
 import (
-	"os"
-
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/termline"
 )
@@ -22,6 +20,8 @@ func newLineCapture(callID string, record func(agent.TerminalInput)) *lineCaptur
 	return termline.NewCapture(callID, record)
 }
 
-func plainText(b []byte) string           { return termline.PlainText(b) }
-func keepTail(b []byte, n int) []byte     { return termline.KeepTail(b, n) }
-func ttyNow(f *os.File) (int, bool, bool) { return termline.TTYNow(f) }
+func plainText(b []byte) string       { return termline.PlainText(b) }
+func keepTail(b []byte, n int) []byte { return termline.KeepTail(b, n) }
+
+// ttyNow asks the terminal; a variable so a test can make the ask fail.
+var ttyNow = termline.TTYNow

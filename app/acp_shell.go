@@ -126,7 +126,7 @@ func (c *acpConn) pumpShell(t *acpTerminal) {
 			// The first output is the shell's prompt; the foreground group
 			// then is the shell's own.
 			if sh.local && sh.shellPgrp.Load() == 0 {
-				if fg, _, ok := termline.TTYNow(sh.tty); ok {
+				if fg, _, ok := ttyNow(sh.tty); ok {
 					sh.shellPgrp.Store(int64(fg))
 				}
 			}
@@ -260,7 +260,7 @@ func (sh *acpShell) ask(e *termline.Entered) {
 		return
 	}
 	e.Program = false
-	fg, canonical, ok := termline.TTYNow(sh.tty)
+	fg, canonical, ok := ttyNow(sh.tty)
 	if !ok {
 		e.Ahead = true
 		return
@@ -271,12 +271,15 @@ func (sh *acpShell) ask(e *termline.Entered) {
 
 // follow notes when the shell is back at its prompt.
 func (sh *acpShell) follow(chunk []byte) {
-	fg, canonical, ok := termline.TTYNow(sh.tty)
+	fg, canonical, ok := ttyNow(sh.tty)
 	sh.prompt.Output(chunk, ok && !sh.isProgram(fg), canonical)
 }
 
 // gave notes that the shell was handed a line.
 func (sh *acpShell) gave() { sh.prompt.Gave() }
+
+// ttyNow asks the terminal; a variable so a test can make the ask fail.
+var ttyNow = termline.TTYNow
 
 func (sh *acpShell) isProgram(fg int) bool {
 	shell := int(sh.shellPgrp.Load())
@@ -287,6 +290,6 @@ func (sh *acpShell) programHasTerminal() bool {
 	if !sh.local {
 		return false
 	}
-	fg, _, ok := termline.TTYNow(sh.tty)
+	fg, _, ok := ttyNow(sh.tty)
 	return ok && sh.isProgram(fg)
 }

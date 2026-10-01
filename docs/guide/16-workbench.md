@@ -346,12 +346,17 @@ What a shell changes about the checks, stated plainly:
   replaced where it stands alone on a line. Where a line recorded without its
   text was edited as it was typed (Backspace, Ctrl-U, the arrow keys), the
   terminal showed something other than its text, so none of the output is
-  kept, only a note that it was withheld; an edited command at the shell's own
-  prompt does not count. What is not caught: pieces of a password shorter
-  than four characters, split apart by other output or by where the kept
-  output begins, and keys typed while another program has the terminal, which
-  are not lines to the server, so what the terminal showed of them stays in
-  the recorded output, as it was on screen.
+  kept, only a note that it was withheld; an edited command typed at the
+  shell's prompt, not ahead of it, does not count. A line typed while another
+  program has the terminal is not recorded at all; when that program left the
+  terminal reading lines (`sleep`, `make`, `ssh` before its prompt, a script's
+  `read`), the line may be a password typed ahead of a later prompt, so it is
+  taken out of the recorded output the same way. Keys typed into a program
+  that reads them raw (an editor, a REPL) stay in the recorded output, as they
+  were on screen. The rule is eager: a command typed ahead takes out every
+  output line sharing four characters in a row with it. What is not caught:
+  pieces of a password shorter than four characters, split apart by other
+  output or by where the kept output begins.
   Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
   in canonical mode too, so from then on every line is recorded without its
   text; it is still screened.
@@ -365,16 +370,21 @@ What a shell changes about the checks, stated plainly:
   password prompt there: a password that also appears in what was printed
   while it was typed, such as a user name in `[sudo] password for root:`, can
   be recorded. Nor can it ask whether the shell is at its prompt, so there a
-  line is recorded with its text only when Abhed's own prompt (ending in `$ `
-  or `# `) came back after the line before; any other line, such as one typed
-  while a command still runs, is recorded without its text. A prompt changed
-  from Abhed's makes every line recorded without its text there.
+  line is recorded with its text only when the output had come back to a line
+  ending in `$ ` or `# ` after the line before; any other line, such as one
+  typed while a command still runs, is recorded without its text and taken
+  out of the recorded output. That check is a heuristic: other output ending
+  that way (a nested shell's prompt) passes it, and a prompt changed to end
+  otherwise makes every line recorded without its text there.
 
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the
 next (variables, `export` and aliases are lost; the folder moves only as
-follows). Only a line that is just
+follows). Keys typed into a running command are not recorded; a line typed
+while it reads lines (or anywhere on the container tier) is taken out of the
+command's recorded output as the shell's are, so a password typed ahead of a
+`read -s` is not kept. Only a line that is just
 `cd <folder>`, with one folder and nothing else, moves the terminal: the
 folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
 `'web app'`, `$'web app'`, and `price\ \$5` for a `$` in the name, as Tab

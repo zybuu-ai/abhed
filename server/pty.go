@@ -70,6 +70,9 @@ type ptyRun struct {
 	// capture is set for an interactive shell; inputMu keeps its keys in order.
 	capture *lineCapture
 	inputMu sync.Mutex
+	// held follows a single command's input only to scrub from its record a
+	// line the terminal may have echoed: a password typed ahead of its prompt.
+	held *lineCapture
 	// local is set when the server holds the shell's own terminal (process
 	// and none tiers), so it can ask which process group has the foreground;
 	// shellPgrp is the shell's, taken at its first prompt.
@@ -542,6 +545,12 @@ loop:
 	// The record is written before readers are told the command ended, so
 	// "exit" on the stream means the observation is already there.
 	how := "on a terminal"
+	run.inputMu.Lock()
+	held := run.held
+	run.inputMu.Unlock()
+	if held != nil {
+		text = held.Scrub(text)
+	}
 	if run.capture != nil {
 		text = run.capture.Scrub(text)
 		how = "interactive terminal"
@@ -734,6 +743,7 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 	// the output unless the program turned echo off, which is exactly when it
 	// should not. A shell's lines are, by the capture.
 	if run.capture == nil {
+		run.holdTyped(live, data)
 		if _, err := run.tty.Write(data); err != nil {
 			WriteError(w, http.StatusGone, "the command has ended")
 			return
@@ -837,6 +847,34 @@ func (p *ptyRun) ask(e *enteredLine) {
 	e.Known, e.Secret, e.Program = true, canonical, p.isProgram(fg)
 	// A line before the shell's prompt is back is typed ahead, and withheld.
 	e.Ahead = p.prompt != nil && !p.prompt.At()
+}
+
+// holdTyped keeps, for the record's scrub, each line typed into a single
+// command while its terminal reads lines (canonical mode, as sleep, cat or a
+// script's read leave it): such a line may be a password typed ahead that the
+// terminal echoed. Where the terminal cannot be asked (a container's), every
+// line is kept. A program reading raw keys, an editor or a REPL, is left alone.
+func (p *ptyRun) holdTyped(live *liveSession, data []byte) {
+	p.inputMu.Lock()
+	defer p.inputMu.Unlock()
+	if p.held == nil {
+		p.held = newLineCapture(p.id, nil)
+	}
+	asked := false
+	if tool, ok := live.Loop.Tools.Get("bash"); ok {
+		if in := isolationOf(tool); in != nil {
+			asked = in.Tier == "process" || in.Tier == "none"
+		}
+	}
+	for _, k := range p.held.Keys(data) {
+		if e := k.Enter; e != nil {
+			_, canonical, ok := ttyNow(p.tty)
+			if !asked || !ok || canonical {
+				e.Secret = true
+				p.held.Hold(e)
+			}
+		}
+	}
 }
 
 // gave notes that the shell was handed a line.

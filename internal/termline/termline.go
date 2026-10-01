@@ -249,9 +249,20 @@ func (c *Capture) Output(chunk []byte) {
 
 // Entered queues a line that reached the shell, to be judged and recorded:
 // at once when typed, after its echo has had time to arrive when pasted.
+//
+// A line for another program is not recorded. When the terminal said it was
+// in canonical mode at the Enter (sleep, make, ssh before its prompt, a
+// script's read), the line may be a password typed ahead that the terminal
+// echoed, so its text is held for Scrub all the same.
 func (c *Capture) Entered(e *Entered) {
-	if e.Program || (e.Line == "" && !e.Edited) {
-		return // keys for a program other than the shell, or an empty line
+	if e.Program {
+		if e.Known && e.Secret {
+			c.Hold(e)
+		}
+		return
+	}
+	if e.Line == "" && !e.Edited {
+		return // an empty line
 	}
 	c.mu.Lock()
 	if len(c.pending) >= maxPending {
@@ -315,11 +326,22 @@ func (c *Capture) judge(e *Entered) {
 	}
 }
 
+// Hold keeps a line's text for Scrub without recording the line: input to a
+// program the terminal may have echoed.
+func (c *Capture) Hold(e *Entered) {
+	c.mu.Lock()
+	c.hold(e)
+	c.mu.Unlock()
+}
+
 // hold keeps a withheld line's text for Scrub. Called with c.mu held. A line
-// the terminal said was typed at bash's own prompt is a command, which the
-// record keeps in clear whenever it can rebuild it, so it is not held.
+// typed at the shell's prompt, read out of canonical mode and not typed
+// ahead, is a command, which the record keeps in clear whenever it can
+// rebuild it, so it is not held; on the container tier, where the terminal
+// cannot be asked, not typed ahead means a line ending in "$ " or "# " was
+// back before it.
 func (c *Capture) hold(e *Entered) {
-	if e.Known && !e.Secret && !e.Ahead {
+	if !e.Secret && !e.Ahead {
 		return
 	}
 	h := heldLine{text: strings.TrimSpace(e.Line), uncertain: e.Edited || e.cut}
