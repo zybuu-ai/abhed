@@ -378,8 +378,8 @@ because a managed rule is an organisation's statement that it holds, and a
 hook may refuse any command.
 A destructive line, one that always confirms, is not run on Enter: the terminal
 shows why and asks `1` No or `2` Yes, run it. Only `2` then Enter runs it,
-recorded as confirmed; `1` or Ctrl-C cancels it and the lines queued behind it,
-recorded as declined. Nothing is chosen for Enter: Enter, a letter or a paste
+recorded as confirmed; `1` or Ctrl-C cancels it, the lines queued behind it and
+anything typed after it, recorded as declined. Nothing is chosen for Enter: Enter, a letter or a paste
 asks again, and keys typed in the first 300 ms after the question appears are
 ignored, so an answer typed behind the line is never taken. The server holds the
 same rule: a confirmation is accepted only for a line it asked about, 300 ms

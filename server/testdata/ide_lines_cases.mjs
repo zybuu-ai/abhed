@@ -68,6 +68,18 @@ for(const answer of ['1\r', '\x03']){
   check(JSON.stringify(answer) + ' runs nothing and drops the queue', __attached === null && t.queue.length === 0 && __sent.every(b => b.command !== 'echo next'));
 }
 
+// A y typed in the same burst as the line, and a y typed 40 ms after the question, are no answer;
+// declining then drops the y, so it is never glued onto the next line.
+({out, t} = term());
+__sent.length = 0; __attached = null; __replies.push(CONFIRM, {denied:'Not run: not confirmed', cwd:'.'}, {id:'u9', cwd:'.'});
+linesData(t, 'rm -rf x\ry'); await tick();
+await new Promise(r => setTimeout(r, 40)); linesData(t, 'y'); linesData(t, '\r');
+check('a y in the burst or 40 ms after the question is not taken', __sent.length === 1 && t.confirm === 'rm -rf x');
+await guard(); linesData(t, '1'); linesData(t, '\r'); await tick();
+check('declining clears what was typed behind the line', __sent.length === 2 && __sent[1].declined === true && t.line === '' && t.queue.length === 0);
+linesData(t, 'ls\r'); await tick();
+check('the next line runs as typed, nothing glued to it', __sent.length === 3 && __sent[2].command === 'ls');
+
 // Type-ahead that was not entered survives the prompt.
 ({out, t} = term());
 __sent.length = 0; __replies.push(CONFIRM, {id:'u4', cwd:'.'});

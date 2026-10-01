@@ -2124,9 +2124,9 @@ function confirmData(t, d){
       const n = ch === '\x03' ? '1' : t.line.trim();
       if(n !== '1' && n !== '2'){ t.term.write('\r\n'); askConfirm(t); return; }
       const cmd = t.confirm, yes = n === '2';
-      t.confirm = null; t.line = ch === '\x03' ? '' : t.ahead || ''; t.ahead = '';
+      // A declined line drops what was typed behind it, entered or not, as Ctrl-C does.
+      t.confirm = null; t.line = yes ? t.ahead || '' : ''; t.ahead = '';
       t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
-      // A declined line stops the lines queued behind it, as Ctrl-C does.
       if(!yes) t.queue = [];
       runLine(t, cmd, yes ? 'confirmed' : 'declined'); return;
     }
