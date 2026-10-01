@@ -11,11 +11,18 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - A password typed ahead of `read -s` in the workbench shell or Studio's
-  interactive terminal could reach the record in clear, two ways.
+  interactive terminal could reach the record in clear, three ways.
   - On the container tier, where the terminal cannot be asked, a line typed
     while a command still ran was recorded with its text. It is now recorded
-    without its text unless Abhed's own prompt had come back; so is a line
-    on the process and none tiers when the terminal could not be asked.
+    without its text unless the output had come back to a line ending in
+    `$ ` or `# `; so is a line on the process and none tiers when the
+    terminal could not be asked.
+  - On the process and none tiers, a line typed while another program had
+    the terminal (`sleep 2; read -s pw`) was not recorded, but the terminal
+    echoed it into the recorded output. When that program left the terminal
+    reading lines, the line is now taken out of the output as below; keys
+    typed into a program reading raw keys (an editor, a REPL) are not. The
+    same holds for a single command run in the workbench's `lines` mode.
   - On every tier, a line recorded without its text could still be in the
     latest output that the shell's end records: arriving after bash had
     handed the terminal back with echo on and before `read -s` turned echo
@@ -285,6 +292,10 @@ Also:
 
 ### Fixed
 
+- An event stream that opened while its session was recording could miss
+  the event recorded between reading the backlog and subscribing, until the
+  next event arrived; a quiet session never showed it. The stream now
+  subscribes first.
 - A single-role server applying its schema at start, or `abhed migrate`,
   could deadlock with a live node on the same database (1.2.2 and earlier):
   the schema altered sessions before events, while an append takes them the
