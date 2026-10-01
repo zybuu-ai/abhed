@@ -58,6 +58,9 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if err != nil {
 		return errf("%v", err)
 	}
+	if err := s.guard(path); err != nil {
+		return errf("%s %v", NotApplied, err)
+	}
 	if a.OldString == a.NewString {
 		return errf("old_string and new_string are identical — this edit would do nothing.")
 	}

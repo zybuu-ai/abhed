@@ -27,6 +27,7 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 	}
 	p.AllowNetwork = cfg.Sandbox.AllowNetwork
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
+	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.StatePaths = StatePaths(cfg, workspace)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {

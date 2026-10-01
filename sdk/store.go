@@ -6,6 +6,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/embedded"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/store"
@@ -64,16 +65,37 @@ type sessionReleaser interface {
 
 // recordFor is the store an agent records to: the one Options.Store names,
 // with the session's row created where the store keeps rows, or memory.
-func recordFor(ctx context.Context, opts Options, id string, cfg config.Config) (agent.Store, error) {
+func recordFor(ctx context.Context, opts Options, id string, cfg config.Config, x embedded.Settings) (agent.Store, error) {
 	if opts.Store == nil {
 		return agent.NewMemStore(), nil
+	}
+	if x.Resume {
+		// Continued, never created again: the one writer's claim is taken.
+		rec, ok := opts.Store.(interface {
+			ClaimResume(context.Context, string) (bool, error)
+		})
+		if !ok {
+			return nil, fmt.Errorf("abhed: this store cannot continue a session")
+		}
+		claimed, err := rec.ClaimResume(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("abhed: continue the session: %w", err)
+		}
+		if !claimed {
+			return nil, fmt.Errorf("abhed: continue the session: %w", local.ErrHeldElsewhere)
+		}
+		return opts.Store, nil
 	}
 	if rec, ok := opts.Store.(interface {
 		CreateSession(context.Context, store.SessionRecord) error
 	}); ok {
 		provider, _ := cfg.Provider()
+		user := x.User
+		if user == "" {
+			user = "embedded"
+		}
 		if err := rec.CreateSession(ctx, store.SessionRecord{
-			ID: id, User: "embedded", Workspace: opts.Workspace, Model: provider.Model,
+			ID: id, User: user, Workspace: opts.Workspace, Model: provider.Model,
 			Mode: opts.Mode,
 		}); err != nil {
 			return nil, fmt.Errorf("abhed: start the session's record: %w", err)
@@ -92,3 +114,13 @@ func (a *Agent) releaseRecord() {
 
 // ID is the agent's session id, the one its record is kept under.
 func (a *Agent) ID() string { return a.id }
+
+func init() {
+	embedded.Of = func(v any) (embedded.Parts, bool) {
+		a, ok := v.(*Agent)
+		if !ok || a == nil {
+			return embedded.Parts{}, false
+		}
+		return embedded.Parts{ID: a.id, Loop: a.loop, Session: a.loop.Session, Config: a.cfg, Set: a.set, Store: a.store}, true
+	}
+}

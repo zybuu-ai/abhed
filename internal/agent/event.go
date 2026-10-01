@@ -228,6 +228,8 @@ type Message struct {
 	// ClientID is an id the sender chose for the message, echoed so a client
 	// can match its own message without comparing text.
 	ClientID string `json:"client_id,omitempty"`
+	// Steered marks a message sent while a run was working, to redirect it.
+	Steered bool `json:"steered,omitempty"`
 }
 
 // DroppedMessage is a queued message the model never saw. It is not a

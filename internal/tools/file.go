@@ -209,6 +209,9 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if err != nil {
 		return errf("%v", err)
 	}
+	if err := s.guard(path); err != nil {
+		return errf("%s %v", NotApplied, err)
+	}
 
 	existed := false
 	if _, err := os.Stat(path); err == nil {

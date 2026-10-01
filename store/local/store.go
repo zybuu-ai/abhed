@@ -1100,3 +1100,39 @@ func orStr(a, b string) string {
 	}
 	return b
 }
+
+// Sealed is an event as its line in the record holds it: with the hash of
+// the line before and its own seal.
+type Sealed struct {
+	agent.Event
+	Prev string
+	Hash string
+}
+
+// SealedSince returns a session's lines after seq, in seq order, read from
+// its file: what was written, not a copy held in memory. An unfinished last
+// line is left out.
+func (s *Store) SealedSince(sessionID string, seq int64) ([]Sealed, error) {
+	if err := checkID("session", sessionID); err != nil {
+		return nil, nil //nolint:nilerr // no such session is an empty record, as in Since
+	}
+	data, err := readOwn(s.Path(sessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []Sealed
+	for i, raw := range scan(data).raws {
+		l, err := parseLine(raw)
+		if err != nil {
+			return nil, fmt.Errorf("the record is damaged at line %d; run abhed record verify: %w", i+1, err)
+		}
+		if l.Seq > seq {
+			out = append(out, Sealed{Event: l.event(), Prev: l.Prev, Hash: l.Hash})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}

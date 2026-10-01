@@ -355,6 +355,7 @@ type QueuedMessage struct {
 	// ClientID is the sender's own id for the message, when it gave one.
 	ClientID string    `json:"client_id,omitempty"`
 	At       time.Time `json:"queued_at"`
+	Steered  bool      `json:"steered,omitempty"`
 }
 
 // Steer delivers a message to a running agent, applied at the next turn
@@ -380,7 +381,7 @@ func (l *Loop) QueueMessage(m Message) string {
 	if strings.TrimSpace(m.Text) == "" {
 		return ""
 	}
-	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC()}
+	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC(), Steered: m.Steered}
 	l.steerMu.Lock()
 	l.steer = append(l.steer, q)
 	l.steerMu.Unlock()
@@ -433,7 +434,7 @@ func (l *Loop) deliverQueued() error {
 		// A steer that cannot be recorded is not applied: the record is the
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
-		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID, ClientID: q.ClientID}); err != nil {
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: q.Text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered}); err != nil {
 			return err
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})

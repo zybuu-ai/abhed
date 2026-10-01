@@ -170,6 +170,9 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(home, stateDir, "skills"))
 	}
 
+	for _, p := range s.policy.WriteProtected {
+		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
+	}
 	for _, p := range s.statePaths() {
 		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
@@ -282,7 +285,7 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		if !s.policy.AllowNetwork {
 			args = append(args, "--unshare-net")
 		}
-		for _, p := range s.policy.ReadOnlyPaths {
+		for _, p := range append(s.policy.ReadOnlyPaths[:len(s.policy.ReadOnlyPaths):len(s.policy.ReadOnlyPaths)], s.policy.WriteProtected...) {
 			args = append(args, "--ro-bind-try", p, p)
 		}
 		// State kept outside .abhed is hidden where a bind above would show

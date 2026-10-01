@@ -193,6 +193,12 @@ func (c *Container) runArgs(cwd string) []string {
 	for _, p := range c.policy.ReadOnlyPaths {
 		args = append(args, "-v", p+":"+p+":ro")
 	}
+	// Mounted over the workspace's own, so only the paths that exist can be.
+	for _, p := range c.policy.WriteProtected {
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "-v", p+":"+p+":ro")
+		}
+	}
 
 	workdir := cwd
 	if workdir == "" {
