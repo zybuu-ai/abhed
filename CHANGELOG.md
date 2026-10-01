@@ -675,6 +675,10 @@ All notable changes to Abhed are recorded here. The format follows
   and finished in between was not drawn until a later one. The session
   state now carries its turn count, and a tab that sees it move reads the
   missed turn back from the record. It also asks every two seconds.
+- /console kept a card answered in another tab open, with live buttons,
+  after the run ended when its stream had gone. A 409 on an answer now
+  reopens the stream, whose replay settles or retires the card, as /ide
+  already did.
 - `abhed serve` on Postgres could leave an event, such as a parallel
   subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
   took their seq before writing, so a later seq could commit first; the

@@ -34,7 +34,7 @@ sets = {
     'ask': ['function node(cls, text){','function md(text){','function lastStreamedBubble(){','function wordCount(s){',
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
-          'function shortPath(p){','function kv(k, v){','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
+          'function shortPath(p){','function kv(k, v){','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){','function recheckSoon(){'],
     'state': ['function shownState(s){','function paintOpenPill(){'],
     'mode': ['async function loadMode(){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',

@@ -5,7 +5,7 @@ function check(label, pass){
   console.log((pass ? 'PASS' : 'FAIL') + '  ' + label);
   ok = ok && pass;
 }
-const tick = () => new Promise(r => setTimeout(r, 5));
+const tick = (ms = 5) => new Promise(r => setTimeout(r, ms));
 const cards = () => tx.querySelectorAll('.approve');
 
 render({seq:1, type:'user.message', payload:{text:'delegate'}});
@@ -67,6 +67,8 @@ check('a 409 during a run keeps the card, answerable, and says so',
   queuedCard.isConnected && !queuedCard.querySelector('.yes').disabled && queuedCard.textContent.includes('Not taken'));
 __posted.length = 0; queuedCard.querySelector('.yes').onclick(); await tick();
 check('a second answer names the same request', __posted.length === 1 && __posted[0].body.request_id === 'cev11');
+await tick(900);
+check('a 409 with no stream open reopens it, so the record can settle the card', __connected.length >= 1 && __connected[0] === 's1');
 render({seq:6, type:'subagent.action', payload:{session:'child', call_id:'c5', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev11'}});
 check('and the record settles it', !queuedCard.isConnected);
 render({seq:7, type:'subagent.ask', payload:{session:'child', subagent:'clean up', request_id:'cev12', call_id:'c6', tool:'bash', args:{command:'touch r'}}});

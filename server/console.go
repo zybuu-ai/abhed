@@ -1146,6 +1146,13 @@ function connect(id){
   };
 }
 
+// recheckSoon reopens a stream that has gone, after a 409: the replay it
+// sends settles a card answered elsewhere, or retires it if the run ended.
+function recheckSoon(){
+  const id = current;
+  setTimeout(() => { if(current === id && !es) connect(id); }, 800);
+}
+
 /* ------------------------------------------------------------------ render */
 function node(cls, text){
   const d = document.createElement('div');
@@ -1699,6 +1706,7 @@ function approval(p, rid){
         if(!n){ n = node('note'); card.appendChild(n); }
         n.textContent = 'Not taken: the run is not waiting on this request right now. This stays open until the record settles it.';
         buttons.forEach(b => { b.disabled = false; });
+        recheckSoon();
         return;
       }
       if(stale){
