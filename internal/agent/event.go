@@ -497,8 +497,11 @@ type Recorder struct {
 	sessionID string
 	parentID  string
 	mu        sync.Mutex
-	seq       int64
-	appended  int64 // the last seq the store took from this recorder, or advanced past
+	// writeMu holds from taking a seq to its append, so the store commits and
+	// publishes a session's events in seq order and a reader never sees a gap fill late.
+	writeMu  sync.Mutex
+	seq      int64
+	appended int64 // the last seq the store took from this recorder, or advanced past
 	// Redact, when set, rewrites a payload before it is written. Set by the
 	// caller from the secrets store; nil records payloads as they are.
 	Redact Redactor
@@ -580,6 +583,7 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 			return Event{}, err
 		}
 	}
+	r.writeMu.Lock()
 	r.mu.Lock()
 	r.seq++
 	ev := Event{
@@ -595,7 +599,9 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	}
 	r.mu.Unlock()
 
-	if err := r.store.Append(ev); err != nil {
+	err = r.store.Append(ev)
+	r.writeMu.Unlock()
+	if err != nil {
 		return ev, err
 	}
 	r.mu.Lock()

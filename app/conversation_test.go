@@ -24,6 +24,9 @@ func TestConversationHelper(t *testing.T) {
 	if ws == "" {
 		t.Skip("run by the conversation tests")
 	}
+	if home := os.Getenv("ABHED_CONV_HOME"); home != "" {
+		t.Setenv("HOME", home) // TestMain gave this process a home of its own
+	}
 	os.Exit(Main([]string{"-C", ws}))
 }
 
@@ -77,6 +80,12 @@ func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cl
 // startCLIConfig is startCLIWith under the configuration config makes from the model's URL.
 func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string) *cliSession {
 	t.Helper()
+	return startCLIEnv(t, reply, config)
+}
+
+// startCLIEnv is startCLIConfig with env added to the helper's environment, where it wins.
+func startCLIEnv(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, env ...string) *cliSession {
+	t.Helper()
 	c := &cliSession{t: t, out: &syncBuffer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -104,6 +113,7 @@ func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), c
 	c.cmd = exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
 	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+t.TempDir(), "USERPROFILE="+t.TempDir(),
 		"ABHED_TRUST_WORKSPACE=1") // the test wrote this configuration
+	c.cmd.Env = append(c.cmd.Env, env...)
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

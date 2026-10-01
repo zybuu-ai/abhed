@@ -330,9 +330,20 @@ type liveSession struct {
 	mu       sync.Mutex
 }
 
-// sessionRedactor is the redactor a session starts with: a store read again now
-// where Redact can do so, withholding every payload if it cannot be loaded.
+// sessionRedactor is the redactor a session records with: the store read as it
+// changes where Redact can do so, withholding every payload if it cannot be loaded.
 func (s *Server) sessionRedactor() agent.Redactor {
+	// Preferred: one that follows the store for the whole session, as bash does.
+	if fresh, ok := s.opts.Redact.(interface {
+		Session() (*secrets.Fresh, error)
+	}); ok {
+		red, err := fresh.Session()
+		if err != nil {
+			s.log.Error("the session's event payloads will be withheld", "err", err)
+			return secrets.Withholding()
+		}
+		return red
+	}
 	live, ok := s.opts.Redact.(interface {
 		Load() (*secrets.Redactor, error)
 	})
