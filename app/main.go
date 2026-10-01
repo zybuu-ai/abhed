@@ -923,6 +923,10 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 		}
 		info, err := st.loop.Compact(ctx)
 		release()
+		if errors.Is(err, agent.ErrNothingToCompact) {
+			fmt.Println(s.Dim("  nothing to compact yet"))
+			return false
+		}
 		if err != nil {
 			fmt.Printf("  %s %v\n", s.Red("✕"), err)
 			return false

@@ -571,15 +571,20 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return err
 	}
 
-	// Started is recorded only once there is something to summarise, so every
-	// compaction.started is followed by its completion.
+	// Started is recorded only once there is something to summarise; every
+	// return after it records a completion (the caller records errors).
+	begun := false
 	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
 	if err != nil {
 		return err
 	}
 	if len(compacted) == len(l.messages) {
+		if begun {
+			l.record(EvCompactDone, ActorSystem, map[string]string{"skipped": "no change", "trigger": "auto"})
+		}
 		return nil // nothing was summarized
 	}
 
@@ -588,6 +593,9 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
+
+// ErrNothingToCompact is Compact finding no older history to summarise.
+var ErrNothingToCompact = errors.New("nothing to compact yet")
 
 // Compact forces compaction now, for the /compact command.
 func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
@@ -600,6 +608,10 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	compacted, info, err := l.Compactor.Compact(ctx, "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
+	}
+	// As for automatic compaction, nothing summarised records nothing.
+	if len(compacted) == len(l.messages) {
+		return Compaction{}, ErrNothingToCompact
 	}
 	l.messages = compacted
 	l.usage.Compactions++
