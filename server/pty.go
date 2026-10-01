@@ -786,11 +786,13 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			if e != nil && !e.Program {
 				run.gave()
 			}
-			if _, err := run.tty.Write(k.Data); err != nil {
-				return err
-			}
+			// Followed before the shell has it: a pasted line's echo can
+			// come back before Write returns, and a line missed it.
 			if e != nil {
 				run.capture.Entered(e)
+			}
+			if _, err := run.tty.Write(k.Data); err != nil {
+				return err
 			}
 			continue
 		}
@@ -800,10 +802,10 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 		}
 		if refused == nil {
 			run.gave()
+			run.capture.Entered(e)
 			if _, err := run.tty.Write(k.Data); err != nil {
 				return err
 			}
-			run.capture.Entered(e)
 			continue
 		}
 		run.say(refused.Content)

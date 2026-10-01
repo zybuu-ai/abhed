@@ -484,10 +484,12 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 		waitShell(at, until)
 	}
 	typeLine("echo hi-$((40+2))\r", func(s string) bool { return strings.Contains(s, "hi-42") && prompted(s) })
-	typeLine("curl example.com\r", func(s string) bool { return strings.Contains(s, "Denied") })
+	// Each command is typed once the prompt is back, as a person would: a line
+	// sent sooner is typed ahead, and withheld however harmless.
+	typeLine("curl example.com\r", func(s string) bool { return strings.Contains(s, "Denied") && prompted(s) })
 	// Echo is off before READY shows, so the password is typed into it.
 	typeLine(`stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "READY") })
-	typeLine("hunter22\r", func(s string) bool { return strings.Contains(s, "got 8") })
+	typeLine("hunter22\r", func(s string) bool { return strings.Contains(s, "got 8") && prompted(s) })
 	// Typed ahead: the password is sent before read -s has turned echo off.
 	// It ends in Ctrl-J: a bare CR that lands while bash's line editor still
 	// has the terminal is not turned into a newline, and read waits for one.

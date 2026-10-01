@@ -211,11 +211,13 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 			if e != nil && !e.Program {
 				sh.gave()
 			}
-			if _, err := sh.tty.Write(k.Data); err != nil {
-				return refusal(errRefused, "the terminal has ended")
-			}
+			// Followed before the shell has it: a pasted line's echo can
+			// come back before Write returns, and a line missed it.
 			if e != nil {
 				sh.capture.Entered(e)
+			}
+			if _, err := sh.tty.Write(k.Data); err != nil {
+				return refusal(errRefused, "the terminal has ended")
 			}
 			continue
 		}
@@ -225,10 +227,10 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 		}
 		if refused == nil {
 			sh.gave()
+			sh.capture.Entered(e)
 			if _, err := sh.tty.Write(k.Data); err != nil {
 				return refusal(errRefused, "the terminal has ended")
 			}
-			sh.capture.Entered(e)
 			continue
 		}
 		c.output(t, []byte("\r\n\x1b[31m"+strings.ReplaceAll(refused.Content, "\n", "\r\n")+"\x1b[0m\r\n"))
