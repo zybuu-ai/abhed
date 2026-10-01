@@ -9,10 +9,19 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - Over ACP, the agent can no longer change an editor's own files in the
-  workspace: the file tools refuse `.vscode/**`, `.devcontainer/**`,
-  `.git/config`, `.git/hooks/**` and `*.code-workspace`, and the sandbox keeps
-  the agent's commands from writing them. An edit or write to a file the
-  editor reports as having unsaved changes (`_abhed/buffers/dirty`) is refused.
+  workspace: the file tools refuse `.vscode/**`, `.devcontainer/**`, `.git`,
+  `.git/config`, `.git/hooks/**` and `*.code-workspace`, in any case and
+  through links, and the config and hooks of the git folder a `.git` file
+  names. The sandbox keeps the agent's commands from writing those that exist
+  and from renaming `.git`, `.vscode` or `.devcontainer`, at the workspace's
+  given and resolved paths. On macOS it also keeps them from creating these
+  paths; on Linux (bubblewrap) and in containers a command can still create a
+  missing `.vscode`, `.devcontainer` or `.git`, and on every platform a new
+  `*.code-workspace`. An edit or write to a file the editor reports as having
+  unsaved changes (`_abhed/buffers/dirty`) is refused.
+- In Studio's interactive terminal, a line entered before the shell is back
+  at its prompt, as a password typed ahead of `read -s`, is recorded
+  withheld rather than as text.
 - `session/new` refuses an `_meta` field it does not know instead of ignoring
   it, and the MCP servers an editor names are not started; the reply lists
   them in `mcpServersRefused`.
