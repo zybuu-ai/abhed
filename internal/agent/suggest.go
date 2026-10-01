@@ -125,7 +125,8 @@ func (l *Loop) finishSuggesting(ctx context.Context) TerminalReason {
 	sctx, cancel := context.WithCancel(context.Background())
 	p := &pendingSuggestion{cancel: cancel, done: make(chan struct{})}
 	l.sugMu.Lock()
-	if l.sugClosed {
+	// Asked again: a hold set while the run ended, as by a revoke, stops it here.
+	if l.sugClosed || (j.sg.Hold != nil && j.sg.Hold()) {
 		l.sugMu.Unlock()
 		cancel()
 		close(p.done)

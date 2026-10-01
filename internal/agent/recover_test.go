@@ -107,9 +107,8 @@ func TestCarriedSpend(t *testing.T) {
 	}
 }
 
-// A suggestion's model.call and offer come after the run's end. They are not
-// the run, so a completed run that owed background work is not rewritten as
-// cut short, and one that owed nothing is not an orphan.
+// A suggestion written after the run's end is not the run: a completed run is
+// neither rewritten as cut short nor taken for an orphan.
 func TestReconcileKeepsACompletedRunBeforeASuggestion(t *testing.T) {
 	for _, bg := range []int{1, 0} {
 		st := NewMemStore()

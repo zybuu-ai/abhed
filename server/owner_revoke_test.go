@@ -193,3 +193,31 @@ func TestStopOwnerBackgroundStopsTheSuggestion(t *testing.T) {
 		t.Fatalf("recorded after the revoke: %d events, then %d", n, len(evs))
 	}
 }
+
+// A revoke that lands while the run is ending, before or after its
+// suggestion is planned, still makes no suggestion call for that owner.
+func TestRevokeWhileTheRunEndsMakesNoSuggestion(t *testing.T) {
+	for _, at := range []agent.EventType{agent.EvAgentMessage, agent.EvSessionEnded} {
+		t.Run(string(at), func(t *testing.T) {
+			g := &gatedSuggest{gate: make(chan struct{})}
+			close(g.gate)
+			var b *bgServer
+			b = newBGServerWith(t, nil, func(_ *config.Config, o *Options) {
+				o.Adapter = g
+				o.EventTap = func(ev agent.Event) {
+					if ev.Type == at {
+						b.live(ev.SessionID).ownerGone.Store(true)
+					}
+				}
+			})
+			id := b.start("hi", false)
+			waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
+			time.Sleep(300 * time.Millisecond)
+			for _, mc := range payloadsOf(b.events(id), agent.EvModelCall) {
+				if mc["purpose"] == agent.PurposeSuggestion {
+					t.Fatalf("a suggestion call was made for the revoked owner: %v", mc)
+				}
+			}
+		})
+	}
+}

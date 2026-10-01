@@ -65,9 +65,8 @@ func lastEndSeq(events []Event) int64 {
 	return 0
 }
 
-// lastRunSeq is the last event a run writes: its messages, calls and model
-// calls. Background work after an end does not count, nor does a suggestion,
-// whose model.call and offer are written after the run's end.
+// lastRunSeq is the last event a run writes; background work and a suggestion,
+// both written after the run's end, do not count.
 func lastRunSeq(events []Event) int64 {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {

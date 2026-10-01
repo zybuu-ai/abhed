@@ -1360,6 +1360,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.
 	if !spec.Unattended {
 		loop.Suggest = toolset.Suggester(s.opts.Config)
+		if loop.Suggest != nil {
+			// A revoked owner gets no suggestion, even from a run still ending.
+			loop.Suggest.Hold = live.ownerGone.Load
+		}
 	}
 	live.Loop = loop
 	return live, loop, nil
@@ -2885,7 +2889,8 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		}
 		n += stopped
 	}
-	// One deadline for every run, so the admin's request waits at most turnEndWait.
+	// One deadline for every run, waited in parallel: a call returns within
+	// about turnEndWait plus the 2s a suggestion is given to stop.
 	wctx, cancel := context.WithTimeout(ctx, turnEndWait)
 	defer cancel()
 	var wg sync.WaitGroup
