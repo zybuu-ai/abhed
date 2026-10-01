@@ -79,15 +79,24 @@ func RequestedOf(ctx context.Context) (Requested, bool) {
 	if !ok {
 		return Requested{}, false
 	}
+	return requestedFrom(ev), true
+}
+
+// requestedFrom reads a recorded action.requested, or reports it withheld.
+func requestedFrom(ev Event) Requested {
 	var p ActionRequested
 	var held struct {
 		Withheld *string `json:"withheld"`
 	}
 	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
-		return Requested{Withheld: true}, true
+		return Requested{Withheld: true}
 	}
-	return Requested{ActionRequested: p}, true
+	return Requested{ActionRequested: p}
 }
+
+// withheldAsk is the refusal of an ask whose record was withheld: no one can
+// be shown what they would approve, so no one is asked.
+const withheldAsk = "the request's record was withheld (redaction could not run), so it was not put to anyone"
 
 // WithRequested carries the recorded action.requested an Approver is asked about.
 func WithRequested(ctx context.Context, ev Event) context.Context {
@@ -1089,6 +1098,12 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}, ""
 
 	case policy.Ask:
+		if requestedFrom(asked).Withheld {
+			l.record(EvActionDenied, ActorSystem, map[string]string{
+				"call_id": call.ID, "reason": withheldAsk, "step": "ask", "by": BySystem,
+			})
+			return false, tools.Result{Content: "Denied: " + withheldAsk + ". The call was not run.", IsError: true}, ""
+		}
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
 		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
