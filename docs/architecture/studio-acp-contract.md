@@ -696,7 +696,7 @@ _abhed/terminal/kill   { terminalId }                   → {}
 // notifications
 _abhed/terminal/output { terminalId, data: string }     // base64 of the bytes
 _abhed/terminal/exit   { terminalId, code?: number, signal?: string }
-// engine → client request: the destructive y/N
+// engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
 

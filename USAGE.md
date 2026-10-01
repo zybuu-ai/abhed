@@ -593,7 +593,7 @@ of the Enterprise Edition.
 | Every request anonymous | `auth.mode: none` | Set `local` or `proxy` |
 | `unexpected issuer` | Trailing-slash mismatch | Match `iss` byte-for-byte |
 | Agent won't edit | `plan` mode | `/mode default` |
-| Too many prompts | Narrow rules | `-mode accept-edits`, or `A` to always-allow |
+| Too many prompts | Narrow rules | `-mode accept-edits`, or `2` to allow for the session |
 
 Full diagnostics:
 

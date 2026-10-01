@@ -270,9 +270,9 @@ no `request_id` is refused with 409 and does not answer it, with or without a
 run live, so it can only answer the run's own ask; refused after 30
 minutes; the console and workbench keep it answerable after the run ends,
 until its own outcome or the closing end); the
-terminal, where only a line that is exactly a decision key (`a`, `y`, `r`,
-`n`, `A`) answers it, and any other line is a prompt, with a note that the
-approval still waits; in an editor, held until your next prompt opens, then asked first,
+terminal, where only a number offered answers it (`1` Yes, `2` the
+session-wide Yes when one is offered, the last number No), and any other
+line is a prompt, with a note that the approval still waits; in an editor, held until your next prompt opens, then asked first,
 and refused after 30 minutes, or if that turn ends before you answer; and
 refused where nobody can be asked.
 

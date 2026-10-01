@@ -124,7 +124,7 @@ command offers no "always", and asks a second time, with No as the default.
 The question, the diff and your answer stay in the transcript.
 
 With input piped in as lines, the same holds line by line: only a line that
-is exactly `a`, `y`, `r`, `n` or `A` answers a waiting approval. Any other
+is one of the numbers offered answers a waiting approval. Any other
 line is never taken as the answer because of where it falls: during a run it
 steers the run, and with no run live (a background task's ask) it is sent to
 the model as a prompt. Either way a note says the approval is still waiting.
