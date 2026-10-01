@@ -811,33 +811,8 @@ each key as tightening or widening.
 
 ## 9. Enterprise: the team server (EE only)
 
-A CE engine answers every method here with -32601, and CE Studio shows
-nothing about team servers.
-
-```ts
-_abhed/team/status {} → { connected: boolean; server?: string; issuer?: string;
-                          subject?: string; expires?: string; policy?: { sha256, version } }
-_abhed/team/connect { server: string } → { started: true }
-_abhed/team/disconnect {} → {}
-// notification
-_abhed/team/changed { connected: boolean; reason?: string }
-```
-
-- **Organisation identity provider only.** The engine reads the issuer from
-  the team server's own discovery document and refuses consumer and platform
-  identity providers (Microsoft consumer and GitHub sign-in among them); the
-  allowed issuers come from the managed configuration. Studio never supplies
-  an issuer.
-- **The engine does the sign-in.** OAuth 2.0 authorization code with PKCE,
-  in the person's system browser, redirected to a loopback port the engine
-  opens for that one exchange. Tokens are stored in the engine's secrets
-  vault and never pass through Studio. Studio shows only `status`.
-- `server` is checked against the managed configuration's allowed team
-  servers; an unlisted server is refused with -32001, so a renderer cannot
-  point the engine at a server of its choosing.
-- Managed policy distributed by the team server applies as managed
-  configuration (tighten and lock). Schedules, the offline gallery and
-  evidence packs are the team server's and are not ACP methods.
+`_abhed/team/*` is reserved for the Enterprise edition; a CE engine answers
+-32601 and CE Studio shows nothing for it.
 
 ---
 

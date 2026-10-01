@@ -12,7 +12,7 @@ model you point it at, and records everything it does.
 | [Models and providers](03-providers.md) | the twenty providers, sampling parameters, subscriptions |
 | [Permissions and safety](04-permissions.md) | what the agent may do, and how you decide |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
-| [The terminal](18-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
+| [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
 
 ## Extending it
 
@@ -36,7 +36,8 @@ model you point it at, and records everything it does.
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
-| [Input, memory and commands](18-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
+| [Input, memory and commands](19-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
 
-Exporting the event log as OpenTelemetry traces and scheduled runs are
-Enterprise Edition features, documented with that edition.
+Scheduled runs are a Team feature, and exporting the event log as
+OpenTelemetry traces an Enterprise feature. Both are documented with the
+Team and Enterprise edition.

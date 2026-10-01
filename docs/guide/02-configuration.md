@@ -49,8 +49,8 @@ configuration](#trusting-the-workspace-configuration).
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
-| `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](18-input-and-memory.md#memory) |
-| `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](18-input-and-memory.md) |
+| `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
+| `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 
@@ -98,7 +98,7 @@ every turn, each a summary call and a lost prefix cache.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
 after compaction. Project conventions belong there. The full order, imports
-and rules are in [Memory](18-input-and-memory.md#memory).
+and rules are in [Memory](19-input-and-memory.md#memory).
 
 **Size `context_window` for what the model can actually hold.** A local server
 reports the size it chose at startup; asking for more does not fail loudly, it
@@ -266,6 +266,13 @@ dropped if it is empty, a `/` command, a `!` shell line, or would repeat a
 stored secret. The record keeps the call as a `model.call` with
 `purpose: suggestion`, counted in the session's tokens and budget, and the
 suggestion as `suggestion.offered`.
+
+Suggestions are on by default, so each completed turn costs one extra model
+call. If `suggest.model` names a provider on a different endpoint from the
+session's, that endpoint receives those excerpts of the conversation: the
+person's last message and the agent's final reply, redacted. On an
+air-gapped setup, name a provider inside the same boundary or turn
+suggestions off.
 
 | Key | Default | |
 |---|---|---|

@@ -140,7 +140,7 @@ Up and Ctrl-R reach the prompts you sent in this workspace, in this session
 and earlier ones. Shift-Tab steps through the default, accept-edits and plan
 modes; the footer always shows which is on. Ctrl-C clears the line, stops a
 running turn, and at an empty prompt pressed twice exits. Every key is in
-[The terminal](18-terminal.md).
+[The terminal](20-terminal.md).
 
 | Command | |
 |---|---|
@@ -165,7 +165,7 @@ running turn, and at an empty prompt pressed twice exits. Every key is in
 | `/model [name]` | show or switch the model, keeping the conversation |
 
 `@path` attaches a file, `!cmd` runs a shell command and `# note` saves a
-note to memory; see [Input, memory and commands](18-input-and-memory.md).
+note to memory; see [Input, memory and commands](19-input-and-memory.md).
 
 Sessions are kept in a local record and survive the process: `abhed -c`
 continues the last one in this workspace, and `abhed -r` picks one. See

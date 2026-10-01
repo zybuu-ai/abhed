@@ -235,8 +235,8 @@ What `verify` cannot show:
   the head and index files, and the same owner can rewrite those as well as
   the lines, or compute a whole new chain. The record is tamper-evident against
   the agent and against accidental or partial edits, and it can be verified
-  offline. It is not proof against the machine's owner. Anchoring the chain
-  outside the machine is not part of the Community edition.
+  offline. It is not proof against the machine's owner. Abhed does not anchor
+  the chain outside the machine.
 
 ## Exporting
 

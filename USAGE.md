@@ -165,7 +165,7 @@ Type a task, or /help. Esc interrupts, Ctrl-C twice exits.
 At an approval, press a number, or an arrow then Enter; Esc declines and stops
 the turn. A key counts only after the question has been on screen for 300 ms
 and with 300 ms of quiet around it, so typing or a held key never answers; see
-[The terminal](docs/guide/18-terminal.md). Ctrl-C stops the turn and refuses the
+[The terminal](docs/guide/20-terminal.md). Ctrl-C stops the turn and refuses the
 approval; a second Ctrl-C, if the turn has not stopped, exits 130.
 
 ### Headless
@@ -459,13 +459,14 @@ headers and is only safe when a trusted proxy is the sole route to the port.
 `mode: "none"` is single-tenant local development. See
 [`docs/ops/enabling-auth.md`](docs/ops/enabling-auth.md).
 
-### Enterprise features
+### Team and Enterprise features
 
-OIDC sign-in with tenant mapping, the admin and access dashboard, scheduled
-runs, multi-tenant isolation, audit retention and export, the signed air-gap
-bundle with verification, managed policy distribution and OpenTelemetry export
-are part of the Enterprise Edition. It is built on this module and documented
-with it; nothing in this file depends on it.
+OIDC sign-in with tenant mapping, the admin and access dashboard and scheduled
+runs are Team features. Multi-tenant isolation, audit retention and export on
+the server, the signed air-gap bundle with verification, managed policy
+distribution and OpenTelemetry export are Enterprise features. Both are a
+separate edition built on this module and documented with it; nothing in this
+file depends on it.
 
 ---
 
