@@ -460,11 +460,11 @@ func TestReportNamesTheModelsUsed(t *testing.T) {
 // A call's own bidi or zero-width characters are shown, not obeyed, in the
 // page and the terminal report; the report value itself is left as recorded.
 func TestReportShowsHiddenCharacters(t *testing.T) {
-	spoof := ";fs- mr‮ x​"
-	r := Report{SessionID: "s1", Prompt: "p⁦", Outcome: "completed",
-		Calls:     []Call{{Seq: 3, Tool: "bash", Args: `{"command":"` + spoof + `"}`, Subject: spoof, Decision: "allowed", Reason: "r‮", Ran: true, Output: "a‮b\ncol1        col2"}},
-		Findings:  []Finding{{Severity: Warn, Title: "t‍", Detail: spoof}},
-		Subagents: []Subagent{{Seq: 4, Description: "d⠀ㅤ"}},
+	spoof := ";fs- mr\u202e x\u200b"
+	r := Report{SessionID: "s1", Prompt: "p\u2066", Outcome: "completed",
+		Calls:     []Call{{Seq: 3, Tool: "bash", Args: `{"command":"` + spoof + `"}`, Subject: spoof, Decision: "allowed", Reason: "r\u202e", Ran: true, Output: "a\u202eb\ncol1        col2"}},
+		Findings:  []Finding{{Severity: Warn, Title: "t\u200d", Detail: spoof}},
+		Subagents: []Subagent{{Seq: 4, Description: "d\u2800\u3164"}},
 	}
 	page, err := HTML(r)
 	if err != nil {

@@ -328,7 +328,7 @@ fresh('s32', true);
   const t = open()[0] ? open()[0].textContent : '';
   check('a long run of spaces is counted on the prompt and warned',
     t.includes('git status --short⟨260 spaces⟩&& tar czf p.tgz internal') && t.includes('hidden or control characters'));
-  render(ev(2, 'action.requested', {call_id:'w2', tool:'bash', args:{command:'ls', description:'list‮ files'}, requires_approval:true}));
+  render(ev(2, 'action.requested', {call_id:'w2', tool:'bash', args:{command:'ls', description:'list\u202e files'}, requires_approval:true}));
   const d = open()[1] ? open()[1].textContent : '';
   check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
 }

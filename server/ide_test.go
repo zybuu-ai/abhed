@@ -438,8 +438,8 @@ El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.i
 Object.defineProperty(El.prototype, 'firstChild', { get(){ return this.childNodes[0] || null; } });
 const nodes = {}; const $ = id => nodes[id] || (nodes[id] = new El('div'));
 const EVT_MAX = 500; let evtN = 0, current = 's1';
-const api = async () => ({outcome:'completed‮', models:['m​'], totals:{turns:1, tokens_in:1}, offloads:[],
-  policy:{allowed:1, denied:0, by_step:{'default⁦':1}}, findings:[{severity:'warn', title:'t​', detail:';fs- mr‮', seq:3}]});
+const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:{turns:1, tokens_in:1}, offloads:[],
+  policy:{allowed:1, denied:0, by_step:{'default\u2066':1}}, findings:[{severity:'warn', title:'t\u200b', detail:';fs- mr\u202e', seq:3}]});
 `
 	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's panels failed:\n%s", out)

@@ -2,9 +2,9 @@
 // the tools': bidi and zero-width characters are shown, never obeyed.
 let ok = true;
 function check(label, pass){ console.log((pass ? 'PASS' : 'FAIL') + '  ' + label); ok = ok && pass; }
-const raw = /[​-‏‪-‮⁦-⁩ㅤ⠀]/;
-logEvent({seq:4, type:'action.requested'}, {tool:'bash', args:{command:';fs- mr‮ x​'}});
-logEvent({seq:5, type:'agent.message'}, {text:'done⁦ ㅤ'});
+const raw = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\u3164\u2800]/;
+logEvent({seq:4, type:'action.requested'}, {tool:'bash', args:{command:';fs- mr\u202e x\u200b'}});
+logEvent({seq:5, type:'agent.message'}, {text:'done\u2066 \u3164'});
 const ev = $('p-events').textContent;
 check('the Events panel shows bidi and zero-width characters: ' + ev, !raw.test(ev) && ev.includes('⟨U+202E⟩') && ev.includes('⟨U+3164⟩'));
 await loadHawkeye();
