@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // maxStateEntries bounds how many files and folders of the state directories
@@ -308,31 +309,7 @@ func hasStateName(clean string) bool {
 }
 
 // RealPath follows symlinks in the part of p that exists, so a path to a file
-// not yet created still lands under its real parent. A link whose target does
-// not exist yet is followed too: writing through it would create the target.
+// not yet created still lands under its real parent.
 func RealPath(p string) string {
-	return realPath(p, 0)
-}
-
-func realPath(p string, hops int) string {
-	rest := ""
-	for cur := p; ; {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		if info, err := os.Lstat(cur); err == nil && info.Mode()&fs.ModeSymlink != 0 && hops < 40 {
-			if target, err := os.Readlink(cur); err == nil {
-				if !filepath.IsAbs(target) {
-					target = filepath.Join(filepath.Dir(cur), target)
-				}
-				return realPath(filepath.Join(target, rest), hops+1)
-			}
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return p
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
-	}
+	return sandbox.RealPath(p)
 }
