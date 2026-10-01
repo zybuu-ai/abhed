@@ -178,7 +178,7 @@ const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => tru
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
 const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
-const requestAnimationFrame = f => f();
+const requestAnimationFrame = f => f(), idleTurns = new Map();
 // api answers the session list from __sessions, after the next of __delays;
 // a route given to __defer answers when the test resolves it.
 let __sessions = [], __delays = []; const __pending = {};
@@ -189,7 +189,7 @@ const api = async (url, opts) => {
   if(opts && opts.body) __posted.push({route, body: JSON.parse(opts.body)});
   if(__pending[route]){ const p = __pending[route]; delete __pending[route]; return p; }
   if(url === '/v1/sessions'){ const snap = __sessions, d = __delays.shift() || 0; if(d) await new Promise(r => setTimeout(r, d)); return snap; }
-  const st = /^\/v1\/sessions\/([^/]+)\/state$/.exec(url); if(st){ const s = __sessions.find(x => x.id === st[1]); if(!s) throw Object.assign(new Error('session not found'), {status:404}); return {id:s.id, state:s.state}; }
+  const st = /^\/v1\/sessions\/([^/]+)\/state$/.exec(url); if(st){ const s = __sessions.find(x => x.id === st[1]); if(!s) throw Object.assign(new Error('session not found'), {status:404}); return {id:s.id, state:s.state, turns:s.turns}; }
   return [];
 };
 `
