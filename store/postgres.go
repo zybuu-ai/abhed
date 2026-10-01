@@ -432,6 +432,16 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 // ListSessions returns recent sessions for the current tenant. RLS restricts
 // the result even if this query were wrong.
 func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord, error) {
+	return p.listSessions(ctx, "", limit)
+}
+
+// ListSessionsOwnedBy is ListSessions for one owner, filtered in the query so
+// an owner's older sessions are not crowded out by the rest of the tenant's.
+func (p *Postgres) ListSessionsOwnedBy(ctx context.Context, owner string, limit int) ([]SessionRecord, error) {
+	return p.listSessions(ctx, owner, limit)
+}
+
+func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([]SessionRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -441,7 +451,8 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
 		       context_tokens, context_window, COALESCE(parent_id,'')
 		FROM sessions WHERE deleted_at IS NULL AND parent_id IS NULL
-		ORDER BY started_at DESC LIMIT $1`, limit)
+		  AND ($2 = '' OR user_id = $2)
+		ORDER BY started_at DESC LIMIT $1`, limit, owner)
 	if err != nil {
 		return nil, err
 	}

@@ -1297,7 +1297,17 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	// Ownership and mode come from the stored row when there is one.
 	var rec store.SessionRecord
-	if s.sessions != nil {
+	if g, ok := s.sessions.(sessionGetter); ok {
+		// By id, so a session older than any bounded list still opens.
+		r, err := g.GetSession(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errNoSession
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read sessions: %w", err)
+		}
+		rec = r
+	} else if s.sessions != nil {
 		recs, err := s.sessions.ListSessions(ctx, 500)
 		if err != nil {
 			return nil, fmt.Errorf("read sessions: %w", err)
@@ -1657,7 +1667,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	// A durable store also returns sessions from before this process started,
 	// which is what makes audit useful after a restart.
 	if s.sessions != nil {
-		records, err := s.sessions.ListSessions(r.Context(), 200)
+		records, err := s.listOwned(r.Context(), user, 200)
 		if err == nil {
 			out := make([]sessionSummary, 0, len(records))
 			for _, rec := range records {
@@ -1791,6 +1801,20 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 // sessionGetter is a store that finds one session row by id.
 type sessionGetter interface {
 	GetSession(ctx context.Context, id string) (store.SessionRecord, error)
+}
+
+// ownerLister is a store that can list one owner's sessions in its query.
+type ownerLister interface {
+	ListSessionsOwnedBy(ctx context.Context, owner string, limit int) ([]store.SessionRecord, error)
+}
+
+// listOwned lists the newest sessions user may see. The owner is filtered in
+// the store where it can be, so the tenant's newest do not crowd theirs out.
+func (s *Server) listOwned(ctx context.Context, user string, limit int) ([]store.SessionRecord, error) {
+	if ol, ok := s.sessions.(ownerLister); ok && user != "" && user != auth.Anonymous && !auth.OwnsNothing(user) {
+		return ol.ListSessionsOwnedBy(ctx, user, limit)
+	}
+	return s.sessions.ListSessions(ctx, limit)
 }
 
 // ownsStored reports whether the caller owns a session this node is not
