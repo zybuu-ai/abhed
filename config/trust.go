@@ -559,6 +559,7 @@ var workspaceRules = map[string]fieldRule{
 	"limits.max_parallel_subagents":   {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},
 	"limits.nested_subagents":         {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
 	"limits.max_background_subagents": {lowerOrZero(func(c *Config) *int { return &c.Limits.MaxBackgroundSubagents }), "only lower; zero allows none"},
+	"limits.background_shells":        {lowerOrZero(func(c *Config) *int { return &c.Limits.BackgroundShells }), "only lower; zero allows none"},
 	"limits.background_max_minutes":   {lower(func(c *Config) *int { return &c.Limits.BackgroundMaxMinutes }, zeroIs(60)), "only lower"},
 	"subagents.wake":                  {tighterWake, "only tighter: off < notify < auto"},
 	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},

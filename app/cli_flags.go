@@ -22,6 +22,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // usage prints the synopsis, the subcommands and then the flags.
@@ -186,6 +187,8 @@ func (f *cliFlags) task() string {
 // Main runs the command with the given arguments and options and returns
 // the exit code. It is what every edition's main calls.
 func Main(args []string, opts ...Option) int {
+	// No background shell outlives the process that started it.
+	defer tools.EndBackgroundShells(shellEndWait)
 	a := newApp(opts...)
 	var f cliFlags
 	fs := newFlagSet(&f)

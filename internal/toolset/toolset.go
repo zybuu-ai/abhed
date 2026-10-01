@@ -118,6 +118,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		Registry: tools.NewRegistry(
 			tools.Read{}, tools.Write{}, tools.Edit{},
 			tools.Glob{}, tools.Grep{}, o.Bash,
+			agent.ShellOutput{}, agent.ShellKill{},
 			agent.TodoTool{},
 		),
 		Skills: skills.NewRegistry(),
@@ -380,6 +381,7 @@ func BackgroundPolicy(cfg config.Config, ceiling agent.WakeMode) agent.Backgroun
 		Lifetime:        time.Duration(min(minutes, 480)) * time.Minute,
 		MaxWakesPerHour: cfg.Subagents.MaxWakesPerHour,
 		WakeMaxTurns:    cfg.Subagents.WakeMaxTurns,
+		MaxShells:       cfg.Limits.BackgroundShells,
 	}
 }
 

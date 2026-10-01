@@ -6,7 +6,8 @@
 |---|---|
 | `read`, `write`, `edit` | files, scoped to the workspace |
 | `glob`, `grep` | find files and search contents |
-| `bash` | shell, sandboxed, destructive commands always confirm |
+| `bash` | shell, sandboxed, destructive commands always confirm; `run_in_background` starts a command and returns at once |
+| `shell_output`, `shell_kill` | read a background command's new output, or stop it |
 | `todo` | the agent's task list for multi-step work, recorded as `todo.updated` |
 | `task`, `tasks` | run one subagent, or several at once, in the foreground or the background; `task` can resume a finished one; see [Parallel subagents](14-parallel-subagents.md) |
 | `task_status`, `task_cancel` | report or cancel this session's background tasks, where the surface runs them |
@@ -25,6 +26,39 @@ and `/undo` of the new file removes them while they are empty.
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
+
+### Background commands
+
+`bash` with `run_in_background: true` starts the command and returns at once
+with a shell id (`sh_…`), so the agent can start a server, a watcher or a long
+build and keep working. The call goes through exactly the same steps as a
+foreground one: deny, ask and allow rules, the destructive-command check,
+extension screening, approval, the sandbox and `secrets`. Plan mode refuses
+it. `timeout_ms`, when given, bounds the command's life; otherwise
+`limits.background_max_minutes` does.
+
+- `shell_output` returns what the command wrote since the last read, with its
+  state (`running`, or `exited` / `killed` and the exit code). One read returns
+  at most the last 30,000 bytes of what is new; `wait_ms` waits up to that
+  long (at most ten minutes) for the command to end first.
+- `shell_kill` stops it and every process it started (its process group), and
+  returns its last output.
+- A shell keeps the last 1 MiB of its output; a read that fell behind says how
+  many bytes were dropped.
+- When a shell ends, the agent is told the way it is told of a background
+  task's result: a `task_status` result with the exit code and the last line.
+  A shell the agent stopped itself with `shell_kill` leaves no such notice.
+- `limits.background_shells` (default 4) bounds the shells running at once in
+  a session; zero allows none. A workspace file may only lower it.
+- Shells are listed with the background tasks (`/tasks`, `task_status`, the
+  server's tasks endpoint, `_abhed/tasks/list` over ACP, the SDK's
+  `Background()`), with `kind: "shell"`, the command, exit code, output size
+  and last output line, and stopped the same way. They end, process group and
+  all, when the session closes, on a stop of all background work, and when
+  Abhed exits. Output the agent reads is recorded as an `observation`, redacted
+  like any other; `shell.started` and `shell.ended` record the rest.
+- A subagent cannot start one, and neither can a surface that runs no
+  background work (`abhed eval`).
 
 `bash` says in its description whether commands can reach the network. When
 the sandbox has none and a command fails because of it, the result ends with

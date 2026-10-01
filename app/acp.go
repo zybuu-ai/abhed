@@ -1081,8 +1081,10 @@ func toolKind(tool string) string {
 		return "search"
 	case "write", "edit":
 		return "edit"
-	case "bash":
+	case "bash", "shell_kill":
 		return "execute"
+	case "shell_output":
+		return "read"
 	case "todo":
 		return "think"
 	}
@@ -1098,7 +1100,10 @@ func toolTitle(tool string, args json.RawMessage) string {
 func rawToolTitle(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
-	for _, k := range []string{"command", "path", "pattern", "query"} {
+	if bg, _ := m["run_in_background"].(bool); bg && tool == "bash" {
+		tool = "bash (background)"
+	}
+	for _, k := range []string{"command", "path", "pattern", "query", "shell_id"} {
 		if v, ok := m[k].(string); ok && v != "" {
 			return ui.VisibleLine(tool + " " + v)
 		}

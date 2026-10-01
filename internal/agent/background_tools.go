@@ -59,6 +59,9 @@ func (TaskStatus) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage
 		var sb strings.Builder
 		for _, t := range list {
 			fmt.Fprintf(&sb, "- %s (%s): %s", t.ID, t.Description, t.Status)
+			if t.ExitCode != nil {
+				fmt.Fprintf(&sb, ", exit %d", *t.ExitCode)
+			}
 			if t.Model != "" {
 				fmt.Fprintf(&sb, ", model %s", t.Model)
 			}
@@ -84,6 +87,12 @@ func describeTask(t TaskInfo) string {
 	s := fmt.Sprintf("Task %s (%s): %s", t.ID, t.Description, t.Status)
 	if t.Reason != "" && t.Reason != t.Status {
 		s += " (" + t.Reason + ")"
+	}
+	if t.ExitCode != nil {
+		s += fmt.Sprintf(", exit %d", *t.ExitCode)
+	}
+	if t.Kind == KindShell {
+		s += fmt.Sprintf("\nCommand: %s\nOutput: %d bytes; read it with shell_output.", t.Command, t.OutputBytes)
 	}
 	if t.Summary != "" {
 		s += "\n\n" + t.Summary

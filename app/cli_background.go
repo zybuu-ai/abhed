@@ -81,7 +81,14 @@ func tasksCommand(args []string, st *cliState, s ui.Style) {
 		return
 	}
 	for _, t := range list {
-		fmt.Printf("  %s  %-10s %s\n", t.ID, t.Status, t.Description)
+		status := t.Status
+		if t.ExitCode != nil {
+			status = fmt.Sprintf("%s %d", status, *t.ExitCode)
+		}
+		fmt.Printf("  %s  %-5s %-10s %s\n", t.ID, t.Kind, status, t.Description)
+		if t.LastLine != "" {
+			fmt.Printf("  %s\n", s.Dim("  "+t.LastLine))
+		}
 	}
 }
 
