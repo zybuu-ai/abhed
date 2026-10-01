@@ -359,7 +359,7 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 		return err
 	}
 	end, _ := agent.LastEnd(events)
-	loop := st.open(id)
+	loop := st.open(id, events[len(events)-1].Seq)
 	loop.Recorder.Advance(events[len(events)-1].Seq)
 	loop.SetHistory(msgs, end.Turns)
 	loop.CarryUsage(end)
@@ -609,6 +609,23 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 		return nil, nil, fmt.Errorf("open event store: %w", err)
 	}
 	return pg, pg.Close, nil
+}
+
+// openServeStore is serve's event store: Postgres when configured, and
+// otherwise memory. The local record belongs to the person at the command line.
+func openServeStore(ctx context.Context, cfg config.Config) (server.EventStore, func(), error) {
+	if cfg.Storage.Driver != "postgres" {
+		return agent.NewMemStore(), func() {}, nil
+	}
+	return openStore(ctx, cfg)
+}
+
+// serveStorageLabel names serve's store, as openServeStore chooses it.
+func serveStorageLabel(cfg config.Config) string {
+	if cfg.Storage.Driver != "postgres" {
+		return "memory (sessions do not survive restart)"
+	}
+	return storageLabel(cfg)
 }
 
 // openRecord opens the local record the configuration names: the managed

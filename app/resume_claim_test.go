@@ -103,7 +103,7 @@ func resumeRig(t *testing.T, user, tenant string) (*cliState, *rowStore, *ui.Ren
 func rigState(rs *rowStore, sess *tools.Session) *cliState {
 	st := &cliState{store: rs, appCfg: config.Default(), sess: sess}
 	st.fresh()
-	st.open = func(id string) *agent.Loop {
+	st.open = func(id string, _ int64) *agent.Loop {
 		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(rs, id, ""), agent.DefaultConfig())
 		st.loop, st.sessionID = l, id
 		return l
@@ -403,7 +403,7 @@ func TestAlwaysAllowEndsWithTheSession(t *testing.T) {
 		st, _, r, sess := resumeRig(t, "me", "default")
 		ap := ui.NewApprover(io.Discard)
 		st.scopes = ap.Session
-		st.open("s-live")
+		st.open("s-live", 0)
 		ap.Session.Add("bash(mkdir *)")
 		handleCommand(context.Background(), cmd, r, policy.New(policy.ModeDefault), sess, st)
 		if ap.Session.Has("bash(mkdir *)") {
@@ -417,7 +417,7 @@ func TestAlwaysAllowEndsWithTheSession(t *testing.T) {
 func TestDoubleCtrlCEndsAsInterrupted(t *testing.T) {
 	for _, stopped := range []bool{false, true} {
 		st, rs, _, _ := resumeRig(t, "me", "default")
-		loop := st.open("s-new")
+		loop := st.open("s-new", 0)
 		if _, err := loop.Recorder.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "go"}); err != nil {
 			t.Fatal(err)
 		}
@@ -451,7 +451,7 @@ func TestResumeRefusesASubagentsSession(t *testing.T) {
 	}
 	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
 	st.fresh()
-	st.open = func(id string) *agent.Loop {
+	st.open = func(id string, _ int64) *agent.Loop {
 		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
 		st.loop, st.sessionID = l, id
 		return l
@@ -508,7 +508,7 @@ func TestCLIResumeCarriesBudgetAndNotices(t *testing.T) {
 	}
 	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
 	st.fresh()
-	st.open = func(id string) *agent.Loop {
+	st.open = func(id string, _ int64) *agent.Loop {
 		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
 		l.Budget = agent.NewBudget(0, 10, false)
 		st.loop, st.sessionID = l, id

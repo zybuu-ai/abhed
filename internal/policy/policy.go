@@ -663,7 +663,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		// A read that can carry data out is not made safe by plan mode, which
 		// any client may narrow a session to: it goes on to the allow rules and asks.
 		if e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in plan mode", Scope: "", Step: "mode"}
 		}
 	case ModeBypass:
 		if e.Managed {
@@ -676,7 +676,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		}
 	case ModeAuto:
 		if !mutates && e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: "read-only tool in auto mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in auto mode", Scope: "", Step: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
 		// and deny checks above still stand, so the dangerous cases never reach
@@ -698,9 +698,21 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
 	}
 	if !mutates {
-		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
+		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
 	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+}
+
+// sessionControl names tools that change only the session's own background
+// work: they need no approval, but they are not reads.
+var sessionControl = map[string]bool{"shell_kill": true, "task_cancel": true}
+
+// readOnlyReason is why a call that changes nothing outside the session is allowed.
+func readOnlyReason(tool string) string {
+	if sessionControl[tool] {
+		return "session control tool (stops this session's own background work)"
+	}
+	return "read-only tool"
 }
 
 // readOnlyAsk is why a read-only call asks anyway, or "".

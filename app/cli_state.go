@@ -28,8 +28,15 @@ type cliState struct {
 	workspace string
 	adapter   model.Adapter
 	provider  config.ProviderConfig
-	// open starts the loop for session id and makes it the conversation.
-	open func(id string) *agent.Loop
+	// open starts the loop for session id, whose record goes on after seq
+	// after (0 for a new one), and makes it the conversation.
+	open func(id string, after int64) *agent.Loop
+	// startedID is the conversation whose session.started this process
+	// recorded; startOwed is the seq a continued one's start goes after, 0 for none.
+	startedID string
+	startOwed int64
+	// recordStart records how this process started, into rec; nil records nothing.
+	recordStart func(rec *agent.Recorder, resumedAfter int64)
 	// claim is a resumed session its first task must claim before it runs,
 	// and claimSeq the last seq of the record it was rebuilt from.
 	claim    string

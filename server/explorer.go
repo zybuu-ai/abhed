@@ -182,7 +182,7 @@ func (s *Server) explorerOp(w http.ResponseWriter, r *http.Request, req any, pla
 	}
 	capBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		WriteError(w, http.StatusBadRequest, "the request is malformed")
+		badBody(w, err, "the request is malformed")
 		return
 	}
 	if _, found := live.Loop.Tools.Get("bash"); !found {

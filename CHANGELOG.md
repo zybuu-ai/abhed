@@ -12,6 +12,13 @@ All notable changes to Abhed are recorded here. The format follows
   `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
   while `/permissions allow` refused them. Every path now refuses an allow
   rule when the managed file sets any `permissions` setting.
+- A wake run could act for a user whose access had been revoked: the owner
+  was looked up only before the wake started, and an edition whose accounts
+  the server could not see found every owner active. A woken run now asks
+  again before each model call and before each call is approved, and ends as
+  `owner_inactive` once the owner has lost access. `StopOwnerBackground`
+  lets an edition stop a revoked owner's live run, background shells, tasks
+  and terminals at once, recorded as `owner_revoked`; no wake follows.
 - Over ACP, the agent can no longer change an editor's own files in the
   workspace: the file tools refuse `.vscode/**`, `.devcontainer/**` and
   `*.code-workspace`, and any `.git` with its `config` and `hooks/**` at any
@@ -179,6 +186,12 @@ before upgrading.
 
 Also:
 
+- The line terminal's destructive-command confirmation is numbered, where it
+  asked `Run it? [y/N]`: `1` No, `2` Yes, run it, then Enter. Enter, a letter
+  or a paste asks again, and keys in the first 300 ms after it appears are
+  ignored. A client of the terminal endpoint must send `confirmed` for a line
+  it was asked about at least 300 ms before; an earlier or unasked
+  confirmation is asked again.
 - `/undo` records each file it puts back as `file.restored`, and is held to
   deny rules on `write`.
 - On macOS the local record syncs with `fsync`, as SQLite does by default,

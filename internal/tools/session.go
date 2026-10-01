@@ -153,6 +153,9 @@ func (s *Session) CloseScoped() {
 	closeAll(vals)
 }
 
+// GuardPath asks Guard about a change to path, as the file tools do.
+func (s *Session) GuardPath(path string) error { return s.guard(path) }
+
 // guard asks Guard about a change to path.
 func (s *Session) guard(path string) error {
 	if s.Guard == nil {

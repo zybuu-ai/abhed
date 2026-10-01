@@ -11,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/embedded"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -196,7 +197,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
 			}
-			na, err := abhed.New(ctx, opts)
+			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc"}), opts)
 			made = na
 			cur = q.sess
 			mu.Lock()

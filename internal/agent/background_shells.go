@@ -82,12 +82,23 @@ type shellHost struct {
 }
 
 // withShellHost gives a tool call the session's background shells. Only the
-// top-level loop of a session has a Background.
+// top-level loop of a session has a Background; a subagent's calls get a host that refuses.
 func (l *Loop) withShellHost(ctx context.Context, callID string) context.Context {
-	if l.Background == nil || l.depth > 0 {
+	if l.depth > 0 {
+		return tools.WithShellHost(ctx, subagentShells{})
+	}
+	if l.Background == nil {
 		return ctx
 	}
 	return tools.WithShellHost(ctx, shellHost{b: l.Background, callID: callID})
+}
+
+// subagentShells replaces the parent's host in a subagent's calls, which
+// would otherwise inherit it through the task call's context.
+type subagentShells struct{}
+
+func (subagentShells) StartShell(context.Context, tools.ShellRequest) (string, error) {
+	return "", errors.New("a subagent cannot start a background command; run it without run_in_background")
 }
 
 func (p BackgroundPolicy) maxShells() int { return max(p.MaxShells, 0) }

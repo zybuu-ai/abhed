@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -180,6 +181,29 @@ func TestPermissionsExplain(t *testing.T) {
 	}
 	if asked {
 		t.Fatal("explain asked a hook about a call that is not being made")
+	}
+}
+
+// A call the tool itself refuses is shown as refused, whatever policy says.
+func TestPermissionsExplainShowsToolRefusals(t *testing.T) {
+	env, surface, _ := permEnv(t, config.Default())
+	env.pol.Mode = policy.ModeBypass
+	kept := filepath.Join(env.sess.Root, "kept.txt")
+	env.sess.Guard = func(p string, _ []string) error {
+		if p == kept {
+			return errors.New("kept.txt is kept from the agent")
+		}
+		return nil
+	}
+	for _, args := range [][]string{{"explain", "write", filepath.Join(t.TempDir(), "x")}, {"explain", "edit", kept}, {"explain", "write", filepath.Join(env.sess.Root, "fine.txt")}} {
+		if _, err := slashPermissions(context.Background(), env, args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(surface.text()), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "refused · by the write tool") || !strings.Contains(lines[0], "policy alone: allow") ||
+		!strings.Contains(lines[1], "refused · by the edit tool · kept.txt is kept from the agent") || !strings.HasPrefix(lines[2], "allow · step mode") {
+		t.Fatalf("explain said:\n%s", surface.text())
 	}
 }
 

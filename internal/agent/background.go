@@ -66,7 +66,10 @@ const (
 	TermSessionDeleted    TerminalReason = "session_deleted"
 	TermSessionClosed     TerminalReason = "session_closed"
 	TermOwnerInactive     TerminalReason = "owner_inactive"
-	TermLost              TerminalReason = "lost"
+	// TermOwnerRevoked ends what ran for an owner whose access an
+	// administrator withdrew.
+	TermOwnerRevoked TerminalReason = "owner_revoked"
+	TermLost         TerminalReason = "lost"
 	// TermLeaseLost ends what a process ran for a session another process
 	// has since taken over: this one's claim lapsed, and it stops.
 	TermLeaseLost TerminalReason = "lease_lost"
@@ -598,7 +601,7 @@ func noticeStatus(r TerminalReason) string {
 	case TermError, TermRetryExhausted:
 		return "failed"
 	case TermUserInterrupt, TermCancelledByParent, TermSessionDeleted, TermSessionClosed,
-		TermOwnerInactive, TermShutdown, TermLost, TermLeaseLost:
+		TermOwnerInactive, TermOwnerRevoked, TermShutdown, TermLost, TermLeaseLost:
 		return "cancelled"
 	}
 	return string(r)
@@ -1007,6 +1010,9 @@ func (l *Loop) RunWoken(ctx context.Context, w Wake) (TerminalReason, error) {
 		l.wakeDelivery = "caller"
 	}
 	defer func() { l.wakeCap, l.wakeDelivery = 0, "" }()
+	if l.OwnerActive != nil {
+		ctx = context.WithValue(ctx, ownerGateKey{}, l.OwnerActive)
+	}
 	return l.run(ctx)
 }
 
@@ -1264,7 +1270,7 @@ func (b *Background) onRunEnd(reason TerminalReason) {
 	switch reason {
 	case TermCompleted, TermWakeLimit:
 		return
-	case TermError, TermMaxTurns, TermMaxBudget, TermShutdown:
+	case TermError, TermMaxTurns, TermMaxBudget, TermShutdown, TermOwnerInactive, TermOwnerRevoked:
 		b.CancelAll(reason)
 		return
 	}

@@ -71,7 +71,7 @@ func (s *Server) acceptChange(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSaveBytes)
 	var req acceptRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "the request is malformed or too large")
+		badBody(w, err, "the request is malformed")
 		return
 	}
 	v, err := s.openView()

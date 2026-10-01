@@ -138,7 +138,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 			fmt.Printf("rag corpora %s\n", strings.Join(names, ", "))
 		}
 	}
-	fmt.Printf("storage     %s\n", storageLabel(cfg))
+	fmt.Printf("storage     %s\n", serveStorageLabel(cfg))
 	if cfg.Storage.Driver == "postgres" {
 		st, closeFn, err := openStore(context.Background(), cfg)
 		if err != nil {
@@ -150,7 +150,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 			closeFn()
 		}
 	}
-	eventStore, closeStore, err := openStore(context.Background(), cfg)
+	eventStore, closeStore, err := openServeStore(context.Background(), cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -230,7 +230,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	fmt.Printf("%s %s %s  %s\n", bs.Accent(ui.Glyph),
 		bs.Bold("ABHED"), bs.Dim(a.version), browsableURL(addr))
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
-		workspace, provider.Model, sb.Tier(), storageLabel(cfg))
+		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
 	switch {
 	case docsite.Available():

@@ -12,6 +12,8 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/server"
+	"github.com/zybuu-ai/abhed/store/local"
 )
 
 // slashUsage is /usage (and /cost): the session's tokens, how much of the
@@ -110,15 +112,12 @@ func (c *cliState) statusModel(mode string) ui.StatusModel {
 		ModeLocked: c.appCfg.ManagedSets("permissions.mode"),
 		TokensIn:   c.total.InputTokens,
 		TokensOut:  c.total.OutputTokens,
-		Record:     ui.RecordMemory,
+		Record:     c.recordStatus(),
 		GitBranch:  gitBranch(c.workspace),
 		Network:    c.appCfg.Sandbox.AllowNetwork,
 	}
 	if c.adapter != nil {
 		m.Model = c.adapter.Profile().Name
-	}
-	if c.appCfg.Storage.Driver == "postgres" {
-		m.Record = ui.RecordUnverified
 	}
 	m.SandboxTier, m.Network = c.sandbox.tierNow(m.Network)
 	m.BackgroundTasks = c.liveTasks()
@@ -128,6 +127,25 @@ func (c *cliState) statusModel(mode string) ui.StatusModel {
 		}
 	}
 	return m
+}
+
+// recordStatus is what the store the session writes to can claim: the local
+// record, Postgres, which this process has not verified, or memory.
+func (c *cliState) recordStatus() ui.RecordStatus {
+	switch {
+	case c.store == nil:
+		return ui.RecordMemory
+	case isLocalRecord(c.store):
+		return ui.RecordLocal
+	case c.appCfg.Storage.Driver == "postgres":
+		return ui.RecordUnverified
+	}
+	return ui.RecordMemory
+}
+
+func isLocalRecord(es server.EventStore) bool {
+	_, ok := es.(*local.Store)
+	return ok
 }
 
 // contextUse is how much of the window the last model call's prompt took.
@@ -175,6 +193,8 @@ func slashStatus(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 		record = "memory only: this session is gone when Abhed exits"
 	case ui.RecordUnverified:
 		record = storageLabel(cfg)
+	case ui.RecordLocal:
+		record = storageLabel(cfg) + "; kept after Abhed exits"
 	}
 	session := orDefault(st.sessionID, "not started")
 	turns := "no limit"

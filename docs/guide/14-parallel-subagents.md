@@ -241,7 +241,13 @@ still active). Otherwise the notice is recorded as `skipped:<reason>` and
 handled as `notify`. On a server, whenever a result arrives with no run live,
 in any wake mode, the owner is looked up first; if they are no longer active,
 the session's other tasks are cancelled as `owner_inactive`, since nobody may
-answer their asks.
+answer their asks. A woken run asks again before each model call and before
+each of its calls is approved, so access withdrawn while it runs ends it as
+`owner_inactive`, its pending call refused (`action.denied`, step `owner`).
+When an administrator revokes, disables or removes a user, the edition that
+manages accounts stops that user's work on the server at once
+(`StopOwnerBackground`): the live run, background shells and tasks, and
+terminals end as `owner_revoked`, and no wake runs for them afterwards.
 
 **Stop means stop.** An explicit stop cancels every background task: Stop or
 `/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),

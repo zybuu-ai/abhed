@@ -26,6 +26,9 @@ type Settings struct {
 	// ProtectGit keeps commands from writing any git folder's config and
 	// hooks in the workspace, at any depth, where the sandbox can name them.
 	ProtectGit bool
+	// Surface names the entry point (acp, rpc); a new session records it in
+	// its session.started, with the mode it runs in.
+	Surface string
 }
 
 type settingsKey struct{}

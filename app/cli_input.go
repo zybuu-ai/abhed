@@ -135,6 +135,19 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 	if err := claimResumed(ctx, st); err != nil {
 		return err
 	}
+	// A continued conversation records this process's start once it is claimed.
+	if st.startOwed > 0 && st.loop != nil && st.recordStart != nil {
+		events, _ := st.store.Events(st.sessionID)
+		st.recordStart(st.loop.Recorder, st.startOwed)
+		st.startedID, st.startOwed = st.sessionID, 0
+		if st.pol != nil {
+			via := agent.ViaFlag
+			if string(st.pol.Mode) != orDefault(st.appCfg.Permissions.Mode, "default") {
+				via = viaCarried
+			}
+			recordResumedMode(st.loop.Recorder, events, string(st.pol.Mode), via)
+		}
+	}
 	if err := recordMove(st); err != nil {
 		return err
 	}
@@ -145,7 +158,7 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 		if err := recordSession(ctx, st.store, id, st.appCfg); err != nil {
 			return err
 		}
-		st.open(id)
+		st.open(id, 0)
 		// A name given before the conversation existed (record track).
 		afterOpen(st)
 	}

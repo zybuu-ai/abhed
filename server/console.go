@@ -1374,9 +1374,10 @@ function render(ev){
     }
 
     // In the turn, as its calls are, so they read before the answer that follows them.
-    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + (p.description || '')));
+    // Task names, results and reasons are the model's or a command's text: shown, never obeyed.
+    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + visible(p.description || '')));
       if(p.background && p.task_id) bgNames.set(p.task_id, p.description || p.task_id); break;
-    case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+    case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + visible(p.reason || ''))); break;
     // A background task's result entering the conversation. What it says is
     // the subagent's own summary, shown as that and never as the person's.
     case 'subagent.notice': if(p.task_id && p.description) bgNames.set(p.task_id, p.description); tx.appendChild(noticeCard(p)); break;
@@ -1384,7 +1385,7 @@ function render(ev){
     case 'session.woken': {
       const names = (p.task_ids || []).map(id => bgNames.get(id) || id);
       tx.appendChild(node('note woke', p.by === 'caller' ? 'continuing with background results, as asked'
-        : 'continuing with results from ' + (names.length ? names.join(', ') : 'background tasks')));
+        : 'continuing with results from ' + (names.length ? names.map(n => visible(n)).join(', ') : 'background tasks')));
       live = true; $('stop').hidden = false; newTurn(); showThinking('continuing');
       break;
     }
@@ -2080,9 +2081,9 @@ function noticeCard(p){
   const wrap = node('call bgnotice');
   const hdr = node('hdr');
   const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
-  hdr.append(node('tool', 'background'), node('arg', (p.description || p.task_id || '') + ' finished (' + (p.status || p.reason || '') + turns + ')'));
+  hdr.append(node('tool', 'background'), node('arg', visible(p.description || p.task_id || '') + ' finished (' + visible(p.status || p.reason || '') + turns + ')'));
   wrap.appendChild(hdr);
-  wrap.appendChild(node('out', p.content || ''));
+  wrap.appendChild(node('out', visible(p.content || '', true)));
   wrap.appendChild(node('note', p.delivery === 'idle' ? 'result added to the conversation; the agent sees it with your next message' : 'result added to the conversation'));
   return wrap;
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
@@ -83,6 +84,18 @@ func TestTerminalLineConfirmsDestructiveCommands(t *testing.T) {
 		!strings.Contains(string(ds[0].Payload), `"step":"destructive"`) {
 		t.Fatalf("declined record: %+v", ds)
 	}
+
+	// A confirmation with no ask before it, or too soon after one, is asked again.
+	if again := wb.typeLine(ptyStartRequest{Command: command, Confirmed: true}); again.Confirm == "" || again.ID != "" || !kept() {
+		t.Fatalf("confirmed with no ask: %+v", again)
+	}
+	if again := wb.typeLine(ptyStartRequest{Command: command, Confirmed: true}); again.Confirm == "" || again.ID != "" || !kept() {
+		t.Fatalf("confirmed as the ask appeared: %+v", again)
+	}
+	if len(requestedIDs(wb, command)) != 1 {
+		t.Fatal("an answer taken too soon was recorded")
+	}
+	time.Sleep(lineConfirmGuard + 20*time.Millisecond)
 
 	// Confirmed: runs, and the record says it was confirmed.
 	confirmed := wb.typeLine(ptyStartRequest{Command: command, Confirmed: true})

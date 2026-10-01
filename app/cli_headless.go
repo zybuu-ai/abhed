@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,6 +275,52 @@ func (sp systemPrompt) record(into map[string]any) {
 	}
 }
 
+// resumedStart is start for a run that continues a recorded conversation
+// after seq after: marked resumed, with the step it goes on from.
+func resumedStart(start map[string]any, after int64) map[string]any {
+	if start == nil || after == 0 {
+		return start
+	}
+	out := maps.Clone(start)
+	out["resumed"], out["through_seq"] = true, after
+	return out
+}
+
+// recordedMode is the permission mode a record was left in: the last
+// mode.changed, or else the mode the last session.started names.
+func recordedMode(events []agent.Event) string {
+	mode := ""
+	for _, ev := range agent.Live(events) {
+		switch ev.Type {
+		case agent.EvSessionStarted:
+			var p struct {
+				Mode string `json:"mode"`
+			}
+			if json.Unmarshal(ev.Payload, &p) == nil && p.Mode != "" {
+				mode = p.Mode
+			}
+		case agent.EvModeChanged:
+			var m agent.ModeChanged
+			if json.Unmarshal(ev.Payload, &m) == nil {
+				mode = m.To
+			}
+		}
+	}
+	return mode
+}
+
+// recordResumedMode records a mode.changed when a continued run's mode is
+// not the one its record was left in, so the record never shows the old one.
+func recordResumedMode(rec *agent.Recorder, events []agent.Event, now, via string) {
+	if was := recordedMode(events); was != "" && now != "" && was != now {
+		if _, err := rec.Record(agent.EvModeChanged, agent.ActorUser, agent.Trusted, agent.ModeChanged{
+			From: was, To: now, By: agent.ByUser, Via: via,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: recording the mode: %v\n", err)
+		}
+	}
+}
+
 // recordStart records how the session was started. The CLI recorded
 // nothing before the first message, so a changed system prompt left no
 // trace in the record.
@@ -346,7 +393,6 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			}
 		}
 	}()
-	recordStart(rec, o.start)
 	if o.fallback != nil {
 		o.fallback.SetRecord(recordFallback(rec))
 	}
@@ -356,6 +402,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
 	seed(loop)
+	// After the seed, so a continued session's start follows its record.
+	resumedAfter := rec.LastAppended()
+	var before []agent.Event
+	if resumedAfter > 0 {
+		before, _ = store.Events(sessionID)
+	}
+	recordStart(rec, resumedStart(o.start, resumedAfter))
+	if mode, _ := o.start["mode"].(string); resumedAfter > 0 {
+		recordResumedMode(rec, before, mode, agent.ViaFlag)
+	}
 	if startFlags.Name != "" {
 		_, _ = loop.Recorder.Record(agent.EvSessionNamed, agent.ActorUser, agent.Trusted, agent.SessionNamed{Name: startFlags.Name})
 	}
@@ -368,6 +424,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
+	if extHost != nil && extHost.Len() > 0 {
+		recordFired(extHost, func() *agent.Recorder { return rec })
+	}
 
 	var (
 		reason     agent.TerminalReason

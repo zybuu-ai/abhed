@@ -104,7 +104,7 @@ func TestModelStatusUsageOnPty(t *testing.T) {
 	h.Type("/status\r")
 	h.WaitText("turn limit")
 	s := h.WaitText("record")
-	if !s.Contains("model-b (b)") || !s.Contains("memory only") {
+	if !s.Contains("model-b (b)") || !s.Contains("local record, chained") {
 		t.Fatalf("status:\n%s", s.Text())
 	}
 	closePanel(h)

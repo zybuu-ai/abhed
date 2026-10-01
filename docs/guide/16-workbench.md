@@ -232,7 +232,7 @@ names, so keeping a folder from the agent takes both `write(...)` and
 `edit(...)`. None of them binds a command: `rm -rf vault` in the terminal, or from
 the agent's `bash`, is judged by `bash(...)` rules, so keep a folder with a
 `bash(...)` rule as well where that matters. A destructive command such as
-`rm -r` always asks, `Run it? [y/N]` in the line terminal.
+`rm -r` always asks, by number, in the line terminal.
 Policy hooks and extensions are shown the action (`mkdir`, `rename` or
 `delete`, with a `path` and, for a rename, a `to`), not a `bash` call; a rename
 reaches them for each name, and as a `delete` for the old name, and a folder's
@@ -377,8 +377,13 @@ or with a policy hook such as an extension, gets that mode without asking,
 because a managed rule is an organisation's statement that it holds, and a
 hook may refuse any command.
 A destructive line, one that always confirms, is not run on Enter: the terminal
-shows why and asks `Run it? [y/N]`, and only `y` runs it, recorded as confirmed;
-anything else cancels it and the lines queued behind it, recorded as declined.
+shows why and asks `1` No or `2` Yes, run it. Only `2` then Enter runs it,
+recorded as confirmed; `1` or Ctrl-C cancels it, the lines queued behind it and
+anything typed after it, recorded as declined. Nothing is chosen for Enter: Enter, a letter or a paste
+asks again, and keys typed in the first 300 ms after the question appears are
+ignored, so an answer typed behind the line is never taken. The server holds the
+same rule: a confirmation is accepted only for a line it asked about, 300 ms
+or more before.
 Any other line is approved by typing it.
 Once a line runs, the program it started owns the terminal until it exits:
 `vi`, `less`, `top` or a Python prompt gets every key as typed, Esc, the arrow

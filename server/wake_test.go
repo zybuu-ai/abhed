@@ -86,14 +86,20 @@ func TestWakeSkippedOwnerInactive(t *testing.T) {
 	}
 }
 
-// The owner lookup, which may take seconds, is never made while the
-// conversation is locked: anything needing the run lock goes on meanwhile.
+// The owner lookup before an idle delivery, which may take seconds, is never
+// made while the conversation is locked: anything needing the run lock goes
+// on meanwhile. (The woken run asks again from inside itself, where the run
+// holds the lock anyway; only the first lookup is the idle one.)
 func TestOwnerLookupOutsideTheRunLock(t *testing.T) {
 	var live atomic.Pointer[liveSession]
+	var first atomic.Bool
 	unlocked := make(chan bool, 4)
 	b := newBGServerWith(t, nil, func(c *config.Config, o *Options) {
 		c.Subagents.Wake = "auto"
 		o.OwnerActive = func(context.Context, string, string) bool {
+			if !first.CompareAndSwap(false, true) {
+				return true
+			}
 			l := live.Load()
 			done := make(chan struct{})
 			go func() { l.Loop.SetHistory(l.Loop.Messages(), 0); close(done) }()
@@ -157,11 +163,93 @@ func TestLocalOwnerActive(t *testing.T) {
 	cfg.Auth.Mode = "local"
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{}, Registry: tools.NewRegistry(tools.Read{}),
 		Auth: &auth.Middleware{Providers: []auth.Provider{local}}})
-	for user, want := range map[string]bool{"alice": true, "alice@example.com": true, "bob": false} {
+	// Sessions carry owner keys, as Identity.Owner makes them; never a bare name or email.
+	for user, want := range map[string]bool{auth.LocalOwner("alice"): true, auth.LocalOwner("Alice"): true,
+		"alice": false, "alice@example.com": false, auth.LocalOwner("bob"): false} {
 		if got := s.ownerActive(&liveSession{User: user}); got != want {
 			t.Fatalf("%s active = %v", user, got)
 		}
 	}
+}
+
+// On serve with local accounts, a signed-in owner's background task outlives
+// the turn and its result wakes the session.
+func TestLocalAccountBackgroundSurvivesAndWakes(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Subagents.Wake = "auto"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	if err := local.CreateUser(context.Background(), auth.User{Username: "bob"}, "correct-horse-1"); err != nil {
+		t.Fatal(err)
+	}
+	ad := newBGAdapter("one")
+	st := agent.NewMemStore()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{}), Store: st,
+		Auth: &auth.Middleware{Providers: []auth.Provider{local}, PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
+	g := &gateRig{h: s.Handler(), local: local}
+	bob := g.signIn(t, "bob")
+	rec := g.do(bob, "POST", "/v1/sessions", `{"prompt":"bg:one"}`)
+	var created createResponse
+	if json.Unmarshal(rec.Body.Bytes(), &created) != nil || created.SessionID == "" {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	id := created.SessionID
+	b := &bgServer{t: t, s: s, h: s.Handler(), ad: ad, store: st}
+	waitUntil(t, "the turn to end with the task running", func() bool { return b.state(id) == "background" })
+	if owner := b.live(id).User; owner != auth.LocalOwner("bob") {
+		t.Fatalf("owner = %q", owner)
+	}
+	ad.release("one")
+	waitUntil(t, "the wake run", func() bool { return countType(b.events(id), agent.EvSessionWoken) == 1 })
+	for _, r := range payloadsOf(b.events(id), agent.EvSubagentReturn) {
+		if r["reason"] == string(agent.TermOwnerInactive) {
+			t.Fatalf("the task was cancelled as owner_inactive: %v", r)
+		}
+	}
+}
+
+// On a multi-user local-accounts server a wake's ask waits for its owner:
+// another account cannot answer it and nothing approves it on its own.
+func TestLocalAccountWakeAskReachesOnlyItsOwner(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Subagents.Wake = "auto"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	for _, name := range []string{"bob", "carol"} {
+		if err := local.CreateUser(context.Background(), auth.User{Username: name}, "correct-horse-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ad := newBGAdapter("one")
+	ad.askOnWake = true
+	st := agent.NewMemStore()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{}, tools.Bash{}), Store: st,
+		Auth: &auth.Middleware{Providers: []auth.Provider{local}, PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
+	g := &gateRig{h: s.Handler(), local: local}
+	bob, carol := g.signIn(t, "bob"), g.signIn(t, "carol")
+	rec := g.do(bob, "POST", "/v1/sessions", `{"prompt":"bg:one"}`)
+	var created createResponse
+	if json.Unmarshal(rec.Body.Bytes(), &created) != nil || created.SessionID == "" {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	id := created.SessionID
+	b := &bgServer{t: t, s: s, h: s.Handler(), ad: ad, store: st}
+	waitUntil(t, "the turn to end with the task running", func() bool { return b.state(id) == "background" })
+	ad.release("one")
+	waitUntil(t, "the wake's ask", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := g.do(carol, "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code < 300 {
+		t.Fatalf("another account answered the wake's ask: %d", rec.Code)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for _, a := range payloadsOf(b.events(id), agent.EvActionApproved) {
+		if a["call_id"] != "tone" {
+			t.Fatalf("the wake's ask was approved without its owner: %v", a)
+		}
+	}
+	if rec := g.do(bob, "POST", "/v1/sessions/"+id+"/approve", `{"approved":false}`); rec.Code >= 300 {
+		t.Fatalf("the owner's answer: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "done", func() bool { return b.state(id) == "done" })
 }
 
 // A wake run that stopped at its cap with a person's message queued after

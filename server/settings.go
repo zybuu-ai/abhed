@@ -254,7 +254,7 @@ type mcpRequest struct {
 func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	var req mcpRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request")
+		badBody(w, err, "invalid request")
 		return
 	}
 	if (req.Command == "") == (req.URL == "") {

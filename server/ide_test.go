@@ -46,7 +46,7 @@ globalThis.__root = new El('div');
 	}
 }
 
-// A destructive line waits at [y/N] and only y confirms it; a running program
+// A destructive line waits at a numbered question and only 2 confirms it; a running program
 // gets every key raw, and Tab completes from the workspace listing.
 func TestIDELineTerminalConfirmsDestructiveLines(t *testing.T) {
 	harness := `globalThis.__sent = []; globalThis.__replies = []; globalThis.__attached = null;
@@ -505,5 +505,31 @@ const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:
 `
 	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's panels failed:\n%s", out)
+	}
+}
+
+// Every place the workbench draws a file name, and the live reply and
+// reasoning, writes hidden characters out through reveal.
+func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
+	for fn, wants := range map[string][]string{
+		"function drawTabs(){":             {"el('span', 'nm', reveal(t.label))", "b.title = reveal(", "'Close ' + reveal(t.label)"},
+		"function crumbs(path, meta){":     {"reveal(p)"},
+		"function flushStream(){":          {"appendData(reveal(pendThink, true))", "appendData(reveal(pendText, true))"},
+		"async function loadChanges(){":    {"reveal(f.path)"},
+		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true)"},
+	} {
+		start := strings.Index(ideHTML, fn)
+		if start < 0 {
+			t.Fatalf("%s is missing", fn)
+		}
+		body := ideHTML[start : start+strings.Index(ideHTML[start:], "\n}\n")]
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does not reveal: want %q", fn, want)
+			}
+		}
+	}
+	if !strings.Contains(ideHTML, "confirm('Delete ' + reveal(e.path)") {
+		t.Error("the delete dialog draws the path raw")
 	}
 }

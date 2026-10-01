@@ -10,6 +10,8 @@ const (
 	RecordUnverified RecordStatus = "unverified"
 	// RecordMemory is a record held only in memory, gone when the process ends.
 	RecordMemory RecordStatus = "memory"
+	// RecordLocal is the local chained record on disk, kept after the process ends.
+	RecordLocal RecordStatus = "local"
 )
 
 // StatusModel is everything the footer, /status and a statusline command

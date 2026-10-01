@@ -672,9 +672,9 @@ function drawTabs(){
   for(const t of tabs){
     const b = el('div', 'tab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t.id === active)); b.tabIndex = 0;
     if(t.kind === 'diff') b.appendChild(el('span', 'k', 'diff'));
-    b.appendChild(el('span', 'nm', t.label)); b.title = t.path || t.label;
+    b.appendChild(el('span', 'nm', reveal(t.label))); b.title = reveal(t.path || t.label);
     if(t.dirty) b.appendChild(el('span', 'dot', '●'));
-    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.label);
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + reveal(t.label));
     x.addEventListener('click', e => { e.stopPropagation(); if(t.dirty && !x.dataset.sure){ x.dataset.sure = '1'; x.textContent = 'discard?'; return; } closeTab(t.id); });
     b.appendChild(x);
     b.addEventListener('click', () => { if(active === t.id) return; keepView(); active = t.id; drawTabs(); showTab(t); });
@@ -687,7 +687,7 @@ function drawTabs(){
 }
 function crumbs(path, meta){
   $('crumbs').hidden = !path; const c = $('crumb'); clear(c);
-  if(path) path.split('/').forEach((p, i, all) => { if(i) c.appendChild(el('span', 'sep codicon codicon-chevron-right')); c.appendChild(el('span', i === all.length - 1 ? 'leaf' : '', p)); });
+  if(path) path.split('/').forEach((p, i, all) => { if(i) c.appendChild(el('span', 'sep codicon codicon-chevron-right')); c.appendChild(el('span', i === all.length - 1 ? 'leaf' : '', reveal(p))); });
   $('crumb-meta').textContent = meta || ''; if(!path) $('crumb-pos').textContent = '';
 }
 
@@ -875,7 +875,7 @@ async function loadTree(path, into, depth){
   for(const e of res.entries){
     const row = el('button', 'row'); row.type = 'button'; row.style.paddingLeft = (8 + depth * 14) + 'px'; row.dataset.path = e.path;
     if(treeSel && treeSel.path === e.path) row.classList.add('sel');
-    row.appendChild(el('span', 'tw codicon' + (e.dir ? ' codicon-chevron-right' : ''))); row.appendChild(el('span', 'name', e.name));
+    row.appendChild(el('span', 'tw codicon' + (e.dir ? ' codicon-chevron-right' : ''))); row.appendChild(el('span', 'name', reveal(e.name)));
     row.addEventListener('contextmenu', ev => { ev.preventDefault(); selectRow(row, e); treeMenu(ev.clientX, ev.clientY, e); });
     row.addEventListener('keydown', ev => {
       if(ev.key === 'F2'){ ev.preventDefault(); renameEntry(e, row); }
@@ -966,7 +966,7 @@ function retarget(from, to){
   const t = activeTab(); drawTabs(); if(t) crumbs(t.path, 'renamed');
 }
 async function deleteEntry(e){
-  if(!confirm('Delete ' + e.path + (e.dir ? ' and everything in it' : '') + '? This is recorded as your action and cannot be undone here.')) return;
+  if(!confirm('Delete ' + reveal(e.path) + (e.dir ? ' and everything in it' : '') + '? This is recorded as your action and cannot be undone here.')) return;
   try{
     await api('/v1/sessions/' + current + '/delete', {method:'POST', body: JSON.stringify({path:e.path})});
     tabs.filter(t => t.path === e.path || t.path.startsWith(e.path + '/')).forEach(t => closeTab(t.id));
@@ -1030,8 +1030,8 @@ async function runSearch(){
     (r.truncated ? ' · stopped at ' + why + '; narrow the search' : '') : 'No results.';
   for(const f of r.files){
     const head = el('button', 'row sfile'); head.type = 'button'; head.title = f.path;
-    head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', f.path.split('/').pop()));
-    head.appendChild(el('span', 'd', parentOf(f.path))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
+    head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', reveal(f.path.split('/').pop())));
+    head.appendChild(el('span', 'd', reveal(parentOf(f.path)))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
     const list = el('div'); box.appendChild(head); box.appendChild(list);
     head.addEventListener('click', () => { list.hidden = !list.hidden; head.firstChild.className = 'tw codicon codicon-chevron-' + (list.hidden ? 'right' : 'down'); });
     for(const m of f.matches){
@@ -1061,7 +1061,7 @@ async function loadChanges(){
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
-    row.appendChild(el('span', 'name mono', f.path));
+    row.appendChild(el('span', 'name mono', reveal(f.path)));
     const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
     row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
   }
@@ -1358,11 +1358,16 @@ function tail(p){ const parts = p.split('/').filter(Boolean); return parts.lengt
 // draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
 // spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
 function visible(s, lines){
-  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+  return reveal(String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
     // Eight columns inside a line (a tab counts eight); indentation only from 32.
     const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
     return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
-  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+  }), lines);
+}
+// reveal is visible without the spacing rule, for prose and code whose layout is its own:
+// replies, reasoning, and file names in the explorer, tabs and dialogs.
+function reveal(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1406,10 +1411,10 @@ function flushStream(){
   if(flushRaf){ cancelAnimationFrame(flushRaf); flushRaf = 0; }
   if(!pendText && !pendThink) return;
   const stick = nearBottom();
-  if(pendThink){ thinkLive().body.appendData(pendThink); pendThink = ''; }
+  if(pendThink){ thinkLive().body.appendData(reveal(pendThink, true)); pendThink = ''; }
   if(pendText){
     if(!streaming){ streaming = bubble('agent', 'abhed', ''); streamBody = streaming.lastChild; add(streaming); }
-    streamBody.appendData(pendText); pendText = '';
+    streamBody.appendData(reveal(pendText, true)); pendText = '';
   }
   follow(stick);
 }
@@ -1427,7 +1432,7 @@ function thinkLive(at){
 }
 function endThinking(at, whole){
   const t = thinkBlock; if(!t) return false;
-  if(whole != null && whole !== t.body.data) t.body.data = whole;
+  if(whole != null && reveal(whole, true) !== t.body.data) t.body.data = reveal(whole, true);
   if(t.live){ t.live = false; t.secs = Math.max(1, Math.round(((at || Date.now()) - t.since) / 1000)); t.node.classList.remove('live'); if(!t.pinned) t.node.open = false; }
   t.summary.textContent = '▸ thought for ' + t.secs + 's · ' + words(t.body.data) + ' words';
   return true;
@@ -1451,7 +1456,7 @@ function mdInline(parent, s){
   if(at < s.length) parent.appendChild(document.createTextNode(s.slice(at)));
 }
 function md(text){
-  const root = el('div', 'md'), lines = String(text || '').split('\n');
+  const root = el('div', 'md'), lines = reveal(String(text || ''), true).split('\n');
   let list = null, kind = '', para = null, quote = null;
   const flat = () => { list = null; kind = ''; para = null; quote = null; };
   for(let i = 0; i < lines.length; i++){
@@ -1590,7 +1595,7 @@ function render(ev){
     follow(stick); break; }
   case 'agent.reasoning':
     if(thinkBlock){ endThinking(at, p.text || ''); thinkBlock = null; break; }
-    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); }
+    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', reveal(p.text || '', true))); add(d); }
     break;
   case 'action.requested': {
     // The chat is the conversation with the agent: what the person did by
@@ -1633,17 +1638,21 @@ function render(ev){
   case 'compaction.started': if(live) waiting('Compacting context'); break;
   case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
-  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || '')));
+  // Task names, results and reasons are the model's or a command's text: shown, never obeyed (bidi, zero-width).
+  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + visible(p.description || '')));
     if(p.background && p.task_id){ bgTasks.set(p.task_id, {name: p.description || p.task_id, state:'running'}); drawBg(); } break;
-  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + visible(p.reason || ''))); break;
+  // A background shell is listed in the status bar while it runs, as a task is.
+  case 'shell.started': if(p.shell_id){ bgTasks.set(p.shell_id, {name: p.description || p.command || p.shell_id, state:'running'}); drawBg(); } break;
+  case 'shell.ended': if(p.shell_id){ bgTasks.set(p.shell_id, {name: (bgTasks.get(p.shell_id) || {}).name || p.shell_id, state: p.state || 'ended'}); drawBg(); } break;
   // A background task's result: the subagent's summary, never the person's words.
   case 'subagent.notice': { const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
-    add(el('div', 'sys bgnotice', 'background: ' + (p.description || p.task_id || '') + ' finished (' + (p.status || p.reason || '') + turns + '); result added to the conversation'));
-    if(p.content) add(el('div', 'sys bgbody', p.content));
+    add(el('div', 'sys bgnotice', 'background: ' + visible(p.description || p.task_id || '') + ' finished (' + visible(p.status || p.reason || '') + turns + '); result added to the conversation'));
+    if(p.content) add(el('div', 'sys bgbody', visible(p.content, true)));
     if(p.task_id){ bgTasks.set(p.task_id, {name: p.description || (bgTasks.get(p.task_id) || {}).name || p.task_id, state: p.status || p.reason || 'done'}); drawBg(); } break; }
   // A turn the session started itself for finished background work: drawn live like any other.
   case 'session.woken': { const names = (p.task_ids || []).map(id => (bgTasks.get(id) || {}).name || id);
-    add(el('div', 'sys woke', p.by === 'caller' ? 'continuing with background results, as asked' : 'continuing with results from ' + (names.length ? names.join(', ') : 'background tasks')));
+    add(el('div', 'sys woke', p.by === 'caller' ? 'continuing with background results, as asked' : 'continuing with results from ' + (names.length ? names.map(n => visible(n)).join(', ') : 'background tasks')));
     streaming = streamBody = null; if(!live){ if(bgLive) setLive(true); recheckSoon(); } if(live) waiting('Thinking'); break; }
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   // Its row stays in the chat, so a reopened session shows what was decided.
@@ -1696,7 +1705,7 @@ async function recheck(id){
 function drawBg(){
   const n = $('s-bg'), running = [...bgTasks.values()].filter(t => t.state === 'running');
   n.hidden = !running.length; n.textContent = running.length ? '◷ ' + running.length + ' background: ' + running.map(t => visible(t.name)).join(', ') : '';
-  n.title = [...bgTasks.values()].map(t => t.name + ' · ' + t.state).join('\n');
+  n.title = [...bgTasks.values()].map(t => visible(t.name) + ' · ' + visible(t.state)).join('\n');
 }
 // subagentRow is the chat's row for a subagent's call put to an approver or
 // refused, made the first time the record names it.
@@ -1813,7 +1822,7 @@ function drawTermTabs(){
   const bar = $('ttabs'); clear(bar);
   for(const t of terms){
     const b = el('div', 'ttab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t === activeTerm)); b.tabIndex = 0;
-    const nm = el('span', 'nm', t.name); if(t.kind !== 'agent') nm.title = 'Double-click to rename'; b.appendChild(nm);
+    const nm = el('span', 'nm', reveal(t.name)); if(t.kind !== 'agent') nm.title = 'Double-click to rename'; b.appendChild(nm);
     if(t.run) b.appendChild(el('span', 'live', '●'));
     const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.name);
     x.addEventListener('click', e => { e.stopPropagation(); closeTerm(t); });
@@ -2097,7 +2106,7 @@ async function runLine(t, cmd, answer){
   let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
-  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
+  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\n'); askConfirm(t); return; }
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   // A cd that was not followed says so, rather than leaving the next line to run elsewhere.
   if(r.note) t.term.write('\x1b[33m' + r.note.replace(/\p{Cc}/gu, '?') + '\x1b[0m');
@@ -2105,16 +2114,24 @@ async function runLine(t, cmd, answer){
   if(!r.id || r.cd){ nextLine(t); return; }
   attach(t, r.id);
 }
-// Only a typed y, then Enter, runs a command that always confirms; anything else cancels it.
+// A key this soon after the confirmation appears is ignored: it was typed for something else.
+const CONFIRM_GUARD = 300;
+const askConfirm = t => { t.line = ''; t.confirmAt = Date.now(); t.term.write('  1. No\r\n  2. Yes, run it\r\nanswer 1-2: '); };
+// Only 2, typed then Enter, runs a command that always confirms; 1 or Ctrl-C cancels it.
+// Enter or anything else asks again; nothing is chosen for Enter, and a paste is no answer.
 function confirmData(t, d){
   // Escape keys are no answer, wherever they fall in what arrived.
   d = d.replace(keySeq, '');
+  if(!d.includes('\x03') && (Date.now() - t.confirmAt < CONFIRM_GUARD)) return;
+  if(!d.includes('\x03') && [...d].length > 1){ t.term.write('\r\n\x1b[2mpasted text is no answer; type 1 or 2\x1b[0m\r\n'); askConfirm(t); return; }
   for(const ch of d){
     if(ch === '\r' || ch === '\n' || ch === '\x03'){
-      const cmd = t.confirm, yes = ch !== '\x03' && /^y$/i.test(t.line.trim());
-      t.confirm = null; t.line = ch === '\x03' ? '' : t.ahead || ''; t.ahead = '';
+      const n = ch === '\x03' ? '1' : t.line.trim();
+      if(n !== '1' && n !== '2'){ t.term.write('\r\n'); askConfirm(t); return; }
+      const cmd = t.confirm, yes = n === '2';
+      // A declined line drops what was typed behind it, entered or not, as Ctrl-C does.
+      t.confirm = null; t.line = yes ? t.ahead || '' : ''; t.ahead = '';
       t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
-      // A declined line stops the lines queued behind it, as Ctrl-C does.
       if(!yes) t.queue = [];
       runLine(t, cmd, yes ? 'confirmed' : 'declined'); return;
     }

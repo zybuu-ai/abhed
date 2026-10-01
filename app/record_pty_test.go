@@ -39,7 +39,11 @@ func TestPtyContinueAfterExit(t *testing.T) {
 	h.Type("And now?")
 	h.Key(clitest.Enter)
 	h.WaitText("again")
-	if r := h.Record(); !r.Verified || r.Events[0].SessionID != first.Events[0].SessionID {
+	r := h.Record()
+	for deadline := time.Now().Add(5 * time.Second); !r.Verified && time.Now().Before(deadline); r = h.Record() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !r.Verified || r.Events[0].SessionID != first.Events[0].SessionID {
 		t.Fatal("-c did not continue the verified session")
 	}
 	h.Exit(0)

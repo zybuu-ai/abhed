@@ -118,7 +118,7 @@ func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 		Provider string `json:"provider"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request")
+		badBody(w, err, "invalid request")
 		return
 	}
 	if s.draining.Load() {

@@ -228,10 +228,12 @@ type Options struct {
 	// SkillDirs, which holds each loaded skill's own directory so its assets
 	// can be read. A reload has to scan the roots.
 	SkillRoots []string
-	// OwnerActive says whether a session's owner may still act, before an
-	// automatic wake run starts on their behalf; nil uses the local
-	// accounts when there are any, and assumes active otherwise. An edition
-	// supplies its own to cover disabled or departed users.
+	// OwnerActive says whether a session's owner may still act: before an
+	// automatic wake run starts on their behalf, and again inside it before
+	// each model call and approval. Nil uses the local accounts when there
+	// are any, and assumes active otherwise. An edition supplies its own to
+	// cover revoked, disabled or departed users; it must answer false when
+	// it cannot tell.
 	OwnerActive func(ctx context.Context, tenant, user string) bool
 	// Agents are the subagent types sessions offer: the built-in roles and
 	// the loaded definitions. Nil offers the built-in roles only, until an
@@ -349,6 +351,8 @@ type liveSession struct {
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
 	manualMu sync.Mutex
+	// lineAsks is when each destructive terminal line was last asked about, under manualMu.
+	lineAsks map[string]time.Time
 	// shellMu orders the start of interactive shells, which need no manualMu.
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.
@@ -1005,7 +1009,7 @@ var errBadMode = errors.New("mode may only narrow permissions; a client may requ
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	idle := req.Workbench && strings.TrimSpace(req.Prompt) == ""
@@ -1339,6 +1343,15 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		BeforeIdle: func() { s.checkOwner(live) },
 		Wake:       func(ids []string) bool { return s.wake(live, ids) },
 	})
+	// Asked again inside a woken run, before each model call and approval:
+	// access withdrawn while it runs ends it.
+	loop.OwnerActive = func() bool {
+		active := s.ownerActive(live)
+		if !active {
+			live.ownerGone.Store(true)
+		}
+		return active
+	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget
@@ -2366,7 +2379,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
@@ -2791,8 +2804,62 @@ func (s *Server) checkOwner(live *liveSession) {
 	}
 }
 
+// StopOwnerBackground stops what this process runs for an owner whose access
+// was withdrawn: each of their sessions' live run, background shells and
+// tasks, and terminals, recorded as owner_revoked; and no wake starts for
+// those sessions until the owner is found active again. An empty tenant
+// matches every tenant; sessions already released from the owner (see
+// ReleaseSessions) are matched too. It returns how many it stopped. ctx
+// bounds the wait for the runs to record their end.
+func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) int {
+	if user == "" || user == auth.Anonymous || auth.OwnsNothing(user) {
+		return 0
+	}
+	released := auth.UnclaimedOwner(user)
+	s.mu.RLock()
+	var hit []*liveSession
+	for _, live := range s.running {
+		if (tenant == "" || live.Tenant == tenant) && (live.User == user || live.User == released) {
+			hit = append(hit, live)
+		}
+	}
+	s.mu.RUnlock()
+	n := 0
+	var ran []chan struct{}
+	for _, live := range hit {
+		live.ownerGone.Store(true)
+		stopped := 0
+		live.mu.Lock()
+		stop, run := live.cancelCause, live.ran
+		live.mu.Unlock()
+		if stop != nil && run != nil {
+			stop(agent.StopCause{Reason: agent.TermOwnerRevoked})
+			ran = append(ran, run)
+			stopped++
+		}
+		if live.Loop != nil {
+			stopped += live.Loop.Background.CancelAll(agent.TermOwnerRevoked)
+		}
+		stopped += len(live.closeTerminals())
+		if stopped > 0 {
+			s.log.Warn("stopped an owner's work", "session", live.ID, "owner", user,
+				"stopped", stopped, "reason", "owner access revoked")
+		}
+		n += stopped
+	}
+	for _, ch := range ran {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return n
+		case <-time.After(turnEndWait):
+		}
+	}
+	return n
+}
+
 // ownerActive asks Options.OwnerActive, or the local accounts when there
-// are any: the owner's account must still exist.
+// are any: the owner's account must still exist. live.User is an owner key.
 func (s *Server) ownerActive(live *liveSession) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2808,7 +2875,8 @@ func (s *Server) ownerActive(live *liveSession) bool {
 		return false // unknown is not active: no run starts on their behalf
 	}
 	for _, u := range users {
-		if u.Username == live.User || u.Email != "" && u.Email == live.User {
+		// Sessions are owned by the owner key, as Identity.Owner makes it.
+		if auth.LocalOwner(u.Username) == live.User {
 			return true
 		}
 	}
@@ -3028,7 +3096,7 @@ func (s *Server) setWake(w http.ResponseWriter, r *http.Request) {
 		Wake string `json:"wake"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	if err := live.Loop.Background.SetWake(agent.WakeMode(req.Wake), agent.ByUser); err != nil {
@@ -3070,7 +3138,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req approveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		badBody(w, err, "invalid JSON body")
 		return
 	}
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
@@ -3264,8 +3332,7 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		Invite   string `json:"invite,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "invalid request"})
+		badBody(w, err, "invalid request")
 		return
 	}
 	// Three admission modes. Open registration on a public URL hands a
@@ -3891,6 +3958,16 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 // WriteError writes the {"error": msg} shape the console expects.
 func WriteError(w http.ResponseWriter, status int, msg string) {
 	WriteJSON(w, status, map[string]string{"error": msg})
+}
+
+// badBody answers a body that failed to decode: 413 when it was over the
+// size cap, and otherwise 400 with msg.
+func badBody(w http.ResponseWriter, err error, msg string) {
+	if tooBig := new(http.MaxBytesError); errors.As(err, &tooBig) {
+		WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the request body is larger than %d bytes", tooBig.Limit))
+		return
+	}
+	WriteError(w, http.StatusBadRequest, msg)
 }
 
 // ListenAndServe starts the HTTP server.
