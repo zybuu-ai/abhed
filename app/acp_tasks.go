@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/ui"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -69,10 +70,11 @@ func (s *acpSession) taskInfo(ti abhed.TaskInfo) map[string]any {
 	note := s.notes[ti.ID]
 	waiting := s.waiting[ti.ID]
 	s.mu.Unlock()
-	out := map[string]any{"task_id": ti.ID, "description": ti.Description, "status": ti.Status,
+	// Model-written and tool-output text is escaped, as tool titles are.
+	out := map[string]any{"task_id": ti.ID, "description": ui.VisibleLine(ti.Description), "status": ti.Status,
 		"started": ti.Started.UTC().Format(time.RFC3339), "waiting_asks": waiting}
 	for k, v := range map[string]string{"agent_type": ti.AgentType, "provider": ti.Provider, "model": ti.Model,
-		"reason": ti.Reason, "summary": ti.Summary, "branch": note.branch} {
+		"reason": ti.Reason, "summary": ui.Visible(ti.Summary), "branch": note.branch} {
 		if v != "" {
 			out[k] = v
 		}
@@ -82,7 +84,7 @@ func (s *acpSession) taskInfo(ti abhed.TaskInfo) map[string]any {
 	}
 	out["kind"] = ti.Kind
 	if ti.Kind == agent.KindShell {
-		for k, v := range map[string]string{"command": ti.Command, "last_line": ti.LastLine} {
+		for k, v := range map[string]string{"command": ui.VisibleLine(ti.Command), "last_line": ui.VisibleLine(ti.LastLine)} {
 			if v != "" {
 				out[k] = v
 			}

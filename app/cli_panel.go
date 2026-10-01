@@ -251,7 +251,7 @@ func (p *workPanel) view(id string) {
 	if !found {
 		return
 	}
-	title := fmt.Sprintf("%s · %s · read-only", j.Kind, sanitizeLine(j.Title))
+	title := fmt.Sprintf("%s · %s · read-only", sanitizeLine(j.Kind), sanitizeLine(j.Title))
 	_ = p.editor.Panel(context.Background(), ui.PanelSpec{Title: title,
 		Body: []ui.Block{{Kind: ui.BlockToolOut, Text: p.recordText(j)}}})
 }
@@ -269,21 +269,22 @@ func (p *workPanel) recordText(j jobRow) string {
 			return strings.TrimRight(b.String(), "\n")
 		}
 	}
-	fmt.Fprintf(&b, "%s: %s\nstatus: %s", j.Kind, j.Title, j.Status)
+	fmt.Fprintf(&b, "%s: %s\nstatus: %s", sanitizeLine(j.Kind), sanitizeLine(j.Title), j.Status)
 	if j.ExitCode != nil {
 		fmt.Fprintf(&b, " (exit code %d)", *j.ExitCode)
 	}
 	if j.Activity != "" {
-		fmt.Fprintf(&b, "\nlast output: %s", j.Activity)
+		fmt.Fprintf(&b, "\nlast output: %s", sanitizeLine(j.Activity))
 	}
 	if j.Summary != "" {
-		fmt.Fprintf(&b, "\n\n%s", j.Summary)
+		fmt.Fprintf(&b, "\n\n%s", ui.Visible(j.Summary))
 	}
 	return b.String()
 }
 
-// sanitizeLine keeps a title to one line.
-func sanitizeLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+// sanitizeLine keeps untrusted text (a title, a shell's output) to one line
+// and shows its escape sequences and hidden characters instead of sending them.
+func sanitizeLine(s string) string { return ui.VisibleLine(strings.Join(strings.Fields(s), " ")) }
 
 // watch says, once each, when a background subagent or job ends, until
 // stop is closed. It reads what the panel reads, so it works the same in

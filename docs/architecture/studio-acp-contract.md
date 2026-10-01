@@ -582,6 +582,10 @@ interface TaskInfo {                 // the SDK's TaskInfo, plus
 }
 ```
 
+- `description`, `summary`, `command` and `last_line` are model- or
+  tool-written: they arrive redacted and with control and hidden characters
+  shown as marked escapes (`⟨\e⟩`), the one-line fields with `⟨\n⟩` too.
+
 - A background shell is listed and cancelled as a task: its `status` is
   `running`, `exited` or `killed`, and `_abhed/tasks/changed` is sent when it
   starts and ends (`shell.started`, `shell.ended`). `resume` and `review` do

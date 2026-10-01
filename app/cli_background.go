@@ -141,7 +141,7 @@ func taskLine(s ui.Style, n int, j jobRow, p *workPanel) string {
 	if j.TokensIn > 0 {
 		meta = append(meta, fmt.Sprintf("%d tokens in", j.TokensIn))
 	}
-	return fmt.Sprintf("  %2d  %s %-16s %s  %s", n, mark, j.Kind, sanitizeLine(j.Title), s.Dim(strings.Join(meta, " · ")))
+	return fmt.Sprintf("  %2d  %s %-16s %s  %s", n, mark, sanitizeLine(j.Kind), sanitizeLine(j.Title), s.Dim(strings.Join(meta, " · ")))
 }
 
 // slashTasks is /tasks.
