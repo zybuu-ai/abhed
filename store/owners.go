@@ -81,6 +81,17 @@ func ownersMigrated(ctx context.Context, q interface {
 	return done, nil
 }
 
+// checkAccountKeysMigrated is Open's check that schema version 5 is recorded.
+var checkAccountKeysMigrated = func(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var done bool
+	err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_version WHERE version = $1)`, accountKeysSchemaVersion).Scan(&done)
+	if err != nil {
+		return false, fmt.Errorf("check schema version: %w", err)
+	}
+	return done, nil
+}
+
 // checkOwnersMigrated is Open's check, a variable so a test can prove the
 // refusal without unrecording version 4 in a shared database.
 var checkOwnersMigrated = func(ctx context.Context, pool *pgxpool.Pool) (bool, error) {

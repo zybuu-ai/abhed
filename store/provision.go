@@ -84,8 +84,8 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	if _, err := pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	if _, err := pool.Exec(ctx, usersSchema); err != nil {
-		return fmt.Errorf("apply users schema: %w", err)
+	if err := migrateUsersSchema(ctx, pool); err != nil {
+		return err
 	}
 	grants := append([]struct{ table, privileges string }{}, runtimeGrants...)
 	for _, ext := range cfg.Extensions {

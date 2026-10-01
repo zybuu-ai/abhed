@@ -181,6 +181,13 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		}
 		return nil, err
 	}
+	if done, err := checkAccountKeysMigrated(ctx, pool); err != nil || !done {
+		pool.Close()
+		if err == nil {
+			err = errAccountKeysNotMigrated
+		}
+		return nil, err
+	}
 	p.protected = true
 	return p, nil
 }

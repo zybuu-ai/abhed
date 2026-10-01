@@ -70,6 +70,13 @@ type UserStore interface {
 	Delete(ctx context.Context, username string) error
 }
 
+// CreatingUserStore is a store that adds an account in one step only when no
+// other holds its username or email (ErrUserExists, ErrEmailTaken), so two
+// processes creating the same account cannot both succeed.
+type CreatingUserStore interface {
+	Create(ctx context.Context, u *User) error
+}
+
 // SessionReleasingUserStore is a store that also keeps sessions, and on
 // removing an account moves the ones it owned to UnclaimedOwner in one step.
 type SessionReleasingUserStore interface {
@@ -129,6 +136,27 @@ func (m *MemoryUserStore) Put(_ context.Context, u *User) error {
 	if old, ok := m.users[key]; ok {
 		copy.Revocations = max(copy.Revocations, old.Revocations)
 	}
+	m.users[key] = &copy
+	m.gen.Add(1)
+	return nil
+}
+
+// Create adds an account unless another holds its username or email.
+func (m *MemoryUserStore) Create(_ context.Context, u *User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := strings.ToLower(u.Username)
+	if _, ok := m.users[key]; ok {
+		return ErrUserExists
+	}
+	if email := strings.TrimSpace(u.Email); email != "" {
+		for _, other := range m.users {
+			if strings.EqualFold(strings.TrimSpace(other.Email), email) {
+				return ErrEmailTaken
+			}
+		}
+	}
+	copy := *u
 	m.users[key] = &copy
 	m.gen.Add(1)
 	return nil
@@ -309,6 +337,9 @@ func (l *LocalAuth) CreateUser(ctx context.Context, u User, password string) err
 	}
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now().UTC()
+	}
+	if c, ok := l.Store.(CreatingUserStore); ok {
+		return c.Create(ctx, &u)
 	}
 	return l.Store.Put(ctx, &u)
 }

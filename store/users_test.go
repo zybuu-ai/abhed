@@ -220,3 +220,70 @@ func TestRemoveUserUnclaimsItsSessions(t *testing.T) {
 		t.Errorf("removing a missing account: %v", err)
 	}
 }
+
+// Two processes creating the same account: exactly one wins and the other is
+// told why, for a duplicate username and for emails differing only in case.
+func TestConcurrentCreateOneWins(t *testing.T) {
+	dsn := os.Getenv("ABHED_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ABHED_TEST_DSN to run store integration tests")
+	}
+	ctx := context.Background()
+	var stores [2]*Postgres
+	for i := range stores {
+		pg, err := Open(ctx, singleRoleConfig(dsn))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer pg.Close()
+		stores[i] = pg
+	}
+	stamp := strings.ToLower(time.Now().Format("150405.000000"))
+	cases := []struct {
+		name    string
+		users   [2]auth.User
+		wantErr error
+	}{
+		{"username", [2]auth.User{
+			{Username: "race-" + stamp, Tenant: "t-race", Hash: "a"},
+			{Username: "RACE-" + stamp, Tenant: "t-race", Hash: "b"},
+		}, auth.ErrUserExists},
+		{"email", [2]auth.User{
+			{Username: "twin1-" + stamp, Email: "same-" + stamp + "@example.test", Tenant: "t-race", Hash: "a"},
+			{Username: "twin2-" + stamp, Email: "SAME-" + stamp + "@Example.Test", Tenant: "t-race", Hash: "b"},
+		}, auth.ErrEmailTaken},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, u := range c.users {
+				defer stores[0].Delete(ctx, u.Username)
+			}
+			var wg sync.WaitGroup
+			var errs [2]error
+			start := make(chan struct{})
+			for i := range stores {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-start
+					u := c.users[i]
+					errs[i] = stores[i].Create(ctx, &u)
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+			wins := 0
+			for _, err := range errs {
+				switch {
+				case err == nil:
+					wins++
+				case !errors.Is(err, c.wantErr):
+					t.Fatalf("loser's error = %v, want %v", err, c.wantErr)
+				}
+			}
+			if wins != 1 {
+				t.Fatalf("%d creates succeeded (%v); want exactly one", wins, errs)
+			}
+		})
+	}
+}
