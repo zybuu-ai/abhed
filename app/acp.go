@@ -563,8 +563,9 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	if refused := mcpNames(p.MCPServers); len(refused) > 0 {
 		metaOf(res)["mcpServersRefused"] = refused
 	}
+	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
-	c.sendCommands(s)
+	c.sessionUpdate(s.id, cmds)
 }
 
 // mcpNames are the names of the MCP servers a client offered.

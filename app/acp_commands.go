@@ -87,8 +87,10 @@ func commandsFor(s *acpSession) []sessionCommand {
 	return out
 }
 
-// sendCommands sends available_commands_update for a session.
-func (c *acpConn) sendCommands(s *acpSession) {
+// commandsUpdate is a session's available_commands_update. A handler that
+// replies first builds it before the reply: once the client has the reply it
+// may prompt, and a prompt can rebuild the session's agent.
+func commandsUpdate(s *acpSession) map[string]any {
 	list := []any{}
 	for _, cmd := range commandsFor(s) {
 		meta := map[string]any{"source": cmd.source}
@@ -102,7 +104,7 @@ func (c *acpConn) sendCommands(s *acpSession) {
 		}
 		list = append(list, entry)
 	}
-	c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "available_commands_update", "availableCommands": list})
+	return map[string]any{"sessionUpdate": "available_commands_update", "availableCommands": list}
 }
 
 // slashCommand runs a prompt that names a command. handled is false for any

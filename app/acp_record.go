@@ -228,8 +228,9 @@ func (c *acpConn) loadSession(msg rpcMessage, replay bool) {
 		verified["firstBad"] = map[string]any{"seq": rep.FirstBad, "reason": rep.Reason}
 	}
 	metaOf(res)["record"] = verified
+	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
-	c.sendCommands(s)
+	c.sessionUpdate(s.id, cmds)
 }
 
 // recordOnly stands in for the agent of a session whose record failed
@@ -405,8 +406,9 @@ func (c *acpConn) forkSession(msg rpcMessage) {
 	}
 	res := c.sessionResult(s)
 	res["parent"], res["forkSeq"] = e.ID, through
+	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
-	c.sendCommands(s)
+	c.sessionUpdate(s.id, cmds)
 }
 
 // copyInto writes a new session holding the source's conversation through
