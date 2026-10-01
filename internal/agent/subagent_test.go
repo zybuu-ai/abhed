@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -218,6 +219,32 @@ func TestWorktreeSubagentKeepsTheSyntaxMode(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(p); string(got) != "{" {
 		t.Fatalf("the child refused a write its parent allows: %q", got)
+	}
+}
+
+// A subagent in its own worktree keeps the parent's guard, which is told the
+// worktree's roots, so the editor's files there are out of its reach too.
+func TestWorktreeSubagentKeepsTheGuard(t *testing.T) {
+	child := tempDir(t)
+	p := filepath.Join(child, "kept.txt")
+	var roots []string
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("write", map[string]string{"path": p, "content": "theirs"})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Session.Guard = func(path string, r []string) error {
+		roots = r
+		return errors.New("kept by the guard")
+	}
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", Workspace: child}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); err == nil {
+		t.Fatal("the child wrote past its parent's guard")
+	}
+	real, _ := filepath.EvalSymlinks(child)
+	if !slices.Contains(roots, real) {
+		t.Fatalf("the guard was not told the worktree: %v", roots)
 	}
 }
 

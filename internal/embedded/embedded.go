@@ -23,6 +23,9 @@ type Settings struct {
 	User string
 	// Protect are workspace paths the agent's commands may read but not write.
 	Protect []string
+	// ProtectGit keeps commands from writing any git folder's config and
+	// hooks in the workspace, at any depth, where the sandbox can name them.
+	ProtectGit bool
 }
 
 type settingsKey struct{}

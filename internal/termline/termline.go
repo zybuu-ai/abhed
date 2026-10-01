@@ -57,6 +57,9 @@ type Entered struct {
 	Known, Secret, Program bool
 	// Alt is the container tier's guess at a full-screen program.
 	Alt bool
+	// Ahead is set when the line came before the shell was back at its
+	// prompt: whatever reads it may have turned echo off after it arrived.
+	Ahead bool
 }
 
 // Chunk is input to forward as it is; Enter, when set, is the line its
@@ -87,6 +90,9 @@ type Capture struct {
 	dropped int
 	record  func(agent.TerminalInput)
 	callID  string
+	// Hidden, when set, says whether a line is being read unshown now; a
+	// pasted line judged while it is, is withheld.
+	Hidden func() bool
 }
 
 // NewCapture follows one shell, recording each line it judges with record.
@@ -267,7 +273,7 @@ func (c *Capture) judge(e *Entered) {
 	c.mu.Unlock()
 	if found {
 		in := agent.TerminalInput{CallID: c.callID, Line: e.Line, Edited: e.Edited}
-		if !e.Echoed() {
+		if !e.Echoed() || (e.Whole && c.Hidden != nil && c.Hidden()) {
 			in = agent.TerminalInput{CallID: c.callID, Withheld: withheldEcho}
 		}
 		c.record(in)
@@ -284,7 +290,7 @@ func (c *Capture) judge(e *Entered) {
 // with them never matches. When unsure it says no: a line wrongly withheld
 // costs the record its text, a line wrongly kept can put a password in it.
 func (e *Entered) Echoed() bool {
-	if e.Secret || e.Edited || e.Line == "" || !strings.Contains(PlainText(e.echo), e.Line) {
+	if e.Secret || e.Ahead || e.Edited || e.Line == "" || !strings.Contains(PlainText(e.echo), e.Line) {
 		return false
 	}
 	// A short line needs the terminal to have said it was not reading a password.

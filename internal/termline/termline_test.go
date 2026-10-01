@@ -39,6 +39,7 @@ func TestCaptureRebuildsTypedLines(t *testing.T) {
 // When the capture cannot be sure a line was shown as typed, it keeps the line
 // without its text.
 func TestCaptureWithholdsWhenUnsure(t *testing.T) {
+	ahead := func(e *Entered) *Entered { e.Ahead = true; return e }
 	typed := func(keys string, echo string, known, secret bool) *Entered {
 		c := NewCapture("u1", nil)
 		for i := range keys[:len(keys)-1] {
@@ -63,9 +64,28 @@ func TestCaptureWithholdsWhenUnsure(t *testing.T) {
 		"edit at the Enter":       {typed("abcdX\x7fr\r", "abcdX", true, false), false},
 		"only the end shown":      {typed("hunter22echo hi there\r", "echo hi there", true, false), false},
 		"all but one key shown":   {typed("echo hi there\r", "echo hi the", true, false), false},
+		"typed ahead":             {ahead(typed("hunter22\r", "hunter22", true, false)), false},
 	} {
 		if got := tc.e.Echoed(); got != tc.want {
 			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)
+		}
+	}
+}
+
+// A pasted line judged while the terminal reads unshown is withheld, though
+// its echo arrived before echo was turned off.
+func TestCaptureWithholdsWhileHidden(t *testing.T) {
+	for _, hidden := range []bool{false, true} {
+		var got []agent.TerminalInput
+		c := NewCapture("u1", func(in agent.TerminalInput) { got = append(got, in) })
+		c.Hidden = func() bool { return hidden }
+		e := c.Keys([]byte("hunter22\r"))[0].Enter
+		e.Known = true
+		c.Entered(e)
+		c.Output([]byte("hunter22\r\n"))
+		c.Flush()
+		if len(got) != 1 || (got[0].Line == "hunter22") == hidden {
+			t.Fatalf("hidden=%v: %+v", hidden, got)
 		}
 	}
 }

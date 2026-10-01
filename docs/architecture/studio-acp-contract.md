@@ -705,7 +705,12 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   shell runs whole under the sandbox and each entered line is recorded
   `terminal.input {line | withheld, by: "user"}`.
 - A line the terminal did not echo (`read -s`, password prompts) is recorded
-  as withheld, never as text.
+  as withheld, never as text. So is a line entered before the shell was back
+  at its prompt, since what reads it may turn echo off after it arrived, and
+  a pasted line still being read with echo off when it is judged. The web
+  IDE's interactive terminal does the same. Only the process and none tiers
+  can ask the terminal; in a container a typed-ahead line is judged by its
+  echo alone.
 - `confirm` is answered only from a modal whose default is No.
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
@@ -937,10 +942,23 @@ Where the engine differs from the sections above:
    `error`. `_abhed/tasks/changed` is sent on spawn, result, cancel and a
    change in waiting asks, not on each turn.
 8. **Editor files (§2.6).** The file tools refuse `.vscode/**`,
-   `.devcontainer/**`, `.git/config`, `.git/hooks/**` and any
-   `*.code-workspace`; commands are kept from writing those paths and the
-   `*.code-workspace` files that exist when the session starts. On Linux a
-   path that does not exist yet cannot be held read-only by bubblewrap.
+   `.devcontainer/**`, any `*.code-workspace`, and any `.git` with its
+   `config` and `hooks/**` at any depth, the config and hooks of the git
+   folder a `.git` file names, whether the path exists or not. Names are
+   compared without case and links are followed, in the workspace, its added
+   folders and a subagent's worktree. Commands are kept from writing those
+   paths that exist when the session starts, at the workspace's given and
+   resolved paths, and cannot rename or remove `.git`, `.vscode` or
+   `.devcontainer`. Nested repositories are searched for at the start, up to
+   six folders deep and 64 repositories, skipping `node_modules`. On macOS the
+   sandbox also refuses any `.git`, `.git/config` and `.git/hooks` at any
+   depth by pattern, so a repository made later is held and `git init` or
+   `git clone` in the workspace fails, and refuses creating a missing
+   `.vscode` or `.devcontainer`. On Linux, bubblewrap and containers can hold
+   only paths that exist when a command starts, so a command there can still
+   create a missing `.vscode`, `.devcontainer` or `.git` or a repository the
+   search did not find; a new `*.code-workspace` can be made by a command on
+   every platform.
 9. **Modes (§5.1).** A mode changes only between prompts and while no
    background task runs (-32002 otherwise), since the policy engine is read
    by every call.

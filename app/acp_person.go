@@ -417,7 +417,7 @@ func (c *acpConn) buffersDirty(msg rpcMessage) {
 	dirty := map[string]bool{}
 	for _, raw := range p.Paths {
 		if path, ok := s.within(raw); ok {
-			dirty[path] = true
+			dirty[bufferKey(path)] = true
 		}
 	}
 	s.mu.Lock()
@@ -557,7 +557,7 @@ func (c *acpConn) reviewDecide(msg rpcMessage, accept bool) {
 		s.record(agent.EvChangeAccepted, payload)
 	} else {
 		// A protected file stays protected, for the person's reject as for the agent.
-		if editorFile(path, s.roots()) {
+		if editorFile(path, s.roots(), s.protected) {
 			c.reply(msg.ID, nil, refusal(errPolicy, "%s", errEditorFile.Error()))
 			return
 		}
@@ -614,10 +614,27 @@ func (s *acpSession) manualWrite(ctx context.Context, parts embedded.Parts, path
 	return nil
 }
 
-// manualRemove deletes a file the agent created, as the person's restore.
+// manualRemove deletes a file the agent created, as the person's restore,
+// put to the delete rules first.
 func (s *acpSession) manualRemove(_ context.Context, path string) error {
+	loop, id := s.parts.Loop, "u"+acpID()
+	args, _ := json.Marshal(map[string]string{"path": path})
+	refused, err := loop.ManualCheck("delete", id, args)
+	if err != nil {
+		return err
+	}
+	if refused != nil {
+		_ = loop.ManualObserve(id, "delete", *refused, 0)
+		return errors.New(refused.Content)
+	}
 	before, _ := s.parts.Session.ReadFile(path)
-	if err := s.parts.Session.RemoveFile(path); err != nil && !os.IsNotExist(err) {
+	start := time.Now()
+	err = s.parts.Session.RemoveFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		_ = loop.ManualObserve(id, "delete", tools.Result{Content: err.Error(), IsError: true}, time.Since(start))
+		return err
+	}
+	if err := loop.ManualObserve(id, "delete", tools.Result{Content: "removed " + path}, time.Since(start)); err != nil {
 		return err
 	}
 	s.record(agent.EvFileRestored, agent.FileRestored{Path: path, BeforeSHA256: hashHex(before), Checkpoint: "baseline", By: agent.ByUser})
@@ -685,7 +702,7 @@ func (c *acpConn) restoreTurn(s *acpSession, turn int) ([]any, error) {
 		return data, err == nil
 	}
 	restore := func(path string, data []byte, existed bool, mode os.FileMode) error {
-		if editorFile(path, s.roots()) {
+		if editorFile(path, s.roots(), s.protected) {
 			return errEditorFile
 		}
 		if !existed {

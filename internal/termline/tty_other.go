@@ -6,3 +6,6 @@ import "os"
 
 // TTYNow cannot ask the terminal on this platform.
 func TTYNow(*os.File) (int, bool, bool) { return 0, false, false }
+
+// Hidden cannot ask the terminal on this platform.
+func Hidden(*os.File) bool { return false }

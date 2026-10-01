@@ -77,6 +77,16 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 	return result, l.ManualObserve(id, action, result, time.Since(start))
 }
 
+// ManualCheck judges and records a person's action that no tool carries out,
+// such as Studio removing a file the agent made; a refusal is the result.
+func (l *Loop) ManualCheck(action, id string, args json.RawMessage) (*tools.Result, error) {
+	decision := l.Policy.Evaluate(action, true, args)
+	if why := l.pathSecretRefused(model.ToolCall{Name: action, Args: args}); why != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	return l.manualDecide(action, id, args, decision, Unanswered)
+}
+
 // ManualRefused records a person's action that a policy denial refused before
 // ManualAs was reached, such as an explorer change to a path a write rule keeps.
 func (l *Loop) ManualRefused(action, id string, args json.RawMessage, denial policy.Result) error {

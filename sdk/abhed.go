@@ -326,6 +326,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	bash := tools.Bash{}
 	cfg.Sandbox.WriteProtected = append(cfg.Sandbox.WriteProtected, embedded.From(ctx).Protect...)
+	cfg.Sandbox.ProtectGit = cfg.Sandbox.ProtectGit || embedded.From(ctx).ProtectGit
 	if opts.Sandbox || cfg.ManagedSets("sandbox") {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {

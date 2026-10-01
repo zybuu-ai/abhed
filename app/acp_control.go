@@ -2,8 +2,10 @@ package app
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -379,52 +382,225 @@ func changedRegion(a, b string, context int) (string, string) {
 // configuration; the agent may not change them (§2.6).
 var editorFiles = []string{".vscode", ".devcontainer", ".git/config", ".git/hooks"}
 
-// protectedPaths are a workspace's editor files as paths for the sandbox,
-// with the *.code-workspace files that exist now.
+// protectedPaths are a workspace's editor files as paths for the sandbox, from
+// the workspace as given and resolved, with the *.code-workspace files that
+// exist now and the git folders a .git file points to.
 func protectedPaths(ws string) []string {
 	var out []string
-	for _, f := range editorFiles {
-		out = append(out, filepath.Join(ws, filepath.FromSlash(f)))
+	for _, root := range sandbox.PathForms(ws) {
+		for _, f := range editorFiles {
+			out = append(out, filepath.Join(root, filepath.FromSlash(f)))
+		}
+		if entries, err := os.ReadDir(root); err == nil {
+			for _, e := range entries {
+				if codeWorkspace(e.Name()) {
+					out = append(out, filepath.Join(root, e.Name()))
+				}
+			}
+		}
+		for _, dir := range gitDirs(root) {
+			out = append(out, filepath.Join(dir, "config"), filepath.Join(dir, "hooks"))
+		}
+		out = append(out, nestedGit(root)...)
 	}
-	if found, err := filepath.Glob(filepath.Join(ws, "*.code-workspace")); err == nil {
-		out = append(out, found...)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// Bounds on the search for git repositories nested in a workspace.
+const (
+	nestedDepth   = 6
+	nestedRepos   = 64
+	nestedEntries = 20000
+)
+
+// nestedGit are the config and hooks of the git repositories nested in root
+// when the session starts, within the bounds above; a repository made later
+// is held by pattern on macOS only.
+func nestedGit(root string) []string {
+	var out []string
+	repos, seen := 0, 0
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == root {
+			return nil //nolint:nilerr // an unreadable folder is passed by
+		}
+		if seen++; seen > nestedEntries || repos >= nestedRepos {
+			return filepath.SkipAll
+		}
+		name := d.Name()
+		if !d.IsDir() && !strings.EqualFold(name, ".git") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		depth := len(strings.Split(rel, string(filepath.Separator)))
+		switch {
+		case strings.EqualFold(name, ".git"):
+			if dir := filepath.Dir(p); dir != root {
+				repos++
+				if d.IsDir() {
+					out = append(out, filepath.Join(p, "config"), filepath.Join(p, "hooks"))
+				}
+				for _, g := range gitDirs(dir) {
+					out = append(out, filepath.Join(g, "config"), filepath.Join(g, "hooks"))
+				}
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		case strings.EqualFold(name, tools.StateDir), name == "node_modules", depth >= nestedDepth:
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
+}
+
+// codeWorkspace reports whether name is a VS Code workspace file, in any case.
+func codeWorkspace(name string) bool {
+	return strings.HasSuffix(strings.ToLower(name), ".code-workspace")
+}
+
+// gitDirs are the git folders a .git file in root points to: a worktree's or
+// submodule's own, and the common folder it shares.
+func gitDirs(root string) []string {
+	dir := gitFileTarget(filepath.Join(root, ".git"))
+	if dir == "" {
+		return nil
+	}
+	out := []string{dir}
+	if common := readPointer(filepath.Join(dir, "commondir"), ""); common != "" {
+		out = append(out, common)
 	}
 	return out
 }
 
-// editorFile reports whether path is one of the editor's own files in one of roots.
-func editorFile(path string, roots []string) bool {
-	if strings.HasSuffix(path, ".code-workspace") {
-		return true
+// gitFileTarget is the folder a .git file names with "gitdir:", or "".
+func gitFileTarget(p string) string {
+	return readPointer(p, "gitdir:")
+}
+
+// readPointer reads a small file holding one path after prefix, resolved
+// against the file's folder.
+func readPointer(p, prefix string) string {
+	info, err := os.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
+		return ""
+	}
+	b, err := os.ReadFile(p) // #nosec G304 -- a .git pointer file in the workspace
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(string(b), "\n")
+	target, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+	target = strings.TrimSpace(target)
+	if !ok || target == "" {
+		return ""
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(p), target)
+	}
+	return filepath.Clean(target)
+}
+
+// editorFile reports whether path is one of the editor's own files in one of
+// roots, or the .git that holds some of them. Links are followed and names
+// compared without case, as APFS and NTFS compare them.
+func editorFile(path string, roots, protected []string) bool {
+	forms := sandbox.PathForms(path)
+	for _, p := range forms {
+		if codeWorkspace(filepath.Base(p)) {
+			return true
+		}
+		// Those found at the start, such as a git folder a nested .git file names.
+		for _, q := range protected {
+			if _, ok := sandbox.Within(p, q); ok {
+				return true
+			}
+		}
 	}
 	for _, root := range roots {
-		rel, err := filepath.Rel(root, path)
-		if err != nil || !filepath.IsLocal(rel) {
-			continue
-		}
-		rel = filepath.ToSlash(rel)
-		for _, f := range editorFiles {
-			if rel == f || strings.HasPrefix(rel, f+"/") {
-				return true
+		for _, r := range sandbox.PathForms(root) {
+			for _, p := range forms {
+				if rest, ok := sandbox.Within(p, r); ok && editorRest(rest) {
+					return true
+				}
+			}
+			for _, p := range forms {
+				if rest, ok := sandbox.Within(p, r); ok && namedByGitFile(r, rest, forms) {
+					return true
+				}
 			}
 		}
 	}
 	return false
 }
 
+// namedByGitFile reports whether a path is the git folder, config or hooks a
+// .git file in root or a folder on the way to the path names.
+func namedByGitFile(root string, rest, forms []string) bool {
+	dir := root
+	for i := 0; i <= len(rest); i++ {
+		for _, g := range gitDirs(dir) {
+			for _, d := range sandbox.PathForms(g) {
+				for _, p := range forms {
+					if r, ok := sandbox.Within(p, d); ok && (len(r) == 0 || gitOwn(r)) {
+						return true
+					}
+				}
+			}
+		}
+		if i < len(rest) {
+			dir = filepath.Join(dir, rest[i])
+		}
+	}
+	return false
+}
+
+// editorRest reports whether a path's parts below a root name an editor file.
+func editorRest(rest []string) bool {
+	if len(rest) == 0 {
+		return false
+	}
+	if strings.EqualFold(rest[0], ".vscode") || strings.EqualFold(rest[0], ".devcontainer") {
+		return true
+	}
+	// Any .git, at any depth, and its config and hooks: the editor's git runs
+	// in nested repositories too.
+	for i, part := range rest {
+		if strings.EqualFold(part, ".git") && (i == len(rest)-1 || gitOwn(rest[i+1:])) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitOwn reports whether parts below a git folder name its config or hooks.
+func gitOwn(rest []string) bool {
+	return len(rest) > 0 && (strings.EqualFold(rest[0], "config") || strings.EqualFold(rest[0], "hooks"))
+}
+
 // dirtyGuard refuses an agent's edit or write to a file the person has
 // unsaved changes to in Studio, or to one of the editor's own files.
-func (s *acpSession) dirtyGuard(path string) error {
-	if editorFile(path, s.roots()) {
+func (s *acpSession) dirtyGuard(path string, roots []string) error {
+	if editorFile(path, append(s.roots(), roots...), s.protected) {
 		return errEditorFile
 	}
 	s.mu.Lock()
-	dirty := s.dirty[tools.RealPath(path)]
+	dirty := s.dirty[bufferKey(tools.RealPath(path))]
 	s.mu.Unlock()
 	if dirty {
 		return errDirtyBuffer
 	}
 	return nil
+}
+
+// bufferKey is a resolved path as the dirty set keys it: without case where
+// the filesystem ignores it, so draft.md and Draft.md are one file.
+func bufferKey(real string) string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return strings.ToLower(real)
+	}
+	return real
 }
 
 type guardError string

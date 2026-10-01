@@ -53,6 +53,8 @@ type acpShell struct {
 	mu        sync.Mutex
 	tail      []byte
 	pumped    chan struct{}
+	// prompt follows whether the shell is back at its prompt.
+	prompt *termline.Prompt
 }
 
 // startShell opens the shell, refusing where a line-by-line terminal is the
@@ -100,6 +102,10 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 		local:   iso.Tier == "process" || iso.Tier == "none",
 		capture: termline.NewCapture(id, func(in agent.TerminalInput) { _ = loop.ManualTerminalInput(in) }),
 		leader:  sandbox.Lead(cmd),
+		prompt:  termline.NewPrompt(),
+	}
+	if sh.local {
+		sh.capture.Hidden = func() bool { return termline.Hidden(tty) }
 	}
 	t.shell = sh
 	prev := t.cancel
@@ -127,6 +133,9 @@ func (c *acpConn) pumpShell(t *acpTerminal) {
 			sh.mu.Lock()
 			sh.tail = termline.KeepTail(append(sh.tail, chunk...), shellTail)
 			sh.mu.Unlock()
+			if sh.local {
+				sh.follow(chunk)
+			}
 			c.output(t, chunk)
 		}
 		if err != nil {
@@ -194,6 +203,9 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 			sh.ask(e)
 		}
 		if e == nil || e.Program || e.Line == "" {
+			if e != nil && !e.Program {
+				sh.gave()
+			}
 			if _, err := sh.tty.Write(k.Data); err != nil {
 				return refusal(errRefused, "the terminal has ended")
 			}
@@ -207,6 +219,7 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 			refused = &tools.Result{Content: "Denied: the line could not be recorded"}
 		}
 		if refused == nil {
+			sh.gave()
 			if _, err := sh.tty.Write(k.Data); err != nil {
 				return refusal(errRefused, "the terminal has ended")
 			}
@@ -220,6 +233,7 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 		if !e.Whole {
 			discard = []byte{0x03}
 		}
+		sh.gave()
 		if _, err := sh.tty.Write(discard); err != nil {
 			return refusal(errRefused, "the terminal has ended")
 		}
@@ -241,7 +255,17 @@ func (sh *acpShell) ask(e *termline.Entered) {
 		return
 	}
 	e.Known, e.Secret, e.Program = true, canonical, sh.isProgram(fg)
+	e.Ahead = !sh.prompt.At()
 }
+
+// follow notes when the shell is back at its prompt.
+func (sh *acpShell) follow(chunk []byte) {
+	fg, canonical, ok := termline.TTYNow(sh.tty)
+	sh.prompt.Output(chunk, ok && !sh.isProgram(fg), canonical)
+}
+
+// gave notes that the shell was handed a line.
+func (sh *acpShell) gave() { sh.prompt.Gave() }
 
 func (sh *acpShell) isProgram(fg int) bool {
 	shell := int(sh.shellPgrp.Load())

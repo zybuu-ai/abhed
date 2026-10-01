@@ -20,6 +20,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -74,6 +75,9 @@ type ptyRun struct {
 	// shellPgrp is the shell's, taken at its first prompt.
 	local     bool
 	shellPgrp atomic.Int64
+	// prompt follows whether the shell is back at its prompt, where the
+	// terminal can be asked.
+	prompt *termline.Prompt
 	// idle is how long the run may go unwatched.
 	idle time.Duration
 	// leader names a shell, so what it leaves in its session can be ended safely.
@@ -285,6 +289,11 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
 		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		if run.local {
+			run.prompt = termline.NewPrompt()
+			tty := run.tty
+			run.capture.Hidden = func() bool { return termline.Hidden(tty) }
+		}
 		run.leader = sandbox.Lead(cmd) // named now, while its pid is certainly its own
 	}
 	live.mu.Lock()
@@ -390,6 +399,10 @@ func (p *ptyRun) pump() {
 					if fg, _, ok := ttyNow(p.tty); ok {
 						p.shellPgrp.Store(int64(fg))
 					}
+				}
+				if p.prompt != nil {
+					fg, canonical, ok := ttyNow(p.tty)
+					p.prompt.Output(chunk, ok && !p.isProgram(fg), canonical)
 				}
 			}
 			p.mu.Lock()
@@ -733,6 +746,9 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			run.ask(e)
 		}
 		if e == nil || e.Program || e.Line == "" {
+			if e != nil && !e.Program {
+				run.gave()
+			}
 			if _, err := run.tty.Write(k.Data); err != nil {
 				return err
 			}
@@ -746,6 +762,7 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			refused = &tools.Result{Content: "Denied: the line could not be recorded"}
 		}
 		if refused == nil {
+			run.gave()
 			if _, err := run.tty.Write(k.Data); err != nil {
 				return err
 			}
@@ -759,6 +776,7 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 		if !e.Whole {
 			discard = []byte{0x03}
 		}
+		run.gave()
 		if _, err := run.tty.Write(discard); err != nil {
 			return err
 		}
@@ -784,6 +802,15 @@ func (p *ptyRun) ask(e *enteredLine) {
 	// password prompt, or keys typed ahead while a builtin ran. Its text is
 	// withheld.
 	e.Known, e.Secret, e.Program = true, canonical, p.isProgram(fg)
+	// A line before the shell's prompt is back is typed ahead, and withheld.
+	e.Ahead = p.prompt != nil && !p.prompt.At()
+}
+
+// gave notes that the shell was handed a line.
+func (p *ptyRun) gave() {
+	if p.prompt != nil {
+		p.prompt.Gave()
+	}
 }
 
 // isProgram reports whether fg, the foreground process group, is not the shell's.

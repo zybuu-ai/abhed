@@ -194,7 +194,22 @@ func (c *Container) runArgs(cwd string) []string {
 		args = append(args, "-v", p+":"+p+":ro")
 	}
 	// Mounted over the workspace's own, so only the paths that exist can be.
-	for _, p := range c.policy.WriteProtected {
+	// A folder holding one is mounted onto itself, so it cannot be renamed.
+	ws := PathForms(c.policy.Workspace)
+	var protected []string
+	for _, p := range formsOf(c.policy.WriteProtected) {
+		if insideAny(p, ws) {
+			protected = append(protected, p)
+		}
+	}
+	for _, p := range holders(ws, protected) {
+		if info, err := os.Lstat(p); err == nil && info.IsDir() {
+			args = append(args, "-v", p+":"+p)
+		} else if err == nil && info.Mode().IsRegular() {
+			args = append(args, "-v", p+":"+p+":ro")
+		}
+	}
+	for _, p := range protected {
 		if _, err := os.Stat(p); err == nil {
 			args = append(args, "-v", p+":"+p+":ro")
 		}

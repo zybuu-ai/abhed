@@ -22,7 +22,7 @@ func TestGuardRefusesEditAndWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.MarkRead(p, "mine")
-	s.Guard = func(path string) error {
+	s.Guard = func(path string, _ []string) error {
 		if path == p {
 			return errors.New("kept by the guard")
 		}
@@ -37,6 +37,10 @@ func TestGuardRefusesEditAndWrite(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(p); string(b) != "mine" {
 		t.Fatalf("the file changed: %q", b)
+	}
+	// A fork keeps the guard.
+	if res := (Write{}).Run(context.Background(), s.Fork(), w); !res.IsError || !strings.Contains(res.Content, "kept by the guard") {
+		t.Fatalf("a fork: %+v", res)
 	}
 	other, _ := json.Marshal(map[string]string{"path": filepath.Join(s.Root, "new.txt"), "content": "x"})
 	if res := (Write{}).Run(context.Background(), s, other); res.IsError {

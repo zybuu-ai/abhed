@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -181,6 +182,36 @@ func TestStudioReviewAndUndo(t *testing.T) {
 	r.cl.refused(errParams, "_abhed/review/undoTurn", map[string]any{"sessionId": id, "turn": 9})
 }
 
+// Rejecting a file the agent made removes it as the person's delete, put to
+// the delete rules and recorded like any action of theirs.
+func TestStudioRejectOfANewFileIsTheirDelete(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits","deny":["delete(**/vault/**)"]}`)
+	kept, gone := filepath.Join(r.ws, "vault", "new.txt"), filepath.Join(r.ws, "new.txt")
+	r.model.script(callTool("c1", "write", map[string]any{"path": kept, "content": "x\n"}),
+		callTool("c2", "write", map[string]any{"path": gone, "content": "y\n"}), say("done"))
+	id := r.open()
+	r.prompt(id, "make them")
+	r.cl.refused(errPolicy, "_abhed/review/reject", map[string]any{"sessionId": id, "path": kept})
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatalf("a delete rule's file was removed: %v", err)
+	}
+	r.cl.ok("_abhed/review/reject", map[string]any{"sessionId": id, "path": gone}, nil)
+	if _, err := os.Stat(gone); err == nil {
+		t.Fatal("the rejected file is still there")
+	}
+	reqs, actors := r.recorded(id, agent.EvActionRequested)
+	deletes := 0
+	for i, q := range reqs {
+		if q["tool"] == "delete" && actors[i] == agent.ActorUser {
+			deletes++
+		}
+	}
+	denied, _ := r.recorded(id, agent.EvActionDenied)
+	if deletes != 2 || len(denied) != 1 || denied[0]["by"] != "policy" {
+		t.Fatalf("deletes %d, denied %v", deletes, denied)
+	}
+}
+
 // §7.6: steering needs a running prompt; the queue lists what waits.
 func TestStudioSteerAndQueue(t *testing.T) {
 	r := newStudioRig(t, "")
@@ -244,6 +275,109 @@ func TestRuleAgentCannotReachTheEditor(t *testing.T) {
 	}
 }
 
+// §2.6 holds whatever the case of the name and through links the agent makes,
+// and its commands cannot move .git out from under the rules.
+func TestRuleEditorFilesByCaseLinkAndRename(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits","allow":["bash(ln *)","bash(mv *)"]}`)
+	r.write(".vscode/settings.json", "{}")
+	r.write(".git/config", "orig")
+	r.write(".git/hooks/README", "hooks")
+	at := func(rel string) string { return filepath.Join(r.ws, filepath.FromSlash(rel)) }
+	r.model.script(
+		callTool("c1", "write", map[string]any{"path": at(".VSCode/launch.json"), "content": "{}"}),
+		callTool("c2", "write", map[string]any{"path": at(".GIT/config"), "content": "[core]\n\tfsmonitor = touch /tmp/x\n"}),
+		callTool("c3", "bash", map[string]any{"command": "ln -s .vscode cfg"}),
+		callTool("c3b", "bash", map[string]any{"command": "ln -s .git g"}),
+		callTool("c4", "write", map[string]any{"path": at("cfg/tasks.json"), "content": "{}"}),
+		callTool("c5", "write", map[string]any{"path": at("g/hooks/pre-commit"), "content": "#!/bin/sh\n"}),
+		callTool("c6", "write", map[string]any{"path": at("team.Code-Workspace"), "content": "{}"}),
+		callTool("c7", "bash", map[string]any{"command": "mv .git .git2"}),
+		say("done"))
+	id := r.open()
+	r.prompt(id, "try it")
+	for _, f := range []string{".vscode/launch.json", ".VSCode/launch.json", ".vscode/tasks.json", ".git/hooks/pre-commit", "team.Code-Workspace"} {
+		if _, err := os.Stat(at(f)); err == nil {
+			t.Errorf("the agent wrote %s", f)
+		}
+	}
+	if info, err := os.Lstat(at("cfg")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		obs, _ := r.recorded(id, agent.EvObservation)
+		t.Fatalf("the links were not made, so they were not tried: %v %v", err, obs)
+	}
+	if r.read(".git/config") != "orig" {
+		t.Error("the agent changed .git/config")
+	}
+	if _, err := os.Stat(at(".git2")); err == nil {
+		t.Error("the agent's command moved .git")
+	}
+}
+
+// §2.6 holds in a repository nested in the workspace, since the editor's git
+// runs there too; on macOS also in one the agent makes during the session.
+func TestRuleNestedRepositoryIsTheEditors(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits","allow":["bash(touch *)","bash(mkdir *)"]}`)
+	r.write("sub/.git/config", "orig")
+	r.write("sub/.git/hooks/README", "hooks")
+	at := func(rel string) string { return filepath.Join(r.ws, filepath.FromSlash(rel)) }
+	r.model.script(
+		callTool("c1", "write", map[string]any{"path": at("sub/.git/hooks/pre-commit"), "content": "#!/bin/sh\n"}),
+		callTool("c2", "write", map[string]any{"path": at("sub/.GIT/config"), "content": "[core]\n"}),
+		callTool("c3", "bash", map[string]any{"command": "touch " + at("sub/.git/hooks/post-commit")}),
+		callTool("c4", "bash", map[string]any{"command": "mkdir -p " + at("later/.git/hooks")}),
+		callTool("c5", "bash", map[string]any{"command": "touch " + at("sub/ok.txt")}),
+		say("done"))
+	id := r.open()
+	r.prompt(id, "try it")
+	gone := []string{"sub/.git/hooks/pre-commit", "sub/.git/hooks/post-commit"}
+	if runtime.GOOS == "darwin" {
+		gone = append(gone, "later/.git")
+	}
+	for _, f := range gone {
+		if _, err := os.Stat(at(f)); err == nil {
+			t.Errorf("the agent made %s", f)
+		}
+	}
+	if r.read("sub/.git/config") != "orig" {
+		t.Error("the agent changed sub/.git/config")
+	}
+	if _, err := os.Stat(at("sub/ok.txt")); err != nil {
+		t.Fatal("the sandboxed command did not run, so nothing was tried")
+	}
+}
+
+// §2.6 holds for a workspace opened through a link, as /tmp is on macOS: the
+// rules name its real path too.
+func TestRuleEditorFilesThroughALinkedWorkspace(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits","allow":["bash(touch *)"]}`)
+	r.write(".vscode/settings.json", "{}")
+	r.write(".git/hooks/README", "hooks")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	link := filepath.Join(dir, "ws")
+	if err := os.Symlink(r.ws, link); err != nil {
+		t.Fatal(err)
+	}
+	r.model.script(
+		callTool("c1", "bash", map[string]any{"command": "touch " + filepath.Join(link, ".git", "hooks", "pre-commit")}),
+		callTool("c2", "bash", map[string]any{"command": "touch " + filepath.Join(r.ws, ".git", "hooks", "post-commit")}),
+		callTool("c3", "write", map[string]any{"path": filepath.Join(link, ".vscode", "tasks.json"), "content": "{}"}),
+		callTool("c4", "bash", map[string]any{"command": "touch " + filepath.Join(link, "notes.txt")}),
+		say("done"))
+	var res struct {
+		SessionID string `json:"sessionId"`
+	}
+	r.cl.ok("session/new", map[string]any{"cwd": link, "mcpServers": []any{}}, &res)
+	r.prompt(res.SessionID, "try it")
+	for _, f := range []string{".git/hooks/pre-commit", ".git/hooks/post-commit", ".vscode/tasks.json"} {
+		if _, err := os.Stat(filepath.Join(r.ws, filepath.FromSlash(f))); err == nil {
+			t.Errorf("the agent wrote %s through the linked workspace", f)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r.ws, "notes.txt")); err != nil {
+		obs, _ := r.recorded(res.SessionID, agent.EvObservation)
+		t.Fatalf("the sandboxed command did not run, so nothing was tried: %v", obs)
+	}
+}
+
 // §7.1 interactive: the shell runs whole under the sandbox; each line is put
 // to the deny rules at its Enter and recorded as the person's, and a line the
 // terminal did not show, as at a password prompt, is recorded withheld.
@@ -280,9 +414,15 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 	}
 	typeLine("echo hi-$((40+2))\r", func(s string) bool { return strings.Contains(s, "hi-42") && prompted(s) })
 	typeLine("curl example.com\r", func(s string) bool { return strings.Contains(s, "Denied") })
-	typeLine(`read -s pw; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "read -s") })
+	// Echo is off before READY shows, so the password is typed into it.
+	typeLine(`stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "READY") })
 	typeLine("hunter22\r", func(s string) bool { return strings.Contains(s, "got 8") })
+	// Typed ahead: the password is sent before read -s has turned echo off.
 	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": `read -s pw; echo "also ${#pw}"` + "\r"}, nil)
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "hunter33\r"}, nil)
+	waitShell(at, func(s string) bool { return strings.Contains(s, "also 8") && prompted(s) })
+	at = r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
 	r.cl.waitFor(at, "the shell's exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
 	time.Sleep(2 * termline.EchoWait)
@@ -303,7 +443,7 @@ func TestStudioInteractiveTerminal(t *testing.T) {
 		t.Fatalf("terminal.input: %v", inputs)
 	}
 	for _, ev := range r.events(id) {
-		if strings.Contains(string(ev.Payload), "hunter22") {
+		if strings.Contains(string(ev.Payload), "hunter22") || strings.Contains(string(ev.Payload), "hunter33") {
 			t.Fatalf("the unechoed line reached the record: %s %s", ev.Type, ev.Payload)
 		}
 	}
