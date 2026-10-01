@@ -319,7 +319,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 		if e.Background > 0 {
 			d.commit(&rawBlock{text: "  " + s.Dim(fmt.Sprintf("%d background task(s) still running; /tasks lists them", e.Background))})
 		}
-		if why := endedText(e.Reason); why != "" {
+		if why := endedText(e.Reason, e.Detail); why != "" {
 			d.commit(&rawBlock{text: "  " + s.Yellow("⎿ ") + why})
 		}
 	}
@@ -401,11 +401,17 @@ func noticeText(n agent.Notice) string {
 }
 
 // endedText says, in words, why a turn ended when it was not by finishing.
-func endedText(reason agent.TerminalReason) string {
+func endedText(reason agent.TerminalReason, detail string) string {
 	switch reason {
 	case agent.TermCompleted, agent.TermWakeLimit, "":
 		return ""
 	case agent.TermUserInterrupt:
+		switch detail {
+		case agent.InterruptKept:
+			return "Interrupted · background shells kept · tell Abhed what to do instead"
+		case agent.InterruptStopped:
+			return "Interrupted · background shells stopped · tell Abhed what to do instead"
+		}
 		return "Interrupted · tell Abhed what to do instead"
 	case agent.TermMaxTurns:
 		return "Stopped at the turn limit (max_turns)"

@@ -561,3 +561,20 @@ func TestRiskySuggestionsAreDropped(t *testing.T) {
 		}
 	}
 }
+
+// A person's Interrupt is recorded as user_interrupt with its detail.
+func TestInterruptDetailRecorded(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	stub := &suggestStub{replies: []stubReply{{text: "Half", onCall: func() { cancel(Interrupt{Detail: InterruptKept}) }}}}
+	l, store := suggestLoop(t, stub)
+	if reason, _ := l.Run(ctx, "hi"); reason != TermUserInterrupt {
+		t.Fatalf("reason = %s", reason)
+	}
+	evs, _ := store.Events("s1")
+	var end SessionEnded
+	_ = json.Unmarshal(evs[len(evs)-1].Payload, &end)
+	if end.Reason != TermUserInterrupt || end.Detail != InterruptKept {
+		t.Fatalf("end = %+v", end)
+	}
+}

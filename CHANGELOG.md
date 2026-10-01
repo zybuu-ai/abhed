@@ -586,6 +586,10 @@ Two changes need action before upgrading:
 
 ### Changed
 
+- In the terminal, Esc and Ctrl-C now say what they left: Esc ends the turn
+  and keeps background shells and tasks ("Interrupted · background shells
+  kept"), Ctrl-C stops them too ("… stopped"). Both still end as
+  `user_interrupt`; `session.ended` gains `detail` to tell them apart.
 - A background task that finishes while the session is idle now wakes the
   agent: `subagents.wake` defaults to `auto` (it was `notify`), so the agent
   continues with the result on its own instead of waiting for your next

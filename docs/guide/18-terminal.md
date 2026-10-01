@@ -72,10 +72,14 @@ way to the reply as soon as the reply starts.
 
 | Keys | |
 |---|---|
-| Esc | stop the turn; the session is kept |
-| Ctrl-C | on a typed line, clear it; otherwise stop the turn, and a second time exit |
+| Esc | stop the turn; the session and its background shells and tasks are kept ("Interrupted · background shells kept") |
+| Ctrl-C | on a typed line, clear it; otherwise stop the turn and its background shells and tasks ("Interrupted · background shells stopped"), and a second time exit |
 | Ctrl-O | the whole transcript, with every tool's output and every reasoning block in full |
 | Shift-Tab | the next permission mode, applied when the turn ends |
+
+Esc and Ctrl-C both end the turn as `user_interrupt`; the record's
+`session.ended` says which in `detail`: `turn interrupted, background shells
+kept` for Esc, `interrupted, background shells stopped` for Ctrl-C.
 
 What you type while it works is shown as you type it. Enter sends it as a
 steering message, applied at the agent's next step; until then it is listed

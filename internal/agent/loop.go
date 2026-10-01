@@ -255,6 +255,7 @@ type Loop struct {
 	sug           *pendingSuggestion
 	sugClosed     bool
 	endSuggesting bool
+	endDetail     string
 	usageMu       sync.Mutex
 
 	// Background is the session's background children; nil runs none.
@@ -649,7 +650,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	}
 	for {
 		if ctx.Err() != nil {
-			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 		}
 		if err := l.recordFailure(); err != nil {
 			return TermError, err
@@ -720,7 +721,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 			if reason == TermCompleted {
 				return l.finishSuggesting(ctx), nil
 			}
-			return l.finish(reason), nil
+			return l.finishStopped(ctx, reason), nil
 		}
 	}
 }
@@ -1539,6 +1540,16 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	return result, ""
 }
 
+// finishStopped is finish with the detail a person's Interrupt gave, if any.
+func (l *Loop) finishStopped(ctx context.Context, reason TerminalReason) TerminalReason {
+	var in Interrupt
+	if reason == TermUserInterrupt && errors.As(context.Cause(ctx), &in) {
+		l.endDetail = in.Detail
+		defer func() { l.endDetail = "" }()
+	}
+	return l.finish(reason)
+}
+
 func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// A shutdown ends the process holding the queue, so a message accepted
 	// but not yet delivered is recorded as dropped rather than lost unseen.
@@ -1566,6 +1577,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		ContextWindow: window,
 		Background:    l.Background.Owed(),
 		Suggesting:    l.endSuggesting,
+		Detail:        l.endDetail,
 	}
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)

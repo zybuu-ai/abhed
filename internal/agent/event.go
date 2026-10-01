@@ -373,6 +373,8 @@ type SessionEnded struct {
 	Background int `json:"background,omitempty"`
 	// Settled marks the closing end recorded after background work finished.
 	Settled bool `json:"settled,omitempty"`
+	// Detail says more of how a run was stopped, as an Interrupt cause names it.
+	Detail string `json:"detail,omitempty"`
 	// Suggesting marks a run's end that a next-prompt suggestion follows: its
 	// model.call (purpose suggestion) comes after, last.
 	Suggesting bool `json:"suggesting,omitempty"`

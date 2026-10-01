@@ -78,6 +78,18 @@ type StopCause struct{ Reason TerminalReason }
 
 func (c StopCause) Error() string { return "stopped: " + string(c.Reason) }
 
+// Interrupt is a person's stop of a run that says what it left running; it
+// ends the run as user_interrupt, with Detail on its session.ended.
+type Interrupt struct{ Detail string }
+
+func (i Interrupt) Error() string { return "interrupted: " + i.Detail }
+
+// Interrupt details the CLI records: Esc keeps background work, Ctrl-C stops it.
+const (
+	InterruptKept    = "turn interrupted, background shells kept"
+	InterruptStopped = "interrupted, background shells stopped"
+)
+
 // ErrBackgroundLifetime is the cause a background child's deadline carries.
 var ErrBackgroundLifetime = errors.New("the background task's lifetime ran out")
 

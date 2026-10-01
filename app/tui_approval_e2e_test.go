@@ -90,6 +90,6 @@ func TestTUIDeclineStopsTheTurn(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	r.send("\x1b")
 	r.waitText("✕ Declined")
-	r.waitText("Interrupted · tell Abhed what to do instead")
+	r.waitText("Interrupted · background shells kept · tell Abhed what to do instead")
 	r.waitFor("the prompt to be idle", false, func(s string) bool { return !strings.Contains(s, "esc to interrupt") })
 }

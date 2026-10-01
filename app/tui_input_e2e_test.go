@@ -141,3 +141,21 @@ func TestTUIKeystrokeBudget(t *testing.T) {
 		t.Fatalf("a key cost %d bytes; budget 64: %q", worst, r.rawSinceMark())
 	}
 }
+
+// Esc ends the turn and keeps background shells; Ctrl-C stops them too. The
+// end says which, on screen and in session.ended's detail.
+func TestTUIEscAndCtrlCSayWhatTheyLeft(t *testing.T) {
+	stub, ws := tuiWorkspace(t, "")
+	r := startTUI(t, stub, ws, 120, 30)
+	for i, tc := range []struct{ key, want string }{
+		{"\x1b", "background shells kept"},
+		{"\x03", "background shells stopped"},
+	} {
+		r.send("please slow\r")
+		r.waitFor("the reply to start", true, func(s string) bool { return strings.Count(s, "word2") > i })
+		r.send(tc.key)
+		r.waitText("Interrupted · " + tc.want)
+		r.waitFor("the turn to stop", false, func(s string) bool { return !strings.Contains(s, "esc to interrupt") })
+		time.Sleep(200 * time.Millisecond)
+	}
+}
