@@ -35,3 +35,24 @@ func TestStatusNamesTheLocalRecord(t *testing.T) {
 		t.Fatalf("status:\n%s", out)
 	}
 }
+
+// /status says the turn limit is per message unless the managed
+// configuration sets it, when it bounds the whole conversation.
+func TestStatusTurnLimitFollowsTheManagedConfiguration(t *testing.T) {
+	own := config.Default()
+	own.Limits.MaxTurns = 30
+	managed := own
+	managed.Managed, managed.ManagedKeys = true, []string{"limits.max_turns"}
+	for _, c := range []struct {
+		cfg       config.Config
+		want, not string
+	}{{own, "30 for each message", "whole conversation"}, {managed, "30 for the whole conversation", "for each message"}} {
+		env, surface, _ := recordedEnv(t, c.cfg, "default")
+		if _, err := slashStatus(context.Background(), env, nil); err != nil {
+			t.Fatal(err)
+		}
+		if out := surface.text(); !strings.Contains(out, c.want) || strings.Contains(out, c.not) {
+			t.Fatalf("status:\n%s", out)
+		}
+	}
+}

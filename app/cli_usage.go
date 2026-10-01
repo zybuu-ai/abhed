@@ -198,8 +198,8 @@ func slashStatus(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	session := orDefault(st.sessionID, "not started")
 	turns := "no limit"
-	if cfg.Limits.MaxTurns > 0 {
-		turns = fmt.Sprintf("%d model turns across the whole conversation; /clear starts a new one", cfg.Limits.MaxTurns)
+	if n := st.maxTurns(); n > 0 {
+		turns = strings.TrimPrefix(turnLimitSummary(cfg, n), "turn limit: ")
 	}
 	budget := "none"
 	if cfg.Limits.MaxBudgetTokens > 0 {
