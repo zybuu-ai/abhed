@@ -49,7 +49,8 @@ type Postgres struct {
 	usersOnce sync.Once
 	usersErr  error
 
-	owners OwnerPolicy
+	owners        OwnerPolicy
+	ownerAccounts func() ([]*auth.User, error)
 }
 
 type Config struct {
@@ -69,6 +70,10 @@ type Config struct {
 	// Owners is what a single-role start's owner migration may do with rows
 	// keyed by a local account's name or email; empty means OwnersUnclaim.
 	Owners OwnerPolicy
+	// OwnerAccounts, when set, gives a single-role start's owner migration
+	// the local accounts kept outside the users table. Called only when the
+	// migration runs; its error stops the start.
+	OwnerAccounts func() ([]*auth.User, error)
 }
 
 func DefaultConfig(dsn string) Config {
@@ -135,7 +140,7 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners}
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
 			pool.Close()
@@ -205,7 +210,8 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	}
 	// A single-role server reads accounts from this database; it warns rather
 	// than refuse, since it cannot be migrated any other way.
-	_, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: p.owners, AllowNoAccounts: true})
+	_, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: p.owners, AllowNoAccounts: true,
+		LoadAccounts: p.ownerAccounts})
 	return err
 }
 

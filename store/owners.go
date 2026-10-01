@@ -104,6 +104,9 @@ type OwnerMigration struct {
 	// Accounts are local accounts kept outside the users table, such as an
 	// auth.users_file; a username already in the table is taken from there.
 	Accounts []*auth.User
+	// LoadAccounts, when set, adds accounts read only once the move is
+	// certain to run; its error stops the move.
+	LoadAccounts func() ([]*auth.User, error)
 	// AllowNoAccounts lets a local-only move run with no account at all,
 	// which would leave every old row where no one can reach it.
 	AllowNoAccounts bool
@@ -159,6 +162,13 @@ func runOwnerMigration(ctx context.Context, tx pgx.Tx, m OwnerMigration, policy 
 	table, err := ownerAccounts(ctx, tx)
 	if err != nil {
 		return nil, nil, err
+	}
+	if m.LoadAccounts != nil {
+		more, err := m.LoadAccounts()
+		if err != nil {
+			return nil, nil, fmt.Errorf("owner migration: %w", err)
+		}
+		m.Accounts = append(append([]*auth.User{}, m.Accounts...), more...)
 	}
 	accounts := mergeAccounts(table, m.Accounts)
 	distinct := distinctUsernames(accounts)

@@ -2503,6 +2503,14 @@ func storeConfig(cfg config.Config) store.Config {
 	sc := store.DefaultConfig(cfg.Storage.DSN)
 	sc.SingleRole = cfg.Storage.SingleRole
 	sc.Owners = ownerPolicy(cfg)
+	if cfg.Storage.SingleRole {
+		// A single-role start migrates owners itself, so it reads the
+		// users_file too; a configured one it cannot read stops the start.
+		sc.OwnerAccounts = func() ([]*auth.User, error) {
+			users, _, err := fileOwnerAccounts(cfg, cfg.Workspace.Workspace, false)
+			return users, err
+		}
+	}
 	if cfg.Storage.Tenant != "" {
 		sc.Tenant = cfg.Storage.Tenant
 	}

@@ -332,3 +332,44 @@ func TestLegacyOwnedRowsCountsEveryTenant(t *testing.T) {
 		t.Fatalf("counted %d new legacy rows, want 2", after-before)
 	}
 }
+
+// A single-role start's accounts outside the table are read when the move
+// runs, and a failure to read them stops it.
+func TestOwnerMigrationLoadsAccountsLate(t *testing.T) {
+	p := openStore(t, "default")
+	ctx := context.Background()
+	x := strings.ToLower(testID(t, "s"))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`); err != nil {
+		t.Fatal(err)
+	}
+	id := testID(t, "sess-late-")
+	if _, err := tx.Exec(ctx, `INSERT INTO sessions (id, tenant_id, user_id, workspace, model)
+		VALUES ($1, 'default', $2, '/w', 'm')`, id, "solo"+x+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	m := OwnerMigration{Policy: OwnersLocalOnly, AllowNoAccounts: true, LoadAccounts: func() ([]*auth.User, error) {
+		return []*auth.User{{Username: "solo" + x, Email: "solo" + x + "@example.test"}}, nil
+	}}
+	if _, _, err := runOwnerMigration(ctx, tx, m, OwnersLocalOnly); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := tx.QueryRow(ctx, `SELECT user_id FROM sessions WHERE id = $1`, id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "local:solo"+x {
+		t.Fatalf("owner %q, want local:solo%s", got, x)
+	}
+	m.LoadAccounts = func() ([]*auth.User, error) { return nil, errors.New("users.json: no such file") }
+	if _, _, err := runOwnerMigration(ctx, tx, m, OwnersLocalOnly); err == nil {
+		t.Fatal("a failed account read did not stop the move")
+	}
+}

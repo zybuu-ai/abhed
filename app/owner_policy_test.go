@@ -166,3 +166,34 @@ func TestMigrateCommandPassesFileAccounts(t *testing.T) {
 		t.Fatalf("--force-no-accounts: exit %d, allow %v", code, got.AllowNoAccounts)
 	}
 }
+
+// A single-role server reads its users_file when it migrates owners itself;
+// a two-role one leaves that to migrate.
+func TestSingleRoleStartReadsTheUsersFile(t *testing.T) {
+	ws := t.TempDir()
+	fs, err := auth.NewFileUserStore(filepath.Join(ws, "state", "users.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Put(context.Background(), &auth.User{Username: "founder"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Auth.Mode, cfg.Auth.UsersFile = "local", "state/users.json"
+	cfg.Workspace.Workspace = ws
+	if storeConfig(cfg).OwnerAccounts != nil {
+		t.Fatal("a two-role start reads the users file")
+	}
+	cfg.Storage.SingleRole = true
+	load := storeConfig(cfg).OwnerAccounts
+	if load == nil {
+		t.Fatal("a single-role start does not read the users file")
+	}
+	if got, err := load(); err != nil || len(got) != 1 || got[0].Username != "founder" {
+		t.Fatalf("loaded %+v %v", got, err)
+	}
+	cfg.Auth.UsersFile = "missing.json"
+	if _, err := storeConfig(cfg).OwnerAccounts(); err == nil {
+		t.Fatal("a missing users_file did not stop a single-role start")
+	}
+}
