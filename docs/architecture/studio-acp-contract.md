@@ -511,9 +511,29 @@ whole tree.
 
 ### 6.2 Background tasks
 
-A background task is a subagent started with `background: true`. ACP clamps
-the wake mode to `notify`: a result is delivered to the conversation, and the
-agent never runs on its own because a task finished.
+A background task is a subagent started with `background: true`. ACP runs
+the wake mode the configuration gives, `auto` by default: a result that
+arrives between prompts opens a **woken turn** that acts on it. `notify`
+(configured, or forced by the managed configuration) only delivers the
+result to the conversation for the next prompt.
+
+A woken turn is a turn the editor did not prompt:
+
+```ts
+_abhed/wake/started { sessionId, taskIds: string[] }     // notification
+// then the turn's session/update notifications, as a prompt's; the first is
+// an agent_message_chunk "Continuing with results from <task>." with
+// _meta["zybuu.ai/abhed"].woken = { by: "policy", taskIds }
+_abhed/wake/ended   { sessionId, taskIds, stopReason, reason? }  // notification
+```
+
+- Its asks go to the editor as a prompt's do; nothing is approved for it.
+- `session/cancel` ends it and holds further wakes until the next prompt.
+- A `session/prompt` sent while it runs waits for `_abhed/wake/ended`, then runs.
+- Only the session's own tasks finishing start one, within
+  `subagents.max_wakes_per_hour` and `subagents.wake_max_turns`
+  (`wake_limit` maps to `max_turn_requests`). None starts while the
+  workspace file changed since the session opened; the next prompt decides.
 
 **Today (done in `app/acp.go`):**
 - `subagent.spawned` with `background: true` opens a card

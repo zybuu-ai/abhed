@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -210,6 +211,14 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "bg-" + n.TaskID, "status": status,
 			"content": []any{map[string]any{"type": "content", "content": text(n.Content)}}})
+	case agent.EvSessionWoken:
+		// A turn the session started for finished background work, marked as such.
+		var w agent.SessionWoken
+		if json.Unmarshal(ev.Payload, &w) != nil {
+			break
+		}
+		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(wokenLine(s, w) + "\n\n"),
+			"_meta": map[string]any{acpMetaKey: map[string]any{"woken": map[string]any{"by": w.By, "taskIds": w.TaskIDs}}}})
 	case agent.EvTodoUpdated:
 		var p agent.TodoList
 		_ = json.Unmarshal(ev.Payload, &p)
@@ -325,4 +334,23 @@ func subagentReturned(payload json.RawMessage) map[string]any {
 			ui.VisibleLine(p.Reason), p.Turns, p.TokensIn, p.TokensOut, p.SummaryChars))}},
 		"_meta": map[string]any{acpMetaKey: map[string]any{"turns": p.Turns, "tokensIn": p.TokensIn,
 			"tokensOut": p.TokensOut, "summaryChars": p.SummaryChars, "reason": p.Reason}}}
+}
+
+// wokenLine names the tasks a woken turn continues from.
+func wokenLine(s *acpSession, w agent.SessionWoken) string {
+	if w.By == "caller" {
+		return "Continuing with background results, as asked."
+	}
+	names := make([]string, 0, len(w.TaskIDs))
+	for _, id := range w.TaskIDs {
+		name := id
+		if ti, ok := s.task(id); ok && ti.Description != "" {
+			name = ti.Description
+		}
+		names = append(names, ui.VisibleLine(name))
+	}
+	if len(names) == 0 {
+		return "Continuing with background results."
+	}
+	return "Continuing with results from " + strings.Join(names, ", ") + "."
 }

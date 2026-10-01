@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -90,7 +91,7 @@ type cancelCounter struct {
 func (a *cancelCounter) CancelTasks() int { a.cancelled.Add(1); return 0 }
 
 // session/cancel stops the background tasks, even with no prompt open; and
-// a session never runs background tasks above notify.
+// a session wakes on its tasks' results.
 func TestACPCancelWithoutPromptCancelsChildren(t *testing.T) {
 	var made *cancelCounter
 	newACPAgent = func(_ context.Context, opts abhed.Options) (acpAgent, error) {
@@ -106,7 +107,7 @@ func TestACPCancelWithoutPromptCancelsChildren(t *testing.T) {
 		SessionID string `json:"sessionId"`
 	}
 	_ = json.Unmarshal(m.Result, &res)
-	if made.opts.Background != "notify" {
+	if made.opts.Background != "auto" || made.opts.HostWake == nil {
 		t.Fatalf("an ACP session runs background tasks as %q", made.opts.Background)
 	}
 	cl.notify("session/cancel", map[string]any{"sessionId": res.SessionID})
@@ -237,5 +238,89 @@ func TestACPAskBoundToItsTurn(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the ask outlived the turn that put it")
+	}
+}
+
+// A result between prompts opens a turn of its own: the editor hears it
+// start, gets its updates marked with the task it continues from, is asked
+// its asks, and hears it end; a prompt sent meanwhile waits for that end.
+func TestACPWokenTurnStreamsAsUpdates(t *testing.T) {
+	var made *scriptedACPAgent
+	newACPAgent = func(_ context.Context, opts abhed.Options) (acpAgent, error) {
+		made = &scriptedACPAgent{opts: opts}
+		return made, nil
+	}
+	defer func() {
+		newACPAgent = func(ctx context.Context, o abhed.Options) (acpAgent, error) { return abhed.New(ctx, o) }
+	}()
+	cl := newACPClient(t, func(method string, params json.RawMessage) any { return chosen(params, "allow_once") })
+	m := cl.request(1, "session/new", map[string]any{"cwd": t.TempDir()})
+	var res struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(m.Result, &res)
+	raw := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	release := make(chan struct{})
+	allowed := make(chan bool, 1)
+	run := func(ctx context.Context) (string, error) {
+		made.opts.OnEvent(abhed.Event{Type: agent.EvSessionWoken, Payload: raw(agent.SessionWoken{By: "policy", TaskIDs: []string{"t1"}})})
+		made.opts.OnEvent(abhed.Event{Type: agent.EvAgentDelta, Payload: raw(map[string]string{"text": "acting on the scan"})})
+		args := json.RawMessage(`{"command":"ls"}`)
+		made.opts.OnEvent(abhed.Event{Type: agent.EvActionRequested, Payload: raw(agent.ActionRequested{CallID: "w1", Tool: "bash", Args: args, RequiresApproval: true})})
+		ok, _ := made.opts.Approve(agent.WithCallID(ctx, "w1"), "bash", args, abhed.Decision{Decision: policy.Ask, Step: "default"})
+		allowed <- ok
+		<-release
+		return "acting on the scan", nil
+	}
+	if !made.opts.HostWake([]string{"t1"}, run) {
+		t.Fatal("the wake was not started")
+	}
+	if made.opts.HostWake([]string{"t2"}, run) {
+		t.Fatal("a second wake started while one runs")
+	}
+	cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("2"), Method: "session/prompt",
+		Params: raw(map[string]any{"sessionId": res.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "next"}}})})
+	var started, marked, streamed, asked, ended, answered bool
+	deadline := time.After(10 * time.Second)
+	for !answered {
+		select {
+		case msg := <-cl.lines:
+			var p struct {
+				Update map[string]any `json:"update"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			switch {
+			case msg.Method == "_abhed/wake/started":
+				started = true
+			case msg.Method == "session/update" && p.Update["sessionUpdate"] == "agent_message_chunk":
+				text := fmt.Sprint(p.Update["content"])
+				marked = marked || strings.Contains(text, "Continuing with results from t1") && strings.Contains(fmt.Sprint(p.Update["_meta"]), "woken")
+				streamed = streamed || strings.Contains(text, "acting on the scan")
+			case msg.Method == "session/request_permission":
+				asked = true
+			case msg.Method == "_abhed/wake/ended":
+				ended = true
+			case msg.Method == "" && string(msg.ID) == "2":
+				if !ended {
+					t.Fatal("the prompt was answered while the woken turn ran")
+				}
+				answered = true
+			}
+			if asked && streamed && !ended {
+				select {
+				case <-release:
+				default:
+					if ok := <-allowed; !ok {
+						t.Fatal("the woken turn's ask was not answered by the editor")
+					}
+					close(release)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("started %v, marked %v, streamed %v, asked %v, ended %v, answered %v", started, marked, streamed, asked, ended, answered)
+		}
+	}
+	if !started || !marked || !streamed || !asked || len(made.ran) != 1 {
+		t.Fatalf("started %v, marked %v, streamed %v, asked %v, prompts run %v", started, marked, streamed, asked, made.ran)
 	}
 }
