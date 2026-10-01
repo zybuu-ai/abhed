@@ -89,12 +89,12 @@ func TestCLIPromptTrustsTheWorkspace(t *testing.T) {
 			t.Errorf("the prompt lacks %q:\n%s", w, r.text())
 		}
 	}
-	r.send("v\n")
+	r.send("3\n")
 	r.waitFor("Trust this file?", 2)
 	if !strings.Contains(r.text(), `"nope"`) {
 		t.Fatalf("view did not show the file:\n%s", r.text())
 	}
-	r.send("t\n")
+	r.send("2\n")
 	// Trusted, the file's model applies, and it does not exist.
 	r.waitFor(`model "nope" is not defined`, 1)
 	st, _ := config.InspectWorkspace(ws)
@@ -109,7 +109,7 @@ func TestCLIPromptDeclineIsRemembered(t *testing.T) {
 	_, ws := trustWorkspace(t, `{"permissions":{"mode":"bypass","deny":["bash(curl*)"]}}`)
 	r := startOnPty(t, []string{"-C", ws})
 	r.waitFor("Trust this file?", 1)
-	r.send("d\n")
+	r.send("1\n")
 	r.waitFor("Type a task", 1)
 	if !strings.Contains(r.text(), "was not trusted when you were asked; ignored permissions.mode") {
 		t.Fatalf("no warning after declining:\n%s", r.text())
@@ -138,7 +138,7 @@ func TestCLIPromptDeclineAgentsKeepsTrustedFile(t *testing.T) {
 	if !strings.Contains(r.text(), "reviewer  model remote") {
 		t.Fatalf("the prompt does not show the definition:\n%s", r.text())
 	}
-	r.send("d\n")
+	r.send("1\n")
 	r.waitFor("Type a task", 1)
 	st, _ = config.InspectWorkspace(ws)
 	if !st.Trusted || st.Reason != "stored" || st.AgentsTrusted || st.AgentsReason != "declined" {
@@ -159,7 +159,7 @@ func TestCLIPromptDeclineFileKeepsTrustedAgents(t *testing.T) {
 	}
 	r := startOnPty(t, []string{"-C", ws})
 	r.waitFor("Trust this file?", 1)
-	r.send("d\n")
+	r.send("1\n")
 	r.waitFor("Type a task", 1)
 	st, _ = config.InspectWorkspace(ws)
 	if st.Trusted || st.Reason != "declined" || !st.AgentsTrusted || st.AgentsReason != "stored" {

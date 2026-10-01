@@ -95,7 +95,7 @@ func TestHeadlessRunNeverPromptsAndTheFlagTrusts(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cmd := mainHelper(c.args, c.env...)
-			cmd.Stdin = strings.NewReader("t\n")
+			cmd.Stdin = strings.NewReader("2\n")
 			var out bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &out
 			err := cmd.Run()
@@ -136,9 +136,9 @@ func TestAskTrustAnswers(t *testing.T) {
 		err   bool
 		shows []string
 	}{
-		{"t\n", true, false, []string{"permissions.mode", `"bypass"`, "permissions.allow", "model.default", "Applied already", "permissions.deny"}},
-		{"d\n", false, false, []string{"Not trusted"}},
-		{"v\nt\n", true, false, []string{`"nope"`, "--- " + cfg.Workspace.File}},
+		{"2\n", true, false, []string{"permissions.mode", `"bypass"`, "permissions.allow", "model.default", "Applied already", "permissions.deny"}},
+		{"1\n", false, false, []string{"Not trusted"}},
+		{"3\n2\n", true, false, []string{`"nope"`, "--- " + cfg.Workspace.File}},
 		{"what\n\n", false, true, []string{"Trust this file?"}},
 		{"", false, true, nil},
 	} {

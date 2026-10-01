@@ -172,6 +172,18 @@ func (c *cliSession) command(line, want string) {
 	c.waitFor(func(out string) bool { return strings.Count(out, want) > before }, want)
 }
 
+// declineNumber is the number of the last approval's No, its last answer,
+// read from the "answer 1-N:" line the prompt prints.
+func (c *cliSession) declineNumber() string {
+	c.t.Helper()
+	out := c.out.String()
+	i := strings.LastIndex(out, "answer 1-")
+	if i < 0 || i+len("answer 1-") >= len(out) {
+		c.t.Fatalf("no numbered approval:\n%s", out)
+	}
+	return out[i+len("answer 1-") : i+len("answer 1-")+1]
+}
+
 func (c *cliSession) waitFor(ok func(string) bool, what string) {
 	c.t.Helper()
 	for deadline := time.Now().Add(20 * time.Second); !ok(c.out.String()); time.Sleep(10 * time.Millisecond) {

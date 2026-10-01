@@ -102,7 +102,8 @@ func TestCLIAutoMemorySaveIsNotAutoApproved(t *testing.T) {
 	})
 	fmt.Fprintln(c.stdin, "read the notes")
 	c.waitFor(func(out string) bool { return strings.Contains(out, "memory_write can make changes") }, "the save to be asked")
-	fmt.Fprintln(c.stdin, "r")
+	c.waitFor(func(out string) bool { return strings.Contains(out, "answer 1-") }, "the numbered answers")
+	fmt.Fprintln(c.stdin, c.declineNumber())
 	c.waitFor(func(out string) bool { return strings.Contains(out, " in / ") }, "the task to finish")
 	matches, _ := filepath.Glob(filepath.Join(home, ".abhed", "projects", "*", "memory", "MEMORY.md"))
 	if len(matches) != 0 {

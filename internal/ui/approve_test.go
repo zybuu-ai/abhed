@@ -225,14 +225,14 @@ func TestApproveNamesTheSubagent(t *testing.T) {
 	}
 }
 
-// Only a line that is exactly a decision key may answer an approval.
+// Only a line that is exactly an approval's number may answer it; no letter does.
 func TestDecisionKeysOnly(t *testing.T) {
-	for _, l := range []string{"a", "y", "r", "n", "A", " a \n"} {
+	for _, l := range []string{"1", "2", "3", " 1 \n"} {
 		if !Decision(l) {
 			t.Errorf("%q is a decision key", l)
 		}
 	}
-	for _, l := range []string{"", "yes", "ok", "no", "approve", "a please", "R"} {
+	for _, l := range []string{"", "yes", "ok", "no", "approve", "1 please", "4", "0", "a", "y", "r", "n", "A"} {
 		if Decision(l) {
 			t.Errorf("%q was taken as a decision", l)
 		}
@@ -246,7 +246,7 @@ func TestDecisionKeysOnly(t *testing.T) {
 	for !p.Waiting() {
 		time.Sleep(time.Millisecond)
 	}
-	if !p.Deliver("a") || <-got != "a" || p.Waiting() {
+	if !p.Deliver("1") || <-got != "1" || p.Waiting() {
 		t.Fatal("a waiting approval did not take its answer")
 	}
 }
@@ -257,7 +257,7 @@ func TestDecisionKeysOnly(t *testing.T) {
 func TestAnswerNamesTheAsk(t *testing.T) {
 	var out strings.Builder
 	a := NewApprover(&out)
-	a.In = strings.NewReader("y\n")
+	a.In = strings.NewReader("1\n")
 	ctx := agent.WithSubagent(context.Background(), "scan logs")
 	ok, err := a.Approve(ctx, "bash", json.RawMessage(`{"command":"touch made.txt"}`), policy.Result{Decision: policy.Ask})
 	if err != nil || !ok {
@@ -265,5 +265,37 @@ func TestAnswerNamesTheAsk(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "accepted: bash") || !strings.Contains(got, "touch made.txt") || !strings.Contains(got, "(subagent scan logs)") {
 		t.Fatalf("the answer does not name its ask:\n%s", got)
+	}
+}
+
+// Hidden characters anywhere in a call — a key, a decoded JSON string, who
+// asked — are shown as escapes, and the line prompt warns before the numbers.
+func TestApproveWarnsOfHiddenCharacters(t *testing.T) {
+	for name, c := range map[string]struct {
+		args string
+		ctx  context.Context
+	}{
+		"command":  {`{"command":"echo ok\u001b[2K"}`, context.Background()},
+		"key":      {`{"command":"ls","x\u202e":"1"}`, context.Background()},
+		"manifest": {`{"manifest":"{\"name\":\"a\u200bb\"}"}`, context.Background()},
+		"subagent": {`{"command":"ls"}`, agent.WithSubagent(context.Background(), "scan\u202elogs")},
+	} {
+		var out strings.Builder
+		a := NewApprover(&out)
+		a.In = strings.NewReader("3\n")
+		if ok, _ := a.Approve(c.ctx, "bash", json.RawMessage(c.args), policy.Result{Decision: policy.Ask}); ok {
+			t.Fatalf("%s: 3 approved", name)
+		}
+		got := out.String()
+		if !strings.Contains(got, HiddenWarning) || strings.ContainsAny(got, "\x1b\u202e\u200b") {
+			t.Fatalf("%s: no warning, or a hidden character reached the screen:\n%q", name, got)
+		}
+	}
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("3\n")
+	_, _ = a.Approve(context.Background(), "bash", json.RawMessage(`{"command":"ls\tx\ny"}`), policy.Result{Decision: policy.Ask})
+	if strings.Contains(out.String(), HiddenWarning) {
+		t.Fatal("a tab or a newline was warned of")
 	}
 }

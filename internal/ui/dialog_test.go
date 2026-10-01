@@ -355,6 +355,21 @@ func TestDialogApproverSaysWhoAskedAndWhy(t *testing.T) {
 	}
 }
 
+// The dialog approval warns of hidden characters and shows them as escapes.
+func TestDialogApproverWarnsOfHiddenCharacters(t *testing.T) {
+	g := newRig(t, 100, 30)
+	a := &DialogApprover{Base: NewApprover(io.Discard), Reader: g.lr, Render: NewRenderer(io.Discard, false)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, _ = a.Approve(ctx, "bash", json.RawMessage(`{"command":"echo ok\u200b"}`), policy.Result{Decision: policy.Ask})
+	}()
+	g.waitText("Run this command?")
+	if text := g.term.Text(); !strings.Contains(text, "hidden characters") || !strings.Contains(text, "⟨U+200B⟩") {
+		t.Fatalf("no warning, or the character is not shown:\n%s", g.term.Dump())
+	}
+}
+
 // Approvals have no default, by decision: the dialog the approver builds
 // selects nothing, a Yes or "always" default is refused before it is drawn,
 // and Enter alone never approves, however long after the question appeared.
@@ -552,7 +567,7 @@ func TestApprovalsAreNumbersOnly(t *testing.T) {
 			}
 		}
 	}
-	for _, kind := range []DialogKind{DialogApproval, DialogConfirm} {
+	for _, kind := range []DialogKind{DialogApproval, DialogConfirm, DialogChoice} {
 		spec := DialogSpec{Kind: kind, Choices: []Choice{{ID: "yes", Label: "Yes", Key: 'y'}, {ID: "no", Label: "No"}}}
 		if _, err := spec.Normalized(); err == nil {
 			t.Errorf("a %s dialog with a letter key was accepted", kind)

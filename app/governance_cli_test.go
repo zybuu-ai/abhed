@@ -40,9 +40,9 @@ func TestCLIModeChangesReachTheRecord(t *testing.T) {
 	c := startCLI(t)
 	c.command("/mode plan", "mode: plan")
 	c.command("/mode auto", "answer 1-2")
-	c.command("no", "mode stays plan")
+	c.command("2", "mode stays plan")
 	c.command("/mode auto", "answer 1-2")
-	c.command("yes", "mode: auto")
+	c.command("1", "mode: auto")
 	c.task("hello")
 	evs := c.export()
 	var got []string
@@ -126,7 +126,7 @@ func TestCLIUnreadEditIsNotAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.task("change main.go")
-	if strings.Contains(c.out.String(), "[a]ccept") {
+	if strings.Contains(c.out.String(), "answer 1-") {
 		t.Fatalf("the person was asked to approve an edit that could not succeed:\n%s", c.out.String())
 	}
 	c.mu.Lock()

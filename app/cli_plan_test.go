@@ -124,8 +124,11 @@ func TestCLIPlanExit(t *testing.T) {
 	}, "the plan card")
 	c.command("2", "mode: default")
 	// Default mode: the edit the plan leads to is put to the person.
-	c.waitFor(func(out string) bool { return strings.Contains(out, "[a]ccept") }, "the edit to be asked about")
-	c.command("r", " in / ")
+	c.waitFor(func(out string) bool {
+		i := strings.LastIndex(out, "needs approval")
+		return i >= 0 && strings.Contains(out[i:], "answer 1-")
+	}, "the edit to be asked about")
+	c.command(c.declineNumber(), " in / ")
 	if _, err := os.Stat(filepath.Join(c.ws, "notes.txt")); err == nil {
 		t.Fatal("a rejected write was made")
 	}

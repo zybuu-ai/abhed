@@ -40,7 +40,7 @@ func TestRewindCodeAndConversation(t *testing.T) {
 		t.Fatalf("a.txt = %q before the rewind", a)
 	}
 	c.command("/rewind 2", "Rewind to before")
-	fmt.Fprintln(c.stdin, "both")
+	fmt.Fprintln(c.stdin, "1") // code and conversation
 	c.waitFor(func(out string) bool { return strings.Contains(out, "the conversation is back") }, "the rewind")
 	if a, _ := g.file("a.txt"); a != "one" {
 		t.Fatalf("a.txt = %q after the rewind, want one", a)
@@ -77,7 +77,7 @@ func TestRewindToTheFirstPrompt(t *testing.T) {
 	g.ask(c, "Remember the codeword ZEBRA-41.")
 	g.ask(c, "And OSPREY-58.")
 	c.command("/rewind 2", "Rewind to before")
-	fmt.Fprintln(c.stdin, "conversation")
+	fmt.Fprintln(c.stdin, "1") // the conversation only
 	c.waitFor(func(out string) bool { return strings.Contains(out, "the conversation is back") }, "the rewind")
 	if body := g.ask(c, "Which codewords?"); strings.Contains(body, "ZEBRA") || strings.Contains(body, "OSPREY") {
 		t.Fatalf("the rewound conversation reached the model:\n%s", body)

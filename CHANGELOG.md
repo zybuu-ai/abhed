@@ -32,7 +32,11 @@ All notable changes to Abhed are recorded here. The format follows
   nothing. Approvals are answered by number only, in the dialog and in the
   line mode alike: no letter approves. Only the answers offered can be
   chosen. A destructive command needs a second, numbered Yes, whose default
-  is No.
+  is No. Every other question the CLI asks is numbered too, the workspace
+  trust prompt included (1 don't trust, 2 trust, 3 view): no letter or word
+  answers one. An approval whose call carries a hidden character anywhere
+  (an argument, a key, a JSON string inside one, the reason, the scope, who
+  asked) shows it as an escape and warns above the answers.
 - Text from the model, from tools, from the workspace (a git branch) and
   from a status line command is drawn with every control and format
   character removed, rune by rune, keeping only text and colour: C0 and C1

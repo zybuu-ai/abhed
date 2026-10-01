@@ -40,7 +40,7 @@ func TestTrustShowsAgentDefinitions(t *testing.T) {
 		t.Fatalf("new definitions asked nothing: %+v", cfg.Workspace)
 	}
 	var out bytes.Buffer
-	if grant, err := askTrust(strings.NewReader("v\nd\n"), &out, cfg.Workspace); grant || err != nil {
+	if grant, err := askTrust(strings.NewReader("3\n1\n"), &out, cfg.Workspace); grant || err != nil {
 		t.Fatalf("grant %v err %v", grant, err)
 	}
 	for _, want := range []string{"reviewer  model remote  tools Read, Grep", "Trust this file and these definitions?", "--- " + filepath.Join(ws, ".abhed", "agents", "reviewer.md")} {

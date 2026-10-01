@@ -188,7 +188,7 @@ func TestPermissionsExplain(t *testing.T) {
 func TestCLIPermissionsAcrossClear(t *testing.T) {
 	c := startCLI(t)
 	c.command("/permissions allow bash(go test*)", "answer 1-2")
-	c.command("yes", "session allow rule added")
+	c.command("1", "session allow rule added")
 	c.task("hello")
 	if got := permissionChanges(t, c.export()); !slices.Equal(got, []string{"add allow bash(go test*)"}) {
 		t.Fatalf("recorded %v", got)

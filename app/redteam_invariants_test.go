@@ -68,7 +68,7 @@ func TestRedTeamDenyWinsInEveryMode(t *testing.T) {
 			c := startWith(t, callThenText("bash", `{"command":"curl http://example.invalid"}`),
 				`"permissions":{"mode":"`+mode+`","deny":["bash(curl *)"]},`)
 			c.command("/permissions allow bash(curl *)", "answer 1-2")
-			c.command("yes", "session allow rule added")
+			c.command("1", "session allow rule added")
 			c.task("fetch it")
 			if got := deniedAt(t, c.export()); !slices.Equal(got, []string{"deny"}) {
 				t.Fatalf("denied at %v", got)
@@ -108,7 +108,7 @@ func TestRedTeamInputEndingRefuses(t *testing.T) {
 	})
 	ws.Store(c.ws)
 	fmt.Fprintln(c.stdin, "write notes")
-	c.waitFor(func(out string) bool { return strings.Contains(out, "[a]ccept") }, "the write to be asked about")
+	c.waitFor(func(out string) bool { return strings.Contains(out, "answer 1-") }, "the write to be asked about")
 	_ = c.stdin.Close()
 	if err := c.cmd.Wait(); err != nil {
 		t.Fatalf("the CLI did not end cleanly: %v", err)
@@ -124,11 +124,11 @@ func TestRedTeamDestructiveAlwaysConfirms(t *testing.T) {
 	c := startWith(t, callThenText("bash", `{"command":"rm -rf build"}`),
 		`"permissions":{"mode":"bypass","allow":["bash(rm *)"]},`)
 	fmt.Fprintln(c.stdin, "clean")
-	c.waitFor(func(out string) bool { return strings.Contains(out, "[a]ccept") }, "the command to be asked about")
-	if strings.Contains(c.out.String(), "[A]lways") {
+	c.waitFor(func(out string) bool { return strings.Contains(out, "answer 1-") }, "the command to be asked about")
+	if strings.Contains(c.out.String(), "don't ask again") {
 		t.Fatal("a destructive command offered to always allow")
 	}
-	c.command("r", " in / ")
+	c.command("2", " in / ")
 	if got := deniedAt(t, c.export()); !slices.Equal(got, []string{"destructive"}) {
 		t.Fatalf("denied at %v", got)
 	}

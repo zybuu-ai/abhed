@@ -228,7 +228,7 @@ func TestCLIIdleLineIsAPromptUnlessADecision(t *testing.T) {
 		}
 	}
 	_, _ = io.WriteString(in, "go\n")
-	waitOut("[a]ccept")
+	waitOut("answer 1-")
 	_, _ = io.WriteString(in, "yes please, and check the logs\n")
 	waitOut("an approval is still waiting")
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
@@ -242,7 +242,7 @@ func TestCLIIdleLineIsAPromptUnlessADecision(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(ws, "made-by-child.txt")); err == nil {
 		t.Fatal("a line that is not a decision key answered the ask")
 	}
-	_, _ = io.WriteString(in, "a\n")
+	_, _ = io.WriteString(in, "1\n")
 	_ = in.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -281,13 +281,13 @@ func TestCLIRunLineSteersUnlessADecision(t *testing.T) {
 		}
 	}
 	_, _ = io.WriteString(in, "run it\n")
-	waitOut("[a]ccept")
+	waitOut("answer 1-")
 	_, _ = io.WriteString(in, "and keep it short\n")
 	waitOut("it steers the run")
 	if _, err := os.Stat(filepath.Join(ws, "made-by-parent.txt")); err == nil {
 		t.Fatal("a line that is not a decision key answered the ask")
 	}
-	_, _ = io.WriteString(in, "a\n")
+	_, _ = io.WriteString(in, "1\n")
 	_ = in.Close()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()

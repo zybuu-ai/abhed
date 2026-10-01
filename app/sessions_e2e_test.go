@@ -318,7 +318,7 @@ func TestResumeTamperedNeedsConfirm(t *testing.T) {
 
 	c = g.start("-r", id)
 	c.waitFor(func(out string) bool { return strings.Contains(out, "unverified") }, "the warning")
-	fmt.Fprintln(c.stdin, "no")
+	fmt.Fprintln(c.stdin, "2") // No
 	c.waitFor(func(out string) bool { return strings.Contains(out, "starting a new session") }, "the refusal")
 	if body := g.ask(c, "What is the codeword?"); strings.Contains(body, "ZEBRA") {
 		t.Fatalf("an unconfirmed tampered record was continued:\n%s", body)
@@ -328,7 +328,7 @@ func TestResumeTamperedNeedsConfirm(t *testing.T) {
 	before, _ := os.ReadFile(p)
 	c = g.start("-r", id)
 	c.waitFor(func(out string) bool { return strings.Contains(out, "unverified") }, "the warning")
-	fmt.Fprintln(c.stdin, "yes")
+	fmt.Fprintln(c.stdin, "1")
 	c.waitFor(func(out string) bool { return strings.Contains(out, "going on in a new session") }, "the fork")
 	if body := g.ask(c, "What is the codeword?"); !strings.Contains(body, "ZEBRA-99") {
 		t.Fatalf("a confirmed resume did not go on:\n%s", body)
@@ -340,7 +340,13 @@ func TestResumeTamperedNeedsConfirm(t *testing.T) {
 		t.Fatal("the unverified record was written to")
 	}
 	rec := g.record()
-	if rep, _ := rec.Verify(id); rep.OK || rep.FirstBad != 1 {
+	// The edited line is the one holding the codeword, after session.started.
+	at := bytes.Index(before, []byte("ZEBRA-99"))
+	if at < 0 {
+		t.Fatal("the edit is not in the record")
+	}
+	edited := int64(bytes.Count(before[:at], []byte("\n")) + 1)
+	if rep, _ := rec.Verify(id); rep.OK || rep.FirstBad != edited {
 		t.Fatalf("the tampered line is no longer reported: %+v", rep)
 	}
 	var fork local.Entry
@@ -351,7 +357,7 @@ func TestResumeTamperedNeedsConfirm(t *testing.T) {
 	}
 	evs := verified(t, rec, fork.ID)
 	var b agent.SessionBranched
-	if evs[0].Type != agent.EvSessionBranched || json.Unmarshal(evs[0].Payload, &b) != nil || b.From != id || !strings.Contains(b.Unverified, "seq 1") {
+	if evs[0].Type != agent.EvSessionBranched || json.Unmarshal(evs[0].Payload, &b) != nil || b.From != id || !strings.Contains(b.Unverified, fmt.Sprintf("seq %d", edited)) {
 		t.Fatalf("the fork does not record its unverified source: %s %s", evs[0].Type, evs[0].Payload)
 	}
 }
@@ -479,11 +485,11 @@ func TestExportDoesNotFollowAPlantedLink(t *testing.T) {
 	c.command("/export notes.jsonl", "an export is never written there")
 	idx := filepath.Join(g.home, ".abhed", "records", "default", "index.jsonl")
 	c.command("/export "+idx, "outside the workspace")
-	fmt.Fprintln(c.stdin, "yes")
+	fmt.Fprintln(c.stdin, "1")
 	c.waitFor(func(out string) bool { return strings.Contains(out, "Abhed's own state") }, "the refusal")
 	other := filepath.Join(t.TempDir(), "x.html")
 	c.command("/export "+other, "outside the workspace")
-	fmt.Fprintln(c.stdin, "no")
+	fmt.Fprintln(c.stdin, "2") // No
 	c.waitFor(func(out string) bool { return strings.Contains(out, "not exported") }, "the refusal")
 	exit(c)
 	if after, _ := os.ReadFile(recPath); !bytes.Equal(before, after) {

@@ -181,12 +181,12 @@ content. The prompt:
 
 - lists each setting the file would change, with its value
 - lists the tightening settings that already apply
-- offers **t**rust, **d**on't trust and **v**iew the file
+- offers numbered answers: 1 don't trust, 2 trust, 3 view the file
 
-Only an explicit `t` trusts the file. An empty line asks again, and the end of
-input counts as no answer. Text from the file is shown with control characters
+Only `2` trusts the file; no letter does. An empty line or anything else asks
+again, and the end of input counts as no answer. Text from the file is shown with control characters
 escaped, newlines and tabs included, so a file can neither drive the terminal
-nor draw lines of its own in the prompt. Only the body of **v**iew keeps its
+nor draw lines of its own in the prompt. Only the body of the view keeps its
 line breaks, between marker lines.
 
 Values that carry credentials are redacted wherever ignored settings are

@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -74,7 +76,7 @@ func warnTrust(st config.WorkspaceTrust) {
 var errNoAnswer = errors.New("no answer about the workspace configuration; it stays untrusted")
 
 // askTrust shows what an untrusted file would change and asks whether to
-// trust it. Only an explicit "t" trusts it.
+// trust it. Only its number, 2, trusts it.
 func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, error) {
 	fmt.Fprintln(out, "\nThis workspace has its own Abhed configuration:")
 	if st.File != "" {
@@ -99,21 +101,39 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 	case agentsPending:
 		question = "Trust these definitions?"
 	}
+	// Numbered answers only, checked as every dialog is: nothing is chosen
+	// for an empty line, and no letter trusts the file.
+	spec, err := ui.DialogSpec{Kind: ui.DialogChoice, Title: question, Choices: []ui.Choice{
+		{ID: ui.ChoiceNo, Label: "No, don't trust it"},
+		{ID: "trust", Label: "Yes, trust it", Widening: true},
+		{ID: "view", Label: "View the file"},
+	}}.Normalized()
+	if err != nil {
+		return false, err
+	}
 	for {
-		fmt.Fprintf(out, "\n%s [t]rust  [d]on't trust  [v]iew the file: ", question)
+		fmt.Fprintf(out, "\n%s\n", question)
+		for i, c := range spec.Choices {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, c.Label)
+		}
+		fmt.Fprintf(out, "answer 1-%d: ", len(spec.Choices))
 		line, err := readAnswer(in)
 		if err != nil {
 			fmt.Fprintln(out)
 			return false, errNoAnswer
 		}
-		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "t", "trust":
+		n, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || n < 1 || n > len(spec.Choices) {
+			continue
+		}
+		switch spec.Choices[n-1].ID {
+		case "trust":
 			fmt.Fprintln(out, "Trusted. A later change to the file will be asked about again.")
 			return true, nil
-		case "d", "n", "no", "don't", "dont":
+		case ui.ChoiceNo:
 			fmt.Fprintln(out, "Not trusted. Only its tightening settings apply; `abhed trust grant` changes that.")
 			return false, nil
-		case "v", "view":
+		case "view":
 			showFile(out, st)
 		}
 	}

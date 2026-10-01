@@ -312,14 +312,13 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 	var choices []ui.Choice
 	for _, c := range []struct {
 		id, label string
-		key       rune
 		mode      policy.Mode
 	}{
-		{planAcceptEdits, "Yes, and accept edits", 'a', policy.ModeAcceptEdits},
-		{planAskEach, "Yes, ask before each change", 'y', policy.ModeDefault},
+		{planAcceptEdits, "Yes, and accept edits", policy.ModeAcceptEdits},
+		{planAskEach, "Yes, ask before each change", policy.ModeDefault},
 	} {
 		if _, err := st.appCfg.Apply(config.Overrides{Mode: string(c.mode)}); err == nil {
-			choices = append(choices, ui.Choice{ID: c.id, Label: c.label, Key: c.key})
+			choices = append(choices, ui.Choice{ID: c.id, Label: c.label})
 		}
 	}
 	choices = append(choices, ui.Choice{ID: planKeep, Label: "No, keep planning (tell it what to change)"})
