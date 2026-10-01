@@ -36,14 +36,15 @@ Policy reads it; the context assembler renders it in a distinct structural block
 | `terminal.input` | call id of the shell, the line as typed, `edited`, or `withheld` with a reason | user |
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |
-| `action.requested` | tool, args | agent |
+| `action.requested` | tool, args (always a JSON object, the canonical arguments every step and the tool read; `{}` on a call refused at step `args`); `raw_args`, the refused arguments as text; `dropped_args`, keys a built-in tool did not declare and dropped; `resolved`, arguments the harness set or rewrote before policy read the call, such as the cluster of the session's only login or a Kubernetes call's default namespace; `via` when something issued it for the agent, such as `skill research pipeline` for a skill pipeline's step (recorded in the record of the loop whose `skill` call ran the pipeline) | agent |
 | `action.approved` / `.denied` | rule matched (`step`), `reason`, `by`; `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
 | `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first | system |
 | `subagent.spawned` / `.returned` | description, agent type, `session` (the subagent's own record), turns, tokens; written to the parent's record and the subagent's; a nested subagent's are passed up to the top-level record | orchestrator |
-| `subagent.action` | a subagent's call that was refused or put to an approver, in the parent's record: `session`, `call_id`, `tool`, `subject`, `decision` (`allowed` or `denied`), `step`, `reason`, `by`, and `scope`, `approver`, `granted_scope` as on `action.approved`. Calls the policy allowed on its own are only in the subagent's record | the answer's actor |
-| `compaction.started` / `.completed` | before/after tokens, summary | context mgr |
+| `subagent.action` | a subagent's call that was refused or put to an approver, in the parent's record: `session`, `call_id`, `tool`, `subject`, `decision` (`allowed` or `denied`), `step`, `reason`, `by`, and `scope`, `approver`, `granted_scope` as on `action.approved`, and `request_id`, the subagent's `action.requested`. Calls the policy allowed on its own are only in the subagent's record | the answer's actor |
+| `subagent.ask` | a subagent's call put to the approver, in the parent's record when its turn to be asked comes, one at a time across subagents running together: `session`, `subagent` (its description), `request_id` (the id an answer names), `call_id`, `tool`, `args`, `subject`, `reason`, `scope`, `via`. Its answer follows as `subagent.action` with the same `request_id` | agent |
+| `compaction.started` / `.completed` | `before_tokens`, `after_tokens`, `summary`, `trigger` (`auto` or `manual`). A `started` is recorded only once there is older history to summarise into a shorter one, and every `started` is followed by a `.completed`: with the token counts, or with `error` when the summary failed. When there is nothing to summarise (automatic or `/compact`) neither is recorded and the compaction count does not rise | context mgr |
 | `plan.updated` / `todo.updated` | items | agent |
 | `session.ended` | terminal reason, totals | system |
 | `conversation.forked` | `through_seq`; the conversation goes on from that step, and the steps between it and the marker are abandoned: kept in the record for audit, left out of every rebuild (`/fork`, `/tree`, `/resume`, a continued session) | user |
@@ -52,12 +53,12 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 | `by` | Meaning | Actor |
 |---|---|---|
-| `policy` | a rule or the mode decided; no one was asked | system |
+| `policy` | a rule or the mode decided; no one was asked (on the workbench, also malformed arguments at step `args`) | system |
 | `reviewer` | a person was asked and answered | user |
 | `user` | the person made the call at the workbench | user |
 | `session-scope` | an "always allow" chosen earlier in the session let it through; `scope` names it | system |
 | `headless` | nobody could be asked (`-p`, `rpc`, an SDK run without an approver, `abhed eval`, or a subagent of one of these), so the run's fixed answer applied; a refusal's reason starts `no approver:` | system |
-| `system` | the harness: an unknown tool (step `unknown`); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
+| `system` | the harness: an unknown tool (step `unknown`); arguments that were not one object, named a key twice or in another case, or gave a tool a key it does not take where that is refused (step `args`, reason naming the key); a call that could not succeed, refused before anyone was asked (step `precheck`, reason the tool's error); or a request that ended before an answer (step `ask`, reason `interrupted before an answer`, `server shut down before an answer`, `deadline passed before an answer`, the same with `before the answer was applied` when an answer arrived as the wait ended, `no answer within 30 minutes: …` or `approval failed: …`) | system |
 
 When a person answered, two more fields say what they did:
 

@@ -12,7 +12,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 //go:embed ide.html
@@ -200,6 +202,24 @@ type capTool struct {
 type capExtension struct {
 	Name   string   `json:"name"`
 	Events []string `json:"events"`
+	// Status is running, stopped or not started; only a running one's veto applies.
+	Status string `json:"status"`
+}
+
+// perSessionTools are the tools every session adds to the shared registry,
+// bound to its own record, policy and budget; any list of tools includes them.
+func (s *Server) perSessionTools() []capTool {
+	var out []capTool
+	// recall goes on the loop's own copy of the registry, given a record.
+	if s.store != nil {
+		out = append(out, capTool{Name: "recall", Source: "builtin",
+			Description: "Read this session's own record, to get back text that has left the context window."})
+	}
+	for _, t := range []tools.Tool{agent.Task{Profiles: agent.Profiles}, agent.Tasks{}} {
+		out = append(out, capTool{Name: t.Name(), Description: firstSentence(t.Description()),
+			Mutates: t.Mutates(), Source: "builtin"})
+	}
+	return out
 }
 
 func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
@@ -232,13 +252,7 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 			c.Sandbox.Tier, c.Sandbox.Backend = b.Isolation.Tier, b.Isolation.Backend
 		}
 	}
-	// recall is bound to one session's record, so the loop adds it to its own
-	// copy of the registry and the shared one never holds it. The agent has
-	// it all the same, and a list that left it out would be wrong.
-	if s.store != nil {
-		c.Tools = append(c.Tools, capTool{Name: "recall", Source: "builtin",
-			Description: "Read this session's own record, to get back text that has left the context window."})
-	}
+	c.Tools = append(c.Tools, s.perSessionTools()...)
 	if sk != nil {
 		for _, one := range sk.All() {
 			c.Skills = append(c.Skills, skillView{Name: one.Name, Description: one.Description, HasPipeline: one.Pipeline != nil})
@@ -255,8 +269,9 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	}
 	// Names and events only. An extension's command line and environment are
 	// the operator's business and may carry credentials.
+	status := toolset.ExtensionStatus(cfg, s.opts.Extensions)
 	for _, e := range cfg.Extensions {
-		c.Extensions = append(c.Extensions, capExtension{Name: e.Name, Events: nonNil(e.Events)})
+		c.Extensions = append(c.Extensions, capExtension{Name: e.Name, Events: nonNil(e.Events), Status: status[e.Name]})
 	}
 	WriteJSON(w, http.StatusOK, c)
 }

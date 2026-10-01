@@ -11,7 +11,7 @@ abhed -version
 
 It runs without internet access. Once built, the only outbound connection is
 to the model endpoint you configure, plus anything you enable explicitly (web
-search, MCP servers, remote tools); copy the binary and a config into an
+search, web fetch, MCP servers, remote tools); copy the binary and a config into an
 enclave and it works there.
 
 ## Point it at a model

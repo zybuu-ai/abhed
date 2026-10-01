@@ -121,6 +121,13 @@ Write it as notes to a colleague, not prose.`
 // failure P4 warns about.
 func (c *Compactor) Compact(ctx context.Context, trigger string, system string,
 	messages []model.Message, beforeTokens int) ([]model.Message, Compaction, error) {
+	return c.CompactWith(ctx, trigger, system, messages, beforeTokens, nil)
+}
+
+// CompactWith is Compact that calls started once there is something to
+// summarise and no hook cancelled it, before the summary is written.
+func (c *Compactor) CompactWith(ctx context.Context, trigger string, system string,
+	messages []model.Message, beforeTokens int, started func()) ([]model.Message, Compaction, error) {
 
 	if c.PreCompact != nil {
 		if err := c.PreCompact(trigger, messages); err != nil {
@@ -168,7 +175,9 @@ func (c *Compactor) Compact(ctx context.Context, trigger string, system string,
 
 	older, recent := messages[:split], messages[split:]
 
-	if len(older) == 0 {
+	// One message summarised into one leaves the history the same length: the
+	// previous summary, re-summarised, for a paid call that changes nothing.
+	if len(older) < 2 {
 		return messages, Compaction{}, nil // nothing worth summarizing yet
 	}
 
@@ -179,6 +188,9 @@ func (c *Compactor) Compact(ctx context.Context, trigger string, system string,
 			return messages, Compaction{}, nil
 		}
 		summary = s
+	}
+	if started != nil {
+		started()
 	}
 	if summary == "" {
 		var err error

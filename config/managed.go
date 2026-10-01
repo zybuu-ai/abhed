@@ -56,14 +56,15 @@ func managedKeys(data []byte) []string {
 		return nil
 	}
 	var out []string
-	walkSet("", raw, reflect.TypeFor[Config](), &out)
+	walkSet("", raw, reflect.TypeFor[Config](), func(path string, _ any) { out = append(out, path) })
 	sort.Strings(out)
 	return out
 }
 
-// walkSet records the path of each value that decoding into t would change.
-// A struct is followed into; anything else, a list or map entry included, is one setting.
-func walkSet(path string, v any, t reflect.Type, out *[]string) {
+// walkSet calls set with the path and value of each setting that decoding v
+// into t would change. A struct is followed into; anything else, a list or map
+// entry included, is one setting.
+func walkSet(path string, v any, t reflect.Type, set func(path string, v any)) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -74,18 +75,18 @@ func walkSet(path string, v any, t reflect.Type, out *[]string) {
 		fields := jsonFields(t)
 		for k, e := range obj {
 			if f, ok := fieldFor(fields, k); ok && !annotation(k) {
-				walkSet(join(path, jsonName(f)), e, f.Type, out)
+				walkSet(join(path, jsonName(f)), e, f.Type, set)
 			}
 		}
 	case isObj && t.Kind() == reflect.Map:
 		// Decoding replaces each entry it names whole, so the entry is the setting.
-		for k := range obj {
-			*out = append(*out, join(path, k))
+		for k, e := range obj {
+			set(join(path, k), e)
 		}
 	case v == nil && t.Kind() != reflect.Slice && t.Kind() != reflect.Map:
 		// null leaves a plain value as it was.
 	case path != "":
-		*out = append(*out, path)
+		set(path, v)
 	}
 }
 

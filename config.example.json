@@ -87,6 +87,9 @@
     "provider": "duckduckgo",
     "max_results": 5
   },
+  "web_fetch": {
+    "enabled": false
+  },
   "storage": {
     "driver": "memory",
     "tenant": "default",

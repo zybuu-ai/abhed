@@ -26,7 +26,8 @@ const tx = new El('div'); tx.id='tx';
 globalThis.__root = tx;
 const els = { tx };
 globalThis.$ = id => els[id] || null;
-let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1';
+let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', es=null;
+globalThis.__connected = []; const connect = id => { __connected.push(id); };
 const calls = new Map();
 let approvals = new Map();
 const stats = {turns:0,tin:0,tout:0,cached:0,tools:{},reason:null,compactions:0};
@@ -41,6 +42,36 @@ function resolveApproval(){}
 `
 	if out, err := runConsoleCases(t, "render", harness, "render_cases.mjs"); err != nil {
 		t.Fatalf("console render produced a duplicate reply:\n%s", out)
+	}
+}
+
+// A subagent's ask is drawn as an approval card that says whose it is and
+// that Always allow covers the session, answered by the subagent's request id
+// on the parent session, and settled by the subagent.action that follows.
+func TestConsoleAsksForASubagent(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
+const tx = new El('div'); tx.id='tx';
+globalThis.__root = tx;
+const els = { tx };
+globalThis.$ = id => els[id] || null;
+let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', es=null;
+globalThis.__connected = []; const connect = id => { __connected.push(id); };
+const calls = new Map();
+let approvals = new Map();
+const stats = {turns:0,tin:0,tout:0,cached:0,tools:{},reason:null,compactions:0};
+globalThis.hideThinking = ()=>{};
+globalThis.showThinking = ()=>{};
+globalThis.refresh = ()=>{};
+globalThis.openDrawer = ()=>{};
+globalThis.paintOpenPill = ()=>{};
+globalThis.__posted = [];
+let __api = async (path, opts) => { __posted.push({path, body: JSON.parse(opts.body)}); return null; };
+const api = (path, opts) => __api(path, opts);
+function newTurn(){ turnEl = node('turn'); tx.appendChild(turnEl); return turnEl; }
+`
+	if out, err := runConsoleCases(t, "ask", harness, "console_ask_cases.mjs"); err != nil {
+		t.Fatalf("the console's subagent ask failed:\n%s", out)
 	}
 }
 
@@ -74,6 +105,29 @@ globalThis.$ = id => els[id] || null;
 `
 	if out, err := runConsoleCases(t, "state", harness, "list_state_cases.mjs"); err != nil {
 		t.Fatalf("the console's session states failed:\n%s", out)
+	}
+}
+
+// The console's mode selector starts on the server's configured mode, which
+// with plan is all a session may start in: it once loaded on default, which a
+// server configured otherwise refuses.
+func TestConsoleModeFollowsTheServer(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+let sel;
+globalThis.reset = () => {
+  sel = {value: 'default', options: [], appendChild(o){ this.options.push(o); return o; }};
+  for(const v of ['default', 'plan', 'accept-edits', 'auto']) sel.options.push({value: v, textContent: v, disabled: false});
+};
+reset();
+globalThis.__caps = null;
+const $ = id => id === 'mode' ? sel : null;
+const api = async path => { if(path !== '/v1/capabilities' || !__caps) throw new Error('no'); return __caps; };
+`
+	if out, err := runConsoleCases(t, "mode", harness, "mode_cases.mjs"); err != nil {
+		t.Fatalf("the console's mode selector failed:\n%s", out)
+	}
+	if !strings.Contains(consoleHTML, "loadProviders(); loadMode();") {
+		t.Error("the console does not load the server's mode when it starts")
 	}
 }
 

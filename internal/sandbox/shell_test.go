@@ -375,3 +375,14 @@ func TestProcessSandboxVimQuitsOnWriteQuit(t *testing.T) {
 		t.Fatalf("the person's vimrc was not read, or $MYVIMRC not set: %q", got)
 	}
 }
+
+// A command on the host does not inherit trust in workspace files: an abhed
+// it runs in another folder asks, or ignores, as the person's own would.
+func TestNoneCommandLeavesOutWorkspaceTrust(t *testing.T) {
+	ws := workspace(t)
+	t.Setenv("ABHED_TRUST_WORKSPACE", "1")
+	out, err := NewNone(DefaultPolicy(ws)).Command(context.Background(), ws, `echo "[$ABHED_TRUST_WORKSPACE]"`).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "[]") {
+		t.Fatalf("the host command inherited ABHED_TRUST_WORKSPACE: %v\n%s", err, out)
+	}
+}

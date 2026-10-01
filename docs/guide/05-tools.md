@@ -7,9 +7,11 @@
 | `read`, `write`, `edit` | files, scoped to the workspace |
 | `glob`, `grep` | find files and search contents |
 | `bash` | shell, sandboxed, destructive commands always confirm |
-| `todo` | the agent's task list for multi-step work |
+| `todo` | the agent's task list for multi-step work, recorded as `todo.updated` |
+| `task`, `tasks` | run one subagent, or several at once; see [Parallel subagents](14-parallel-subagents.md) |
 | `skill` | load a procedure on demand |
-| `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng |
+| `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default |
+| `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
 | `ssh`, `ssh_connect` | remote execution, off by default |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
 
@@ -22,6 +24,91 @@ and `/undo` of the new file removes them while they are empty.
 handed to that one command as environment variables when a
 `secret(NAME)` rule allows it. The model never sees a value; see
 [Secrets](04-permissions.md#secrets).
+
+`bash` says in its description whether commands can reach the network. When
+the sandbox has none and a command fails because of it, the result ends with
+a note that says so, so the model reports the reason or uses a web tool
+instead of retrying.
+
+### Cluster and machine logins
+
+`k8s_login` and `ssh_connect` take credentials the same way: by name, from
+the store, under a `secret(NAME)` rule. `k8s_login` takes `cluster` and
+`token_secret`; `ssh_connect` takes a key path or `password_secret`. Neither
+takes a token or password, so none is recorded, shown for approval, or sent
+back to the model; one sent anyway is dropped.
+
+Where a credential goes is the operator's choice, not the model's.
+`k8s_login` sends a token only to a cluster named in `k8s.clusters`, over TLS
+verified against the system roots and the configured CA; a URL is refused
+before any request, and the approval prompt names the cluster and its server.
+`k8s_get` and `k8s_apply` then take `cluster` to use that login.
+`ssh_connect` sends a password only to a host whose key is already in
+`known_hosts`.
+
+A login or a connected host belongs to the session that made it and that
+session's subagents, and ends with it. Another session on the same server,
+another user's included, never uses it: it keeps the operator's kubeconfig,
+`ABHED_K8S_TOKEN` and `ssh.hosts`. Details in
+[Clusters and machines](../ops/infrastructure.md).
+
+### Reading a web page
+
+`web_fetch` takes a `url` and returns the page's text: HTML reduced to
+headings, paragraphs, list items and links, with scripts and styles removed.
+Plain text, JSON, XML and other text types come back as they are; images,
+PDFs and other binary types are refused. It reads up to 5 MiB of a page and
+returns up to `web_fetch.max_chars` characters per call, with the `start`
+to pass to read on. Each part is a new request, so a page that changes
+between parts can shift. The result is tagged untrusted like any tool output.
+
+The request is made by Abhed, not the sandboxed shell, and every call is
+judged by policy and recorded like any other. With no
+`web_fetch.allowed_hosts`, each call asks unless an allow rule matches, in
+plan mode too. With it, a listed host runs without asking only on its
+scheme's default port (80 for `http`, 443 for `https`); a URL that names
+another port asks, since that is another service on the host. In either
+case the approval offers "always allow" for the site
+(`web_fetch(https://host/*)`), which covers any URL on it for the session,
+and whatever such a URL carries.
+What it refuses:
+
+- a scheme other than `http` or `https`, and a URL with a user name or
+  password;
+- any loopback, private, link-local, cloud metadata (`169.254.169.254`,
+  `fd00:ec2::254`), carrier-grade NAT, multicast or reserved address. The
+  address is checked where the connection is made, on every hop, so a name
+  that resolves to a public address once and an internal one the next time
+  is refused;
+- a URL that holds a value from the secrets store, as written or
+  percent-encoded, in any case. A value encoded otherwise (base64, hex) or
+  split across the URL is not caught: the ask, or the host list, is the
+  control for that;
+- a host not on `web_fetch.allowed_hosts`, when that is set;
+- a URL written in any but its one form (see
+  [Permissions](04-permissions.md#rules)), including a port with leading
+  zeros, an IPv4 address written as IPv6 or as one number, and a path
+  segment of dots, a control character or a doubly encoded `.`, `/` or `\`.
+  A URL that carries another URL in its path, as `web.archive.org` links do
+  (`https://web.archive.org/web/2020/https://example.com/`), has an empty
+  segment and cannot be fetched. Nor can one with an encoded slash (`%2F`)
+  in its path, such as GitLab's `projects/group%2Fproject` or npm's
+  `@scope%2Fname`: written with `/` it names another resource, so no
+  spelling is suggested.
+
+It follows a redirect only to the same URL or its upgrade from `http` to
+`https`, up to five. Any other redirect, including to another path on the
+same host, is handed back to the model, without any user name or password
+it carried, and the model fetches it as a new call if it needs it, judged by
+the rules again. It ignores `HTTP_PROXY` and
+the other proxy variables, since through a proxy it could not check where
+the connection goes.
+
+`web_search`'s description points at `web_fetch` only when both are on, and
+the system prompt names only the web tools the session has. A search query
+that holds a stored secret, as written, percent-encoded or in another case,
+is refused before it reaches the provider, as a URL holding one is for
+`web_fetch`.
 
 ### An edit that would break the file
 
@@ -56,6 +143,14 @@ Edits and saves made by a person in the [workbench](16-workbench.md) are
 never refused: they are saved, with the warning. Refused changes appear in
 [HawkEYE](15-hawkeye.md) as `broken-edit`. `tools.syntax_check` sets the
 behaviour: `refuse` (the default), `report` to apply and warn, or `off`.
+
+The console and workbench, `abhed rpc`, `abhed acp` and `abhed eval` build
+the same tool set as the CLI, from one place, together with the system
+prompt and its `ABHED.md` memory files. Where one differs it is by design:
+the SDK takes the configured tools only with `Options.ConfiguredTools`, and
+`abhed eval` leaves out MCP servers, extensions, rag corpora, the code index
+and the Kubernetes and SSH tools, so a score depends on the harness and the
+task rather than on what those reach.
 
 ## Adding your own
 

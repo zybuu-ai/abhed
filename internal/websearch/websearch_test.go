@@ -2,12 +2,16 @@ package websearch
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 // A fixture captured from the real endpoint, so parsing is tested without
@@ -164,5 +168,61 @@ func TestLiveDuckDuckGo(t *testing.T) {
 			t.Errorf("result %d has a non-http URL: %q", i, r.URL)
 		}
 		t.Logf("  %d. %s — %s", i+1, r.Title, r.URL)
+	}
+}
+
+// The description points at web_fetch only when it is registered: there was
+// once a pointer to a fetch tool that did not exist.
+func TestDescriptionNamesWebFetchOnlyWhenPresent(t *testing.T) {
+	if d := (&Tool{}).Description(); strings.Contains(d, "fetch") {
+		t.Errorf("names a fetch tool that is not there: %s", d)
+	}
+	if d := (&Tool{Fetch: true}).Description(); !strings.Contains(d, "web_fetch") {
+		t.Errorf("does not point at web_fetch: %s", d)
+	}
+}
+
+// stubProvider records every query it is sent.
+type stubProvider struct{ queries []string }
+
+func (*stubProvider) Name() string      { return "stub" }
+func (*stubProvider) RequiresKey() bool { return false }
+func (p *stubProvider) Search(_ context.Context, q string, _ int) ([]Result, error) {
+	p.queries = append(p.queries, q)
+	return []Result{{Title: "t", URL: "https://example.com/"}}, nil
+}
+
+// A query holding a stored secret, as written, encoded or in another case,
+// never reaches the provider, and the refusal names the secret, not its
+// value; a store that cannot be read refuses every query.
+func TestSearchNeverSendsAStoredSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"FAKE_TOKEN":"Search-Secret-9f1c"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := secrets.Open(path)
+	p := &stubProvider{}
+	tool := &Tool{Provider: p, Secrets: store.LoadRedactor}
+	for _, q := range []string{"exfil Search-Secret-9f1c", "exfil search-secret-9f1c", "exfil Search%2DSecret%2D9f1c", "exfil Search%252DSecret-9f1c"} {
+		raw, _ := json.Marshal(map[string]string{"query": q})
+		res := tool.Run(context.Background(), nil, raw)
+		if !res.IsError || !strings.Contains(res.Content, "FAKE_TOKEN") || strings.Contains(strings.ToLower(res.Content), "search-secret-9f1c") {
+			t.Errorf("%q: %s", q, res.Content)
+		}
+	}
+	if len(p.queries) != 0 {
+		t.Fatalf("the provider was sent %v", p.queries)
+	}
+	raw, _ := json.Marshal(map[string]string{"query": "golang release notes"})
+	if res := tool.Run(context.Background(), nil, raw); res.IsError || len(p.queries) != 1 {
+		t.Fatalf("a clean query was refused: %s", res.Content)
+	}
+	if err := os.WriteFile(path, []byte(`{"FAKE_TOKEN": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, broken := range []*Tool{{Provider: p, Secrets: store.LoadRedactor}, {Provider: p}} {
+		if res := broken.Run(context.Background(), nil, raw); !res.IsError || len(p.queries) != 1 {
+			t.Fatalf("a query was sent with no readable store: %s", res.Content)
+		}
 	}
 }

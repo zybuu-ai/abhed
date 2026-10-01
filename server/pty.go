@@ -545,7 +545,7 @@ func plainText(b []byte) string {
 // process, so a session that is not live here has none to find.
 func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *ptyRun, bool) {
 	id := r.PathValue("id")
-	live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, found := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !validSessionID(id) || !found {
 		WriteError(w, http.StatusNotFound, "that command is not running")
 		return nil, nil, false
@@ -624,25 +624,51 @@ func (s *Server) streamPTY(w http.ResponseWriter, r *http.Request) {
 		run.mu.Unlock()
 	}()
 
-	send := func(event string, data []byte) {
+	// A terminal can stay open for hours, so its caller is authorised again
+	// while it runs, as the session's event stream is.
+	guard := s.guardStream(r, r.PathValue("id"))
+	defer guard.stop()
+	refused := false
+	send := func(event string, data []byte) bool {
+		if refused {
+			return false
+		}
+		if err := guard.allowed(); err != nil {
+			endStream(w, err)
+			refused = true
+			return false
+		}
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 		flusher.Flush()
+		return true
 	}
 	if len(backlog) > 0 {
 		send("out", []byte(base64.StdEncoding.EncodeToString(backlog)))
 	}
-	for {
+	for !refused {
 		select {
 		case <-r.Context().Done():
 			return
 		case chunk := <-ch:
 			send("out", []byte(base64.StdEncoding.EncodeToString(chunk)))
+		case <-guard.tick():
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
+		case <-guard.woken():
+			if err := guard.allowed(); err != nil {
+				endStream(w, err)
+				return
+			}
 		case <-run.done:
 			// Drain what arrived between the last read and the exit.
 			for {
 				select {
 				case chunk := <-ch:
-					send("out", []byte(base64.StdEncoding.EncodeToString(chunk)))
+					if !send("out", []byte(base64.StdEncoding.EncodeToString(chunk))) {
+						return
+					}
 					continue
 				default:
 				}

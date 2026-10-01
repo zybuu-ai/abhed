@@ -1,32 +1,28 @@
-package app
+package toolset
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/pipeline"
 	"github.com/zybuu-ai/abhed/internal/skills"
-	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
-// pipelineRunner builds the function the skill tool calls to execute a
-// declared pipeline.
+// PipelineRunner builds the function the skill tool calls to execute a
+// declared pipeline. A nil adapter runs the model steps on the calling loop's
+// model, as it is when the skill is called; an empty input takes the request
+// that loop is answering.
 //
-// Everything a step does goes through the same machinery an ordinary turn uses:
-// a tool step is dispatched through the registry and the policy engine, and a
-// model step is an ordinary completion on the configured adapter. The pipeline
-// decides what happens and in what order; it does not decide what is permitted.
-func pipelineRunner(
-	adapter model.Adapter,
-	registry *tools.Registry,
-	session *tools.Session,
-	loop *agent.LoopHolder,
-) func(context.Context, *skills.Skill, string) (string, error) {
+// A tool step is put through the loop that called the skill, as its own call is:
+// policy, hooks, the monitor, the approver, the sandbox, redaction and the
+// record. A model step is a completion on the configured adapter, and sees
+// tool output only once secrets are stripped from it. The pipeline decides
+// what happens and in what order; it does not decide what is permitted.
+func PipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, string) (string, error) {
 
 	return func(ctx context.Context, s *skills.Skill, input string) (string, error) {
 		var p pipeline.Pipeline
@@ -36,28 +32,45 @@ func pipelineRunner(
 		if err := p.Validate(); err != nil {
 			return "", err
 		}
+		if err := refuseUnsafe(p); err != nil {
+			return "", err
+		}
+		// Steps run on the loop that called the skill, or the pipeline is refused.
+		steps, err := agent.StepsFor(ctx, "skill "+s.Name+" pipeline")
+		if err != nil {
+			return "", err
+		}
+		stepModel := adapter
+		if stepModel == nil {
+			stepModel = steps.Adapter()
+		}
+		if input == "" {
+			input = steps.Input()
+		}
 
 		runner := &pipeline.Runner{
 			Tool: func(ctx context.Context, name string, args json.RawMessage) (string, error) {
-				tool, found := registry.Get(name)
-				if !found {
-					return "", fmt.Errorf("no tool named %q", name)
+				runFor, _ := pipeline.ToolTimeout(ctx)
+				res, err := steps.Run(ctx, name, args, runFor)
+				if err != nil {
+					return "", err
 				}
-				res := tool.Run(ctx, session, args)
 				if res.IsError {
 					return "", fmt.Errorf("%s", res.Content)
 				}
 				return res.Content, nil
 			},
 			Model: func(ctx context.Context, prompt string, schema json.RawMessage) (string, error) {
-				return completeOnce(ctx, adapter, prompt, schema)
+				return completeOnce(ctx, stepModel, steps.Redact(prompt), schema)
 			},
 			// Each stage is recorded, so the decomposition, the sufficiency
 			// verdict and the reason for every extra hop are visible in the
 			// transcript rather than being inferred from tool calls.
 			Event: func(stage, detail string, data map[string]any) {
-				loop.RecordPipelineStage(s.Name, stage, detail, data)
+				steps.Stage(s.Name, stage, detail, data)
 			},
+			// A step's timeout starts once it is approved, not while a person decides.
+			ToolTimes: true,
 		}
 
 		res, err := runner.Run(ctx, p, input)
@@ -66,6 +79,19 @@ func pipelineRunner(
 		}
 		return renderForModel(s, res), nil
 	}
+}
+
+// refuseUnsafe refuses a pipeline whose steps would call a skill: a pipeline
+// that runs itself again has no bound.
+func refuseUnsafe(p pipeline.Pipeline) error {
+	for _, st := range p.Stages {
+		for _, step := range st.Steps {
+			if step.Kind == "tool" && step.Tool == "skill" {
+				return fmt.Errorf("stage %q calls the skill tool; a pipeline step cannot run a skill, so the pipeline was not run", st.Name)
+			}
+		}
+	}
+	return nil
 }
 
 // completeOnce asks the model for one answer, with no tools offered.
@@ -142,27 +168,4 @@ func format(v any) string {
 		}
 		return string(b)
 	}
-}
-
-// lastPrompt returns the request the current turn is answering.
-//
-// A pipeline needs it and the skill tool's arguments do not carry it: the model
-// calls the skill by name, not by repeating the question. Holding it here keeps
-// the tool's schema unchanged, so a skill invocation still looks the same to
-// the model.
-var currentPrompt struct {
-	mu sync.Mutex
-	s  string
-}
-
-func setPrompt(p string) {
-	currentPrompt.mu.Lock()
-	currentPrompt.s = p
-	currentPrompt.mu.Unlock()
-}
-
-func lastPrompt() string {
-	currentPrompt.mu.Lock()
-	defer currentPrompt.mu.Unlock()
-	return currentPrompt.s
 }

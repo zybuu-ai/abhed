@@ -285,6 +285,8 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .call .why{padding:5px 10px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
 .ask{border:1px solid var(--warn);background:var(--warn-bg);border-radius:6px;padding:9px 10px;flex:none}
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.ask p.hidden-warn{color:var(--bad);font-weight:600}
+.ask p.hidden-field{font:11.5px/1.5 var(--mono)}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -1109,12 +1111,12 @@ async function loadHawkeye(){
   if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
   let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
-  [['Outcome', r.outcome],['Model', (r.models || []).join(' → ') || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
+  [['Outcome', visible(r.outcome)],['Model', visible((r.models || []).join(' → ')) || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
    ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'],['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
    .forEach(([k, v]) => { const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', String(v))); dl.appendChild(d); });
   box.appendChild(dl);
-  const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => k + ' ' + v).join(' · ');
+  const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => visible(k) + ' ' + v).join(' · ');
   if(steps){ box.appendChild(el('div', 'group', 'Policy steps')); box.appendChild(el('div', 'rules', steps)); }
   const fs = r.findings || []; const loud = fs.filter(f => f.severity !== 'info').length;
   $('b-hawk').hidden = !loud; $('b-hawk').textContent = loud;
@@ -1123,7 +1125,7 @@ async function loadHawkeye(){
   box.appendChild(el('div', 'group', 'Findings'));
   if(!fs.length){ box.appendChild(el('div', 'empty', 'Nothing in this record needs a second look.')); prob.appendChild(el('div', 'dim', 'No findings.')); }
   for(const f of fs){
-    const mk = () => { const n = el('div', 'finding ' + f.severity); n.appendChild(el('b', '', f.title + (f.seq ? '  #' + f.seq : ''))); n.appendChild(el('p', '', f.detail)); return n; };
+    const mk = () => { const n = el('div', 'finding ' + f.severity); n.appendChild(el('b', '', visible(f.title) + (f.seq ? '  #' + f.seq : ''))); n.appendChild(el('p', '', visible(f.detail))); return n; };
     box.appendChild(mk()); prob.appendChild(mk());
   }
 }
@@ -1166,7 +1168,7 @@ function resetSession(){
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
-  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session';
+  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session'; if(caps && $('mode').selectedOptions[0] && $('mode').selectedOptions[0].disabled) limitModes(caps.permissions.mode);
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
@@ -1307,6 +1309,18 @@ function connIdle(){
   if(!document.hidden && !connTimer && !signInGone && connState === true && !(es && es.readyState === 1)) connLost(false);
 }
 setInterval(connIdle, 5000);
+// A page open on a session whose run has ended holds no stream, and another
+// tab or client may start the next turn: ask after that session now and then,
+// and follow the turn.
+async function watchIdle(){
+  const id = current; if(!id || live || es || document.hidden || signInGone || leaving) return;
+  let st; try{ st = await api('/v1/sessions/' + id + '/state'); }catch{ return; }
+  if(current !== id || live || es || !st) return;
+  if(st.state === 'running' || st.state === 'waiting_approval'){ setLive(true); connect(id); }
+  // A turn that started and ended between two asks still changes the count: read it back.
+  else if(st.turns !== undefined && st.turns !== idleTurns.get(id)){ idleTurns.set(id, st.turns); connect(id); }
+}
+const idleTurns = new Map(), idleWatch = setInterval(watchIdle, 2000);
 
 /* ---------------------------------------------------------------- transcript */
 const tx = () => $('tx');
@@ -1334,10 +1348,36 @@ function trim(){
 }
 // An absolute path is mostly prefix. The end of it is what a person reads.
 function tail(p){ const parts = p.split('/').filter(Boolean); return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : p; }
+// visible writes out control and format characters (CR, ESC, zero-width, bidi) and ones that
+// draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
+// spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
+function visible(s, lines){
+  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+    // Eight columns inside a line (a tab counts eight); indentation only from 32.
+    const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
+    return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
+  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+    : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
+}
+// argsJSON draws a call's arguments with every key and string made visible first,
+// so a newline inside a value keeps the indentation rule and stringify adds no escapes to hide.
+function argsJSON(v){
+  return JSON.stringify(v, (k, x) => typeof x === 'string' ? visible(x, true)
+    : x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).map(([a, b]) => [visible(a), b])) : x, 2);
+}
+// hasHidden walks every key and string in a value, and a string that is itself JSON (a manifest).
+function hasHidden(v, depth = 0){
+  if(v && typeof v === 'object') return Object.entries(v).some(([k, x]) => hasHidden(k, depth) || hasHidden(x, depth));
+  if(typeof v !== 'string') return false;
+  if(visible(v, true) !== v) return true;
+  const t = v.trim();
+  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  return false;
+}
 function subjectOf(tool, args){
   if(!args) return ''; if(args.command) return args.command; if(args.path) return args.path.startsWith('/') ? tail(args.path) : args.path; if(args.pattern) return args.pattern;
   if(tool === 'todo' && Array.isArray(args.items)) return args.items.filter(i => i.status === 'done').length + ' of ' + args.items.length + ' done';
-  if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
+  if(args.url) return args.url; if(args.query) return args.query; if(args.call_id) return args.call_id; if(args.description) return args.description;
   const s = JSON.stringify(args); return s === '{}' ? '' : s;
 }
 // The line under the conversation that says what the agent is doing, and for how long.
@@ -1551,7 +1591,7 @@ function render(ev){
     if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
     endThinking(at); streaming = null; streamBody = null;
     const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
-    s.appendChild(el('span', 'tool', p.tool)); s.appendChild(el('span', 'subj', subj)); const res = el('span', 'res', '…'); s.appendChild(res);
+    s.appendChild(el('span', 'tool', visible(p.tool))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
     const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
     // Arguments and output are drawn when the call is opened, so a session of
@@ -1586,6 +1626,16 @@ function render(ev){
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  // A subagent's call waiting on you, answered as the agent's own are, by its request id.
+  // Its row stays in the chat, so a reopened session shows what was decided.
+  case 'subagent.ask': { if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
+    const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
+    asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
+  case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
+    if(!ok){ c.node.classList.add('denied'); } c.res.textContent = ok ? 'allowed' : 'denied';
+    c.node.appendChild(el('div', 'why', (ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
+      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')));
+    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break; }
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
@@ -1617,8 +1667,19 @@ async function recheck(id){
   if(running || read){ if(!es) connect(id); if(running) return; }
   for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
 }
+// subagentRow is the chat's row for a subagent's call put to an approver or
+// refused, made the first time the record names it.
+function subagentRow(id, p, at){
+  let c = calls.get(id); if(c) return c;
+  endThinking(at); streaming = null; streamBody = null;
+  const d = el('details', 'call'), s = el('summary'), subj = subjectOf(p.tool, p.args), res = el('span', 'res', '…');
+  s.appendChild(el('span', 'tool', visible(p.tool + ' (subagent ' + (p.subagent || '') + ')'))); s.appendChild(el('span', 'subj', visible(subj || p.subject || ''))); s.appendChild(res);
+  d.appendChild(s); c = {node:d, res, tool:p.tool, subject:subj, args:p.args || {}, out:null, drawn:0};
+  d.addEventListener('toggle', () => { if(d.open) fillCall(c); });
+  add(d); calls.set(id, c); return c;
+}
 function fillCall(c){
-  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', JSON.stringify(c.args, null, 2)), c.node.firstChild.nextSibling); }
+  if(!c.drawn){ c.drawn = 1; c.node.insertBefore(el('pre', '', visible(JSON.stringify(c.args, null, 2), true)), c.node.firstChild.nextSibling); }
   if(c.out != null && c.drawn < 2){ c.drawn = 2; c.node.appendChild(clip(c.out)); }
 }
 // Long output shows its head until asked for the rest.
@@ -1636,8 +1697,18 @@ function drawPlan(items){
   add(todoNode);
 }
 function askApproval(p, rid){
+  // An answer names its request; without one the server would apply it to whatever is pending.
+  if(!rid) return;
   const a = el('div', 'ask'); a.dataset.call = p.call_id;
-  a.appendChild(el('b', '', 'Allow ' + p.tool + '?')); a.appendChild(el('p', '', (subjectOf(p.tool, p.args) || '') + (p.reason ? '  —  ' + p.reason : '')));
+  // Every field is made visible: the prompt must show exactly what allowing runs.
+  const subj = subjectOf(p.tool, p.args) || '';
+  a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v))){
+    a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
+    // A field the line above does not draw is shown too, so the warning points at something.
+    if(p.args && typeof p.args === 'object') for(const [k, x] of Object.entries(p.args))
+      if(x !== subj && (hasHidden(k) || hasHidden(x))) a.appendChild(el('p', 'hidden-field', visible(k) + ': ' + (typeof x === 'string' ? visible(x) : argsJSON(x))));
+  }
   const btns = el('div', 'btns');
   const mk = (label, cls, ok, scope) => { const b = el('button', cls, label); b.type = 'button';
     b.addEventListener('click', async () => { const q = asks.get(p.call_id); if(!q || q.rid !== rid) return; btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
@@ -1645,11 +1716,20 @@ function askApproval(p, rid){
       const body = {approved:ok, request_id:rid}; if(scope) body.scope = scope;
       try{ const r = await api('/v1/sessions/' + current + '/approve', {method:'POST', body: JSON.stringify(body)});
         if(r && r.applied === false) settleAsk(p.call_id, 'recorded, but the run had already moved on'); }
-      catch(e){ if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
+      catch(e){
+        // While the run goes on, a 409 means it is not waiting on this request now: answered
+        // elsewhere, or queued behind another. The record settles the card; until then it stays.
+        if(e.status === 409 && live){ const n = a.querySelector('.note') || a.appendChild(el('p', 'note')); n.textContent = 'Not taken: the run is not waiting on this request right now. This stays open until the record settles it.';
+          btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); recheckSoon(); return; }
+        if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
         // Only the server running the session can check the answer against its request.
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
         a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
-  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + p.scope, '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
+  // A subagent's ask answers for the session: a scope allowed here covers the agent too.
+  if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'));
+  // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
+  if(p.via) a.appendChild(el('p', 'scope-note', 'Asked by ' + visible(p.via) + '.'));
+  btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon();
   // A pending question is never left half off screen, wherever the reader had scrolled to.
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
@@ -2018,14 +2098,16 @@ function logTerminal(cmd, p, who){
   if(who === 'you') return; // the person's own commands are already on their terminal
   if(!agentTerm){ const keep = activeTerm; agentTerm = makeTerm('agent', 'agent'); agentTerm.term.write('\x1b[2mCommands the agent ran, with their output. Read only.\x1b[0m\r\n'); if(keep) selectTerm(keep); }
   const out = (p.content || '').slice(0, 8000);
-  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + cmd + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
+  // The command is the model's text: escapes in it must print, not drive the terminal.
+  agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }
 function logEvent(ev, p){
   if(ev.type === 'agent.delta' || ev.type === 'agent.reasoning.delta') return;
   const box = $('p-events'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40, r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
   r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
-  r.appendChild(el('span', 'd', p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160)));
+  // Record text is the model's and the tools': shown, never obeyed (bidi, zero-width).
+  r.appendChild(el('span', 'd', visible(p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160))));
   // The panel keeps the latest rows; the whole record is one replay away.
   box.appendChild(r); while(box.childElementCount > EVT_MAX) box.firstElementChild.remove();
   $('n-evt').textContent = ' ' + (++evtN); if(!box.hidden && stick) box.scrollTop = box.scrollHeight;
@@ -2122,7 +2204,9 @@ async function send(){
       drawQueued(b);
     }else{
       const provider = chosenProvider();
-      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid, provider})});
+      let r; try{ r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid, provider})}); }
+      // A refused mode is not the mode: show the one a session would get.
+      catch(e){ if(e.status === 403 && caps){ limitModes(caps.permissions.mode); $('s-mode').textContent = 'mode ' + caps.permissions.mode; } throw e; }
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value, provider, model: modelOf(provider)}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
@@ -2139,6 +2223,13 @@ $('agent').addEventListener('keydown', e => {
   stopArmed = setTimeout(() => { stopArmed = 0; setLive(live); }, 2500);
 });
 $('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
+// A session may start in the server's mode or narrow to plan: offer only those.
+function limitModes(m){
+  const sel = $('mode');
+  if(!Array.from(sel.options).some(o => o.value === m)){ const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); }
+  for(const o of Array.from(sel.options)){ o.disabled = o.value !== m && o.value !== 'plan'; o.title = o.disabled ? 'This server runs in ' + m + ' mode; a session may start in it or in plan' : ''; }
+  sel.value = m;
+}
 
 /* ---------------------------------------------------------------- palette + keys */
 let palSel = 0, palHits = [];
@@ -2262,7 +2353,7 @@ $('switchuser').addEventListener('click', postSignOut);
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
   if(sb.tier === 'none') sbox.className = 'off';
-  $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode;
+  $('s-model').textContent = caps.model.name; limitModes(caps.permissions.mode);
   await loadProviders(); $('s-mode').textContent = 'mode ' + caps.permissions.mode;
   try{
     const me = await api('/v1/whoami');

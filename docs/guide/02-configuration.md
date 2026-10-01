@@ -3,6 +3,11 @@
 Abhed reads `.abhed/config.json` from the workspace. `abhed init` writes a
 starter file; everything below is optional and has a default.
 
+The workspace file is untrusted until you trust its exact contents, because a
+repository can ship one. Until then Abhed applies only what makes it stricter
+and names each setting it ignored. See [Trusting the workspace
+configuration](#trusting-the-workspace-configuration).
+
 ```json
 {
   "model": {
@@ -38,8 +43,9 @@ starter file; everything below is optional and has a default.
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
 | `web_search` | provider and result count |
+| `web_fetch` | whether the agent can read a web page, and from which hosts — [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora |
-| `k8s`, `ssh` | infrastructure tools, off by default |
+| `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 
@@ -80,7 +86,10 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
-and the token estimate is approximate.
+and the token estimate is approximate. Not much below 0.5 either: a
+compaction keeps recent turns up to about half the window, so below roughly
+0.3 what it keeps is already over the threshold and it compacts on almost
+every turn, each a summary call and a lost prefix cache.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
 after compaction. Project conventions belong there.
@@ -133,6 +142,57 @@ policy-checked command of its own instead of an interactive shell; the
 [workbench guide](16-workbench.md) says what each mode checks.
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
+
+With `allow_network` false, the `bash` tool's description tells the model
+that commands cannot reach the network, and a command that fails for that
+reason (a name that does not resolve, no route to a host) ends with a note
+saying so and pointing at `web_search` and `web_fetch`. A command that exits 0
+gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
+`npm`, `pip` and the like) and the failure is in its last five lines, so
+output that merely mentions such an error, a log being read, does not.
+
+## Web fetch
+
+```json
+"web_fetch": {
+  "enabled": true,
+  "allowed_hosts": ["docs.python.org", "*.github.com"],
+  "max_chars": 20000
+}
+```
+
+Off by default, and separate from `web_search`: turning search on does not
+let the agent send a request to any site, and turning this on does not give
+the shell a network. `web_fetch` reads one http or https page through Abhed
+and returns its text. It never reaches a loopback, private, link-local,
+metadata or reserved address, whatever the host name resolves to.
+
+`allowed_hosts`, when set, is every host the agent may fetch: a name, or
+`*.` and a domain for any host under it (not the domain itself). An entry
+with a scheme, port or path is refused at load, and so is one that could
+never match a host as web_fetch writes it: a name ending in a number, an
+IPv4 address not written as four plain decimal numbers, or a wildcard over
+address numbers such as `*.216.34`. A listed host runs without asking only
+on its scheme's default port; a URL naming another port asks ("web_fetch
+asks: the URL names a port…") unless an allow rule names it.
+
+Without `allowed_hosts`, any public site can be fetched, and a URL can carry
+whatever the model puts in it, so every call asks in the `default`,
+`accept-edits`, `auto` and `plan` modes (the reason reads "web_fetch asks:
+no allowed_hosts configured") unless an allow rule such as
+`"allow": ["web_fetch(https://docs.python.org/*)"]` matches.
+`plan` asks too, because a console client can narrow any session to it.
+`bypass` runs it. A headless run, which has no one to ask, needs such an
+allow rule or `allowed_hosts`; `abhed eval` approves every ask, so an eval
+run with `web_fetch` on and no host list fetches any public URL.
+
+A wildcard over a single label, such as `*.com`, is refused. Be careful with
+wildcards over shared hosting — `*.github.io`, `*.vercel.app`,
+`*.s3.amazonaws.com`, `*.githubusercontent.com` — where anyone can publish a
+site: listing one lets any of those sites receive, without asking, whatever
+the model puts in a URL. `max_chars` is the most text
+one call returns; unset means 20,000, and the most is 100,000. A longer page
+is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 
 ## Storage
 
@@ -237,7 +297,9 @@ signed out, and a group added or removed applies at once. Removing
 administrator rights through `POST /v1/admin/users/admin` also ends that
 person's sessions, on every server sharing the account store: at once on the
 one that removed them, and within about 2 seconds on the others over
-Postgres.
+Postgres. An event or terminal stream already open is authorised again while
+it runs, and ends when its sign-in would now be refused: at once for a change
+made on the same server, within 10 seconds otherwise.
 
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,
@@ -350,3 +412,29 @@ decoding does, so `Model` is read as `model` and is not reported. A key that
 starts with `_` or `$`, such as `_comment` or `$schema`, is an annotation for
 people and is never reported. An unknown key in the managed file
 (`/etc/abhed/config.json`) is marked as such, since only its owner can correct it.
+
+## Trusting the workspace configuration
+
+A `.abhed/config.json` that came with a repository could turn on bypass mode,
+send your code to another model server, or start processes. Until you trust
+it, Abhed applies only its deny and ask rules, a narrower mode (`plan` or
+`default`), a stricter sandbox and lower limits. It ignores the rest, and
+prints a warning naming each ignored setting. `abhed doctor` lists them too.
+`serve`, `user` and `migrate` refuse to start when an untrusted file sets
+`auth`, `storage` or `server`, since running without those would leave the
+server open.
+
+- **Interactive `abhed`** asks once, listing what the file would change: trust,
+  don't trust, or view the file.
+- **Headless runs** (`-p`, `acp`, `rpc`, `resolve`, `serve`) never ask. They
+  use your stored decision, or trust the file for one run with
+  `-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`.
+- **`abhed trust`** shows the file and what it would change. `abhed trust
+  grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
+  list` lists every decision.
+
+Trust is for the file's exact contents: after an edit it is asked about again.
+`abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and
+the managed `/etc/abhed/config.json` are not affected, and the managed file
+still wins. The full classification of every setting is in [Workspace
+trust](../architecture/workspace-trust.md).

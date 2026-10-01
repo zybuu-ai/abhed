@@ -27,10 +27,46 @@ type Tool interface {
 	Run(ctx context.Context, sess *Session, args json.RawMessage) Result
 }
 
+// CallMutator is a tool whose calls mutate or not by their arguments, such as
+// one that changes the host only when asked to.
+type CallMutator interface {
+	MutatesCall(args json.RawMessage) bool
+}
+
+// MutatesCall reports whether this call of t can change state: Mutates, or
+// what a CallMutator says of these arguments.
+func MutatesCall(t Tool, args json.RawMessage) bool {
+	if t.Mutates() {
+		return true
+	}
+	if m, ok := t.(CallMutator); ok {
+		return m.MutatesCall(args)
+	}
+	return false
+}
+
 // Prechecker is an optional check that needs no side effect to make. The loop
 // runs it before asking a person, so nobody approves a call that cannot succeed.
 type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
+}
+
+// ArgResolver fills in what a call leaves to the session, such as the one
+// cluster it logged in to, and puts what it names in the one form the tool
+// uses, so that policy, the approver and the record judge what the call will
+// do. The loop runs it before policy and runs the tool with what it returns;
+// nil keeps the arguments as they are. resolved names the arguments it set
+// or changed, which the record keeps. An error refuses the call before policy
+// reads it: the arguments cannot be put in a form the tool would run.
+type ArgResolver interface {
+	ResolveArgs(sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
+}
+
+// Targeter names where a call sends what it carries, such as the server a
+// credential goes to, when the arguments alone do not show it. The person
+// approving the call and the record both get it.
+type Targeter interface {
+	Target(sess *Session, args json.RawMessage) string
 }
 
 // precheckPath is the shared check for tools whose target is a "path" argument.

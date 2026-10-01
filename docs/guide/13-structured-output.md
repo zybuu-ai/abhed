@@ -54,7 +54,9 @@ sixth.
 
 Validation happens **inside** the loop, not after it. That is the whole
 difference from parsing the model's prose: the model gets to correct the
-answer, and the caller never sees an invalid one.
+answer, and the caller never sees one that failed validation. Stored secrets
+are then redacted from the answer, so an answer holding one may no longer match
+the schema, or come back as `{"withheld": ...}`; see [the SDK](09-sdk.md).
 
 ## What the schema can say
 

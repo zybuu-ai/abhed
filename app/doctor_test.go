@@ -46,6 +46,7 @@ func TestDoctorFailsOnUnknownKeys(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 		return stdoutOf(t, func() int { return newApp().doctor(ws) })
 	}
 
@@ -120,6 +121,7 @@ func TestDoctorFailsOnAStateFileWithASecondName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	users := filepath.Join(ws, ".abhed", "users.json")
 	if err := os.WriteFile(users, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
@@ -191,6 +193,7 @@ func TestDoctorFailsWhenTheSandboxCannotBeBuilt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
 	if code != 1 || !strings.Contains(out, "checking sandbox exec... FAILED") || strings.Contains(out, "SKIPPED") || strings.Contains(out, "Ready.") {
 		t.Fatalf("the doctor did not fail on the sandbox (%d):\n%s", code, out)

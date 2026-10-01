@@ -14,6 +14,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -529,7 +530,7 @@ func TestSubagentRecordCopiesAllowedAsksOnly(t *testing.T) {
 	appr := &grantingApprover{}
 	l, store, dir := parentWithTask(t, []scriptedTurn{
 		{calls: []model.ToolCall{taskCall("t1", "work")}},
-		{calls: []model.ToolCall{call("read", map[string]string{"file_path": "notes.txt"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "notes.txt"})}},
 		{calls: []model.ToolCall{bashCall("b1", "mkdir out")}},
 		{text: "made it"},
 		{text: "done"},
@@ -568,7 +569,7 @@ func TestFailedSubagentReturnIsRecorded(t *testing.T) {
 	store := NewMemStore()
 	l, _, _ := taskTree(t, &scriptedAdapter{turns: []scriptedTurn{
 		{calls: []model.ToolCall{taskCall("t1", "work")}},
-		{calls: []model.ToolCall{call("read", map[string]string{"file_path": "x"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "x"})}},
 	}}, AutoApprove{Yes: false}, store, failingStore{store}, false)
 	if _, err := l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
@@ -632,5 +633,264 @@ func TestTaskNamesTheTasksToolForATasksList(t *testing.T) {
 	res = Task{}.Run(context.Background(), nil, json.RawMessage(`{"description":"x"}`))
 	if !res.IsError || strings.Contains(res.Content, "tasks tool") {
 		t.Fatalf("a call with no prompt and no tasks got %q", res.Content)
+	}
+}
+
+// A child redacts as its parent's session does, whether its factory has no
+// redactor or one read before the value was stored.
+func TestSubagentRedactsAsItsParentDoes(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		subagentRedactsAsParent(t, stale)
+	}
+}
+
+func subagentRedactsAsParent(t *testing.T, stale bool) {
+	t.Helper()
+	const raw = "fake-subagent-value-5d1c"
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("FAKE_TOKEN", raw); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "read it", "description": "read"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "creds.txt"})}},
+		{text: "the file holds " + raw},
+		{text: "done"},
+	}}
+	store := NewMemStore()
+	l, dir, f := taskTree(t, adapter, AutoApprove{Yes: true}, store, store, false)
+	if f.Redact != nil {
+		t.Fatal("the factory under test must have no redactor of its own")
+	}
+	l.Recorder.Redact = vault.Redactor()
+	if stale {
+		// Built before the value was stored, as a long-lived factory is.
+		f.Redact = secrets.Open(filepath.Join(t.TempDir(), "empty.json")).Redactor()
+	}
+	if err := os.WriteFile(filepath.Join(dir, "creds.txt"), []byte("token="+raw+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	parent, _ := store.Events("parent")
+	child := ""
+	for _, e := range parent {
+		all.Write(e.Payload)
+		if e.Type == EvSubagentSpawned {
+			var p map[string]any
+			_ = json.Unmarshal(e.Payload, &p)
+			child, _ = p["session"].(string)
+		}
+	}
+	if child == "" {
+		t.Fatalf("no subagent ran: %s", types(parent))
+	}
+	childEvs, _ := store.Events(child)
+	for _, e := range childEvs {
+		all.Write(e.Payload)
+	}
+	for _, req := range adapter.gotRequests {
+		for _, m := range req.Messages {
+			all.WriteString(m.Content)
+		}
+	}
+	if strings.Contains(all.String(), raw) {
+		t.Fatalf("the stored value reached a subagent's record or model:\n%s", all.String())
+	}
+	if !strings.Contains(all.String(), "[secret:FAKE_TOKEN]") {
+		t.Fatalf("the subagent's output was not redacted by name:\n%s", all.String())
+	}
+}
+
+// scopedProbe reports what its session keeps under scopedProbeKey.
+type scopedProbe struct{ saw *any }
+
+type scopedProbeKey struct{}
+
+func (scopedProbe) Name() string            { return "probe" }
+func (scopedProbe) Description() string     { return "probe" }
+func (scopedProbe) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (scopedProbe) Mutates() bool           { return false }
+func (p scopedProbe) Run(_ context.Context, s *tools.Session, _ json.RawMessage) tools.Result {
+	*p.saw = s.Scoped(scopedProbeKey{}, nil)
+	return tools.Result{Content: "ok"}
+}
+
+// A subagent in its own worktree is still the parent's conversation: a login
+// the parent made is the child's too, and not a fresh, empty session's.
+func TestWorktreeSubagentInheritsScopedState(t *testing.T) {
+	var saw any
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("probe", map[string]string{})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Tools.Add(scopedProbe{saw: &saw})
+	f.Session.Scoped(scopedProbeKey{}, func() any { return "parent's login" })
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", Workspace: tempDir(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if saw != "parent's login" {
+		t.Fatalf("the worktree subagent saw %v, not its parent's login", saw)
+	}
+}
+
+// targeted is a mutating tool that says where its call sends a credential.
+type targeted struct{}
+
+func (targeted) Name() string            { return "deploy" }
+func (targeted) Description() string     { return "deploys" }
+func (targeted) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (targeted) Mutates() bool           { return true }
+func (targeted) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	return tools.Result{Content: "deployed"}
+}
+func (targeted) Target(*tools.Session, json.RawMessage) string {
+	return "cluster prod at https://api.prod.example:6443"
+}
+
+// A subagent's ask in the parent's record names where the call sends a
+// credential, as the child's own request does.
+func TestSubagentAskNamesItsTarget(t *testing.T) {
+	store := NewMemStore()
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "ship", "description": "ship"})}},
+		{calls: []model.ToolCall{{ID: "d1", Name: "deploy", Args: json.RawMessage(`{}`)}}},
+		{text: "could not"},
+		{text: "done"},
+	}}
+	l, _, f := taskTree(t, adapter, &askingApprover{}, store, store, false)
+	f.Tools.Add(targeted{})
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	asks := payloads[SubagentAsk](evs, EvSubagentAsk)
+	if len(asks) != 1 {
+		t.Fatalf("want one subagent.ask, got %d: %s", len(asks), types(evs))
+	}
+	if asks[0].Target != "cluster prod at https://api.prod.example:6443" {
+		t.Fatalf("subagent.ask does not name the target: %+v", asks[0])
+	}
+}
+
+// pipeTool runs one pipeline step, `touch step.txt`, on the loop that called it.
+type pipeTool struct{}
+
+func (pipeTool) Name() string            { return "pipe" }
+func (pipeTool) Description() string     { return "runs a pipeline" }
+func (pipeTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (pipeTool) Mutates() bool           { return false }
+func (pipeTool) Run(ctx context.Context, _ *tools.Session, _ json.RawMessage) tools.Result {
+	steps, err := StepsFor(ctx, "skill p pipeline")
+	if err != nil {
+		return tools.Result{Content: err.Error(), IsError: true}
+	}
+	res, err := steps.Run(ctx, "bash", json.RawMessage(`{"command":"touch step.txt"}`), 0)
+	if err != nil {
+		return tools.Result{Content: err.Error(), IsError: true}
+	}
+	return res
+}
+
+// A pipeline step a subagent runs is offered in the parent's record when it
+// is put to the person, naming the subagent and the pipeline.
+func TestSubagentPipelineStepAskReachesTheParent(t *testing.T) {
+	store := NewMemStore()
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "run it", "description": "runner"})}},
+		{calls: []model.ToolCall{{ID: "p1", Name: "pipe", Args: json.RawMessage(`{}`)}}},
+		{text: "ran"},
+		{text: "done"},
+	}}
+	appr := &askingApprover{}
+	l, _, f := taskTree(t, adapter, appr, store, store, false)
+	f.Tools.Add(pipeTool{})
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("parent")
+	asks := payloads[SubagentAsk](evs, EvSubagentAsk)
+	if len(appr.asked) != 1 || len(asks) != 1 || asks[0].Subagent != "runner" || asks[0].Via != "skill p pipeline" {
+		t.Fatalf("the step's ask did not reach the parent's record once, named: asked %v, %+v", appr.asked, asks)
+	}
+}
+
+// askRefusingStore is a parent's store that refuses to record a subagent.ask,
+// as a fenced or moved session's store refuses its writes.
+type askRefusingStore struct{ *MemStore }
+
+func (s askRefusingStore) Append(ev Event) error {
+	if ev.Type == EvSubagentAsk {
+		return errors.New("the session is fenced on this node")
+	}
+	return s.MemStore.Append(ev)
+}
+
+// withholdAll is a redactor whose store cannot be loaded: every payload is withheld.
+type withholdAll struct{}
+
+func (withholdAll) Redact([]byte) []byte { return nil }
+func (withholdAll) Span() int            { return 0 }
+
+// A subagent's ask that cannot be recorded in the parent's record, because
+// the write is refused or the request's payload was withheld, is not put to
+// anyone: the call is denied by the system at step ask.
+func TestUnrecordedSubagentAskIsNeverPut(t *testing.T) {
+	for name, setup := range map[string]func(*SubagentFactory) (parent Store, child Store){
+		"parent write refused": func(*SubagentFactory) (Store, Store) {
+			ms := NewMemStore()
+			return askRefusingStore{ms}, ms
+		},
+		"payload withheld": func(f *SubagentFactory) (Store, Store) {
+			f.Redact = withholdAll{}
+			ms := NewMemStore()
+			return ms, ms
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &scriptedAdapter{turns: []scriptedTurn{
+				{calls: []model.ToolCall{call("task", map[string]string{"prompt": "touch it", "description": "toucher"})}},
+				{calls: []model.ToolCall{{ID: "k1", Name: "bash", Args: json.RawMessage(`{"command":"touch made.txt"}`)}}},
+				{text: "could not"},
+				{text: "done"},
+			}}
+			appr := &askingApprover{}
+			probe := &SubagentFactory{}
+			parentStore, childStore := setup(probe)
+			l, dir, f := taskTree(t, adapter, appr, parentStore, childStore, false)
+			f.Redact = probe.Redact
+			_, _ = l.Run(context.Background(), "go")
+			if len(appr.asked) != 0 {
+				t.Fatalf("the approver was asked %v with no ask in the parent's record", appr.asked)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "made.txt")); err == nil {
+				t.Fatal("the subagent's call ran")
+			}
+			ms := childStore.(*MemStore)
+			parentEvs, _ := ms.Events("parent")
+			kid := ""
+			for _, sp := range payloads[map[string]any](parentEvs, EvSubagentSpawned) {
+				if id, _ := sp["session"].(string); id != "" {
+					kid = id
+				}
+			}
+			if kid == "" {
+				t.Fatalf("no subagent was spawned: %s", types(parentEvs))
+			}
+			evs, _ := ms.Events(kid)
+			denied := false
+			for _, ev := range evs {
+				// A withheld payload hides the step; the actor still says who refused.
+				if ev.Type == EvActionDenied && ev.Actor == ActorSystem &&
+					(strings.Contains(string(ev.Payload), `"step":"ask"`) || strings.Contains(string(ev.Payload), "withheld")) {
+					denied = true
+				}
+			}
+			if !denied {
+				t.Fatal("the child's call was not denied by the system at step ask")
+			}
+		})
 	}
 }

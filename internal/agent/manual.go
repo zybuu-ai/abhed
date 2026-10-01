@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -49,6 +50,9 @@ func (l *Loop) ManualAs(ctx context.Context, sess *tools.Session, action, id str
 		return tools.Result{}, fmt.Errorf("unknown tool %q", run)
 	}
 	decision := l.Policy.Evaluate(action, true, args)
+	if refused := l.namesSecret(action, args); refused != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	}
 	for _, a := range also {
 		if decision.Decision == policy.Deny {
 			break
@@ -90,11 +94,34 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	if !found {
 		return nil, nil, fmt.Errorf("unknown tool %q", call)
 	}
-	refused, err := l.manualDecide(call, id, args, l.Policy.Evaluate(call, tool.Mutates(), args), Unanswered)
+	decision := l.Policy.Evaluate(call, tool.Mutates(), args)
+	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	refused, err := l.manualDecide(call, id, args, decision, Unanswered)
 	if err != nil || refused != nil {
 		return nil, refused, err
 	}
 	return tool, nil, nil
+}
+
+// namesSecret applies the file-name secret check to the name an explorer
+// action creates: a new folder's path, or a rename's new path.
+func (l *Loop) namesSecret(action string, args json.RawMessage) string {
+	var a struct {
+		Path string `json:"path"`
+		To   string `json:"to"`
+	}
+	if json.Unmarshal(args, &a) != nil {
+		return ""
+	}
+	switch action {
+	case "mkdir", "write", "edit":
+		return l.pathHoldsSecret(a.Path)
+	case "rename":
+		return l.pathHoldsSecret(a.To)
+	}
+	return ""
 }
 
 // Confirmation is the person's answer to a command that always confirms.

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -199,11 +200,11 @@ type SubagentFactory struct {
 	Depth int
 }
 
-// sessionCreator is implemented by durable stores that need a session row
+// SessionCreator is implemented by durable stores that need a session row
 // before events can reference it. The memory store does not implement it, so
-// the local path is unaffected.
-type sessionCreator interface {
-	CreateSubSession(ctx context.Context, id, description string) error
+// the local path is unaffected. parentID is the session that spawned it.
+type SessionCreator interface {
+	CreateSubagentSession(ctx context.Context, id, parentID, description string) error
 }
 
 // MaxSummaryChars bounds what a subagent returns to its parent. The point of
@@ -235,8 +236,12 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	// A durable store requires the session row before any event references it.
 	// Without this a subagent's first event fails the foreign key and the whole
 	// delegation errors out — which only shows up once Postgres is configured.
-	if creator, ok := f.Store.(sessionCreator); ok {
-		if err := creator.CreateSubSession(ctx, sessionID, req.Description); err != nil {
+	if creator, ok := f.Store.(SessionCreator); ok {
+		parentSession := ""
+		if parent != nil && parent.rec != nil {
+			parentSession = parent.rec.sessionID
+		}
+		if err := creator.CreateSubagentSession(ctx, sessionID, parentSession, req.Description); err != nil {
 			return "", fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
@@ -259,9 +264,18 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		approver = AutoApprove{Yes: false}
 	}
 	rec := NewRecorder(f.Store, sessionID, parentID)
+	// A child redacts as its parent's session does; the factory's own is for a
+	// spawn with no parent.
 	rec.Redact = f.Redact
+	if parent != nil && parent.rec.redactor() != nil {
+		rec.Redact = parent.rec.redactor()
+	}
 	if parent != nil {
 		rec.tap = mirrorInto(parent, sessionID)
+		if o, ok := approver.(oneAtATime); ok {
+			o.asking = askInto(parent, sessionID, req.Description)
+			approver = o
+		}
 	}
 
 	profile := req.AgentType
@@ -281,8 +295,17 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
+			// Still the parent's conversation: a login it made carries over.
+			session.InheritScoped(f.Session)
 		}
 		workspace = req.Workspace
+	}
+
+	// A narrow role gets a narrow tool set: an explore subagent that can write
+	// will write, and the orchestrator will not know (docs §07).
+	registry := f.Tools
+	if p, found := Profiles[profile]; found && len(p.Tools) > 0 {
+		registry = f.Tools.Subset(p.Tools...)
 	}
 
 	// Fresh context: the subagent gets its own system prompt and memory file,
@@ -293,14 +316,8 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		Model:         adapter.Profile().Name,
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
+		Tools:         registry.Names(),
 	})
-
-	// A narrow role gets a narrow tool set: an explore subagent that can write
-	// will write, and the orchestrator will not know (docs §07).
-	registry := f.Tools
-	if p, found := Profiles[profile]; found && len(p.Tools) > 0 {
-		registry = f.Tools.Subset(p.Tools...)
-	}
 
 	cfg := f.Config
 	cfg.SystemPrompt = sysPrompt
@@ -312,6 +329,9 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	sub := NewLoop(adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
 	sub.depth = depth + 1
+	// The child spends from the parent's allowance turn by turn, so it stops
+	// when the session's budget runs out rather than after it.
+	sub.Budget = f.Budget
 	// Deliberately no Compactor: a subagent that needs compaction was given too
 	// large a task, and silently compacting hides that from the operator.
 
@@ -329,7 +349,6 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	reason, err := sub.Run(ctx, req.Prompt)
 	usage := sub.Usage()
-	f.Budget.Spend(usage.InputTokens + usage.OutputTokens)
 
 	if err != nil {
 		parent.record(EvSubagentReturn, ActorAgent, map[string]any{
@@ -365,6 +384,17 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	return summary, nil
 }
 
+// SubagentRecord reports whether a record is a subagent's, and the session
+// that started it when the record names one. Records from before events
+// carried a parent are known by their first event, the child's own spawn.
+func SubagentRecord(events []Event) (parent string, ok bool) {
+	if len(events) == 0 {
+		return "", false
+	}
+	first := events[0]
+	return first.ParentID, first.ParentID != "" || first.Type == EvSubagentSpawned
+}
+
 // parentKey carries the loop running a tool, so a subagent that tool spawns
 // answers to the same approver and is linked into the same record.
 type parentKey struct{}
@@ -376,6 +406,7 @@ type parentLink struct {
 	depth    int           // 0 for a top-level loop, 1 for its subagents, and so on
 	fail     func(error)   // a write the parent's record refused ends the parent's run
 	adapter  model.Adapter // the parent's model now, which a switch may have changed
+	loop     *Loop         // the loop making the call, which a pipeline's steps run on
 }
 
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
@@ -387,18 +418,25 @@ func (l *Loop) asParent(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
-		adapter: l.Adapter,
+		adapter: l.Adapter, loop: l,
 	})
 }
 
 // record writes to the parent's record; a nil link has none.
 func (p *parentLink) record(t EventType, actor Actor, payload any) {
+	_ = p.recordErr(t, actor, payload)
+}
+
+// recordErr is record, reporting a write the parent's record refused.
+func (p *parentLink) recordErr(t EventType, actor Actor, payload any) error {
 	if p == nil {
-		return
+		return nil
 	}
-	if _, err := p.rec.Record(t, actor, Trusted, payload); err != nil && p.fail != nil {
+	_, err := p.rec.Record(t, actor, Trusted, payload)
+	if err != nil && p.fail != nil {
 		p.fail(err)
 	}
+	return err
 }
 
 // oneAtATime serializes asks: sibling subagents run together, but a person
@@ -407,6 +445,11 @@ type oneAtATime struct {
 	Approver
 	asks chan struct{}
 	who  string
+	via  string // the pipeline asking, when a pipeline step asks
+	// asking records that the call is now the one put to the person, once it
+	// has its turn: a sibling's ask still queued behind it is not offered. An
+	// ask it cannot record is not put: nobody watching could see it.
+	asking func(ctx context.Context) error
 }
 
 func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
@@ -419,7 +462,42 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	return o.Approver.Approve(WithSubagent(ctx, o.who), tool, args, res)
+	if o.who != "" {
+		ctx = WithSubagent(ctx, o.who)
+	}
+	if o.via != "" {
+		ctx = context.WithValue(ctx, pipelineAskKey{}, o.via)
+	}
+	if o.asking != nil {
+		if err := o.asking(ctx); err != nil {
+			return false, fmt.Errorf("the ask could not be offered in the parent's record, so it was not put to anyone: %w", err)
+		}
+	}
+	return o.Approver.Approve(ctx, tool, args, res)
+}
+
+// askInto writes a subagent's call to the parent's record as subagent.ask
+// when it is put to the approver, so a console or editor watching the parent
+// shows the request the run is waiting on, and only that one.
+func askInto(parent *parentLink, child, description string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		ev, ok := ctx.Value(requestedKey{}).(Event)
+		if !ok {
+			return errors.New("no recorded request to offer")
+		}
+		var held struct {
+			Withheld *string `json:"withheld"`
+		}
+		var a ActionRequested
+		if json.Unmarshal(ev.Payload, &a) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
+			return errors.New("the request's record was withheld, so it cannot be shown")
+		}
+		return parent.recordErr(EvSubagentAsk, ev.Actor, SubagentAsk{
+			Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
+			Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
+			Reason: a.Reason, Scope: a.Scope, Via: a.Via, Target: a.Target,
+		})
+	}
 }
 
 type subagentKey struct{}
@@ -449,16 +527,41 @@ type SubagentAction struct {
 	Scope        string `json:"scope,omitempty"`
 	Approver     string `json:"approver,omitempty"`
 	GrantedScope string `json:"granted_scope,omitempty"`
+	// RequestID is the child's action.requested event, which a subagent.ask
+	// for the same call names too.
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// SubagentAsk is a subagent's call put to the approver, copied into the
+// parent's record before the approver is asked. RequestID is the id an answer
+// names, as for the parent's own asks.
+type SubagentAsk struct {
+	Session   string          `json:"session"`
+	Subagent  string          `json:"subagent,omitempty"`
+	RequestID string          `json:"request_id"`
+	CallID    string          `json:"call_id"`
+	Tool      string          `json:"tool"`
+	Args      json.RawMessage `json:"args"`
+	Subject   string          `json:"subject,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Scope     string          `json:"scope,omitempty"`
+	Via       string          `json:"via,omitempty"`
+	// Target is where the call sends a credential, as the child's request names it.
+	Target string `json:"target,omitempty"`
 }
 
 // mirrorInto copies the child's settled calls that matter to an audit into
 // the parent's record as they happen.
 func mirrorInto(parent *parentLink, child string) func(Event) {
 	var mu sync.Mutex
-	asked := map[string]ActionRequested{}
+	type request struct {
+		ActionRequested
+		id string
+	}
+	asked := map[string]request{}
 	return func(ev Event) {
 		switch ev.Type {
-		case EvSubagentSpawned, EvSubagentReturn, EvSubagentAction:
+		case EvSubagentSpawned, EvSubagentReturn, EvSubagentAction, EvSubagentAsk:
 			// A nested subagent's events are passed up, so the root record has them;
 			// the child's own spawn and return are written to the parent directly.
 			var own struct {
@@ -472,8 +575,9 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 			var a ActionRequested
 			if json.Unmarshal(ev.Payload, &a) == nil {
 				mu.Lock()
-				asked[a.CallID] = a
+				asked[a.CallID] = request{a, ev.ID}
 				mu.Unlock()
+				// Its subagent.ask is written by askInto when its turn to be asked comes.
 			}
 		case EvActionApproved, EvActionDenied:
 			var d map[string]string
@@ -493,6 +597,7 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 				Session: child, CallID: a.CallID, Tool: a.Tool, Subject: policy.Subject(a.Tool, a.Args),
 				Decision: decision, Step: d["step"], Reason: d["reason"], By: d["by"],
 				Scope: d["scope"], Approver: d["approver"], GrantedScope: d["granted_scope"],
+				RequestID: a.id,
 			})
 		}
 	}

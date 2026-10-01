@@ -115,11 +115,17 @@ proxy, or any hosted OpenAI-compatible API — declare a named provider in
 
 ```bash
 export ABHED_API_KEY=sk_...            # resolved via api_key_env, never written to disk
+./abhed trust grant                    # the edit makes the file untrusted until you trust it
 ./abhed doctor                         # confirms the endpoint answers and tool-calling works
 ./abhed                                # interactive CLI
 ./abhed serve -addr 127.0.0.1:8090     # web console + API on http://127.0.0.1:8090
 ```
 
+- **`abhed trust grant`** is needed after every edit to a workspace's
+  `.abhed/config.json`: until then Abhed applies only the file's tightening
+  settings, and a run without it uses the default model. For a personal
+  gateway key you can put the same block in `~/.abhed/config.json` instead,
+  which is always trusted. See [Workspace trust](docs/architecture/workspace-trust.md).
 - **`api_key_env`** names the variable holding the key, so the secret stays out of
   the config and out of version control (`.abhed/` is git-ignored). Export it in
   every shell that runs `abhed`, or add it to your shell profile.

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,101 @@ type Session struct {
 	reads  map[string]string // abs path -> content hash at time of read
 	frozen *StateSet         // set by FreezeState
 	made   map[string]bool   // folders the write tool made, for undo to remove
+	scoped *scopedValues     // see Scoped
+}
+
+// scopedValues is what tools keep for one conversation, such as a credential
+// obtained during it. Fork and InheritScoped share it; nothing else does.
+type scopedValues struct {
+	mu     sync.Mutex
+	m      map[any]any
+	closed bool // after CloseScoped nothing is kept, so nothing outlives the session
+}
+
+func (s *Session) scopedLocked() *scopedValues {
+	if s.scoped == nil {
+		s.scoped = &scopedValues{m: map[any]any{}}
+	}
+	return s.scoped
+}
+
+// Scoped returns what a tool keeps under key for this session, made by mk on
+// first use; a nil mk only looks. A nil session, or one whose scoped state was
+// closed, keeps nothing and returns nil, so a tool that must not share state
+// across sessions can refuse.
+func (s *Session) Scoped(key any, mk func() any) any {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	sc := s.scopedLocked()
+	s.mu.Unlock()
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.closed {
+		return nil
+	}
+	v, ok := sc.m[key]
+	if !ok && mk != nil {
+		v = mk()
+		sc.m[key] = v
+	}
+	return v
+}
+
+// InheritScoped gives s the scoped state of from, for a subagent that works in
+// its own worktree but is still part of the same conversation.
+func (s *Session) InheritScoped(from *Session) {
+	if from == nil {
+		return
+	}
+	from.mu.Lock()
+	sc := from.scopedLocked()
+	from.mu.Unlock()
+	s.mu.Lock()
+	s.scoped = sc
+	s.mu.Unlock()
+}
+
+// ResetScoped closes and forgets what the session's tools kept, and leaves the
+// session able to keep more: a CLI process that starts another conversation
+// on the same session must not carry the last one's logins into it.
+func (s *Session) ResetScoped() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	sc := s.scopedLocked()
+	s.mu.Unlock()
+	sc.mu.Lock()
+	vals := sc.m
+	sc.m = map[any]any{}
+	sc.mu.Unlock()
+	closeAll(vals)
+}
+
+func closeAll(vals map[any]any) {
+	for _, v := range vals {
+		if c, ok := v.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
+}
+
+// CloseScoped closes whatever the session's tools kept that holds a
+// connection, and forgets all of it. The session keeps nothing afterwards.
+func (s *Session) CloseScoped() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	sc := s.scopedLocked()
+	s.mu.Unlock()
+	sc.mu.Lock()
+	vals := sc.m
+	sc.m, sc.closed = map[any]any{}, true
+	sc.mu.Unlock()
+	closeAll(vals)
 }
 
 // snapshot captures a file's current content before it is modified. Called by
@@ -94,6 +190,7 @@ func (s *Session) Fork() *Session {
 		Checkpoint: s.Checkpoint,
 		Syntax:     s.Syntax,
 		reads:      make(map[string]string),
+		scoped:     s.scopedLocked(),
 	}
 }
 

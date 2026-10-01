@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/config"
 )
 
 var workingDir = regexp.MustCompile(`Working directory: (.+?)\\n`)
@@ -60,6 +62,7 @@ func rootsWorkspace(t *testing.T, url string) string {
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	return ws
 }
 
@@ -92,7 +95,7 @@ func TestEvalDeniesAbsolutePathByRelativeRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := filepath.Join(t.TempDir(), "report.json")
-	evalCmd(ws, corpus, report)
+	evalCmd(ws, corpus, report, "")
 	if !sent.Load() {
 		t.Fatal("the model never made the write call")
 	}

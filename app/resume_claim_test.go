@@ -438,3 +438,170 @@ func TestDoubleCtrlCEndsAsInterrupted(t *testing.T) {
 		}
 	}
 }
+
+// A subagent's record is not resumed on its own: it goes on only through the
+// session that started it.
+func TestResumeRefusesASubagentsSession(t *testing.T) {
+	ms := agent.NewMemStore()
+	msg, _ := json.Marshal(agent.Message{Text: "child work ZEBRA-77"})
+	_ = ms.Append(agent.Event{ID: "k1", SessionID: "s-kid", ParentID: "s-top", Seq: 1, Type: agent.EvUserMessage, Payload: msg})
+	sess, err := tools.NewSession(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
+	st.fresh()
+	st.open = func(id string) *agent.Loop {
+		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
+		st.loop, st.sessionID = l, id
+		return l
+	}
+	var shown bytes.Buffer
+	handleCommand(context.Background(), "/resume s-kid", ui.NewRenderer(&shown, false), policy.New(policy.ModeDefault), sess, st)
+	if st.loop != nil || st.sessionID == "s-kid" {
+		t.Fatal("a subagent's session was resumed on its own")
+	}
+	if err := resumeConversation(context.Background(), st, "s-kid", mustEvents(t, ms, "s-kid")); err == nil || !strings.Contains(err.Error(), "s-top") {
+		t.Fatalf("the refusal does not name the session to resume: %v", err)
+	}
+}
+
+func mustEvents(t *testing.T, st agent.Store, id string) []agent.Event {
+	t.Helper()
+	evs, err := st.Events(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
+
+// Ownership is checked first, so another user's subagent record is refused
+// as theirs without naming the session that started it; a record from before
+// events named a parent is known by its first event, the subagent's spawn.
+func TestResumeChecksTheOwnerBeforeTheSubagent(t *testing.T) {
+	child := []agent.Event{{ID: "k1", SessionID: "s-old", ParentID: "s-secret-parent", Seq: 1, Type: agent.EvUserMessage}}
+	st, _, _, _ := resumeRig(t, "mallory", "default")
+	if err := resumeConversation(context.Background(), st, "s-old", child); err == nil ||
+		!strings.Contains(err.Error(), "another user") || strings.Contains(err.Error(), "s-secret-parent") {
+		t.Fatalf("another user's subagent record: %v", err)
+	}
+	st, _, _, _ = resumeRig(t, "me", "default")
+	legacy := []agent.Event{{ID: "k1", SessionID: "s-old", Seq: 1, Type: agent.EvSubagentSpawned}}
+	if err := resumeConversation(context.Background(), st, "s-old", legacy); err == nil || !strings.Contains(err.Error(), "subagent") {
+		t.Fatalf("a subagent record with no parent named was resumed: %v", err)
+	}
+}
+
+// A CLI subagent's row is recorded as store.SubagentUser. /resume of the
+// person's own subagent names the session that started it, through a nested
+// subagent too; another user's subagent is refused as theirs, its parent unnamed.
+func TestResumeOfOwnSubagentNamesItsParent(t *testing.T) {
+	st, rs, _, sess := resumeRig(t, "me", "default")
+	ended := time.Now()
+	rs.rows["s-top"] = store.SessionRecord{ID: "s-top", User: "me", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-kid"] = store.SessionRecord{ID: "s-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-top", EndedAt: &ended}
+	rs.rows["s-grandkid"] = store.SessionRecord{ID: "s-grandkid", User: store.SubagentUser, Tenant: "default", ParentID: "s-kid", EndedAt: &ended}
+	rs.rows["s-their-top"] = store.SessionRecord{ID: "s-their-top", User: "mallory", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-their-kid"] = store.SessionRecord{ID: "s-their-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-their-top", EndedAt: &ended}
+	rs.rows["s-orphan"] = store.SessionRecord{ID: "s-orphan", User: store.SubagentUser, Tenant: "default", ParentID: "s-gone", EndedAt: &ended}
+	msg, _ := json.Marshal(agent.Message{Text: "child work OKAPI-3"})
+	for id, parent := range map[string]string{"s-kid": "s-top", "s-grandkid": "s-kid", "s-their-kid": "s-their-top", "s-orphan": "s-gone"} {
+		_ = rs.Append(agent.Event{ID: id + "-1", SessionID: id, ParentID: parent, Seq: 1, Type: agent.EvUserMessage, Payload: msg})
+	}
+	resume := func(id string) string {
+		var shown bytes.Buffer
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stdout
+		os.Stdout = w
+		handleCommand(context.Background(), "/resume "+id, ui.NewRenderer(&shown, false), policy.New(policy.ModeDefault), sess, st)
+		os.Stdout = old
+		_ = w.Close()
+		said, _ := io.ReadAll(r)
+		if st.loop != nil || st.claim != "" || rs.claims != 0 {
+			t.Fatalf("%s was resumed on its own", id)
+		}
+		return shown.String() + string(said)
+	}
+	for id, parent := range map[string]string{"s-kid": "s-top", "s-grandkid": "s-kid"} {
+		if got := resume(id); strings.Contains(got, "another user") || !strings.Contains(got, "is a subagent's; resume "+parent) {
+			t.Errorf("/resume of my own subagent %s:\n%s", id, got)
+		}
+	}
+	for _, id := range []string{"s-their-kid", "s-orphan"} {
+		got := resume(id)
+		if !strings.Contains(got, "belongs to another user") || strings.Contains(got, "s-their-top") ||
+			strings.Contains(got, "s-gone") || strings.Contains(got, "OKAPI-3") {
+			t.Errorf("/resume of %s, not mine, said more than whose it is:\n%s", id, got)
+		}
+	}
+}
+
+// brokenParent is a store whose lookup of one session fails.
+type brokenParent struct {
+	*rowStore
+	broken string
+}
+
+func (b brokenParent) GetSession(ctx context.Context, id string) (store.SessionRecord, error) {
+	if id == b.broken {
+		return store.SessionRecord{}, fmt.Errorf("connection reset")
+	}
+	return b.rowStore.GetSession(ctx, id)
+}
+
+// A subagent's row is owned only through a parent in this tenant, never by a
+// user named like the subagent rows are, and a lookup that fails says so
+// rather than blaming another user.
+func TestSubagentOwnershipWalkEdges(t *testing.T) {
+	st, rs, _, _ := resumeRig(t, "me", "default")
+	ended := time.Now()
+	rs.rows["s-far-top"] = store.SessionRecord{ID: "s-far-top", User: "me", Tenant: "other", EndedAt: &ended}
+	rs.rows["s-far-kid"] = store.SessionRecord{ID: "s-far-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-far-top", EndedAt: &ended}
+	rs.rows["s-orphan"] = store.SessionRecord{ID: "s-orphan", User: store.SubagentUser, Tenant: "default", ParentID: "s-gone", EndedAt: &ended}
+	rs.rows["s-top"] = store.SessionRecord{ID: "s-top", User: "me", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-kid"] = store.SessionRecord{ID: "s-kid", User: store.SubagentUser, Tenant: "default", ParentID: "s-top", EndedAt: &ended}
+	if err := ownedHere(context.Background(), st, "s-far-kid"); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("a subagent whose parent is in another tenant was owned here: %v", err)
+	}
+	t.Setenv("USER", store.SubagentUser)
+	if err := ownedHere(context.Background(), st, "s-orphan"); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("a user named %q owned an orphaned subagent row: %v", store.SubagentUser, err)
+	}
+	t.Setenv("USER", "me")
+	st.store = brokenParent{rowStore: rs, broken: "s-top"}
+	if err := ownedHere(context.Background(), st, "s-kid"); err == nil || strings.Contains(err.Error(), "another user") || !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("a failed lookup was not reported as one: %v", err)
+	}
+}
+
+// A session the owner migration moved to the account named like this OS
+// user is still this user's; another account's is not.
+func TestCLIOwnsItsMigratedSessions(t *testing.T) {
+	st, rs, _, _ := resumeRig(t, "me", "default")
+	t.Setenv("USER", "Me")
+	ended := time.Now()
+	rs.rows["s-moved"] = store.SessionRecord{ID: "s-moved", User: "local:me", Tenant: "default", EndedAt: &ended}
+	rs.rows["s-theirs"] = store.SessionRecord{ID: "s-theirs", User: "local:you", Tenant: "default", EndedAt: &ended}
+	if err := ownedHere(context.Background(), st, "s-moved"); err != nil {
+		t.Errorf("the CLI lost its migrated session: %v", err)
+	}
+	if err := ownedHere(context.Background(), st, "s-theirs"); err == nil || !strings.Contains(err.Error(), "another user") {
+		t.Errorf("another account's session was owned here: %v", err)
+	}
+}
+
+// An unclaimed or nobody row is refused even when $USER is spelled like it.
+func TestCLIRefusesUnclaimedOwnerViaUser(t *testing.T) {
+	st, rs, _, _ := resumeRig(t, "me", "default")
+	ended := time.Now()
+	for _, owner := range []string{"unclaimed:bob@example.test", "nobody:local", "Unclaimed:Bob"} {
+		rs.rows["s-x"] = store.SessionRecord{ID: "s-x", User: owner, Tenant: "default", EndedAt: &ended}
+		t.Setenv("USER", owner)
+		if err := ownedHere(context.Background(), st, "s-x"); err == nil || !strings.Contains(err.Error(), "another user") {
+			t.Errorf("$USER=%q resumed a row owned by %q: %v", owner, owner, err)
+		}
+	}
+}

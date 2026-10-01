@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,12 +27,16 @@ import (
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/docsite"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -154,8 +159,8 @@ type Options struct {
 	Config   config.Config
 	Adapter  model.Adapter
 	Registry *tools.Registry
-	// Redact rewrites every event payload before it is written; the app sets
-	// it from the secrets store. Nil records payloads as they are.
+	// Redact rewrites every event payload before it is written. Nil, a typed nil
+	// included, means the operator's secrets store, read again for each session.
 	Redact agent.Redactor
 	// SkillListing is the rendered skill index for the system prompt. The
 	// server takes the rendered string rather than the registry, because the
@@ -201,6 +206,9 @@ type Options struct {
 	SkillRegistry *skills.Registry
 	// Gateway holds the MCP connections, so a server can be added at runtime.
 	Gateway *mcp.Gateway
+	// Extensions are the running extensions: each session's policy carries
+	// their veto, and compaction asks them for a summary. Nil runs none.
+	Extensions *extension.Host
 	// Index backs the retrieval tool, for a reindex triggered from settings.
 	Index        *index.Index
 	IndexOptions index.BuildOptions
@@ -214,6 +222,10 @@ type Options struct {
 	// A shutdown takes at most DrainTimeout + turnEndWait (5s) + 10s for HTTP,
 	// which must fit the process's grace period (30s by default on Kubernetes).
 	DrainTimeout time.Duration
+	// StreamRecheck is how often an open event or terminal stream is
+	// authorised again. Zero means the default; it can only be shortened, and
+	// anything above maxStreamRecheck is held to it.
+	StreamRecheck time.Duration
 }
 
 // Server holds live sessions and serves the API.
@@ -246,6 +258,11 @@ type Server struct {
 	// "changes at runtime" in one struct is how a field ends up read without
 	// the lock.
 	state *mutable
+
+	// streams are the long-lived responses open now, told to authorise again
+	// when a sign-in changes (stream_auth.go).
+	streamMu sync.Mutex
+	streams  map[*streamGuard]struct{}
 }
 
 type liveSession struct {
@@ -313,9 +330,40 @@ type liveSession struct {
 	mu       sync.Mutex
 }
 
+// sessionRedactor is the redactor a session records with: the store read as it
+// changes where Redact can do so, withholding every payload if it cannot be loaded.
+func (s *Server) sessionRedactor() agent.Redactor {
+	// Preferred: one that follows the store for the whole session, as bash does.
+	if fresh, ok := s.opts.Redact.(interface {
+		Session() (*secrets.Fresh, error)
+	}); ok {
+		red, err := fresh.Session()
+		if err != nil {
+			s.log.Error("the session's event payloads will be withheld", "err", err)
+			return secrets.Withholding()
+		}
+		return red
+	}
+	live, ok := s.opts.Redact.(interface {
+		Load() (*secrets.Redactor, error)
+	})
+	if !ok {
+		return s.opts.Redact
+	}
+	red, err := live.Load()
+	if err != nil {
+		s.log.Error("the session's event payloads will be withheld", "err", err)
+		return secrets.Withholding()
+	}
+	return red
+}
+
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
+	}
+	if v := reflect.ValueOf(opts.Redact); !v.IsValid() || v.Kind() == reflect.Pointer && v.IsNil() {
+		opts.Redact = secrets.Default().Live()
 	}
 	st := opts.Store
 	// The tap wraps only what the loop writes through. Optional interfaces
@@ -348,6 +396,12 @@ func New(opts Options) *Server {
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
+	if local := s.LocalAuth(); local != nil {
+		local.OnChange(func(username string) {
+			s.releaseStale(local, username)
+			s.RecheckStreams()
+		})
+	}
 	return s
 }
 
@@ -377,6 +431,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sessions/{id}/pty/{pty}", s.killPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/messages", s.postMessage)
 	mux.HandleFunc("GET /v1/sessions/{id}/queue", s.listQueue)
+	mux.HandleFunc("GET /v1/sessions/{id}/state", s.sessionState)
 	mux.HandleFunc("DELETE /v1/sessions/{id}/queue/{qid}", s.cancelQueued)
 	mux.HandleFunc("POST /v1/sessions/{id}/upload", s.uploadFile)
 	// Uploading before a session exists: see uploadFile for why a placeholder
@@ -670,19 +725,20 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 
 		// Identity comes from the auth layer, which has already verified it.
-		user := "anonymous"
 		id, _ := auth.FromContext(r.Context())
-		if id != nil {
-			user = id.Subject
-			if id.Email != "" {
-				user = id.Email
-			}
-		}
-		tenant := s.tenantFor(r.Context(), id)
+		user, tenant := s.callerOf(r.Context(), id)
 		ctx := context.WithValue(r.Context(), ctxUser, user)
 		ctx = context.WithValue(ctx, ctxTenant, tenant)
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		// A caller who names no one could create sessions it can never open again.
+		if auth.OwnsNothing(user) && strings.HasPrefix(r.URL.Path, "/v1/") {
+			WriteError(rec, http.StatusUnauthorized, "the request names no user")
+			s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+				"user", user, "tenant", tenant, "duration", time.Since(start))
+			return
+		}
 
 		// A panicking handler would otherwise drop the connection with no
 		// status and no audit line — the request simply vanishes from the log,
@@ -730,6 +786,11 @@ func TenantOf(ctx context.Context) string {
 		return v
 	}
 	return "default"
+}
+
+// callerOf is the user and tenant a request acts as, given its identity.
+func (s *Server) callerOf(ctx context.Context, id *auth.Identity) (user, tenant string) {
+	return id.Owner(), s.tenantFor(ctx, id)
 }
 
 // tenantFor applies the configured resolver, or the default rule.
@@ -926,7 +987,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	}
 
 	rec := agent.NewRecorder(s.store, sessionID, "")
-	rec.Redact = s.opts.Redact
+	rec.Redact = s.sessionRedactor()
 	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
 	if err != nil {
 		return "", err
@@ -1029,7 +1090,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	sessionID := newSessionID()
 	rec := agent.NewRecorder(s.store, sessionID, "")
-	rec.Redact = s.opts.Redact
+	rec.Redact = s.sessionRedactor()
 	// Built before the row is written, so a failure leaves no empty session listed.
 	live, _, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
 	if err != nil {
@@ -1080,6 +1141,7 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
+	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
 
@@ -1129,36 +1191,87 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		model:    adapter.Profile().Name,
 	}
 
-	cfg := agent.DefaultConfig()
-	cfg.SystemPrompt = agent.BuildSystemPrompt(agent.BuildOptions{
-		Profile:       "main",
-		Workspace:     s.opts.Workspace,
-		Model:         adapter.Profile().Name,
-		ContextWindow: adapter.Profile().ContextWindow,
-		MemoryFiles:   agent.DiscoverMemoryFiles(s.opts.Workspace),
-		Skills:        s.skillListing(skillReg),
-	})
-	cfg.MaxTurns = s.opts.Config.Limits.MaxTurns
-	// The server built its loops on the defaults and ignored the operator's
-	// context settings; the CLI has always honoured them.
-	if at := s.opts.Config.Context.CompactAt; at > 0 {
-		cfg.CompactAt = at
-	}
-	cfg.OffloadAt = s.opts.Config.Context.OffloadFraction()
+	// The prompt, loop settings and budget as the CLI builds them. The prompt
+	// is set once the session's own tools are bound, so it names only those.
+	cfg := toolset.LoopConfig(s.opts.Config, "")
+	toolset.Police(s.opts.Extensions, pol, sessionID)
 
 	var approver agent.Approver = live
 	if spec.Unattended {
 		approver = agent.AutoApprove{Yes: false}
 	}
-	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	budget := toolset.Budget(s.opts.Config)
+	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
+	cfg.SystemPrompt = toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg), own.Names())
+	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
-	loop.Budget = agent.NewBudget(
-		int64(s.opts.Config.Limits.MaxBudgetTokens),
-		s.opts.Config.Limits.MaxSubagents,
-		s.opts.Config.Limits.NestedSubagents,
-	)
+	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
+	loop.Budget = budget
 	live.Loop = loop
 	return live, loop, nil
+}
+
+// sessionTools is the shared registry with this session's own tools bound to
+// it: the skill tool over the skills loaded now, and task and tasks spawning
+// into this session's workspace, record, policy and budget.
+//
+// A subagent has no approver of its own: its asks go to the approver of the
+// loop that spawned it, which for an attended session is the person in the
+// console, through the same pending request and answer as the parent's, and
+// for an unattended one the refuser. None is approved on its behalf.
+func (s *Server) sessionTools(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
+	registry *tools.Registry, skillReg *skills.Registry, pol *policy.Engine, sess *tools.Session,
+	budget *agent.Budget, cfg agent.Config, rec *agent.Recorder) *tools.Registry {
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
+	// Bound per session, so a skill reloaded in settings reaches the next session's tool too.
+	if skillReg != nil {
+		registry = registry.Clone()
+		registry.Remove("skill")
+		if skillReg.Len() > 0 {
+			registry.Add(toolset.SkillTool(skillReg))
+		}
+	}
+	f := &agent.SubagentFactory{
+		Adapter: adapter, Policy: pol, Session: sess, Budget: budget, Config: cfg,
+		Workspace: sess.Root, Redact: rec.Redact,
+		Store: s.subagentStore(sessionID, spec, mode),
+	}
+	return toolset.Subagents(registry, f, s.opts.Config.Limits.MaxParallelSubagents)
+}
+
+// subagentStore is where a session's subagents record. With session rows it
+// writes each child's row as the session owner's, in the session's tenant and
+// naming the session that spawned it, so a child is served only to whoever may
+// see its parent, is left out of lists, and is deleted with it.
+func (s *Server) subagentStore(sessionID string, spec StartSpec, mode string) agent.Store {
+	if s.sessions == nil {
+		return s.store
+	}
+	tenant, user, workspace := storeTenant(s.opts.Config, spec.Tenant), spec.User, s.opts.Workspace
+	return subSessions{EventStore: s.store, create: func(ctx context.Context, id, parentID, description string) error {
+		if parentID == "" {
+			parentID = sessionID
+		}
+		return s.sessions.CreateSession(ctx, store.SessionRecord{
+			ID: id, Tenant: tenant, User: user, Workspace: workspace,
+			Model: "subagent", Mode: mode, ParentID: parentID,
+			Prompt: description, StartedAt: time.Now().UTC(),
+		})
+	}}
+}
+
+// subSessions gives the subagent factory the parent's owner for each child row.
+type subSessions struct {
+	EventStore
+	create func(ctx context.Context, id, parentID, description string) error
+}
+
+var _ agent.SessionCreator = subSessions{}
+
+func (c subSessions) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
+	return c.create(ctx, id, parentID, description)
 }
 
 // resumeSession continues a finished session from its record, on this node.
@@ -1181,12 +1294,23 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if err != nil {
 		return nil, fmt.Errorf("read record: %w", err)
 	}
-	if len(events) == 0 {
+	// A subagent's record goes on only through the session that started it.
+	if _, child := agent.SubagentRecord(events); len(events) == 0 || child {
 		return nil, errNoSession
 	}
 	// Ownership and mode come from the stored row when there is one.
 	var rec store.SessionRecord
-	if s.sessions != nil {
+	if g, ok := s.sessions.(sessionGetter); ok {
+		// By id, so a session older than any bounded list still opens.
+		r, err := g.GetSession(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errNoSession
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read sessions: %w", err)
+		}
+		rec = r
+	} else if s.sessions != nil {
 		recs, err := s.sessions.ListSessions(ctx, 500)
 		if err != nil {
 			return nil, fmt.Errorf("read sessions: %w", err)
@@ -1231,7 +1355,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	registry, skillReg, _ := s.state.snapshot()
 	recorder := agent.NewRecorder(s.store, id, "")
-	recorder.Redact = s.opts.Redact
+	recorder.Redact = s.sessionRedactor()
 	recorder.Advance(events[len(events)-1].Seq)
 
 	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant}
@@ -1546,7 +1670,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	// A durable store also returns sessions from before this process started,
 	// which is what makes audit useful after a restart.
 	if s.sessions != nil {
-		records, err := s.sessions.ListSessions(r.Context(), 200)
+		records, err := s.listOwned(r.Context(), user, 200)
 		if err == nil {
 			out := make([]sessionSummary, 0, len(records))
 			for _, rec := range records {
@@ -1556,7 +1680,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				// filter has to be here, or one person's list of prompts
 				// (which is a list of what they were working on, and often
 				// what they uploaded) is shown to everyone else in the tenant.
-				if !ownsSession(rec.Tenant, rec.User, tenant, user) {
+				if !ownsSession(rec.Tenant, rec.User, tenant, user) || rec.ParentID != "" {
 					continue
 				}
 				state, reason, prompt := "done", rec.TerminalReason, rec.Prompt
@@ -1594,7 +1718,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	for _, l := range s.running {
 		// Tenant isolation is enforced here AND at the data layer: a boundary
 		// that exists in only one place is not a boundary (docs/ops §4). The
-		// user check is the same rule s.session() applies to a single session,
+		// user check is the same rule s.session(r.Context(), ) applies to a single session,
 		// applied to the list — they must agree, or the list advertises
 		// sessions that then 404.
 		if !ownsSession(l.Tenant, l.User, tenant, user) {
@@ -1612,6 +1736,40 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, out)
 }
 
+// sessionStateResponse is one session's state, for a page watching it.
+type sessionStateResponse struct {
+	ID     string `json:"id"`
+	State  string `json:"state"` // running | waiting_approval | idle | done
+	Reason string `json:"reason,omitempty"`
+	// Turns lets a page following an idle session see a turn it missed.
+	Turns int `json:"turns,omitempty"`
+}
+
+// sessionState answers one session's state to its owner, so a page open on a
+// session with no run can tell when the next one starts without listing the
+// tenant's sessions. Anyone else is told it does not exist.
+func (s *Server) sessionState(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+		live.mu.Lock()
+		out := sessionStateResponse{ID: id, State: live.State, Reason: listedReason(live.State, live.Reason), Turns: live.Turns}
+		live.mu.Unlock()
+		WriteJSON(w, http.StatusOK, out)
+		return
+	}
+	if g, ok := s.sessions.(sessionGetter); ok && s.mayAccess(r, id) {
+		if rec, err := g.GetSession(r.Context(), id); err == nil {
+			out := sessionStateResponse{ID: id, State: "done", Reason: rec.TerminalReason}
+			if rec.EndedAt == nil {
+				out.State, out.Reason = "running", ""
+			}
+			WriteJSON(w, http.StatusOK, out)
+			return
+		}
+	}
+	WriteError(w, http.StatusNotFound, "session not found")
+}
+
 // mayAccess reports whether the request's caller owns session id, checking the
 // live map first and then the durable store.
 //
@@ -1621,11 +1779,16 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 // failing closed, so an unknown id can never be mistaken for an owned one.
 func (s *Server) mayAccess(r *http.Request, id string) bool {
 	tenant, user := TenantOf(r.Context()), UserOf(r.Context())
-	if _, ok := s.session(id, tenant, user); ok {
+	if _, ok := s.session(r.Context(), id, tenant, user); ok {
 		return true
 	}
 	if s.sessions == nil {
 		return false
+	}
+	// Found by id where the store can: a list is bounded and leaves subagents out.
+	if g, ok := s.sessions.(sessionGetter); ok {
+		rec, err := g.GetSession(r.Context(), id)
+		return err == nil && ownsSession(rec.Tenant, rec.User, tenant, user)
 	}
 	records, err := s.sessions.ListSessions(r.Context(), 500)
 	if err != nil {
@@ -1640,9 +1803,61 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 	return false
 }
 
+// scheduledForAdmin reports whether the caller is an administrator and id is
+// a scheduled run in their tenant: a session no identity owns, which only an
+// administrator may read, never continue.
+func (s *Server) scheduledForAdmin(r *http.Request, id string) (store.SessionRecord, bool) {
+	g, ok := s.sessions.(sessionGetter)
+	if !ok || !s.IsAdmin(r) {
+		return store.SessionRecord{}, false
+	}
+	rec, err := g.GetSession(r.Context(), id)
+	if err != nil || rec.Tenant != TenantOf(r.Context()) || !strings.HasPrefix(rec.User, auth.SchedulePrefix) {
+		return store.SessionRecord{}, false
+	}
+	return rec, true
+}
+
+// mayRead is mayAccess for reading a session's record, which an administrator
+// may also do for a scheduled run.
+func (s *Server) mayRead(r *http.Request, id string) bool {
+	if s.mayAccess(r, id) {
+		return true
+	}
+	_, ok := s.scheduledForAdmin(r, id)
+	return ok
+}
+
+// readable is mayRead for a handler that serves the record, auditing an
+// administrator's read of a scheduled run as what.
+func (s *Server) readable(r *http.Request, id, what string) bool {
+	if s.mayAccess(r, id) {
+		return true
+	}
+	rec, ok := s.scheduledForAdmin(r, id)
+	if ok {
+		s.adminAudit(r, "session.read", id, map[string]any{"owner": rec.User, "via": what})
+	}
+	return ok
+}
+
 // sessionGetter is a store that finds one session row by id.
 type sessionGetter interface {
 	GetSession(ctx context.Context, id string) (store.SessionRecord, error)
+}
+
+// ownerLister is a store that can list one owner's sessions in its query.
+type ownerLister interface {
+	ListSessionsOwnedBy(ctx context.Context, owner string, limit int) ([]store.SessionRecord, error)
+}
+
+// listOwned lists the newest sessions user may see. The owner is filtered in
+// the store where it can be, so the tenant's newest do not crowd theirs out.
+func (s *Server) listOwned(ctx context.Context, user string, limit int) ([]store.SessionRecord, error) {
+	if ol, ok := s.sessions.(ownerLister); ok && user != "" && user != auth.Anonymous && !auth.OwnsNothing(user) {
+		return ol.ListSessionsOwnedBy(ctx, user, limit)
+	}
+	return s.sessions.ListSessions(ctx, limit)
 }
 
 // ownsStored reports whether the caller owns a session this node is not
@@ -1670,10 +1885,10 @@ func (s *Server) ownsStored(r *http.Request, id string) bool {
 // caller is "anonymous" in tenant "default", and filtering by user would leave
 // a single-user local deployment unable to see its own history.
 func ownsSession(recTenant, recUser, tenant, user string) bool {
-	if recTenant != tenant {
+	if recTenant != tenant || auth.OwnsNothing(user) {
 		return false
 	}
-	if user == "" || user == "anonymous" {
+	if user == "" || user == auth.Anonymous {
 		return true
 	}
 	return recUser == user
@@ -1688,12 +1903,12 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	// durable store — that is the whole point of event sourcing. Looking only
 	// at the in-memory map meant every session from before a restart returned
 	// 404, so clicking one in the UI showed a blank pane.
-	live, running := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, running := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !running {
 		// Not running is not the same as not ours. Ownership is checked
 		// against the stored record before any event is streamed, or a
 		// finished session becomes readable by anyone who knows its id.
-		if !s.mayAccess(r, id) {
+		if !s.readable(r, id, "events") {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
@@ -1751,13 +1966,27 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 
+	// Authorised again while it runs, not only when it opened: every write
+	// below goes through guard.allowed, and a refusal ends the stream.
+	guard := s.guardReadStream(r, id)
+	defer guard.stop()
+
 	// The store drops events for a subscriber that falls behind rather than
 	// stall the loop. Seeing a full buffer, or a gap in seq, means some may
 	// be gone, and they are read back from the record before going on.
+	// ended is true once the stream is over: the session ended or the
+	// caller is no longer authorised to read it.
 	send := func(batch []agent.Event) (ended bool) {
 		for _, e := range batch {
 			if e.Seq <= lastSeq {
 				continue
+			}
+			// Per event, not per batch: a refill can be a whole backlog, and a
+			// recheck asked for midway must stop the rest of it.
+			if err := guard.allowed(); err != nil {
+				flusher.Flush()
+				endStream(w, err)
+				return true
 			}
 			lastSeq = e.Seq
 			writeSSE(w, e)
@@ -1802,8 +2031,22 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-keepalive.C:
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
+		case <-guard.tick():
+			if err := guard.check(); err != nil {
+				endStream(w, err)
+				return
+			}
+		case <-guard.woken():
+			if err := guard.allowed(); err != nil {
+				endStream(w, err)
+				return
+			}
 		}
 	}
 }
@@ -1817,7 +2060,7 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 	// against the stored record: row-level security scopes the query by tenant,
 	// never by user, so without this any signed-in account could replay a
 	// colleague's full transcript by id.
-	if !s.mayAccess(r, id) {
+	if !s.readable(r, id, "replay") {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -1838,7 +2081,7 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 // same ownership check — a report carries every tool result in the session.
 func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.mayAccess(r, id) {
+	if !s.readable(r, id, "hawkeye") {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -1895,7 +2138,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
 
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	resumedHere := false
 	if !ok {
 		// Not running here is not the end of it. A finished session is
@@ -2090,7 +2333,7 @@ func (s *Server) notRunningHere(w http.ResponseWriter, r *http.Request, id strin
 
 // listQueue returns the messages waiting for the session's next turn boundary.
 func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
-	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		s.notRunningHere(w, r, r.PathValue("id"))
 		return
@@ -2105,7 +2348,7 @@ func (s *Server) listQueue(w http.ResponseWriter, r *http.Request) {
 // cancelQueued withdraws a queued message before the loop reads it. Once it
 // has been delivered it cannot be withdrawn, and the answer is 404.
 func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
-	live, ok := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		s.notRunningHere(w, r, r.PathValue("id"))
 		return
@@ -2122,7 +2365,7 @@ func (s *Server) cancelQueued(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		s.notRunningHere(w, r, r.PathValue("id"))
 		return
@@ -2153,7 +2396,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !ok {
 		// The session is not here. If the store holds the approval, answer it
 		// anyway: the waiting node polls for the result, so the reviewer's
@@ -2271,7 +2514,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	me := map[string]any{
 		"authenticated": true, "auth_mode": mode,
 		"subject": id.Subject, "email": id.Email, "name": id.Name,
-		"tenant": id.Tenant, "groups": id.Groups,
+		"tenant": id.Tenant, "groups": id.Groups, "owner": id.Owner(),
 		"sign_out_url": "/logout",
 	}
 	// Switching user is a fresh sign-in: the identity provider's own
@@ -2372,6 +2615,10 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		// Checked before the code is spent, so a taken name or a short
 		// password does not use up the invite.
 		if err := local.CheckNewUser(r.Context(), req.Username, req.Password); err != nil {
+			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := local.CheckEmail(r.Context(), req.Username, strings.TrimSpace(req.Email)); err != nil {
 			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -2491,6 +2738,7 @@ type overviewResponse struct {
 	// the guard is the boundary.
 	Admin      bool     `json:"admin"`
 	WebSearch  string   `json:"web_search"`
+	WebFetch   bool     `json:"web_fetch"`
 	Retrieval  bool     `json:"retrieval"`
 	MCPServers int      `json:"mcp_servers"`
 	Tools      []string `json:"tools"`
@@ -2535,6 +2783,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	if cfg.WebSearch.Enabled {
 		o.WebSearch = orDefaultStr(cfg.WebSearch.Provider, "duckduckgo")
 	}
+	o.WebFetch = cfg.WebFetch.Enabled
 
 	if reg := s.state.toolRegistry(); reg != nil {
 		o.Tools = reg.Names()
@@ -2747,14 +2996,103 @@ func (s *Server) router() (SessionRouter, bool) {
 	return r, ok
 }
 
-func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
+func (s *Server) session(ctx context.Context, id, tenant, user string) (*liveSession, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	live, found := s.running[id]
-	if !found || !ownsSession(live.Tenant, live.User, tenant, user) {
+	owned := found && ownsSession(live.Tenant, live.User, tenant, user)
+	s.mu.RUnlock()
+	if !owned || !s.stillOwned(ctx, live, id) {
 		return nil, false
 	}
 	return live, true
+}
+
+// stillOwnedWait bounds stillOwned's read of the session row.
+const stillOwnedWait = 5 * time.Second
+
+// stillOwned checks a held session's owner against its stored row, which an
+// account's removal in another process moves to unclaimed while this one
+// still holds the old owner. A disagreement adopts the row's owner. Without
+// a durable store, or before the row exists, memory is all there is.
+func (s *Server) stillOwned(ctx context.Context, live *liveSession, id string) bool {
+	g, ok := s.sessions.(sessionGetter)
+	if !ok {
+		return true
+	}
+	s.mu.RLock()
+	held, heldTenant := live.User, live.Tenant
+	s.mu.RUnlock()
+	if held == "" || held == auth.Anonymous {
+		return true
+	}
+	// The request's own deadline, and at most a few seconds: a store that
+	// does not answer in time refuses, as one that errs does.
+	ctx, cancel := context.WithTimeout(ctx, stillOwnedWait)
+	defer cancel()
+	rec, err := g.GetSession(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		// A store that cannot answer is not permission to proceed.
+		return false
+	}
+	if rec.User == held && rec.Tenant == heldTenant {
+		return true
+	}
+	s.mu.Lock()
+	if live.User == held {
+		live.User = rec.User
+	}
+	s.mu.Unlock()
+	s.log.Warn("held session's owner no longer matches its record; released",
+		"session", id, "held", held, "stored", rec.User)
+	s.RecheckStreams()
+	return false
+}
+
+// releaseStale lets go of the sessions this process holds for a local
+// account that no longer exists, or exists again under the same name since
+// they started: a later account of that name is not their owner.
+func (s *Server) releaseStale(local *auth.LocalAuth, username string) {
+	if username == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u, err := local.Store.Get(ctx, username)
+	gone := errors.Is(err, auth.ErrNoSuchUser) || (err == nil && u == nil)
+	if err != nil && !gone {
+		return
+	}
+	owner := auth.LocalOwner(username)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, live := range s.running {
+		if live.User != owner || (!gone && (u.CreatedAt.IsZero() || !live.Created.Before(u.CreatedAt))) {
+			continue
+		}
+		live.User = auth.UnclaimedOwner(owner)
+		s.log.Warn("released a session whose account was removed or made again", "session", id, "owner", owner)
+	}
+}
+
+// ReleaseSessions moves the sessions this process holds for owner in tenant
+// to auth.UnclaimedOwner, as a removed account's rows are, and returns how many.
+func (s *Server) ReleaseSessions(tenant, owner string) int {
+	if owner == "" || owner == auth.Anonymous || auth.OwnsNothing(owner) {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, live := range s.running {
+		if live.Tenant == tenant && live.User == owner {
+			live.User = auth.UnclaimedOwner(owner)
+			n++
+		}
+	}
+	return n
 }
 
 // elsewhere reports the node holding a session that this process does not,

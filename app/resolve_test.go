@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/forge"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
@@ -116,7 +117,7 @@ func TestResolveOpensAPullRequestFromAWorktree(t *testing.T) {
 	fg := &fakeForge{}
 	stubResolve(t, fg, "one\ntwo\n")
 
-	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}); code != 0 {
+	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, ""); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if fg.opened == nil || fg.opened.Head != "abhed/issue-5" || fg.opened.Base != "main" || !strings.Contains(fg.opened.Title, "Resolve #5") {
@@ -140,7 +141,7 @@ func TestResolveWillNotOpenAPullRequestUnasked(t *testing.T) {
 	fg := &fakeForge{}
 	stubResolve(t, fg, "one\ntwo\n")
 
-	if code := resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}); code == 0 {
+	if code := resolveCmd(repo, []string{"https://git.example/t/r/issues/5"}, ""); code == 0 {
 		t.Fatal("opened without approval")
 	}
 	if fg.opened != nil || branchOnRemote(t, remote) {
@@ -153,7 +154,7 @@ func TestResolveWillNotOpenAPullRequestUnasked(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".abhed", "config.json"), []byte(`{"permissions":{"deny":["forge_pr(*)"]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}); code == 0 {
+	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, ""); code == 0 {
 		t.Fatal("a deny rule was overridden by -y")
 	}
 	if fg.opened != nil || branchOnRemote(t, remote) {
@@ -166,7 +167,7 @@ func TestResolveReportsNoChange(t *testing.T) {
 	repo, remote := resolveRepo(t)
 	fg := &fakeForge{}
 	stubResolve(t, fg, "")
-	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}); code != 2 {
+	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, ""); code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
 	if fg.opened != nil || branchOnRemote(t, remote) {
@@ -202,9 +203,10 @@ func TestResolveCommitsWhatTheAgentWrote(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	fg := &fakeForge{}
 	stubForge(t, fg)
-	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}); code != 0 {
+	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, ""); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	out, err := exec.Command("git", "--git-dir", remote, "show", "abhed/issue-5:a.txt").CombinedOutput()
@@ -277,7 +279,7 @@ func TestResolveKeepsARunsOwnCommit(t *testing.T) {
 			return nil
 		}, nil
 	}
-	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}); code != 0 {
+	if code := resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, ""); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	out, err := exec.Command("git", "--git-dir", remote, "show", "abhed/issue-5:a.txt").CombinedOutput()
@@ -295,7 +297,7 @@ func TestResolveNamesALegacyWorktree(t *testing.T) {
 	if err := os.MkdirAll(legacy, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}) })
+	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, "") })
 	if code == 0 || !strings.Contains(msg, "git worktree remove --force "+legacy) {
 		t.Fatalf("exit %d: %s", code, msg)
 	}
@@ -356,7 +358,7 @@ func TestResolveRefusesCommitsOffTheBranch(t *testing.T) {
 				}
 				gitIn(t, dir, "commit", "-q", "-am", "mine")
 			})
-			code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}) })
+			code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, "") })
 			if code == 0 || fg.opened != nil || branchOnRemote(t, remote) {
 				t.Fatalf("exit %d, opened %v, pushed %v: %s", code, fg.opened, branchOnRemote(t, remote), msg)
 			}
@@ -386,7 +388,7 @@ func TestResolveKeepsAWorktreeHoldingIgnoredFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}) })
+	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, "") })
 	if code != 2 || fg.opened != nil || branchOnRemote(t, remote) || !strings.Contains(msg, "holds ignored files") {
 		t.Fatalf("exit %d: %s", code, msg)
 	}
@@ -409,7 +411,7 @@ func TestResolveRefusesARewrittenBranch(t *testing.T) {
 		}
 		gitIn(t, dir, "commit", "-q", "-a", "--amend", "-m", "history rewritten")
 	})
-	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}) })
+	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, "") })
 	if code == 0 || fg.opened != nil || branchOnRemote(t, remote) || !strings.Contains(msg, "no longer builds on") {
 		t.Fatalf("exit %d: %s", code, msg)
 	}
@@ -423,7 +425,7 @@ func TestResolveKeepsAWorktreeItCannotCheck(t *testing.T) {
 	old := workUntouched
 	t.Cleanup(func() { workUntouched = old })
 	workUntouched = func(context.Context, *forge.Work) (bool, error) { return false, errors.New("git status failed") }
-	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}) })
+	code, msg := resolveStderr(t, func() int { return resolveCmd(repo, []string{"-y", "https://git.example/t/r/issues/5"}, "") })
 	if code != 2 || !strings.Contains(msg, "could not be checked (git status failed)") || strings.Contains(msg, "ignored files") {
 		t.Fatalf("exit %d: %s", code, msg)
 	}

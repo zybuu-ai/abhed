@@ -121,6 +121,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	if reg != nil {
 		v.Tools = reg.Names()
 	}
+	// The same list capabilities shows: what each session adds is the agent's too.
+	for _, t := range s.perSessionTools() {
+		v.Tools = append(v.Tools, t.Name)
+	}
 	if sk != nil {
 		for _, one := range sk.All() {
 			v.Skills = append(v.Skills, skillView{

@@ -55,7 +55,21 @@ send(method="prompt", prompt="fix the failing tests")
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
-per run.
+per run. A `steer` goes to the session of the last `start` sent, even one
+not yet answered. It is answered at once: `steered` when a prompt is running
+and will read it before its answer, `queued` when it will lead that
+session's next prompt instead. A queued steer the session never reads, because
+`quit`, the end of input or a new `start` came first, is named in an
+`{"type":"error"}` line rather than dropped silently. Every other request, a
+second `prompt` included, waits for the running prompt and is answered in the
+order sent; up to 256 may wait, and one beyond that is answered with an error.
+
+`limits.max_turns` binds as it does for the CLI, from the user's file or a
+trusted workspace's; an untrusted workspace can only lower it.
+
+The session has the CLI's tool set, subagents, MCP servers, skills and the
+other tools the configuration enables included. There is no approver, so a
+call that needs approval, a subagent's too, is refused.
 
 Commands run in the sandbox tier the workspace's configuration sets
 (`sandbox.min_tier`, `process` by default), as from the terminal: `start`
@@ -160,13 +174,55 @@ binary:
 ```
 
 The editor's approval dialog is the approver: an `ask` decision becomes a
-permission request with *Allow once*, *Always allow* the rule policy suggests
-when one is offered, and *Deny*. It can answer an ask; it cannot lift a deny
-rule, and the sandbox tier and the workspace boundary are whatever the
-configuration says, exactly as from the terminal. The agent's text, its
-reasoning, every tool call with its outcome, the plan and the context usage
-stream to the editor as `session/update` notifications, and the session is
-recorded like any other.
+permission request with *Allow once*, *Always allow* the rule policy
+suggests when one is offered, and *Deny*. It can answer an ask; it cannot
+lift a deny rule, and the sandbox tier and the workspace boundary are
+whatever the configuration says, exactly as from the terminal.
+
+The request's `toolCallId` is the id of the `tool_call` update for the same
+call, and that update is sent first, so the editor can show the prompt on
+that call. A call the model wrote as prose has no id of its own; it is named
+by its `requestId` everywhere instead.
+
+The option ids are bound to the request. An answer naming any other option
+is refused, including *Always allow* where it was not offered, and so is a
+cancelled or unreadable reply. Each is recorded as refused by the system,
+not as a reviewer's no.
+
+The request's `toolCall._meta["zybuu.ai/abhed"]` carries:
+
+- `tool`, and the policy `step` that asked, with its `reason`;
+- `destructive`, true for a command with no undo, whichever step asked, so
+  an editor can confirm it more firmly;
+- `scope`, the rule *Always allow* would grant, when it is offered;
+- `requestId`, the id of the recorded `action.requested`.
+
+The title, `rawInput` and reason are the copy the session records. If the
+record withheld that copy, the call is refused without asking, since nobody
+can review input they cannot see, and the editor is told why. A `tool_call`
+update names its tool in the same `_meta` key.
+
+The agent's text, its reasoning, every tool call with its outcome, the plan
+and the context usage stream to the editor as `session/update`
+notifications, and the session is recorded like any other. The plan is the
+agent's `todo` list, sent as a `plan` update each time it changes.
+
+The session has the CLI's tool set, subagents included. A subagent's ask is a
+permission request like the agent's own, labelled with the subagent, named
+`subagent-<request id>` and preceded by a `tool_call` of that id; its answer
+settles that call. The subagent's other calls are in its own record, not
+streamed to the editor.
+
+The workspace's `.abhed/config.json` applies whole only once the person has
+trusted it; `session/new` reports the decision in
+`_meta.abhed.workspaceTrust`, with the settings it ignored, so the editor can
+ask and then run `abhed trust grant`. The editor may send
+`_meta.abhed.trust: "untrusted"` to take only what tightens; it cannot grant
+trust over the wire; pass the reported `sha256` to `abhed trust grant
+-sha256` so only the content the person saw is trusted. Starting
+`abhed -trust-workspace acp` trusts the file of every workspace the editor
+opens for the life of the process, not only the one it was started in. See [Workspace
+trust](../architecture/workspace-trust.md).
 
 Not yet supported: `session/load` (resuming an editor session from the
 record) and editor-side modes. A conformance test drives the adapter with a

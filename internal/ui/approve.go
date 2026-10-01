@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -135,22 +137,40 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 		defer cleanup()
 	}
 
+	// Every model- or tool-supplied field is made visible before it is styled,
+	// so a carriage return or escape in the arguments cannot redraw the prompt.
 	s := a.Style
-	fmt.Fprintf(a.Out, "\n%s %s %s\n", s.Yellow("●"), s.Bold(tool), s.Dim(summarizeArgs(tool, args)))
+	var v visibleTracker
+	header := fmt.Sprintf("\n%s %s %s\n", s.Yellow("●"), s.Bold(v.line(tool)), s.Dim(v.line(summarizeArgs(tool, args))))
+	var asked []string
+	if via := agent.PipelineOf(ctx); via != "" {
+		asked = append(asked, "asked by "+v.line(via))
+	}
 	if who := agent.SubagentOf(ctx); who != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by subagent: "+who))
+		asked = append(asked, "asked by subagent: "+v.line(who))
 	}
 	if res.Reason != "" {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim(res.Reason))
+		asked = append(asked, v.line(res.Reason))
 	}
-
-	if preview := a.preview(tool, args); preview != "" {
-		fmt.Fprintln(a.Out, preview)
+	preview := a.preview(&v, tool, args)
+	// The warning covers the whole call, not only the fields drawn above.
+	if ArgsHidden(args) {
+		v.hidden = true
 	}
-
 	options := "[a]ccept  [r]eject"
 	if scope != "" {
-		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(scope))
+		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(v.line(scope)))
+	}
+
+	fmt.Fprint(a.Out, header)
+	if v.hidden {
+		fmt.Fprintf(a.Out, "  %s\n", s.Red(hiddenWarning))
+	}
+	for _, line := range asked {
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim(line))
+	}
+	if preview != "" {
+		fmt.Fprintln(a.Out, preview)
 	}
 	fmt.Fprintf(a.Out, "  %s ", options)
 
@@ -217,7 +237,7 @@ func (a *Approver) readAnswer() (string, bool) {
 }
 
 // preview renders what the action will actually do.
-func (a *Approver) preview(tool string, raw json.RawMessage) string {
+func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) string {
 	s := a.Style
 	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
@@ -237,10 +257,10 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		old, updated := str("old_string"), str("new_string")
 		var b strings.Builder
 		for _, line := range strings.Split(strings.TrimRight(old, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Red("- "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Red("- "+v.line(line)))
 		}
 		for _, line := range strings.Split(strings.TrimRight(updated, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+v.line(line)))
 		}
 		return strings.TrimRight(b.String(), "\n")
 
@@ -253,7 +273,7 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 			shown = lines[:15]
 		}
 		for _, line := range shown {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+line))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+v.line(line)))
 		}
 		if len(lines) > 15 {
 			fmt.Fprintf(&b, "  %s\n", s.Dim(fmt.Sprintf("... %d more lines", len(lines)-15)))
@@ -261,7 +281,82 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		return strings.TrimRight(b.String(), "\n")
 
 	case "bash":
-		return fmt.Sprintf("  %s", s.Dim("$ "+str("command")))
+		return fmt.Sprintf("  %s", s.Dim("$ "+v.line(str("command"))))
+
+	case "ssh":
+		return fmt.Sprintf("  %s", s.Dim(v.line(str("host"))+" $ "+v.line(str("command"))))
+
+	case "web_fetch":
+		line := v.line(str("url"))
+		if method := str("method"); method != "" {
+			line = v.line(method) + " " + line
+		}
+		return fmt.Sprintf("  %s", s.Dim(line))
+
+	case "task":
+		kind := str("agent_type")
+		if kind == "" {
+			kind = "general"
+		}
+		return a.block(v, "subagent: "+kind, firstLines(str("prompt"), 10))
+
+	case "k8s_apply":
+		return a.block(v, k8sHead(m, str), k8sBody(str))
 	}
 	return ""
+}
+
+// block draws a dim heading and indented lines, each escaped as one line.
+func (a *Approver) block(v *visibleTracker, head string, lines []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s", a.Style.Dim(v.line(head)))
+	for _, line := range lines {
+		fmt.Fprintf(&b, "\n    %s", a.Style.Dim(v.line(line)))
+	}
+	return b.String()
+}
+
+// k8sHead names what a k8s_apply changes: action, cluster, namespace, kind and name.
+func k8sHead(m map[string]any, str func(string) string) string {
+	action, ns, target := str("action"), str("namespace"), str("resource")+"/"+str("name")
+	if action == "apply" {
+		if mf, err := kubescope.DecodeManifest(str("manifest")); err == nil {
+			target = mf.Kind + "/" + mf.Name
+			if ns == "" {
+				ns = mf.Namespace
+			}
+		}
+	}
+	parts := []string{action}
+	if c := str("cluster"); c != "" {
+		parts = append(parts, "cluster "+c)
+	} else if c := str("context"); c != "" {
+		parts = append(parts, "context "+c)
+	}
+	if ns != "" {
+		parts = append(parts, "namespace "+ns)
+	}
+	if target != "/" {
+		parts = append(parts, target)
+	}
+	if r, ok := m["replicas"].(float64); ok {
+		parts = append(parts, fmt.Sprintf("replicas %v", r))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// k8sBody is the start of the manifest in the canonical form that is sent,
+// indented for reading; a manifest that does not decode is shown as given.
+func k8sBody(str func(string) string) []string {
+	raw := str("manifest")
+	if raw == "" {
+		return nil
+	}
+	if mf, err := kubescope.DecodeManifest(raw); err == nil {
+		var b bytes.Buffer
+		if json.Indent(&b, mf.Canonical, "", "  ") == nil {
+			raw = b.String()
+		}
+	}
+	return firstLines(raw, 15)
 }

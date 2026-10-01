@@ -38,7 +38,7 @@ direction, and this document and the code as what runs today.
 documented at the top of `internal/policy/policy.go`:
 
 ```
-Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
+Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 ```
 
 **Deny rules are absolute for tool calls.** A matching deny rule blocks the
@@ -84,7 +84,8 @@ shipped entry points and programs that load configuration with `config.Load`;
 a `config.Config` built by hand carries no managed keys.
 
 **The agent cannot reach its own configuration.** `.abhed/` in the workspace
-and in the home directory holds the policy, the users file and the keys. One
+and in the home directory holds the policy, the users file, the keys and the
+workspace-trust decisions (`~/.abhed/trust.json`). One
 check, `tools.StateSet` (`internal/tools/state.go`), is shared by the agent's
 file tools, glob, grep, the code index and the server's download, viewer,
 search and upload endpoints. It compares path components with `.abhed`
@@ -290,6 +291,33 @@ is tagged at ingest"). Policy decisions are made on the *action* requested,
 never on the untrusted text that motivated it (`docs/architecture/03-security.md`
 §2, "L2").
 
+**A repository's own configuration is untrusted.** A workspace's
+`.abhed/config.json` arrives with the repository, so it applies whole only
+once the person has trusted its exact contents (path and SHA-256, kept in
+`~/.abhed/trust.json`). Until then it can only tighten: add deny and ask rules,
+narrow the mode to `plan` or `default`, strengthen the sandbox, turn network
+and tools off, and lower limits. It cannot add allow rules, change a model
+provider or `base_url`, start extensions or MCP servers, add directories,
+widen the sandbox, or set skills, telemetry, auth, storage or server
+settings; every ignored setting is named on stderr and in `abhed doctor`.
+`serve`, `user` and `migrate` refuse to start when an untrusted file sets
+`auth`, `storage` or `server`, because running without them fails open.
+Headless runs never prompt; trust comes from a stored grant,
+`-trust-workspace` or `ABHED_TRUST_WORKSPACE=1`. What this does not bind:
+
+- A trusted file is trusted whole. Trust is a decision about content the
+  person has read, not a sandbox for it.
+- The `none` sandbox tier confines nothing, so a command there can write
+  `~/.abhed/trust.json` as it can every other file of the user's.
+- The default configuration asks before a bash command that mentions
+  `ABHED_TRUST_WORKSPACE` or `trust-workspace`, so the agent cannot quietly
+  start a nested trusted run. A configuration that sets its own
+  `permissions.ask` replaces those rules, and a command that assembles the
+  name or runs a script is not caught by them.
+
+Design and the classification of every setting:
+`docs/architecture/workspace-trust.md`.
+
 ## Data flow — what leaves the deployment
 
 **Nothing, by default.** The shell tool gets no network access unless
@@ -312,12 +340,31 @@ Programs that enumerate interfaces get an error rather than a loopback-only
 list, as Node's `os.networkInterfaces()` does; Python, git, `go build` and
 pytest are unaffected.
 
-**`web_search`, when enabled**, is the one narrow, structured exception: a Go
-tool in the server process makes the request, not the sandboxed shell, so a
-compromised session cannot turn it into an arbitrary outbound connection. It
-is off by default (`web_search.enabled: false` in
-`config/config.go`'s defaults) and is a separate capability from
-shell networking — enabling one does not enable the other.
+**`web_search` and `web_fetch`, when enabled**, are the two narrow,
+structured exceptions: a Go tool in the Abhed process makes the request, not
+the sandboxed shell. `web_search` sends a query to the configured provider.
+`web_fetch` sends only GETs with no body, to the one URL policy judged on a
+public host (a redirect is followed only to that same URL or its https
+upgrade, at most five times), and nothing else: no other method, no
+connection the model holds. A port other than
+the scheme's default asks unless an allow rule names it, even for a host on
+`web_fetch.allowed_hosts`, except in bypass mode (unless a managed policy
+disables it) and `abhed eval`, which approve every ask. Both are off by default (`web_search.enabled`
+and `web_fetch.enabled` are false in `config/config.go`'s defaults), each is
+enabled on its own, and neither enables shell networking. `web_fetch`
+fetches only the URL policy has judged: it refuses schemes other than
+http and https, and any loopback, private, link-local, metadata or reserved
+address, checked on the address it connects to, on every redirect hop
+(`internal/webfetch/guard.go`). It follows a redirect only to the same URL
+or its https upgrade, and hands any other back to the model as a new call.
+It ignores proxy settings from the environment, refuses a URL that holds a
+stored secret as written, percent-encoded or in another case (not one
+encoded otherwise or split across the URL), and
+can be held to an operator's host list (`web_fetch.allowed_hosts`). A URL is
+a channel out: whatever the model puts in it reaches the site. Without a
+host list every call asks, in plan mode too, unless an operator's allow rule
+names it (`Engine.AskReadOnly` in `internal/policy/policy.go`); bypass mode
+(unless a managed policy disables it) and `abhed eval` do not ask, and a run with no one to ask refuses it.
 
 **The model endpoint the operator configured.** Prompts and context go to
 whatever model endpoint is set in `model.providers`. Abhed is model-agnostic

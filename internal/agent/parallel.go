@@ -37,6 +37,15 @@ type Tasks struct {
 func (Tasks) Name() string  { return "tasks" }
 func (Tasks) Mutates() bool { return false } // each child's tools are policed on their own
 
+// MutatesCall is true for worktree isolation, which makes branches and
+// checkouts on the host before any child runs: that asks, and plan mode refuses it.
+func (Tasks) MutatesCall(raw json.RawMessage) bool {
+	var a struct {
+		Isolation string `json:"isolation"`
+	}
+	return json.Unmarshal(raw, &a) == nil && a.Isolation == "worktree"
+}
+
 func (t Tasks) Description() string {
 	return "Run several subagents AT THE SAME TIME, each with a fresh context and a " +
 		"complete self-contained prompt. Use for independent subtasks — investigating " +

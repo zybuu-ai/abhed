@@ -2,7 +2,7 @@
 //
 // Evaluation is ordered (docs P7):
 //
-//	Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
+//	Arguments → Hooks → Deny rules → Ask rules → Permission mode → Allow rules → Callback
 //
 // Deny is absolute: a matching deny rule blocks the tool even in the most
 // permissive mode. Rules are scoped per-command, not per-tool, so allowing
@@ -12,12 +12,14 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/zybuu-ai/abhed/internal/kubescope"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -253,7 +255,9 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
-// Hook runs before rule evaluation and can short-circuit the decision.
+// Hook runs before rule evaluation. A Deny from it is final; an Ask applies
+// after the deny, plan-mode and ask steps, before the mode; an Allow, or nil, is
+// no opinion. A hook can tighten a decision and never loosen one.
 type Hook func(tool string, args json.RawMessage) *Result
 
 type Engine struct {
@@ -270,6 +274,13 @@ type Engine struct {
 	// Roots returns the workspace and added directories, so a path rule
 	// written relative to one matches. Nil matches paths only as given.
 	Roots func() []string
+
+	// AskReadOnly names read-only tools that may still ask in the default,
+	// accept-edits, auto and plan modes. Each is given the call's subject and
+	// returns why it asks, or "" when it need not. An allow rule approves
+	// them and bypass mode runs them. It is for a tool whose reads can carry
+	// data out, such as web_fetch.
+	AskReadOnly map[string]func(subject string) string
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
@@ -321,24 +332,80 @@ func (e *Engine) Screens(tool string) bool {
 // consequential field and ssh already asks unconditionally. Scoping ssh by host
 // needs a per-tool subject (a tool-declared Subjector), which is left as follow-up.
 func Subject(tool string, args json.RawMessage) string {
-	_, s := subjectOf(args)
+	_, s, _ := subjectOf(args)
+	if target, ok := clusterSubject(tool, args); ok {
+		return target
+	}
 	return s
 }
 
-// subjectOf is Subject with the argument it came from.
-func subjectOf(args json.RawMessage) (key, subject string) {
-	var m map[string]any
-	if err := json.Unmarshal(args, &m); err != nil {
-		return "", ""
+// clusterSubject is the subject of a Kubernetes tool, which names where the
+// call goes first: the declared cluster, or `context:NAME` for a kubeconfig
+// context (`context:` for the current one). k8s_login's subject is the
+// cluster; k8s_get's is cluster/namespace/resource and k8s_apply's
+// cluster/namespace/action, with an empty namespace for the call's default.
+// So a rule or an "always allow" on one cluster never covers another.
+func clusterSubject(tool string, args json.RawMessage) (string, bool) {
+	if tool != "k8s_login" && tool != "k8s_get" && tool != "k8s_apply" {
+		return "", false
 	}
-	for _, key := range []string{"command", "path", "pattern", "action", "resource", "host", "namespace", "name"} {
-		if v, found := m[key]; found {
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", false
+	}
+	str := func(key string) string {
+		v, _ := tools.Lookup(m, key)
+		s, _ := v.(string)
+		return s
+	}
+	where := strings.TrimSpace(str("cluster"))
+	if where == "" {
+		where = "context:" + str("context")
+	}
+	// A cluster-scoped object, or a kind whose scope is not known, is judged
+	// under a namespace no rule written for a real one can match.
+	ns := str("namespace")
+	resource := kubescope.Resource(str("resource"))
+	switch tool {
+	case "k8s_get":
+		if kubescope.ClusterScopedResource(resource) {
+			ns = kubescope.ClusterWide
+		}
+		return where + "/" + ns + "/" + resource, true
+	case "k8s_apply":
+		if str("action") == "apply" {
+			// The manifest is read as the tool reads it; one that does not
+			// decode strictly is judged cluster-wide.
+			kind := ""
+			if mf, err := kubescope.DecodeManifest(str("manifest")); err == nil {
+				kind = mf.Kind
+			}
+			if namespaced, known := kubescope.KindScope(kind); !namespaced || !known {
+				ns = kubescope.ClusterWide
+			}
+		} else if kubescope.ClusterScopedResource(resource) {
+			ns = kubescope.ClusterWide
+		}
+		return where + "/" + ns + "/" + str("action"), true
+	}
+	return where, true
+}
+
+// subjectOf is Subject with the argument it came from. Arguments are decoded
+// strictly and keys matched as a tool's struct matches them, so both read one value.
+func subjectOf(args json.RawMessage) (key, subject string, err error) {
+	m, err := tools.DecodeArgs(args)
+	if err != nil {
+		return "", "", err
+	}
+	for _, key := range tools.SubjectKeys {
+		if v, found := tools.Lookup(m, key); found {
 			if s, isStr := v.(string); isStr {
-				return key, s
+				return key, s, nil
 			}
 		}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // pathSubjects are the spellings a path rule is matched against. Deny and ask
@@ -424,28 +491,77 @@ func (e *Engine) pathRules(tool string) bool {
 	return false
 }
 
-// Evaluate applies the ordered decision flow.
+// Evaluate applies the ordered decision flow. A prompt shows the command as
+// written; its reason notes continuations the checks joined.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	key, subject := subjectOf(args)
+	res := e.evaluate(tool, mutates, args)
+	if res.Decision == Ask && tool == "bash" {
+		if _, subject, err := subjectOf(args); err == nil && tools.CanonicalCommand(subject).Joined {
+			res.Reason += " (the command continues lines with backslash-newline; it was checked joined)"
+		}
+	}
+	return res
+}
+
+func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Result {
+	key, subject, err := subjectOf(args)
+	if err != nil {
+		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
+	}
 	// Deny and ask rules see each command in a bash chain. A narrow allow rule
 	// approves only a simple command, and never a multi-line subject.
 	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
 	allowSubjects := []string{subject}
+	var canon tools.Canonical
 	switch {
 	case tool == "bash":
+		// Every step sees the command as written and as the shell splits it,
+		// continuations joined; an allow rule sees no more than the joined form.
+		canon = tools.CanonicalCommand(subject)
 		subjects, complete = commandSegments(subject)
 		narrowAllows = !hasShellControl(subject)
+		if canon.Text != subject {
+			more, whole := commandSegments(canon.Text)
+			subjects, complete = append(subjects, more...), complete && whole
+		}
+		if canon.Joined && !canon.Reworded {
+			allowSubjects, narrowAllows = []string{canon.Text}, !hasShellControl(canon.Text)
+		}
+		if canon.Reworded {
+			narrowAllows = false
+		}
 	case key == "path" && e.pathRules(tool):
 		subjects, allowSubjects = e.pathSubjects(subject)
 	}
+	// A Kubernetes call is judged on where it goes. Deny and ask rules also
+	// see the argument its subject used to be, so a rule written on a
+	// resource, a verb or a namespace still holds; allow rules and the
+	// offered scope see only the cluster-first subject.
+	if target, ok := clusterSubject(tool, args); ok {
+		subjects, allowSubjects = []string{target}, []string{target}
+		if subject != "" && subject != target {
+			subjects = append(subjects, subject)
+		}
+		subject, narrowAllows = target, !strings.ContainsAny(target, "\n\r")
+	}
 
-	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto.
+	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
+	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
+	// steps below, so a hook can never turn a refusal into a question.
+	var hookAsk *Result
 	for _, h := range e.Hooks {
-		if res := h(tool, args); res != nil {
-			if res.Step == "" {
-				res.Step = "hook"
-			}
+		res := h(tool, args)
+		if res == nil || res.Decision == Allow {
+			continue
+		}
+		if res.Step == "" {
+			res.Step = "hook"
+		}
+		if res.Decision != Ask {
 			return *res
+		}
+		if hookAsk == nil {
+			hookAsk = res
 		}
 	}
 
@@ -453,6 +569,16 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	matches := Rule.matchesAny
 	if key == "path" && tool != "bash" {
 		matches = Rule.matchesPathAny
+	}
+	// A Kubernetes call on every namespace, `*`, reads each one: a deny or ask
+	// rule matches it when the rule would match some namespace it covers.
+	if _, k8s := clusterSubject(tool, args); k8s && strings.ContainsAny(subject, "*?") {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			if r.matchesAny(tool, subjects) {
+				return true
+			}
+			return (r.tool == tool || r.tool == "*") && r.pattern != nil && globsMeet(r.glob, subject)
+		}
 	}
 
 	// 2. Deny rules — absolute, survive every mode including bypass.
@@ -490,13 +616,28 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		}
 	}
 
+	// Words split or glued by an expansion may hide a part a rule would match.
+	if canon.Hidden && e.rulesSeeParts(tool) {
+		return Result{Decision: Ask, Reason: "the command builds its words with an expansion, brace list or IFS, so its parts cannot be checked against the rules", Scope: "", Step: "screen"}
+	}
+
+	// A hook's ask comes after the destructive, screen and ask-rule prompts, so
+	// the record names the stronger reason; before the mode, so no mode skips it.
+	if hookAsk != nil {
+		return *hookAsk
+	}
+
 	// 4. Permission mode.
 	switch e.Mode {
 	case ModePlan:
 		if mutates {
 			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 		}
-		return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+		// A read that can carry data out is not made safe by plan mode, which
+		// any client may narrow a session to: it goes on to the allow rules and asks.
+		if e.readOnlyAsk(tool, subject) == "" {
+			return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+		}
 	case ModeBypass:
 		if e.Managed {
 			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy", Scope: "", Step: "mode"}
@@ -507,7 +648,7 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode"}
 		}
 	case ModeAuto:
-		if !mutates {
+		if !mutates && e.readOnlyAsk(tool, subject) == "" {
 			return Result{Decision: Allow, Reason: "read-only tool in auto mode", Scope: "", Step: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
@@ -526,10 +667,21 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 6. Default: read-only tools proceed, mutations ask.
+	if why := e.readOnlyAsk(tool, subject); why != "" && !mutates {
+		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
+	}
 	if !mutates {
 		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
 	}
 	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+}
+
+// readOnlyAsk is why a read-only call asks anyway, or "".
+func (e *Engine) readOnlyAsk(tool, subject string) string {
+	if f := e.AskReadOnly[tool]; f != nil {
+		return f(subject)
+	}
+	return ""
 }
 
 // askReason says why a call is put to a person. A command is asked about
@@ -571,5 +723,42 @@ func suggestScope(tool, subject string) string {
 		}
 		return fmt.Sprintf("%s(%s *)", tool, prefix)
 	}
+	// A page's site, not the page: "always allow" for one URL would ask again
+	// for the next page there.
+	if tool == "web_fetch" {
+		if u, err := url.Parse(subject); err == nil && u.Scheme != "" && u.Host != "" {
+			return fmt.Sprintf("%s(%s://%s/*)", tool, u.Scheme, u.Host)
+		}
+	}
 	return fmt.Sprintf("%s(%s)", tool, subject)
+}
+
+// globsMeet reports whether some string matches both glob patterns, where
+// `*` is any run of characters and `?` any one.
+func globsMeet(a, b string) bool {
+	type pos struct{ i, j int }
+	seen := map[pos]bool{}
+	var meet func(i, j int) bool
+	meet = func(i, j int) bool {
+		if i == len(a) && j == len(b) {
+			return true
+		}
+		p := pos{i, j}
+		if done, ok := seen[p]; ok {
+			return done
+		}
+		seen[p] = false
+		ok := false
+		switch {
+		case i < len(a) && a[i] == '*':
+			ok = meet(i+1, j) || (j < len(b) && meet(i, j+1))
+		case j < len(b) && b[j] == '*':
+			ok = meet(i, j+1) || (i < len(a) && meet(i+1, j))
+		case i < len(a) && j < len(b) && (a[i] == b[j] || a[i] == '?' || b[j] == '?'):
+			ok = meet(i+1, j+1)
+		}
+		seen[p] = ok
+		return ok
+	}
+	return meet(0, 0)
 }

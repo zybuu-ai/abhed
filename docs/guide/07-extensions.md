@@ -126,6 +126,16 @@ such as a bash `description`. Deliberate — an extension judging a command shou
 see the stated intent alongside it — but it means a naive whole-line match can
 fire on a description rather than the command. Match the field you mean.
 
+**On a server, one process serves every session.** `abhed serve` starts each
+configured extension once. It is asked about every user's calls, in every
+tenant the server serves, and is given the conversation when a session
+compacts, one request at a time. An extension that must not see one user's
+work alongside another's belongs on a server of its own. The serve banner
+lists the extensions and names any that is not running, and
+`/v1/capabilities` gives each one's `status`: `running`, `stopped` (it
+crashed, hung or was closed) or `not started`. Only a running extension's
+veto applies; the sessions go on without the others.
+
 ## Providing tools
 
 See [Tools](05-tools.md).

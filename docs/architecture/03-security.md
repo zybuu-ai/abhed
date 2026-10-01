@@ -27,6 +27,7 @@ Status: Draft · 2026-09-02
 | T5 | Exfiltration | Any egress path | Source code / secret loss |
 | T6 | Cross-tenant leakage | Shared cache, shared FS | Confidentiality breach |
 | T7 | Resource exhaustion | Runaway loop, fork bomb | Denial of service |
+| T8 | Repository-supplied configuration | A `.abhed/config.json` shipped in a cloned repository | Mode, allow rules, model endpoint, processes and sandbox widened before any prompt; untrusted until the person trusts its contents ([Workspace trust](workspace-trust.md)) |
 
 **T2/T3 are the defining hazard of an agentic system.** A coding agent's entire job is to
 read untrusted text and act on it. There is no known complete defense — which is exactly why
@@ -124,24 +125,27 @@ tools improve both reliability *and* security: every tool is an attack surface a
 decision the model can get wrong.
 
 Abhed ships a deliberately small native tool set — read, write, edit, glob, grep, bash,
-task/subagent, plan — and everything else arrives through the reviewed MCP gateway.
+task/subagent, plan — plus a few opt-in native tools, off by default and listed below.
+Everything else arrives through the reviewed MCP gateway or an extension, and goes
+through the same policy engine.
 
 ### Opt-in tools execute outside the sandbox
 
 `bash` runs inside the configured sandbox tier. The opt-in network tools — `ssh`, the
-`k8s_*` tools, `websearch` and remote RAG — do not: they run in the host process with host
-network, so the Seatbelt, bubblewrap or gVisor boundary that contains `bash` does not
-contain them.
+`k8s_*` tools, `web_search`, `web_fetch` and remote RAG — do not: they run in the host
+process with host network, so the Seatbelt, bubblewrap or gVisor boundary that contains
+`bash` does not contain them.
 
-All four are disabled unless configured, so the default posture of no egress is intact.
+All five are disabled unless configured, so the default posture of no egress is intact.
 Enabling one is a deliberate decision to move that execution and its egress outside the
 boundary, and the consequences are worth stating plainly:
 
 | Tool | Mediation once enabled |
 |---|---|
 | `ssh` | Always asks — it reports `Mutates() = true`, so no mode auto-approves it |
-| `k8s_get`, `websearch` | Read-only, so **auto mode approves them without a prompt** |
+| `k8s_get`, `web_search` | Read-only, so **auto mode approves them without a prompt** |
 | `k8s_apply` | Mutating, so it asks |
+| `web_fetch` | Read-only, but it composes a URL that can carry data to the site, so with no `web_fetch.allowed_hosts` it **asks in the default, accept-edits, auto and plan modes** unless an allow rule names the URL. With `allowed_hosts`, a listed host runs unasked on the scheme's default port and asks on any other port. Bypass mode (unless a managed policy disables it) and `abhed eval` approve every ask. It refuses internal, loopback and metadata addresses on every hop and a URL holding a stored secret |
 
 The read-only pair is the sharp edge: in an unattended or `auto` deployment, an injected
 instruction in untrusted content can drive them to read and to reach the network with no
@@ -150,7 +154,9 @@ the control that applies, and they work — but whole-tool policy is otherwise t
 thing mediating these tools.
 
 Routing network-bound tools through a broker egress path, so egress stays default-deny and
-auditable even when a tool is enabled, is tracked as outstanding work rather than shipped.
+auditable even when a tool is enabled, is tracked as outstanding work rather than shipped
+(issue #44). It is meant to carry `web_fetch` as well as the tools above; until it does,
+`web_fetch.allowed_hosts` is a per-machine list, not a broker.
 
 ## 7. Validation status
 

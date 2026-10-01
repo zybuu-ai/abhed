@@ -53,6 +53,13 @@ type HostConfig struct {
 	InsecureSkipHostKeyCheck bool `json:"insecure_skip_host_key_check,omitempty"`
 
 	Timeout time.Duration `json:"-"`
+
+	// password is one ssh_connect read from the secrets store. Unexported so
+	// no config file can carry it.
+	password string
+	// connected marks a host ssh_connect added, whose errors name its
+	// arguments rather than config keys.
+	connected bool
 }
 
 // Host is a connection to one machine, dialed lazily and reused across calls.
@@ -118,6 +125,10 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
 
+	if h.cfg.password != "" {
+		methods = append(methods, ssh.Password(h.cfg.password))
+	}
+
 	if h.cfg.PasswordEnv != "" {
 		pw := os.Getenv(h.cfg.PasswordEnv)
 		if pw == "" {
@@ -128,6 +139,10 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 	}
 
 	if len(methods) == 0 {
+		if h.cfg.connected {
+			return nil, fmt.Errorf("host %s has no usable credentials: start an ssh-agent, "+
+				"or give ssh_connect identity_file or password_secret", h.cfg.Name)
+		}
 		return nil, fmt.Errorf("host %s has no usable credentials: "+
 			"start an ssh-agent, set identity_file, or set password_env", h.cfg.Name)
 	}
@@ -198,6 +213,13 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 	})
 	if err != nil {
 		_ = conn.Close()
+		if (strings.Contains(err.Error(), "knownhosts") ||
+			strings.Contains(err.Error(), "key is unknown")) && h.cfg.password != "" {
+			return nil, fmt.Errorf("the host key for %s is not in known_hosts, and a stored "+
+				"password is sent only to a host whose key is. Ask the user to run `ssh %s@%s` "+
+				"once to record the key, or to connect with a key file: %w",
+				h.cfg.Name, h.cfg.User, h.cfg.Addr, err)
+		}
 		if strings.Contains(err.Error(), "knownhosts") ||
 			strings.Contains(err.Error(), "key is unknown") {
 			return nil, fmt.Errorf("the host key for %s is not in known_hosts, so Abhed "+

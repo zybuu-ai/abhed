@@ -50,6 +50,59 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 
+type callIDKey struct{}
+
+// CallIDOf reports the model's id for the call an Approver is asked about, the
+// call_id its action.requested carries.
+func CallIDOf(ctx context.Context) string { id, _ := ctx.Value(callIDKey{}).(string); return id }
+
+// WithCallID names the call an Approver is asked about.
+func WithCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, callIDKey{}, id)
+}
+
+type requestedKey struct{}
+
+// Requested is the action.requested an Approver is asked about, as recorded
+// (redacted when the session has a redactor).
+type Requested struct {
+	ActionRequested
+	// Withheld is true when the record holds no readable copy, as when
+	// redaction withheld the payload; then nothing of the call can be shown.
+	Withheld bool
+}
+
+// RequestedOf reports the recorded request an Approver is asked about, so what
+// is shown to a person matches the record. ok is false outside the loop.
+func RequestedOf(ctx context.Context) (Requested, bool) {
+	ev, ok := ctx.Value(requestedKey{}).(Event)
+	if !ok {
+		return Requested{}, false
+	}
+	return requestedFrom(ev), true
+}
+
+// requestedFrom reads a recorded action.requested, or reports it withheld.
+func requestedFrom(ev Event) Requested {
+	var p ActionRequested
+	var held struct {
+		Withheld *string `json:"withheld"`
+	}
+	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
+		return Requested{Withheld: true}
+	}
+	return Requested{ActionRequested: p}
+}
+
+// withheldAsk is the refusal of an ask whose record was withheld: no one can
+// be shown what they would approve, so no one is asked.
+const withheldAsk = "the request's record was withheld (redaction could not run), so it was not put to anyone"
+
+// WithRequested carries the recorded action.requested an Approver is asked about.
+func WithRequested(ctx context.Context, ev Event) context.Context {
+	return context.WithValue(ctx, requestedKey{}, ev)
+}
+
 // Who settled a call, as action.approved and action.denied record it in "by".
 const (
 	ByPolicy   = "policy"   // a policy rule or the mode decided, and no one was asked
@@ -202,7 +255,9 @@ type Loop struct {
 	// asks puts the asks of this loop's subagents to its approver one at a time.
 	asks     chan struct{}
 	asksOnce sync.Once
-	depth    int // how deep this loop is among subagents; 0 for a top-level loop
+	// stepRun keeps a mutating pipeline step apart from the loop's other steps.
+	stepRun sync.RWMutex
+	depth   int // how deep this loop is among subagents; 0 for a top-level loop
 
 	// dropEffort is set once a turn has spent its whole output budget on
 	// reasoning without acting; later calls ask for low effort, where the
@@ -215,8 +270,14 @@ type Loop struct {
 	emptyTurns int
 
 	// todos is the agent's task list, recorded whenever it changes so a replay
-	// shows what the plan was believed to be at each point.
-	todos []Todo
+	// shows what the plan was believed to be at each point. Guarded because
+	// two todo calls in one turn run concurrently.
+	todos   []Todo
+	todosMu sync.Mutex
+
+	// prompt is the last message a person sent, which a skill's pipeline takes
+	// as its input; guarded by steerMu.
+	prompt string
 
 	// steer carries messages sent while the agent is working. Reading them at
 	// a turn boundary is what lets a user redirect a run instead of killing it.
@@ -307,17 +368,37 @@ func (l *Loop) deliverQueued() error {
 			return err
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: q.Text})
+		l.setPrompt(q.Text)
 	}
 	return nil
 }
 
+func (l *Loop) setPrompt(text string) {
+	l.steerMu.Lock()
+	l.prompt = text
+	l.steerMu.Unlock()
+}
+
+// Prompt is the last message a person sent this loop, or a subagent's task.
+func (l *Loop) Prompt() string {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return l.prompt
+}
+
 // Todos returns the current task list.
-func (l *Loop) Todos() []Todo { return l.todos }
+func (l *Loop) Todos() []Todo {
+	l.todosMu.Lock()
+	defer l.todosMu.Unlock()
+	return l.todos
+}
 
 // RecordTodos stores a new list and emits the event. It is exported so the
 // todo tool can report through the loop rather than carrying a recorder.
 func (l *Loop) RecordTodos(items []Todo, note string) {
+	l.todosMu.Lock()
 	l.todos = items
+	l.todosMu.Unlock()
 	// The list is loop state first and a record second: a store that cannot
 	// take this event will fail the next tool event, which does stop the run.
 	_, _ = l.Recorder.Record(EvTodoUpdated, ActorAgent, Trusted, TodoList{Items: items, Note: note})
@@ -409,6 +490,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: m.Text})
+	l.setPrompt(m.Text)
 	return l.run(ctx)
 }
 
@@ -498,15 +580,20 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return err
 	}
 
-	l.record(EvCompactStarted, ActorSystem, Compaction{
-		BeforeTokens: used, Trigger: "auto",
+	// Started is recorded only once there is something to summarise; every
+	// return after it records a completion (the caller records errors).
+	begun := false
+	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+		begun = true
+		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
-
-	compacted, info, err := l.Compactor.Compact(ctx, "auto", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return err
 	}
 	if len(compacted) == len(l.messages) {
+		if begun {
+			l.record(EvCompactDone, ActorSystem, map[string]string{"skipped": "no change", "trigger": "auto"})
+		}
 		return nil // nothing was summarized
 	}
 
@@ -515,6 +602,9 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
+
+// ErrNothingToCompact is Compact finding no older history to summarise.
+var ErrNothingToCompact = errors.New("nothing to compact yet")
 
 // Compact forces compaction now, for the /compact command.
 func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
@@ -527,6 +617,10 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	compacted, info, err := l.Compactor.Compact(ctx, "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
+	}
+	// As for automatic compaction, nothing summarised records nothing.
+	if len(compacted) == len(l.messages) {
+		return Compaction{}, ErrNothingToCompact
 	}
 	l.messages = compacted
 	l.usage.Compactions++
@@ -880,14 +974,24 @@ func truncateKey(k string) string {
 // a time while the approved calls can then run together: two permission prompts
 // racing for the same terminal is unusable, and the user cannot tell which one
 // they are answering.
-func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.Result, TerminalReason) {
+//
+// It replaces the call's arguments with their canonical encoding, so everything
+// after it, the tool included, reads the value policy judged.
+func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
+	call := *c
 	tool, found := l.Tools.Get(call.Name)
 	if !found {
 		// Recorded like any refused call, so the record accounts for every
 		// call the model made, not only those naming a real tool.
 		why := fmt.Sprintf("unknown tool %q", call.Name)
+		args, raw := call.Args, ""
+		// A near miss for a tool that takes credentials may carry one.
+		if l.nearCredentialTool(call.Name) {
+			args, raw = json.RawMessage(`{}`), WithheldLookalikeArgs
+			c.Args = args
+		}
 		if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
-			CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why,
+			CallID: call.ID, Tool: call.Name, Args: args, RawArgs: raw, Reason: why, Via: viaOf(ctx),
 		}); err != nil {
 			return false, tools.Result{Content: err.Error(), IsError: true}, TermError
 		}
@@ -901,10 +1005,40 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}, ""
 	}
 
-	decision := l.Policy.Evaluate(call.Name, tool.Mutates(), call.Args)
+	canon, dropped, err := tools.CanonicalArgs(tool, call.Args)
+	if err != nil {
+		c.Args = json.RawMessage(`{}`)
+		return l.refuseArgs(ctx, tool, call, err)
+	}
+	// Before policy, approval, the record and history see it: a credential
+	// where a secret's name belongs is never kept.
+	canon = tools.WithholdSecretValues(tool, canon)
+	// A destination the call leaves to the session is named before policy
+	// judges it, so a rule on it holds and the approval covers only it.
+	var resolved []string
+	var unresolvable error
+	if r, ok := tool.(tools.ArgResolver); ok {
+		out, which, err := r.ResolveArgs(l.Session, canon)
+		switch {
+		case err != nil:
+			unresolvable = err
+		case out != nil:
+			if again, _, err := tools.CanonicalArgs(tool, out); err == nil {
+				canon, resolved = again, which
+			}
+		}
+	}
+	c.Args, call.Args = canon, canon
+	if unresolvable != nil {
+		return l.refuseUnresolvable(ctx, call, unresolvable)
+	}
+
+	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
-	if refused := l.secretsRefused(call); refused != "" {
+	if refused := l.secretsRefused(tool, call); refused != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	} else if refused := l.pathSecretRefused(call); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
 
@@ -917,7 +1051,16 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		decision.Reason = "refused before approval: the call could not succeed"
 	}
 	if l.Monitor != nil && doomed == nil {
-		decision = l.reviewed(ctx, call, tool.Mutates(), decision)
+		decision = l.reviewed(ctx, call, tools.MutatesCall(tool, call.Args), decision)
+	}
+
+	// Where a credential goes is part of what is approved, so it is in the
+	// reason every approver shows and in the record.
+	var target string
+	if tg, ok := tool.(tools.Targeter); ok {
+		if target = tg.Target(l.Session, call.Args); target != "" {
+			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
+		}
 	}
 
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
@@ -927,6 +1070,10 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		RequiresApproval: decision.Decision == policy.Ask && doomed == nil,
 		Reason:           decision.Reason,
 		Scope:            decision.Offer(),
+		Via:              viaOf(ctx),
+		Dropped:          dropped,
+		Resolved:         resolved,
+		Target:           target,
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -951,9 +1098,15 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 		}, ""
 
 	case policy.Ask:
+		if requestedFrom(asked).Withheld {
+			l.record(EvActionDenied, ActorSystem, map[string]string{
+				"call_id": call.ID, "reason": withheldAsk, "step": "ask", "by": BySystem,
+			})
+			return false, tools.Result{Content: "Denied: " + withheldAsk + ". The call was not run.", IsError: true}, ""
+		}
 		var actx context.Context
-		actx, answer = ExpectAnswer(WithRequestID(ctx, asked.ID))
-		approved, err := l.Approver.Approve(actx, call.Name, call.Args, decision)
+		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
+		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
@@ -1019,6 +1172,108 @@ func (l *Loop) authorize(ctx context.Context, call model.ToolCall) (bool, tools.
 	}
 	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
+}
+
+// WithheldLookalikeArgs stands in for the arguments of an unknown call
+// whose name is close to a tool that takes credentials.
+const WithheldLookalikeArgs = "[withheld: unknown credential tool]"
+
+// credentialTools are the built-in tools that take credentials, matched even
+// where the deployment has not enabled them.
+var credentialTools = []string{"k8s_login", "ssh_connect"}
+
+// nearCredentialTool reports whether an unknown tool name is, ignoring case,
+// within one edit of a tool whose arguments name secrets or contains its name,
+// either as written or once a namespace such as functions., mcp__x__ or a
+// path is taken off.
+func (l *Loop) nearCredentialTool(name string) bool {
+	names := append([]string(nil), credentialTools...)
+	if l.Tools != nil {
+		for _, n := range l.Tools.Names() {
+			if t, ok := l.Tools.Get(n); ok {
+				if _, secret := t.(tools.SecretArgs); secret {
+					names = append(names, n)
+				}
+			}
+		}
+	}
+	folded := tools.FoldKey(name)
+	for _, got := range []string{folded, unqualified(folded)} {
+		for _, n := range names {
+			n = tools.FoldKey(n)
+			if strings.Contains(got, n) || withinOneEdit([]rune(got), []rune(n)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unqualified is name after its last ".", "/", ":" or "__".
+func unqualified(name string) string {
+	cut := 0
+	for _, sep := range []string{".", "/", ":", "__"} {
+		if i := strings.LastIndex(name, sep); i >= 0 && i+len(sep) > cut {
+			cut = i + len(sep)
+		}
+	}
+	return name[cut:]
+}
+
+// withinOneEdit reports whether a becomes b by at most one insertion,
+// deletion or substitution.
+func withinOneEdit(a, b []rune) bool {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	if len(b)-len(a) > 1 {
+		return false
+	}
+	i := 0
+	for i < len(a) && a[i] == b[i] {
+		i++
+	}
+	if len(a) == len(b) {
+		return string(a[i+min(1, len(a)-i):]) == string(b[i+min(1, len(b)-i):])
+	}
+	return string(a[i:]) == string(b[i+1:])
+}
+
+// refuseArgs records a call whose arguments could not be read one way only.
+// Args is {} and the arguments sent are kept as text, so no reader decodes them.
+func (l *Loop) refuseArgs(ctx context.Context, tool tools.Tool, call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+	raw := string(call.Args)
+	// A tool that takes credentials by name may have been sent one instead.
+	if _, ok := tool.(tools.SecretArgs); ok {
+		raw = tools.WithheldSecretArg
+	}
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: json.RawMessage(`{}`), RawArgs: raw, Reason: why.Error(),
+		Via: viaOf(ctx),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why.Error(), "step": "args", "by": BySystem,
+	})
+	return false, tools.Result{
+		Content: fmt.Sprintf("Refused: %s. Nothing was run. Send one JSON object with each argument once, spelled exactly as in the tool's schema.", why),
+		IsError: true,
+	}, ""
+}
+
+// refuseUnresolvable records a call whose arguments cannot be put in the form
+// the tool runs, as the model sent them, and refuses it before any rule reads it.
+func (l *Loop) refuseUnresolvable(ctx context.Context, call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why.Error(), Via: viaOf(ctx),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why.Error(), "step": "args", "by": BySystem,
+	})
+	return false, tools.Result{Content: fmt.Sprintf("Refused: %s. Nothing was run.", why), IsError: true}, ""
 }
 
 // invoke runs an already-authorized tool and records its observation.
@@ -1211,30 +1466,6 @@ func (l *Loop) resultLimitChars() int {
 	return window / 4 * 36 / 10
 }
 
-// LoopHolder lets a tool built before the loop report into it once it exists.
-//
-// The registry is constructed first — tools have to be known before a loop can
-// be given them — so a tool that needs to record an event has nothing to record
-// into yet. A holder makes that ordering explicit and scoped, where a package
-// variable would silently share one loop across every session in the process.
-type LoopHolder struct{ loop *Loop }
-
-func (h *LoopHolder) Set(l *Loop) { h.loop = l }
-
-// RecordTodos forwards to the current loop, and does nothing before one is set.
-func (h *LoopHolder) RecordTodos(items []Todo, note string) {
-	if h != nil && h.loop != nil {
-		h.loop.RecordTodos(items, note)
-	}
-}
-
-// RecordPipelineStage forwards to the current loop.
-func (h *LoopHolder) RecordPipelineStage(skill, stage, detail string, data map[string]any) {
-	if h != nil && h.loop != nil {
-		h.loop.RecordPipelineStage(skill, stage, detail, data)
-	}
-}
-
 // runCalls executes a turn's tool calls and appends their results.
 //
 // Independent calls run concurrently. A model that asks to read four files
@@ -1261,8 +1492,8 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
-	for i, call := range calls {
-		decision, res, terminal := l.authorize(ctx, call)
+	for i := range calls {
+		decision, res, terminal := l.authorize(ctx, &calls[i])
 		if terminal != "" {
 			results[i] = callOutcome{result: res, terminal: terminal, set: true}
 			l.appendEnded(calls, results, terminal, i+1)
@@ -1285,7 +1516,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 			continue
 		}
 		tool, found := l.Tools.Get(call.Name)
-		if found && tool.Mutates() {
+		if found && tools.MutatesCall(tool, call.Args) {
 			mutating = append(mutating, i)
 			continue
 		}
@@ -1411,13 +1642,12 @@ func (l *Loop) recordFailure() error {
 
 // secretsRefused names the first secret in the call that policy does not
 // allow outright, or "" when the call asks for none or every one is allowed.
-func (l *Loop) secretsRefused(call model.ToolCall) string {
+func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 	var a struct {
 		Secrets []string `json:"secrets"`
 	}
-	if json.Unmarshal(call.Args, &a) != nil || len(a.Secrets) == 0 {
-		return ""
-	}
+	_ = json.Unmarshal(call.Args, &a)
+	a.Secrets = append(a.Secrets, tools.SecretNames(tool, call.Args)...)
 	// Rules only, never the mode: bypass and auto approve calls, not secrets.
 	for _, name := range a.Secrets {
 		for _, r := range l.Policy.Deny {
@@ -1432,6 +1662,49 @@ func (l *Loop) secretsRefused(call model.ToolCall) string {
 		if !allowed {
 			return fmt.Sprintf("secret %s is not permitted: a secret needs its own allow rule, secret(%s), in every mode", name, name)
 		}
+	}
+	return ""
+}
+
+// pathSecretRefused refuses a write or edit whose path holds a stored value: a
+// file's name is seen by whoever can list the directory, and by the record.
+func (l *Loop) pathSecretRefused(call model.ToolCall) string {
+	if call.Name != "write" && call.Name != "edit" {
+		return ""
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(call.Args, &a) != nil {
+		return ""
+	}
+	return l.pathHoldsSecret(a.Path)
+}
+
+// pathHoldsSecret is pathSecretRefused's check of one path, "" when it passes.
+func (l *Loop) pathHoldsSecret(path string) string {
+	if path == "" {
+		return ""
+	}
+	red := l.Recorder.redactor()
+	if red == nil {
+		return ""
+	}
+	const unreadable = "refused by the check that keeps stored secrets out of file names: the secrets store could not be read, so the path cannot be checked"
+	if f, ok := red.(interface{ FindInPath(string) (string, bool) }); ok {
+		if label, found := f.FindInPath(path); found {
+			if label == "" {
+				return unreadable
+			}
+			return fmt.Sprintf("refused by the check that keeps stored secrets out of file names: the path contains the stored secret %s", label)
+		}
+		return ""
+	}
+	quoted, _ := json.Marshal(path)
+	if out := red.Redact(quoted); out == nil {
+		return unreadable
+	} else if string(out) != string(quoted) {
+		return "refused by the check that keeps stored secrets out of file names: the path contains a stored secret"
 	}
 	return ""
 }

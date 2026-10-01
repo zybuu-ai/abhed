@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -94,8 +95,9 @@ func TestConfigDirIsHonoured(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The program wrote this file, so it trusts it.
 	a, err := abhed.New(context.Background(), abhed.Options{
-		Workspace: dir, ConfigDir: dir,
+		Workspace: dir, ConfigDir: dir, WorkspaceTrust: config.TrustGranted,
 	})
 	if err != nil {
 		t.Fatalf("a config file the CLI would accept must work here too: %v", err)
@@ -170,6 +172,7 @@ func TestSandboxedSessionRefusesALinkedStateFile(t *testing.T) {
 // A session whose workspace is a worktree inside the configuration's folder,
 // as a resolve run's is, cannot read that folder's .abhed from its commands.
 func TestConfigFoldersStateIsHiddenFromAWorktreeSession(t *testing.T) {
+	t.Setenv("ABHED_TRUST_WORKSPACE", "1") // the test wrote this configuration
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("ABHED_SECRETS_FILE", "")
@@ -232,6 +235,7 @@ func TestConfigFoldersStateIsHiddenFromAWorktreeSession(t *testing.T) {
 // A relative deny rule holds against an absolute path in the workspace, which
 // needs the session's roots on the policy.
 func TestRelativeDenyStopsAnAbsolutePath(t *testing.T) {
+	t.Setenv("ABHED_TRUST_WORKSPACE", "1") // the test wrote this configuration
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("ABHED_SECRETS_FILE", "")

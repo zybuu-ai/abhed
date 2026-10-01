@@ -35,7 +35,39 @@ A rule is a tool name, optionally followed by a pattern:
 ```
 
 `*` matches anything, newlines included; the pattern is matched against the
-command or path.
+command or path, or for a tool with neither, the first of its `pattern`,
+`action`, `resource`, `host`, `namespace`, `name` or `url` arguments. So an
+MCP tool that takes only a `url` is matched on it:
+`mcp__browser__open(https://intranet.example/*)`.
+
+For `web_fetch` the pattern is matched against the URL exactly as the model
+wrote it, and the tool fetches that string or nothing. It only fetches a URL
+written in one form — no spaces around it, lower-case scheme and host, no user
+name, no trailing dot on the host, a port written as a plain number from 1 to
+65535 and left out when it is the scheme's default, an address written as
+four decimal numbers (IPv4) or in compressed form (IPv6, never an IPv4 address
+written as IPv6), a path of at least `/` with no `.`, `..` or empty segment
+(raw or `%`-encoded), no needless `%` escapes and no `#fragment` — and
+refuses any other spelling. A host whose last part is a number and is not an
+IPv4 address, such as `1572395042` or `127.1`, is refused, since a resolver
+reads it as an address. So `"deny": ["web_fetch(https://example.com/*)"]`
+cannot be stepped around by writing `HTTPS://Example.COM:0443`, and
+`web_fetch(https://example.com/admin*)` cannot by writing `/public/../admin`.
+
+Two things are not normalised. A path rule matches case-sensitively:
+`web_fetch(http*://example.com/admin*)` does not match `/Admin/`, which a
+server that ignores case (IIS, or a static server on a case-insensitive disk)
+serves as `/admin/`. A query is matched exactly as written, its parameters'
+order and duplicates included. For a server that ignores case, or content you
+must keep out whatever the path or query, deny the host:
+`web_fetch(http*://example.com/*)`.
+
+Write a deny rule for a host so it covers both schemes:
+`web_fetch(http*://example.com/*)`. A rule written with `https://` alone
+leaves `http://` to the same host open. A host on another port needs its own
+rule, such as `web_fetch(http*://example.com:8080/*)`. A redirect to anything
+but the same URL is not followed but handed back, so it is judged as a call
+of its own.
 
 A deny or ask path pattern matches the path as the tool was given it, the
 absolute path, the path with its links resolved, and the path relative to the
@@ -166,7 +198,7 @@ A deny pattern matches the words as written, so it is easy to step around.
 
 - an absolute or relative path to the program: `/usr/bin/curl x`
 - a command handed to another shell: `bash -c 'curl x'`, `sh -c "curl x"`
-- a quoted or escaped name: `'curl' x`, `$'curl' x`, `\curl x`, `c\url x`
+- a quoted or escaped name: `'curl' x`, `"cu"rl x`, `\curl x`, `c\url x`
 - flags in another place or split up: `bash(rm -rf *)` does not match
   `rm x -rf` or `rm -r -f x`
 
@@ -182,7 +214,17 @@ that you are protected when you are not.
 
 Every call goes through the same steps, and the order is the design:
 
-1. **Hooks** — extensions, first, so they can veto
+0. **Arguments** — before any rule or hook, a call's arguments are decoded
+   strictly and written out once in a canonical form. A call whose
+   arguments are not one JSON object, name the same key twice in any case
+   (`command` and `Command`), spell a declared argument in another case
+   (`Content` for `content`), or give a tool a key the rules read
+   (`command`, `path`, …) that it does not take, is refused at step `args`. A
+   built-in tool drops any other key it does not declare, and the record
+   lists them in `dropped_args`; an MCP tool whose schema sets
+   `additionalProperties: false` refuses them instead. Every later step,
+   and the tool itself, reads those same canonical arguments
+1. **Hooks** — extensions, next, so they can veto
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
@@ -306,6 +348,13 @@ has accept and reject only: approve it once, or write the rule yourself. The
 same holds for a call that matched an ask rule and for a destructive command,
 which must be asked about every time.
 
+Text in the prompt comes from the model, so it is shown as written, not
+obeyed. A carriage return, escape sequence, backspace, zero-width or bidi
+character is printed as an escape such as `\r`, `\x1b` or `⟨U+200D⟩`, and the
+prompt adds `! this call contains hidden or control characters`. The console
+and the IDE do the same on their approval cards, and an editor over `acp` gets
+the same escapes in the permission request's title.
+
 The record names the scope on the approval that chose it (`granted_scope`),
 and in the console and the API the person who answered (`approver`); a call a
 remembered scope let through later is `by: session-scope` with that `scope`.
@@ -377,7 +426,11 @@ The model sees the **names**, and asks for one on a single command:
 ```
 
 That command, and only that command, runs with `GITHUB_TOKEN` in its
-environment. Whether it may is decided by a rule:
+environment. `k8s_login` names a token as `token_secret` and `ssh_connect` a
+password as `password_secret`, and use it for that session's login only.
+Whether any of them may is decided by a rule. Rules hold for the whole
+deployment: on `abhed serve`, every session may name a secret its rules
+allow, whichever user started it.
 
 ```json
 "allow": ["secret(GITHUB_TOKEN)"],
@@ -404,4 +457,59 @@ A stored key file makes that lag visible, a few kilobytes of text, and values
 that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes
 `[redacted: output withheld]`.
+
+**File paths.** A `write` or `edit` whose path holds a stored secret is
+refused, in every mode, whether the agent or a person at the workbench makes
+it: the editor's save, and the explorer's New file, New folder and the new
+name of a Rename, are checked the same way. `bash` is not: a command can still
+create a file whose name holds a value the person typed or the agent built. The path is matched as written, in its case, and
+only against values of 12 characters or more, so a value such as `postgres`
+does not refuse ordinary files. A value of 8 to 11 characters can therefore
+still become a file name in a mode that approves writes without asking;
+store longer values, or leave writes to ask.
+
+Every way of running a session redacts with the same store: the terminal, the
+server and the console, `abhed acp`, `abhed rpc`, `abhed resolve`, `abhed eval`,
+subagents and the [SDK](09-sdk.md). There is no setting that turns it off. In
+1.2.1 and earlier the SDK, and so `acp`, `rpc` and `resolve`, did not redact;
+see the changelog.
+
+A store that exists but cannot be loaded stops sessions from starting. That
+covers a file that is empty (0 bytes), not valid JSON, readable by others,
+unreadable, larger than 1 MiB, or not a regular file (a FIFO or a device). The
+terminal, `abhed serve`, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse to
+start with an error that names the file and the fix, and `abhed doctor` reports
+it as not ready. A missing store just means no secrets.
+
+`abhed serve` checks the store when it starts. If the store breaks while the
+server runs, each new or resumed session still starts, but every event payload
+it records is withheld, and the server logs why, until the file is fixed. The
+same happens for the next conversation in a terminal that is already running.
+
+Redaction follows the store for the whole session, as bash does: the store is
+read again whenever the file changes, in each terminal conversation (`-p`
+included), each server session (new or resumed), each SDK agent, each ACP
+session, each rpc `start` and each eval task. A secret stored or changed during
+a session is redacted from that moment on, with no restart, and a value seen
+during the session stays redacted after it is changed or removed. A subagent
+redacts as its parent does.
+
+`abhed secret set` refuses a value under 8 characters, which would also match
+ordinary text. A shorter value stored before that rule is still redacted, but
+not in JSON object keys, so a value such as `type` cannot break the structure
+of an event.
+
+What redaction does not catch. It matches the exact value, in its JSON-escaped
+and HTML-escaped forms, and nothing else:
+
+- An encoded form is not caught: base64 (as in a Basic auth header that
+  `curl -v` prints), URL-encoded, hex, or a change of case.
+- Part of a value is not caught, such as a truncated one.
+- An error returned from a run, such as a provider's error body, is not
+  redacted.
+- Files are not redacted. What the agent writes to a file stays there, and
+  `abhed resolve` pushes it and quotes the diff in the pull request's
+  description.
+- The model's own text and calls go back to the same model unredacted in the
+  conversation. They are redacted everywhere else.
 

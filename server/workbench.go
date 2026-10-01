@@ -383,7 +383,7 @@ func (s *Server) changesSession(w http.ResponseWriter, r *http.Request) {
 	defer v.Close()
 
 	out := changesResponse{Files: []changedFile{}}
-	live, found := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	live, found := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !found || live.undo == nil {
 		WriteJSON(w, http.StatusOK, out)
 		return

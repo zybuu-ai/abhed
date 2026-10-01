@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 type Config struct {
@@ -37,6 +39,7 @@ type Config struct {
 	MCP         MCPConfig         `json:"mcp"`
 	Retrieval   RetrievalConfig   `json:"retrieval"`
 	WebSearch   WebSearchConfig   `json:"web_search"`
+	WebFetch    WebFetchConfig    `json:"web_fetch,omitempty"`
 	Extensions  []ExtensionConfig `json:"extensions,omitempty"`
 	// CustomProviders adds model providers without a rebuild.
 	CustomProviders []CustomProviderConfig `json:"custom_providers,omitempty"`
@@ -58,6 +61,8 @@ type Config struct {
 	Unknown []UnknownKey `json:"-"`
 	// SetKeys are the settings any file made, as dotted paths; see Sets.
 	SetKeys []string `json:"-"`
+	// Workspace is what loading decided about the workspace's own file.
+	Workspace WorkspaceTrust `json:"-"`
 }
 
 type ModelConfig struct {
@@ -256,6 +261,21 @@ type WebSearchConfig struct {
 	MaxResults int    `json:"max_results,omitempty"`
 }
 
+// WebFetchConfig controls the web_fetch tool, which reads one page through
+// Abhed rather than the sandboxed shell.
+//
+// OFF by default, and separate from web_search: turning search on does not
+// open a way to send a request to any site, which this does.
+type WebFetchConfig struct {
+	Enabled bool `json:"enabled"`
+	// AllowedHosts, when set, is every host that may be fetched:
+	// "docs.python.org" or "*.github.com". Internal addresses are refused
+	// whatever it says.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	// MaxChars caps the text returned per call; 0 means 20,000.
+	MaxChars int `json:"max_chars,omitempty"`
+}
+
 // StorageConfig selects the event store. Memory is fine for a CLI session;
 // audit and replay across restarts need Postgres (docs §10).
 type StorageConfig struct {
@@ -366,6 +386,53 @@ type K8sConfig struct {
 	// AllowWrites exposes k8s_apply. Even then every call needs approval;
 	// this decides whether the capability exists at all.
 	AllowWrites bool `json:"allow_writes,omitempty"`
+	// Clusters are the only servers k8s_login may send a stored token to. The
+	// model names one; it never supplies a URL.
+	Clusters []K8sClusterConfig `json:"clusters,omitempty"`
+	// CAFile adds a CA bundle to the system roots for a cluster that names none.
+	CAFile string `json:"ca_file,omitempty"`
+}
+
+// validateClusters refuses clusters k8s_login could not tell apart or reach
+// safely, at load rather than at the first login.
+func (k K8sConfig) validateClusters() error {
+	seen := map[string]string{}
+	for i, c := range k.Clusters {
+		if strings.TrimSpace(c.Name) == "" || c.Name != strings.TrimSpace(c.Name) {
+			return fmt.Errorf("k8s.clusters[%d]: name is required, without surrounding spaces", i)
+		}
+		// Rules and "always allow" read a call as cluster/namespace/verb, and
+		// a kubeconfig context as context:NAME.
+		if strings.ContainsAny(c.Name, "/:*?") {
+			return fmt.Errorf("k8s.clusters %q: a name cannot hold / : * or ?, which permission rules on it use", c.Name)
+		}
+		if prev, dup := seen[strings.ToLower(c.Name)]; dup {
+			return fmt.Errorf("k8s.clusters: %q and %q name the same cluster", prev, c.Name)
+		}
+		seen[strings.ToLower(c.Name)] = c.Name
+		u, err := url.Parse(c.Server)
+		switch {
+		case err != nil:
+			// Not echoed: text that does not parse may still hold a credential.
+			return fmt.Errorf("k8s.clusters %q: server is not a URL", c.Name)
+		case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+			return fmt.Errorf("k8s.clusters %q: server must not carry a user, password, query "+
+				"or fragment; the token comes from k8s_login", c.Name)
+		case u.Scheme != "https" || u.Host == "":
+			return fmt.Errorf("k8s.clusters %q: server must be an https:// URL with a host, got %q", c.Name, u.String())
+		}
+	}
+	return nil
+}
+
+// K8sClusterConfig declares one cluster k8s_login may reach.
+type K8sClusterConfig struct {
+	Name   string `json:"name"`
+	Server string `json:"server"`
+	CAFile string `json:"ca_file,omitempty"`
+	// InsecureSkipTLSVerify sends the token without checking who answers.
+	// For lab clusters only; reported at startup and by doctor.
+	InsecureSkipTLSVerify bool `json:"insecure_skip_tls_verify,omitempty"`
 }
 
 // SSHConfig declares reachable machines. The agent can only name a host from
@@ -513,6 +580,9 @@ func Default() Config {
 				"bash(git status*)", "bash(git diff*)", "bash(git log*)",
 				"bash(ls*)", "bash(pwd)", "bash(cat *)",
 			},
+			// A command that trusts a workspace for a nested run is the
+			// person's decision, not the agent's.
+			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,
@@ -539,16 +609,26 @@ func Default() Config {
 	}
 }
 
-// Load assembles configuration from all sources in precedence order.
+// Load assembles configuration from all sources in precedence order, taking
+// the workspace's file whole only once the person has trusted it.
 func Load(workspace string) (Config, error) {
+	return LoadWith(workspace, LoadOptions{})
+}
+
+// LoadWith is Load with the caller's say over the workspace file.
+func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg := Default()
 
+	var userFile string
 	if home, err := os.UserHomeDir(); err == nil {
-		if err := mergeFile(&cfg, filepath.Join(home, ".abhed", "config.json")); err != nil {
+		userFile = filepath.Join(home, ".abhed", "config.json")
+		if err := mergeFile(&cfg, userFile); err != nil {
 			return cfg, err
 		}
 	}
-	if err := mergeFile(&cfg, filepath.Join(workspace, ".abhed", "config.json")); err != nil {
+	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	cfg.Workspace = st
+	if err != nil {
 		return cfg, err
 	}
 
@@ -560,6 +640,9 @@ func Load(workspace string) (Config, error) {
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
+	if !o.Quiet {
+		warnUntrusted(cfg.Workspace)
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -585,6 +668,11 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	return mergeData(cfg, path, data)
+}
+
+// mergeData merges a file's contents, already read, into cfg.
+func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
 	if err := json.Unmarshal(data, cfg); err != nil {
@@ -719,6 +807,17 @@ func (c Config) Validate() error {
 	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
 	}
+	// Checked here so every path fails on a bad rule, not only the CLI.
+	for _, l := range []struct {
+		name  string
+		rules []string
+	}{{"deny", c.Permissions.Deny}, {"ask", c.Permissions.Ask}, {"allow", c.Permissions.Allow}} {
+		for _, r := range l.rules {
+			if _, err := policy.ParseRule(r); err != nil {
+				return fmt.Errorf("permissions.%s: %w", l.name, err)
+			}
+		}
+	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
 	}
@@ -740,11 +839,20 @@ func (c Config) Validate() error {
 	if u := c.Auth.ProxyLogoutURL; u != "" && !validLogoutURL(u) {
 		return fmt.Errorf("auth.proxy_logout_url %q must be an http(s) URL or a path on this host", u)
 	}
+	if err := c.K8s.validateClusters(); err != nil {
+		return err
+	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":
 	default:
 		return fmt.Errorf("unknown web_search.provider %q "+
 			"(want duckduckgo, brave, tavily, serper or searxng)", c.WebSearch.Provider)
+	}
+	for _, h := range c.WebFetch.AllowedHosts {
+		if !validHostPattern(h) {
+			return fmt.Errorf("web_fetch.allowed_hosts: %q is not a host name or *.domain "+
+				"(no scheme, port or path; a wildcard needs a domain of two labels or more)", h)
+		}
 	}
 	switch c.Storage.Driver {
 	case "memory", "postgres", "":
@@ -813,12 +921,17 @@ func WriteDefault(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(Default(), "", "  ")
+	data, err := defaultConfigJSON()
 	if err != nil {
 		return err
 	}
 	// A config can carry keys. Owner-only, like every other file that can.
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	return os.WriteFile(path, data, 0o600)
+}
+
+func defaultConfigJSON() ([]byte, error) {
+	data, err := json.MarshalIndent(Default(), "", "  ")
+	return append(data, '\n'), err
 }
 
 // TelemetryConfig exports the event stream as OpenTelemetry traces.
@@ -864,4 +977,40 @@ func (c ContextConfig) OffloadFraction() float64 {
 		return 0.60
 	}
 	return *c.OffloadAt
+}
+
+// validHostPattern is a host name, or *. and a domain: what web_fetch's
+// allowlist can match. A URL or a pattern of any other shape would match
+// nothing, and an operator would believe it did.
+func validHostPattern(h string) bool {
+	h, wild := strings.CutPrefix(h, "*.")
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	// *.com would allow every site under a top-level domain.
+	if wild && !strings.Contains(h, ".") {
+		return false
+	}
+	// A name ending in a number is never a host web_fetch fetches, and a
+	// wildcard over one would match address numbers: only a plain IPv4
+	// address may end in digits.
+	labels := strings.Split(h, ".")
+	if last := strings.ToLower(labels[len(labels)-1]); strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "" {
+		a, err := netip.ParseAddr(h)
+		if wild || err != nil || !a.Is4() || a.String() != h {
+			return false
+		}
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for _, c := range label {
+			ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-'
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
 }

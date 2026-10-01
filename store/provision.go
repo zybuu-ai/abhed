@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/zybuu-ai/abhed/auth"
 )
 
 // The record is only as protected as the role that writes it. Triggers refuse
@@ -45,6 +47,14 @@ type ProvisionConfig struct {
 	// and must differ from the owner.
 	RuntimeRole string
 	Extensions  []Extension
+	// Owners is what the owner migration may do with rows keyed by a local
+	// account's name or email; empty means OwnersUnclaim.
+	Owners OwnerPolicy
+	// OwnerAccounts, AllowNoAccounts and AccountsFound are passed to the
+	// owner migration; see OwnerMigration.
+	OwnerAccounts   []*auth.User
+	AllowNoAccounts bool
+	AccountsFound   func(table, extra, distinct int)
 }
 
 // Provision applies the schema as the owner and grants the runtime role what
@@ -81,8 +91,8 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	if _, err := pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	if _, err := pool.Exec(ctx, usersSchema); err != nil {
-		return fmt.Errorf("apply users schema: %w", err)
+	if err := migrateUsersSchema(ctx, pool); err != nil {
+		return err
 	}
 	grants := append([]struct{ table, privileges string }{}, runtimeGrants...)
 	for _, ext := range cfg.Extensions {
@@ -92,6 +102,11 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 		for table, privs := range ext.Grants {
 			grants = append(grants, struct{ table, privileges string }{table, privs})
 		}
+	}
+
+	if _, err := migrateOwners(ctx, pool, OwnerMigration{Policy: cfg.Owners,
+		Accounts: cfg.OwnerAccounts, AllowNoAccounts: cfg.AllowNoAccounts, Found: cfg.AccountsFound}); err != nil {
+		return err
 	}
 
 	role := pgx.Identifier{cfg.RuntimeRole}.Sanitize()

@@ -148,13 +148,26 @@ check('a prompt with a reused call id sends nothing for the new request', __post
 open()[0].querySelector('.btns').firstChild.on.click(); await tick();
 check('the new request is answered by its own id', __posted.length === 1 && __posted[0].body.request_id === 'ev4');
 
-// Either 409 settles the prompt: the server will not take an answer for it.
+// While the run goes on, a 409 means it is not waiting on this request now:
+// the prompt stays answerable, says so, asks the server again, and is settled
+// by the record. Once the run has ended, a 409 settles it.
 for(const msg of ['no approval is pending for this session', 'that approval is no longer pending']){
   fresh('s10', true);
   render(write(1));
   __defer('POST /v1/sessions/s10/approve').reject(Object.assign(new Error(msg), {status:409}));
+  __routes.length = 0; open()[0].querySelector('.btns').firstChild.on.click(); await tick(700);
+  check('"' + msg + '" during a run keeps the prompt answerable', open().length === 1 && asks.has('w1') &&
+    !open()[0].querySelector('.btns').firstChild.disabled && open()[0].textContent.includes('Not taken'));
+  check('and asks the server for the session\'s state', __routes.includes('GET /v1/sessions'));
+  __posted.length = 0; open()[0].querySelector('.btns').firstChild.on.click(); await tick();
+  check('a second answer is sent for the same request', __posted.length === 1 && __posted[0].body.request_id === 'ev1');
+  render(ev(2, 'action.approved', {call_id:'w1', step:'default', by:'reviewer'}));
+  check('and the record settles it', open().length === 0);
+  fresh('s10', true);
+  render(write(1)); live = false;
+  __defer('POST /v1/sessions/s10/approve').reject(Object.assign(new Error(msg), {status:409}));
   open()[0].querySelector('.btns').firstChild.on.click(); await tick();
-  check('"' + msg + '" settles the prompt', open().length === 0);
+  check('"' + msg + '" after the run settles the prompt', open().length === 0);
 }
 
 // Another node runs the session: the prompt says where it can be answered.
@@ -218,5 +231,117 @@ check('a dropped message is shown as not delivered',
 // drawQueued offers Send now and Cancel only on a bubble still queued.
 check('and no longer offers Send now or Cancel', !queued.has('q11') && !dropped.classList.contains('queued'));
 check('and its text is back in the message box', $('q').value === 'after the drain' && dropped.qnote.includes('back in the message box'));
+
+// A subagent's call waiting on the person is asked here, answered by its
+// request id, and settled by the subagent.action that follows.
+fresh('s18', true);
+render(write(1)); render(ev(2, 'action.approved', {call_id:'w1', step:'reviewer'}));
+render(ev(3, 'subagent.ask', {session:'child', subagent:'clean up', request_id:'cev7', call_id:'w1', tool:'bash', args:{command:'touch made.txt'}, reason:'ask rule'}));
+check('a subagent\'s ask is put to the person', open().length === 1 && open()[0].dataset.call === 'subagent-cev7');
+check('and says Always allow covers the whole session', open()[0].textContent.includes('whole session'));
+__posted.length = 0; open()[0].querySelector('.btns').firstChild.on.click(); await tick();
+check('its answer names the subagent\'s request', __posted.length === 1 && __posted[0].body.request_id === 'cev7' && __posted[0].body.approved === true);
+render(ev(4, 'subagent.action', {session:'child', call_id:'w1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev7'}));
+check('and the subagent.action settles it', open().length === 0 && !asks.has('subagent-cev7'));
+
+// A reopened session shows what was decided on a subagent's calls: a row for
+// each, allowed or denied, with no card to answer.
+fresh('s20', false);
+render(ev(1, 'subagent.ask', {session:'child', subagent:'probe', request_id:'r1', call_id:'k1', tool:'bash', args:{command:'echo hi'}}));
+render(ev(2, 'subagent.action', {session:'child', call_id:'k1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'r1'}));
+render(ev(3, 'subagent.ask', {session:'child', subagent:'probe', request_id:'r2', call_id:'k2', tool:'bash', args:{command:'date -u'}}));
+render(ev(4, 'subagent.action', {session:'child', call_id:'k2', tool:'bash', decision:'denied', by:'reviewer', reason:'rejected', request_id:'r2'}));
+render(ev(5, 'subagent.action', {session:'child', call_id:'k3', tool:'bash', subject:'reboot', decision:'denied', by:'policy', step:'deny', reason:'denied by rule', request_id:'r3'}));
+{
+  const rows = __root.childNodes.filter(n => n.className === 'call' || n.className === 'call denied'), t = __root.textContent;
+  check('a replayed subagent call is drawn with its outcome', rows.length === 3 && t.includes('subagent probe') && t.includes('echo hi') && t.includes('allowed'));
+  check('a denied one says so, with the reason', rows.filter(r => r.className.includes('denied')).length === 2 && t.includes('rejected') && t.includes('reboot'));
+  check('and none is offered as an open card', open().length === 0 && asks.size === 0);
+}
+
+// A page whose run ended, a second tab say, follows the next turn another
+// tab starts: it asks the server now and then, and opens the stream.
+fresh('s22', false); es = null; __connected.length = 0;
+__sessions = [{id:'s22', state:'idle'}];
+watchIdle(); await tick();
+check('an idle session is left idle', !live && __connected.length === 0);
+__sessions = [{id:'s22', state:'running'}]; __routes.length = 0;
+watchIdle(); await tick();
+check('a turn started elsewhere is followed', live && __connected.length === 1 && __connected[0] === 's22');
+check('by asking after that session alone, not the tenant\'s list',
+  __routes.includes('GET /v1/sessions/s22/state') && !__routes.includes('GET /v1/sessions'));
+es = {}; __routes.length = 0; live = false;
+watchIdle(); await tick();
+check('a page with a stream open does not ask', __routes.length === 0);
+
+// A turn that started and ended between two asks is read back from the record
+// when the server's turn count moves, rather than waiting for the next one.
+fresh('s24', false); es = null; __connected.length = 0; idleTurns.clear();
+__sessions = [{id:'s24', state:'idle', turns:2}];
+watchIdle(); await tick(); __connected.length = 0; es = null;
+watchIdle(); await tick();
+check('an idle session whose count is unchanged is left alone', !live && __connected.length === 0);
+__sessions = [{id:'s24', state:'idle', turns:3}];
+watchIdle(); await tick();
+check('a quick turn another tab ran is read back', !live && __connected.length === 1 && __connected[0] === 's24');
+
+// An ask with no request id is not drawn as a card anyone could answer.
+fresh('s23', true);
+render(ev(1, 'subagent.ask', {session:'child', subagent:'x', call_id:'k9', tool:'bash', args:{command:'touch nid'}}));
+askApproval({call_id:'w9', tool:'bash', args:{command:'ls'}}, undefined);
+check('an ask with no request id draws no answerable card', open().length === 0 && __root.textContent.includes('no request id'));
+
+// A pipeline step's ask names the pipeline asking.
+fresh('s19', true);
+render(ev(1, 'action.requested', {call_id:'step_1', tool:'bash', args:{command:'date -u > stamp.txt'}, requires_approval:true, via:'skill tide-audit pipeline'}));
+check('a pipeline step\'s ask names the pipeline', open().length === 1 && open()[0].textContent.includes('Asked by skill tide-audit pipeline'));
+render(ev(2, 'subagent.ask', {session:'child', subagent:'runner', request_id:'cev21', call_id:'step_2', tool:'bash', args:{command:'ls'}, via:'skill p pipeline'}));
+check('and so does one a subagent\'s pipeline puts', open().some(a => a.textContent.includes('Asked by skill p pipeline') && a.textContent.includes('subagent runner')));
+
+// A call's own text cannot hide what allowing runs: control and format
+// characters are written out, and the prompt warns that they were there.
+fresh('s30', true);
+{
+  const payload = 'touch pwned #\u200d\r\u001b[2K\u202e\u007f\u009b  $ ls -la';
+  render(ev(1, 'action.requested', {call_id:'x1', tool:'bash', args:{command: payload}, requires_approval:true,
+    reason:'why\r' + payload, scope:'bash(' + payload + ')', via:'via\u200b'}));
+  const ask = open()[0];
+  const shown = ask ? ask.textContent : '';
+  const raw = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+  check('the prompt shows hidden characters instead of obeying them',
+    !!ask && !raw.test(shown) && shown.includes('touch pwned') && shown.includes('⟨U+200D⟩') && shown.includes('⟨U+000D⟩'));
+  check('the prompt warns that the call carries hidden characters', shown.includes('hidden or control characters'));
+  const row = calls.get('x1').node.querySelector('.subj').textContent;
+  check('the call row shows them too', row.includes('⟨U+202E⟩') && !raw.test(row));
+  render(ev(2, 'action.requested', {call_id:'x2', tool:'bash', args:{command:'printf "a\tb"'}, requires_approval:true}));
+  check('a plain call draws no warning', open().length === 2 && !open()[1].textContent.includes('hidden or control characters'));
+}
+
+// The warning reads every value in the call, not only the subject it draws.
+fresh('s31', true);
+{
+  const calls = [
+    ['write', {path:'a.txt', content: Array.from({length:25}, (_, i) => i === 19 ? 'x\u202ey' : 'line').join('\n')}],
+    ['bash', {command:'ls\rrm -rf x', description:'list'}],
+    ['k8s_apply', {action:'apply', manifest:'{"kind":"ConfigMap","data":{"k":"\\u001b[2J"}}'}],
+    ['task', {description:'look', prompt:'a\u200db'}],
+  ];
+  calls.forEach(([tool, args], i) => render(ev(1 + i, 'action.requested', {call_id:'h' + i, tool, args, requires_approval:true})));
+  const warned = open().map(a => a.textContent.includes('hidden or control characters'));
+  check('a hidden character anywhere in the args raises the warning: ' + warned, warned.length === 4 && warned.every(Boolean));
+}
+
+// A run of spaces is counted on the prompt, and a field the prompt does not
+// draw is shown when it is what carries the hidden characters.
+fresh('s32', true);
+{
+  render(ev(1, 'action.requested', {call_id:'w1', tool:'bash', args:{command:'git status --short' + ' '.repeat(260) + '&& tar czf p.tgz internal'}, requires_approval:true}));
+  const t = open()[0] ? open()[0].textContent : '';
+  check('a long run of spaces is counted on the prompt and warned',
+    t.includes('git status --short⟨260 spaces⟩&& tar czf p.tgz internal') && t.includes('hidden or control characters'));
+  render(ev(2, 'action.requested', {call_id:'w2', tool:'bash', args:{command:'ls', description:'list\u202e files'}, requires_approval:true}));
+  const d = open()[1] ? open()[1].textContent : '';
+  check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
+}
 
 if(!ok) process.exit(1);

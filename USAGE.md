@@ -105,9 +105,17 @@ abhed doctor
 Or write it into config:
 
 ```bash
-abhed init          # creates .abhed/config.json
+abhed init          # creates .abhed/config.json, trusted as written
 $EDITOR .abhed/config.json
+abhed trust grant   # trust it again after the edit
 ```
+
+A workspace's `.abhed/config.json` is untrusted until you trust its exact
+contents. Until then only its tightening settings apply: deny and ask rules, a
+narrower mode, a stricter sandbox and lower limits. The interactive CLI asks
+once. Headless runs never ask; they take a stored decision, `-trust-workspace`
+or `ABHED_TRUST_WORKSPACE=1`. `abhed trust` shows, grants and revokes. See
+[Workspace trust](docs/architecture/workspace-trust.md).
 
 **`abhed doctor` is the command to run first.** It checks the endpoint responds,
 that the model actually emits tool calls (the capability Abhed depends on), and
@@ -186,6 +194,7 @@ shutdown cause, so it does not exit with them.
 | `-allow '<rule>'` | Extra allow rules, comma-separated |
 | `-deny '<rule>'` | Extra deny rules |
 | `-output-format json` | Emit the event stream, one JSON event per line (`text` or `json`) |
+| `-trust-workspace` | Trust the workspace's `.abhed/config.json` for this run, without recording it |
 
 ### Slash commands
 

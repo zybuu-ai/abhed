@@ -41,6 +41,9 @@ such as the console's `web_search`, or a destructive command, such as
 `git restore .`, offers no **Always allow** and asks every time, whatever was
 allowed before ([which scopes are offered](04-permissions.md)). The chat line
 under an approved call names who approved it and any scope they chose. The
+agent can delegate with `task` and `tasks` as it does in the terminal; a call a
+subagent needs approved is asked here, labelled with the subagent, and
+answered the same way ([Parallel subagents](14-parallel-subagents.md)). The
 plan the agent keeps is drawn as a checklist. `/` in the composer opens
 commands — `/changes`, `/tools`, `/hawkeye`, `/stop` and the rest — and the
 permission mode is chosen beside it.

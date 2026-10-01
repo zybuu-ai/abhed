@@ -364,3 +364,44 @@ func TestForkBeforeADenialPastTheCutDropsTheTurn(t *testing.T) {
 		t.Fatalf("a fork between a call and its refusal kept:\n%s", dump(msgs))
 	}
 }
+
+// A pipeline's steps are the harness's calls, not the model's: a rebuilt
+// conversation holds only the skill call and its result, whole or cut mid-step.
+func TestForkLeavesOutPipelineSteps(t *testing.T) {
+	events := []Event{
+		ev(1, EvUserMessage, Message{Text: "research it"}),
+		ev(2, EvActionRequested, ActionRequested{CallID: "k1", Tool: "skill", Args: json.RawMessage(`{"name":"research"}`)}),
+		ev(3, EvActionRequested, ActionRequested{CallID: "step_1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`), Via: "skill research pipeline"}),
+		ev(4, EvObservation, Observation{CallID: "step_1", Tool: "bash", Content: "a.go"}),
+		ev(5, EvActionRequested, ActionRequested{CallID: "step_2", Tool: "read", Args: json.RawMessage(`{"path":"x"}`), Via: "skill research pipeline"}),
+		ev(6, EvActionDenied, map[string]string{"call_id": "step_2", "reason": "no", "step": "deny"}),
+		ev(7, EvObservation, Observation{CallID: "k1", Tool: "skill", Content: "summary"}),
+		ev(8, EvAgentMessage, Message{Text: "Done."}),
+	}
+	msgs, err := Fork(events, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// user, assistant[skill], tool(skill), assistant
+	if len(msgs) != 4 || len(msgs[1].ToolCalls) != 1 || msgs[1].ToolCalls[0].ID != "k1" || msgs[2].Content != "summary" {
+		t.Fatalf("pipeline steps entered the conversation:\n%s", dump(msgs))
+	}
+	cut, err := Fork(events, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The skill's result lies past the cut, so its turn goes and the request stays.
+	if len(cut) != 1 || cut[0].Role != model.RoleUser {
+		t.Fatalf("a cut inside a step kept more than the request:\n%s", dump(cut))
+	}
+	for _, m := range cut {
+		for _, c := range m.ToolCalls {
+			if c.ID != "k1" {
+				t.Fatalf("a cut inside a step replayed %s:\n%s", c.ID, dump(cut))
+			}
+		}
+		if m.ToolCallID != "" && m.ToolCallID != "k1" {
+			t.Fatalf("a step's result was replayed:\n%s", dump(cut))
+		}
+	}
+}

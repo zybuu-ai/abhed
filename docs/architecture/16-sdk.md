@@ -58,6 +58,10 @@ ask should be stricter than a terminal with somebody watching, not looser —
 defaulting to permissive would make the SDK quietly weaker than the same policy
 on the command line.
 
+Stored secrets are redacted with the store the CLI reads, before an event is
+recorded or delivered, before a tool's output reaches the model, and in what
+`Approve` is shown and what `Run` returns. No option turns this off.
+
 ## Driving it from another language
 
 `abhed rpc` speaks line-delimited JSON on stdin and stdout, for callers that are

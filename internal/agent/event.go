@@ -72,6 +72,10 @@ const (
 	// EvSubagentAction copies a subagent's refused or asked-about call into the
 	// parent's record; see SubagentAction.
 	EvSubagentAction EventType = "subagent.action"
+	// EvSubagentAsk copies a subagent's call that is waiting on the approver
+	// into the parent's record, so the person asked sees it where they are
+	// watching; see SubagentAsk. Its answer follows as subagent.action.
+	EvSubagentAsk EventType = "subagent.ask"
 )
 
 type Actor string
@@ -179,6 +183,19 @@ type ActionRequested struct {
 	// the way the CLI's [A] option does — without it, default mode re-prompts
 	// for every mutating call with no way to stop.
 	Scope string `json:"scope,omitempty"`
+	// Via names what issued the call for the agent, such as "skill research pipeline".
+	Via string `json:"via,omitempty"`
+	// RawArgs holds arguments refused as malformed, as sent; Args is then {}.
+	RawArgs string `json:"raw_args,omitempty"`
+	// Dropped names keys a fixed tool does not take, left out of Args before policy.
+	Dropped []string `json:"dropped_args,omitempty"`
+	// Resolved names arguments the harness set or rewrote before policy, such
+	// as a cluster the session's only login stands for, so an audit can tell
+	// them from the model's own.
+	Resolved []string `json:"resolved,omitempty"`
+	// Target is where the call sends what it carries, from the operator's
+	// config, such as the server a login's token goes to.
+	Target string `json:"target,omitempty"`
 }
 
 type Observation struct {
@@ -377,13 +394,24 @@ func NewMemStore() *MemStore {
 	}
 }
 
-// DeleteSession forgets a session's events. Subscribers are left alone: a live
-// stream that is cut mid-run should end because the run ended, not because the
-// rows vanished underneath it.
+// DeleteSession forgets a session's events, and its subagents', whose records
+// name it as their parent and hold its work. Subscribers are left alone: a
+// live stream that is cut mid-run should end because the run ended, not
+// because the rows vanished underneath it.
 func (m *MemStore) DeleteSession(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.events, sessionID)
+	gone := []string{sessionID}
+	for len(gone) > 0 {
+		id := gone[0]
+		gone = gone[1:]
+		delete(m.events, id)
+		for child, evs := range m.events {
+			if len(evs) > 0 && evs[0].ParentID == id {
+				gone = append(gone, child)
+			}
+		}
+	}
 	return nil
 }
 
@@ -406,15 +434,15 @@ func (m *MemStore) Append(ev Event) error {
 		}
 	}
 	m.events[ev.SessionID] = append(held, ev)
-	subs := append([]chan Event(nil), m.subs[ev.SessionID]...)
-	m.mu.Unlock()
-
-	for _, ch := range subs {
+	// Sent under the lock: Unsubscribe closes the channel under it, and a
+	// send racing that close panics. The sends never block, so this is cheap.
+	for _, ch := range m.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block the loop on a slow consumer
 		}
 	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -469,8 +497,11 @@ type Recorder struct {
 	sessionID string
 	parentID  string
 	mu        sync.Mutex
-	seq       int64
-	appended  int64 // the last seq the store took from this recorder, or advanced past
+	// writeMu holds from taking a seq to its append, so the store commits and
+	// publishes a session's events in seq order and a reader never sees a gap fill late.
+	writeMu  sync.Mutex
+	seq      int64
+	appended int64 // the last seq the store took from this recorder, or advanced past
 	// Redact, when set, rewrites a payload before it is written. Set by the
 	// caller from the secrets store; nil records payloads as they are.
 	Redact Redactor
@@ -552,6 +583,7 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 			return Event{}, err
 		}
 	}
+	r.writeMu.Lock()
 	r.mu.Lock()
 	r.seq++
 	ev := Event{
@@ -567,7 +599,9 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	}
 	r.mu.Unlock()
 
-	if err := r.store.Append(ev); err != nil {
+	err = r.store.Append(ev)
+	r.writeMu.Unlock()
+	if err != nil {
 		return ev, err
 	}
 	r.mu.Lock()

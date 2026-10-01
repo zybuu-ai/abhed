@@ -31,11 +31,11 @@ func TestStopHelper(t *testing.T) {
 	ws := os.Getenv("ABHED_STOP_WS")
 	switch os.Getenv("ABHED_STOP_HELPER") {
 	case "rpc":
-		os.Exit(rpcCmd(ws))
+		os.Exit(rpcCmd(ws, ""))
 	case "eval":
-		os.Exit(evalCmd(ws, filepath.Join(ws, "corpus"), filepath.Join(ws, "report.json")))
+		os.Exit(evalCmd(ws, filepath.Join(ws, "corpus"), filepath.Join(ws, "report.json"), ""))
 	case "acp":
-		os.Exit(acpCmd(ws, "test"))
+		os.Exit(acpCmd(ws, "test", ""))
 	case "p":
 		os.Exit(Main([]string{"-C", ws, "-p", "go"}))
 	}
@@ -85,6 +85,7 @@ func stopWorkspace(t *testing.T, url, mode string) (string, *exec.Cmd, io.WriteC
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
 	helper := exec.Command(os.Args[0], "-test.run=^TestStopHelper$")
 	helper.Env = append(os.Environ(), "ABHED_STOP_HELPER="+mode, "ABHED_STOP_WS="+ws, "HOME="+t.TempDir())
 	stdin, err := helper.StdinPipe()

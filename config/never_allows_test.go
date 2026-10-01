@@ -11,6 +11,7 @@ import (
 // A bash allow rule that can never match is named when the config loads, and
 // the config still loads.
 func TestAllowRuleThatNeverMatchesIsWarned(t *testing.T) {
+	t.Setenv(TrustEnv, "1") // these files are the person's own
 	t.Setenv("HOME", t.TempDir())
 	ws := t.TempDir()
 	path := filepath.Join(ws, ".abhed", "config.json")

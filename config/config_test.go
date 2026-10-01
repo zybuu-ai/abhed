@@ -15,6 +15,7 @@ func TestDefaultIsValid(t *testing.T) {
 }
 
 func TestProjectConfigOverridesUser(t *testing.T) {
+	t.Setenv(TrustEnv, "1") // these files are the person's own
 	ws := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
 	os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{
@@ -187,6 +188,25 @@ func TestSyntaxCheckSettingIsValidated(t *testing.T) {
 	}
 }
 
+// An allowlist entry of the wrong shape would match no host, so it is refused
+// rather than left to look like protection.
+func TestWebFetchAllowedHostsAreValidated(t *testing.T) {
+	for h, ok := range map[string]bool{
+		"docs.python.org": true, "*.github.com": true, "localhost": true,
+		"https://docs.python.org": false, "docs.python.org/3": false, "example.com:443": false,
+		"*": false, "*.": false, "a..b": false, "": false, "ex ample.com": false,
+		"*.com": false, "*.co.uk": true,
+		"93.184.216.34": true, "93.184.216.034": false, "name.123": false,
+		"*.216.34": false, "*.0x22": false, "1572395042": false,
+	} {
+		c := Default()
+		c.WebFetch.AllowedHosts = []string{h}
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("%q: err %v, want accepted=%v", h, err, ok)
+		}
+	}
+}
+
 // The GitHub keys are read only by a paid edition, but a mistake in them is
 // reported here, at load, in every edition.
 func TestGitHubAuthKeysAreValidated(t *testing.T) {
@@ -281,6 +301,7 @@ func TestSetsNamesWhatAFileSet(t *testing.T) {
 // The built-in local provider is offered for choosing only when it is the
 // default or a file names it; a file's own providers are always offered.
 func TestOfferedListsOnlyConfiguredProviders(t *testing.T) {
+	t.Setenv(TrustEnv, "1") // these files are the person's own
 	for _, c := range []struct {
 		file      string
 		wantLocal bool
@@ -309,5 +330,52 @@ func TestOfferedListsOnlyConfiguredProviders(t *testing.T) {
 		if !cfg.Offered("wx") {
 			t.Errorf("%s: the configured provider is not offered", c.file)
 		}
+	}
+}
+
+// k8s_login finds a cluster by name and sends it a token, so two clusters it
+// cannot tell apart, an empty name, or a server that is not https:// are
+// refused when the config loads rather than at the first login.
+func TestK8sClustersAreValidatedAtLoad(t *testing.T) {
+	good := K8sClusterConfig{Name: "prod", Server: "https://api.prod.example:6443"}
+	for name, clusters := range map[string][]K8sClusterConfig{
+		"duplicate":   {good, {Name: "Prod", Server: "https://other.example"}},
+		"empty name":  {{Name: "", Server: "https://x.example"}},
+		"spaced name": {{Name: " prod", Server: "https://x.example"}},
+		"http":        {{Name: "a", Server: "http://x.example"}},
+		"no host":     {{Name: "a", Server: "https://"}},
+		"userinfo":    {{Name: "a", Server: "https://u:p@x.example"}},
+		"query":       {{Name: "a", Server: "https://x.example/?access_token=t"}},
+		"fragment":    {{Name: "a", Server: "https://x.example/#t"}},
+		"not a url":   {{Name: "a", Server: "x.example"}},
+		"slash":       {{Name: "prod/east", Server: "https://x.example"}},
+		"colon":       {{Name: "context:prod", Server: "https://x.example"}},
+		"wildcard":    {{Name: "prod*", Server: "https://x.example"}},
+	} {
+		c := Default()
+		c.K8s.Clusters = clusters
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: accepted %v", name, clusters)
+		}
+	}
+	// The error names the problem, not the credential written into the URL.
+	for _, server := range []string{"https://admin:s3cr3t-pw@x.example", "https://tok-9f2e@x.example",
+		"http://admin:s3cr3t-pw@x.example", "https://admin:s3cr3t-pw@x.example:bad%zz"} {
+		c := Default()
+		c.K8s.Clusters = []K8sClusterConfig{{Name: "a", Server: server}}
+		err := c.Validate()
+		if err == nil {
+			t.Fatalf("accepted %s", server)
+		}
+		for _, secret := range []string{"s3cr3t-pw", "tok-9f2e", "admin"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("the error for %s repeats %s: %v", server, secret, err)
+			}
+		}
+	}
+	c := Default()
+	c.K8s.Clusters = []K8sClusterConfig{good, {Name: "lab", Server: "https://lab.example"}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("refused valid clusters: %v", err)
 	}
 }

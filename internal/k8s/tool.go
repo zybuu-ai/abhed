@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/kubescope"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -28,78 +32,403 @@ import (
 // worst it can do is act on a cluster the person running Abhed can already
 // reach — which is the same blast radius as their own kubectl.
 
-// Manager holds connections, opened lazily and reused.
+// Manager holds the operator's connections, opened lazily and reused. What
+// k8s_login adds is kept per session, never here: a server runs every user's
+// sessions in one process.
 type Manager struct {
 	cfg Config
 
 	mu       sync.Mutex
 	clusters map[string]*Cluster
-	// sessions holds credentials supplied at runtime by k8s_login, keyed by
-	// server URL. They live in memory for the life of the process and are
-	// never written anywhere: a token pasted into a chat should not end up in
-	// a config file, an event, or a log.
-	sessions map[string]sessionCred
-}
-
-type sessionCred struct {
-	token  string
-	server string
 }
 
 func NewManager(cfg Config) *Manager {
-	return &Manager{cfg: cfg, clusters: map[string]*Cluster{},
-		sessions: map[string]sessionCred{}}
+	return &Manager{cfg: cfg, clusters: map[string]*Cluster{}}
 }
 
-// login records a credential for this process only, replacing whatever the
-// kubeconfig held.
-func (m *Manager) login(server, token string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sessions[server] = sessionCred{token: token, server: server}
-	// Drop cached clients so the next call picks the new credential up rather
-	// than reusing a connection built with the expired one.
-	m.clusters = map[string]*Cluster{}
+// logins is what k8s_login added to one session: credentials keyed by the
+// declared cluster's name, and the clients built with them. Memory only.
+type logins struct {
+	mu       sync.Mutex
+	creds    map[string]sessionCred
+	clusters map[string]*Cluster
+	closed   bool
 }
 
-func (m *Manager) cluster(ctxName string) (*Cluster, error) {
+type sessionCred struct {
+	token     string
+	cluster   LoginCluster
+	namespace string
+}
+
+// Close forgets the session's credentials and drops its connections, when the
+// session goes.
+func (l *logins) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	closeClients(l.clusters)
+	l.clusters, l.creds, l.closed = map[string]*Cluster{}, map[string]sessionCred{}, true
+	return nil
+}
+
+func closeClients(cs map[string]*Cluster) {
+	for _, c := range cs {
+		if c.client != nil {
+			c.client.CloseIdleConnections()
+		}
+	}
+}
+
+// loginsKey keys a session's logins by manager, so two managers never meet.
+type loginsKey struct{ m *Manager }
+
+// logins returns the session's logins, made when create is set. Nil when the
+// session has none, or there is no session to keep them in.
+func (m *Manager) logins(sess *tools.Session, create bool) *logins {
+	var mk func() any
+	if create {
+		mk = func() any { return &logins{creds: map[string]sessionCred{}, clusters: map[string]*Cluster{}} }
+	}
+	l, _ := sess.Scoped(loginsKey{m}, mk).(*logins)
+	return l
+}
+
+// login records a credential for this session only.
+func (m *Manager) login(sess *tools.Session, cred sessionCred) error {
+	l := m.logins(sess, true)
+	if l == nil {
+		return fmt.Errorf("no session to hold the login in")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return fmt.Errorf("the session has ended; nothing was stored")
+	}
+	l.creds[cred.cluster.Name] = cred
+	// Drop the clients built with the old credential, connections included,
+	// so the next call uses the new one.
+	if c, ok := l.clusters[cred.cluster.Name]; ok {
+		closeClients(map[string]*Cluster{"": c})
+		delete(l.clusters, cred.cluster.Name)
+	}
+	return nil
+}
+
+// cluster picks the client for a call. A declared cluster the session logged
+// in to is reached only with its own login and TLS settings; a kubeconfig
+// context only with the operator's credential. A login token is never put on
+// a kubeconfig client, whose TLS and exec credential are not what was approved.
+func (m *Manager) cluster(sess *tools.Session, clusterName, ctxName string) (*Cluster, error) {
+	if clusterName != "" && ctxName != "" {
+		return nil, fmt.Errorf("name a cluster you logged in to or a kubeconfig context, not both")
+	}
+	l := m.logins(sess, false)
+	if clusterName != "" {
+		if l == nil {
+			return nil, fmt.Errorf("this session has not logged in to cluster %q; call k8s_login first", clusterName)
+		}
+		return l.cluster(m.cfg, clusterName)
+	}
+	if ctxName == "" && l != nil {
+		// ResolveArgs names a single login before policy judges the call, so
+		// an unnamed call here was judged as going to the kubeconfig: one
+		// that meets a login made since, or several, is refused, not guessed.
+		if _, n := l.only(); n > 1 {
+			return nil, fmt.Errorf("this session is logged in to more than one cluster; name one "+
+				"as cluster (%s), or a kubeconfig context", strings.Join(l.names(), ", "))
+		} else if n == 1 {
+			return nil, fmt.Errorf("this session is logged in to cluster %s; name it as cluster, "+
+				"or name a kubeconfig context", strings.Join(l.names(), ", "))
+		}
+	}
+
+	return m.kubeClient(ctxName)
+}
+
+// resolve puts a call in the form policy judges and the tool runs: the
+// session's only login named as its cluster when it names neither a cluster
+// nor a context, the resource in its canonical plural, and an empty
+// namespace filled with the one the call would use, the manifest's for an
+// apply. It reports which arguments it set or changed.
+func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) (json.RawMessage, []string, error) {
+	if m == nil {
+		return nil, nil, nil
+	}
+	args, err := tools.DecodeArgs(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	str := func(key string) string {
+		v, _ := tools.Lookup(args, key)
+		s, _ := v.(string)
+		return s
+	}
+	var changed []string
+	set := func(key, value string) {
+		if str(key) != value {
+			args[key] = value
+			changed = append(changed, key)
+		}
+	}
+	clusterName, ctxName := str("cluster"), str("context")
+	l := m.logins(sess, false)
+	if clusterName == "" && ctxName == "" && l != nil {
+		if name, n := l.only(); n == 1 {
+			clusterName = name
+			set("cluster", name)
+		}
+	}
+	resource := str("resource")
+	if resource != "" {
+		resource = kubescope.Resource(strings.ToLower(strings.TrimSpace(resource)))
+		set("resource", resource)
+	}
+	if err := checkSegments(str("namespace"), str("name"), resource); err != nil {
+		return nil, nil, err
+	}
+	ns := str("namespace")
+	clusterWide := kubescope.ClusterScopedResource(resource)
+	if apply && str("action") == "apply" {
+		mf, err := checkManifest(str("manifest"))
+		if err != nil {
+			return nil, nil, err
+		}
+		kind := ""
+		if mf != nil {
+			// Policy, the approver and the tool read this one encoding.
+			set("manifest", string(mf.Canonical))
+			kind = mf.Kind
+		}
+		namespaced, known := kubescope.KindScope(kind)
+		if kind != "" && !known {
+			return nil, nil, fmt.Errorf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash", kind)
+		}
+		clusterWide = kind != "" && !namespaced
+		if ns == "" && !clusterWide && mf != nil {
+			ns = mf.Namespace
+		}
+	}
+	switch {
+	case clusterWide:
+		// A cluster-scoped object has no namespace: one the model named is
+		// dropped, so no rule on a namespace reads as covering it.
+		if _, named := tools.Lookup(args, "namespace"); named {
+			delete(args, "namespace")
+			changed = append(changed, "namespace")
+		}
+	case ns == "":
+		ns = m.defaultNamespace(sess, clusterName, ctxName)
+		fallthrough
+	default:
+		if ns != "" {
+			set("namespace", ns)
+		}
+	}
+	if len(changed) == 0 {
+		return nil, nil, nil
+	}
+	out, err := json.Marshal(args)
+	if err != nil {
+		return nil, nil, err
+	}
+	sort.Strings(changed)
+	return out, changed, nil
+}
+
+var resourceRe = regexp.MustCompile(`^[a-z0-9]*$`)
+
+// checkSegments refuses a namespace, name or resource that could not stand as
+// one segment of a request path, so a call reaches only what it names.
+func checkSegments(ns, name, resource string) error {
+	if !kubescope.ValidNamespace(ns) {
+		return fmt.Errorf("namespace %q is not a namespace name (lower-case letters, digits and '-', or '*' for all)", ns)
+	}
+	if name != "" && !kubescope.ValidName(name) {
+		return fmt.Errorf("name %q cannot be a resource name: it holds '/', '?', '#', '%%', '..', a backslash, whitespace or a control character", name)
+	}
+	if !resourceRe.MatchString(resource) {
+		return fmt.Errorf("resource %q is not a resource type", resource)
+	}
+	return nil
+}
+
+// checkManifest decodes an apply's manifest strictly and refuses one whose
+// kind, apiVersion, name or namespace could not stand in a request path. An
+// empty manifest is left to the tool, which says why it is refused.
+func checkManifest(manifest string) (*kubescope.Manifest, error) {
+	if strings.TrimSpace(manifest) == "" {
+		return nil, nil
+	}
+	mf, err := kubescope.DecodeManifest(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("%w. Convert YAML to JSON first", err)
+	}
+	switch {
+	case mf.Kind != "" && !kubescope.ValidKind(mf.Kind):
+		return nil, fmt.Errorf("the manifest's kind %q is not a kind", mf.Kind)
+	case mf.APIVersion != "" && !kubescope.ValidAPIVersion(mf.APIVersion):
+		return nil, fmt.Errorf("the manifest's apiVersion %q is not group/version or version", mf.APIVersion)
+	case mf.Namespace == "*":
+		return nil, fmt.Errorf("the manifest's namespace cannot be '*'")
+	}
+	return mf, checkSegments(mf.Namespace, mf.Name, "")
+}
+
+// defaultNamespace is the namespace a call naming none uses: the login's, or
+// the kubeconfig context's. "" when it cannot be known, and the call will fail.
+func (m *Manager) defaultNamespace(sess *tools.Session, clusterName, ctxName string) string {
+	if clusterName != "" && ctxName != "" {
+		return ""
+	}
+	if clusterName != "" {
+		l := m.logins(sess, false)
+		if l == nil {
+			return ""
+		}
+		l.mu.Lock()
+		cred, ok := l.creds[clusterName]
+		l.mu.Unlock()
+		if !ok {
+			return ""
+		}
+		return orDefaultNS(cred.namespace, m.cfg.Namespace)
+	}
+	c, err := m.kubeClient(ctxName)
+	if err != nil {
+		return ""
+	}
+	return c.Namespace
+}
+
+// kubeClient returns the operator's client for a kubeconfig context, opened
+// once and kept, so an approval and the call it approves name one server.
+func (m *Manager) kubeClient(ctxName string) (*Cluster, error) {
+	cfg := m.cfg
+	if ctxName != "" {
+		cfg.Context = ctxName
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if c, ok := m.clusters[ctxName]; ok {
 		return c, nil
 	}
-	cfg := m.cfg
-	if ctxName != "" {
-		cfg.Context = ctxName
-	}
-	// A runtime login for an explicit server bypasses the kubeconfig entirely:
-	// there may not be a context for that cluster at all.
-	if len(m.sessions) == 1 && ctxName == "" {
-		for _, cred := range m.sessions {
-			c, err := OpenDirect(cred.server, cred.token, cfg.Namespace)
-			if err != nil {
-				return nil, err
-			}
-			m.clusters[ctxName] = c
-			return c, nil
-		}
-	}
 	c, err := Open(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// Read the map directly: m.mu is already held, and sessionFor would
-	// re-lock it. This deadlocked the first time.
-	if cred, ok := m.sessions[c.Server]; ok {
-		c.bearer = cred.token
-	}
 	m.clusters[ctxName] = c
+	return c, nil
+}
+
+// where describes the client cluster() would pick. A kubeconfig client is
+// opened, and kept for the call, only to read its server: opening one runs no
+// credential helper and sends nothing.
+func (m *Manager) where(sess *tools.Session, clusterName, ctxName string) string {
+	if clusterName != "" && ctxName != "" {
+		return "names both a cluster and a context, so the call will be refused"
+	}
+	l := m.logins(sess, false)
+	if clusterName == "" && ctxName == "" && l != nil {
+		if _, n := l.only(); n > 0 {
+			return "names no cluster while this session is logged in, so the call will be refused"
+		}
+	}
+	if clusterName != "" && ctxName == "" {
+		for _, lc := range m.cfg.Clusters {
+			if lc.Name != clusterName {
+				continue
+			}
+			how := "with this session's login"
+			if l == nil || !l.has(clusterName) {
+				how = "but this session has not logged in to it, so the call will fail"
+			}
+			return fmt.Sprintf("changes cluster %s at %s %s, %s", lc.Name, displayURL(lc.Server), how,
+				lc.Verification(m.cfg.CAFile))
+		}
+		return ""
+	}
+	// The client the call will use, not a fresh read of the file, which may
+	// have changed since that client was opened.
+	c, err := m.kubeClient(ctxName)
+	if err != nil {
+		// Open's errors name files, contexts and lines, never their values.
+		name := ctxName
+		if name == "" {
+			name = "(current)"
+		}
+		return fmt.Sprintf("kubeconfig context %q could not be opened, so the call will fail: %v", name, err)
+	}
+	return fmt.Sprintf("changes kubeconfig context %s at %s with the kubeconfig's own credential",
+		c.Name, displayURL(c.Server))
+}
+
+// displayURL is a server URL fit to show and record: any user, password,
+// query or fragment written into it is left out.
+func displayURL(server string) string {
+	u, err := url.Parse(server)
+	if err != nil {
+		return "(a server address that is not a URL)"
+	}
+	// A query or fragment can carry a token as readily as userinfo.
+	u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
+	return u.String()
+}
+
+func (l *logins) has(name string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.creds[name]
+	return ok
+}
+
+func (l *logins) only() (string, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for name := range l.creds {
+		return name, len(l.creds)
+	}
+	return "", 0
+}
+
+func (l *logins) names() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, 0, len(l.creds))
+	for name := range l.creds {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// cluster opens, or reuses, the client for one of the session's logins.
+func (l *logins) cluster(cfg Config, name string) (*Cluster, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cred, ok := l.creds[name]
+	if !ok {
+		return nil, fmt.Errorf("this session has not logged in to cluster %q; call k8s_login first", name)
+	}
+	if c, ok := l.clusters[name]; ok {
+		return c, nil
+	}
+	c, err := OpenLogin(cred.cluster, cfg.CAFile, cred.token, orDefaultNS(cred.namespace, cfg.Namespace))
+	if err != nil {
+		return nil, err
+	}
+	l.clusters[name] = c
 	return c, nil
 }
 
 // ---------------------------------------------------------------- read tool
 
 type GetTool struct{ M *Manager }
+
+// ResolveArgs puts the call in the form it runs in, its cluster, resource and
+// namespace named, so policy judges what the call reads.
+func (t GetTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
+	return t.M.resolve(sess, raw, false)
+}
 
 func (GetTool) Name() string  { return "k8s_get" }
 func (GetTool) Mutates() bool { return false }
@@ -117,6 +446,7 @@ func (GetTool) Schema() json.RawMessage {
     "resource":{"type":"string","description":"Resource type, plural: pods, deployments, services, nodes, namespaces, events, configmaps. Use 'logs' to fetch pod logs."},
     "name":{"type":"string","description":"A single resource name. Omit to list all of that type."},
     "namespace":{"type":"string","description":"Namespace. Omit for the context's default; use '*' for all namespaces."},
+    "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login. Omit to use the only login, or the kubeconfig."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster. Omit for the current context."},
     "selector":{"type":"string","description":"Label selector, e.g. app=web."},
     "container":{"type":"string","description":"For logs: which container in the pod."},
@@ -127,6 +457,7 @@ func (GetTool) Schema() json.RawMessage {
 }
 
 type getArgs struct {
+	Cluster   string `json:"cluster"`
 	Resource  string `json:"resource"`
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -136,7 +467,7 @@ type getArgs struct {
 	Tail      int    `json:"tail"`
 }
 
-func (t GetTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
+func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a getArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for k8s_get: %v", err)
@@ -144,7 +475,7 @@ func (t GetTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage)
 	if strings.TrimSpace(a.Resource) == "" {
 		return errf("resource is required (pods, deployments, nodes, logs, …)")
 	}
-	c, err := t.M.cluster(a.Context)
+	c, err := t.M.cluster(sess, a.Cluster, a.Context)
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -176,12 +507,15 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 	if ns == "" || ns == "*" {
 		ns = c.Namespace
 	}
+	if err := checkSegments(ns, a.Name, ""); err != nil || ns == "*" {
+		return errf("logs needs a pod name and a namespace that can stand in a request path: %v", err)
+	}
 	tail := a.Tail
 	if tail <= 0 {
 		tail = 200
 	}
 	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d",
-		ns, a.Name, tail)
+		url.PathEscape(ns), url.PathEscape(a.Name), tail)
 	if a.Container != "" {
 		path += "&container=" + urlEscape(a.Container)
 	}
@@ -198,6 +532,12 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 // ---------------------------------------------------------------- write tool
 
 type ApplyTool struct{ M *Manager }
+
+// ResolveArgs puts the call in the form it runs in, its cluster and
+// namespace named, so policy judges what the call changes.
+func (t ApplyTool) ResolveArgs(sess *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
+	return t.M.resolve(sess, raw, true)
+}
 
 func (ApplyTool) Name() string { return "k8s_apply" }
 
@@ -222,6 +562,7 @@ func (ApplyTool) Schema() json.RawMessage {
     "resource":{"type":"string","description":"For delete/scale/restart: resource type, plural."},
     "name":{"type":"string","description":"For delete/scale/restart: the resource name."},
     "namespace":{"type":"string","description":"Namespace. Omit for the context's default."},
+    "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster."},
     "replicas":{"type":"integer","description":"For scale: the desired replica count."}
   },
@@ -230,6 +571,7 @@ func (ApplyTool) Schema() json.RawMessage {
 }
 
 type applyArgs struct {
+	Cluster   string `json:"cluster"`
 	Action    string `json:"action"`
 	Manifest  string `json:"manifest"`
 	Resource  string `json:"resource"`
@@ -239,12 +581,23 @@ type applyArgs struct {
 	Replicas  *int   `json:"replicas"`
 }
 
-func (t ApplyTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
+// Target tells the person approving a write which cluster it changes, at
+// which server, and with whose credential: this session's login or the
+// operator's kubeconfig.
+func (t ApplyTool) Target(sess *tools.Session, raw json.RawMessage) string {
+	var a applyArgs
+	if json.Unmarshal(raw, &a) != nil || t.M == nil {
+		return ""
+	}
+	return t.M.where(sess, a.Cluster, a.Context)
+}
+
+func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a applyArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for k8s_apply: %v", err)
 	}
-	c, err := t.M.cluster(a.Context)
+	c, err := t.M.cluster(sess, a.Cluster, a.Context)
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -266,39 +619,49 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 	if strings.TrimSpace(a.Manifest) == "" {
 		return errf("apply needs a manifest.")
 	}
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(a.Manifest), &obj); err != nil {
-		return errf("manifest must be JSON: %v. Convert YAML to JSON first.", err)
+	mf, err := kubescope.DecodeManifest(a.Manifest)
+	if err != nil {
+		return errf("%v. Convert YAML to JSON first.", err)
 	}
-	kind, _ := obj["kind"].(string)
-	apiVersion, _ := obj["apiVersion"].(string)
+	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
 		return errf("manifest needs both apiVersion and kind.")
 	}
-	meta, _ := obj["metadata"].(map[string]any)
-	name, _ := meta["name"].(string)
+	// One object, in one namespace, is what the approval and the rules judged.
+	if _, list := mf.Object["items"]; list || strings.HasSuffix(kind, "List") {
+		return errf("apply takes one object per call; apply each item of the %s on its own.", kind)
+	}
 	if name == "" {
 		return errf("manifest metadata.name is required.")
 	}
+	if !kubescope.ValidKind(kind) || !kubescope.ValidAPIVersion(apiVersion) {
+		return errf("the manifest's kind %q or apiVersion %q cannot stand in a request path.", kind, apiVersion)
+	}
 	ns := a.Namespace
 	if ns == "" {
-		if v, ok := meta["namespace"].(string); ok {
-			ns = v
-		} else {
+		if ns = mf.Namespace; ns == "" {
 			ns = c.Namespace
 		}
 	}
+	if err := checkSegments(ns, name, ""); err != nil || ns == "*" {
+		return errf("the manifest's name and namespace must each stand as one path segment: %v", err)
+	}
+	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
 	base := apiBase(apiVersion) + "/" + pluralFor(kind)
-	if isNamespaced(kind) {
+	namespaced, known := kubescope.KindScope(kind)
+	if !known {
+		return errf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash.", kind)
+	}
+	if namespaced {
 		base = apiBase(apiVersion) + "/namespaces/" + ns + "/" + pluralFor(kind)
 	}
 
 	// Server-side apply: one PATCH that creates or updates, so there is no
 	// read-modify-write race between checking existence and writing.
 	path := base + "/" + name + "?fieldManager=abhed&force=true"
-	body, _ := json.Marshal(obj)
-	data, err := c.doPatch(ctx, path, body, "application/apply-patch+yaml")
+	// The bytes sent are the canonical encoding the rules and the approver saw.
+	data, err := c.doPatch(ctx, path, mf.Canonical, "application/apply-patch+yaml")
 	if err != nil {
 		return errf("%v", err)
 	}
@@ -461,14 +824,13 @@ var appsResources = map[string]bool{
 	"deployments": true, "statefulsets": true, "daemonsets": true, "replicasets": true,
 }
 
-var clusterScoped = map[string]bool{
-	"nodes": true, "namespaces": true, "persistentvolumes": true,
-	"clusterroles": true, "clusterrolebindings": true, "storageclasses": true,
-}
-
 func resourcePath(c *Cluster, resource, namespace, name string) (string, error) {
 	r := strings.ToLower(strings.TrimSpace(resource))
-	r = normalizeResource(r)
+	r = kubescope.Resource(r)
+	if err := checkSegments(namespace, name, r); err != nil {
+		return "", err
+	}
+	name = url.PathEscape(name)
 
 	var base string
 	switch {
@@ -488,7 +850,7 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 			resource, strings.Join(knownResources(), ", "))
 	}
 
-	if clusterScoped[r] {
+	if kubescope.ClusterScopedResource(r) {
 		if name != "" {
 			return base + "/" + r + "/" + name, nil
 		}
@@ -498,6 +860,12 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 	ns := namespace
 	if ns == "" {
 		ns = c.Namespace
+	}
+	if ns != "*" {
+		if !kubescope.ValidNamespace(ns) {
+			return "", fmt.Errorf("namespace %q is not a namespace name", ns)
+		}
+		ns = url.PathEscape(ns)
 	}
 	if ns == "*" {
 		if name != "" {
@@ -509,47 +877,6 @@ func resourcePath(c *Cluster, resource, namespace, name string) (string, error) 
 		return base + "/namespaces/" + ns + "/" + r + "/" + name, nil
 	}
 	return base + "/namespaces/" + ns + "/" + r, nil
-}
-
-// normalizeResource accepts the singular and short forms people type.
-func normalizeResource(r string) string {
-	switch r {
-	case "po", "pod":
-		return "pods"
-	case "deploy", "deployment":
-		return "deployments"
-	case "svc", "service":
-		return "services"
-	case "ns", "namespace":
-		return "namespaces"
-	case "no", "node":
-		return "nodes"
-	case "cm", "configmap":
-		return "configmaps"
-	case "sts", "statefulset":
-		return "statefulsets"
-	case "ds", "daemonset":
-		return "daemonsets"
-	case "rs", "replicaset":
-		return "replicasets"
-	case "ing", "ingress":
-		return "ingresses"
-	case "job":
-		return "jobs"
-	case "cj", "cronjob":
-		return "cronjobs"
-	case "ev", "event":
-		return "events"
-	case "pvc":
-		return "persistentvolumeclaims"
-	case "pv":
-		return "persistentvolumes"
-	case "sa":
-		return "serviceaccounts"
-	case "secret":
-		return "secrets"
-	}
-	return r
 }
 
 func knownResources() []string {
@@ -586,15 +913,6 @@ func pluralFor(kind string) string {
 	return k + "s"
 }
 
-func isNamespaced(kind string) bool {
-	switch strings.ToLower(kind) {
-	case "namespace", "node", "persistentvolume", "clusterrole",
-		"clusterrolebinding", "storageclass", "customresourcedefinition":
-		return false
-	}
-	return true
-}
-
 func errf(format string, a ...any) tools.Result {
 	return tools.Result{Content: fmt.Sprintf(format, a...), IsError: true}
 }
@@ -617,7 +935,7 @@ func urlEscape(s string) string {
 
 // ---------------------------------------------------------------- login tool
 
-// LoginTool accepts a cluster credential supplied during a conversation.
+// LoginTool logs in to a cluster during a conversation.
 //
 // This exists because of a real failure: a user pasted an `oc login --token=...
 // --server=...` command into the chat, approved the agent running it, and got
@@ -628,13 +946,22 @@ func urlEscape(s string) string {
 // were failing too.
 //
 // Handling the credential directly fixes all three: it never touches the
-// sandbox, it lives in the manager for the life of the process, and it
-// replaces the stale kubeconfig entry.
+// sandbox, it lives with the session, and it replaces the stale kubeconfig
+// entry for that session.
 //
-// The token is held in memory only. It is never written to the kubeconfig, the
-// event store, or a log — a credential pasted into a chat should not become a
-// durable artifact of that chat.
-type LoginTool struct{ M *Manager }
+// The token is taken from the secrets store by name, never as an argument: an
+// argument is judged, shown for approval, recorded and sent back to the model
+// on every turn. It goes only to a cluster the operator declared in
+// k8s.clusters, over verified TLS: a server the model chose could be anyone's.
+// The login belongs to the session that made it, since a server runs every
+// user's sessions in one process.
+type LoginTool struct {
+	M *Manager
+	// Secret returns a stored secret's value; nil means no store.
+	Secret func(name string) (string, error)
+	// SecretNames is what the model may name, listed in the description.
+	SecretNames []string
+}
 
 func (LoginTool) Name() string { return "k8s_login" }
 
@@ -643,61 +970,156 @@ func (LoginTool) Name() string { return "k8s_login" }
 // That deserves the same confirmation as a write.
 func (LoginTool) Mutates() bool { return true }
 
-func (LoginTool) Description() string {
-	return "Authenticate to a Kubernetes or OpenShift cluster with a token, for this " +
-		"session only. Use this when the user supplies a token and server — including " +
-		"when they paste an `oc login --token=... --server=...` command. " +
+// FixedArgs: a token sent the old way is dropped, not kept in the record.
+func (LoginTool) FixedArgs() {}
+
+// SecretArgs puts token_secret to a secret(NAME) rule.
+func (LoginTool) SecretArgs() []string { return []string{"token_secret"} }
+
+func (t LoginTool) Description() string {
+	d := "Authenticate to a Kubernetes or OpenShift cluster, for this session only, with a " +
+		"token the user has stored with `abhed secret set NAME`. Pass the cluster's name from " +
+		"the list below and the secret's NAME, never the token or a server URL. When the user " +
+		"offers a token or pastes an `oc login --token=... --server=...` command, ask them to " +
+		"store the token with `abhed secret set NAME` and tell you the name. " +
 		"Do NOT run `oc login` through bash: the sandbox blocks access to the kubeconfig, " +
 		"and a login inside a bash call does not survive to the next one."
+	if names := t.clusterNames(); len(names) > 0 {
+		d += " Clusters: " + strings.Join(names, ", ") + "."
+	} else {
+		d += " No clusters are declared for login; the operator adds them in k8s.clusters."
+	}
+	if len(t.SecretNames) > 0 {
+		d += " Stored secrets: " + strings.Join(t.SecretNames, ", ") + "."
+	}
+	return d
 }
 
 func (LoginTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "server":{"type":"string","description":"API server URL, e.g. https://api.cluster.example.com:6443"},
-    "token":{"type":"string","description":"Bearer token, e.g. sha256~..."},
+    "cluster":{"type":"string","description":"Name of a cluster the operator declared, e.g. prod. Not a URL."},
+    "token_secret":{"type":"string","description":"NAME of the stored secret holding the bearer token, e.g. OCP_TOKEN. Never the token."},
     "namespace":{"type":"string","description":"Default namespace for later calls."}
   },
-  "required":["server","token"]
+  "required":["cluster","token_secret"]
 }`)
 }
 
 type loginArgs struct {
-	Server    string `json:"server"`
-	Token     string `json:"token"`
-	Namespace string `json:"namespace"`
+	Cluster     string `json:"cluster"`
+	TokenSecret string `json:"token_secret"`
+	Namespace   string `json:"namespace"`
 }
 
-func (t LoginTool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
+func (t LoginTool) clusterNames() []string {
+	if t.M == nil {
+		return nil
+	}
+	out := make([]string, 0, len(t.M.cfg.Clusters))
+	for _, c := range t.M.cfg.Clusters {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
+// declared finds the named cluster. Anything else, a URL included, is refused
+// before a secret is read or a request is made.
+func (t LoginTool) declared(name string) (LoginCluster, error) {
+	name = strings.TrimSpace(name)
+	if t.M != nil {
+		for _, c := range t.M.cfg.Clusters {
+			if c.Name == name {
+				return c, nil
+			}
+		}
+	}
+	names := t.clusterNames()
+	if len(names) == 0 {
+		return LoginCluster{}, fmt.Errorf("no clusters are declared for k8s_login; the operator " +
+			"adds them in k8s.clusters, and a token is sent to no other server")
+	}
+	return LoginCluster{}, fmt.Errorf("%q is not a declared cluster (declared: %s). A token is "+
+		"sent only to a cluster the operator declared in k8s.clusters, never to a URL",
+		name, strings.Join(names, ", "))
+}
+
+// Precheck refuses an undeclared cluster before anyone is asked to approve it.
+func (t LoginTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
+	var a loginArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return err
+	}
+	_, err := t.declared(a.Cluster)
+	return err
+}
+
+// Target tells the person approving, and the record, where the token goes.
+func (t LoginTool) Target(_ *tools.Session, raw json.RawMessage) string {
+	var a loginArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return ""
+	}
+	lc, err := t.declared(a.Cluster)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("sends the token in secret %s to cluster %s at %s, %s",
+		a.TokenSecret, lc.Name, displayURL(lc.Server), lc.Verification(t.M.cfg.CAFile))
+}
+
+func (t LoginTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a loginArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return errf("Invalid arguments for k8s_login: %v", err)
 	}
-	a.Server = strings.TrimSpace(a.Server)
-	a.Token = strings.TrimSpace(a.Token)
-	if a.Server == "" || a.Token == "" {
-		return errf("Both server and token are required.")
+	// Without a session the login would have nowhere of its own to live.
+	if sess == nil {
+		return errf("k8s_login needs a session to hold the login; nothing was stored.")
 	}
-	if !strings.HasPrefix(a.Server, "http") {
-		a.Server = "https://" + a.Server
-	}
-
-	c, err := OpenDirect(a.Server, a.Token, orDefaultNS(a.Namespace, t.M.cfg.Namespace))
+	lc, err := t.declared(a.Cluster)
 	if err != nil {
 		return errf("%v", err)
 	}
+	a.TokenSecret = strings.TrimSpace(a.TokenSecret)
+	if a.TokenSecret == "" {
+		return errf("token_secret is required. Ask the user to store the token with " +
+			"`abhed secret set NAME` and pass that NAME as token_secret.")
+	}
+	if !secrets.ValidName(a.TokenSecret) {
+		return errf("token_secret is the NAME of a stored secret, such as OCP_TOKEN, not the " +
+			"token. Ask the user to store the token with `abhed secret set NAME`.")
+	}
+	if t.Secret == nil {
+		return errf("No secrets store is available here, so k8s_login cannot read a token.")
+	}
+	token, err := t.Secret(a.TokenSecret)
+	if err != nil {
+		return errf("%v", err)
+	}
+	token = strings.TrimSpace(token)
+
+	c, err := OpenLogin(lc, t.M.cfg.CAFile, token, orDefaultNS(a.Namespace, t.M.cfg.Namespace))
+	if err != nil {
+		return errf("%v", err)
+	}
+	// Only the check uses this client; the session opens its own.
+	defer c.client.CloseIdleConnections()
 	// Verify before reporting success. Storing a credential that does not work
 	// would turn one clear failure into a confusing one on the next call.
 	if _, err := c.Do(ctx, "GET", "/version", nil); err != nil {
-		return errf("Could not authenticate to %s: %v", a.Server, err)
+		return errf("Could not authenticate to cluster %s at %s: %v", lc.Name, displayURL(lc.Server), err)
 	}
 
-	t.M.login(a.Server, a.Token)
+	if err := t.M.login(sess, sessionCred{token: token, cluster: lc, namespace: a.Namespace}); err != nil {
+		return errf("%v", err)
+	}
 	return tools.Result{Content: fmt.Sprintf(
-		"Authenticated to %s (namespace %s). This credential is held in memory for "+
-			"this Abhed process only and is not written to your kubeconfig. "+
-			"k8s_get will now use it.", a.Server, c.Namespace)}
+		"Authenticated to cluster %s at %s (namespace %s, %s) with secret %s. The login "+
+			"holds for this session only and is not written to your kubeconfig. "+
+			"Name it as cluster %q in k8s_get and k8s_apply.", lc.Name, displayURL(lc.Server), c.Namespace,
+		lc.Verification(t.M.cfg.CAFile), a.TokenSecret, lc.Name)}
 }
 
 func orDefaultNS(a, b string) string {

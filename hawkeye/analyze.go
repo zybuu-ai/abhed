@@ -79,7 +79,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			c := &Call{
 				Seq: e.Seq, CallID: a.CallID, Tool: a.Tool, Args: clip(string(a.Args), 2000),
 				Subject: policy.Subject(a.Tool, a.Args), Decision: "pending", Reason: a.Reason,
-				Actor: string(e.Actor),
+				Actor: string(e.Actor), Via: a.Via,
 			}
 			calls[a.CallID] = c
 			order = append(order, a.CallID)

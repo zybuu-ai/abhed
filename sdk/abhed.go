@@ -16,6 +16,9 @@
 // is set: Options may tighten what it sets and never loosen it, and New
 // returns an error for an option that would.
 //
+// Stored secrets become [secret:NAME] as on the command line, before the record,
+// OnEvent, the model, Approve or a returned answer sees them; nothing turns it off.
+//
 // One guarantee does NOT come with it by default: this package builds no
 // sandbox unless the managed configuration sets one or Options.Sandbox asks
 // for the configured one. Otherwise bash runs with the privileges of the
@@ -25,11 +28,14 @@
 package abhed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -39,7 +45,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
 
 // Event is one recorded action or observation. The stream is the session: a
@@ -64,8 +73,20 @@ type Options struct {
 
 	// ConfigDir loads .abhed/config.json from a directory, the same file the
 	// CLI reads, with the user's and the managed file. Provider overrides what
-	// it names. Without it only the managed file, if any, is read.
+	// it names. Without it only the managed file, if any, is read. That file
+	// is untrusted until the person trusts it (`abhed trust`); until then
+	// only the settings that tighten apply. Agent.WorkspaceTrust reports it.
 	ConfigDir string
+
+	// WorkspaceTrust overrides the recorded decision about ConfigDir's file:
+	// config.TrustGranted takes it whole for this agent, config.TrustRefused
+	// takes only what tightens. Empty follows the decision and ABHED_TRUST_WORKSPACE.
+	WorkspaceTrust config.TrustChoice
+
+	// AllowDefaultModel runs on the configured default model when ConfigDir's
+	// untrusted file names its own and was ignored. Without it New returns
+	// ErrUntrustedModel then, unless WorkspaceTrust or Provider is set.
+	AllowDefaultModel bool
 
 	// Provider names the model directly, for a caller that would rather not
 	// keep a config file.
@@ -101,8 +122,13 @@ type Options struct {
 	OnEvent func(Event)
 
 	// MaxTurns bounds one conversation. Zero uses the default, or the managed
-	// limits.max_turns, which it may not exceed.
+	// limits.max_turns, which it may not exceed. Set, it wins over the
+	// ConfigDir and user files, below the managed ceiling.
 	MaxTurns int
+
+	// ConfiguredLimits takes limits.max_turns from the configuration, as the
+	// CLI does, when MaxTurns is zero. Off, only a managed value binds.
+	ConfiguredLimits bool
 
 	// SystemPrompt replaces the built-in prompt entirely. Most callers want
 	// AppendSystem instead.
@@ -110,14 +136,35 @@ type Options struct {
 	// AppendSystem adds host-specific rules to the built-in prompt.
 	AppendSystem string
 
-	// Extensions are subprocesses that may veto a tool call.
+	// Extensions are subprocesses that may veto a tool call. With
+	// ConfiguredTools, the tools they provide are offered too.
 	Extensions []ExtensionConfig
+
+	// Warn receives what the tool set skipped or found unsafe as it was
+	// built: an MCP server or extension that did not start, a cluster or
+	// host that skips verification. Nil discards it.
+	Warn func(format string, args ...any)
+
+	// ConfiguredTools gives the agent the tool set the CLI runs with, as the
+	// configuration enables it: subagents (task and tasks, sharing this
+	// agent's policy, approver and budget), MCP servers, the tools extensions
+	// provide, skills and their pipelines, web search, retrieval, rag corpora,
+	// and the Kubernetes and SSH tools, and the built-in prompt carries the
+	// ABHED.md memory files. Off, the agent has the built-in file, shell and
+	// todo tools only and no memory files, so an embedder decides what else
+	// it reaches and reads. A configuration file ConfigDir holds that is not
+	// trusted adds none of it.
+	ConfiguredTools bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
 	Sandbox bool
 }
+
+// ErrUntrustedModel is New's refusal to run on another model than the one
+// ConfigDir's file names, because that file is not trusted.
+var ErrUntrustedModel = errors.New("the workspace configuration's model settings were ignored because it is not trusted")
 
 // Provider names a model endpoint.
 type Provider struct {
@@ -136,9 +183,16 @@ type Agent struct {
 	registry *tools.Registry
 	loop     *agent.Loop
 	store    *agent.MemStore
-	host     *extension.Host
+	set      *toolset.Set
 	id       string
 	fwd      *forwarder
+	redact   *secrets.Fresh
+	trust    config.WorkspaceTrust
+	// running counts the runs in progress, under forkMu: Fork holds it while
+	// it forks and refuses while a run is in progress, and a run starting
+	// meanwhile waits for the fork to finish.
+	forkMu  sync.Mutex
+	running int
 }
 
 // New builds an agent.
@@ -150,11 +204,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// The managed configuration applies with or without a config file.
 	load := config.LoadManaged
 	if opts.ConfigDir != "" {
-		load = func() (config.Config, error) { return config.Load(opts.ConfigDir) }
+		load = func() (config.Config, error) {
+			return config.LoadWith(opts.ConfigDir, config.LoadOptions{Trust: opts.WorkspaceTrust})
+		}
 	}
 	cfg, err := load()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	if keys := untrustedModelKeys(cfg.Workspace); len(keys) > 0 && opts.Provider == nil &&
+		opts.WorkspaceTrust == config.TrustAsStored && !opts.AllowDefaultModel {
+		return nil, fmt.Errorf("abhed: %w (%s in %s): trust it with `abhed trust grant`, or set Options.WorkspaceTrust, "+
+			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
 		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
@@ -177,6 +238,14 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// The CLI's redactor; a store that exists but cannot be loaded refuses the session.
+	first, err := secrets.Default().LoadRedactor()
+	if err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
+	// Read again as the store changes: bash reads it by name at each call,
+	// so a secret added during the session is redacted from then on.
+	red := secrets.Default().Fresh(first)
 	adapter, err := provider.Adapter()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -191,6 +260,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 
 	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	// Set whatever the tool set holds: web_fetch with no host list asks.
+	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
@@ -229,14 +300,22 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		tools.AddStatePath(p)
 	}
 
-	host := extension.NewHost(nil)
-	specs := append(cfg.ExtensionSpecs(), opts.Extensions...)
-	if len(specs) > 0 {
-		host.Load(ctx, specs)
-		if host.Len() > 0 {
-			pol.Hooks = append(pol.Hooks, host.PolicyHook(ctx, "embedded"))
+	parts := toolset.Vetoes
+	if opts.ConfiguredTools {
+		parts = toolset.All
+	}
+	set := toolset.Build(ctx, cfg, toolset.Options{
+		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
+		Vault: secrets.Default(), Warn: opts.Warn,
+	})
+	// A skill's own directory is reachable, as it is from the command line.
+	for _, dir := range set.SkillDirs() {
+		if err := sess.AddRoot(dir); err != nil {
+			set.Close()
+			return nil, fmt.Errorf("abhed: skill directory: %w", err)
 		}
 	}
+	toolset.Police(set.Extensions, pol, "embedded")
 
 	store := agent.NewMemStore()
 	id := fmt.Sprintf("embedded-%d", time.Now().UnixNano())
@@ -244,35 +323,55 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)
 	rec := agent.NewRecorder(fwd, id, "")
+	rec.Redact = red
 
+	loopCfg := toolset.LoopConfig(cfg, "")
+	// The file's max_turns binds an embedded agent when the organisation sets
+	// it, or when the caller asks for the configured limits.
+	loopCfg.MaxTurns = agent.DefaultConfig().MaxTurns
+	if (opts.MaxTurns > 0 || opts.ConfiguredLimits || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
+		loopCfg.MaxTurns = cfg.Limits.MaxTurns
+	}
+
+	approver := approverFor(opts.Approve, red)
+	registry := set.Registry
+	budget := toolset.Budget(cfg)
+	if opts.ConfiguredTools {
+		// The child's events stay in the store, reached through the parent's
+		// subagent.* events; OnEvent carries this agent's own record, as the
+		// command line's JSON output does.
+		f := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
+			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red}
+		registry = toolset.Subagents(registry, f, cfg.Limits.MaxParallelSubagents)
+	}
+
+	// Set once the tools are known, so the prompt names only those there.
 	system := opts.SystemPrompt
-	if system == "" {
+	switch {
+	case system != "":
+	case opts.ConfiguredTools:
+		system = toolset.SystemPrompt(opts.Workspace, adapter, set.SkillListing, registry.Names())
+	default:
+		// No ABHED.md: an embedder running on repositories it does not own
+		// takes the workspace's instructions only by opting in.
 		system = agent.BuildSystemPrompt(agent.BuildOptions{
 			Profile: "main", Workspace: opts.Workspace,
-			// Named as the adapter names itself, so SetModel can rewrite the line.
 			Model: adapter.Profile().Name, ContextWindow: adapter.Profile().ContextWindow,
+			Tools: registry.Names(),
 		})
 	}
 	if opts.AppendSystem != "" {
 		system += "\n\n" + opts.AppendSystem
 	}
-
-	loopCfg := agent.DefaultConfig()
 	loopCfg.SystemPrompt = system
-	if (opts.MaxTurns > 0 || cfg.ManagedSets("limits.max_turns")) && cfg.Limits.MaxTurns > 0 {
-		loopCfg.MaxTurns = cfg.Limits.MaxTurns
-	}
 
-	registry := tools.NewRegistry(
-		tools.Read{}, tools.Write{}, tools.Edit{},
-		tools.Glob{}, tools.Grep{}, bash, tools.Todo{},
-	)
-
-	loop := agent.NewLoop(adapter, registry, pol, approverFor(opts.Approve),
-		sess, rec, loopCfg)
+	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
+	toolset.Summarize(loop.Compactor, set.Extensions, id)
+	loop.Budget = budget
 
-	a := &Agent{loop: loop, store: store, host: host, id: id, registry: registry, fwd: fwd}
+	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
+	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace}
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -281,6 +380,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 // Run sends a prompt and returns the agent's final message.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
+	defer a.startRun()()
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err
@@ -319,16 +419,19 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 	return nil
 }
 
-// RunStructured is RunJSON without the decode: the validated JSON as sent.
+// RunStructured is RunJSON without the decode: the validated JSON, with stored
+// secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
+	defer a.startRun()()
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
 	if err != nil {
 		var nr agent.ErrNoResult
 		if errors.As(err, &nr) {
-			return nil, ErrNoResult{Reason: string(nr.Reason), LastMessage: nr.Last}
+			return nil, ErrNoResult{Reason: string(nr.Reason), LastMessage: redactText(a.redact, nr.Last)}
 		}
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	raw = redactJSON(a.redact, raw)
 	if reason != agent.TermCompleted {
 		return raw, fmt.Errorf("abhed: ended as %s", reason)
 	}
@@ -355,6 +458,29 @@ func (a *Agent) Continue(ctx context.Context, prompt string) (string, error) {
 // boundary. Safe to call from another goroutine.
 func (a *Agent) Steer(text string) { a.loop.Steer(text) }
 
+// Queued counts steering messages not yet delivered: sent while no run was in
+// progress, or as the last run ended. The next run delivers them first.
+func (a *Agent) Queued() int { return len(a.loop.Queued()) }
+
+// RunQueued continues the conversation with only the queued steering
+// messages, for one that arrived as the last run ended. With none it does
+// nothing and returns the last message.
+func (a *Agent) RunQueued(ctx context.Context) (string, error) {
+	defer a.startRun()()
+	reason, err := a.loop.RunQueued(ctx)
+	if err != nil {
+		return "", err
+	}
+	if reason != agent.TermCompleted {
+		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+	}
+	return a.lastMessage(), nil
+}
+
+// WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
+// of its settings were ignored because it is not trusted.
+func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
+
 // Events returns everything recorded so far.
 func (a *Agent) Events() []Event {
 	evs, _ := a.store.Events(a.id)
@@ -368,10 +494,36 @@ func (a *Agent) Usage() Usage { return a.loop.Usage() }
 // conversation as it stands. It records a conversation.forked event, so the
 // steps after throughSeq stay in the record but leave the conversation (see
 // Live), and it refuses a step past the end or one an earlier fork abandoned.
+// It returns ErrForkDuringRun while Run, Continue, RunJSON or RunStructured is
+// in progress: a fork rewrites the conversation and ends its logins, which
+// must not happen under a turn. A run started while a fork is under way
+// waits for it.
 func (a *Agent) Fork(throughSeq int64) error {
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
+	if a.running > 0 {
+		return ErrForkDuringRun
+	}
 	_, err := a.loop.ForkTo(a.Events(), throughSeq)
 	return err
 }
+
+// startRun counts a run in progress, after any fork under way, and returns
+// what ends it.
+func (a *Agent) startRun() func() {
+	a.forkMu.Lock()
+	a.running++
+	a.forkMu.Unlock()
+	return func() {
+		a.forkMu.Lock()
+		a.running--
+		a.forkMu.Unlock()
+	}
+}
+
+// ErrForkDuringRun is Fork's refusal while a run is in progress. Fork once
+// the run has returned.
+var ErrForkDuringRun = errors.New("abhed: cannot fork while a run is in progress; fork after it returns")
 
 // ExportHTML renders the session as a self-contained page.
 func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) }
@@ -402,10 +554,12 @@ func (a *Agent) Flush(ctx context.Context) error { return a.fwd.flush(ctx) }
 // errClosed is Flush's answer once the agent is closed and delivery has stopped.
 var errClosed = errors.New("abhed: the agent is closed; no more events are delivered")
 
-// Close releases the extensions and stops delivering events.
+// Close releases the extensions and MCP servers, the logins and hosts the
+// agent's session made, and stops delivering events.
 func (a *Agent) Close() {
 	a.fwd.close()
-	a.host.Close()
+	a.set.Close()
+	a.loop.Session.CloseScoped()
 }
 
 // Providers lists the model provider types this build supports.
@@ -417,21 +571,48 @@ func (f approverFn) Approve(ctx context.Context, tool string, args json.RawMessa
 	return f(ctx, tool, args, d)
 }
 
-func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error)) agent.Approver {
+func approverFor(f func(context.Context, string, json.RawMessage, Decision) (bool, error), red *secrets.Fresh) agent.Approver {
 	if f == nil {
 		// No approver means nobody to ask, so anything needing approval is
 		// refused. Defaulting to yes would make an embedded agent quietly more
 		// permissive than the same policy on the command line.
 		return agent.AutoApprove{Yes: false}
 	}
-	return approverFn(f)
+	// The approver is shown the call as the record holds it, stored values redacted.
+	return approverFn(func(ctx context.Context, tool string, args json.RawMessage, d Decision) (bool, error) {
+		d.Reason, d.Scope = redactText(red, d.Reason), redactText(red, d.Scope)
+		return f(ctx, tool, redactJSON(red, args), d)
+	})
+}
+
+// withheld stands in for a payload whose redaction left invalid JSON.
+var withheld = json.RawMessage(`{"withheld":"` + agent.Withheld + `"}`)
+
+// redactJSON replaces stored values in a JSON payload. It fails closed: a
+// payload redaction broke is withheld, never returned as it was.
+func redactJSON(red *secrets.Fresh, b json.RawMessage) json.RawMessage {
+	out := red.Redact(b)
+	if !json.Valid(out) && !bytes.Equal(out, b) {
+		return withheld
+	}
+	return out
+}
+
+// redactText replaces stored values in text, withholding it if that fails.
+func redactText(red *secrets.Fresh, s string) string {
+	raw, _ := json.Marshal(s)
+	var out string
+	if json.Unmarshal(red.Redact(raw), &out) != nil {
+		return agent.Withheld
+	}
+	return out
 }
 
 func (a *Agent) lastMessage() string {
 	msgs := a.loop.Messages()
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == model.RoleAssistant && msgs[i].Content != "" {
-			return msgs[i].Content
+			return redactText(a.redact, msgs[i].Content)
 		}
 	}
 	return ""
@@ -442,4 +623,15 @@ func orDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// untrustedModelKeys are the model settings an untrusted file could not make.
+func untrustedModelKeys(st config.WorkspaceTrust) []string {
+	var out []string
+	for _, k := range st.Ignored {
+		if k.Key == "model" || strings.HasPrefix(k.Key, "model.") || strings.HasPrefix(k.Key, "custom_providers") {
+			out = append(out, k.Key)
+		}
+	}
+	return out
 }
