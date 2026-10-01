@@ -30,7 +30,7 @@ check('a subagent.action settles its card', !cards().some(c => c.isConnected && 
 // end settles it. The run's own ask ends with the run.
 const answerable = text => cards().some(c => c.isConnected && c.textContent.includes(text) && c.querySelector('.yes'));
 render({seq:5, type:'subagent.ask', payload:{session:'child', subagent:'clean up', request_id:'cev11', call_id:'c1', tool:'bash', args:{command:'touch later'}}});
-render({seq:6, type:'action.requested', payload:{call_id:'own1', tool:'write', args:{path:'x.md'}, requires_approval:true}});
+render({seq:6, id:'ev6own', type:'action.requested', payload:{call_id:'own1', tool:'write', args:{path:'x.md'}, requires_approval:true}});
 check('the run\'s own ask is drawn', answerable('x.md'));
 render({seq:7, type:'session.ended', payload:{reason:'max_turns', turns:3, background:1}});
 check('after a run ends with background owed, the subagent\'s ask stays answerable', answerable('touch later'));
@@ -46,6 +46,8 @@ check('the closing end settles what is left', !answerable('touch never'));
 render({seq:11, type:'subagent.ask', payload:{session:'child', subagent:'s', request_id:'cev13', call_id:'c3', tool:'bash', args:{command:'touch gone'}}});
 render({seq:12, type:'session.ended', payload:{reason:'completed', turns:4, background:0}});
 check('an end that owes nothing settles a subagent\'s ask too', !answerable('touch gone'));
+// The cases below run during a live run, as the page is before an end.
+live = true;
 // A subagent's start and finish read in the turn, before the answer after them.
 render({seq:30, type:'user.message', payload:{text:'fan out'}});
 render({seq:31, type:'action.requested', payload:{call_id:'t1', tool:'task', args:{prompt:'x', description:'probe'}}});

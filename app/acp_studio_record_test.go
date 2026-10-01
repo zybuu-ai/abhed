@@ -172,6 +172,14 @@ func TestStudioRenameForkCompact(t *testing.T) {
 	if stop, _ := r.prompt(child, "go on"); stop != "end_turn" {
 		t.Fatalf("fork prompt: %q", stop)
 	}
+	// More exchanges than compaction keeps verbatim, so there is older
+	// history to summarise.
+	for _, said := range []string{"two", "three", "four", "five"} {
+		r.model.script(say(said))
+		if stop, _ := r.prompt(id, "next"); stop != "end_turn" {
+			t.Fatalf("prompt: %q", stop)
+		}
+	}
 	var c map[string]any
 	r.model.script(say("compacted summary"))
 	r.cl.ok("_abhed/session/compact", map[string]any{"sessionId": id}, &c)
