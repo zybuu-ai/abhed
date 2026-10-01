@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-10-02
+
 ### Security
 
 - The console and `/ide` drew a tool call's output with its bidi, isolate,
