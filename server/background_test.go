@@ -100,6 +100,9 @@ func newBGServerWith(t *testing.T, st EventStore, tune func(*config.Config, *Opt
 	t.Helper()
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
+	// These tests follow a result delivered while idle, so they run notify;
+	// a test of waking says so with its tune.
+	cfg.Subagents.Wake = "notify"
 	ad := newBGAdapter(names...)
 	if st == nil {
 		st = agent.NewMemStore()

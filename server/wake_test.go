@@ -16,9 +16,13 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 func autoWake(c *config.Config, _ *Options) { c.Subagents.Wake = "auto" }
+
+// defaultWake runs the wake mode an unconfigured server has.
+func defaultWake(c *config.Config, _ *Options) { c.Subagents.Wake = config.Default().Subagents.Wake }
 
 // With wake auto an idle result starts a wake run on the server: the record
 // says it woke, the result arrives at the wake's boundary, and the session
@@ -229,7 +233,7 @@ func (b *bgServer) openStream(id string) <-chan string {
 // starts a turn on its own: the stream already open carries session.woken
 // naming the task, then the model's reply to the result, then the end.
 func TestServerWakesByDefault(t *testing.T) {
-	b := newBGServer(t, nil, "one")
+	b := newBGServerWith(t, nil, defaultWake, "one")
 	id := b.start("bg:one", false)
 	<-b.ended
 	waitUntil(t, "state background", func() bool { return b.state(id) == "background" })
@@ -277,7 +281,7 @@ func TestServerWakesByDefault(t *testing.T) {
 // A result that arrives while a turn is running is delivered at that run's
 // next boundary, inside it: no wake, and the run answers it before it ends.
 func TestServerResultMidRunDeliveredAtBoundary(t *testing.T) {
-	b := newBGServer(t, nil, "one")
+	b := newBGServerWith(t, nil, defaultWake, "one")
 	b.ad.slow = 600 * time.Millisecond
 	id := b.start("bg:one", false)
 	waitUntil(t, "the child", func() bool { return b.live(id).Loop.Background.Live() == 1 })
@@ -303,7 +307,7 @@ func TestServerResultMidRunDeliveredAtBoundary(t *testing.T) {
 // Stop between a result arriving and its wake holds the wake: the result is
 // recorded as skipped, and no turn starts.
 func TestServerStopPreventsWake(t *testing.T) {
-	b := newBGServer(t, nil, "one")
+	b := newBGServerWith(t, nil, defaultWake, "one")
 	id := b.start("bg:one", false)
 	<-b.ended
 	live := b.live(id)
@@ -326,7 +330,7 @@ func TestServerStopPreventsWake(t *testing.T) {
 // The hourly cap holds: once it is used, a later result is delivered
 // without a wake, as skipped:wake_limit.
 func TestServerWakeCapHonoured(t *testing.T) {
-	b := newBGServerWith(t, nil, func(c *config.Config, _ *Options) { c.Subagents.MaxWakesPerHour = 1 }, "one", "two")
+	b := newBGServerWith(t, nil, func(c *config.Config, o *Options) { defaultWake(c, o); c.Subagents.MaxWakesPerHour = 1 }, "one", "two")
 	id := b.start("bg:one", false)
 	<-b.ended
 	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"bg:two"}`); rec.Code != http.StatusAccepted {
@@ -345,4 +349,21 @@ func TestServerWakeCapHonoured(t *testing.T) {
 	if c := countType(b.events(id), agent.EvSessionWoken); c != 1 {
 		t.Fatalf("%d wakes with a cap of one", c)
 	}
+}
+
+// A woken turn that ends with nothing owed lets the row go, as a closing
+// end does in notify: another node may claim the session.
+func TestWokenTurnReleasesTheRow(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	b := newBGServerWith(t, st, defaultWake, "one")
+	id := b.start("bg:one", false)
+	<-b.ended
+	if ok, _ := st.ClaimResume(context.Background(), id); ok {
+		t.Fatal("another node claimed a session whose children run here")
+	}
+	b.ad.release("one")
+	waitUntil(t, "the woken turn's end", func() bool {
+		return countType(b.events(id), agent.EvSessionWoken) == 1 && b.state(id) == "done"
+	})
+	waitUntil(t, "the row released", func() bool { ok, _ := st.ClaimResume(context.Background(), id); return ok })
 }
