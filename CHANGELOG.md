@@ -221,7 +221,9 @@ Two changes need action before upgrading:
   It is recorded after the run's `session.ended` (marked `suggesting`) as the
   new `suggestion.offered` event, then the call as a `model.call` with
   `purpose: suggestion`, counted in the session's tokens and budget. The text is cleaned of control and format
-  characters and capped at 80 characters, and none is offered that tells
+  characters and capped at 80 characters. The call asks for low reasoning
+  effort and thinking off wherever the provider takes them, and asks once
+  more without them if the model refuses. None is offered that tells
   anyone to ignore, bypass or override a policy, an approval, a rule, the
   sandbox or safety, suggests something destructive (delete, `rm -rf`,
   force-push, drop, wipe, disable), or asks to print, show or send a secret: it is model text, which what the agent

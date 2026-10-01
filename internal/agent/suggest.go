@@ -99,12 +99,14 @@ func (l *Loop) planSuggestion(ctx context.Context) *suggestJob {
 		Messages:  []model.Message{{Role: model.RoleUser, Content: input}},
 		MaxTokens: suggestMaxTokens,
 	}
-	// Thinking off where the provider can turn it off; else the least effort.
-	switch prof := a.Profile().Sampling; {
-	case prof.Think:
+	// Thinking off and the least effort, wherever the provider takes them,
+	// whatever the session's own effort: a reasoning model spends the cap otherwise.
+	prof := a.Profile().Sampling
+	if prof.Think {
 		off := false
 		req.Params.Think = &off
-	case l.Config.Effort != model.EffortNone:
+	}
+	if prof.Effort {
 		req.Effort = model.EffortLow
 	}
 	return &suggestJob{sg: sg, adapter: a, req: req, timeout: timeout, turn: l.turns}
@@ -204,6 +206,16 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	cctx, cancel := context.WithTimeout(ctx, j.timeout)
 	start := time.Now()
 	text, usage, err := suggestCall(cctx, j.adapter, j.req)
+	// A model that refuses the reasoning settings is asked once more without them.
+	if err != nil && cctx.Err() == nil && (j.req.Effort != model.EffortNone || j.req.Params.Think != nil) {
+		plain := j.req
+		plain.Effort, plain.Params.Think = model.EffortNone, nil
+		var more model.Usage
+		text, more, err = suggestCall(cctx, j.adapter, plain)
+		usage.InputTokens += more.InputTokens
+		usage.OutputTokens += more.OutputTokens
+		usage.CachedInputTokens += more.CachedInputTokens
+	}
 	cancel()
 	took := time.Since(start)
 

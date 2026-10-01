@@ -513,8 +513,10 @@ func TestSuggestionRequestLeavesRoomToThink(t *testing.T) {
 		think    bool
 		want     model.EffortLevel
 	}{
-		{"think off", model.Sampling{Think: true, Effort: true}, model.EffortHigh, true, model.EffortNone},
+		{"think off and low", model.Sampling{Think: true, Effort: true}, model.EffortHigh, true, model.EffortLow},
 		{"effort low", model.Sampling{Effort: true}, model.EffortHigh, false, model.EffortLow},
+		{"low with no session effort", model.Sampling{Effort: true}, model.EffortNone, false, model.EffortLow},
+		{"think off only", model.Sampling{Think: true}, model.EffortNone, true, model.EffortNone},
 		{"neither", model.Sampling{}, model.EffortNone, false, model.EffortNone},
 	} {
 		stub := &suggestStub{sampling: tc.sampling, replies: []stubReply{{text: "Done."}, {text: "Next"}}}
@@ -550,6 +552,7 @@ func TestRiskySuggestionsAreDropped(t *testing.T) {
 		"Disable the hooks for this run",
 		"Skip the checks and merge",
 		"Run it without asking me",
+		"Yes, go ahead and force-push the main branch",
 	} {
 		if got := CleanSuggestion(risky); got != "" {
 			t.Errorf("CleanSuggestion(%q) = %q, want none", risky, got)
@@ -613,5 +616,24 @@ func TestSuggestionNeverAsksToRevealASecret(t *testing.T) {
 	l.WaitSuggestion(context.Background())
 	if offered, _ := suggestions(t, store); len(offered) != 0 {
 		t.Fatalf("offered %+v: it asks to show a stored secret", offered)
+	}
+}
+
+// A model that refuses the reasoning settings gets the suggestion asked again
+// without them.
+func TestSuggestionRetriesWithoutReasoningSettings(t *testing.T) {
+	stub := &suggestStub{sampling: model.Sampling{Effort: true}, replies: []stubReply{
+		{text: "Done."}, {err: errors.New("400: reasoning_effort is not supported")}, {text: "Run the tests"}}}
+	l, store := suggestLoop(t, stub)
+	if _, err := l.Run(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	l.WaitSuggestion(context.Background())
+	reqs := stub.requests()
+	if len(reqs) != 3 || reqs[1].Effort != model.EffortLow || reqs[2].Effort != model.EffortNone {
+		t.Fatalf("requests %d; efforts %q", len(reqs), []model.EffortLevel{reqs[1].Effort, reqs[len(reqs)-1].Effort})
+	}
+	if offered, _ := suggestions(t, store); len(offered) != 1 || offered[0].Text != "Run the tests" {
+		t.Fatalf("offered %+v", offered)
 	}
 }
