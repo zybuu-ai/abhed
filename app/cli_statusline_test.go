@@ -46,6 +46,11 @@ func testSandbox(t *testing.T, ws string) sandbox.Sandbox {
 	if err != nil {
 		t.Skipf("no process sandbox here: %v", err)
 	}
+	// The statusline never has network, and a runner that cannot unshare a
+	// network namespace cannot start bwrap; the sandbox CI job runs these.
+	if probe, err := runStatusline(context.Background(), sb, ws, "echo probe", ui.StatusModel{}); err != nil || probe != "probe" {
+		t.Skipf("the process sandbox cannot run a command here: %v", err)
+	}
 	return sb
 }
 

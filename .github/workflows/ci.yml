@@ -119,10 +119,12 @@ jobs:
       # skip only as pending on an item listed here, each still being built:
       # "editor", fixes to the line editor (keys typed before raw mode, and a
       # data race when typing while output arrives). Delete an item once it
-      # lands, and its tests must then pass.
+      # lands, and its tests must then pass. "netns" is this runner, which
+      # cannot unshare a network namespace for the statusline; the sandbox
+      # job below runs those tests and lets none skip.
       - name: End-to-end CLI tests actually ran
         env:
-          ABHED_CLITEST_PENDING: "editor"
+          ABHED_CLITEST_PENDING: "editor netns"
         run: |
           set -euo pipefail
           python3 scripts/ci/clitest-skips.py --self-test
@@ -203,6 +205,16 @@ jobs:
           set -euo pipefail
           go test ./app/ -run 'TestStatuslineScriptPinned$' -count=1 -v > pin.log 2>&1 || { cat pin.log; exit 1; }
           grep -q -- "--- PASS: TestStatuslineScriptPinned" pin.log || { echo "the pin test did not run and pass:"; cat pin.log; exit 1; }
+      # The statusline runs with no network, so on the hosted runner its tests
+      # skip; here each must run and pass.
+      - name: The statusline runs under bubblewrap
+        run: |
+          set -euo pipefail
+          go test ./app/ -run 'TestRunStatusline$|TestTUIStatusLineCommand$|TestTUIStatusLineIsSanitized$' -count=1 -v > status.log 2>&1 || { cat status.log; exit 1; }
+          go test ./internal/clitest/ -run 'TestStatuslineFromUserConfig$' -count=1 -v >> status.log 2>&1 || { cat status.log; exit 1; }
+          for t in TestRunStatusline TestTUIStatusLineCommand TestTUIStatusLineIsSanitized TestStatuslineFromUserConfig; do
+            grep -q -- "--- PASS: $t " status.log || { echo "$t did not run and pass:"; grep -- "$t" status.log || true; exit 1; }
+          done
       # The kernel does not bound root's processes, and this job runs as root,
       # so the process limit is checked as an unprivileged user.
       - name: The process limit binds an unprivileged user's commands

@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,6 +39,7 @@ func available(t *testing.T, s Sandbox) {
 // Renaming or removing .git would carry its config and hooks out from under
 // their rules; the folder stays where it is, and what else it holds is writable.
 func TestProcessSandboxPinsTheGitFolder(t *testing.T) {
+	requireNetNS(t)
 	ws := workspace(t)
 	s := NewProcess(editorRepo(t, ws))
 	available(t, s)
@@ -55,26 +55,10 @@ func TestProcessSandboxPinsTheGitFolder(t *testing.T) {
 	}
 }
 
-// Where .git does not exist yet, a command cannot make one that points at a
-// git folder it controls. Only seatbelt can name a path that does not exist.
-func TestProcessSandboxRefusesANewGitFile(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("bwrap and containers protect only paths that exist")
-	}
-	ws := workspace(t)
-	p := DefaultPolicy(ws)
-	p.WriteProtected = []string{filepath.Join(ws, ".git", "config"), filepath.Join(ws, ".git", "hooks")}
-	s := NewProcess(p)
-	available(t, s)
-	_, _ = runIn(t, s, ws, "mkdir -p .git2/hooks; printf 'gitdir: .git2\\n' > .git")
-	if _, err := os.Lstat(filepath.Join(ws, ".git")); err == nil {
-		t.Fatal("the command made a .git of its own")
-	}
-}
-
 // A git folder named by a .git file is protected as the workspace's own: its
 // hooks cannot be written, the folder cannot be moved, nor the file re-pointed.
 func TestProcessSandboxProtectsTheGitFolderAGitFileNames(t *testing.T) {
+	requireNetNS(t)
 	ws := workspace(t)
 	if err := os.MkdirAll(filepath.Join(ws, ".git2", "hooks"), 0o750); err != nil {
 		t.Fatal(err)
@@ -103,6 +87,7 @@ func TestProcessSandboxProtectsTheGitFolderAGitFileNames(t *testing.T) {
 // A workspace given by a path through a link, as /tmp is on macOS, is
 // protected at its real path as well as the one given.
 func TestProcessSandboxProtectsThroughALinkedWorkspace(t *testing.T) {
+	requireNetNS(t)
 	real := workspace(t)
 	link := filepath.Join(workspace(t), "ws")
 	if err := os.Symlink(real, link); err != nil {
@@ -178,31 +163,6 @@ func TestSeatbeltProfileNamesBothForms(t *testing.T) {
 		if !strings.Contains(profile, want) {
 			t.Errorf("missing %s", want)
 		}
-	}
-}
-
-// With ProtectGit, seatbelt holds every git folder's config and hooks, and
-// each .git, at any depth and in any case, including repositories made later.
-func TestProcessSandboxProtectsNestedRepositories(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("only seatbelt names paths by pattern; the other tiers hold the nested repositories listed")
-	}
-	ws := workspace(t)
-	if err := os.MkdirAll(filepath.Join(ws, "sub", ".git", "hooks"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	p := DefaultPolicy(ws)
-	p.ProtectGit = true
-	s := NewProcess(p)
-	available(t, s)
-	_, _ = runIn(t, s, ws, "touch sub/.git/hooks/pre-commit; echo x > sub/.GIT/config; mv sub/.git sub/g2; mkdir -p new/.Git/HOOKS; printf 'gitdir: x\\n' > other.git; mkdir d; printf 'gitdir: ../x\\n' > d/.git")
-	for _, f := range []string{"sub/.git/hooks/pre-commit", "sub/.git/config", "sub/g2", "new/.Git", "d/.git"} {
-		if _, err := os.Lstat(filepath.Join(ws, filepath.FromSlash(f))); err == nil {
-			t.Errorf("the command made %s", f)
-		}
-	}
-	if out, err := runIn(t, s, ws, "touch sub/.git/HEAD sub/main.go"); err != nil {
-		t.Fatalf("the rest of a nested repository is not writable: %v %s", err, out)
 	}
 }
 

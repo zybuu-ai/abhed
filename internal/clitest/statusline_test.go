@@ -3,9 +3,13 @@
 package clitest
 
 import (
+	"context"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 const statuslineConfig = `{"sandbox":{"min_tier":"none"},"statusline":{"command":"grep -o '\"provider\":\"[a-z]*\"'; printf '\\033]0;pwned\\007'"},` +
@@ -15,6 +19,7 @@ const statuslineConfig = `{"sandbox":{"min_tier":"none"},"statusline":{"command"
 // shown in the footer, with no escape but colour reaching the terminal.
 func TestStatuslineFromUserConfig(t *testing.T) {
 	t.Parallel()
+	requireNetNS(t)
 	h := StartRun(t, Opts{UserConfig: statuslineConfig, Cols: 120, Script: "text \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\""})
 	h.WaitText("Type a task")
 	// A few tasks, in case the first status line is slow to come.
@@ -56,4 +61,19 @@ func TestStatuslineFromUntrustedWorkspaceIgnored(t *testing.T) {
 		t.Fatal("an untrusted workspace's statusline ran")
 	}
 	h.Exit(0)
+}
+
+// requireNetNS holds a test whose statusline runs under bwrap, never with
+// network, on a runner that cannot unshare a network namespace; the sandbox
+// CI job, which can, runs it.
+func requireNetNS(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "bwrap", "--unshare-net", "--ro-bind", "/", "/", "/bin/true").CombinedOutput(); err != nil {
+		Pending(t, "netns", "this runner cannot unshare a network namespace: "+strings.TrimSpace(string(out)))
+	}
 }

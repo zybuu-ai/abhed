@@ -57,7 +57,9 @@ func Binary(t testing.TB) string {
 		}
 		pkg := "github.com/zybuu-ai/abhed/internal/managed"
 		none := filepath.Join(build.dir, "no-managed")
-		args := []string{"build", "-o", build.bin, "-ldflags",
+		// -buildvcs=false: a version stamped from the checkout differs on every
+		// commit, and the screens and /release-notes expect a development build.
+		args := []string{"build", "-buildvcs=false", "-o", build.bin, "-ldflags",
 			"-X " + pkg + ".ConfigFile=" + filepath.Join(none, "config.json") + " -X " + pkg + ".AgentsDir=" + filepath.Join(none, "agents") +
 				" -X " + pkg + ".testDirEnv=" + managedEnv}
 		if raceEnabled {

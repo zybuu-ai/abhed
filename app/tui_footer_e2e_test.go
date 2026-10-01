@@ -48,6 +48,7 @@ func TestTUIFooterShowsTheSession(t *testing.T) {
 
 // A status line command's output replaces the built-in status row.
 func TestTUIStatusLineCommand(t *testing.T) {
+	testSandbox(t, t.TempDir())
 	stub, ws := tuiWorkspace(t, `,"statusline":{"command":"cat >/dev/null; printf 'custom \\033[32mstatus\\033[0m line'"}`)
 	r := startTUI(t, stub, ws, 100, 30)
 	r.waitFor("the custom status line", false, func(s string) bool { return strings.Contains(s, "custom status line") })
@@ -96,6 +97,7 @@ func TestTUIShiftTabDuringATurn(t *testing.T) {
 // A status line command's output keeps its text and colour, and nothing
 // that could write the clipboard or retitle the window reaches the terminal.
 func TestTUIStatusLineIsSanitized(t *testing.T) {
+	testSandbox(t, t.TempDir())
 	stub, ws := tuiWorkspace(t, `,"statusline":{"command":"cat >/dev/null; printf '\\033]52;c;U1BPT0Y=\\007\\033]0;title\\007\\033[2J\\033[32mok\\033[0m line'"}`)
 	r := startTUI(t, stub, ws, 100, 30)
 	r.waitFor("the status line", false, func(s string) bool { return strings.Contains(s, "ok line") })

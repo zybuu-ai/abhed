@@ -46,10 +46,11 @@ func BenchmarkAppendSynced(b *testing.B) {
 // TestBudgets holds the plan's budgets: an unsynced append within 1 ms, a
 // synced one within 15 ms, and verifying 100,000 events within 2 s. Each is
 // the median of several runs, so one slow moment on a busy machine does not
-// fail it; they are skipped under -short and the race detector.
+// fail it; they are skipped under -short, the race detector and coverage,
+// whose instrumented builds are not what the budgets are about.
 func TestBudgets(t *testing.T) {
-	if testing.Short() || raceEnabled || os.Getenv("ABHED_SKIP_BUDGETS") != "" {
-		t.Skip("budgets are measured without -short and -race")
+	if testing.Short() || raceEnabled || testing.CoverMode() != "" || os.Getenv("ABHED_SKIP_BUDGETS") != "" {
+		t.Skip("budgets are measured without -short, -race and -cover")
 	}
 	s, err := Open(Options{Dir: t.TempDir()})
 	if err != nil {
