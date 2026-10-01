@@ -180,7 +180,8 @@ inside it. So, for the terminal:
 - the sandbox is the enforcement boundary;
 - `bash` deny rules are a screen: the server rebuilds each line from the keys
   it forwards and refuses a matching line before its Enter reaches the shell
-  (`server/terminal.go`, `shellInput` in `server/pty.go`), recording the
+  (`internal/termline`, `shellInput` in `server/pty.go`, and the same in
+  `app/acp_shell.go` for Abhed Studio's interactive terminal), recording the
   refusal. It does not see what the shell makes of the line: history recall
   (arrow keys, `!!`, Ctrl-R, Ctrl-O), completion, variables and other
   expansions, a line continued with `\` (`rm -rf \` then `/` passes both
