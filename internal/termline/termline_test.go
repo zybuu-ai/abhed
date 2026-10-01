@@ -150,3 +150,44 @@ func TestScrubTakesWithheldLinesOutOfOutput(t *testing.T) {
 		t.Fatalf("an echoed line was scrubbed: %q", got)
 	}
 }
+
+// Scrub fails closed where the echo is not the line's text as recorded.
+func TestScrubFailsClosed(t *testing.T) {
+	entered := func(keys string, known, secret, ahead bool) *Capture {
+		c := NewCapture("u1", func(agent.TerminalInput) {})
+		chunks := c.Keys([]byte(keys))
+		e := chunks[len(chunks)-1].Enter
+		e.Known, e.Secret, e.Ahead = known, secret, ahead
+		c.Entered(e)
+		c.Flush()
+		return c
+	}
+	// Edited as typed ahead: the terminal showed "swordfiX sh99", which is not
+	// the line, so nothing of the output is kept.
+	c := entered("swordfiX\x7fsh99\n", true, true, true)
+	if got := c.Scrub("BUSY\nswordfiX sh99\nlate 11\n"); got != unscrubbable {
+		t.Fatalf("an edited withheld line left the output: %q", got)
+	}
+	// Ctrl-U threw away text the terminal had shown.
+	c = entered("hunter55\x15xyz\n", true, true, true)
+	if got := c.Scrub("hunter55\n"); got != unscrubbable {
+		t.Fatalf("a line cut with Ctrl-U left the output: %q", got)
+	}
+	// Split by other output, or cut where the kept output begins: any line
+	// holding four of its characters in a row goes.
+	c = entered("correcthorse\n", true, true, true)
+	got := c.Scrub("orsebattery\nprogress 10%\ncorrec[2K 50%thorse\nnothing here\n")
+	if got != "[withheld]\nprogress 10%\n[withheld]\nnothing here\n" {
+		t.Fatalf("fragments were kept: %q", got)
+	}
+	// A short secret goes where it stands alone, however padded.
+	c = entered(" ab \n", true, true, true)
+	if got := c.Scrub("x\n  ab\t\nab cd\n"); got != "x\n[withheld]\nab cd\n" {
+		t.Fatalf("short line: %q", got)
+	}
+	// An edited command at bash's own prompt is not a secret, and the output stays.
+	c = entered("git sta\tus\r", true, false, false)
+	if got := c.Scrub("git status\nOn branch main\n"); got != "git status\nOn branch main\n" {
+		t.Fatalf("an edited command at the prompt took the output: %q", got)
+	}
+}

@@ -11,12 +11,20 @@ All notable changes to Abhed are recorded here. The format follows
 ### Security
 
 - A password typed ahead of `read -s` in the workbench shell or Studio's
-  interactive terminal was recorded without its text as a line, but when it
-  arrived after bash had handed the terminal back with echo on and before
-  `read -s` turned echo off, the terminal echoed it, and the latest output
-  that the shell's end records kept it in clear. Whether it did depended on
-  timing, so a slower machine leaked it more often. Every line recorded
-  without its text is now also taken out of that output, as `[withheld]`.
+  interactive terminal could reach the record in clear, two ways.
+  - On the container tier, where the terminal cannot be asked, a line typed
+    while a command still ran was recorded with its text. It is now recorded
+    without its text unless Abhed's own prompt had come back; so is a line
+    on the process and none tiers when the terminal could not be asked.
+  - On every tier, a line recorded without its text could still be in the
+    latest output that the shell's end records: arriving after bash had
+    handed the terminal back with echo on and before `read -s` turned echo
+    off, it was echoed. Whether it was depended on timing, so slower
+    machines leaked it more often. Each line of that output holding four or
+    more characters in a row of a withheld line is now replaced by
+    `[withheld]`, and when a withheld line was edited as it was typed, the
+    output is withheld whole. Pieces shorter than four characters split
+    apart by other output are not caught (docs/guide/16-workbench.md).
 - The console and `/ide` drew a tool call's output with its bidi, isolate,
   joiner, zero-width and control characters applied, so a background task's
   description echoed in "Started in background" could reorder or hide part
@@ -277,6 +285,14 @@ Also:
 
 ### Fixed
 
+- A single-role server applying its schema at start, or `abhed migrate`,
+  could deadlock with a live node on the same database (1.2.2 and earlier):
+  the schema altered sessions before events, while an append takes them the
+  other way round. Postgres then failed one side, losing the event or the
+  start. Applying the schema now takes each table it alters without waiting
+  and tries again while one is busy, one server at a time, so it neither
+  deadlocks with appends, orphan claims or the statistics query, nor holds
+  up appends behind it.
 - Found before release: a wake run could act for a user whose access had
   been revoked. A woken run now asks for its owner again before each model
   call and before each call is approved, and ends as `owner_inactive` once

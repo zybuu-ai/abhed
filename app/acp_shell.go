@@ -135,6 +135,8 @@ func (c *acpConn) pumpShell(t *acpTerminal) {
 			sh.mu.Unlock()
 			if sh.local {
 				sh.follow(chunk)
+			} else {
+				sh.prompt.OutputUnasked(chunk)
 			}
 			c.output(t, chunk)
 		}
@@ -247,14 +249,20 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 // ask fills in what the terminal says at a line's Enter, where this process
 // holds it: a line read in canonical mode is not one typed at the prompt (a
 // password, perhaps), and its text is withheld.
+//
+// Where it cannot ask, it cannot confirm the line was typed with echo on at
+// the shell's prompt, so the line counts as typed ahead unless Abhed's own
+// prompt is plainly back (container tier), or at all (a failed ask).
 func (sh *acpShell) ask(e *termline.Entered) {
 	e.Program = e.Alt
 	if !sh.local {
+		e.Ahead = !sh.prompt.At()
 		return
 	}
 	e.Program = false
 	fg, canonical, ok := termline.TTYNow(sh.tty)
 	if !ok {
+		e.Ahead = true
 		return
 	}
 	e.Known, e.Secret, e.Program = true, canonical, sh.isProgram(fg)

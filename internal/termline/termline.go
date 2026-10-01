@@ -40,8 +40,11 @@ const (
 	withheldEcho = "the terminal did not show this line as typed, so its text is not recorded"
 	// maxHeld bounds the withheld lines kept to scrub from recorded output.
 	maxHeld = 256
-	// scrubbed stands in recorded output for a withheld line's text.
+	// scrubbed stands in recorded output for a line that held a withheld line's text.
 	scrubbed = "[withheld]"
+	// unscrubbable stands for the whole recorded output when a withheld line
+	// was edited as typed, so what the terminal showed of it is not its text.
+	unscrubbable = "[output withheld: a line withheld from the record was edited as it was typed, so what the terminal showed of it cannot be found and taken out]"
 )
 
 // Entered is one line, at the Enter that submitted it.
@@ -65,6 +68,16 @@ type Entered struct {
 	// Ahead is set when the line came before the shell was back at its
 	// prompt: whatever reads it may have turned echo off after it arrived.
 	Ahead bool
+	// cut is set when Ctrl-U or Ctrl-C threw away text typed before the
+	// line: the terminal may have shown that text, which Line does not hold.
+	cut bool
+}
+
+// heldLine is a withheld line's text, and whether the terminal may have
+// shown it as something else (edited as typed) that Scrub cannot find.
+type heldLine struct {
+	text      string
+	uncertain bool
 }
 
 // Chunk is input to forward as it is; Enter, when set, is the line its
@@ -86,6 +99,7 @@ type Capture struct {
 	// from then on.
 	started   bool
 	typedEcho bool
+	cut       bool
 	echo      []byte
 	// alt follows the alternate screen, where the terminal cannot be asked;
 	// tail keeps the end of the last read, for a switch split across two.
@@ -98,7 +112,7 @@ type Capture struct {
 	// held are the texts of lines withheld from the record. The terminal may
 	// still have echoed one, as when it was typed ahead of read -s turning
 	// echo off, so Scrub takes them out of any output that is recorded.
-	held []string
+	held []heldLine
 	// Hidden, when set, says whether a line is being read unshown now; a
 	// pasted line judged while it is, is withheld.
 	Hidden func() bool
@@ -173,7 +187,7 @@ func (c *Capture) Keys(data []byte) []Chunk {
 			}
 			c.edited()
 		case b == 0x03 || b == 0x15: // Ctrl-C and Ctrl-U abandon the line
-			c.line, c.edit = c.line[:0], false
+			c.line, c.edit, c.cut = c.line[:0], false, len(c.line) > 0 || c.cut
 		case b < 0x20:
 			c.edited()
 		default:
@@ -194,7 +208,7 @@ func (c *Capture) Keys(data []byte) []Chunk {
 func (c *Capture) Abandon() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.line, c.edit, c.started = c.line[:0], false, false
+	c.line, c.edit, c.started, c.cut = c.line[:0], false, false, false
 }
 
 // edited marks the line as changed by a key the capture cannot follow.
@@ -206,11 +220,11 @@ func (c *Capture) edited() {
 // matched against the output that came before its Enter; a pasted one,
 // against what follows.
 func (c *Capture) submit(whole bool) *Entered {
-	e := &Entered{Line: string(c.line), Edited: c.edit, Whole: whole, typedEcho: c.typedEcho, Alt: c.alt}
+	e := &Entered{Line: string(c.line), Edited: c.edit, Whole: whole, typedEcho: c.typedEcho, Alt: c.alt, cut: c.cut}
 	if !whole {
 		e.echo = append([]byte(nil), c.echo...)
 	}
-	c.line, c.edit, c.started = c.line[:0], false, false
+	c.line, c.edit, c.started, c.cut = c.line[:0], false, false, false
 	return e
 }
 
@@ -242,7 +256,7 @@ func (c *Capture) Entered(e *Entered) {
 	c.mu.Lock()
 	if len(c.pending) >= maxPending {
 		c.dropped++
-		c.hold(e.Line)
+		c.hold(e)
 		c.mu.Unlock()
 		return
 	}
@@ -266,6 +280,9 @@ func (c *Capture) Flush() {
 }
 
 // judge records a line once, without its text unless the terminal showed it.
+//
+// The line leaves pending and, when withheld, joins held under one lock, so a
+// Flush and Scrub at the shell's end never find it in neither.
 func (c *Capture) judge(e *Entered) {
 	c.mu.Lock()
 	found := false
@@ -276,19 +293,20 @@ func (c *Capture) judge(e *Entered) {
 			break
 		}
 	}
+	var in agent.TerminalInput
+	if found {
+		in = agent.TerminalInput{CallID: c.callID, Line: e.Line, Edited: e.Edited}
+		if !e.Echoed() || (e.Whole && c.Hidden != nil && c.Hidden()) {
+			in = agent.TerminalInput{CallID: c.callID, Withheld: withheldEcho}
+			c.hold(e)
+		}
+	}
 	dropped := 0
 	if len(c.pending) == 0 {
 		dropped, c.dropped = c.dropped, 0
 	}
 	c.mu.Unlock()
 	if found {
-		in := agent.TerminalInput{CallID: c.callID, Line: e.Line, Edited: e.Edited}
-		if !e.Echoed() || (e.Whole && c.Hidden != nil && c.Hidden()) {
-			in = agent.TerminalInput{CallID: c.callID, Withheld: withheldEcho}
-			c.mu.Lock()
-			c.hold(e.Line)
-			c.mu.Unlock()
-		}
 		c.record(in)
 	}
 	if dropped > 0 {
@@ -297,40 +315,73 @@ func (c *Capture) judge(e *Entered) {
 	}
 }
 
-// hold keeps a withheld line's text for Scrub. Called with c.mu held.
-func (c *Capture) hold(line string) {
-	if strings.TrimSpace(line) == "" || slices.Contains(c.held, line) {
+// hold keeps a withheld line's text for Scrub. Called with c.mu held. A line
+// the terminal said was typed at bash's own prompt is a command, which the
+// record keeps in clear whenever it can rebuild it, so it is not held.
+func (c *Capture) hold(e *Entered) {
+	if e.Known && !e.Secret && !e.Ahead {
+		return
+	}
+	h := heldLine{text: strings.TrimSpace(e.Line), uncertain: e.Edited || e.cut}
+	if h.text == "" && !h.uncertain {
+		return
+	}
+	if i := slices.IndexFunc(c.held, func(o heldLine) bool { return o.text == h.text }); i >= 0 {
+		c.held[i].uncertain = c.held[i].uncertain || h.uncertain
 		return
 	}
 	if len(c.held) >= maxHeld {
 		c.held = c.held[1:]
 	}
-	c.held = append(c.held, line)
+	c.held = append(c.held, h)
 }
 
-// Scrub takes the text of every line withheld so far out of text, output
-// about to be recorded. A line of probeMin bytes or more goes wherever it
-// stands; a shorter one only where it stands alone on a line, so a one-letter
-// answer does not take every such letter out of the output. Lines still
-// waiting to be judged are judged first by Flush, which the caller runs.
+// Scrub takes out of text, output about to be recorded, every line that may
+// show a line withheld so far. It fails closed: a line of output holding any
+// probeMin characters of a withheld line in a row is replaced whole, which
+// also catches an echo split by other output or cut where the kept output
+// begins; a withheld line shorter than that is taken where it stands alone on
+// a line. When a withheld line was edited as typed, what the terminal showed
+// of it is not its text, and the whole output is withheld instead. Lines
+// still waiting to be judged are judged first by Flush, which the caller runs.
 func (c *Capture) Scrub(text string) string {
 	c.mu.Lock()
 	held := slices.Clone(c.held)
 	c.mu.Unlock()
-	// Longest first, so a line that contains another is taken whole.
-	slices.SortFunc(held, func(a, b string) int { return len(b) - len(a) })
+	grams := map[string]bool{}
+	short := map[string]bool{}
 	for _, h := range held {
-		if len(h) >= probeMin {
-			text = strings.ReplaceAll(text, h, scrubbed)
+		if h.uncertain {
+			return unscrubbable
 		}
+		if len(h.text) < probeMin {
+			short[h.text] = true
+			continue
+		}
+		for i := 0; i+probeMin <= len(h.text); i++ {
+			grams[h.text[i:i+probeMin]] = true
+		}
+	}
+	if len(grams) == 0 && len(short) == 0 {
+		return text
 	}
 	lines := strings.Split(text, "\n")
 	for i, l := range lines {
-		if t := strings.TrimSpace(l); t != "" && slices.Contains(held, t) {
+		if short[strings.TrimSpace(l)] || holdsGram(l, grams) {
 			lines[i] = scrubbed
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// holdsGram reports whether line holds any of grams, each probeMin bytes.
+func holdsGram(line string, grams map[string]bool) bool {
+	for i := 0; i+probeMin <= len(line); i++ {
+		if grams[line[i:i+probeMin]] {
+			return true
+		}
+	}
+	return false
 }
 
 // Echoed reports whether the terminal showed the line as it was typed: the

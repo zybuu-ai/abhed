@@ -378,6 +378,61 @@ func TestRuleEditorFilesThroughALinkedWorkspace(t *testing.T) {
 	}
 }
 
+// A password typed ahead into Studio's terminal and edited as it was typed
+// is shown as something other than its text; the record keeps none of the
+// shell's output.
+func TestStudioInteractiveTerminalWithholdsAnEditedPassword(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+		Tier       string `json:"tier"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
+	if term.TerminalID == "" || term.Tier == "none" {
+		t.Fatalf("create: %+v", term)
+	}
+	prompted := func(s string) bool {
+		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
+		return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#")
+	}
+	waitShell := func(from int, pred func(string) bool) string {
+		t.Helper()
+		var got strings.Builder
+		r.cl.waitFor(from, "shell output", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return pred(got.String())
+		})
+		return got.String()
+	}
+	waitShell(from, prompted)
+	typeLine := func(keys string, until func(string) bool) string {
+		t.Helper()
+		at := r.cl.mark()
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": keys}, nil)
+		return waitShell(at, until)
+	}
+	typeLine(`echo BU""SY; end=$((SECONDS+2)); while ((SECONDS < end)); do :; done; read -s pw; echo "late ${#pw}"`+"\r",
+		func(s string) bool { return strings.Contains(s, "BUSY") })
+	if out := typeLine("swordfiX\x7fsh99\n", func(s string) bool { return strings.Contains(s, "late 11") && prompted(s) }); !strings.Contains(out, "swordfi") {
+		t.Fatalf("the terminal did not echo the edited line, so nothing was tried: %q", out)
+	}
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
+	r.cl.waitFor(at, "the shell's exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
+	time.Sleep(2 * termline.EchoWait)
+	for _, ev := range r.events(id) {
+		if strings.Contains(string(ev.Payload), "swordfi") || strings.Contains(string(ev.Payload), "sh99") {
+			t.Fatalf("an edited password reached the record: %s %s", ev.Type, ev.Payload)
+		}
+	}
+	obs, _ := r.recorded(id, agent.EvObservation)
+	if c, _ := obs[len(obs)-1]["content"].(string); !strings.Contains(c, "output withheld") {
+		t.Fatalf("the shell's end does not say its output was withheld: %v", obs[len(obs)-1])
+	}
+}
+
 // §7.1 interactive: the shell runs whole under the sandbox; each line is put
 // to the deny rules at its Enter and recorded as the person's, and a line the
 // terminal did not show, as at a password prompt, is recorded withheld.

@@ -348,6 +348,32 @@ func TestShellWithholdsAPasswordTypedAheadOfThePrompt(t *testing.T) {
 	}
 }
 
+// A password typed ahead and edited as it was typed is shown by the terminal
+// as something other than its text, which cannot be found in the output; the
+// record keeps none of that output.
+func TestShellWithholdsAnEditedPasswordTypedAhead(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `echo BU""SY; end=$((SECONDS+2)); while ((SECONDS < end)); do :; done; read -s pw; echo "late ${#pw}"` + "\r", until: "BUSY"},
+		step{keys: "swordfiX\x7fsh99\n", until: "late 11"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "late 11") || !strings.Contains(out, "swordfi") {
+		t.Fatalf("the terminal did not echo the edited line, so nothing was tried:\n%s", out)
+	}
+	time.Sleep(2 * termline.EchoWait)
+	ended := false
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "swordfi") || strings.Contains(string(e.Payload), "sh99") {
+			t.Fatalf("an edited password reached the record: %s %s", e.Type, e.Payload)
+		}
+		ended = ended || (e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "output withheld"))
+	}
+	if !ended {
+		t.Fatal("the shell's end does not say its output was withheld")
+	}
+}
+
 // Keys a program reads without an Enter (read -s -n) are the front of the
 // next line the capture sees. That line was recorded in clear, secret and
 // all, because only its tail was looked for in the echo; now the whole line

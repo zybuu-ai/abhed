@@ -307,8 +307,8 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
 		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		run.prompt = termline.NewPrompt()
 		if run.local {
-			run.prompt = termline.NewPrompt()
 			tty := run.tty
 			run.capture.Hidden = func() bool { return termline.Hidden(tty) }
 		}
@@ -418,9 +418,13 @@ func (p *ptyRun) pump() {
 						p.shellPgrp.Store(int64(fg))
 					}
 				}
-				if p.prompt != nil {
+				switch {
+				case p.prompt == nil:
+				case p.local:
 					fg, canonical, ok := ttyNow(p.tty)
 					p.prompt.Output(chunk, ok && !p.isProgram(fg), canonical)
+				default:
+					p.prompt.OutputUnasked(chunk)
 				}
 			}
 			p.mu.Lock()
@@ -811,14 +815,20 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 // none tiers the server holds the shell's own terminal and can ask it; on a
 // container's, the engine's CLI holds it raw, and the alternate screen is the
 // only sign of a full-screen program.
+//
+// Where it cannot ask, it cannot confirm the line was typed with echo on at
+// the shell's prompt, so the line counts as typed ahead unless Abhed's own
+// prompt is plainly back (container tier), or at all (a failed ask).
 func (p *ptyRun) ask(e *enteredLine) {
 	e.Program = e.Alt
 	if !p.local {
+		e.Ahead = p.prompt == nil || !p.prompt.At()
 		return
 	}
 	e.Program = false
 	fg, canonical, ok := ttyNow(p.tty)
 	if !ok {
+		e.Ahead = true
 		return
 	}
 	// A line read in canonical mode is not one typed at bash's prompt: a

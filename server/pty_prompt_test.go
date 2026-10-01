@@ -47,3 +47,26 @@ func TestWorkbenchLineTypedAheadOfThePrompt(t *testing.T) {
 		t.Fatal("a line before the prompt came back was taken as typed at it")
 	}
 }
+
+// On the container tier the server cannot ask the terminal: a line is typed
+// ahead, and its text withheld, unless Abhed's prompt is back.
+func TestWorkbenchLineUnaskedIsAheadUntilThePrompt(t *testing.T) {
+	run := &ptyRun{local: false, prompt: termline.NewPrompt()}
+	asked := func() bool {
+		e := &enteredLine{Line: "hunter44", Whole: true}
+		run.ask(e)
+		return e.Ahead
+	}
+	if !asked() {
+		t.Fatal("a line before the first prompt was taken as typed at it")
+	}
+	run.prompt.OutputUnasked([]byte("(sandbox: container) ws $ "))
+	if asked() {
+		t.Fatal("a line at the prompt was taken as typed ahead")
+	}
+	run.gave()
+	run.prompt.OutputUnasked([]byte("echo BUSY; sleep 2; read -s pw\r\nBUSY\r\n"))
+	if !asked() {
+		t.Fatal("a line typed while the command ran was taken as typed at the prompt")
+	}
+}

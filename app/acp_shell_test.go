@@ -56,3 +56,27 @@ func TestShellLineTypedAheadOfThePrompt(t *testing.T) {
 		t.Fatal("the prompt's return was missed")
 	}
 }
+
+// Where the terminal cannot be asked, as on the container tier, a line is
+// typed ahead unless Abhed's prompt is back: a password typed while a command
+// runs is withheld, however slow the machine.
+func TestShellLineUnaskedIsAheadUntilThePrompt(t *testing.T) {
+	sh := &acpShell{local: false, prompt: termline.NewPrompt()}
+	asked := func() bool {
+		e := &termline.Entered{Line: "hunter44", Whole: true}
+		sh.ask(e)
+		return e.Ahead
+	}
+	if !asked() {
+		t.Fatal("a line before the first prompt was taken as typed at it")
+	}
+	sh.prompt.OutputUnasked([]byte("(sandbox: container) ws $ "))
+	if asked() {
+		t.Fatal("a line at the prompt was taken as typed ahead")
+	}
+	sh.gave()
+	sh.prompt.OutputUnasked([]byte("echo BUSY; sleep 2; read -s pw\r\nBUSY\r\n"))
+	if !asked() {
+		t.Fatal("a line typed while the command ran was taken as typed at the prompt")
+	}
+}

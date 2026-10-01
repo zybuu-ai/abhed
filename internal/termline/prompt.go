@@ -36,6 +36,25 @@ func (p *Prompt) Output(chunk []byte, shellFront, canonical bool) {
 	}
 }
 
+// OutputUnasked notes what the shell wrote where the terminal cannot be
+// asked (a container's, which the engine's CLI holds). Only Abhed's own
+// prompt, which ends in "$ " or "# ", counts as the shell back at it: a
+// password prompt or a progress line does not, so a line typed then is taken
+// as typed ahead and its text withheld. A prompt changed from Abhed's makes
+// every line withheld, which errs the safe way.
+func (p *Prompt) OutputUnasked(chunk []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.since = KeepTail(append(p.since, chunk...), promptKeep)
+	text := PlainText(p.since)
+	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+		last := text[i+1:]
+		// Once back, it stays back until the next line: the keys typed at
+		// the prompt are echoed after it.
+		p.at = p.at || strings.HasSuffix(last, "$ ") || strings.HasSuffix(last, "# ")
+	}
+}
+
 // Gave notes that the shell was handed a line.
 func (p *Prompt) Gave() {
 	p.mu.Lock()
