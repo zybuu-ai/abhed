@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,6 +275,17 @@ func (sp systemPrompt) record(into map[string]any) {
 	}
 }
 
+// resumedStart is start for a run that continues a recorded conversation
+// after seq after: marked resumed, with the step it goes on from.
+func resumedStart(start map[string]any, after int64) map[string]any {
+	if start == nil || after == 0 {
+		return start
+	}
+	out := maps.Clone(start)
+	out["resumed"], out["through_seq"] = true, after
+	return out
+}
+
 // recordStart records how the session was started. The CLI recorded
 // nothing before the first message, so a changed system prompt left no
 // trace in the record.
@@ -346,7 +358,6 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			}
 		}
 	}()
-	recordStart(rec, o.start)
 	if o.fallback != nil {
 		o.fallback.SetRecord(recordFallback(rec))
 	}
@@ -356,6 +367,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
 	seed(loop)
+	// After the seed, so a continued session's start follows its record.
+	recordStart(rec, resumedStart(o.start, rec.LastAppended()))
 	if startFlags.Name != "" {
 		_, _ = loop.Recorder.Record(agent.EvSessionNamed, agent.ActorUser, agent.Trusted, agent.SessionNamed{Name: startFlags.Name})
 	}

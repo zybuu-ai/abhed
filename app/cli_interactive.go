@@ -123,11 +123,26 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	wakeCh := make(chan []string, 1)
 	// One conversation per session: every task continues the same loop and
 	// record until /clear, and /fork and /resume change what it continues from.
-	sessionState.open = func(id string) *agent.Loop {
+	sessionState.recordStart = start.recordStart
+	sessionState.open = func(id string, after int64) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
 		// Read again as the store changes: bash reads it at each call.
 		rec.Redact = openVault().Session()
+		// What is held for the record is written after the steps already there.
+		rec.Advance(after)
 		start.onOpen(rec)
+		// A new conversation records its start now; a continued one when it is
+		// claimed, and a rebuild of the one already started never again.
+		switch {
+		case after == 0:
+			sessionState.startOwed = 0
+			if start.recordStart != nil {
+				start.recordStart(rec, 0)
+			}
+			sessionState.startedID = id
+		case id != sessionState.startedID:
+			sessionState.startOwed = after
+		}
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
@@ -489,9 +504,10 @@ type interactiveStart struct {
 	sandbox *lazySandbox
 	probe   *endpointProbe
 	set     *toolset.Set
-	// onOpen runs for each conversation's recorder: it records the start
-	// and binds where a model fallback is recorded.
-	onOpen func(rec *agent.Recorder)
+	// onOpen runs for each conversation's recorder: it binds where a model
+	// fallback is recorded. recordStart records session.started.
+	onOpen      func(rec *agent.Recorder)
+	recordStart func(rec *agent.Recorder, resumedAfter int64)
 }
 
 // turnOutcome is how a turn's run ended.

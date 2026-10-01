@@ -32,7 +32,7 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 | Type | Payload | Emitted by |
 |---|---|---|
-| `session.started` | workspace, model, mode, origin (`chat` or `workbench`), provider; the first event of every session the server starts, so a resume keeps its provider. The CLI's also carries `surface`, `headless`, the permission `mode` it started in, `bypass_confirmed` (true only when bypass came from a confirmed `-dangerously-skip-permissions`) and the system prompt's digests | system |
+| `session.started` | workspace, model, mode, origin (`chat` or `workbench`), provider; the first event of every session the server starts, so a resume keeps its provider. The CLI's also carries `surface`, `headless`, the permission `mode` it started in, `bypass_confirmed` (true only when bypass came from a confirmed `-dangerously-skip-permissions`) and the system prompt's digests. A CLI run that continues a recorded conversation (`-c`, `-r`, `/resume`, `-fork-session`) records its own after the record, with `resumed: true` and `through_seq`, the last step it goes on from; a conversation rebuilt within the same process records none | system |
 | `terminal.input` | call id of the shell, the line as typed, `edited`, or `withheld` with a reason | user |
 | `user.message` | text, attachments | user |
 | `agent.message` | text, reasoning (stripped from history) | agent |

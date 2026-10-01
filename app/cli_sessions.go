@@ -359,7 +359,7 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 		return err
 	}
 	end, _ := agent.LastEnd(events)
-	loop := st.open(id)
+	loop := st.open(id, events[len(events)-1].Seq)
 	loop.Recorder.Advance(events[len(events)-1].Seq)
 	loop.SetHistory(msgs, end.Turns)
 	loop.CarryUsage(end)
