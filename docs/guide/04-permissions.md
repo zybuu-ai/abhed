@@ -198,7 +198,7 @@ A deny pattern matches the words as written, so it is easy to step around.
 
 - an absolute or relative path to the program: `/usr/bin/curl x`
 - a command handed to another shell: `bash -c 'curl x'`, `sh -c "curl x"`
-- a quoted or escaped name: `'curl' x`, `$'curl' x`, `\curl x`, `c\url x`
+- a quoted or escaped name: `'curl' x`, `"cu"rl x`, `\curl x`, `c\url x`
 - flags in another place or split up: `bash(rm -rf *)` does not match
   `rm x -rf` or `rm -r -f x`
 

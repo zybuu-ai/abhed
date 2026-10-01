@@ -111,9 +111,13 @@ All notable changes to Abhed are recorded here. The format follows
   server's running ones with them. No identity owns an unclaimed session; an
   operator gives one back with
   `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:local:<username>'`
-  as the owning role. Sessions kept only in memory, on a server other than
-  the one the account was removed through, keep their owner until that
-  server restarts.
+  as the owning role. A server that holds the removed account's sessions in
+  memory lets go of them without a restart, even when the account was
+  removed by another process: with session rows, each held session is
+  checked against its row and takes the row's owner; with or without them,
+  the sessions are released when the server finds the account gone, or when
+  an account made again under the name signs in, which it must before it can
+  reach anything.
 - A person signed out, removed, taken out of `auth.require_group` or refused
   by an access check kept receiving every event of a session on a
   `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
