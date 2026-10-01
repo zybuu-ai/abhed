@@ -12,22 +12,26 @@ All notable changes to Abhed are recorded here. The format follows
   joiner, zero-width and control characters applied, so a background task's
   description echoed in "Started in background" could reorder or hide part
   of the line in the call's peek and output. Every call's output, peek and
-  header, replies and reasoning, decision reasons, the agent's terminal tab,
-  the refusals, reasons and notes Abhed writes into a line terminal,
-  file names, file and diff lines, search results, session titles and MCP,
+  header, replies and reasoning, the person's messages, decision reasons,
+  the agent's terminal tab, the refusals, reasons and notes Abhed writes
+  into a line terminal and the directory in its prompt, file names
+  (Explorer, tabs, search, the command palette and the `@` list), file and
+  diff lines, search results, session titles, the running label and MCP,
   skill and extension names now show those characters as `⟨U+XXXX⟩`,
   keeping newlines, tabs and indentation.
 - `/ide` drew a model error with the model's own invalid tool arguments
   quoted as given, so an RLO in them reversed the row. It is now written out
   like any other record text.
 - A managed file that set `permissions` but not `permissions.allow` still let
-  `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
-  while `/permissions allow` refused them. Every path now refuses an allow
-  rule when the managed file sets any `permissions` setting.
+  `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules. Every
+  path, including the new `-allowedTools` and `/permissions allow`, now
+  refuses an allow rule when the managed file sets any `permissions`
+  setting.
 - Over ACP, the agent can no longer change an editor's own files in the
-  workspace: the file tools refuse `.vscode/**`, `.devcontainer/**` and
-  `*.code-workspace`, and any `.git` with its `config` and `hooks/**` at any
-  depth, so a nested repository's too, in any case and through links, and the
+  workspace; this affects ACP editors in 1.2.2 and earlier. The file tools
+  refuse `.vscode/**`, `.devcontainer/**` and `*.code-workspace`, and any
+  `.git` with its `config` and `hooks/**` at any depth, so a nested
+  repository's too, in any case and through links, and the
   config and hooks of the git folder a `.git` file names. They refuse to
   create any of these as well as to change them. The sandbox keeps the
   agent's commands from writing those that exist, and from renaming `.git`,
@@ -69,15 +73,20 @@ All notable changes to Abhed are recorded here. The format follows
   approve: hooks were evaluated first, and their ask ended the evaluation.
   A hook's ask now applies only after the deny rules and plan mode. Its
   refusal is still final, and an `allow` in its reply approves nothing.
-- The interactive approval can no longer be answered by a key pressed as it
-  appears. No key, arrows and Enter included, counts for the first 300 ms the
-  question is on screen; a number counts only with 300 ms of quiet on either
-  side, so typing or a key held down never answers, and a number that fails
-  this chooses nothing and leaves nothing selected; nothing is selected at
-  first; no letter moves the selection (`j` and `k` did); and Enter never
+- The 300 ms guard from 1.2.2's approval prompt now also covers the new
+  approval dialog. In 1.2.2 a decision key counted only alone, on an empty
+  line, 300 ms after the choices were drawn and with 300 ms of quiet on
+  either side, and Enter never answered. In the dialog no key, arrows and
+  Enter included, counts for the first 300 ms the question is on screen; a
+  number counts only with 300 ms of quiet on either side, so typing or a key
+  held down never answers, and a number that fails this chooses nothing and
+  leaves nothing selected; nothing is selected at first; and Enter never
   approves: on a highlighted No it declines, on a Yes it answers nothing.
-  Approvals are answered by number only, in the dialog and in the line mode
-  alike: no letter approves. Only the answers offered can be
+  Found before release, in the new dialog: `j` and `k` moved the selection
+  with no quiet rule, so `j` then Enter approved, and a number refused for
+  the keys around it stayed selected for a later Enter. No letter moves the
+  selection now. Approvals are answered by number only, in the dialog and
+  in the line mode alike: no letter approves. Only the answers offered can be
   chosen. A destructive command needs a second, numbered Yes, whose default
   is No. Every other question the CLI asks is numbered too, the workspace
   trust prompt included (1 don't trust, 2 trust, 3 view): no letter or word
@@ -204,9 +213,10 @@ before upgrading.
     managed file sets any `permissions` key (mode, deny, ask or allow),
     `-allow`, `-allowedTools`, `/permissions allow`, the SDK's
     `Options.Allow` (`sdk.New` returns a `*config.ManagedError`) and rpc's
-    `start` with allow rules are refused. In 1.2.2 they were refused only
-    when the file set `permissions.allow`. Put the rules in the managed
-    file's `permissions.allow` instead.
+    `start` with allow rules are refused. In 1.2.2, `-allow`,
+    `Options.Allow` and rpc `start` were refused only when the file set
+    `permissions.allow`; `-allowedTools` and `/permissions allow` are new in
+    1.2.3. Put the rules in the managed file's `permissions.allow` instead.
 18. **On macOS, commands in an ACP editor's workspace (Abhed Studio) cannot
     create any `.git`, `.vscode` or `.devcontainer`**, so `git init` and
     `git clone` inside the workspace fail. Run them in a terminal outside
@@ -319,6 +329,8 @@ Also:
 
 ### Added
 
+- The `-p` result line of `-output-format stream-json` names the event types
+  it left out, in `omitted`.
 - The terminal lists the conversation's work under the input: `main`, then
   each subagent (foreground and background) and background job, nested under
   what started it, with its type, title, what it is doing now, how long it

@@ -72,6 +72,11 @@ a record must be checked whole, capture with `-output-format json` or
 `-include-partial-messages`, or check the local record or a `.jsonl` export
 of it, which is verified against its head.
 
+The JSON report says the same under `integrity`: `omitted` lists the gaps
+excused as omitted deltas, `omitted_types` the event types the result line
+named, and `unsure` is `true` when a gap could be omitted deltas but the
+capture does not say it left any out.
+
 ## What the report contains
 
 | Section | What it tells you |
