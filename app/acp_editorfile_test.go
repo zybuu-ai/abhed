@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -137,7 +138,7 @@ func TestDirtyBufferIgnoresCaseWhereTheDiskDoes(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &acpSession{cwd: ws, dirty: map[string]bool{bufferKey(tools.RealPath(draft)): true}}
-	if err := s.dirtyGuard(filepath.Join(ws, "draft.md"), nil); err != errDirtyBuffer {
+	if err := s.dirtyGuard(filepath.Join(ws, "draft.md"), nil); !errors.Is(err, errDirtyBuffer) {
 		t.Fatalf("draft.md past an unsaved Draft.md: %v", err)
 	}
 	if err := s.dirtyGuard(filepath.Join(ws, "other.md"), nil); err != nil {
@@ -150,7 +151,7 @@ func TestDirtyBufferIgnoresCaseWhereTheDiskDoes(t *testing.T) {
 func TestEditorGuardHoldsInTheToolSessionsRoots(t *testing.T) {
 	ws, wt := t.TempDir(), t.TempDir()
 	s := &acpSession{cwd: ws}
-	if err := s.dirtyGuard(filepath.Join(wt, ".vscode", "tasks.json"), []string{wt}); err != errEditorFile {
+	if err := s.dirtyGuard(filepath.Join(wt, ".vscode", "tasks.json"), []string{wt}); !errors.Is(err, errEditorFile) {
 		t.Fatalf("a worktree's .vscode: %v", err)
 	}
 }
