@@ -7,24 +7,7 @@ import (
 	"errors"
 
 	"github.com/zybuu-ai/abhed/internal/linediff"
-	abhed "github.com/zybuu-ai/abhed/sdk"
 )
-
-type taskNote struct{}
-
-type tasker interface {
-	Background() []abhed.TaskInfo
-	CancelTask(id string) error
-}
-
-func (w *reviewWindow) covers(string) bool                   { return false }
-func (w *reviewWindow) stopLinger()                          {}
-func (s *acpSession) closeWindowLocked()                     {}
-func (c *acpConn) windowAnswered(*acpSession, *reviewWindow) {}
-func (c *acpConn) taskChanged(*acpSession, string)           {}
-func (c *acpConn) taskEvent(*acpSession, abhed.Event)        {}
-func (s *acpSession) liveTasks() int                         { return 0 }
-func (s *acpSession) waitingAll() int                        { return 0 }
 
 type acpTerminal struct{}
 
