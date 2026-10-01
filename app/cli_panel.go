@@ -38,6 +38,18 @@ type jobRow struct {
 
 func (j jobRow) running() bool { return j.Status == "running" }
 
+// outcome is how an ended row reads: a shell that exited 0 completed, one
+// that exited otherwise failed; anything else is its own status.
+func (j jobRow) outcome() string {
+	if j.Status != agent.ShellExited {
+		return j.Status
+	}
+	if j.ExitCode != nil && *j.ExitCode == 0 {
+		return "completed"
+	}
+	return "failed"
+}
+
 // workPanel feeds the dock's work panel and /tasks from the open
 // conversation's work list and background registry, and says in the
 // transcript when a background subagent or job finishes.
@@ -112,7 +124,7 @@ func (p *workPanel) jobs() []jobRow {
 		if have[t.ID] {
 			continue
 		}
-		j := jobRow{ID: t.ID, Kind: orDefault(t.Kind, "agent"), Agent: t.Kind == "", Background: true,
+		j := jobRow{ID: t.ID, Kind: t.Kind, Agent: t.Kind != agent.KindShell, Background: true,
 			Title: t.Description, Activity: t.LastLine, Status: t.Status, Reason: t.Reason,
 			Started: t.Started, ExitCode: t.ExitCode, Summary: t.Summary}
 		if j.Agent {
@@ -195,7 +207,7 @@ func (p *workPanel) tree(jobs []jobRow, mainID string) []ui.WorkRow {
 func (p *workPanel) row(j jobRow, depth int) ui.WorkRow {
 	r := ui.WorkRow{ID: j.ID, Depth: depth, Kind: j.Kind, Title: j.Title, Tokens: j.TokensIn,
 		Target: j.Agent && j.running()}
-	switch j.Status {
+	switch j.outcome() {
 	case "running":
 		r.State, r.Activity = ui.WorkRunning, j.Activity
 		r.Elapsed = p.now().Sub(j.Started)
@@ -319,7 +331,7 @@ func (p *workPanel) announce() {
 //	● Background task "go test ./..." completed (exit code 0)
 func finishNotice(s ui.Style, j jobRow, took time.Duration) string {
 	mark := s.Green("●")
-	switch j.Status {
+	switch j.outcome() {
 	case "completed":
 	case "failed":
 		mark = s.Red("✕")

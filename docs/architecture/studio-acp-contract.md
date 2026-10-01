@@ -542,8 +542,15 @@ interface TaskInfo {                 // the SDK's TaskInfo, plus
   waiting_asks: number;              // asks held for a person
   notice?: { delivery: "boundary" | "idle" | "wake"; content_chars: number };
   branch?: string;                   // worktree isolation
+  kind: "task" | "shell";            // "shell": a bash run_in_background command
+  command?: string; exit_code?: number; output_bytes?: number; last_line?: string;  // shells; redacted
 }
 ```
+
+- A background shell is listed and cancelled as a task: its `status` is
+  `running`, `exited` or `killed`, and `_abhed/tasks/changed` is sent when it
+  starts and ends (`shell.started`, `shell.ended`). `resume` and `review` do
+  not apply to shells.
 
 - `cancel` is recorded as the person's stop (`user_interrupt`).
 - `resume` is the `task` tool's `resume` argument used by a person. It is a

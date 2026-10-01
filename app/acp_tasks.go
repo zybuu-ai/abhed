@@ -80,6 +80,18 @@ func (s *acpSession) taskInfo(ti abhed.TaskInfo) map[string]any {
 	if ti.Turns > 0 {
 		out["turns"] = ti.Turns
 	}
+	out["kind"] = ti.Kind
+	if ti.Kind == agent.KindShell {
+		for k, v := range map[string]string{"command": ti.Command, "last_line": ti.LastLine} {
+			if v != "" {
+				out[k] = v
+			}
+		}
+		out["output_bytes"] = ti.OutputBytes
+		if ti.ExitCode != nil {
+			out["exit_code"] = *ti.ExitCode
+		}
+	}
 	if note.noticed {
 		out["tokens_in"], out["tokens_out"] = note.tokensIn, note.tokOut
 		if note.delivery != "" {
@@ -133,6 +145,13 @@ func (c *acpConn) taskEvent(s *acpSession, ev abhed.Event) {
 		s.notes[p.TaskID] = n
 		s.mu.Unlock()
 		c.taskChanged(s, p.TaskID)
+	case agent.EvShellStarted, agent.EvShellEnded:
+		var p struct {
+			ShellID string `json:"shell_id"`
+		}
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			c.taskChanged(s, p.ShellID)
+		}
 	case agent.EvSubagentNotice:
 		var p agent.Notice
 		if json.Unmarshal(ev.Payload, &p) != nil || p.TaskID == "" {

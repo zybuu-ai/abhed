@@ -112,13 +112,16 @@ func tasksCommand(args []string, st *cliState, s ui.Style) {
 	}
 	for i, j := range list {
 		fmt.Println(taskLine(s, i+1, j, st.panel))
+		if !j.Agent && j.Activity != "" {
+			fmt.Printf("  %s\n", s.Dim("      "+sanitizeLine(j.Activity)))
+		}
 	}
 	fmt.Println(s.Dim("  /tasks view <n> shows one · /tasks kill <n> stops a background one"))
 }
 
 // taskLine is one numbered row of /tasks.
 func taskLine(s ui.Style, n int, j jobRow, p *workPanel) string {
-	mark := map[string]string{"running": "●", "completed": "✓", "failed": "✕"}[j.Status]
+	mark := map[string]string{"running": "●", "completed": "✓", "failed": "✕"}[j.outcome()]
 	if mark == "" {
 		mark = "○"
 	}

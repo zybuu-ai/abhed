@@ -128,7 +128,8 @@ finishes. Zero means no cap.
 ```json
 "limits": {
   "max_background_subagents": 4,
-  "background_max_minutes": 60
+  "background_max_minutes": 60,
+  "background_shells": 4
 },
 "subagents": {
   "wake": "notify",
@@ -139,7 +140,9 @@ finishes. Zero means no cap.
 
 `max_background_subagents` bounds a session's background tasks alive at once,
 across its runs; zero allows none. `background_max_minutes` is each task's
-lifetime, at most 480. `wake` is `off`, `notify` (the default) or `auto`:
+lifetime, at most 480, and a background shell's too.
+`background_shells` bounds the commands started with `run_in_background`
+running at once; zero allows none (see [Tools](05-tools.md#background-commands)). `wake` is `off`, `notify` (the default) or `auto`:
 what a result arriving while the session is idle does. `auto` runs the agent
 on it, up to `wake_max_turns` turns and `max_wakes_per_hour` times an hour
 (zero never wakes). A surface may allow less: `-p`, eval and unattended runs

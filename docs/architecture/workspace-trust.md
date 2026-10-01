@@ -126,7 +126,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.max_turns` | **applied** only when lower; zero means no turns, so nothing is lower |
 | `limits.max_parallel_subagents` | **applied** only when lower; zero means the tool's cap of 8 |
 | `limits.nested_subagents` | **applied** only when false |
-| `limits.max_background_subagents`, `subagents.max_wakes_per_hour` | **applied** only when lower; zero is the tightest (none, never) |
+| `limits.max_background_subagents`, `limits.background_shells`, `subagents.max_wakes_per_hour` | **applied** only when lower; zero is the tightest (none, never) |
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |

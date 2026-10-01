@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -337,8 +338,12 @@ func must(err error) {
 
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+	tools.EndBackgroundShells(shellEndWait)
 	os.Exit(1)
 }
+
+// shellEndWait bounds how long an exit waits for background shells to end.
+const shellEndWait = 3 * time.Second
 
 // warnf reports something that failed and was left out, on stderr.
 func warnf(format string, args ...any) {

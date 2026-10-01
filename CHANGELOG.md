@@ -196,6 +196,16 @@ Two changes need action before upgrading:
   stop still blocks it until your next message, and a file that sets
   `notify` or `off` keeps it. The note that a result was delivered now reads
   `result of "…" added to the conversation (completed, 1 turn)`.
+- Background shells: `bash` takes `run_in_background`, which starts the
+  command and returns at once with a shell id, through the same rules,
+  approval, sandbox, secrets and redaction as a foreground command. New tools
+  `shell_output` (new output since the last read, the state and exit code,
+  optionally waiting) and `shell_kill` (stops its whole process group). Shells
+  are listed and stopped with the background tasks on every surface (`kind:
+  "shell"`), the agent is told when one ends as it is of a background task's
+  result, and each is killed when the session closes, on a stop and when Abhed
+  exits. `limits.background_shells` (default 4) bounds them; plan mode refuses
+  them; `-p` waits for them. Recorded as `shell.started` and `shell.ended`.
 - The engine side of the Abhed Studio contract
   (docs/architecture/studio-acp-contract.md, `apiLevel` 1). `abhed acp`
   keeps sessions in the local record, so `session/list`, `session/load`

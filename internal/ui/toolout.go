@@ -155,6 +155,10 @@ func toolTitle(tool string) string {
 		return "Fetch"
 	case "web_search":
 		return "Search"
+	case "shell_output":
+		return "Shell output"
+	case "shell_kill":
+		return "Shell kill"
 	}
 	if tool == "" {
 		return "Tool"
@@ -201,9 +205,14 @@ func summarizeArgsRel(tool string, raw json.RawMessage, rel func(string) string)
 		return str("url")
 	case "web_search":
 		return str("query")
+	case "shell_output", "shell_kill":
+		return str("shell_id")
 	}
 	return ""
 }
+
+// backgroundStarted begins a bash result for a command started in the background.
+const backgroundStarted = "Started in background: "
 
 // toolHeader is a call's one line: ● Edit(src/main.go).
 func (r *Renderer) toolHeader(tool string, args json.RawMessage) string {
@@ -243,6 +252,9 @@ func (r *Renderer) toolObserved(d *dock, o agent.Observation) {
 		if b := r.changeResult(o, c, content); b != nil {
 			d.commit(b)
 		}
+	case o.Tool == "bash" && o.ExitCode == nil && strings.HasPrefix(content, backgroundStarted):
+		first, _ := splitFirst(content)
+		d.commit(&resultBlock{head: s.Dim("started in background: " + strings.TrimPrefix(first, backgroundStarted))})
 	case o.Tool == "bash":
 		first, rest := splitFirst(content)
 		code := 0
@@ -407,6 +419,8 @@ func observationSummary(o agent.Observation) string {
 		if o.ExitCode != nil {
 			return fmt.Sprintf("exit %d", *o.ExitCode)
 		}
+	case "shell_output", "shell_kill":
+		return firstLine(o.Content)
 	}
 	return ""
 }

@@ -19,6 +19,14 @@ the pipe still open Abhed says it is waiting, so a caller that leaves stdin
 open by mistake should redirect it from `/dev/null`. Flags may come before
 or after the task.
 
+A command the agent starts with `bash` and `run_in_background` is allowed
+under `-p` wherever `bash` is: the same rules and approver decide. `-p` waits
+for it: the run does not end, and the exit code is not set, until every
+background shell has ended and the agent has seen how (up to its lifetime,
+`timeout_ms` or `limits.background_max_minutes`). A shell still running when
+the run ends any other way (an error, a stop signal, `max_turns`) is killed
+with its process group before Abhed exits.
+
 Any stdin that is a pipe or a file is read, including one a script
 inherited. In a loop that reads a list on stdin, give each run its own
 stdin, or the first run takes the rest of the list:
@@ -173,7 +181,7 @@ send(method="prompt", prompt="fix the failing tests")
 | `quit` | close; running background tasks end as `session_closed` |
 
 `start` takes `wake`: `off` (the default), so `prompt` answers when the work,
-background tasks included, is done; or `notify`, so they outlive the prompt
+background tasks and background shells included, is done; or `notify`, so they outlive the prompt
 and their results arrive as event lines. rpc never starts a run on its own.
 
 Events stream as they happen rather than only at the end, so a caller can render

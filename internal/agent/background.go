@@ -102,6 +102,10 @@ type BackgroundPolicy struct {
 	Settle time.Duration
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// MaxShells bounds the background shells running at once. Zero allows none.
+	MaxShells int
+	// ShellOutputCap is the bytes of output kept per shell; zero is 1 MiB.
+	ShellOutputCap int
 }
 
 func (p BackgroundPolicy) maxLive() int { return max(p.MaxLive, 0) }
@@ -136,10 +140,12 @@ type Background struct {
 	tasks    map[string]*bgTask
 	order    []string
 	reserved int
-	notices  []Notice
-	closed   bool
-	signal   chan struct{}
-	hooks    BackgroundHooks
+	// shellsReserved counts shells being started, for the shell limit.
+	shellsReserved int
+	notices        []Notice
+	closed         bool
+	signal         chan struct{}
+	hooks          BackgroundHooks
 
 	// unacted counts notices delivered while idle that no run has seen.
 	unacted int
@@ -294,7 +300,9 @@ func (b *Background) Unacted() int {
 
 // bgTask is one background child.
 type bgTask struct {
-	ID          string
+	ID string
+	// Kind is KindTask for a subagent, KindShell for a background command.
+	Kind        string
 	Description string
 	AgentType   string
 	Provider    string
@@ -308,11 +316,15 @@ type bgTask struct {
 	reason  TerminalReason
 	summary string
 	turns   int
+	// shell is a background command's state; nil for a subagent.
+	shell *shellState
 }
 
 // Notice is a background child's result as the conversation receives it.
 type Notice struct {
-	TaskID      string `json:"task_id"`
+	TaskID string `json:"task_id"`
+	// Kind is "shell" for a background command's end; empty for a subagent.
+	Kind        string `json:"kind,omitempty"`
 	Session     string `json:"session"`
 	Description string `json:"description,omitempty"`
 	// Status is completed, failed or cancelled, or the reason a cap ended it.
@@ -385,6 +397,17 @@ func (b *Background) liveLocked() int {
 	return n
 }
 
+// liveTasksLocked counts the subagents still running, for the task limit.
+func (b *Background) liveTasksLocked() int {
+	n := 0
+	for _, t := range b.tasks {
+		if !t.ended && t.Kind != KindShell {
+			n++
+		}
+	}
+	return n
+}
+
 func (b *Background) joinedLive() int {
 	if b == nil {
 		return 0
@@ -407,7 +430,7 @@ func (b *Background) reserve() error {
 	if b.closed {
 		return errors.New("the session is closing; no background task can start")
 	}
-	if n, most := b.liveLocked()+b.reserved, b.policy.maxLive(); n >= most {
+	if n, most := b.liveTasksLocked()+b.reserved, b.policy.maxLive(); n >= most {
 		return fmt.Errorf("background task limit reached (%d of %d running). Wait for one to finish, or run this one in the foreground", n, most)
 	}
 	b.reserved++
@@ -432,7 +455,7 @@ func (b *Background) reserveN(n int) (*slots, error) {
 	if b.closed {
 		return nil, errors.New("the session is closing; no background task can start")
 	}
-	if free := b.policy.maxLive() - b.liveLocked() - b.reserved; free < n {
+	if free := b.policy.maxLive() - b.liveTasksLocked() - b.reserved; free < n {
 		return nil, fmt.Errorf("background task limit: %d more may run now, and this call asks for %d. "+
 			"Start fewer, or run them in the foreground", max(free, 0), n)
 	}
@@ -478,12 +501,22 @@ func (b *Background) Tasks() []TaskInfo {
 		return nil
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	out := make([]TaskInfo, 0, len(b.order))
 	for _, id := range b.order {
 		out = append(out, b.tasks[id].info())
 	}
+	b.mu.Unlock()
+	for i := range out {
+		b.redactInfo(&out[i])
+	}
 	return out
+}
+
+// redactInfo redacts what a shell's listing shows of its command and output.
+func (b *Background) redactInfo(ti *TaskInfo) {
+	if ti.Kind == KindShell {
+		ti.Command, ti.LastLine = b.redacted(ti.Command), b.redacted(ti.LastLine)
+	}
 }
 
 // running names the children still running, as "description (task id)".
@@ -502,9 +535,13 @@ func (b *Background) running() []string {
 	return out
 }
 
-// TaskInfo is what task_status and the surfaces say about one child.
+// TaskInfo is what task_status and the surfaces say about one background
+// task: a subagent (Kind "task") or a background shell (Kind "shell").
 type TaskInfo struct {
-	ID          string    `json:"task_id"`
+	ID string `json:"task_id"`
+	// Kind is KindTask or KindShell.
+	Kind string `json:"kind"`
+	// Description is the task's title: a shell's description or command summary.
 	Description string    `json:"description"`
 	AgentType   string    `json:"agent_type,omitempty"`
 	Provider    string    `json:"provider,omitempty"`
@@ -514,11 +551,12 @@ type TaskInfo struct {
 	Turns       int       `json:"turns,omitempty"`
 	Started     time.Time `json:"started"`
 	Summary     string    `json:"summary,omitempty"`
-	// Kind is "" for a subagent; another kind (a shell) sets its own, with
-	// its exit code and last line of output once it has them.
-	Kind     string `json:"kind,omitempty"`
-	ExitCode *int   `json:"exit_code,omitempty"`
-	LastLine string `json:"last_line,omitempty"`
+	// A shell's fields; Command and LastLine are redacted, and Status is
+	// running, exited or killed.
+	Command     string `json:"command,omitempty"`
+	ExitCode    *int   `json:"exit_code,omitempty"`
+	OutputBytes int64  `json:"output_bytes,omitempty"`
+	LastLine    string `json:"last_line,omitempty"`
 }
 
 func (t *bgTask) info() TaskInfo {
@@ -526,9 +564,14 @@ func (t *bgTask) info() TaskInfo {
 	if t.ended {
 		st = noticeStatus(t.reason)
 	}
-	return TaskInfo{ID: t.ID, Description: t.Description, AgentType: t.AgentType,
+	ti := TaskInfo{ID: t.ID, Kind: KindTask, Description: t.Description, AgentType: t.AgentType,
 		Provider: t.Provider, Model: t.Model, Status: st, Reason: string(t.reason),
 		Turns: t.turns, Started: t.Started, Summary: t.summary}
+	if t.shell != nil {
+		ti.Kind = KindShell
+		t.shellInfo(&ti)
+	}
+	return ti
 }
 
 // Task reports one child, and whether it is one of this session's.
@@ -537,12 +580,14 @@ func (b *Background) Task(id string) (TaskInfo, bool) {
 		return TaskInfo{}, false
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	t, ok := b.tasks[id]
-	if !ok {
-		return TaskInfo{}, false
+	var ti TaskInfo
+	if ok {
+		ti = t.info()
 	}
-	return t.info(), true
+	b.mu.Unlock()
+	b.redactInfo(&ti)
+	return ti, ok
 }
 
 // noticeStatus is the one-word outcome a notice names.
@@ -1115,20 +1160,28 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 			Reason: string(reason), Turns: usage.Turns, TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens,
 			Provider: c.provider, Model: c.adapter.Profile().Name, CallID: "bgn_" + newID(),
 			Content: parentRedacted(parent, summary)}
-		// Ended and owed in one step: a run ending in between would count
-		// neither, and close the stream on a result still to come.
-		mgr.mu.Lock()
-		t.ended, t.reason, t.summary, t.turns = true, reason, n.Content, usage.Turns
-		mgr.notices = append(mgr.notices, n)
-		mgr.mu.Unlock()
-		if testHookChildEnded != nil {
-			testHookChildEnded(mgr)
-		}
+		mgr.settleTask(&n, func() {
+			t.ended, t.reason, t.summary, t.turns = true, reason, n.Content, usage.Turns
+		})
 		cancel(nil)
-		mgr.poke()
-		mgr.kick()
 	}()
 	return id, nil
+}
+
+// settleTask is the one hook every background end (subagent or shell) goes through:
+// state and notice land in one step, then a waiting run and idle delivery are woken.
+func (b *Background) settleTask(n *Notice, end func()) {
+	b.mu.Lock()
+	end()
+	if n != nil {
+		b.notices = append(b.notices, *n)
+	}
+	b.mu.Unlock()
+	if testHookChildEnded != nil {
+		testHookChildEnded(b)
+	}
+	b.poke()
+	b.kick()
 }
 
 // parentRedacted redacts text as the parent's record would.

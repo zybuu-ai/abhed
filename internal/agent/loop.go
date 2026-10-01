@@ -1470,7 +1470,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 
 	start := time.Now()
-	result := tool.Run(l.asParent(ctx), l.Session, call.Args)
+	result := tool.Run(l.withShellHost(l.asParent(ctx), call.ID), l.Session, call.Args)
 	if _, isTask := tool.(Task); isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}

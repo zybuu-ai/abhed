@@ -759,6 +759,9 @@ type LimitsConfig struct {
 	// BackgroundMaxMinutes is each background subagent's wall-clock
 	// lifetime. Zero means 60; at most 480.
 	BackgroundMaxMinutes int `json:"background_max_minutes,omitempty"`
+	// BackgroundShells bounds a session's commands run with run_in_background
+	// at once. Zero allows none. Default 4.
+	BackgroundShells int `json:"background_shells"`
 }
 
 // SubagentsConfig is what a background subagent's result does when it
@@ -828,6 +831,7 @@ func Default() Config {
 			MaxTurns: 100, MaxTokens: 8192, MaxBudgetTokens: 0,
 			MaxSubagents: 20, NestedSubagents: false,
 			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
+			BackgroundShells: 4,
 		},
 		Subagents: SubagentsConfig{Wake: "notify", MaxWakesPerHour: 4, WakeMaxTurns: 8},
 		Storage:   StorageConfig{Driver: "memory", Tenant: "default", MaxConns: 10},
