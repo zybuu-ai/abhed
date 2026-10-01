@@ -2228,8 +2228,16 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		lastSeq = 0
 	}
 
-	// Replay what was missed before subscribing, so no event is dropped in the
-	// gap between reconnect and subscription.
+	// Subscribe before reading the backlog: an event recorded between the
+	// two is then in both, and send skips what was already written. Read the
+	// other way round, an event recorded in that gap reached neither, and a
+	// quiet session never showed it.
+	var events <-chan agent.Event
+	if running {
+		events = s.store.Subscribe(live.ID)
+		defer s.store.Unsubscribe(live.ID, events)
+	}
+
 	// The backlog never closes the stream, but a suggestion it shows owed is awaited.
 	var end streamEnd
 	runLive := func() bool {
@@ -2254,9 +2262,6 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	if !running {
 		return
 	}
-
-	events := s.store.Subscribe(live.ID)
-	defer s.store.Unsubscribe(live.ID, events)
 
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
