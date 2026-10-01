@@ -40,7 +40,7 @@ func (s *Server) originalFile(w http.ResponseWriter, r *http.Request) {
 		writeViewError(w, err)
 		return
 	}
-	live, found := s.session(r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
+	live, found := s.session(r.Context(), r.PathValue("id"), TenantOf(r.Context()), UserOf(r.Context()))
 	if !found || live.undo == nil {
 		WriteError(w, http.StatusNotFound, "no recorded change to this file")
 		return

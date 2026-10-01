@@ -545,7 +545,7 @@ func plainText(b []byte) string {
 // process, so a session that is not live here has none to find.
 func (s *Server) ptyFor(w http.ResponseWriter, r *http.Request) (*liveSession, *ptyRun, bool) {
 	id := r.PathValue("id")
-	live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context()))
+	live, found := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	if !validSessionID(id) || !found {
 		WriteError(w, http.StatusNotFound, "that command is not running")
 		return nil, nil, false

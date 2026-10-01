@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -109,21 +110,56 @@ func TestHeldSessionFollowsItsStoredOwner(t *testing.T) {
 	s.running["s-norow"] = &liveSession{ID: "s-norow", Tenant: "default", User: "local:bob"}
 	s.mu.Unlock()
 	rows.rows["s-held"] = store.SessionRecord{ID: "s-held", Tenant: "default", User: "local:bob"}
-	if _, ok := s.session("s-held", "default", "local:bob"); !ok {
+	if _, ok := s.session(context.Background(), "s-held", "default", "local:bob"); !ok {
 		t.Fatal("an owner agreeing with its row was refused")
 	}
 	rows.rows["s-held"] = store.SessionRecord{ID: "s-held", Tenant: "default", User: "unclaimed:local:bob"}
-	if _, ok := s.session("s-held", "default", "local:bob"); ok {
+	if _, ok := s.session(context.Background(), "s-held", "default", "local:bob"); ok {
 		t.Fatal("a held session whose row was unclaimed is still bob's")
 	}
 	if got := s.running["s-held"].User; got != "unclaimed:local:bob" {
 		t.Errorf("held owner %q, want the row's", got)
 	}
-	if _, ok := s.session("s-norow", "default", "local:bob"); !ok {
+	if _, ok := s.session(context.Background(), "s-norow", "default", "local:bob"); !ok {
 		t.Error("a session with no row yet was refused")
 	}
 	s.mu.Lock()
 	delete(s.running, "s-held")
 	delete(s.running, "s-norow")
 	s.mu.Unlock()
+}
+
+// failingRows is a session store whose row lookup fails or stalls.
+type failingRows struct {
+	*durableMem
+	stall bool
+}
+
+func (f failingRows) GetSession(ctx context.Context, id string) (store.SessionRecord, error) {
+	if f.stall {
+		<-ctx.Done()
+		return store.SessionRecord{}, ctx.Err()
+	}
+	return store.SessionRecord{}, errors.New("connection reset")
+}
+
+// A held session whose row cannot be read, by an error or within the
+// request's deadline, is not served: an unanswered check is not permission.
+func TestHeldSessionRefusedWhenItsRowCannotBeRead(t *testing.T) {
+	for _, stall := range []bool{false, true} {
+		rows := failingRows{durableMem: &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}, stall: stall}
+		s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+			Registry: tools.NewRegistry(tools.Read{}), Store: rows})
+		s.mu.Lock()
+		s.running["s-held"] = &liveSession{ID: "s-held", Tenant: "default", User: "local:bob"}
+		s.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		if _, ok := s.session(ctx, "s-held", "default", "local:bob"); ok {
+			t.Errorf("stall=%v: a session whose row could not be read was served", stall)
+		}
+		cancel()
+		s.mu.Lock()
+		delete(s.running, "s-held")
+		s.mu.Unlock()
+	}
 }
