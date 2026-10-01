@@ -1111,12 +1111,12 @@ async function loadHawkeye(){
   if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
   let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
-  [['Outcome', r.outcome],['Model', (r.models || []).join(' → ') || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
+  [['Outcome', visible(r.outcome)],['Model', visible((r.models || []).join(' → ')) || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
    ['Policy', r.policy.allowed + ' ok · ' + r.policy.denied + ' denied'],['Offloads', (r.offloads || []).length],['Recalls', t.recalls || 0]]
    .forEach(([k, v]) => { const d = el('div'); d.appendChild(el('dt', '', k)); d.appendChild(el('dd', '', String(v))); dl.appendChild(d); });
   box.appendChild(dl);
-  const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => k + ' ' + v).join(' · ');
+  const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => visible(k) + ' ' + v).join(' · ');
   if(steps){ box.appendChild(el('div', 'group', 'Policy steps')); box.appendChild(el('div', 'rules', steps)); }
   const fs = r.findings || []; const loud = fs.filter(f => f.severity !== 'info').length;
   $('b-hawk').hidden = !loud; $('b-hawk').textContent = loud;
@@ -1125,7 +1125,7 @@ async function loadHawkeye(){
   box.appendChild(el('div', 'group', 'Findings'));
   if(!fs.length){ box.appendChild(el('div', 'empty', 'Nothing in this record needs a second look.')); prob.appendChild(el('div', 'dim', 'No findings.')); }
   for(const f of fs){
-    const mk = () => { const n = el('div', 'finding ' + f.severity); n.appendChild(el('b', '', f.title + (f.seq ? '  #' + f.seq : ''))); n.appendChild(el('p', '', f.detail)); return n; };
+    const mk = () => { const n = el('div', 'finding ' + f.severity); n.appendChild(el('b', '', visible(f.title) + (f.seq ? '  #' + f.seq : ''))); n.appendChild(el('p', '', visible(f.detail))); return n; };
     box.appendChild(mk()); prob.appendChild(mk());
   }
 }
@@ -2104,7 +2104,8 @@ function logEvent(ev, p){
   if(ev.type === 'agent.delta' || ev.type === 'agent.reasoning.delta') return;
   const box = $('p-events'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40, r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
   r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
-  r.appendChild(el('span', 'd', p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160)));
+  // Record text is the model's and the tools': shown, never obeyed (bidi, zero-width).
+  r.appendChild(el('span', 'd', visible(p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160))));
   // The panel keeps the latest rows; the whole record is one replay away.
   box.appendChild(r); while(box.childElementCount > EVT_MAX) box.firstElementChild.remove();
   $('n-evt').textContent = ' ' + (++evtN); if(!box.hidden && stick) box.scrollTop = box.scrollHeight;

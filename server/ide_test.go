@@ -427,3 +427,21 @@ func TestIDEVendorEveryComponentUnpacks(t *testing.T) {
 		t.Fatalf("only %d components embedded", seen)
 	}
 }
+
+// The Events and HawkEYE panels show a record's hidden characters rather than obey them.
+func TestIDEPanelsShowHiddenCharacters(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+Object.defineProperty(El.prototype, 'childElementCount', { get(){ return this.childNodes.filter(c => c.nodeType === 1).length; } });
+Object.defineProperty(El.prototype, 'firstElementChild', { get(){ return this.childNodes.find(c => c.nodeType === 1) || null; } });
+El.prototype.remove = function(){ const p = this.parentNode; if(p) p.childNodes.splice(p.childNodes.indexOf(this), 1); };
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); return c; };
+Object.defineProperty(El.prototype, 'firstChild', { get(){ return this.childNodes[0] || null; } });
+const nodes = {}; const $ = id => nodes[id] || (nodes[id] = new El('div'));
+const EVT_MAX = 500; let evtN = 0, current = 's1';
+const api = async () => ({outcome:'completed‮', models:['m​'], totals:{turns:1, tokens_in:1}, offloads:[],
+  policy:{allowed:1, denied:0, by_step:{'default⁦':1}}, findings:[{severity:'warn', title:'t​', detail:';fs- mr‮', seq:3}]});
+`
+	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's panels failed:\n%s", out)
+	}
+}

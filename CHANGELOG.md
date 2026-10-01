@@ -18,6 +18,11 @@ All notable changes to Abhed are recorded here. The format follows
   (Hangul fillers, braille blank, U+034F, a U+FE0F not after a symbol) are
   now written out as `⟨U+XXXX⟩` like other hidden characters, and /ide shows
   an argument the warning is about when its prompt does not draw it.
+- Bidi and zero-width characters in a tool call were drawn raw in the /ide
+  Events and HawkEYE panels, the HawkEYE HTML report and `abhed hawkeye`,
+  so a right-to-left override made `;fs- mr` read as `rm -sf`. These views
+  now write them out as `⟨U+XXXX⟩`, as the approval prompts do. The JSON
+  report keeps the record's text as it is.
 - The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
   redacted with the secrets stored when a session started, while bash reads
   the store at each call. A secret stored or changed during a session, and

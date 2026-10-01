@@ -53,6 +53,9 @@ sets = {
           'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
           'async function newEntry(folder){'],
     'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
+    # From ide.html: the Events and HawkEYE panels, which draw record text.
+    'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function tail(p){','function subjectOf(tool, args){',
+          'function logEvent(ev, p){','async function loadHawkeye(){'],
     'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function hasHidden(v, depth = 0){','function render(ev){','function subagentRow(id, p, at){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
