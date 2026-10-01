@@ -126,6 +126,24 @@ func webSources(names []string) string {
 	return noWebLine
 }
 
+// toolSearchLine points the model at the MCP tools that are offered only
+// through tool_search, which it otherwise never calls.
+const toolSearchLine = `
+- Connected services: the MCP servers' tools (trackers, tickets, billing and the
+  like) are listed by name in tool_search's description. When a request may concern
+  such a system, call tool_search with a name or keyword to load the tool, before
+  searching the files or saying you have no such tool.`
+
+// mcpSources is the prompt's line on deferred MCP tools, empty without them.
+func mcpSources(names []string) string {
+	for _, n := range names {
+		if n == "tool_search" {
+			return toolSearchLine
+		}
+	}
+	return ""
+}
+
 // Profile is layer 2: role-specific behavior for subagents. A narrow role with
 // a narrow tool set outperforms a general one (docs §07).
 type PromptProfile struct {
@@ -189,7 +207,7 @@ type BuildOptions struct {
 func BuildSystemPrompt(opts BuildOptions) string {
 	var b strings.Builder
 
-	b.WriteString(strings.Replace(CorePrompt, "{{web}}", webSources(opts.Tools), 1))
+	b.WriteString(strings.Replace(CorePrompt, "{{web}}", webSources(opts.Tools)+mcpSources(opts.Tools), 1))
 
 	role := opts.Role
 	if p, found := Profiles[opts.Profile]; found && role == "" {

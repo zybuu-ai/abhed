@@ -281,6 +281,11 @@ func (t *remoteTool) Name() string {
 
 func (t *remoteTool) Description() string { return t.description }
 
+// ServerName and RemoteName are the two halves of Name, kept apart because a
+// server name may itself hold "__".
+func (t *remoteTool) ServerName() string { return t.server }
+func (t *remoteTool) RemoteName() string { return t.remoteName }
+
 func (t *remoteTool) Schema() json.RawMessage {
 	if len(t.schema) == 0 {
 		return json.RawMessage(`{"type":"object","properties":{}}`)

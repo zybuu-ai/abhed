@@ -146,8 +146,8 @@ workspace's configuration it needs trust, like any other process.
 | `/mcp restart NAME` | reconnect a server; its tools reach the new connection |
 
 With more than 40 MCP tools, they are not listed to the model one by one.
-A `tool_search` tool finds them by what they do and loads the ones it
-returns, so a server of two hundred tools does not fill the context. A
+A `tool_search` tool, whose description lists the servers and their tool
+names, finds them by name or by what they do and loads the ones it returns, so a server of two hundred tools does not fill the context. A
 loaded tool is policed like any other: it asks unless a rule allows it, and
 its output is untrusted.
 

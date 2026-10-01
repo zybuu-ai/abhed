@@ -131,6 +131,10 @@ Two changes need action before upgrading:
 
 ### Fixed
 
+- With more than 40 MCP tools, models never found them: `tool_search` named
+  no server and no tool. Its description now lists the servers and their
+  tool names (names only, plain characters, about 2.5 KB at most, the rest
+  counted), and the system prompt says to use it when tools are deferred.
 - `tasks` ran a task naming an unknown `agent_type` as the general role; it
   now refuses the call before anything runs, as `task` does.
 - A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's

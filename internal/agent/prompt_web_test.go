@@ -37,3 +37,15 @@ func TestPromptNamesOnlyTheWebToolsRegistered(t *testing.T) {
 		}
 	}
 }
+
+// With MCP tools behind tool_search, the prompt says to use it; without, it
+// does not mention it.
+func TestPromptPointsAtToolSearch(t *testing.T) {
+	ws := t.TempDir()
+	if p := BuildSystemPrompt(BuildOptions{Profile: "main", Workspace: ws, Tools: []string{"read", "tool_search"}}); !strings.Contains(p, "call tool_search with a name or keyword") {
+		t.Error("deferred tools, but the prompt does not point at tool_search")
+	}
+	if p := BuildSystemPrompt(BuildOptions{Profile: "main", Workspace: ws, Tools: []string{"read"}}); strings.Contains(p, "tool_search") {
+		t.Error("the prompt names tool_search without it")
+	}
+}
