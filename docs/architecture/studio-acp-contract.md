@@ -1,6 +1,6 @@
 # Abhed Studio and the engine: the ACP contract
 
-Status: 2026-09-30, draft for `apiLevel: 1`
+Status: 2026-10-01, `apiLevel: 1`; the engine side is implemented in 1.2.3 except where §11 says otherwise
 
 Abhed Studio is an editor. It runs no agent code of its own: every capability
 it shows is a call to the local `abhed acp` engine over the Agent Client
@@ -12,7 +12,8 @@ rules for each.
 The engine is the ground truth. Where this page and `app/acp.go` disagree
 about something the engine already does, the engine is right and this page is
 wrong. Where this page asks for something the engine does not do yet, it is
-marked **Engine: add**.
+marked **Engine: add**. Those notes record the 1.2.2 starting point; §11
+says what the engine serves now.
 
 Studio's test double, `scripts/abhed/stub-engine/abhed-stub.mjs` in the Studio
 repository, speaks this contract so Studio's views can be built and tested
@@ -846,32 +847,77 @@ meaning from a type it does not know.
 
 ## 11. The whole surface at a glance
 
-| Capability | Wire | Kind | Today |
+"Engine 1.2.3" is what the engine serves. Where it differs from a section
+above, the engine is right (§ intro) and the difference is listed after the
+table.
+
+| Capability | Wire | Kind | Engine 1.2.3 |
 |---|---|---|---|
-| Handshake, features | `initialize` + `meta` | spec + meta | partial (no meta) |
-| Chat, thinking, plan, usage | `session/prompt`, `session/update` | spec | done; reasoning deltas to add |
-| Models | `session/set_config_option` (`model`) | spec | done |
-| Thinking level | config option `thought_level` | spec | add |
-| Slash commands | `available_commands_update` | spec | add |
-| Modes | `session/set_mode`, `current_mode_update` | spec | add |
-| Approvals | `session/request_permission` | spec + meta | done; rule, via, diff, held to add |
-| Policy view, explain | `_abhed/capabilities`, `_abhed/policy/explain` | ext | add |
-| Workspace trust | `session/new` meta, `_abhed/trust/inspect`, `_abhed/trust/changed` | meta + ext | report done; inspect to add |
-| Sessions | `session/list`, `session/load`, `session/resume`, `session/close` | spec | add |
-| Rename, fork, compact | `_abhed/session/rename`, `/fork`, `/compact` | ext | add |
-| Event stream | `_abhed/events/subscribe`, `/page`, `/unsubscribe`, `_abhed/event` | ext | add |
-| Verify, export | `_abhed/record/verify`, `_abhed/export` | ext | add |
-| HawkEYE | `_abhed/hawkeye` | ext | add |
-| Subagents | `tool_call` cards + events | spec + meta | asks done; spawn cards to add |
-| Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | cards and cancel-all done; list, cancel, resume, review to add |
-| Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities`, `_abhed/mcp/restart`, `_abhed/index/*`, `_abhed/infra/status` | ext | add |
-| Abhed terminal | `_abhed/terminal/*` | ext | add |
-| Host terminal | none (Studio only), removable by managed policy | — | Studio |
-| Manual edits, dirty buffers | `_abhed/manual/edited`, `_abhed/buffers/dirty` | ext | add |
-| Per-hunk review, undo | `_abhed/review/*` | ext | add |
-| Queue, steer, stop | `_abhed/session/steer`, `_abhed/queue/*`, `session/cancel` | ext + spec | cancel done |
-| Resolve | `_abhed/resolve` | ext | add |
-| Doctor | `_abhed/doctor` | ext | add |
-| Setup, config, trust grant, secrets | engine command line from Studio's main process | — | add (`setup --json`, `config set`) |
-| Team server (EE) | `_abhed/team/*` | ext | add (EE) |
+| Handshake, features | `initialize` + `meta`, `abhed version --json` | spec + meta | done |
+| Chat, thinking, plan, usage | `session/prompt`, `session/update` | spec | done: reasoning deltas, stop reasons from the terminal reason, usage `meta`; no `cost` (no price table) |
+| Models | `session/set_config_option` (`model`) | spec | done; `config_option_update` on `model.fallback` |
+| Thinking level | config option `thought_level` | spec | not yet: never offered, as no provider reports reasoning control |
+| Slash commands | `available_commands_update` | spec | done (see note 3) |
+| Modes | `session/set_mode`, `current_mode_update`, config option `mode` | spec | done |
+| Approvals | `session/request_permission` | spec + meta | done: `rule`, `via`, `diff`, `held`, `taskId`; `approval.scope_granted` |
+| Policy view, explain | `_abhed/capabilities`, `_abhed/policy/explain` | ext | done |
+| Workspace trust | `session/new` meta, `_abhed/trust/inspect`, `_abhed/trust/changed` | meta + ext | done (see note 6) |
+| Sessions | `session/list`, `session/load`, `session/resume`, `session/close` | spec | done (local record only) |
+| Rename, fork, compact | `_abhed/session/rename`, `/fork`, `/compact` | ext | done; `compact` refuses a `focus` |
+| Event stream | `_abhed/events/subscribe`, `/page`, `/unsubscribe`, `_abhed/event` | ext | done |
+| Verify, export | `_abhed/record/verify`, `_abhed/export` | ext | done |
+| HawkEYE | `_abhed/hawkeye` | ext | done |
+| Subagents | `tool_call` cards + events | spec + meta | done |
+| Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
+| Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
+| MCP restart, index, infra polling | `_abhed/mcp/restart`, `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `mcp.restart`, `index`, `infra` not in `features`) |
+| Abhed terminal | `_abhed/terminal/*` | ext | `lines` mode done; `interactive` refused (see note 4) |
+| Host terminal | none (Studio only), removable by managed `studio.disable_host_terminal` | — | Studio; the managed key is read into `capabilities.studio` |
+| Manual edits, dirty buffers | `_abhed/manual/edited`, `_abhed/buffers/dirty` | ext | done |
+| Per-hunk review, undo | `_abhed/review/*` | ext | done |
+| Queue, steer, stop | `_abhed/session/steer`, `_abhed/queue/*`, `session/cancel` | ext + spec | done |
+| Resolve | `_abhed/resolve` | ext | not yet (-32601; `resolve` not in `features`) |
+| Doctor | `_abhed/doctor`, `abhed doctor --json` | ext | done |
+| Setup, config, trust grant, secrets | engine command line from Studio's main process | — | `trust grant -sha256` and `secret set` exist; `setup --json`, `api_key_secret` and `config get|set` not yet |
+| Memory area | `memory` feature | ext | not yet (memory files are in `capabilities`) |
+| Team server (EE) | `_abhed/team/*` | ext | CE answers -32601 |
 | Deletion | none; `abhed record prune` in a terminal | — | — |
+
+Where the engine differs from the sections above:
+
+1. **Fork (§4.2).** `session.branched` is recorded in the new session, naming
+   the source and the last seq taken, as the CLI's branch records it; the
+   source's record is not written to, since another process may hold it.
+   A fork of a record that failed verification copies it marked untrusted.
+2. **Export (§4.5).** `html` is the HawkEYE page, as this page says; the
+   CLI's `abhed record export` still writes the transcript page.
+3. **Commands (§3.3).** A custom command that runs shell lines, narrows the
+   tools or names a model is refused over ACP (the CLI runs it). Skills are
+   listed as commands of source `skill`; MCP prompts are not listed.
+   `/mode` from a prompt refuses `auto` and `bypass`, which need Studio's
+   picker; `/fork` and `/clear` answer that they are Studio's actions.
+4. **Terminal (§7.1).** `lines` mode runs each line as the person's `bash`
+   call through policy, in the session's sandbox, on a tool session of its
+   own; a destructive line asks `_abhed/terminal/confirm`. `interactive` is
+   refused until the server's pty and line capture move into a shared
+   package; until then a hidden prompt such as `abhed secret set` needs a
+   host terminal.
+5. **Undo (§7.5).** `turn` is the turn number the record's
+   `checkpoint.saved` events carry. An accepted hunk moves the baseline, so
+   undo returns to it.
+6. **Trust changes (§5.6).** The file's hash is compared at each prompt and
+   each `_abhed/capabilities` call, not watched; on a change the engine sends
+   `_abhed/trust/changed` and the prompt restarts the session from its record
+   under the new decision.
+7. **Capabilities (§6.4).** Skills report `source: "user"`; `rag.docs` is 0;
+   clusters report `logged_in: false`; an MCP server is `connected` or
+   `error`. `_abhed/tasks/changed` is sent on spawn, result, cancel and a
+   change in waiting asks, not on each turn.
+8. **Editor files (§2.6).** The file tools refuse `.vscode/**`,
+   `.devcontainer/**`, `.git/config`, `.git/hooks/**` and any
+   `*.code-workspace`; commands are kept from writing those paths and the
+   `*.code-workspace` files that exist when the session starts. On Linux a
+   path that does not exist yet cannot be held read-only by bubblewrap.
+9. **Modes (§5.1).** A mode changes only between prompts and while no
+   background task runs (-32002 otherwise), since the policy engine is read
+   by every call.

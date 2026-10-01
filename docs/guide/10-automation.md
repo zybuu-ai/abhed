@@ -212,10 +212,11 @@ streamed to the editor.
 
 The workspace's `.abhed/config.json` applies whole only once the person has
 trusted it; `session/new` reports the decision in
-`_meta.abhed.workspaceTrust`, with the settings it ignored, so the editor can
-ask and then run `abhed trust grant`. The editor may send
-`_meta.abhed.trust: "untrusted"` to take only what tightens; it cannot grant
-trust over the wire; pass the reported `sha256` to `abhed trust grant
+`_meta["zybuu.ai/abhed"].workspaceTrust`, with the settings it ignored, so the
+editor can ask and then run `abhed trust grant`. The editor may send
+`_meta["zybuu.ai/abhed"].trust: "untrusted"` (the older `_meta.abhed` key is
+still read) to take only what tightens; any other field there is refused, and
+it cannot grant trust over the wire; pass the reported `sha256` to `abhed trust grant
 -sha256` so only the content the person saw is trusted. Starting
 `abhed -trust-workspace acp` trusts the file of every workspace the editor
 opens for the life of the process, not only the one it was started in. See [Workspace
@@ -227,8 +228,11 @@ whether or not a prompt turn is open. A background task's ask needs an open
 prompt turn, since that is when an editor can be asked: between turns the
 task's own `bg-<task id>` card says it is waiting, and the ask goes out,
 first, when your next prompt opens, bound to that turn: it is refused if the
-turn ends before you answer, or if no turn opens within 30 minutes. `session/cancel` stops every
-background task too, with or without a prompt open.
+turn ends before you answer, or if no turn opens within 30 minutes. A person
+can also review held asks without a prompt: `_abhed/tasks/review` sends them
+as permission requests marked `held`, refused if the review closes first.
+`session/cancel` stops every background task too, with or without a prompt
+open, and `_abhed/tasks/cancel` stops one.
 
 ### Choosing the model
 
@@ -255,7 +259,7 @@ switch, the editor sends
 
 and the reply is the full `configOptions` with the new `currentValue`. No
 `config_option_update` follows: the spec keeps that for a change the agent
-makes itself, and Abhed makes none. `models` and `session/set_model`
+makes itself, such as a recorded `model.fallback`. `models` and `session/set_model`
 (`{"sessionId", "modelId"}`, reply `_meta["zybuu.ai/abhed"].currentModelId`)
 are the earlier unstable form, for editors that predate config options.
 
@@ -271,9 +275,37 @@ Subagents and background tasks started after a switch run on the new model,
 unless their agent definition or the call names one; a task already running
 keeps the model it started on.
 
-Not yet supported: `session/load` (resuming an editor session from the
-record) and editor-side modes. A conformance test drives the adapter with a
-scripted client, so no editor is needed in CI.
+### Sessions, modes and Abhed Studio
+
+Sessions are kept in the local record the CLI uses (`~/.abhed/records`), so
+`session/list` shows them, `session/load` replays one (never running a tool
+again) and `session/resume` continues it without the replay; both verify the
+chain first and say whether it held in `_meta["zybuu.ai/abhed"].record`. A
+session another Abhed process is writing is refused, and one whose record
+fails verification opens read-only, to be forked. `session/close` lets a
+session go; nothing is deleted over ACP. With `storage.driver` set to
+`postgres` the record is the server's, and sessions here stay in memory.
+
+`session/new` offers the permission modes the engine allows now, as `modes`
+and as a config option of category `mode`. `session/set_mode` changes it
+within the managed ceiling and is recorded as `mode.changed` by the person;
+bypass is offered only when your own configuration starts in it.
+
+Abhed Studio uses the rest through `_abhed/*` extension methods: the event
+stream, verify and export, HawkEYE, the policy view and a dry-run explain,
+workspace trust inspection, background tasks and held asks, the sandboxed
+Abhed terminal (lines mode), manual edits, per-hunk review and undo,
+steering and the doctor. `initialize` names the ones this engine serves in
+`agentCapabilities._meta["zybuu.ai/abhed"].features`, and `abhed version
+--json` prints the same block without starting anything. The engine
+write-protects an editor's own files in the workspace (`.vscode`,
+`.devcontainer`, `.git/config`, `.git/hooks`, `*.code-workspace`) from the
+agent, and refuses its edit to a file with unsaved changes the editor
+reported. The full surface, with what is not served yet, is in
+[the Studio contract](../architecture/studio-acp-contract.md).
+
+A conformance test drives the adapter with a scripted client, so no editor
+is needed in CI.
 
 ## Server
 
