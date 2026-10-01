@@ -397,7 +397,10 @@ func New(opts Options) *Server {
 		s.sessions = rec
 	}
 	if local := s.LocalAuth(); local != nil {
-		local.OnChange(func(string) { s.RecheckStreams() })
+		local.OnChange(func(username string) {
+			s.releaseStale(local, username)
+			s.RecheckStreams()
+		})
 	}
 	return s
 }
@@ -2995,12 +2998,76 @@ func (s *Server) router() (SessionRouter, bool) {
 
 func (s *Server) session(id, tenant, user string) (*liveSession, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	live, found := s.running[id]
-	if !found || !ownsSession(live.Tenant, live.User, tenant, user) {
+	owned := found && ownsSession(live.Tenant, live.User, tenant, user)
+	s.mu.RUnlock()
+	if !owned || !s.stillOwned(live, id) {
 		return nil, false
 	}
 	return live, true
+}
+
+// stillOwned checks a held session's owner against its stored row, which an
+// account's removal in another process moves to unclaimed while this one
+// still holds the old owner. A disagreement adopts the row's owner. Without
+// a durable store, or before the row exists, memory is all there is.
+func (s *Server) stillOwned(live *liveSession, id string) bool {
+	g, ok := s.sessions.(sessionGetter)
+	if !ok {
+		return true
+	}
+	s.mu.RLock()
+	held, heldTenant := live.User, live.Tenant
+	s.mu.RUnlock()
+	if held == "" || held == auth.Anonymous {
+		return true
+	}
+	rec, err := g.GetSession(context.Background(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		// A store that cannot answer is not permission to proceed.
+		return false
+	}
+	if rec.User == held && rec.Tenant == heldTenant {
+		return true
+	}
+	s.mu.Lock()
+	if live.User == held {
+		live.User = rec.User
+	}
+	s.mu.Unlock()
+	s.log.Warn("held session's owner no longer matches its record; released",
+		"session", id, "held", held, "stored", rec.User)
+	s.RecheckStreams()
+	return false
+}
+
+// releaseStale lets go of the sessions this process holds for a local
+// account that no longer exists, or exists again under the same name since
+// they started: a later account of that name is not their owner.
+func (s *Server) releaseStale(local *auth.LocalAuth, username string) {
+	if username == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u, err := local.Store.Get(ctx, username)
+	gone := errors.Is(err, auth.ErrNoSuchUser) || (err == nil && u == nil)
+	if err != nil && !gone {
+		return
+	}
+	owner := auth.LocalOwner(username)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, live := range s.running {
+		if live.User != owner || (!gone && (u.CreatedAt.IsZero() || !live.Created.Before(u.CreatedAt))) {
+			continue
+		}
+		live.User = auth.UnclaimedOwner(owner)
+		s.log.Warn("released a session whose account was removed or made again", "session", id, "owner", owner)
+	}
 }
 
 // ReleaseSessions moves the sessions this process holds for owner in tenant

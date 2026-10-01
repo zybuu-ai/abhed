@@ -57,7 +57,7 @@ func TestMigrateReadsTheUsersFile(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Auth.Mode, cfg.Auth.UsersFile = "local", path
-	got, from, err := fileOwnerAccounts(cfg, dir)
+	got, from, err := fileOwnerAccounts(cfg, dir, false)
 	if err != nil || from != path || len(got) != 2 {
 		t.Fatalf("users_file: %d accounts from %q: %v", len(got), from, err)
 	}
@@ -72,7 +72,7 @@ func TestMigrateReadsTheUsersFile(t *testing.T) {
 	// No users_file and no default file: the table alone, nothing created.
 	cfg.Auth.UsersFile = ""
 	ws := t.TempDir()
-	if got, from, err := fileOwnerAccounts(cfg, ws); err != nil || from != "" || got != nil {
+	if got, from, err := fileOwnerAccounts(cfg, ws, false); err != nil || from != "" || got != nil {
 		t.Fatalf("no file: %v %q %v", got, from, err)
 	}
 	if _, err := os.Stat(filepath.Join(ws, ".abhed")); !errors.Is(err, os.ErrNotExist) {
@@ -86,7 +86,114 @@ func TestMigrateReadsTheUsersFile(t *testing.T) {
 	if err := def.Put(context.Background(), &auth.User{Username: "bob"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, from, err := fileOwnerAccounts(cfg, ws); err != nil || from == "" || len(got) != 1 {
+	if got, from, err := fileOwnerAccounts(cfg, ws, false); err != nil || from == "" || len(got) != 1 {
 		t.Fatalf("default file: %v %q %v", got, from, err)
+	}
+}
+
+// A configured users_file that is missing or unreadable stops the migration
+// unless --force-no-accounts is given, and a relative one is found beside the
+// workspace whatever directory migrate runs in.
+func TestMigrateNeedsItsUsersFile(t *testing.T) {
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Auth.Mode, cfg.Auth.UsersFile = "local", "state/users.json"
+	if _, _, err := fileOwnerAccounts(cfg, ws, false); err == nil {
+		t.Fatal("a missing users_file was accepted")
+	}
+	if got, _, err := fileOwnerAccounts(cfg, ws, true); err != nil || got != nil {
+		t.Fatalf("forced: %v %v", got, err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(ws, "state", "users.json")
+	if err := os.WriteFile(bad, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fileOwnerAccounts(cfg, ws, false); err == nil {
+		t.Fatal("an unreadable users_file was accepted")
+	}
+	fs, err := auth.NewFileUserStore(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(bad)
+	if err := fs.Put(context.Background(), &auth.User{Username: "founder"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	if got, from, err := fileOwnerAccounts(cfg, ws, false); err != nil || len(got) != 1 || from != bad {
+		t.Fatalf("relative path from another directory: %v %q %v", got, from, err)
+	}
+}
+
+// migrate hands the users_file accounts to the owner migration, says where
+// it found them, and refuses a missing file.
+func TestMigrateCommandPassesFileAccounts(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
+	t.Setenv("ABHED_DATABASE_URL", "postgres://rt@127.0.0.1:1/x")
+	t.Setenv("ABHED_MIGRATE_DATABASE_URL", "postgres://owner@127.0.0.1:1/x")
+	users := filepath.Join(ws, "state", "users.json")
+	fs, err := auth.NewFileUserStore(users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Put(context.Background(), &auth.User{Username: "founder", Email: "founder@example.test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conf := `{"auth":{"mode":"local","users_file":"state/users.json"},"storage":{"driver":"postgres"}}`
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got store.ProvisionConfig
+	saved := provision
+	provision = func(_ context.Context, c store.ProvisionConfig) error { got = c; return nil }
+	defer func() { provision = saved }()
+	if code := migrateCmd(ws, nil, nil, config.TrustGranted); code != 0 {
+		t.Fatalf("migrate exited %d", code)
+	}
+	if got.Owners != store.OwnersLocalOnly || got.AllowNoAccounts || len(got.OwnerAccounts) != 1 ||
+		got.OwnerAccounts[0].Email != "founder@example.test" {
+		t.Fatalf("provision got owners %q allow %v accounts %+v", got.Owners, got.AllowNoAccounts, got.OwnerAccounts)
+	}
+	if code := migrateCmd(ws, []string{"--force-no-accounts"}, nil, config.TrustGranted); code != 0 || !got.AllowNoAccounts {
+		t.Fatalf("--force-no-accounts: exit %d, allow %v", code, got.AllowNoAccounts)
+	}
+}
+
+// A single-role server reads its users_file when it migrates owners itself;
+// a two-role one leaves that to migrate.
+func TestSingleRoleStartReadsTheUsersFile(t *testing.T) {
+	ws := t.TempDir()
+	fs, err := auth.NewFileUserStore(filepath.Join(ws, "state", "users.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Put(context.Background(), &auth.User{Username: "founder"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Auth.Mode, cfg.Auth.UsersFile = "local", "state/users.json"
+	cfg.Workspace.Workspace = ws
+	if storeConfig(cfg).OwnerAccounts != nil {
+		t.Fatal("a two-role start reads the users file")
+	}
+	cfg.Storage.SingleRole = true
+	load := storeConfig(cfg).OwnerAccounts
+	if load == nil {
+		t.Fatal("a single-role start does not read the users file")
+	}
+	if got, err := load(); err != nil || len(got) != 1 || got[0].Username != "founder" {
+		t.Fatalf("loaded %+v %v", got, err)
+	}
+	cfg.Auth.UsersFile = "missing.json"
+	if _, err := storeConfig(cfg).OwnerAccounts(); err == nil {
+		t.Fatal("a missing users_file did not stop a single-role start")
 	}
 }

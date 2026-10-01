@@ -59,3 +59,32 @@ func TestAdminReadsAScheduledRun(t *testing.T) {
 		t.Error("an administrator may continue a scheduled run")
 	}
 }
+
+// An administrator's read stream of a scheduled run ends once a recheck finds
+// them no longer in the admin group.
+func TestDemotedAdminLosesAScheduledRunStream(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st.rows["s-sched"] = store.SessionRecord{ID: "s-sched", Tenant: "default", User: "schedule:nightly"}
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Store: st})
+	ann := func(groups ...string) *auth.Identity {
+		return &auth.Identity{Provider: auth.ProviderLocal, Subject: "ann", Tenant: "default", Groups: groups}
+	}
+	for _, c := range []struct {
+		name  string
+		now   *auth.Identity
+		allow bool
+	}{{"still an admin", ann(DefaultAdminGroup), true}, {"demoted", ann(), false}} {
+		r := httptest.NewRequest("GET", "/v1/sessions/s-sched/events", nil)
+		r = asUser(r, "default", "local:ann")
+		now := c.now
+		ctx := auth.WithIdentity(r.Context(), ann(DefaultAdminGroup))
+		ctx = auth.WithRecheck(ctx, func(context.Context) (*auth.Identity, error) { return now, nil })
+		g := s.guardReadStream(r.WithContext(ctx), "s-sched")
+		err := g.check()
+		g.stop()
+		if (err == nil) != c.allow {
+			t.Errorf("%s: check() = %v, want allowed %v", c.name, err, c.allow)
+		}
+	}
+}

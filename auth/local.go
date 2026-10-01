@@ -544,6 +544,8 @@ func (l *LocalAuth) current(ctx context.Context, sid string, s *browserSession) 
 		l.mu.Lock()
 		delete(l.sessions, sid)
 		l.mu.Unlock()
+		// Removed, perhaps by another process: what it held here is let go.
+		l.changed(old.Subject)
 		return nil, errSessionGone
 	}
 	if err != nil {
@@ -726,6 +728,9 @@ func (l *LocalAuth) SignInHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	l.issue(w, u)
+	// An account made again under a removed name must not find the old one's
+	// sessions still held here.
+	l.changed(u.Username)
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "username": u.Username, "tenant": u.Tenant,
 		"must_change_password": u.MustChange,

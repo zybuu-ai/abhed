@@ -287,3 +287,46 @@ func TestConcurrentCreateOneWins(t *testing.T) {
 		})
 	}
 }
+
+// Accounts that already share a username or an email, in any case, stop the
+// version 5 migration with their names; without them it adds the indexes.
+// Run in a transaction that is rolled back, indexes included.
+func TestAccountKeysRefuseExistingClashes(t *testing.T) {
+	p := openStore(t, "default")
+	ctx := context.Background()
+	if err := p.MigrateUsers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	x := strings.ToLower(testID(t, "k"))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DROP INDEX IF EXISTS users_username_key; DROP INDEX IF EXISTS users_email_key`); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range [][2]string{
+		{"dupa" + x, "shared" + x + "@example.test"}, {"DUPA" + x, ""},
+		{"other" + x, "SHARED" + x + "@Example.test"},
+	} {
+		if _, err := tx.Exec(ctx, `INSERT INTO users (username, email, hash) VALUES ($1, $2, 'x')`, u[0], u[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = applyAccountKeys(ctx, tx)
+	if err == nil {
+		t.Fatal("clashing accounts were accepted")
+	}
+	for _, want := range []string{"DUPA" + x, "other" + x, "share the username", "share the email"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not name %q", err, want)
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM users WHERE username IN ($1, $2)`, "DUPA"+x, "other"+x); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyAccountKeys(ctx, tx); err != nil {
+		t.Fatalf("no clashes left: %v", err)
+	}
+}
