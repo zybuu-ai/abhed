@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -22,6 +24,7 @@ func LoadManaged() (Config, error) {
 	}
 	warnUnknown(cfg.Unknown)
 	warnNeverAllows(cfg.Permissions.Allow)
+	warnNotYetInEffect(cfg)
 	return cfg, nil
 }
 
@@ -110,6 +113,51 @@ func (c Config) ManagedSets(path string) bool {
 	return false
 }
 
+// AllowLocked reports whether no caller may add allow rules: the managed
+// configuration sets a permissions key, whichever one. Every surface asks this.
+func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
+
+// dropLockedAllow sets aside the allow rules the user's and the workspace's
+// files added when the managed file locks allow rules without listing its own.
+func dropLockedAllow(c *Config, userFile, workspaceFile string) {
+	if !c.AllowLocked() || c.ManagedSets("permissions.allow") {
+		return
+	}
+	var kept []string
+	for _, r := range c.Permissions.Allow {
+		file := userFile
+		switch c.RuleLayer("allow", r) {
+		case LayerUser:
+		case LayerWorkspace:
+			file = workspaceFile
+		default:
+			kept = append(kept, r)
+			continue
+		}
+		delete(c.ruleLayers, "allow\x00"+strings.TrimSpace(r))
+		c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: "permissions.allow", Value: r,
+			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
+	}
+	if len(kept) < len(c.Permissions.Allow) {
+		// The files' list had replaced the built-in rules; put those back.
+		c.Permissions.Allow = dedupe(append(slices.Clone(Default().Permissions.Allow), kept...))
+		c.SetKeys = slices.DeleteFunc(c.SetKeys, func(k string) bool { return k == "permissions.allow" })
+	}
+}
+
+// dedupe keeps the first of each rule, in order.
+func dedupe(rules []string) []string {
+	seen := map[string]bool{}
+	out := rules[:0]
+	for _, r := range rules {
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // Offered reports whether a provider is one to offer for choosing: the default,
 // one not built in, or a built-in one a configuration file names.
 func (c Config) Offered(name string) bool {
@@ -140,6 +188,8 @@ type Overrides struct {
 	Allow          []string
 	Deny           []string
 	AdditionalDirs []string
+	// MemoryAuto, when set, turns auto memory on or off.
+	MemoryAuto *bool
 }
 
 // ManagedError is an override refused because it would loosen a setting the
@@ -204,18 +254,27 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		}
 		c.Limits.MaxTurns = o.MaxTurns
 	}
-	if len(o.Allow) > 0 && c.ManagedSets("permissions.allow") {
+	if o.MemoryAuto != nil {
+		if c.ManagedSets("memory.auto") && *o.MemoryAuto != c.Memory.Auto {
+			return c, refuse("memory.auto", fmt.Sprint(*o.MemoryAuto), fmt.Sprintf(
+				"the managed configuration sets it to %v", c.Memory.Auto))
+		}
+		c.Memory.Auto = *o.MemoryAuto
+	}
+	if len(o.Allow) > 0 && c.AllowLocked() {
 		return c, refuse("permissions.allow", strings.Join(o.Allow, ","),
-			"the managed configuration sets the allow rules, which may not be added to")
+			"the managed configuration sets the permissions, so allow rules may not be added")
 	}
 	if len(o.AdditionalDirs) > 0 && c.ManagedSets("additional_dirs") {
 		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
 	warnNeverAllows(o.Allow)
-	// Copied, so the result never shares a list with the configuration it came from.
+	c.ruleLayers = maps.Clone(c.ruleLayers)
 	c.Permissions.Allow = append(append([]string{}, c.Permissions.Allow...), o.Allow...)
 	c.Permissions.Deny = append(append([]string{}, c.Permissions.Deny...), o.Deny...)
+	c.noteRuleLayer(LayerFlag)
+	// Copied, so the result never shares a list with the configuration it came from.
 	c.AdditionalDirs = append(append([]string{}, c.AdditionalDirs...), o.AdditionalDirs...)
 	return c, nil
 }
@@ -238,4 +297,59 @@ func orRefuse(v string) string {
 		return "refuse"
 	}
 	return v
+}
+
+// Layers a permission rule can come from, as RuleLayer names them.
+const (
+	LayerDefault   = "default"
+	LayerUser      = "user"
+	LayerWorkspace = "workspace"
+	LayerManaged   = "managed"
+	LayerFlag      = "flag"
+)
+
+// noteRuleLayer credits the permission rules and extensions not yet
+// credited to layer. The managed layer takes every entry of a list it sets,
+// since it replaced that list; the others take only entries new to it.
+func (c *Config) noteRuleLayer(layer string) {
+	if c.ruleLayers == nil {
+		c.ruleLayers = map[string]string{}
+	}
+	for list, rules := range map[string][]string{
+		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
+	} {
+		replaced := layer == LayerManaged && c.ManagedSets("permissions."+list)
+		for _, r := range rules {
+			k := list + "\x00" + strings.TrimSpace(r)
+			if _, have := c.ruleLayers[k]; !have || replaced {
+				c.ruleLayers[k] = layer
+			}
+		}
+	}
+	replaced := layer == LayerManaged && c.ManagedSets("extensions")
+	for _, e := range c.Extensions {
+		k := "extension\x00" + e.Name
+		if _, have := c.ruleLayers[k]; !have || replaced {
+			c.ruleLayers[k] = layer
+		}
+	}
+}
+
+// ExtensionLayer names where a configured extension came from, as
+// RuleLayer does for a rule.
+func (c Config) ExtensionLayer(name string) string {
+	if l, ok := c.ruleLayers["extension\x00"+name]; ok {
+		return l
+	}
+	return "config"
+}
+
+// RuleLayer names where a configured permission rule in list (allow, ask or
+// deny) came from: default, user, workspace, managed or flag. A rule loading
+// did not see, as in a Config built by hand, is "config".
+func (c Config) RuleLayer(list, rule string) string {
+	if l, ok := c.ruleLayers[list+"\x00"+strings.TrimSpace(rule)]; ok {
+		return l
+	}
+	return "config"
 }

@@ -244,6 +244,24 @@ check('its answer names the subagent\'s request', __posted.length === 1 && __pos
 render(ev(4, 'subagent.action', {session:'child', call_id:'w1', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev7'}));
 check('and the subagent.action settles it', open().length === 0 && !asks.has('subagent-cev7'));
 
+// A background subagent's ask outlives the run while background work is
+// owed; the run's own ask ends with it. Its outcome or the closing end
+// settles it, and an ask made after the run is offered too.
+fresh('s19', true);
+render(write(1));
+render(ev(2, 'subagent.ask', {session:'child', subagent:'clean up', request_id:'cev21', call_id:'x1', tool:'bash', args:{command:'touch a'}, reason:'ask rule'}));
+render(ev(3, 'session.ended', {reason:'max_turns', turns:3, background:1}));
+check('after the run ends with background owed, the subagent\'s ask stays open',
+  open().length === 1 && open()[0].dataset.call === 'subagent-cev21' && asks.has('subagent-cev21'));
+check('and the run\'s own ask is settled', !asks.has('w1'));
+render(ev(4, 'subagent.ask', {session:'child', subagent:'clean up', request_id:'cev22', call_id:'x2', tool:'bash', args:{command:'touch b'}, reason:'ask rule'}));
+check('an ask made after the run is offered while background work is owed', open().some(a => a.dataset.call === 'subagent-cev22'));
+__posted.length = 0; open().find(a => a.dataset.call === 'subagent-cev22').querySelector('.btns').firstChild.on.click(); await tick();
+check('and answered by its request id', __posted.length === 1 && __posted[0].body.request_id === 'cev22');
+render(ev(5, 'subagent.action', {session:'child', call_id:'x2', tool:'bash', decision:'allowed', by:'reviewer', request_id:'cev22'}));
+check('its outcome settles it alone', !open().some(a => a.dataset.call === 'subagent-cev22') && open().some(a => a.dataset.call === 'subagent-cev21'));
+render(ev(6, 'session.ended', {reason:'max_turns', turns:3, settled:true}));
+check('the closing end settles what is left', open().length === 0 && asks.size === 0);
 // A reopened session shows what was decided on a subagent's calls: a row for
 // each, allowed or denied, with no card to answer.
 fresh('s20', false);
@@ -342,6 +360,41 @@ fresh('s32', true);
   render(ev(2, 'action.requested', {call_id:'w2', tool:'bash', args:{command:'ls', description:'list\u202e files'}, requires_approval:true}));
   const d = open()[1] ? open()[1].textContent : '';
   check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
+}
+
+// A background result wakes the session while the page sits on the open
+// stream: the woken turn is drawn as it streams, marked with the task it
+// continues from, and its ask is offered, with no reload.
+fresh('s40', false);
+{
+  render(ev(1, 'user.message', {text:'start a scan'}));
+  render(ev(2, 'subagent.spawned', {task_id:'t1', description:'scan logs', background:true}));
+  render(ev(3, 'session.ended', {reason:'completed', turns:1, background:1}));
+  check('the task shows as running', $('s-bg').hidden === false && $('s-bg').textContent.includes('scan logs'));
+  check('the page is not live between turns', live === false && bgLive === true);
+  render(ev(4, 'session.woken', {by:'policy', wake_mode:'auto', task_ids:['t1']}));
+  render(ev(5, 'subagent.notice', {task_id:'t1', description:'scan logs', status:'completed', content:'three errors'}));
+  check('the woken turn is marked with its task', __root.textContent.includes('continuing with results from scan logs'));
+  check('the woken turn is live without a reload', live === true);
+  check('the finished task leaves the running list', $('s-bg').hidden === true);
+  render(write(6));
+  check('the woken turn\'s ask is offered', open().length === 1 && open()[0].dataset.call === 'w6');
+  render(ev(7, 'action.denied', {call_id:'w6', step:'reviewer', reason:'no'}));
+  render(ev(9, 'session.ended', {reason:'completed', turns:2, background:0}));
+  check('the woken turn ends like any other', live === false);
+}
+
+// The sender's own bubble draws what was typed through the helper, and keeps
+// the raw text to put back in the box if the send fails.
+fresh('s41', false);
+{
+  const typed = 'fix\u202etxt.exe\u001b[2J\n    indented\tline';
+  const mine = userBubble(typed, 'pending'); sent.push(mine);
+  render(ev(1, 'user.message', {text: typed, client_id: mine.cid}));
+  const shown = __root.textContent;
+  check('the sender\'s bubble reveals hidden characters', shown.includes('fix⟨U+202E⟩txt.exe⟨U+001B⟩[2J\n    indented\tline') && !shown.includes('\u202e') && !shown.includes('\u001b'));
+  check('the sender\'s bubble is the one claimed', __root.childNodes.length === 1 && __root.childNodes[0] === mine);
+  check('the bubble keeps the raw text for a retry', mine.text === typed);
 }
 
 if(!ok) process.exit(1);

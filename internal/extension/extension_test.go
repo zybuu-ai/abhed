@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,19 +103,21 @@ func TestExtensionFiltersContext(t *testing.T) {
 	}
 }
 
-// A crashed extension must not fail the run: it can only ever have made a
-// decision stricter, so continuing under policy alone is safe and stopping is
-// not more secure, merely less useful.
-func TestCrashedExtensionIsSkippedNotFatal(t *testing.T) {
+// A crashed extension fails closed without failing the run: the call it
+// crashed on is refused, and every later call it would have screened is
+// asked, since the veto it stood for is gone. It is not asked again.
+func TestCrashedExtensionFailsClosed(t *testing.T) {
 	h := hostWith(t, "crasher.sh")
 	d := h.OnToolCall(context.Background(), "s1", "bash", []byte(`{"command":"ls"}`))
-	if d.Block {
-		t.Error("a crashed extension must not block")
+	if !d.Block || !strings.Contains(d.Reason, "did not answer") {
+		t.Errorf("the call a hook crashed on was not refused: %+v", d)
 	}
-	// And it stays skipped rather than being retried on every call.
 	d2 := h.OnToolCall(context.Background(), "s1", "bash", []byte(`{"command":"ls"}`))
-	if d2.Block {
-		t.Error("a dead extension must stay dead")
+	if d2.Block || !d2.Ask || !strings.Contains(d2.Reason, "not running") {
+		t.Errorf("a dead hook's calls are not asked: %+v", d2)
+	}
+	if h.Running()["crasher.sh"] || h.Extensions()[0].LastError() == "" {
+		t.Error("a dead extension is reported running, or without why")
 	}
 }
 
@@ -152,8 +155,8 @@ func TestHungExtensionTimesOut(t *testing.T) {
 	d := h.OnToolCall(context.Background(), "s1", "bash", []byte(`{"command":"ls"}`))
 	elapsed := time.Since(start)
 
-	if d.Block {
-		t.Error("a hung extension must not block the call")
+	if !d.Block {
+		t.Error("a call a hung extension never answered was not refused")
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("waited %s for a hung extension; the timeout did not fire", elapsed)

@@ -33,3 +33,11 @@ uploads/
 # Internal notes and raw research are not published
 docs/internal/
 docs/research/
+
+# Session records and exports a test or a run could leave in the tree.
+/app/*.jsonl
+/*.jsonl
+abhed-session-*.html
+
+# A statusline test's home, removed when the test ends.
+app/.statusline-home-*

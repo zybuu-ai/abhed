@@ -1,0 +1,20 @@
+──── screen ────
+            ▄      ABHED  dev
+       ▗▟▙▖        deep agent harness · on-prem
+      ▗█▛▜█▖
+     ▗█▛  ▜█▖      model    stub-model
+    ▗█▛▀▀▀▀▜█▖     work     ‹ws›
+   ▗█▛      ▜█▖    sandbox  ‹tier› · no network
+  ▗██▖      ▗██▖   storage  local record, chained (~/.abhed/records; abhed rec…
+
+Type a task, or /help. Esc interrupts, Ctrl-C twice exits.
+
+▲ hi
+
+● Hello from the stub.
+
+───────────────────────────────────────────────────────────────────────────────
+▲
+───────────────────────────────────────────────────────────────────────────────
+  ● default mode · shift+tab                                    ? for shortcuts
+  stub-model · 14% context · 1.2k tokens · …/ws

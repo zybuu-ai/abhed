@@ -53,6 +53,9 @@ type Result struct {
 	// for a person; this is what lets a reviewer count how often each stage
 	// is doing the work.
 	Step string
+	// Rule is the rule that decided, as written, for the deny, ask and allow
+	// steps; "" when no rule did.
+	Rule string
 }
 
 // Offer is the scope a person may "always allow", and the only one a
@@ -76,6 +79,8 @@ type Rule struct {
 	// nfc is pattern in Unicode NFC, which deny and ask path rules also match
 	// against NFC subjects; nil for a pattern with no non-ASCII character.
 	nfc *regexp.Regexp
+	// session marks a rule a person added for this session; see Overlay.
+	session bool
 }
 
 func ParseRule(s string) (Rule, error) {
@@ -190,7 +195,8 @@ func foldName(command string) string {
 
 // rulesSeeParts reports whether a deny or ask rule with a pattern applies to tool.
 func (e *Engine) rulesSeeParts(tool string) bool {
-	for _, rules := range [][]Rule{e.Deny, e.Ask} {
+	deny, ask, _ := e.rules()
+	for _, rules := range [][]Rule{deny, ask} {
 		for _, r := range rules {
 			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
 				return true
@@ -255,6 +261,14 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
+// named is how a reason names the rule: a session rule says so.
+func (r Rule) named() string {
+	if r.session {
+		return "session rule " + r.raw
+	}
+	return "rule " + r.raw
+}
+
 // Hook runs before rule evaluation. A Deny from it is final; an Ask applies
 // after the deny, plan-mode and ask steps, before the mode; an Allow, or nil, is
 // no opinion. A hook can tighten a decision and never loosen one.
@@ -266,10 +280,17 @@ type Engine struct {
 	Ask   []Rule
 	Allow []Rule
 	Hooks []Hook
+	// EngineHooks are hooks made for the engine evaluating, so one copied for
+	// a subagent, with more roots, judges with those.
+	EngineHooks []func(*Engine) Hook
 
 	// Managed marks the engine as org-controlled: bypass mode is refused and
 	// local config cannot escalate past it (docs P7, §10 precedence).
 	Managed bool
+
+	// Session holds the rules a person added for this session, evaluated
+	// after the configured ones in each list. Nil adds none.
+	Session *Overlay
 
 	// Roots returns the workspace and added directories, so a path rule
 	// written relative to one matches. Nil matches paths only as given.
@@ -304,10 +325,10 @@ func addAll(dst *[]Rule, patterns []string) error {
 // tool and not others. Something that cannot show each call to the engine,
 // such as an interactive shell, cannot honour such a rule and must not run.
 func (e *Engine) Screens(tool string) bool {
-	if len(e.Hooks) > 0 {
+	if len(e.Hooks)+len(e.EngineHooks) > 0 {
 		return true
 	}
-	for _, r := range e.Deny {
+	for _, r := range e.DenyRules() {
 		if r.tool == tool || r.tool == "*" {
 			return true
 		}
@@ -481,7 +502,8 @@ func (e *Engine) pathSubjects(p string) (all, allow []string) {
 
 // pathRules reports whether any deny, ask or allow rule for tool has a pattern.
 func (e *Engine) pathRules(tool string) bool {
-	for _, rules := range [][]Rule{e.Deny, e.Ask, e.Allow} {
+	deny, ask, allow := e.rules()
+	for _, rules := range [][]Rule{deny, ask, allow} {
 		for _, r := range rules {
 			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
 				return true
@@ -549,7 +571,11 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
 	// steps below, so a hook can never turn a refusal into a question.
 	var hookAsk *Result
-	for _, h := range e.Hooks {
+	hooks := e.Hooks
+	for _, bind := range e.EngineHooks {
+		hooks = append(hooks[:len(hooks):len(hooks)], bind(e))
+	}
+	for _, h := range hooks {
 		res := h(tool, args)
 		if res == nil || res.Decision == Allow {
 			continue
@@ -582,9 +608,10 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 2. Deny rules — absolute, survive every mode including bypass.
-	for _, r := range e.Deny {
+	denyRules, askRules, allowRules := e.rules()
+	for _, r := range denyRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Deny, Reason: fmt.Sprintf("denied by rule %s", r), Scope: "", Step: "deny"}
+			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw}
 		}
 	}
 
@@ -610,9 +637,9 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 
 	// 3. Ask rules — force a prompt even if a later allow would match, so they
 	// offer no scope: a remembered one would stop them asking.
-	for _, r := range e.Ask {
+	for _, r := range askRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: "", Step: "ask"}
+			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw}
 		}
 	}
 
@@ -636,7 +663,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		// A read that can carry data out is not made safe by plan mode, which
 		// any client may narrow a session to: it goes on to the allow rules and asks.
 		if e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: "read-only tool in plan mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in plan mode", Scope: "", Step: "mode"}
 		}
 	case ModeBypass:
 		if e.Managed {
@@ -649,7 +676,7 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		}
 	case ModeAuto:
 		if !mutates && e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: "read-only tool in auto mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in auto mode", Scope: "", Step: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
 		// and deny checks above still stand, so the dangerous cases never reach
@@ -660,9 +687,9 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	}
 
 	// 5. Allow rules.
-	for _, r := range e.Allow {
+	for _, r := range allowRules {
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
-			return Result{Decision: Allow, Reason: fmt.Sprintf("matched allow rule %s", r), Scope: "", Step: "allow"}
+			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw}
 		}
 	}
 
@@ -671,9 +698,21 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		return Result{Decision: Ask, Reason: why, Scope: suggestScope(tool, subject), Step: "default"}
 	}
 	if !mutates {
-		return Result{Decision: Allow, Reason: "read-only tool", Scope: "", Step: "default"}
+		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
 	}
 	return Result{Decision: Ask, Reason: askReason(tool, e.Mode), Scope: suggestScope(tool, subject), Step: "default"}
+}
+
+// sessionControl names tools that change only the session's own background
+// work: they need no approval, but they are not reads.
+var sessionControl = map[string]bool{"shell_kill": true, "task_cancel": true}
+
+// readOnlyReason is why a call that changes nothing outside the session is allowed.
+func readOnlyReason(tool string) string {
+	if sessionControl[tool] {
+		return "session control tool (stops this session's own background work)"
+	}
+	return "read-only tool"
 }
 
 // readOnlyAsk is why a read-only call asks anyway, or "".

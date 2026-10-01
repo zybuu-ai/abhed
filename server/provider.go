@@ -3,8 +3,10 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 )
@@ -79,6 +81,25 @@ func (s *Server) resolveProvider(name string) (model.Adapter, error) {
 	return a, nil
 }
 
+// providerNames are the providers a session may run on, sorted.
+func (s *Server) providerNames() []string {
+	var out []string
+	for _, p := range s.providers() {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+// subagentModel resolves a subagent's model as resolveProvider does, and
+// says what may be chosen instead when it cannot.
+func (s *Server) subagentModel(name string) (model.Adapter, error) {
+	a, err := s.resolveProvider(name)
+	if err != nil {
+		return nil, fmt.Errorf("%w; available: %s", err, strings.Join(s.providerNames(), ", "))
+	}
+	return a, nil
+}
+
 type providerError string
 
 func (e providerError) Error() string { return string(e) }
@@ -97,7 +118,7 @@ func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 		Provider string `json:"provider"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request")
+		badBody(w, err, "invalid request")
 		return
 	}
 	if s.draining.Load() {
@@ -138,6 +159,9 @@ func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errBusySession):
 		WriteError(w, http.StatusConflict, "session is being continued elsewhere")
+		return
+	case errors.Is(err, errHoldFailed):
+		writeHoldFailed(w)
 		return
 	case err != nil:
 		s.log.Error("claim failed", "session", id, "error", err)

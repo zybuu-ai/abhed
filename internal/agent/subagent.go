@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -53,6 +58,20 @@ func (b *Budget) Spent() int64 {
 	return b.tokens.Load()
 }
 
+// Carry starts the counters from what a session already spent before it was
+// continued here, so continuing a session elsewhere does not reset its
+// allowance. It only raises them.
+func (b *Budget) Carry(tokens int64, spawned int) {
+	if b == nil {
+		return
+	}
+	for cur := b.tokens.Load(); tokens > cur && !b.tokens.CompareAndSwap(cur, tokens); cur = b.tokens.Load() {
+	}
+	n := int32(min(max(spawned, 0), math.MaxInt32)) // #nosec G115 -- clamped to int32's range first
+	for cur := b.spawned.Load(); n > cur && !b.spawned.CompareAndSwap(cur, n); cur = b.spawned.Load() {
+	}
+}
+
 // TryReserveSubagent accounts for one spawn, or explains the refusal.
 func (b *Budget) TryReserveSubagent() error {
 	if b == nil {
@@ -78,8 +97,19 @@ type Task struct {
 	// Spawn runs a subagent and returns its summary. Injected so the tool does
 	// not have to know how a Loop is constructed.
 	Spawn func(ctx context.Context, req SubagentRequest) (string, error)
-	// Profiles limits which agent types may be requested.
-	Profiles map[string]PromptProfile
+	// Agents are the agent types this session offers; nil offers the
+	// built-in roles. They are fixed for the session, since they are part of
+	// the prompt the model was given.
+	Agents *Definitions
+	// Workspace is the parent's root, beneath which a role that works in its
+	// own worktree gets one.
+	Workspace string
+	// Models are the provider names a call may choose. The model property is
+	// offered only when there is more than one to choose from.
+	Models []string
+	// Background starts a child that outlives the call; nil offers no
+	// background property.
+	Background func(ctx context.Context, req SubagentRequest) (string, error)
 }
 
 type SubagentRequest struct {
@@ -87,39 +117,101 @@ type SubagentRequest struct {
 	Description string
 	AgentType   string
 	MaxTurns    int
+	// Model names a configured provider to run on, over the definition's;
+	// empty or "inherit" takes the definition's, then the parent's model.
+	Model string
 	// Workspace, when set, roots the subagent there instead of in the
 	// parent's workspace — a git worktree, for parallel work that must not
 	// collide. The child's file and shell boundary is that directory.
 	Workspace string
+
+	// Resume names a finished child of this session to continue with Prompt,
+	// instead of starting a new one.
+	Resume string
+
+	// sessionID, when set, is the child's session id, chosen by the caller.
+	sessionID string
+	// worktree is the checkout the child works in, recorded so a resume
+	// can find it again.
+	worktree *worktree
+	// settle, when set, runs once a background child has ended and returns
+	// what its notice says about the worktree it worked in.
+	settle func(context.Context) string
+	// epoch, when epochSet, is the manager's stop count when the call that
+	// asked for this background task began.
+	epoch    int
+	epochSet bool
+	// slots, when set, holds the live slot this background task takes,
+	// reserved with its siblings' before the call made any worktree.
+	slots *slots
 }
 
 func (Task) Name() string  { return "task" }
 func (Task) Mutates() bool { return false } // the subagent's own tools are policed separately
 
+// MutatesCall is true for a role that works in its own worktree, which makes
+// a branch and a checkout on the host before the child runs.
+func (t Task) MutatesCall(raw json.RawMessage) bool {
+	var a taskArgs
+	if json.Unmarshal(raw, &a) != nil {
+		return false
+	}
+	def, ok := t.Agents.Get(a.AgentType)
+	return ok && def.Isolation == "worktree"
+}
+
 func (t Task) Description() string {
-	types := make([]string, 0, len(t.Profiles))
-	for name := range t.Profiles {
-		if name != "main" {
-			types = append(types, name)
-		}
+	note := ""
+	if t.Background != nil {
+		note = backgroundNote
 	}
 	return "Spawn a subagent with a fresh context to handle a self-contained subtask. " +
 		"Use when a task needs extensive exploration whose intermediate detail you do not need — " +
 		"the subagent returns only a summary. The prompt must be COMPLETE and self-contained: " +
-		"the subagent cannot see this conversation. Agent types: " + strings.Join(types, ", ") + "."
+		"the subagent cannot see this conversation." + note + " Agent types:" + t.Agents.listing()
 }
 
-func (Task) Schema() json.RawMessage {
-	return json.RawMessage(`{
-  "type":"object",
-  "properties":{
-    "prompt":{"type":"string","description":"Complete, self-contained task description. The subagent sees none of this conversation, so include all necessary context."},
-    "description":{"type":"string","description":"3-5 word label shown to the user."},
-    "agent_type":{"type":"string","description":"explore | test | review | general. Defaults to general."},
-    "max_turns":{"type":"integer","description":"Turn cap for the subagent."}
-  },
-  "required":["prompt","description"]
-}`)
+func (t Task) Schema() json.RawMessage {
+	return mustSchema(map[string]any{
+		"type": "object",
+		"properties": withModel(map[string]any{
+			"prompt":      map[string]any{"type": "string", "description": "Complete, self-contained task description. The subagent sees none of this conversation, so include all necessary context."},
+			"description": map[string]any{"type": "string", "description": "3-5 word label shown to the user."},
+			"agent_type":  agentTypeSchema(t.Agents),
+			"max_turns":   map[string]any{"type": "integer", "description": "Turn cap for the subagent."},
+			"resume": map[string]any{"type": "string", "description": "The task_id of a finished subagent of yours, to continue it with this prompt " +
+				"as a follow-up; it keeps what it learned. Omit agent_type and model, or give the ones it ran with."},
+		}, t.Models, t.Background != nil),
+		"required": []string{"prompt", "description"},
+	})
+}
+
+// withModel adds the model property when there is a choice to make. With one
+// model configured it would only cost prompt tokens.
+func withModel(props map[string]any, models []string, background bool) map[string]any {
+	if background {
+		props["background"] = map[string]any{"type": "boolean",
+			"description": "Start it and continue at once; its result is delivered to you automatically."}
+	}
+	if len(models) > 1 {
+		props["model"] = map[string]any{"type": "string", "enum": models,
+			"description": "A configured model to run the subagent on. Omit to use the agent type's, or yours."}
+	}
+	return props
+}
+
+// agentTypeSchema is the agent_type property: the types this session offers.
+func agentTypeSchema(d *Definitions) map[string]any {
+	return map[string]any{"type": "string", "enum": d.Names(),
+		"description": "One of the agent types listed on the task tool. Defaults to general."}
+}
+
+func mustSchema(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err) // built from fixed shapes and strings; cannot fail
+	}
+	return b
 }
 
 // hasTasks reports whether raw carries a tasks field, the tasks tool's argument.
@@ -135,6 +227,17 @@ type taskArgs struct {
 	Description string `json:"description"`
 	AgentType   string `json:"agent_type"`
 	MaxTurns    int    `json:"max_turns"`
+	Model       string `json:"model"`
+	Background  bool   `json:"background"`
+	Resume      string `json:"resume"`
+}
+
+// unknownType refuses an agent type the session does not offer, naming those it does.
+func unknownType(d *Definitions, what, name string) tools.Result {
+	return tools.Result{
+		Content: fmt.Sprintf("Unknown %s %q. Available: %s.", what, name, strings.Join(d.Names(), ", ")),
+		IsError: true,
+	}
 }
 
 func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) tools.Result {
@@ -149,36 +252,121 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		}
 		return tools.Result{Content: "prompt is required and must be self-contained.", IsError: true}
 	}
-	if strings.TrimSpace(a.Description) == "" {
+	// A resume keeps the task's own description unless given another.
+	if strings.TrimSpace(a.Description) == "" && a.Resume == "" {
 		return tools.Result{Content: "description is required (3-5 words, shown to the user).", IsError: true}
+	}
+	if a.Resume != "" {
+		// The resumed task's own role and worktree apply; the spawn checks them.
+		req := SubagentRequest{Prompt: a.Prompt, Description: a.Description, AgentType: a.AgentType,
+			MaxTurns: a.MaxTurns, Model: a.Model, Resume: a.Resume}
+		if a.Background {
+			if t.Background == nil {
+				return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
+			}
+			id, err := t.Background(ctx, req)
+			if err != nil {
+				return tools.Result{Content: err.Error(), IsError: true}
+			}
+			return tools.Result{Content: startedText(id, a.Description)}
+		}
+		summary, err := t.Spawn(ctx, req)
+		if err != nil {
+			return tools.Result{Content: err.Error(), IsError: true}
+		}
+		return tools.Result{Content: summary}
 	}
 	agentType := a.AgentType
 	if agentType == "" {
 		agentType = "general"
 	}
-	if agentType != "general" {
-		if _, found := t.Profiles[agentType]; !found {
-			known := make([]string, 0, len(t.Profiles))
-			for name := range t.Profiles {
-				known = append(known, name)
-			}
-			return tools.Result{
-				Content: fmt.Sprintf("Unknown agent_type %q. Available: %s.", agentType, strings.Join(known, ", ")),
-				IsError: true,
-			}
-		}
+	def, found := t.Agents.Get(agentType)
+	if !found {
+		return unknownType(t.Agents, "agent_type", agentType)
 	}
-
-	summary, err := t.Spawn(ctx, SubagentRequest{
+	req := SubagentRequest{
 		Prompt:      a.Prompt,
 		Description: a.Description,
 		AgentType:   agentType,
 		MaxTurns:    a.MaxTurns,
-	})
+		Model:       a.Model,
+	}
+	if a.Background {
+		if t.Background == nil {
+			return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
+		}
+		// Counted from before the worktree: a stop while it is made refuses the task.
+		if b, _ := managerOf(ctx); b != nil {
+			req.epoch, req.epochSet = b.stopEpoch(), true
+		}
+		if def.Isolation == "worktree" {
+			wt, res := makeWorktree(ctx, t.Workspace, req.AgentType)
+			if wt == nil {
+				return res
+			}
+			req.Workspace, req.settle, req.worktree = wt.Dir, settleLater(t.Workspace, wt), wt
+		}
+		if testHookBeforeBackground != nil {
+			testHookBeforeBackground()
+		}
+		id, err := t.Background(ctx, req)
+		if err != nil {
+			if req.settle != nil {
+				req.settle(context.WithoutCancel(ctx))
+			}
+			return tools.Result{Content: err.Error(), IsError: true}
+		}
+		return tools.Result{Content: startedText(id, req.Description)}
+	}
+	if def.Isolation == "worktree" {
+		return runInWorktree(ctx, t.Spawn, t.Workspace, req)
+	}
+	summary, err := t.Spawn(ctx, req)
 	if err != nil {
 		return tools.Result{Content: err.Error(), IsError: true}
 	}
 	return tools.Result{Content: summary}
+}
+
+// testHookBeforeBackground, when set by a test, runs as task or tasks has
+// made the background tasks' worktrees and is about to start them.
+var testHookBeforeBackground func()
+
+// makeWorktree makes a worktree for a role that works in one, or says why not.
+func makeWorktree(ctx context.Context, ws, agentType string) (*worktree, tools.Result) {
+	if err := requireGitRepo(ctx, ws); err != nil {
+		return nil, tools.Result{Content: fmt.Sprintf("agent type %q works in its own worktree, which needs the workspace to be a git repository: %v", agentType, err), IsError: true}
+	}
+	wt, err := addWorktree(ctx, ws)
+	if err != nil {
+		return nil, tools.Result{Content: "could not create a worktree: " + err.Error(), IsError: true}
+	}
+	return wt, tools.Result{}
+}
+
+// settleLater settles a background child's worktree when the child ends.
+func settleLater(ws string, wt *worktree) func(context.Context) string {
+	return func(ctx context.Context) string {
+		rel, _ := filepath.Rel(ws, wt.Dir)
+		return settleWorktree(ctx, ws, rel, wt)
+	}
+}
+
+// runInWorktree runs one subagent in a worktree of its own and says what it
+// left there, for a role whose definition works in one.
+func runInWorktree(ctx context.Context, spawn func(context.Context, SubagentRequest) (string, error), ws string, req SubagentRequest) tools.Result {
+	wt, res := makeWorktree(ctx, ws, req.AgentType)
+	if wt == nil {
+		return res
+	}
+	req.Workspace, req.worktree = wt.Dir, wt
+	summary, err := spawn(ctx, req)
+	rel, _ := filepath.Rel(ws, wt.Dir)
+	settled := settleWorktree(ctx, ws, rel, wt)
+	if err != nil {
+		return tools.Result{Content: err.Error() + "\n\n" + settled, IsError: true}
+	}
+	return tools.Result{Content: strings.TrimSpace(summary) + "\n\n" + settled}
 }
 
 // SubagentFactory builds and runs subagents. A subagent answers to the approver
@@ -198,6 +386,20 @@ type SubagentFactory struct {
 	Redact Redactor
 	// Depth guards against runaway recursion; nested spawning is off by default.
 	Depth int
+	// Definitions are the agent types a spawn may name; nil offers the
+	// built-in roles. The task and tasks tools offer the same set.
+	Definitions *Definitions
+	// Models turns a configured provider name into an adapter, for a child
+	// run on another model than its parent's. It must look the name up among
+	// the providers offered to this session and never treat it as an
+	// endpoint. Nil offers no choice: only the parent's model.
+	Models func(name string) (model.Adapter, error)
+	// ModelNames are the names Models resolves, as the tools offer them.
+	ModelNames []string
+	// Background offers background tasks: the task and tasks tools take a
+	// background flag, and task_status and task_cancel are offered. The
+	// loop that runs them needs a Background manager.
+	Background bool
 }
 
 // SessionCreator is implemented by durable stores that need a session row
@@ -212,7 +414,64 @@ type SessionCreator interface {
 // return value defeats the mechanism.
 const MaxSummaryChars = 8000
 
+// truncateSummary cuts a summary longer than MaxSummaryChars bytes on a rune
+// boundary, so the record's JSON keeps the same text the conversation has.
+func truncateSummary(s string) string {
+	if len(s) <= MaxSummaryChars {
+		return s
+	}
+	cut := MaxSummaryChars
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n\n[summary truncated]"
+}
+
 func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (string, error) {
+	c, err := f.prepare(ctx, req, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	if c.release != nil {
+		defer c.release()
+	}
+	summary, _, err := c.execute(ctx)
+	if c.settle != nil {
+		settled := c.settle(context.WithoutCancel(ctx))
+		if err != nil {
+			return "", fmt.Errorf("%w\n\n%s", err, settled)
+		}
+		summary = strings.TrimSpace(summary) + "\n\n" + settled
+	}
+	return summary, err
+}
+
+// child is a subagent ready to run: its loop is built and its spawn recorded.
+type child struct {
+	sub       *Loop
+	parent    *parentLink
+	req       SubagentRequest
+	sessionID string
+	adapter   model.Adapter
+	provider  string
+	// extra goes on both its spawned and returned events, such as a
+	// background task's id.
+	extra map[string]any
+	// settle, for a resumed worktree child, settles its worktree again once
+	// it has ended; release lets the task be resumed again.
+	settle  func(context.Context) string
+	release func()
+	// before is how many messages the conversation held before this run: a
+	// resumed run's answer is only one it gives itself.
+	before int
+}
+
+// prepare settles everything a spawn needs and records it. reserve runs just
+// before the spawn is counted, and may refuse it.
+func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extra map[string]any, reserve func() error) (*child, error) {
+	if req.Resume != "" {
+		return f.prepareResume(ctx, req, extra, reserve)
+	}
 	parent, _ := ctx.Value(parentKey{}).(*parentLink)
 	depth, adapter := f.Depth, f.Adapter
 	if parent != nil {
@@ -222,17 +481,50 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 			adapter = parent.adapter
 		}
 	}
-	if f.Budget != nil {
-		if !f.Budget.AllowNested && depth > 0 {
-			return "", fmt.Errorf(
-				"nested subagents are disabled. Do this work directly rather than delegating again")
+	// The role and its tools are settled before a spawn is counted: a type
+	// this session does not offer, or a tool list naming a tool it does not
+	// have, refuses the call with nothing spawned.
+	def, found := f.Definitions.Get(req.AgentType)
+	if !found {
+		return nil, fmt.Errorf("unknown agent type %q; available: %s", req.AgentType, strings.Join(f.Definitions.Names(), ", "))
+	}
+	registry, err := childTools(f.Tools, def)
+	if err != nil {
+		return nil, err
+	}
+	// The model is resolved before a spawn is counted too, and a model that
+	// cannot be had refuses the spawn: a child never runs on another model
+	// than the one named, and the parent's is never substituted.
+	provider := ""
+	if parent != nil {
+		provider = parent.provider
+	}
+	// The organisation's choice of model for a managed role binds, as its
+	// turn cap does: a call cannot move the role to another provider.
+	if def.Source == SourceManaged && def.Model != "" && childModel(req.Model, "") != "" && req.Model != def.Model {
+		return nil, fmt.Errorf("agent type %s runs on model %q, set by the organisation; omit model", def.Name, def.Model)
+	}
+	if name := childModel(req.Model, def.Model); name != "" {
+		if err := ValidModelName(name); err != nil {
+			return nil, err
 		}
-		if err := f.Budget.TryReserveSubagent(); err != nil {
-			return "", fmt.Errorf("cannot spawn subagent: %w. Complete the task with the context you have", err)
+		if f.Models == nil {
+			return nil, fmt.Errorf("model %q was asked for, and this agent offers no model choice; omit model to use yours", name)
 		}
+		a, err := f.Models(name)
+		if err != nil {
+			return nil, fmt.Errorf("model %q is not available: %w", name, err)
+		}
+		adapter, provider = a, name
+	}
+	if err := f.reserve(depth, reserve); err != nil {
+		return nil, err
 	}
 
-	sessionID := newID()
+	sessionID := req.sessionID
+	if sessionID == "" {
+		sessionID = newID()
+	}
 	// A durable store requires the session row before any event references it.
 	// Without this a subagent's first event fails the foreign key and the whole
 	// delegation errors out — which only shows up once Postgres is configured.
@@ -242,9 +534,48 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 			parentSession = parent.rec.sessionID
 		}
 		if err := creator.CreateSubagentSession(ctx, sessionID, parentSession, req.Description); err != nil {
-			return "", fmt.Errorf("could not record subagent session: %w", err)
+			return nil, fmt.Errorf("could not record subagent session: %w", err)
 		}
 	}
+	c, spawned, err := f.build(parent, def, registry, adapter, provider, sessionID, depth, req, req.Workspace,
+		childTurns(f.Config.MaxTurns, def.MaxTurns, req.MaxTurns))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range extra {
+		spawned[k] = v
+	}
+	_, _ = c.sub.Recorder.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
+	c.parent.record(EvSubagentSpawned, ActorAgent, spawned)
+	c.extra = extra
+	return c, nil
+}
+
+// reserve counts one spawn, after the nesting rule and the caller's own
+// reservation (a background slot).
+func (f *SubagentFactory) reserve(depth int, reserve func() error) error {
+	if f.Budget != nil && !f.Budget.AllowNested && depth > 0 {
+		return fmt.Errorf(
+			"nested subagents are disabled. Do this work directly rather than delegating again")
+	}
+	if reserve != nil {
+		if err := reserve(); err != nil {
+			return err
+		}
+	}
+	if f.Budget != nil {
+		if err := f.Budget.TryReserveSubagent(); err != nil {
+			return fmt.Errorf("cannot spawn subagent: %w. Complete the task with the context you have", err)
+		}
+	}
+	return nil
+}
+
+// build makes the child's loop, with its approver, record and prompt, and
+// returns it with the spawned payload to record. workspace, when set, roots
+// the child in a worktree.
+func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *tools.Registry, adapter model.Adapter,
+	provider, sessionID string, depth int, req SubagentRequest, workspace string, turns int) (*child, map[string]any, error) {
 	// The child asks whoever the parent asks: the person at the prompt, or the
 	// headless refuser. Nothing it does is approved on its behalf.
 	approver, parentID := f.Approver, ""
@@ -253,7 +584,7 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 		if o, nested := inner.(oneAtATime); nested {
 			inner = o.Approver // one queue for the whole tree, never taken twice
 		}
-		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description}
+		approver = oneAtATime{Approver: inner, asks: parent.asks, who: req.Description, task: req.sessionID}
 		if parent.rec == nil {
 			parent = nil
 		} else {
@@ -270,65 +601,88 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	if parent != nil && parent.rec.redactor() != nil {
 		rec.Redact = parent.rec.redactor()
 	}
+	var work *Work
+	if parent != nil && parent.loop != nil {
+		work = parent.loop.Work
+	}
 	if parent != nil {
 		rec.tap = mirrorInto(parent, sessionID)
+		if work != nil {
+			mirror := rec.tap
+			rec.tap = func(ev Event) { mirror(ev); work.observe(sessionID, ev) }
+		}
 		if o, ok := approver.(oneAtATime); ok {
 			o.asking = askInto(parent, sessionID, req.Description)
 			approver = o
 		}
 	}
 
-	profile := req.AgentType
-	if _, found := Profiles[profile]; !found {
-		profile = "main"
+	profile, role := "main", ""
+	if def.Source == SourceBuiltin {
+		if def.Name != "general" {
+			profile = def.Name
+		}
+	} else {
+		role = def.Instruction
 	}
 
 	// Where the subagent works. Usually the parent's workspace and session;
 	// for isolated parallel work, its own worktree with its own scoping
 	// boundary, so two children cannot write over each other and neither can
 	// reach the parent's tree.
-	workspace, session := f.Workspace, f.Session
-	if req.Workspace != "" {
+	session := f.Session
+	if workspace != "" && workspace != f.Workspace {
 		var err error
-		if session, err = tools.NewSession(req.Workspace); err != nil {
-			return "", fmt.Errorf("subagent workspace: %w", err)
+		if session, err = tools.NewSession(workspace); err != nil {
+			return nil, nil, fmt.Errorf("subagent workspace: %w", err)
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
+			// The editor's files in the worktree are as out of reach as the parent's.
+			session.Guard = f.Session.Guard
 			// Still the parent's conversation: a login it made carries over.
 			session.InheritScoped(f.Session)
 		}
-		workspace = req.Workspace
+	} else {
+		workspace = f.Workspace
 	}
 
-	// A narrow role gets a narrow tool set: an explore subagent that can write
-	// will write, and the orchestrator will not know (docs §07).
-	registry := f.Tools
-	if p, found := Profiles[profile]; found && len(p.Tools) > 0 {
-		registry = f.Tools.Subset(p.Tools...)
+	// The prompt names the tools the child will have, a role's disallowed ones left out.
+	promptTools := registry
+	if def.strict && len(def.DisallowedTools) > 0 {
+		promptTools = registry.Without(def.DisallowedTools)
 	}
 
 	// Fresh context: the subagent gets its own system prompt and memory file,
 	// and none of the parent's turns.
 	sysPrompt := BuildSystemPrompt(BuildOptions{
 		Profile:       profile,
+		Role:          role,
 		Workspace:     workspace,
 		Model:         adapter.Profile().Name,
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
-		Tools:         registry.Names(),
+		MemoryAllow:   ReadAllowed(f.Policy),
+		Tools:         promptTools.Names(),
 	})
 
 	cfg := f.Config
 	cfg.SystemPrompt = sysPrompt
-	if req.MaxTurns > 0 {
-		cfg.MaxTurns = req.MaxTurns
-	} else if cfg.MaxTurns > 30 {
-		cfg.MaxTurns = 30 // subagents are for bounded subtasks
-	}
+	cfg.MaxTurns = turns
 
-	sub := NewLoop(adapter, registry, childPolicy(f.Policy, session), approver, session, rec, cfg)
+	sub := NewLoop(adapter, registry, narrowMode(childPolicy(f.Policy, session), def.PermissionMode), approver, session, rec, cfg)
+	// recall is added by NewLoop to every loop; a role that disallows it
+	// does without, as with any other tool.
+	if def.strict && len(def.DisallowedTools) > 0 {
+		sub.Tools = sub.Tools.Without(def.DisallowedTools)
+	}
 	sub.depth = depth + 1
+	sub.Work = work
+	sub.Provider = provider
+	// A subagent's calls reach the same person, so the same hooks screen them.
+	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
+		sub.Hooks = childHooks{parent.loop.Hooks}
+	}
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.
 	sub.Budget = f.Budget
@@ -337,51 +691,187 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 
 	// The parent records the spawn and the return in its own log, which is
 	// what the audit relies on; the child's copy is for its own replay.
+	effective := registry.Names()
+	sort.Strings(effective)
 	spawned := map[string]any{
-		"description": req.Description,
-		"agent_type":  req.AgentType,
-		"depth":       depth,
-		"workspace":   workspace,
-		"session":     sessionID,
+		"description":       req.Description,
+		"agent_type":        req.AgentType,
+		"depth":             depth,
+		"workspace":         workspace,
+		"session":           sessionID,
+		"definition":        def.Name,
+		"definition_source": def.Source,
+		"tools":             effective,
+		"model":             adapter.Profile().Name,
 	}
-	_, _ = rec.Record(EvSubagentSpawned, ActorAgent, Trusted, spawned)
-	parent.record(EvSubagentSpawned, ActorAgent, spawned)
+	if def.SHA256 != "" {
+		spawned["definition_sha256"] = def.SHA256
+	}
+	if provider != "" {
+		spawned["provider"] = provider
+	}
+	if req.worktree != nil {
+		spawned["branch"], spawned["start"] = req.worktree.Branch, req.worktree.Start
+	}
+	return &child{sub: sub, parent: parent, req: req, sessionID: sessionID,
+		adapter: adapter, provider: provider}, spawned, nil
+}
 
-	reason, err := sub.Run(ctx, req.Prompt)
-	usage := sub.Usage()
+// execute runs a prepared child to its end, records its return in both
+// records, and gives back its summary as the parent should read it.
+func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
+	c.track()
+	reason, err := c.sub.Run(ctx, c.req.Prompt)
+	c.untrack(reason, err)
+	usage := c.sub.Usage()
+	returned := map[string]any{
+		"description": c.req.Description,
+		"session":     c.sessionID,
+		"reason":      string(reason),
+		"turns":       usage.Turns,
+		"tokens_in":   usage.InputTokens,
+		"tokens_out":  usage.OutputTokens,
+		"model":       c.adapter.Profile().Name,
+		// The child's last event of this run, its end: the answer this
+		// return carries is the last one before it, whatever runs follow.
+		"end_seq": c.sub.Recorder.LastAppended(),
+	}
+	if c.provider != "" {
+		returned["provider"] = c.provider
+	}
+	for k, v := range c.extra {
+		returned[k] = v
+	}
 
 	if err != nil {
-		parent.record(EvSubagentReturn, ActorAgent, map[string]any{
-			"description": req.Description, "session": sessionID, "reason": string(TermError),
-			"turns": usage.Turns, "tokens_in": usage.InputTokens, "tokens_out": usage.OutputTokens,
-		})
-		return "", fmt.Errorf("subagent failed: %w", err)
+		returned["reason"] = string(TermError)
+		c.parent.record(EvSubagentReturn, ActorAgent, returned)
+		return "", TermError, fmt.Errorf("subagent failed: %w", err)
 	}
 
-	summary := lastAssistantMessage(sub.Messages())
+	summary := lastAssistantMessage(c.sub.Messages()[min(c.before, len(c.sub.Messages())):])
 	if strings.TrimSpace(summary) == "" {
 		summary = fmt.Sprintf("(subagent ended with %s and produced no summary)", reason)
 	}
 	if len(summary) > MaxSummaryChars {
-		summary = summary[:MaxSummaryChars] + "\n\n[summary truncated]"
+		summary = truncateSummary(summary)
 	}
-
-	returned := map[string]any{
-		"description":   req.Description,
-		"session":       sessionID,
-		"reason":        string(reason),
-		"turns":         usage.Turns,
-		"tokens_in":     usage.InputTokens,
-		"tokens_out":    usage.OutputTokens,
-		"summary_chars": len(summary),
-	}
-	_, _ = rec.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
-	parent.record(EvSubagentReturn, ActorAgent, returned)
+	returned["summary_chars"] = len(summary)
+	_, _ = c.sub.Recorder.Record(EvSubagentReturn, ActorAgent, Trusted, returned)
+	c.parent.record(EvSubagentReturn, ActorAgent, returned)
 
 	if reason != TermCompleted {
-		return summary + fmt.Sprintf("\n\n[subagent ended early: %s]", reason), nil
+		return summary + fmt.Sprintf("\n\n[subagent ended early: %s]", reason), reason, nil
 	}
-	return summary, nil
+	return summary, reason, nil
+}
+
+// childTools is the tool set a role gets, cut from the parent's registry at
+// the moment of the spawn. A narrow role gets a narrow tool set: an explore
+// subagent that can write will write, and the orchestrator will not know
+// (docs §07). A loaded definition's list may only narrow, and a tool it names
+// that the session does not have refuses the spawn rather than being dropped.
+func childTools(parent *tools.Registry, def *Definition) (*tools.Registry, error) {
+	if parent == nil {
+		parent = tools.NewRegistry()
+	}
+	if !def.strict {
+		if len(def.Tools) > 0 {
+			return parent.Subset(def.Tools...), nil
+		}
+		return parent, nil
+	}
+	reg := parent
+	if def.Tools != nil {
+		// recall is every loop's own, bound to its record, and never in the
+		// parent's registry; naming it asks for nothing the child lacks.
+		names := make([]string, 0, len(def.Tools))
+		for _, n := range def.Tools {
+			if !strings.EqualFold(n, "recall") {
+				names = append(names, n)
+			}
+		}
+		var missing []string
+		if reg, missing = parent.SubsetStrict(names); len(missing) > 0 {
+			return nil, fmt.Errorf("definition %s names tools this session does not have: %s. Use another agent type, or do the work directly",
+				def.Name, strings.Join(missing, ", "))
+		}
+	}
+	if len(def.DisallowedTools) > 0 {
+		reg = reg.Without(def.DisallowedTools)
+	}
+	return reg, nil
+}
+
+// childModel is the model a child is asked to run on: the call's, else the
+// definition's. Empty, or inherit, is the parent's.
+func childModel(call, def string) string {
+	for _, m := range []string{call, def} {
+		if m != "" && m != "inherit" {
+			return m
+		}
+	}
+	return ""
+}
+
+// ValidModelName refuses a model value that is not a plain provider name. A
+// URL, a path or anything with spaces is never looked up, so no value can
+// point a subagent at an endpoint of its own.
+func ValidModelName(v string) error {
+	if v == "" || len(v) > 128 || strings.Contains(v, "://") || strings.ContainsAny(v, "/\\ \t\r\n") {
+		return fmt.Errorf("model %q is not a provider name; name a configured provider, never an endpoint", v)
+	}
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("model %q is not a provider name", v)
+		}
+	}
+	return nil
+}
+
+// childTurns is a child's turn cap: the call's, else the definition's, else
+// thirty, since subagents are for bounded subtasks. A definition's cap binds
+// the call, and nothing goes above the parent's cap.
+func childTurns(parent, def, call int) int {
+	limit := parent
+	if def > 0 && (limit <= 0 || def < limit) {
+		limit = def
+	}
+	turns := 30
+	switch {
+	case call > 0:
+		turns = call
+	case def > 0:
+		turns = def
+	}
+	if limit > 0 && turns > limit {
+		turns = limit
+	}
+	return turns
+}
+
+// modeRank orders the permission modes from narrowest to widest; a mode not
+// listed ranks widest, so a definition's mode always narrows it.
+var modeRank = map[policy.Mode]int{policy.ModePlan: 0, policy.ModeDefault: 1, policy.ModeAcceptEdits: 2, policy.ModeAuto: 3, policy.ModeBypass: 4}
+
+func rankOf(m policy.Mode) int {
+	if r, ok := modeRank[m]; ok {
+		return r
+	}
+	return len(modeRank)
+}
+
+// narrowMode is the child's policy with a definition's mode where it is
+// narrower than the parent's, on a copy of the engine: its deny rules, hooks
+// and managed marking come along, and the parent's engine is untouched. A
+// mode that would widen is ignored.
+func narrowMode(pol *policy.Engine, mode string) *policy.Engine {
+	if pol == nil || mode == "" || rankOf(policy.Mode(mode)) >= rankOf(pol.Mode) {
+		return pol
+	}
+	child := *pol
+	child.Mode = policy.Mode(mode)
+	return &child
 }
 
 // SubagentRecord reports whether a record is a subagent's, and the session
@@ -406,19 +896,16 @@ type parentLink struct {
 	depth    int           // 0 for a top-level loop, 1 for its subagents, and so on
 	fail     func(error)   // a write the parent's record refused ends the parent's run
 	adapter  model.Adapter // the parent's model now, which a switch may have changed
+	provider string        // the configured name adapter came from, when known
 	loop     *Loop         // the loop making the call, which a pipeline's steps run on
 }
 
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
 func (l *Loop) asParent(ctx context.Context) context.Context {
-	l.asksOnce.Do(func() { l.asks = make(chan struct{}, 1) })
-	asks := l.asks
-	if p, ok := ctx.Value(parentKey{}).(*parentLink); ok {
-		asks = p.asks
-	}
+	asks := l.askQueue(ctx)
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
-		adapter: l.Adapter, loop: l,
+		adapter: l.Adapter, provider: l.Provider, loop: l,
 	})
 }
 
@@ -446,6 +933,7 @@ type oneAtATime struct {
 	asks chan struct{}
 	who  string
 	via  string // the pipeline asking, when a pipeline step asks
+	task string // the background task asking, when one does
 	// asking records that the call is now the one put to the person, once it
 	// has its turn: a sibling's ask still queued behind it is not offered. An
 	// ask it cannot record is not put: nobody watching could see it.
@@ -468,12 +956,29 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if o.via != "" {
 		ctx = context.WithValue(ctx, pipelineAskKey{}, o.via)
 	}
+	if o.task != "" {
+		ctx = WithBackgroundTask(ctx, o.task)
+	}
 	if o.asking != nil {
 		if err := o.asking(ctx); err != nil {
 			return false, fmt.Errorf("the ask could not be offered in the parent's record, so it was not put to anyone: %w", err)
 		}
 	}
 	return o.Approver.Approve(ctx, tool, args, res)
+}
+
+type backgroundTaskKey struct{}
+
+// WithBackgroundTask names the background task an ask comes from.
+func WithBackgroundTask(ctx context.Context, taskID string) context.Context {
+	return context.WithValue(ctx, backgroundTaskKey{}, taskID)
+}
+
+// BackgroundTaskOf is the id of the background task an ask comes from, or ""
+// when the loop or a foreground subagent asks.
+func BackgroundTaskOf(ctx context.Context) string {
+	s, _ := ctx.Value(backgroundTaskKey{}).(string)
+	return s
 }
 
 // askInto writes a subagent's call to the parent's record as subagent.ask
@@ -627,4 +1132,34 @@ func childPolicy(pol *policy.Engine, session *tools.Session) *policy.Engine {
 		return roots
 	}
 	return &child
+}
+
+// track lists the child in the conversation's work as its run starts.
+func (c *child) track() {
+	if c.sub.Work == nil {
+		return
+	}
+	parent := ""
+	if c.parent != nil && c.parent.rec != nil {
+		parent = c.parent.rec.sessionID
+	}
+	bg, _ := c.extra["background"].(bool)
+	c.sub.Work.start(WorkItem{ID: c.sessionID, Parent: parent, Kind: WorkAgent, AgentType: c.req.AgentType,
+		Title: c.req.Description, Background: bg, Started: time.Now()}, c.sub)
+}
+
+// untrack marks the child's run over, with any message it never took.
+func (c *child) untrack(reason TerminalReason, err error) {
+	if c.sub.Work == nil {
+		return
+	}
+	status := noticeStatus(reason)
+	if err != nil {
+		status = "failed"
+	}
+	var left []string
+	for _, q := range c.sub.takeSteering() {
+		left = append(left, q.Text)
+	}
+	c.sub.Work.end(c.sessionID, status, string(reason), left)
 }

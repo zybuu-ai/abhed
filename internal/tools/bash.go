@@ -53,6 +53,9 @@ type Bash struct {
 	Shell func(ctx context.Context, cwd string) *exec.Cmd
 	// Isolation says what contains the commands, for a person to read.
 	Isolation Isolation
+	// RanUnder, when set, is the tier a command ran under, for a sandbox
+	// chosen after start-up; Isolation.Tier is then the weakest it can be.
+	RanUnder func() string
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -87,7 +90,8 @@ func (Bash) Schema() json.RawMessage {
     "command":{"type":"string","description":"The shell command to run."},
     "description":{"type":"string","description":"Short human-readable description of what this does, shown in the approval prompt."},
     "timeout_ms":{"type":"integer","description":"Timeout in milliseconds. Default 120000, max 600000."},
-    "secrets":{"type":"array","items":{"type":"string"},"description":"Names of stored secrets this command needs as environment variables. Each must be permitted by policy."}
+    "secrets":{"type":"array","items":{"type":"string"},"description":"Names of stored secrets this command needs as environment variables. Each must be permitted by policy."},
+    "run_in_background":{"type":"boolean","description":"Start the command and return at once with a shell id, for a server, a watcher or a long build. Read its output with shell_output, stop it with shell_kill; you are told when it ends. timeout_ms, when given, bounds its life."}
   },
   "required":["command","description"]
 }`)
@@ -98,6 +102,7 @@ type bashArgs struct {
 	Description string   `json:"description"`
 	TimeoutMS   int      `json:"timeout_ms"`
 	Secrets     []string `json:"secrets"`
+	Background  bool     `json:"run_in_background"`
 }
 
 // editorPattern matches full-screen programs; vim in silent Ex mode is exempt.
@@ -271,6 +276,9 @@ func rmArgForces(a string) bool {
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	res := b.run(ctx, s, raw)
 	res.Tier = b.tier()
+	if b.Sandbox != nil && b.RanUnder != nil {
+		res.Tier = b.RanUnder()
+	}
 	return res
 }
 
@@ -304,6 +312,13 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("Refusing to run an interactive command: %s\nInteractive commands wait for a terminal that is not attached and will hang.\nUse a non-interactive equivalent (for example `git rebase --onto` instead of `git rebase -i`, or `cat` instead of `less`).", a.Command)
 	}
 
+	if len(a.Secrets) > 0 && b.Secrets == nil {
+		return errf("No secrets are configured on this deployment; run the command without `secrets`.")
+	}
+	if a.Background {
+		return b.background(ctx, s, a)
+	}
+
 	timeout := time.Duration(a.TimeoutMS) * time.Millisecond
 	if a.TimeoutMS <= 0 {
 		timeout = defaultTimeoutMS * time.Millisecond
@@ -315,35 +330,9 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if b.Sandbox != nil {
-		cmd = b.Sandbox(runCtx, s.Cwd, a.Command)
-	} else {
-		cmd = exec.CommandContext(runCtx, "bash", "-c", a.Command)
-		cmd.Dir = s.Cwd
-		// No sandbox: the server's own environment, less BASH_ENV and CDPATH.
-		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
-	}
-	// A stopped turn ends what the command started, not only its shell.
-	sandbox.EndWithCommand(cmd)
-
-	if len(a.Secrets) > 0 {
-		if b.Secrets == nil {
-			return errf("No secrets are configured on this deployment; run the command without `secrets`.")
-		}
-		env, err := b.Secrets(a.Secrets)
-		if err != nil {
-			return errf("%v", err)
-		}
-		cmd.Env = append(cmd.Env, env...)
-		names := make([]string, 0, len(env))
-		for _, kv := range env {
-			if k, _, ok := strings.Cut(kv, "="); ok {
-				names = append(names, k)
-			}
-		}
-		// A container sees only what is forwarded to it by name.
-		sandbox.ForwardEnv(cmd, names)
+	cmd, err := b.command(runCtx, s.Cwd, a)
+	if err != nil {
+		return errf("%v", err)
 	}
 
 	output, err := newBashOutput(cmd)
@@ -428,6 +417,72 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		Truncated: truncated,
 		ExitCode:  &exitCode,
 	}
+}
+
+// command makes the process for a call: under the sandbox when there is
+// one, with the secrets it asked for, ending its whole group when ctx ends.
+func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, error) {
+	var cmd *exec.Cmd
+	if b.Sandbox != nil {
+		cmd = b.Sandbox(ctx, cwd, a.Command)
+	} else {
+		cmd = exec.CommandContext(ctx, "bash", "-c", a.Command)
+		cmd.Dir = cwd
+		// No sandbox: the server's own environment, less BASH_ENV and CDPATH.
+		cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
+	}
+	// A stopped turn ends what the command started, not only its shell.
+	sandbox.EndWithCommand(cmd)
+
+	if len(a.Secrets) > 0 {
+		env, err := b.Secrets(a.Secrets)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Env = append(cmd.Env, env...)
+		names := make([]string, 0, len(env))
+		for _, kv := range env {
+			if k, _, ok := strings.Cut(kv, "="); ok {
+				names = append(names, k)
+			}
+		}
+		// A container sees only what is forwarded to it by name.
+		sandbox.ForwardEnv(cmd, names)
+	}
+	return cmd, nil
+}
+
+// background starts the command on the session's host and returns its id at
+// once. Policy, approval and the sandbox are the same as in the foreground.
+func (b Bash) background(ctx context.Context, s *Session, a bashArgs) Result {
+	host := ShellHostOf(ctx)
+	if host == nil {
+		return errf("Background commands are not available here; run the command without run_in_background.")
+	}
+	var timeout time.Duration
+	if a.TimeoutMS > 0 {
+		timeout = time.Duration(a.TimeoutMS) * time.Millisecond
+	}
+	tier := b.tier()
+	if b.Sandbox != nil && b.RanUnder != nil {
+		tier = b.RanUnder()
+	}
+	cwd := s.Cwd
+	id, err := host.StartShell(ctx, ShellRequest{
+		Command: a.Command, Description: a.Description, Secrets: a.Secrets, Timeout: timeout, Tier: tier,
+		Build: func(sctx context.Context) (*exec.Cmd, error) { return b.command(sctx, cwd, a) },
+	})
+	if err != nil {
+		return errf("Could not start the command in the background: %v", err)
+	}
+	return Result{Content: BackgroundStarted(id, a.Description) + "\nRead its output with shell_output, stop it with shell_kill. " +
+		"You are told when it ends; do not poll in a loop."}
+}
+
+// BackgroundStarted is the first line of a background start's result, which
+// the surfaces show as the call's one line.
+func BackgroundStarted(id, description string) string {
+	return "Started in background: " + id + " · " + description
 }
 
 type networkState int

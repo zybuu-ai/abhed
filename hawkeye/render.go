@@ -73,6 +73,9 @@ func Text(r Report) string {
 	} else {
 		b.WriteString("   no gaps")
 	}
+	if len(r.Integrity.Omitted) > 0 {
+		fmt.Fprintf(&b, "   agent.delta omitted by stream-json at %v", r.Integrity.Omitted)
+	}
 	b.WriteString("\n")
 
 	if len(r.Findings) == 0 {

@@ -57,19 +57,19 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 // The usage table and Main's dispatch name the same subcommands, so neither
 // can gain one the other lacks.
 func TestUsageMatchesMainsDispatch(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	f, err := parser.ParseFile(token.NewFileSet(), "cli_flags.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dispatched := map[string]bool{}
 	ast.Inspect(f, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "Main" {
+		if !ok || fn.Name.Name != "subcommand" {
 			return true
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			sw, ok := n.(*ast.SwitchStmt)
-			if !ok || sw.Tag == nil || types.ExprString(sw.Tag) != "fs.Arg(0)" {
+			if !ok || sw.Tag == nil || types.ExprString(sw.Tag) != "rest[0]" {
 				return true
 			}
 			for _, st := range sw.Body.List {
@@ -85,7 +85,7 @@ func TestUsageMatchesMainsDispatch(t *testing.T) {
 		return false
 	})
 	if len(dispatched) == 0 {
-		t.Fatal("found no subcommands in Main's switch; this test would prove nothing")
+		t.Fatal("found no subcommands in subcommand's switch; this test would prove nothing")
 	}
 	for name := range dispatched {
 		if !builtinCommands[name] {

@@ -31,10 +31,13 @@ type pendingApproval struct {
 	// DurableID the store's row for it, when the store holds approvals.
 	RequestID string
 	DurableID string
-	Tool      string
-	Args      json.RawMessage
-	Reason    string
-	Scope     string
+	// Subagent names the subagent asking, "" for the session's own ask.
+	Subagent string
+	Since    time.Time
+	Tool     string
+	Args     json.RawMessage
+	Reason   string
+	Scope    string
 
 	state    askState
 	approved bool
@@ -103,8 +106,14 @@ func (l *liveSession) pendingFor(ctx context.Context, requestID string) (*pendin
 	for {
 		l.mu.Lock()
 		p, ended := l.pending, l.ended[requestID]
+		// A subagent's ask is answered only by its request id: an approve
+		// naming none was meant for the run's own ask, and must not land on
+		// a subagent's that happens to be waiting first.
+		byIDOnly := p != nil && p.Subagent != ""
 		l.mu.Unlock()
 		switch {
+		case p != nil && requestID == "" && byIDOnly:
+			return nil, "this approval is answered only by its request_id"
 		case p != nil && (requestID == "" || p.RequestID == requestID):
 			return p, ""
 		case p != nil || ended:
@@ -237,6 +246,20 @@ func writeRecordedNotApplied(w http.ResponseWriter) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"recorded": true, "applied": false})
 }
 
+// stateAfterAsk is the session's state once an ask has ended: running while a
+// run is live, else what it was before the ask, or done. Called with mu held.
+func (l *liveSession) stateAfterAsk(prior string) string {
+	switch {
+	case l.ran != nil:
+		return "running"
+	case l.Loop != nil && l.Loop.Background.Owed() > 0:
+		return "background"
+	case prior == "idle" || prior == "done":
+		return prior
+	}
+	return "done"
+}
+
 // Approve implements agent.Approver for a server session: it publishes the
 // pending request and blocks until a reviewer answers or the session is
 // cancelled. This is what enables headless runs with a human gate.
@@ -256,8 +279,10 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	}
 
 	p := &pendingApproval{RequestID: agent.RequestIDOf(ctx), Tool: tool, Args: args, Reason: res.Reason, Scope: offer,
+		Subagent: agent.SubagentOf(ctx), Since: time.Now().UTC(),
 		ready: make(chan struct{}), answer: make(chan struct{}), final: make(chan struct{})}
 	l.mu.Lock()
+	prior := l.State
 	l.State = "waiting_approval"
 	l.pending = p
 	l.mu.Unlock()
@@ -265,7 +290,9 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 	defer func() {
 		l.mu.Lock()
 		l.move(p, askEnded, false, "") // a no-op once taken
-		l.State = "running"
+		// The state that fits now, not a forced "running": an ask can outlive
+		// the run it came from, and must not revive a session that ended.
+		l.State = l.stateAfterAsk(prior)
 		if l.pending == p {
 			l.pending = nil
 		}

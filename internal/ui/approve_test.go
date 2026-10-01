@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -27,13 +28,20 @@ func TestApproveLineInput(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"a\n", true},
-		{"y\n", true},
-		{"\n", false},   // Enter alone never accepts; input then ends
-		{"\na\n", true}, // Enter re-prompts, then an explicit key accepts
-		{"r\n", false},
-		{"n\n", false},
-		{"x\na\n", true}, // an unknown key re-prompts, then accept
+		{"1\n", true},
+		{"2\n", false},   // with no scope offered, 2 is No
+		{"\n", false},    // Enter alone never accepts; input then ends
+		{"\n1\n", true},  // Enter re-prompts, then a number accepts
+		{"x\n1\n", true}, // anything else re-prompts, then a number
+		{"3\n", false},   // not offered: re-prompts, then input ends
+	}
+	// A letter never approves, in line mode as in the dialog: every one is
+	// asked again, and input ending refuses.
+	for _, letter := range []string{"y", "a", "A", "Y", "yes", "ok"} {
+		cases = append(cases, struct {
+			in   string
+			want bool
+		}{letter + "\n", false})
 	}
 	for _, c := range cases {
 		a := newTestApprover(strings.NewReader(c.in))
@@ -60,18 +68,16 @@ func TestApproveEOFRefuses(t *testing.T) {
 	}
 }
 
-// TestApproveSingleKey covers the interactive path Prepare installs: one
-// keypress decides, with no Enter, and the thinking indicator is paused and
-// resumed exactly once around the prompt.
+// TestApproveSingleKey covers the path Prepare installs: the answer is read
+// through it, and the thinking indicator is paused and resumed exactly once
+// around the prompt.
 func TestApproveSingleKey(t *testing.T) {
 	cases := []struct {
 		key  string
 		want bool
 	}{
-		{"a", true},
-		{"y", true},
-		{"r", false},
-		{"n", false},
+		{"1", true},
+		{"2", false},
 	}
 	for _, c := range cases {
 		a := NewApprover(io.Discard)
@@ -98,7 +104,7 @@ func TestApproveSingleKey(t *testing.T) {
 // the scope so the next call with the same scope is silent.
 func TestApproveAlwaysAllow(t *testing.T) {
 	a := NewApprover(io.Discard)
-	answers := []string{"A"}
+	answers := []string{"2"}
 	a.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
 		return func() (string, bool) {
 			if len(answers) == 0 {
@@ -130,11 +136,12 @@ func TestApproveAlwaysAllow(t *testing.T) {
 	}
 }
 
-// The editor's notices, and Enter alone, re-show the choices without deciding.
-func TestApproveHeldNoticeDoesNotDecide(t *testing.T) {
+// Enter alone and letters re-show the choices without deciding; the
+// choices are numbered.
+func TestApproveAsksAgainUntilANumber(t *testing.T) {
 	var out strings.Builder
 	a := NewApprover(&out)
-	answers := []string{string(approvalHeld), string(approvalBusy), "\r", "r"}
+	answers := []string{"\r", "y", "a", "3"}
 	a.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
 		return func() (string, bool) {
 			s := answers[0]
@@ -142,14 +149,47 @@ func TestApproveHeldNoticeDoesNotDecide(t *testing.T) {
 			return s, true
 		}, func() {}
 	}
-	got, err := a.Approve(context.Background(), "write", json.RawMessage(`{}`), policy.Result{})
+	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "write(/ws/x)"}
+	got, err := a.Approve(context.Background(), "write", json.RawMessage(`{}`), res)
 	if err != nil || got {
-		t.Fatalf("got %v err %v, want a rejection from the explicit key", got, err)
+		t.Fatalf("got %v err %v, want a refusal from 3", got, err)
 	}
-	for _, want := range []string{"steering message", "the line is not empty"} {
+	for _, want := range []string{"1. Yes", "2. Yes, and don't ask again for write(/ws/x) this session", "3. No", "answer with a number"} {
 		if !strings.Contains(out.String(), want) {
-			t.Errorf("notice %q was not shown:\n%s", want, out.String())
+			t.Errorf("missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// A destructive command needs a second numbered yes; Enter and letters do
+// not give it.
+func TestApproveDestructiveAsksTwice(t *testing.T) {
+	for in, want := range map[string]bool{"1\n2\n": true, "1\n1\n": false, "1\ny\n\n": false} {
+		a := newTestApprover(strings.NewReader(in))
+		got, _ := a.Approve(context.Background(), "bash", json.RawMessage(`{"command":"rm -rf build"}`),
+			policy.Result{Decision: policy.Ask, Step: "destructive", Reason: "rm -rf"})
+		if got != want {
+			t.Errorf("%q: got %v, want %v", in, got, want)
+		}
+	}
+}
+
+// What the line prompt shows is filtered: the command is revealed, not
+// drawn raw, so a carriage return cannot hide its head.
+func TestApproveLineRevealsTheCommand(t *testing.T) {
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("3\n")
+	args, _ := json.Marshal(map[string]string{"command": "touch pwned #\u200d\r│ $ ls -la \x1b]52;c;eA==\x07"})
+	_, _ = a.Approve(context.Background(), "bash", args, policy.Result{Decision: policy.Ask, Reason: "r\x1b]0;T\x07"})
+	got := out.String()
+	for _, bad := range []string{"\r", "\x1b]", "\x07", "\u200d"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("%q reached the prompt: %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "touch pwned #⟨U+200D⟩⟨\\r⟩│ $ ls -la") {
+		t.Fatalf("the command is not shown whole: %q", got)
 	}
 }
 
@@ -175,12 +215,87 @@ func TestApproveInterruptedRefuses(t *testing.T) {
 func TestApproveNamesTheSubagent(t *testing.T) {
 	var out strings.Builder
 	a := NewApprover(&out)
-	a.In = strings.NewReader("n\n")
+	a.In = strings.NewReader("2\n")
 	ctx := agent.WithSubagent(context.Background(), "audit pkg/auth")
 	if _, err := a.Approve(ctx, "bash", json.RawMessage(`{"command":"rm -rf x"}`), policy.Result{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "asked by subagent: audit pkg/auth") {
 		t.Fatalf("the prompt does not name the subagent: %q", out.String())
+	}
+}
+
+// Only a line that is exactly an approval's number may answer it; no letter does.
+func TestDecisionKeysOnly(t *testing.T) {
+	for _, l := range []string{"1", "2", "3", " 1 \n"} {
+		if !Decision(l) {
+			t.Errorf("%q is a decision key", l)
+		}
+	}
+	for _, l := range []string{"", "yes", "ok", "no", "approve", "1 please", "4", "0", "a", "y", "r", "n", "A"} {
+		if Decision(l) {
+			t.Errorf("%q was taken as a decision", l)
+		}
+	}
+	p := NewPrompter()
+	if p.Waiting() {
+		t.Fatal("waiting with no approval")
+	}
+	got := make(chan string, 1)
+	go func() { s, _ := p.Await(context.Background()); got <- s }()
+	for !p.Waiting() {
+		time.Sleep(time.Millisecond)
+	}
+	if !p.Deliver("1") || <-got != "1" || p.Waiting() {
+		t.Fatal("a waiting approval did not take its answer")
+	}
+}
+
+// An answer says which ask it answered: the tool, what it acts on, and the
+// subagent that asked. A piped key answers by position, so this is the line
+// that shows what it approved.
+func TestAnswerNamesTheAsk(t *testing.T) {
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("1\n")
+	ctx := agent.WithSubagent(context.Background(), "scan logs")
+	ok, err := a.Approve(ctx, "bash", json.RawMessage(`{"command":"touch made.txt"}`), policy.Result{Decision: policy.Ask})
+	if err != nil || !ok {
+		t.Fatalf("approve: %v %v", ok, err)
+	}
+	if got := out.String(); !strings.Contains(got, "accepted: bash") || !strings.Contains(got, "touch made.txt") || !strings.Contains(got, "(subagent scan logs)") {
+		t.Fatalf("the answer does not name its ask:\n%s", got)
+	}
+}
+
+// Hidden characters anywhere in a call — a key, a decoded JSON string, who
+// asked — are shown as escapes, and the line prompt warns before the numbers.
+func TestApproveWarnsOfHiddenCharacters(t *testing.T) {
+	for name, c := range map[string]struct {
+		args string
+		ctx  context.Context
+	}{
+		"command":  {`{"command":"echo ok\u001b[2K"}`, context.Background()},
+		"key":      {`{"command":"ls","x\u202e":"1"}`, context.Background()},
+		"manifest": {`{"manifest":"{\"name\":\"a\u200bb\"}"}`, context.Background()},
+		"subagent": {`{"command":"ls"}`, agent.WithSubagent(context.Background(), "scan\u202elogs")},
+	} {
+		var out strings.Builder
+		a := NewApprover(&out)
+		a.In = strings.NewReader("3\n")
+		if ok, _ := a.Approve(c.ctx, "bash", json.RawMessage(c.args), policy.Result{Decision: policy.Ask}); ok {
+			t.Fatalf("%s: 3 approved", name)
+		}
+		got := out.String()
+		if !strings.Contains(got, HiddenWarning) || strings.ContainsAny(got, "\x1b\u202e\u200b") {
+			t.Fatalf("%s: no warning, or a hidden character reached the screen:\n%q", name, got)
+		}
+	}
+	var out strings.Builder
+	a := NewApprover(&out)
+	a.In = strings.NewReader("3\n")
+	_, _ = a.Approve(context.Background(), "bash", json.RawMessage(`{"command":"ls\tx\ny"}`), policy.Result{Decision: policy.Ask})
+	if strings.Contains(out.String(), HiddenWarning) {
+		t.Fatal("a tab or a newline was warned of")
 	}
 }

@@ -9,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/ui"
 	"golang.org/x/term"
 )
 
@@ -35,15 +38,24 @@ func loadSession(workspace string, trust config.TrustChoice, interactive bool) (
 		return cfg, nil
 	}
 	if !grant {
-		if err := config.DeclineTrust(workspace, st.SHA256); err != nil {
+		// Declining keeps whichever part was already trusted for this content:
+		// new definitions do not cost a trusted file, nor a changed file
+		// trusted definitions.
+		if err := config.RecordDecision(workspace, st.Reviewed(), st.Trusted && st.Reason == "stored",
+			st.AgentsTrusted && st.AgentsReason == "stored"); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: could not record the decision: %v\n", err)
 		}
-		st.Reason = "declined"
+		if !st.Trusted {
+			st.Reason = "declined"
+		}
+		if len(st.Agents) > 0 && !st.AgentsTrusted {
+			st.AgentsReason = "declined"
+		}
 		cfg.Workspace = st
 		warnTrust(st)
 		return cfg, nil
 	}
-	if err := config.GrantTrust(workspace, st.SHA256); err != nil {
+	if err := config.GrantReviewed(workspace, st.Reviewed()); err != nil {
 		// The session goes on untrusted rather than ending on a failed write.
 		fmt.Fprintf(os.Stderr, "abhed: could not record trust, so the file stays untrusted: %v\n", err)
 		warnTrust(st)
@@ -64,31 +76,58 @@ func warnTrust(st config.WorkspaceTrust) {
 var errNoAnswer = errors.New("no answer about the workspace configuration; it stays untrusted")
 
 // askTrust shows what an untrusted file would change and asks whether to
-// trust it. Only an explicit "t" trusts it.
+// trust it. Only its number, 2, trusts it.
 func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, error) {
-	fmt.Fprintf(out, "\nThis workspace has its own Abhed configuration:\n  %s\n", config.Printable(st.File))
-	if st.Reason == "changed" {
+	fmt.Fprintln(out, "\nThis workspace has its own Abhed configuration:")
+	if st.File != "" {
+		fmt.Fprintf(out, "  %s\n", config.Printable(st.File))
+	}
+	if len(st.Agents) > 0 {
+		fmt.Fprintf(out, "  %s (%d agent definition(s))\n", config.Printable(filepath.Join(st.Workspace, filepath.FromSlash(config.WorkspaceAgentsDir))), len(st.Agents))
+	}
+	if st.Reason == "changed" || st.AgentsReason == "changed" {
 		fmt.Fprintln(out, "It has changed since you trusted it.")
 	} else {
 		fmt.Fprintln(out, "You have not trusted it yet. A file that came with a repository can widen what the agent may do.")
 		fmt.Fprintln(out, "Abhed now asks about workspace configuration, including files you wrote.")
 	}
 	describeTrust(out, st)
+	// Ask about what is not yet trusted, never about what already is.
+	question := "Trust this file?"
+	agentsPending := len(st.Agents) > 0 && !st.AgentsTrusted
+	switch {
+	case agentsPending && st.File != "" && !st.Trusted:
+		question = "Trust this file and these definitions?"
+	case agentsPending:
+		question = "Trust these definitions?"
+	}
+	// Numbered answers only, checked as every dialog is: nothing is chosen
+	// for an empty line, and no letter trusts the file.
+	spec, err := ui.DialogSpec{Kind: ui.DialogChoice, Title: question, Choices: []ui.Choice{
+		{ID: ui.ChoiceNo, Label: "No, don't trust it"},
+		{ID: "trust", Label: "Yes, trust it", Widening: true},
+		{ID: "view", Label: "View the file"},
+	}}.Normalized()
+	if err != nil {
+		return false, err
+	}
+	labels := make([]string, len(spec.Choices))
+	for i, c := range spec.Choices {
+		labels[i] = c.Label
+	}
 	for {
-		fmt.Fprint(out, "\nTrust this file? [t]rust  [d]on't trust  [v]iew the file: ")
-		line, err := readAnswer(in)
+		n, err := askNumbered(in, out, question, labels)
 		if err != nil {
-			fmt.Fprintln(out)
 			return false, errNoAnswer
 		}
-		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "t", "trust":
+		switch spec.Choices[n].ID {
+		case "trust":
 			fmt.Fprintln(out, "Trusted. A later change to the file will be asked about again.")
 			return true, nil
-		case "d", "n", "no", "don't", "dont":
+		case ui.ChoiceNo:
 			fmt.Fprintln(out, "Not trusted. Only its tightening settings apply; `abhed trust grant` changes that.")
 			return false, nil
-		case "v", "view":
+		case "view":
 			showFile(out, st)
 		}
 	}
@@ -110,20 +149,99 @@ func describeTrust(out io.Writer, st config.WorkspaceTrust) {
 	if len(st.Applied) > 0 {
 		fmt.Fprintf(out, "Applied already, since they only tighten: %s\n", strings.Join(st.Applied, ", "))
 	}
+	if !st.AgentsTrusted {
+		describeAgents(out, st, "Trusting them would let these agent definitions load:")
+	}
 }
 
-// showFile prints the file only when it still holds what was classified.
+// describeAgents lists the workspace's definitions: the name the model would
+// call, the model each chooses and the tools each is limited to, read from
+// the content the decision covers.
+func describeAgents(out io.Writer, st config.WorkspaceTrust, heading string) {
+	files := st.AgentFiles()
+	if len(files) == 0 && len(st.AgentsProblems) == 0 {
+		return
+	}
+	fmt.Fprintln(out, heading)
+	for _, f := range files {
+		name, model, tools := agentSummary(f)
+		fmt.Fprintf(out, "  %s  model %s  tools %s  (%s)\n", name, model, tools, config.Printable(f.Rel))
+	}
+	for _, p := range st.AgentsProblems {
+		fmt.Fprintf(out, "  never loaded: %s\n", p)
+	}
+}
+
+// agentSummary is a definition's name, model and tools for display, with
+// what an omitted key means.
+func agentSummary(f config.AgentFile) (name, model, tools string) {
+	name = strings.TrimSuffix(filepath.Base(f.Rel), ".md")
+	model, tools = "inherit", "the session's"
+	doc, err := frontmatter.Parse(string(f.Data))
+	if err != nil {
+		return config.Printable(name), model, "(no frontmatter: it will not load)"
+	}
+	for _, fl := range doc.Top() {
+		switch strings.ToLower(fl.Key) {
+		case "name":
+			if fl.Value != "" {
+				name = fl.Value
+			}
+		case "model":
+			if fl.Value != "" {
+				model = fl.Value
+			}
+		case "tools":
+			if fl.Kind == frontmatter.List {
+				tools = strings.Join(fl.List, ", ")
+			} else if fl.Value != "" {
+				tools = fl.Value
+			}
+		}
+	}
+	return config.Printable(name), config.Printable(model), config.Printable(tools)
+}
+
+// showFile prints the file only when it still holds what was classified, and
+// the definitions as they were hashed.
 func showFile(out io.Writer, st config.WorkspaceTrust) {
+	for _, f := range st.AgentFiles() {
+		fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(f.Path), config.PrintableText(string(bytes.TrimRight(f.Data, "\n"))))
+	}
+	if st.File == "" {
+		return
+	}
 	data, err := os.ReadFile(st.File)
 	if err != nil {
 		fmt.Fprintf(out, "cannot read it: %v\n", err)
 		return
 	}
 	if config.HashOf(data) != st.SHA256 {
-		fmt.Fprintln(out, "The file changed while you were being asked. Answer d, and run abhed again to review the new version.")
+		fmt.Fprintln(out, "The file changed while you were being asked. Answer 1 (No), and run abhed again to review the new version.")
 		return
 	}
 	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.PrintableText(string(bytes.TrimRight(data, "\n"))))
+}
+
+// askNumbered asks until a line names one of the numbered labels and returns
+// its index. Nothing is chosen for Enter or a letter; input that ends refuses.
+func askNumbered(in io.Reader, out io.Writer, question string, labels []string) (int, error) {
+	for {
+		fmt.Fprintf(out, "\n%s\n", question)
+		for i, l := range labels {
+			fmt.Fprintf(out, "  %d. %s\n", i+1, l)
+		}
+		fmt.Fprintf(out, "answer 1-%d: ", len(labels))
+		line, err := readAnswer(in)
+		if err != nil {
+			fmt.Fprintln(out)
+			return 0, err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(line))
+		if err == nil && n >= 1 && n <= len(labels) {
+			return n - 1, nil
+		}
+	}
 }
 
 // readAnswer reads one line a byte at a time, so nothing past it is taken
@@ -165,15 +283,16 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		verb, args = args[0], args[1:]
 	}
 	// -sha256 pins a grant to the content that was reviewed.
-	var want string
+	var want, wantAgents string
 	if verb == "grant" {
 		fs := flag.NewFlagSet("abhed trust grant", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
 		sum := fs.String("sha256", "", "grant only if the file still has this hash")
+		agentsSum := fs.String("agents-sha256", "", "grant only if the agent definitions still have this hash")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		want, args = strings.ToLower(*sum), fs.Args()
+		want, wantAgents, args = strings.ToLower(*sum), strings.ToLower(*agentsSum), fs.Args()
 	}
 	dir := workspace
 	if len(args) > 0 {
@@ -199,12 +318,12 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 			fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 			return 1
 		}
-		if st.File == "" {
-			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json to trust\n", st.Workspace)
+		if st.File == "" && len(st.Agents) == 0 {
+			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json or .abhed/agents to trust\n", st.Workspace)
 			return 1
 		}
-		if st.Reason == "home" {
-			fmt.Fprintf(out, "%s is your own configuration and is always trusted.\n", config.Printable(st.File))
+		if st.Reason == "home" || st.AgentsReason == "home" {
+			fmt.Fprintf(out, "%s is your own configuration and is always trusted.\n", config.Printable(filepath.Join(st.Workspace, ".abhed")))
 			return 0
 		}
 		if want != "" && want != st.SHA256 {
@@ -212,14 +331,24 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 				"Nothing was trusted; review it again with `abhed trust`\n", config.Printable(st.File), st.SHA256, config.Printable(want))
 			return 1
 		}
-		// The hash is of the content just classified, not of a second read.
-		if err := config.GrantTrust(dir, st.SHA256); err != nil {
+		if wantAgents != "" && wantAgents != st.AgentsSHA256 {
+			fmt.Fprintf(os.Stderr, "abhed: trust: the agent definitions have changed: their sha256 is %s, not the %s you reviewed. "+
+				"Nothing was trusted; review them again with `abhed trust`\n", st.AgentsSHA256, config.Printable(wantAgents))
+			return 1
+		}
+		// The hashes are of the content just classified, not of a second read.
+		if err := config.GrantReviewed(dir, st.Reviewed()); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "Trusted %s (sha256 %s).\n", config.Printable(st.File), st.SHA256[:12])
-		describeTrust(out, config.WorkspaceTrust{Ignored: st.Ignored})
-		fmt.Fprintln(out, "A later change to the file makes it untrusted again.")
+		if st.File != "" {
+			fmt.Fprintf(out, "Trusted %s (sha256 %s).\n", config.Printable(st.File), st.SHA256[:12])
+			describeTrust(out, config.WorkspaceTrust{Ignored: st.Ignored})
+		}
+		if len(st.Agents) > 0 {
+			fmt.Fprintf(out, "Trusted %d agent definition(s) (sha256 %s).\n", len(st.Agents), st.AgentsSHA256[:12])
+		}
+		fmt.Fprintln(out, "A later change to the file or a definition makes it untrusted again.")
 		return 0
 	case "revoke":
 		had, err := config.RevokeTrust(dir)
@@ -277,6 +406,7 @@ func trustLabel(st config.WorkspaceTrust) string {
 
 func printTrust(out io.Writer, st config.WorkspaceTrust) {
 	fmt.Fprintf(out, "workspace   %s\n", config.Printable(st.Workspace))
+	printAgentsTrust(out, st)
 	if st.File == "" {
 		fmt.Fprintln(out, "config      none")
 		return
@@ -303,9 +433,52 @@ func printTrust(out io.Writer, st config.WorkspaceTrust) {
 	}
 }
 
+// agentsLabel is the one-line state of the workspace's agent definitions.
+func agentsLabel(st config.WorkspaceTrust) string {
+	switch {
+	case st.AgentsReason == "home":
+		return "your own definitions"
+	case st.AgentsTrusted:
+		return map[string]string{"stored": "trusted", "flag": "trusted for this run (-trust-workspace)",
+			"env": "trusted for this run (" + config.TrustEnv + ")"}[st.AgentsReason]
+	case st.AgentsReason == "changed":
+		return "NOT TRUSTED: changed since they were trusted"
+	case st.AgentsReason == "declined":
+		return "NOT TRUSTED: you chose not to trust them"
+	}
+	return "NOT TRUSTED"
+}
+
+// printAgentsTrust is abhed trust's section on the workspace's definitions.
+func printAgentsTrust(out io.Writer, st config.WorkspaceTrust) {
+	if len(st.Agents) == 0 && len(st.AgentsProblems) == 0 {
+		return
+	}
+	if len(st.Agents) > 0 {
+		fmt.Fprintf(out, "agents      %d definition(s) in %s\n", len(st.Agents), config.WorkspaceAgentsDir)
+		fmt.Fprintf(out, "sha256      %s\n", st.AgentsSHA256)
+		fmt.Fprintf(out, "trust       %s\n", agentsLabel(st))
+	}
+	heading := "Not loaded until you trust them (`abhed trust grant`):"
+	if st.AgentsTrusted {
+		heading = "Loaded:"
+	}
+	describeAgents(out, st, heading)
+	fmt.Fprintln(out)
+}
+
 // printDoctorTrust is doctor's line on the workspace file, naming each
 // setting an untrusted one had ignored.
 func printDoctorTrust(out io.Writer, st config.WorkspaceTrust) {
+	if len(st.Agents) > 0 {
+		fmt.Fprintf(out, "agents      %s — %d definition(s) in %s\n", agentsLabel(st), len(st.Agents), config.WorkspaceAgentsDir)
+		for _, a := range st.IgnoredAgents() {
+			fmt.Fprintf(out, "            ⚠ ignored %s\n", a)
+		}
+	}
+	for _, p := range st.AgentsProblems {
+		fmt.Fprintf(out, "            ⚠ never loaded: %s\n", p)
+	}
 	if st.File == "" {
 		return
 	}

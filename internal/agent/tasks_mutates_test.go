@@ -41,7 +41,7 @@ func TestWorktreeTasksAskFirst(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := tempDir(t)
-			reg := tools.NewRegistry(Tasks{Workspace: ws, Profiles: Profiles,
+			reg := tools.NewRegistry(Tasks{Workspace: ws,
 				Spawn: func(context.Context, SubagentRequest) (string, error) { return "ok", nil }})
 			sess, err := tools.NewSession(ws)
 			if err != nil {
@@ -78,7 +78,7 @@ func TestWorktreeTasksAskFirst(t *testing.T) {
 // change to the host it is rather than as a read.
 func TestMonitorIsToldWorktreeTasksMutate(t *testing.T) {
 	ws := tempDir(t)
-	reg := tools.NewRegistry(Tasks{Workspace: ws, Profiles: Profiles,
+	reg := tools.NewRegistry(Tasks{Workspace: ws,
 		Spawn: func(context.Context, SubagentRequest) (string, error) { return "ok", nil }})
 	sess, err := tools.NewSession(ws)
 	if err != nil {

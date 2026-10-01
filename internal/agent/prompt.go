@@ -3,19 +3,16 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/hostgit"
-	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // CorePrompt is layer 1 of the prompt stack (docs §07): stable across all
-// sessions and tenants, and therefore part of the cached prefix. {{web}} is
-// replaced by what the session's web tools allow; see webSources.
+// sessions and tenants, and therefore part of the cached prefix. {{current}}
+// and {{web}} are replaced by what the session's tools allow; see sources.
 //
 // Every rule here is paid on every request of every session forever, so each
 // one must change behavior. Aspirations ("be helpful") change nothing; rules
@@ -36,8 +33,7 @@ the question is about the workspace. Judge what the user actually wants:
   answer depends on current fact, or your own knowledge. Do not grep the repository
   for it.
 - A question about current or changing fact (a release, a version, an API as it
-  stands today, anything after your training cutoff) — check the web if you have a
-  web tool (see below); if not, answer from what you know and say it is unchecked.
+  stands today, anything after your training cutoff) — {{current}}
 - A request to change something — follow the working method below.
 
 Choosing the wrong source is the most common failure, and it runs in both directions.
@@ -99,6 +95,8 @@ say so and say which you trust.
   did not explicitly request.`
 
 const (
+	currentLine = `check the web if you have a
+  web tool (see below); if not, answer from what you know and say it is unchecked.`
 	webSearchLine = `- Web search: invoke web_search on your own judgement whenever the answer
   depends on information you do not reliably have: current versions, recent releases,
   changing APIs, anything post-cutoff, or a specific fact you would otherwise hedge
@@ -110,23 +108,55 @@ const (
   know and say that you could not check it.`
 )
 
-// webSources is the prompt's line on the web, naming only the web tools the
-// session has: naming one it lacks sends the model looking for it, or to curl.
-func webSources(names []string) string {
-	var search, fetch bool
+// With MCP tools behind tool_search, the connected-services line comes first
+// and the lines on the web and own knowledge defer to it: otherwise a live-data
+// question goes to the web, or to memory, past a listed tool that answers it.
+const (
+	deferredCurrentLine = `first call tool_search with a
+  keyword from the question (see below); if nothing fits, check the web if you have
+  a web tool; if not, answer from what you know and say it is unchecked.`
+	toolSearchLine = `- Connected services: MCP tools not offered directly are listed by server in
+  tool_search's description: live data and status, accounts, tickets, billing and
+  the like. Check them first. For a request about live or current data, or one a
+  listed tool could fit, call tool_search with a keyword from the request (it is
+  cheap and also searches the tools' descriptions) before your own knowledge, the
+  web or the files; use the web or memory only when it finds nothing that fits.
+  Never say you cannot get live or current data before you have called it.`
+	deferredWebSearchLine = `- Web search: for what tool_search finds no tool for, invoke web_search
+  on your own judgement whenever the answer depends on information you do not
+  reliably have: current versions, recent releases, changing APIs, anything
+  post-cutoff, or a specific fact you would otherwise hedge about.`
+	deferredNoWebLine = `- The web: this session has no web tool. For current fact that tool_search
+  finds no tool for, answer from what you know and say that you could
+  not check it.`
+)
+
+// sources returns the prompt's {{current}} and {{web}} text for the session's
+// tools. It names only the web tools the session has: naming one it lacks
+// sends the model looking for it, or to curl.
+func sources(names []string) (current, web string) {
+	var search, fetch, deferred bool
 	for _, n := range names {
 		search = search || n == "web_search"
 		fetch = fetch || n == "web_fetch"
+		deferred = deferred || n == "tool_search"
 	}
-	switch {
-	case search && fetch:
-		return webSearchLine + "\n" + webFetchLine
-	case search:
-		return webSearchLine
-	case fetch:
-		return webFetchLine
+	current, searchLine, none := currentLine, webSearchLine, noWebLine
+	var lines []string
+	if deferred {
+		current, searchLine, none = deferredCurrentLine, deferredWebSearchLine, deferredNoWebLine
+		lines = append(lines, toolSearchLine)
 	}
-	return noWebLine
+	if search {
+		lines = append(lines, searchLine)
+	}
+	if fetch {
+		lines = append(lines, webFetchLine)
+	}
+	if !search && !fetch {
+		lines = append(lines, none)
+	}
+	return current, strings.Join(lines, "\n")
 }
 
 // Profile is layer 2: role-specific behavior for subagents. A narrow role with
@@ -161,11 +191,19 @@ var Profiles = map[string]PromptProfile{
 
 // BuildOptions assembles the four prompt layers.
 type BuildOptions struct {
-	Profile       string
+	Profile string
+	// Role, when set, is the role section in place of the profile's own: a
+	// loaded definition's instructions.
+	Role          string
 	Workspace     string
 	Model         string
 	ContextWindow int
 	MemoryFiles   []string // discovered ABHED.md paths, in precedence order
+	// Memory, when set, is the loaded memory in place of MemoryFiles.
+	Memory *Memory
+	// MemoryAllow puts the imports MemoryFiles name to the read rules; nil
+	// follows no import.
+	MemoryAllow func(path string) error
 	// Skills is the rendered skill listing: names and one-line descriptions
 	// only. Bodies are fetched by the skill tool, so twenty skills cost about
 	// three hundred tokens here rather than twenty thousand.
@@ -184,11 +222,16 @@ type BuildOptions struct {
 func BuildSystemPrompt(opts BuildOptions) string {
 	var b strings.Builder
 
-	b.WriteString(strings.Replace(CorePrompt, "{{web}}", webSources(opts.Tools), 1))
+	current, web := sources(opts.Tools)
+	b.WriteString(strings.NewReplacer("{{current}}", current, "{{web}}", web).Replace(CorePrompt))
 
-	if p, found := Profiles[opts.Profile]; found && p.Instruction != "" {
+	role := opts.Role
+	if p, found := Profiles[opts.Profile]; found && role == "" {
+		role = p.Instruction
+	}
+	if role != "" {
 		b.WriteString("\n\n## Role\n")
-		b.WriteString(p.Instruction)
+		b.WriteString(role)
 	}
 
 	b.WriteString("\n\n## Environment\n")
@@ -214,63 +257,15 @@ func BuildSystemPrompt(opts BuildOptions) string {
 		b.WriteString(opts.Skills)
 	}
 
-	for _, path := range opts.MemoryFiles {
-		data, err := ReadMemoryFile(opts.Workspace, path)
-		if err != nil || len(data) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "\n## Project memory (%s)\n", filepath.Base(path))
-		b.WriteString(strings.TrimSpace(string(data)))
-		b.WriteString("\n")
+	mem := opts.Memory
+	if mem == nil && len(opts.MemoryFiles) > 0 {
+		mem = memoryFromFiles(opts.Workspace, opts.MemoryFiles, opts.MemoryAllow)
+	}
+	if mem != nil {
+		b.WriteString(mem.Render())
 	}
 
 	return b.String()
-}
-
-// ReadMemoryFile reads a memory file for the system prompt or /memory. A file
-// in the workspace is the agent's to change, so it is read as the file tools
-// read: a link planted there cannot put .abhed/users.json or a file outside
-// the workspace into the prompt. The operator's files, in ~/.abhed and
-// /etc/abhed, are read as they are, but never through a link.
-func ReadMemoryFile(workspace, path string) ([]byte, error) {
-	if workspace != "" {
-		ws, err := filepath.Abs(workspace)
-		if err == nil {
-			for _, root := range []string{ws, tools.RealPath(ws)} {
-				if rel, err := filepath.Rel(root, path); err == nil && filepath.IsLocal(rel) {
-					return tools.ReadInWorkspace(ws, path)
-				}
-			}
-		}
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	return os.ReadFile(path) // #nosec G304 -- an operator's memory file, not a link
-}
-
-// DiscoverMemoryFiles finds ABHED.md files in precedence order (docs §07).
-// Later files override earlier ones, except an org-managed file which always wins.
-func DiscoverMemoryFiles(workspace string) []string {
-	var out []string
-	add := func(p string) {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			out = append(out, p)
-		}
-	}
-
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".abhed", "ABHED.md"))
-	}
-	add(filepath.Join(workspace, "ABHED.md"))
-	add(filepath.Join(workspace, "ABHED.local.md"))
-	// Managed policy last so it cannot be overridden by user or project files.
-	add(filepath.Join("/etc", "abhed", "ABHED.md"))
-	return out
 }
 
 func gitState(dir string) (branch string, dirty int, isRepo bool) {

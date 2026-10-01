@@ -18,8 +18,18 @@ import (
 // Build selects an execution backend meeting the configured minimum tier; Select
 // never downgrades. stateRoots' .abhed is state too, as a worktree's repository's is.
 func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Sandbox, error) {
-	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
+	p, err := Policy(cfg, workspace, stateRoots...)
+	if err != nil {
 		return nil, err
+	}
+	return sandbox.Select(p)
+}
+
+// Policy is the sandbox policy a configuration asks for, after checking its
+// state paths. Build selects a backend for it.
+func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Policy, error) {
+	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
+		return sandbox.Policy{}, err
 	}
 	p := sandbox.DefaultPolicy(workspace)
 	if cfg.Sandbox.MinTier != "" {
@@ -27,6 +37,8 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 	}
 	p.AllowNetwork = cfg.Sandbox.AllowNetwork
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
+	p.WriteProtected = cfg.Sandbox.WriteProtected
+	p.ProtectGit = cfg.Sandbox.ProtectGit
 	p.StatePaths = StatePaths(cfg, workspace)
 	for _, r := range stateRoots {
 		if filepath.Clean(r) != filepath.Clean(workspace) {
@@ -39,12 +51,12 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 	if cfg.Sandbox.MaxProcs > 0 {
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
-	return sandbox.Select(p)
+	return p, nil
 }
 
 // StatePaths are the files holding Abhed's state that a configuration can put
-// outside .abhed: the local accounts and the secrets store. The tools, the
-// server and the sandbox all refuse them.
+// outside .abhed: the local accounts, the secrets store and a managed record
+// directory. The tools, the server and the sandbox all refuse them.
 func StatePaths(cfg config.Config, workspace string) []string {
 	users := cfg.Auth.UsersFile
 	if users == "" {
@@ -56,7 +68,24 @@ func StatePaths(cfg config.Config, workspace string) []string {
 	if path, err := secrets.DefaultPath(); err == nil {
 		out = append(out, path)
 	}
-	return out
+	// The local record, when the managed configuration moves it out of
+	// ~/.abhed, or when ~/.abhed/records is a link to somewhere else: the
+	// agent can neither read nor write it where it really is.
+	records := cfg.Record.Dir
+	if records == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			records = filepath.Join(home, ".abhed", "records")
+		}
+	}
+	if records != "" {
+		if cfg.Record.Dir != "" {
+			out = append(out, records)
+		}
+		if real, err := filepath.EvalSymlinks(records); err == nil && real != records {
+			out = append(out, real)
+		}
+	}
+	return append(out, cfg.Record.Also...)
 }
 
 // CheckStatePaths refuses a configured state file that commands could reach:

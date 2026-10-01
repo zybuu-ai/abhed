@@ -209,6 +209,9 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	if err != nil {
 		return errf("%v", err)
 	}
+	if err := s.guard(path); err != nil {
+		return errf("%s %v", NotApplied, err)
+	}
 
 	existed := false
 	if _, err := os.Stat(path); err == nil {
@@ -332,6 +335,15 @@ func (s *Session) ReadFile(path string) ([]byte, error) { return s.readFile(path
 // for /undo.
 func (s *Session) RestoreFile(path string, data []byte) error {
 	return s.atomicWrite(path, data, 0o600)
+}
+
+// RestoreFileMode is RestoreFile with the file's permission bits, set on the
+// new file before it takes the path, so no link is followed.
+func (s *Session) RestoreFileMode(path string, data []byte, mode os.FileMode) error {
+	if mode == 0 {
+		mode = 0o600
+	}
+	return s.atomicWrite(path, data, mode.Perm())
 }
 
 // RemoveFile removes a file inside the root that holds it, for /undo of a

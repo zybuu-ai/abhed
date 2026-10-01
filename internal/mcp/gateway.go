@@ -55,10 +55,12 @@ type Gateway struct {
 	mu      sync.RWMutex
 	clients map[string]*Client
 	configs map[string]ServerConfig
+	// failed are the enabled servers that did not connect, with why.
+	failed map[string]error
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig)}
+	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}}
 }
 
 // Connect starts and initializes the enabled servers. A server that fails to
@@ -71,6 +73,9 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			continue
 		}
 		if err := g.connectOne(ctx, cfg); err != nil {
+			g.mu.Lock()
+			g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
+			g.mu.Unlock()
 			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
 		}
 	}
@@ -121,8 +126,73 @@ func (g *Gateway) connectOne(ctx context.Context, cfg ServerConfig) error {
 	g.mu.Lock()
 	g.clients[cfg.Name] = client
 	g.configs[cfg.Name] = cfg
+	delete(g.failed, cfg.Name)
 	g.mu.Unlock()
 	return nil
+}
+
+// Restart closes a configured server's connection, if any, and connects it
+// again. Its tools keep their names and reach the new connection; tools the
+// server added since are offered from the next session.
+func (g *Gateway) Restart(ctx context.Context, name string) error {
+	g.mu.Lock()
+	cfg, ok := g.configs[name]
+	old := g.clients[name]
+	delete(g.clients, name)
+	g.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no MCP server %q is configured and enabled", name)
+	}
+	if old != nil {
+		_ = old.Close()
+	}
+	if err := g.connectOne(ctx, cfg); err != nil {
+		g.mu.Lock()
+		g.failed[name] = err
+		g.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// ServerStatus is one configured server as /mcp shows it.
+type ServerStatus struct {
+	Name      string
+	Transport string // stdio or http
+	Connected bool
+	Err       error
+	Tools     []string // the tools it offers that are allowed, by remote name
+}
+
+// Servers reports every enabled server, connected or not, by name.
+func (g *Gateway) Servers() []ServerStatus {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var out []ServerStatus
+	for name, cfg := range g.configs {
+		st := ServerStatus{Name: name, Transport: "stdio", Err: g.failed[name]}
+		if cfg.URL != "" {
+			st.Transport = "http"
+		}
+		if c, ok := g.clients[name]; ok {
+			st.Connected = true
+			for _, d := range c.Tools() {
+				if allowed(cfg, d.Name) {
+					st.Tools = append(st.Tools, d.Name)
+				}
+			}
+		}
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// client is the live connection for a server, nil when it has none.
+func (g *Gateway) client(name string) *Client {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.clients[name]
 }
 
 var validServerName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -148,7 +218,7 @@ func (g *Gateway) Tools() []tools.Tool {
 				continue
 			}
 			out = append(out, &remoteTool{
-				client:      client,
+				gw:          g,
 				server:      server,
 				remoteName:  def.Name,
 				description: sanitizeDescription(def.Description),
@@ -194,7 +264,9 @@ func (g *Gateway) Status() []string {
 
 // remoteTool adapts an MCP tool to Abhed's tool interface.
 type remoteTool struct {
-	client      *Client
+	// gw is asked for the server's connection at each call, so a restart
+	// reaches tools already handed out.
+	gw          *Gateway
 	server      string
 	remoteName  string
 	description string
@@ -209,6 +281,11 @@ func (t *remoteTool) Name() string {
 
 func (t *remoteTool) Description() string { return t.description }
 
+// ServerName and RemoteName are the two halves of Name, kept apart because a
+// server name may itself hold "__".
+func (t *remoteTool) ServerName() string { return t.server }
+func (t *remoteTool) RemoteName() string { return t.remoteName }
+
 func (t *remoteTool) Schema() json.RawMessage {
 	if len(t.schema) == 0 {
 		return json.RawMessage(`{"type":"object","properties":{}}`)
@@ -221,7 +298,11 @@ func (t *remoteTool) Schema() json.RawMessage {
 func (t *remoteTool) Mutates() bool { return true }
 
 func (t *remoteTool) Run(ctx context.Context, _ *tools.Session, args json.RawMessage) tools.Result {
-	content, isErr, err := t.client.Call(ctx, t.remoteName, args)
+	client := t.gw.client(t.server)
+	if client == nil {
+		return tools.Result{Content: fmt.Sprintf("MCP server %s is not connected; /mcp restart %s reconnects it", t.server, t.server), IsError: true}
+	}
+	content, isErr, err := client.Call(ctx, t.remoteName, args)
 	if err != nil {
 		return tools.Result{
 			Content: fmt.Sprintf("MCP call to %s failed: %v", t.Name(), err),

@@ -48,7 +48,7 @@ func TestACPTitleShowsHiddenCharacters(t *testing.T) {
 		t.Fatalf("expected the card and the ask, got %q", got)
 	}
 	for _, title := range got {
-		if strings.ContainsAny(title, "\r\u001b\u200d") || !strings.Contains(title, "⟨U+200D⟩") || !strings.Contains(title, `\r\x1b[2K`) {
+		if strings.ContainsAny(title, "\r\u001b\u200d") || !strings.Contains(title, "⟨U+200D⟩") || !strings.Contains(title, `⟨\r⟩⟨\e⟩[2K`) {
 			t.Errorf("title not made visible: %q", title)
 		}
 	}

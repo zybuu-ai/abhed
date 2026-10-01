@@ -40,6 +40,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/embedded"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -105,8 +106,8 @@ type Options struct {
 
 	// Allow and Deny are policy rules, e.g. "bash(go test*)", added to the
 	// configured ones. Deny is absolute: no mode, extension or approver
-	// overrides it. Allow is refused if the managed configuration sets
-	// permissions.allow. A bash allow rule whose pattern holds ; & | ( ) < >
+	// overrides it. Allow is refused if the managed configuration sets any
+	// permissions setting. A bash allow rule whose pattern holds ; & | ( ) < >
 	// $( ${ a backtick or a newline never matches, and a warning names it.
 	Allow []string
 	Deny  []string
@@ -156,11 +157,41 @@ type Options struct {
 	// trusted adds none of it.
 	ConfiguredTools bool
 
+	// Background is what background tasks do, with ConfiguredTools: "off"
+	// (the default) joins them, so Run returns when the work is done, as it
+	// always has; "notify" lets them outlive a Run, their results recorded
+	// and delivered to OnEvent as they arrive, for the next Run or an
+	// explicit Wake; "auto" does too, and a result that arrives while no run
+	// is in progress starts a wake run on its own, its events to OnEvent.
+	// The configuration may only tighten it.
+	Background string
+
+	// HostWake, with Background "auto", hosts each wake run: it is called
+	// with the finished tasks' ids and the run to start, and reports whether
+	// it started it. Nil runs it on the agent's own goroutine.
+	HostWake func(taskIDs []string, run func(ctx context.Context) (string, error)) bool
+
+	// Suggest offers a next prompt after each completed Run, as a
+	// suggestion.offered event after Run returns, when the configuration's
+	// suggest.enabled allows it. Off by default: one more model call per Run.
+	Suggest bool
+
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
 	Sandbox bool
+
+	// Store keeps the agent's record. Nil keeps it in memory, where it ends
+	// with the process; OpenLocalRecord gives the durable, chained local
+	// record the command line uses. See store.go.
+	Store Store
 }
+
+// TaskInfo describes one background task.
+type TaskInfo = agent.TaskInfo
+
+// ErrNothingToWake is Wake's answer when no background result waits.
+var ErrNothingToWake = agent.ErrNothingToWake
 
 // ErrUntrustedModel is New's refusal to run on another model than the one
 // ConfigDir's file names, because that file is not trusted.
@@ -182,17 +213,23 @@ type Provider struct {
 type Agent struct {
 	registry *tools.Registry
 	loop     *agent.Loop
-	store    *agent.MemStore
+	store    agent.Store
 	set      *toolset.Set
 	id       string
 	fwd      *forwarder
 	redact   *secrets.Fresh
 	trust    config.WorkspaceTrust
+	// cfg is the configuration New loaded, the only source of models to
+	// switch to by name; current names the one the loop runs on, under forkMu.
+	cfg     config.Config
+	current string
 	// running counts the runs in progress, under forkMu: Fork holds it while
 	// it forks and refuses while a run is in progress, and a run starting
 	// meanwhile waits for the fork to finish.
 	forkMu  sync.Mutex
 	running int
+	// wakes are the wake runs this agent started on its own, by cancel.
+	wakes wakeRuns
 }
 
 // New builds an agent.
@@ -234,6 +271,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}}
 	}
 
+	// The record Options.Store names is state, as a managed record.dir is.
+	if cfg, err = withRecordState(cfg, opts); err != nil {
+		return nil, err
+	}
 	provider, err := cfg.Provider()
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -284,6 +325,8 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		tools.AddStatePath(filepath.Join(opts.ConfigDir, tools.StateDir))
 	}
 	bash := tools.Bash{}
+	cfg.Sandbox.WriteProtected = append(cfg.Sandbox.WriteProtected, embedded.From(ctx).Protect...)
+	cfg.Sandbox.ProtectGit = cfg.Sandbox.ProtectGit || embedded.From(ctx).ProtectGit
 	if opts.Sandbox || cfg.ManagedSets("sandbox") {
 		sb, err := sandboxconfig.Build(cfg, opts.Workspace, stateRoots...)
 		if err != nil {
@@ -317,8 +360,16 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	}
 	toolset.Police(set.Extensions, pol, "embedded")
 
-	store := agent.NewMemStore()
-	id := fmt.Sprintf("embedded-%d", time.Now().UnixNano())
+	x := embedded.From(ctx)
+	id := x.ID
+	if id == "" {
+		id = fmt.Sprintf("embedded-%d", time.Now().UnixNano())
+	}
+	store, err := recordFor(ctx, opts, id, cfg, x)
+	if err != nil {
+		set.Close()
+		return nil, err
+	}
 	// Every write goes through the forwarder, so OnEvent misses none, from the
 	// first event on.
 	fwd := newForwarder(store, opts.OnEvent != nil)
@@ -336,12 +387,24 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	approver := approverFor(opts.Approve, red)
 	registry := set.Registry
 	budget := toolset.Budget(cfg)
+	// Off unless the caller asks, so Run keeps returning when the work is done.
+	mode, err := agent.ParseWakeMode(opts.Background)
+	if opts.Background == "" {
+		mode, err = agent.WakeOff, nil
+	}
+	if err != nil {
+		set.Close()
+		return nil, fmt.Errorf("abhed: Background is off, notify or auto, not %q", opts.Background)
+	}
+	bgCfg := cfg
+	bgCfg.Subagents.Wake = string(mode.Tighter(wakeOf(cfg)))
 	if opts.ConfiguredTools {
 		// The child's events stay in the store, reached through the parent's
 		// subagent.* events; OnEvent carries this agent's own record, as the
 		// command line's JSON output does.
 		f := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red}
+			Budget: budget, Config: loopCfg, Workspace: opts.Workspace, Redact: red, Definitions: set.Agents, Background: true,
+			Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg)}
 		registry = toolset.Subagents(registry, f, cfg.Limits.MaxParallelSubagents)
 	}
 
@@ -366,12 +429,28 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loopCfg.SystemPrompt = system
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
+	loop.Provider = cfg.Model.Default
+	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
 	loop.Budget = budget
+	if opts.Suggest {
+		loop.Suggest = toolset.Suggester(cfg)
+	}
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
-	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace}
+	// A surface's new session says how it started, as the command line's does.
+	if x.Surface != "" && !x.Resume {
+		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
+			"model": adapter.Profile().Name, "mode": string(pol.Mode)}
+		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
+			set.Close()
+			return nil, fmt.Errorf("abhed: recording the session start: %w", err)
+		}
+	}
+	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
+		cfg: cfg, current: cfg.Model.Default}
+	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
@@ -386,10 +465,16 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), fmt.Errorf("abhed: ended as %s", reason)
+		return a.lastMessage(), &EndedError{Reason: reason}
 	}
 	return a.lastMessage(), nil
 }
+
+// EndedError is a run that ended for another reason than completing its
+// work, such as the turn limit; Reason is the terminal reason recorded.
+type EndedError struct{ Reason TerminalReason }
+
+func (e *EndedError) Error() string { return fmt.Sprintf("abhed: ended as %s", e.Reason) }
 
 // RunJSON runs a prompt whose answer must be a JSON value matching schema,
 // and decodes it into out.
@@ -433,7 +518,7 @@ func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.Ra
 	}
 	raw = redactJSON(a.redact, raw)
 	if reason != agent.TermCompleted {
-		return raw, fmt.Errorf("abhed: ended as %s", reason)
+		return raw, &EndedError{Reason: reason}
 	}
 	return raw, nil
 }
@@ -539,8 +624,15 @@ func (a *Agent) SetModel(p Provider) error {
 	if err != nil {
 		return err
 	}
+	// Under forkMu, as SwitchModelNamed is, so the two never interleave.
+	a.forkMu.Lock()
+	defer a.forkMu.Unlock()
 	// Recorded, so the record names the model that answers from here on.
-	return a.loop.SwitchModel("", next)
+	if err := a.loop.SwitchModel("", next); err != nil {
+		return err
+	}
+	a.current = "" // no configured model is current now
+	return nil
 }
 
 // Flush waits until OnEvent has returned for every event recorded before the
@@ -556,10 +648,77 @@ var errClosed = errors.New("abhed: the agent is closed; no more events are deliv
 
 // Close releases the extensions and MCP servers, the logins and hosts the
 // agent's session made, and stops delivering events.
+//
+// Background tasks still running are cancelled as session_closed first, and
+// Close waits a bounded time for them to record their end.
 func (a *Agent) Close() {
+	a.endWakes()
+	a.loop.Background.Close(agent.TermSessionClosed)
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	a.releaseRecord()
+}
+
+// Background lists this agent's background tasks. Approve may be called for
+// one of them at any time until Close, including after Run has returned.
+func (a *Agent) Background() []TaskInfo { return a.loop.Background.Tasks() }
+
+// CancelTask stops one running background task, as a person's stop.
+func (a *Agent) CancelTask(id string) error {
+	if !a.loop.Background.Cancel(id, agent.TermUserInterrupt) {
+		return fmt.Errorf("abhed: no running background task %q", id)
+	}
+	return nil
+}
+
+// CancelTasks stops every running background task, as a person's stop, and
+// reports how many. A wake run in progress stops too, and no other starts
+// until the next Run.
+func (a *Agent) CancelTasks() int {
+	n := a.loop.Background.CancelAll(agent.TermUserInterrupt)
+	a.stopWake()
+	return n
+}
+
+// WaitBackground waits until no background task is running, or ctx ends.
+func (a *Agent) WaitBackground(ctx context.Context) error {
+	t := time.NewTicker(20 * time.Millisecond)
+	defer t.Stop()
+	for a.loop.Background.Live() > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	return nil
+}
+
+// Wake runs the agent on the background results waiting for it, with no new
+// prompt, and returns its answer. It is recorded as session.woken by the
+// caller. ErrNothingToWake when no result waits.
+func (a *Agent) Wake(ctx context.Context) (string, error) {
+	// A wake is a run: Fork and a model switch wait for it or refuse.
+	defer a.startRun()()
+	reason, err := a.loop.RunWoken(ctx, agent.Wake{By: "caller"})
+	if err != nil {
+		return "", err
+	}
+	if reason != agent.TermCompleted && reason != agent.TermWakeLimit {
+		return a.lastMessage(), &EndedError{Reason: reason}
+	}
+	return a.lastMessage(), nil
+}
+
+// wakeOf is the configured wake mode: auto when unset, and off, the
+// tightest, when the setting cannot be read.
+func wakeOf(cfg config.Config) agent.WakeMode {
+	m, err := agent.ParseWakeMode(cfg.Subagents.Wake)
+	if err != nil {
+		return agent.WakeOff
+	}
+	return m
 }
 
 // Providers lists the model provider types this build supports.

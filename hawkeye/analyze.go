@@ -2,6 +2,7 @@ package hawkeye
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -18,6 +19,12 @@ const outputKeep = 4000
 type Options struct {
 	// Live is set when the session is still running where the report is made.
 	Live bool
+	// Omitted is what the capture says it left out, from a -p run's result line.
+	// Only the delta types are honoured: a gap that only they could fill is no hole.
+	Omitted []string
+	// Unsure is set for a capture that may have left deltas out without saying so:
+	// a gap where they would sit cannot be told from a missing event, and stays one.
+	Unsure bool
 }
 
 // Analyze derives a report from a session's events. Events may arrive in any
@@ -38,7 +45,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		Policy:    PolicyStats{ByStep: map[string]int{}},
 		Findings:  []Finding{},
 	}
-	r.Integrity = integrity(evs, ordered)
+	r.Integrity = integrity(evs, ordered, opt)
 	r.Totals.Events = len(evs)
 	if len(evs) == 0 {
 		return r
@@ -63,6 +70,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		case agent.EvModelCall:
 			var m agent.ModelCall
 			_ = json.Unmarshal(e.Payload, &m)
+			if m.Purpose != "" {
+				break // a call outside the conversation, as a suggestion, is no turn
+			}
 			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
 				r.Models = append(r.Models, m.Model)
 			}
@@ -241,16 +251,31 @@ func (r *Report) totals(ended agent.SessionEnded) {
 	}
 }
 
-func integrity(evs []agent.Event, ordered bool) Integrity {
+func integrity(evs []agent.Event, ordered bool, opt Options) Integrity {
 	in := Integrity{Ordered: ordered}
 	if len(evs) == 0 {
 		return in
 	}
+	omitsDeltas := slices.Contains(opt.Omitted, string(agent.EvAgentDelta)) && slices.Contains(opt.Omitted, string(agent.EvAgentReasoningDelta))
 	in.FirstSeq, in.LastSeq = evs[0].Seq, evs[len(evs)-1].Seq
+	open := map[string]bool{} // calls asked for and not yet settled
 	for i := 1; i < len(evs); i++ {
-		if evs[i].Seq != evs[i-1].Seq+1 {
-			in.Gaps = append(in.Gaps, evs[i-1].Seq+1)
+		settle(open, evs[i-1])
+		if evs[i].Seq == evs[i-1].Seq+1 {
+			continue
 		}
+		at := evs[i-1].Seq + 1
+		switch fits := deltaShaped(evs[i-1], evs[i], open); {
+		case fits && omitsDeltas:
+			in.Omitted = append(in.Omitted, at)
+		case fits && opt.Unsure:
+			in.Gaps, in.Unsure = append(in.Gaps, at), true
+		default:
+			in.Gaps = append(in.Gaps, at)
+		}
+	}
+	if omitsDeltas {
+		in.OmittedTypes = []string{string(agent.EvAgentDelta), string(agent.EvAgentReasoningDelta)}
 	}
 	for _, e := range evs {
 		if e.Type == agent.EvSessionEnded {
@@ -258,6 +283,40 @@ func integrity(evs []agent.Event, ordered bool) Integrity {
 		}
 	}
 	return in
+}
+
+// beforeModel are the events after which the loop asks the model again, and so
+// the only ones a run of streamed deltas follows: what prompted the call, a retry
+// of one that failed, or the context made smaller or moved to another model.
+var beforeModel = map[agent.EventType]bool{
+	agent.EvUserMessage: true, agent.EvObservation: true, agent.EvActionDenied: true,
+	agent.EvSubagentNotice: true, agent.EvSessionWoken: true, agent.EvModelCall: true,
+	agent.EvCompactDone: true, agent.EvContextOffloaded: true, agent.EvModelSwitched: true, agent.EvModelFallback: true,
+}
+
+// deltaShaped reports whether a gap between prev and next could hold only deltas.
+// Deltas stream while the model answers and are recorded before its model.call,
+// after the event that prompted it, and only once every call asked for is settled.
+func deltaShaped(prev, next agent.Event, open map[string]bool) bool {
+	return next.Type == agent.EvModelCall && beforeModel[prev.Type] && len(open) == 0
+}
+
+// settle tracks the calls asked for and not yet denied or answered with a result.
+func settle(open map[string]bool, e agent.Event) {
+	var c struct {
+		CallID string `json:"call_id"`
+	}
+	switch e.Type {
+	case agent.EvActionRequested, agent.EvActionDenied, agent.EvObservation:
+		if json.Unmarshal(e.Payload, &c) != nil || c.CallID == "" {
+			return
+		}
+		if e.Type == agent.EvActionRequested {
+			open[c.CallID] = true
+		} else {
+			delete(open, c.CallID)
+		}
+	}
 }
 
 // sandboxRefused spots the note bash adds to its result when the sandbox

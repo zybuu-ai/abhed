@@ -80,11 +80,19 @@ func startCLIWith(t *testing.T, reply func(w io.Writer, n int, body string)) *cl
 // startCLIConfig is startCLIWith under the configuration config makes from the model's URL.
 func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string) *cliSession {
 	t.Helper()
-	return startCLIEnv(t, reply, config)
+	return startCLIPrepared(t, reply, config, nil)
 }
 
 // startCLIEnv is startCLIConfig with env added to the helper's environment, where it wins.
 func startCLIEnv(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, env ...string) *cliSession {
+	t.Helper()
+	return startCLIPrepared(t, reply, config, nil, env...)
+}
+
+// startCLIPrepared is startCLIConfig with prep run on the workspace before
+// the process starts, for files it reads at start-up, and env added to the
+// helper's environment, where it wins.
+func startCLIPrepared(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, prep func(ws, home string), env ...string) *cliSession {
 	t.Helper()
 	c := &cliSession{t: t, out: &syncBuffer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +118,12 @@ func startCLIEnv(t *testing.T, reply func(w io.Writer, n int, body string), conf
 	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	home := t.TempDir()
+	if prep != nil {
+		prep(ws, home)
+	}
 	c.cmd = exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
-	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+t.TempDir(), "USERPROFILE="+t.TempDir(),
+	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+home, "ABHED_CONV_KEEP_HOME=1", "USERPROFILE="+t.TempDir(),
 		"ABHED_TRUST_WORKSPACE=1") // the test wrote this configuration
 	c.cmd.Env = append(c.cmd.Env, env...)
 	stdin, err := c.cmd.StdinPipe()
@@ -171,6 +183,18 @@ func (c *cliSession) command(line, want string) {
 	c.waitFor(func(out string) bool { return strings.Count(out, want) > before }, want)
 }
 
+// declineNumber is the number of the last approval's No, its last answer,
+// read from the "answer 1-N:" line the prompt prints.
+func (c *cliSession) declineNumber() string {
+	c.t.Helper()
+	out := c.out.String()
+	i := strings.LastIndex(out, "answer 1-")
+	if i < 0 || i+len("answer 1-") >= len(out) {
+		c.t.Fatalf("no numbered approval:\n%s", out)
+	}
+	return out[i+len("answer 1-") : i+len("answer 1-")+1]
+}
+
 func (c *cliSession) waitFor(ok func(string) bool, what string) {
 	c.t.Helper()
 	for deadline := time.Now().Add(20 * time.Second); !ok(c.out.String()); time.Sleep(10 * time.Millisecond) {
@@ -183,7 +207,12 @@ func (c *cliSession) waitFor(ok func(string) bool, what string) {
 // export writes the conversation's record and returns it.
 func (c *cliSession) export() []agent.Event {
 	c.t.Helper()
-	path := filepath.Join(c.t.TempDir(), "record.json")
+	// Inside the workspace: an export elsewhere asks first.
+	dir, err := os.MkdirTemp(c.ws, "export-")
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	path := filepath.Join(dir, "record.json")
 	c.command("/export "+path, "wrote ")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -375,12 +404,13 @@ func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"made\"}}]}\n\n")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
 	})
-	asked := func() int { return strings.Count(c.out.String(), "[A]lways allow") }
+	// The answer is sent once the question is whole: a line sent sooner steers.
+	asked := func() int { return strings.Count(c.out.String(), "answer 1-3:") }
 	finished := func() int { return strings.Count(c.out.String(), " in / ") }
 
 	fmt.Fprintln(c.stdin, "Make the folder.")
 	c.waitFor(func(string) bool { return asked() == 1 }, "the approval")
-	fmt.Fprintln(c.stdin, "A")
+	fmt.Fprintln(c.stdin, "2") // don't ask again this session
 	c.waitFor(func(string) bool { return finished() == 1 }, "the first task to finish")
 
 	c.command("/clear", "context cleared")
@@ -389,6 +419,6 @@ func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
 	if asked() != 2 {
 		t.Fatalf("a scope from the cleared session approved the call:\n%s", c.out.String())
 	}
-	fmt.Fprintln(c.stdin, "r")
+	fmt.Fprintln(c.stdin, "3") // no
 	c.waitFor(func(string) bool { return finished() == 2 }, "the second task to finish")
 }

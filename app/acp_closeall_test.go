@@ -11,6 +11,7 @@ type idleACPAgent struct{}
 func (idleACPAgent) Run(context.Context, string) (string, error) { return "", nil }
 func (idleACPAgent) Steer(string)                                {}
 func (idleACPAgent) Flush(context.Context) error                 { return nil }
+func (idleACPAgent) CancelTasks() int                            { return 0 }
 func (idleACPAgent) Close()                                      {}
 
 // Closing the connection while a prompt starts or ends reads the session's

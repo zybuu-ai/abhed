@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +28,9 @@ type ptyRun struct {
 
 func startOnPty(t *testing.T, args []string) *ptyRun {
 	t.Helper()
-	cmd := mainHelper(args)
+	// A terminal that can move the cursor, whatever the machine running the
+	// tests has in TERM: without one the CLI reads lines, as on a pipe.
+	cmd := mainHelper(args, "TERM=xterm-256color")
 	tty, err := pty.Start(cmd)
 	if err != nil {
 		t.Skipf("no pty: %v", err)
@@ -86,12 +89,12 @@ func TestCLIPromptTrustsTheWorkspace(t *testing.T) {
 			t.Errorf("the prompt lacks %q:\n%s", w, r.text())
 		}
 	}
-	r.send("v\n")
+	r.send("3\n")
 	r.waitFor("Trust this file?", 2)
 	if !strings.Contains(r.text(), `"nope"`) {
 		t.Fatalf("view did not show the file:\n%s", r.text())
 	}
-	r.send("t\n")
+	r.send("2\n")
 	// Trusted, the file's model applies, and it does not exist.
 	r.waitFor(`model "nope" is not defined`, 1)
 	st, _ := config.InspectWorkspace(ws)
@@ -106,7 +109,7 @@ func TestCLIPromptDeclineIsRemembered(t *testing.T) {
 	_, ws := trustWorkspace(t, `{"permissions":{"mode":"bypass","deny":["bash(curl*)"]}}`)
 	r := startOnPty(t, []string{"-C", ws})
 	r.waitFor("Trust this file?", 1)
-	r.send("d\n")
+	r.send("1\n")
 	r.waitFor("Type a task", 1)
 	if !strings.Contains(r.text(), "was not trusted when you were asked; ignored permissions.mode") {
 		t.Fatalf("no warning after declining:\n%s", r.text())
@@ -119,5 +122,47 @@ func TestCLIPromptDeclineIsRemembered(t *testing.T) {
 	again.waitFor("Type a task", 1)
 	if strings.Contains(again.text(), "Trust this file?") {
 		t.Fatalf("asked again about content already declined:\n%s", again.text())
+	}
+}
+
+// Declining new agent definitions keeps the file the person already trusted.
+func TestCLIPromptDeclineAgentsKeepsTrustedFile(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"permissions":{"deny":["bash(curl*)"],"mode":"plan"}}`)
+	st, _ := config.InspectWorkspace(ws)
+	if err := config.GrantTrust(ws, st.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	workspaceAgent(t, ws, "reviewer.md", "---\ndescription: reviews\nmodel: remote\n---\nReview.")
+	r := startOnPty(t, []string{"-C", ws})
+	r.waitFor("Trust these definitions?", 1)
+	if !strings.Contains(r.text(), "reviewer  model remote") {
+		t.Fatalf("the prompt does not show the definition:\n%s", r.text())
+	}
+	r.send("1\n")
+	r.waitFor("Type a task", 1)
+	st, _ = config.InspectWorkspace(ws)
+	if !st.Trusted || st.Reason != "stored" || st.AgentsTrusted || st.AgentsReason != "declined" {
+		t.Fatalf("declining the definitions: %+v", st)
+	}
+}
+
+// Declining a changed file keeps definitions that were already trusted.
+func TestCLIPromptDeclineFileKeepsTrustedAgents(t *testing.T) {
+	_, ws := trustWorkspace(t, `{"permissions":{"deny":["bash(curl*)"]}}`)
+	workspaceAgent(t, ws, "reviewer.md", "---\ndescription: reviews\n---\nReview.\n")
+	st, _ := config.InspectWorkspace(ws)
+	if err := config.GrantReviewed(ws, st.Reviewed()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{"permissions":{"mode":"bypass"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := startOnPty(t, []string{"-C", ws})
+	r.waitFor("Trust this file?", 1)
+	r.send("1\n")
+	r.waitFor("Type a task", 1)
+	st, _ = config.InspectWorkspace(ws)
+	if st.Trusted || st.Reason != "declined" || !st.AgentsTrusted || st.AgentsReason != "stored" {
+		t.Fatalf("declining the changed file: %+v", st)
 	}
 }

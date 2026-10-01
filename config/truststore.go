@@ -21,9 +21,17 @@ const (
 
 // TrustRecord is one recorded decision about a workspace's configuration.
 type TrustRecord struct {
-	SHA256   string    `json:"sha256"`
-	Decision string    `json:"decision"`
-	At       time.Time `json:"at"`
+	SHA256   string `json:"sha256"`
+	Decision string `json:"decision"`
+	// AgentsSHA256 is the hash of the agent definitions the decision covers.
+	// A record from before definitions were covered has none, and decides
+	// nothing about them.
+	AgentsSHA256 string `json:"agents_sha256,omitempty"`
+	// AgentsDecision, when set, is the decision about the definitions where it
+	// differs from Decision: a person may decline new definitions and keep a
+	// configuration file they trusted.
+	AgentsDecision string    `json:"agents_decision,omitempty"`
+	At             time.Time `json:"at"`
 }
 
 type trustFile struct {
@@ -101,7 +109,17 @@ var lockWait = 5 * time.Second
 // the returned function runs, waiting at most lockWait. The file itself is
 // never removed, so every writer locks the same one.
 func lockTrust(lock string) (func(), error) {
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- the lock beside the user's trust store
+	return lockPath(lock, "the trust store is busy: another abhed has held %s for %s; nothing was recorded")
+}
+
+// LockFile holds an exclusive lock on lock, a file beside the one it guards,
+// until the returned function runs, waiting at most five seconds.
+func LockFile(lock string) (func(), error) {
+	return lockPath(lock, "%s is held by another abhed (waited %s); nothing was changed")
+}
+
+func lockPath(lock, busy string) (func(), error) {
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- a lock file beside the user's own file
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +134,7 @@ func lockTrust(lock string) (func(), error) {
 		}
 		if time.Now().After(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("the trust store is busy: another abhed has held %s for %s; nothing was recorded", lock, lockWait)
+			return nil, fmt.Errorf(busy, lock, lockWait)
 		}
 	}
 	return func() {
@@ -169,24 +187,55 @@ func isParseError(err error) bool {
 
 // GrantTrust records that the person trusts the workspace's configuration
 // with this content. sha256 is the hash of what they reviewed, not a re-read.
+// It decides nothing about agent definitions; GrantReviewed covers both.
 func GrantTrust(workspace, sha256 string) error {
-	return record(workspace, sha256, decisionTrusted)
+	return RecordDecision(workspace, Reviewed{SHA256: sha256}, true, false)
 }
 
 // DeclineTrust records that the person chose not to trust this content, so
 // they are not asked again until it changes.
 func DeclineTrust(workspace, sha256 string) error {
-	return record(workspace, sha256, decisionDeclined)
+	return RecordDecision(workspace, Reviewed{SHA256: sha256}, false, false)
 }
 
-func record(workspace, sha256, decision string) error {
-	if sha256 == "" {
-		return fmt.Errorf("no configuration file to decide on in %s", workspace)
+// GrantReviewed trusts the configuration file and the agent definitions with
+// exactly the content reviewed.
+func GrantReviewed(workspace string, r Reviewed) error {
+	return RecordDecision(workspace, r, true, true)
+}
+
+// RecordDecision records one answer about the reviewed content: whether the
+// configuration file is trusted, and whether the agent definitions are.
+func RecordDecision(workspace string, r Reviewed, configTrusted, agentsTrusted bool) error {
+	if r.SHA256 == "" && r.AgentsSHA256 == "" {
+		return fmt.Errorf("no configuration file or agent definitions to decide on in %s", workspace)
 	}
 	key := canonical(workspace)
 	return updateTrust(func(m map[string]TrustRecord) {
-		m[key] = TrustRecord{SHA256: sha256, Decision: decision, At: time.Now().UTC()}
+		rec := TrustRecord{SHA256: r.SHA256, Decision: decisionOf(configTrusted), At: time.Now().UTC()}
+		agentsSum, agentsDecision := r.AgentsSHA256, decisionOf(agentsTrusted)
+		// A decision about the file alone keeps what was decided about the
+		// definitions: abhed init must not forget a trust it did not review.
+		if agentsSum == "" {
+			if old, ok := m[key]; ok && old.AgentsSHA256 != "" {
+				agentsSum, agentsDecision = old.AgentsSHA256, orDecision(old.AgentsDecision, old.Decision)
+			}
+		}
+		if agentsSum != "" {
+			rec.AgentsSHA256 = agentsSum
+			if agentsDecision != rec.Decision {
+				rec.AgentsDecision = agentsDecision
+			}
+		}
+		m[key] = rec
 	})
+}
+
+func decisionOf(trusted bool) string {
+	if trusted {
+		return decisionTrusted
+	}
+	return decisionDeclined
 }
 
 // RevokeTrust forgets any decision about the workspace and reports whether

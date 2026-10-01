@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -70,11 +70,17 @@ type ptyRun struct {
 	// capture is set for an interactive shell; inputMu keeps its keys in order.
 	capture *lineCapture
 	inputMu sync.Mutex
+	// held follows a single command's input only to scrub from its record a
+	// line the terminal may have echoed: a password typed ahead of its prompt.
+	held *lineCapture
 	// local is set when the server holds the shell's own terminal (process
 	// and none tiers), so it can ask which process group has the foreground;
 	// shellPgrp is the shell's, taken at its first prompt.
 	local     bool
 	shellPgrp atomic.Int64
+	// prompt follows whether the shell is back at its prompt, where the
+	// terminal can be asked.
+	prompt *termline.Prompt
 	// idle is how long the run may go unwatched.
 	idle time.Duration
 	// leader names a shell, so what it leaves in its session can be ended safely.
@@ -177,10 +183,13 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	args, _ := json.Marshal(map[string]string{"command": req.Command, "description": "typed into the workbench terminal"})
 	answer := agent.Unanswered
 	switch {
-	case req.Confirmed:
+	case req.Confirmed && answerable(live, req.Command):
 		answer = agent.Confirmed
 	case req.Declined:
 		answer = agent.Declined
+	}
+	if answer != agent.Unanswered {
+		delete(live.lineAsks, req.Command)
 	}
 	tool, refused, confirm, err := live.Loop.ManualAuthorizeTyped(id, args, answer)
 	if errors.Is(err, agent.ErrNothingToDecline) {
@@ -192,6 +201,10 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if confirm != "" {
+		if live.lineAsks == nil || len(live.lineAsks) >= 64 {
+			live.lineAsks = map[string]time.Time{}
+		}
+		live.lineAsks[req.Command] = time.Now()
 		WriteJSON(w, http.StatusOK, ptyStartResponse{Confirm: confirm, Cwd: sess.Rel(sess.Cwd)})
 		return
 	}
@@ -235,6 +248,17 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, ptyStartResponse{ID: run.id, Cwd: sess.Rel(sess.Cwd)})
+}
+
+// lineConfirmGuard is how long after asking a confirmation may answer it, so
+// a key typed behind the line as the question appears is never the answer.
+const lineConfirmGuard = 300 * time.Millisecond
+
+// answerable reports whether command was asked about, at least lineConfirmGuard ago.
+// A confirmation that is not is no answer: the line is asked about again.
+func answerable(live *liveSession, command string) bool {
+	at, ok := live.lineAsks[command]
+	return ok && time.Since(at) >= lineConfirmGuard
 }
 
 // terminalsFull refuses another terminal when the session runs maxTerminals.
@@ -286,6 +310,11 @@ func (s *Server) launch(live *liveSession, sess *tools.Session, id, command stri
 		subs: map[chan []byte]struct{}{}, pumped: make(chan struct{}), done: make(chan struct{}), lastRead: time.Now()}
 	if shell != nil {
 		run.capture, run.local, run.idle = shell.capture, shell.local, shell.idle
+		run.prompt = termline.NewPrompt()
+		if run.local {
+			tty := run.tty
+			run.capture.Hidden = func() bool { return termline.Hidden(tty) }
+		}
 		run.leader = sandbox.Lead(cmd) // named now, while its pid is certainly its own
 	}
 	live.mu.Lock()
@@ -384,13 +413,21 @@ func (p *ptyRun) pump() {
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			if p.capture != nil {
-				p.capture.output(chunk)
+				p.capture.Output(chunk)
 				// The first output is the shell's prompt, and the foreground
 				// group then is the shell's own.
 				if p.local && p.shellPgrp.Load() == 0 {
 					if fg, _, ok := ttyNow(p.tty); ok {
 						p.shellPgrp.Store(int64(fg))
 					}
+				}
+				switch {
+				case p.prompt == nil:
+				case p.local:
+					fg, canonical, ok := ttyNow(p.tty)
+					p.prompt.Output(chunk, ok && !p.isProgram(fg), canonical)
+				default:
+					p.prompt.OutputUnasked(chunk)
 				}
 			}
 			p.mu.Lock()
@@ -494,6 +531,11 @@ loop:
 			run.note(note)
 		}
 	}
+	// Every line still waiting is judged before the output is taken, so a
+	// withheld line's echo is scrubbed from it.
+	if run.capture != nil {
+		run.capture.Flush()
+	}
 	run.mu.Lock()
 	run.exit = code
 	text := plainText(run.record)
@@ -503,8 +545,14 @@ loop:
 	// The record is written before readers are told the command ended, so
 	// "exit" on the stream means the observation is already there.
 	how := "on a terminal"
+	run.inputMu.Lock()
+	held := run.held
+	run.inputMu.Unlock()
+	if held != nil {
+		text = held.Scrub(text)
+	}
 	if run.capture != nil {
-		run.capture.flush()
+		text = run.capture.Scrub(text)
 		how = "interactive terminal"
 		if by := run.endedBy.Load(); by != nil {
 			how += ", " + *by
@@ -530,15 +578,6 @@ loop:
 		delete(live.ptys, run.id)
 		live.mu.Unlock()
 	})
-}
-
-// ansiSeq matches CSI, OSC and DCS sequences, charset selections, the
-// single-character escapes, and the control bytes that only move a cursor.
-var ansiSeq = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]|\x1b[P\\]^_][^\x1b\x07]*(\x07|\x1b\\\\)|\x1b[()*+][A-Za-z0-9]|\x1b[=>78cMDEH]|[\r\x00-\x08\x0b-\x0c\x0e-\x1a\x1c-\x1f]")
-
-// plainText strips terminal control sequences so the record reads as text.
-func plainText(b []byte) string {
-	return string(ansiSeq.ReplaceAll(b, nil))
 }
 
 // ptyFor finds one of the caller's running commands. A terminal lives in this
@@ -704,6 +743,7 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 	// the output unless the program turned echo off, which is exactly when it
 	// should not. A shell's lines are, by the capture.
 	if run.capture == nil {
+		run.holdTyped(live, data)
 		if _, err := run.tty.Write(data); err != nil {
 			WriteError(w, http.StatusGone, "the command has ended")
 			return
@@ -727,48 +767,55 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 	run.inputMu.Lock()
 	defer run.inputMu.Unlock()
-	keys := run.capture.keys(data)
+	keys := run.capture.Keys(data)
 	if len(keys) > maxLinesPerInput {
 		return errTooManyLines
 	}
 	// Keys a program reads are not the start of the shell's next line.
 	defer func() {
 		if run.programHasTerminal() {
-			run.capture.abandon()
+			run.capture.Abandon()
 		}
 	}()
 	for _, k := range keys {
-		e := k.enter
+		e := k.Enter
 		if e != nil {
 			run.ask(e)
 		}
-		if e == nil || e.program || e.line == "" {
-			if _, err := run.tty.Write(k.data); err != nil {
-				return err
+		if e == nil || e.Program || e.Line == "" {
+			if e != nil && !e.Program {
+				run.gave()
 			}
+			// Followed before the shell has it: a pasted line's echo can
+			// come back before Write returns, and a line missed it.
 			if e != nil {
-				run.capture.entered(e)
+				run.capture.Entered(e)
+			}
+			if _, err := run.tty.Write(k.Data); err != nil {
+				return err
 			}
 			continue
 		}
-		refused, err := live.Loop.ManualScreen("u"+newSessionID(), e.line)
+		refused, err := live.Loop.ManualScreen("u"+newSessionID(), e.Line)
 		if err != nil {
 			refused = &tools.Result{Content: "Denied: the line could not be recorded"}
 		}
 		if refused == nil {
-			if _, err := run.tty.Write(k.data); err != nil {
+			run.gave()
+			run.capture.Entered(e)
+			if _, err := run.tty.Write(k.Data); err != nil {
 				return err
 			}
-			run.capture.entered(e)
 			continue
 		}
 		run.say(refused.Content)
 		// A line pasted whole has not reached the shell at all, and an empty
 		// line brings its prompt back. One typed earlier is in its buffer.
 		discard := []byte{'\r'}
-		if !e.whole {
+		if !e.Whole {
 			discard = []byte{0x03}
 		}
+		run.gave()
 		if _, err := run.tty.Write(discard); err != nil {
 			return err
 		}
@@ -780,20 +827,63 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 // none tiers the server holds the shell's own terminal and can ask it; on a
 // container's, the engine's CLI holds it raw, and the alternate screen is the
 // only sign of a full-screen program.
+//
+// Where it cannot ask, it cannot confirm the line was typed with echo on at
+// the shell's prompt, so the line counts as typed ahead unless Abhed's own
+// prompt is plainly back (container tier), or at all (a failed ask).
 func (p *ptyRun) ask(e *enteredLine) {
-	e.program = e.alt
+	e.Program = e.Alt
 	if !p.local {
+		e.Ahead = p.prompt == nil || !p.prompt.At()
 		return
 	}
-	e.program = false
+	e.Program = false
 	fg, canonical, ok := ttyNow(p.tty)
 	if !ok {
+		e.Ahead = true
 		return
 	}
 	// A line read in canonical mode is not one typed at bash's prompt: a
 	// password prompt, or keys typed ahead while a builtin ran. Its text is
 	// withheld.
-	e.known, e.secret, e.program = true, canonical, p.isProgram(fg)
+	e.Known, e.Secret, e.Program = true, canonical, p.isProgram(fg)
+	// A line before the shell's prompt is back is typed ahead, and withheld.
+	e.Ahead = p.prompt != nil && !p.prompt.At()
+}
+
+// holdTyped keeps, for the record's scrub, each line typed into a single
+// command while its terminal reads lines (canonical mode, as sleep, cat or a
+// script's read leave it): such a line may be a password typed ahead that the
+// terminal echoed. Where the terminal cannot be asked (a container's), every
+// line is kept. A program reading raw keys, an editor or a REPL, is left alone.
+func (p *ptyRun) holdTyped(live *liveSession, data []byte) {
+	p.inputMu.Lock()
+	defer p.inputMu.Unlock()
+	if p.held == nil {
+		p.held = newLineCapture(p.id, nil)
+	}
+	asked := false
+	if tool, ok := live.Loop.Tools.Get("bash"); ok {
+		if in := isolationOf(tool); in != nil {
+			asked = in.Tier == "process" || in.Tier == "none"
+		}
+	}
+	for _, k := range p.held.Keys(data) {
+		if e := k.Enter; e != nil {
+			_, canonical, ok := ttyNow(p.tty)
+			if !asked || !ok || canonical {
+				e.Secret = true
+				p.held.Hold(e)
+			}
+		}
+	}
+}
+
+// gave notes that the shell was handed a line.
+func (p *ptyRun) gave() {
+	if p.prompt != nil {
+		p.prompt.Gave()
+	}
 }
 
 // isProgram reports whether fg, the foreground process group, is not the shell's.

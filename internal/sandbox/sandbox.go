@@ -16,7 +16,9 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -53,6 +55,50 @@ func (t Tier) Strength() int {
 	}
 }
 
+// ReadableFile is a file pinned when it was checked: Path is resolved, with
+// no symlink in it, and Info is what it was then.
+type ReadableFile struct {
+	Path string
+	Info os.FileInfo
+}
+
+// PinReadable resolves path and pins the regular file it names.
+func PinReadable(path string) (ReadableFile, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ReadableFile{}, err
+	}
+	info, err := os.Lstat(real)
+	if err != nil {
+		return ReadableFile{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return ReadableFile{}, fmt.Errorf("%s is not a regular file", real)
+	}
+	return ReadableFile{Path: real, Info: info}, nil
+}
+
+// Same reports whether the file at Path is still the one pinned: a swap
+// of it, or of a folder above it, for another file or a folder is not, nor
+// is the same file changed since.
+func (f ReadableFile) Same() bool {
+	if f.Info == nil {
+		return false
+	}
+	cur, err := os.Lstat(f.Path)
+	if err != nil || !cur.Mode().IsRegular() || !os.SameFile(cur, f.Info) {
+		return false
+	}
+	// An inode number can be handed out again once freed, as ext4 does, so
+	// the size and both change times must match as well.
+	if cur.Size() != f.Info.Size() || !cur.ModTime().Equal(f.Info.ModTime()) || cur.Mode() != f.Info.Mode() {
+		return false
+	}
+	c1, ok1 := changeTime(cur)
+	c2, ok2 := changeTime(f.Info)
+	return ok1 == ok2 && c1 == c2
+}
+
 // Policy declares what a session's execution environment must provide.
 type Policy struct {
 	// MinTier is refused at startup if no available backend meets it.
@@ -65,10 +111,22 @@ type Policy struct {
 	AllowNetwork bool
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
+	// ReadableFiles are single files a command may read, and run, even where
+	// they sit in an area the process tier hides, such as a statusline
+	// script outside the workspace on Linux. The process tier only; each is
+	// read-only, and dropped unless it is still the file that was pinned.
+	ReadableFiles []ReadableFile
 	// StatePaths are files or folders holding Abhed's state outside .abhed,
 	// such as a configured users file. Commands can neither read nor write
 	// them, as for .abhed.
 	StatePaths []string
+	// WriteProtected are paths inside the workspace a command may read but
+	// not write, such as an editor's own settings there.
+	WriteProtected []string
+	// ProtectGit write-protects the config and hooks of every git folder in
+	// the workspace, and each .git, at any depth. Seatbelt names them by
+	// pattern; the other tiers hold only those listed in WriteProtected.
+	ProtectGit bool
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int

@@ -103,7 +103,7 @@ func resumeRig(t *testing.T, user, tenant string) (*cliState, *rowStore, *ui.Ren
 func rigState(rs *rowStore, sess *tools.Session) *cliState {
 	st := &cliState{store: rs, appCfg: config.Default(), sess: sess}
 	st.fresh()
-	st.open = func(id string) *agent.Loop {
+	st.open = func(id string, _ int64) *agent.Loop {
 		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(rs, id, ""), agent.DefaultConfig())
 		st.loop, st.sessionID = l, id
 		return l
@@ -384,7 +384,7 @@ func TestForkOrCompactThenQuitLeavesTheSessionResumable(t *testing.T) {
 // Every task in interactive() ends through settleTurn, which ends a failed
 // turn and claims the session again before the next write.
 func TestInteractiveSettlesEveryTask(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+	src, err := os.ReadFile("cli_interactive.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestAlwaysAllowEndsWithTheSession(t *testing.T) {
 		st, _, r, sess := resumeRig(t, "me", "default")
 		ap := ui.NewApprover(io.Discard)
 		st.scopes = ap.Session
-		st.open("s-live")
+		st.open("s-live", 0)
 		ap.Session.Add("bash(mkdir *)")
 		handleCommand(context.Background(), cmd, r, policy.New(policy.ModeDefault), sess, st)
 		if ap.Session.Has("bash(mkdir *)") {
@@ -417,7 +417,7 @@ func TestAlwaysAllowEndsWithTheSession(t *testing.T) {
 func TestDoubleCtrlCEndsAsInterrupted(t *testing.T) {
 	for _, stopped := range []bool{false, true} {
 		st, rs, _, _ := resumeRig(t, "me", "default")
-		loop := st.open("s-new")
+		loop := st.open("s-new", 0)
 		if _, err := loop.Recorder.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "go"}); err != nil {
 			t.Fatal(err)
 		}
@@ -451,7 +451,7 @@ func TestResumeRefusesASubagentsSession(t *testing.T) {
 	}
 	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
 	st.fresh()
-	st.open = func(id string) *agent.Loop {
+	st.open = func(id string, _ int64) *agent.Loop {
 		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
 		st.loop, st.sessionID = l, id
 		return l
@@ -489,6 +489,37 @@ func TestResumeChecksTheOwnerBeforeTheSubagent(t *testing.T) {
 	legacy := []agent.Event{{ID: "k1", SessionID: "s-old", Seq: 1, Type: agent.EvSubagentSpawned}}
 	if err := resumeConversation(context.Background(), st, "s-old", legacy); err == nil || !strings.Contains(err.Error(), "subagent") {
 		t.Fatalf("a subagent record with no parent named was resumed: %v", err)
+	}
+}
+
+// /resume goes on from what the session spent, and queues what its
+// background children left undelivered.
+func TestCLIResumeCarriesBudgetAndNotices(t *testing.T) {
+	ms := agent.NewMemStore()
+	p := agent.NewRecorder(ms, "s-bg", "")
+	_, _ = p.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "go"})
+	_, _ = p.Record(agent.EvSubagentSpawned, agent.ActorAgent, agent.Trusted, map[string]any{"session": "c1", "task_id": "c1", "background": true})
+	_, _ = p.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted, TokensIn: 70, TokensOut: 5})
+	_, _ = p.Record(agent.EvSubagentReturn, agent.ActorAgent, agent.Trusted, map[string]any{"session": "c1", "task_id": "c1", "background": true,
+		"reason": "completed", "tokens_in": 20, "tokens_out": 5})
+	sess, err := tools.NewSession(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &cliState{store: ms, appCfg: config.Default(), sess: sess}
+	st.fresh()
+	st.open = func(id string, _ int64) *agent.Loop {
+		l := agent.NewLoop(nil, nil, policy.New(policy.ModeDefault), agent.AutoApprove{}, sess, agent.NewRecorder(ms, id, ""), agent.DefaultConfig())
+		l.Budget = agent.NewBudget(0, 10, false)
+		st.loop, st.sessionID = l, id
+		return l
+	}
+	evs, _ := ms.Events("s-bg")
+	if err := rebuildFrom(st, "s-bg", evs); err != nil {
+		t.Fatal(err)
+	}
+	if st.loop.Budget.Spent() != 100 || st.loop.Background.Pending() != 1 {
+		t.Fatalf("spent %d, pending %d", st.loop.Budget.Spent(), st.loop.Background.Pending())
 	}
 }
 

@@ -36,10 +36,34 @@ Wherever the operator points `storage.dsn`. Give the database no published
 port: reachable only from the network the server is on, never the LAN or the
 host at large.
 
-Without the Postgres driver configured, sessions and events live in memory
-and do not survive a restart at all. Accounts do survive, in `users.json`;
-transcripts do not (`docs/ops/enabling-auth.md`, "Where accounts live";
+Without the Postgres driver configured, `abhed serve` keeps sessions and
+events in memory, and they do not survive a restart. Accounts do survive, in
+`users.json` (`docs/ops/enabling-auth.md`, "Where accounts live";
 `docs/guide/02-configuration.md`, "Storage").
+
+## The local record (command line and SDK)
+
+Without Postgres, the command line keeps every session in the **local record**
+under `~/.abhed/records/<tenant>/`, or a managed `record.dir`; an embedder can
+hand one to an SDK agent (`docs/guide/12-records.md`).
+
+- **What:** each session's events, redacted before the first write, one
+  chained file per session, plus an index, head files and lock files.
+- **Blobs:** `blobs/sha256/` holds the content of each file just before the
+  agent changed it, **unredacted**, since a redacted copy could not restore
+  it. A file a read deny rule covers, or whose name says it holds keys
+  (`.env`, `*.env`, `.envrc`, `*.pem`, `*.key`, `id_rsa`, `.git-credentials`,
+  `.pgpass`, `credentials.json`, `*.tfvars`, `.ssh/`, `.aws/`, `.azure/`,
+  `.kube/` and the like), is not copied; its checkpoint records why. The
+  file's content can still reach the record another way, in the edit tool's
+  own events.
+- **Where and who:** directories `0700`, files `0600`, refused if another user
+  owns them (not checked on Windows). The agent's file tools and the sandbox
+  tiers refuse the directory. It belongs on a local disk.
+- **How long:** until `abhed record prune` removes a session, leaving a
+  tombstone in the index, or, when the managed configuration sets
+  `record.retention_days`, until a session is older than that when the record
+  is opened. Pruning takes the session's blobs that no other session names.
 
 ## Retention
 

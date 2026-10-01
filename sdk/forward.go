@@ -12,7 +12,7 @@ import (
 // reading the store's subscription, which drops what a slow reader has not
 // taken; so a slow OnEvent delays delivery but never loses an event.
 type forwarder struct {
-	*agent.MemStore
+	agent.Store
 	mu        sync.Mutex
 	cond      *sync.Cond
 	queue     []agent.Event
@@ -23,8 +23,8 @@ type forwarder struct {
 	on bool
 }
 
-func newForwarder(store *agent.MemStore, on bool) *forwarder {
-	f := &forwarder{MemStore: store, on: on}
+func newForwarder(store agent.Store, on bool) *forwarder {
+	f := &forwarder{Store: store, on: on}
 	f.cond = sync.NewCond(&f.mu)
 	return f
 }
@@ -34,7 +34,7 @@ func newForwarder(store *agent.MemStore, on bool) *forwarder {
 func (f *forwarder) Append(ev agent.Event) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.MemStore.Append(ev); err != nil {
+	if err := f.Store.Append(ev); err != nil {
 		return err
 	}
 	if !f.on || f.closed {

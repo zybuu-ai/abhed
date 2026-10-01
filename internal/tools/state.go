@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // maxStateEntries bounds how many files and folders of the state directories
@@ -73,6 +74,8 @@ type StateSet struct {
 	files []os.FileInfo
 	paths []string // where each of files was found
 	named []string // registered paths, lexical and resolved
+	// records are the record folders met, whose files are not listed.
+	records []string
 }
 
 // NewStateSet gathers the state under the given roots, in the home directory
@@ -145,6 +148,16 @@ func (set *StateSet) walk(dir string) {
 		}
 		info := entryInfo(d)
 		switch {
+		case d.IsDir() && isRecordTree(path):
+			// The record is state by where it is: every path into it passes
+			// this folder, whose identity is kept. Its files are not listed
+			// one by one, which would make every check read every session;
+			// Linked walks it for second names when asked.
+			if info != nil && path != dir && !set.seen(set.dirs, info) {
+				set.dirs = append(set.dirs, info)
+			}
+			set.records = append(set.records, path)
+			return filepath.SkipDir
 		case info == nil || path == dir:
 		case d.IsDir() && d.Name() == "worktrees":
 			return filepath.SkipDir
@@ -160,6 +173,15 @@ func (set *StateSet) walk(dir string) {
 		}
 		return nil
 	})
+}
+
+// RecordMarker is the file the local record keeps at the top of its
+// directory, so the state walk knows the folder without listing it.
+const RecordMarker = ".abhed-record"
+
+func isRecordTree(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, RecordMarker))
+	return err == nil
 }
 
 // entryInfo returns an entry's info, or nil when it cannot be read: such
@@ -249,6 +271,17 @@ func (set *StateSet) Linked() []string {
 			out = append(out, set.paths[i])
 		}
 	}
+	for _, tree := range set.records {
+		_ = filepath.WalkDir(tree, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.Type().IsRegular() {
+				return nil //nolint:nilerr // an unreadable entry cannot be judged
+			}
+			if info, err := d.Info(); err == nil && nlink.Of(info) > 1 {
+				out = append(out, path)
+			}
+			return nil
+		})
+	}
 	return out
 }
 
@@ -276,31 +309,7 @@ func hasStateName(clean string) bool {
 }
 
 // RealPath follows symlinks in the part of p that exists, so a path to a file
-// not yet created still lands under its real parent. A link whose target does
-// not exist yet is followed too: writing through it would create the target.
+// not yet created still lands under its real parent.
 func RealPath(p string) string {
-	return realPath(p, 0)
-}
-
-func realPath(p string, hops int) string {
-	rest := ""
-	for cur := p; ; {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		if info, err := os.Lstat(cur); err == nil && info.Mode()&fs.ModeSymlink != 0 && hops < 40 {
-			if target, err := os.Readlink(cur); err == nil {
-				if !filepath.IsAbs(target) {
-					target = filepath.Join(filepath.Dir(cur), target)
-				}
-				return realPath(filepath.Join(target, rest), hops+1)
-			}
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return p
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
-	}
+	return sandbox.RealPath(p)
 }

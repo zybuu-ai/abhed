@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 )
@@ -39,6 +40,27 @@ type Compactor struct {
 	// information deliberately, and only the deployment knows what must
 	// survive it.
 	Summarizer func(messages []model.Message) (summary string, cancel bool)
+
+	// focus is what the next manual compaction's summary must keep, as the
+	// person asked with /compact <focus>; it is used once. See SetFocus.
+	focusMu sync.Mutex
+	focus   string
+}
+
+// SetFocus asks the next manual compaction to keep what focus names above
+// all else. It is taken by that compaction, or cleared by SetFocus("").
+func (c *Compactor) SetFocus(focus string) {
+	c.focusMu.Lock()
+	c.focus = strings.TrimSpace(focus)
+	c.focusMu.Unlock()
+}
+
+func (c *Compactor) takeFocus() string {
+	c.focusMu.Lock()
+	defer c.focusMu.Unlock()
+	f := c.focus
+	c.focus = ""
+	return f
 }
 
 func NewCompactor(a model.Adapter, threshold float64) *Compactor {
@@ -113,6 +135,14 @@ forces the work to be redone.
 
 Write it as notes to a colleague, not prose.`
 
+// focusLine is the person's focus for the summary, when they gave one.
+func focusLine(focus string) string {
+	if focus == "" {
+		return ""
+	}
+	return "\n\nThe person asked this summary to keep, above all else: " + focus
+}
+
 // Compact replaces history with a summary plus the most recent turns.
 //
 // Returns the new message list and the token accounting for the event. The
@@ -129,6 +159,10 @@ func (c *Compactor) Compact(ctx context.Context, trigger string, system string,
 func (c *Compactor) CompactWith(ctx context.Context, trigger string, system string,
 	messages []model.Message, beforeTokens int, started func()) ([]model.Message, Compaction, error) {
 
+	focus := ""
+	if trigger == "manual" {
+		focus = c.takeFocus()
+	}
 	if c.PreCompact != nil {
 		if err := c.PreCompact(trigger, messages); err != nil {
 			return messages, Compaction{}, fmt.Errorf("pre-compact hook: %w", err)
@@ -194,7 +228,7 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 	}
 	if summary == "" {
 		var err error
-		summary, err = c.summarize(ctx, older)
+		summary, err = c.summarize(ctx, older, focus)
 		if err != nil {
 			return messages, Compaction{}, err
 		}
@@ -217,7 +251,7 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 	}, nil
 }
 
-func (c *Compactor) summarize(ctx context.Context, older []model.Message) (string, error) {
+func (c *Compactor) summarize(ctx context.Context, older []model.Message, focus string) (string, error) {
 	// Render the history as text rather than replaying it as messages: the
 	// summarizer is doing a different job than the agent, and giving it the
 	// tool schemas would invite it to call them.
@@ -247,7 +281,7 @@ func (c *Compactor) summarize(ctx context.Context, older []model.Message) (strin
 		System: "You summarize engineering work accurately and concisely.",
 		Messages: []model.Message{{
 			Role:    model.RoleUser,
-			Content: summaryPrompt + "\n\n---\n\n" + transcript.String(),
+			Content: summaryPrompt + focusLine(focus) + "\n\n---\n\n" + transcript.String(),
 		}},
 		MaxTokens: 2048,
 	})

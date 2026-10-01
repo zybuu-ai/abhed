@@ -80,6 +80,11 @@ func (p ProviderConfig) Adapter() (model.Adapter, error) {
 
 // ExtensionSpecs converts the configured extensions to the extension package's
 // form, so neither package needs to import the other's types.
+//
+// With hooks.disabled, which only the managed configuration sets, an
+// extension keeps only the tools it provides: it is sent list_tools and
+// invoke_tool and no hook event, and one that provides no tools is not
+// started at all.
 func (c Config) ExtensionSpecs() []extension.Config {
 	out := make([]extension.Config, 0, len(c.Extensions))
 	for _, e := range c.Extensions {
@@ -87,10 +92,31 @@ func (c Config) ExtensionSpecs() []extension.Config {
 		for _, ev := range e.Events {
 			events = append(events, extension.Event(ev))
 		}
+		if c.Hooks.Disabled {
+			if events = toolEventsOnly(events); len(events) == 0 {
+				continue
+			}
+		}
 		out = append(out, extension.Config{
 			Name: e.Name, Command: e.Command, Args: e.Args,
 			Events: events, TimeoutMS: e.TimeoutMS, Env: e.Env,
+			Match: e.Match, Async: e.Async,
 		})
+	}
+	return out
+}
+
+// toolEventsOnly keeps the events that serve an extension's own tools. No
+// events means every event, so it becomes those two.
+func toolEventsOnly(events []extension.Event) []extension.Event {
+	if len(events) == 0 {
+		return []extension.Event{extension.EvListTools, extension.EvInvokeTool}
+	}
+	var out []extension.Event
+	for _, ev := range events {
+		if ev == extension.EvListTools || ev == extension.EvInvokeTool {
+			out = append(out, ev)
+		}
 	}
 	return out
 }

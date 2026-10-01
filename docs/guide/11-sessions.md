@@ -21,9 +21,11 @@ fragment at a time, so a value split between two is still caught. See
 
 ## Storage
 
-In memory by default, which loses everything when the process exits. Postgres
-makes sessions durable, and is what `/sessions`, `/resume`, replay and audit
-need:
+The command line keeps sessions in the local record by default: a chained,
+verifiable file per session under `~/.abhed/records`, described in
+[Sessions and the local record](12-records.md). `abhed serve` keeps them in
+memory unless configured otherwise, which loses everything when the process
+exits. Postgres makes sessions durable for a server and for teams:
 
 ```json
 "storage": { "driver": "postgres", "dsn": "postgres://...", "tenant": "default" }
@@ -41,8 +43,12 @@ is not a boundary.
 ```
 /tree            the session's steps
 /fork 12         rebuild the conversation up to step 12 and continue from there
+/rewind          take code and/or the conversation back to before a prompt
 /resume <id>     replay a recorded session and continue its conversation
 ```
+
+`-c`, `-r`, `/rename`, `/branch` and `/rewind` are covered in
+[Sessions and the local record](12-records.md).
 
 In the interactive CLI, every task you type continues one conversation, and
 the session's record holds all of them: one sequence, with a `session.ended`
@@ -55,7 +61,9 @@ random id, so two CLIs started in the same second never share one. After `/fork`
 next task continues from the rebuilt conversation, and its events extend
 that session's record. A fork is recorded as a `conversation.forked` event:
 the steps it abandoned stay in the record for audit, but no later `/fork`,
-`/tree` or `/resume` brings them back. `/resume` continues only a session that is not
+`/tree` or `/resume` brings them back. A fork is refused while background
+tasks are running, naming them: wait for them or cancel them (`/tasks cancel`),
+then fork. It never cancels them itself. `/resume` continues only a session that is not
 running elsewhere, and on Postgres only one recorded as yours, in your
 tenant; another user's session is not replayed either. A subagent's session
 id is refused, in the CLI and in the console: it is shown, but continues only
@@ -83,8 +91,9 @@ session — it is the session.
 ## Getting it out
 
 ```
-/export                     a self-contained HTML transcript
+/export                     a self-contained HTML transcript, in ~/.abhed/exports
 /export session.json        the raw events, for a program
+/export session.jsonl       the chained record with its head, verifiable offline
 ```
 
 The HTML embeds everything and fetches nothing, so it works from a filesystem,
@@ -125,12 +134,13 @@ different replica behind a load balancer.
 On the Postgres store the continuation is claimed atomically, so two replicas
 asked to continue the same session at once cannot both do it; the second
 answers `409`. Only the session's owner can continue it. Opening a finished
-session in the workbench to read it does not claim it: it stays ended, with
-its reason. The first thing written to it, a message or workbench work such
+session in the workbench to read it does not claim it or write to it: it
+stays ended, with its reason, and a background result it still owes is
+delivered only once something claims it. The first thing written to it, a message or workbench work such
 as a save or a terminal, claims it, after catching up on anything another
 process recorded meanwhile; while another process is running it, that write
 is refused. A claim taken for workbench work alone is given back two minutes
-after its last write, once no terminal is open, by recording the end it was
+after its last write, once no terminal is open and no result is owed, by recording the end it was
 opened with again, so that work appears in the record after an end. A
 session running elsewhere is not opened at all.
 

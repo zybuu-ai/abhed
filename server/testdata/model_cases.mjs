@@ -27,6 +27,9 @@ __fail = 'the session is mid-turn; interrupt it or wait for the turn to finish';
 sel.value = 'a'; await sel.onchange();
 check('a refused switch says why', lastNote().startsWith('Model not switched: the session is mid-turn'));
 check('a refused switch shows the model still in use', sel.value === 'b');
+__fail = 'bad \u202e name';
+sel.value = 'a'; await sel.onchange();
+check('a refused switch draws its reason through the helper', lastNote() === 'Model not switched: bad \u27e8U+202E\u27e9 name');
 
 // Two providers serving one model are told apart by name, in the picker and the note.
 __fail = null; __posted.length = 0;

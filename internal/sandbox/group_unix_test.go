@@ -95,3 +95,70 @@ func TestTreeStopsOnlyProcessesWhoseParentIsInIt(t *testing.T) {
 		t.Fatal("the stopped member was not killed")
 	}
 }
+
+// A cancel signals only the group the command itself leads: its own pid as
+// the group id, never 0, 1, -1 or the caller's group.
+func TestCancelSignalsOnlyTheCommandsOwnGroup(t *testing.T) {
+	var mu sync.Mutex
+	var signalled []int
+	real := killGroup
+	killGroup = func(pgid int) error {
+		mu.Lock()
+		signalled = append(signalled, pgid)
+		mu.Unlock()
+		return real(pgid)
+	}
+	t.Cleanup(func() { killGroup = real })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := EndWithCommand(exec.CommandContext(ctx, "sleep", "30"))
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err != nil || pgid != cmd.Process.Pid || pgid == syscall.Getpgrp() {
+		t.Fatalf("the command is not in a group of its own: pgid %d, pid %d, ours %d", pgid, cmd.Process.Pid, syscall.Getpgrp())
+	}
+	cancel()
+	_ = cmd.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(signalled) != 1 || signalled[0] != cmd.Process.Pid {
+		t.Fatalf("signalled groups %v, want only %d", signalled, cmd.Process.Pid)
+	}
+}
+
+// The kill target refuses every id that would reach beyond one child's group.
+func TestGroupTargetRefusesWideTargets(t *testing.T) {
+	for _, pgid := range []int{0, 1, -1, -42, syscall.Getpgrp()} {
+		if target, err := groupTarget(pgid); err == nil {
+			t.Fatalf("groupTarget(%d) = %d, want refused", pgid, target)
+		}
+	}
+	if target, err := groupTarget(4242); err != nil || target != -4242 {
+		t.Fatalf("groupTarget(4242) = %d, %v", target, err)
+	}
+}
+
+// killGroup's own path goes through groupTarget: no wide id reaches kill(2),
+// and a child's group is signalled as -pgid with SIGKILL.
+func TestKillGroupSignalsOnlyTheTarget(t *testing.T) {
+	type sent struct {
+		pid int
+		sig syscall.Signal
+	}
+	var calls []sent
+	orig := sysKill
+	sysKill = func(pid int, sig syscall.Signal) error { calls = append(calls, sent{pid, sig}); return nil }
+	defer func() { sysKill = orig }()
+	for _, pgid := range []int{0, 1, -1, -42, syscall.Getpgrp()} {
+		if err := killGroupNow(pgid); err == nil {
+			t.Fatalf("killGroupNow(%d) was not refused", pgid)
+		}
+	}
+	if len(calls) != 0 {
+		t.Fatalf("refused ids reached kill(2): %v", calls)
+	}
+	if err := killGroupNow(4242); err != nil || len(calls) != 1 || calls[0] != (sent{-4242, syscall.SIGKILL}) {
+		t.Fatalf("killGroupNow(4242): %v, calls %v", err, calls)
+	}
+}

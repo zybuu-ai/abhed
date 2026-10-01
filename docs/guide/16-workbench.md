@@ -84,6 +84,17 @@ scroll up and it stays where you are, with **Jump to latest** to come back. A
 tool call's arguments and output are drawn when you open it, and long output
 shows its first lines until you ask for the rest.
 
+**A suggested next prompt.** When a turn completes, the message box shows a
+guess at what you may ask next as its placeholder, a moment after the turn
+ends: the event stream stays open for it. Tab in the empty box puts
+it in the box to edit or send; it is never sent for you. Typing, sending or
+opening another session takes it away. The console's message box does the
+same. The suggestion is the model's text, so it is shown with every control
+and format character written out, as tool output is, and none is offered
+that urges past a safeguard or towards something destructive.
+`suggest.enabled: false` turns it off
+([Configuration](02-configuration.md#suggestions)).
+
 **Sending while the agent works.** Send stays enabled during a run. A message
 sent then is not a reason to cancel the step in progress: it is queued, shown
 below the conversation as *Queued — will be read at the next step*, and the
@@ -223,7 +234,7 @@ names, so keeping a folder from the agent takes both `write(...)` and
 `edit(...)`. None of them binds a command: `rm -rf vault` in the terminal, or from
 the agent's `bash`, is judged by `bash(...)` rules, so keep a folder with a
 `bash(...)` rule as well where that matters. A destructive command such as
-`rm -r` always asks, `Run it? [y/N]` in the line terminal.
+`rm -r` always asks, by number, in the line terminal.
 Policy hooks and extensions are shown the action (`mkdir`, `rename` or
 `delete`, with a `path` and, for a rename, a `to`), not a `bash` call; a rename
 reaches them for each name, and as a `delete` for the old name, and a folder's
@@ -259,8 +270,8 @@ process tier, a container with a terminal on the container tier), in the
 workspace root. Variables, aliases, functions, history, tab completion, `vim`
 and the like work as in any shell, within what the tier allows. The first lines
 of each tab say what contains it, for example
-`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`, and
-the prompt names the tier: `(sandbox: process) repo $`. On the `none` tier the
+`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`; the
+prompt itself is the shell's own. On the `none` tier the
 banner says in red that commands run directly on the host, and so does the
 status bar.
 
@@ -328,8 +339,24 @@ What a shell changes about the checks, stated plainly:
   see echoed before the Enter (so keys a program took without an Enter, as
   `read -s -n` does, never prefix a recorded line), for an edited line, and for a short line where it could not ask the
   terminal. Keys typed ahead while a command still runs are shown by the
-  terminal as they arrive, so a password typed ahead of its prompt is in the
-  recorded output, as it was on screen.
+  terminal as they arrive, so a password typed ahead of its prompt can be on
+  screen. The output the record keeps then drops it, best effort: every line
+  of that output holding four or more characters in a row of a line recorded
+  without its text is replaced by `[withheld]`, and a shorter such line is
+  replaced where it stands alone on a line. Where a line recorded without its
+  text was edited as it was typed (Backspace, Ctrl-U, the arrow keys), the
+  terminal showed something other than its text, so none of the output is
+  kept, only a note that it was withheld; an edited command typed at the
+  shell's prompt, not ahead of it, does not count. A line typed while another
+  program has the terminal is not recorded at all; when that program left the
+  terminal reading lines (`sleep`, `make`, `ssh` before its prompt, a script's
+  `read`), the line may be a password typed ahead of a later prompt, so it is
+  taken out of the recorded output the same way. Keys typed into a program
+  that reads them raw (an editor, a REPL) stay in the recorded output, as they
+  were on screen. The rule is eager: a command typed ahead takes out every
+  output line sharing four characters in a row with it. What is not caught:
+  pieces of a password shorter than four characters, split apart by other
+  output or by where the kept output begins.
   Line editing turned off (`set +o emacs +o vi`) makes bash read its prompt
   in canonical mode too, so from then on every line is recorded without its
   text; it is still screened.
@@ -342,13 +369,25 @@ What a shell changes about the checks, stated plainly:
   recording off there until the screen is switched back. Nor can it tell a
   password prompt there: a password that also appears in what was printed
   while it was typed, such as a user name in `[sudo] password for root:`, can
-  be recorded.
+  be recorded. Nor can it ask whether the shell is at its prompt, so there a
+  line is recorded with its text only when the output had come back to a line
+  ending in `$ ` or `# ` after the line before; any other line, such as one
+  typed while a command still runs, is recorded without its text and taken
+  out of the recorded output. That check is a heuristic: other output ending
+  that way (a nested shell's prompt) passes it, and a prompt changed to end
+  otherwise makes every line recorded without its text there.
 
 Where that is not enough, the operator sets `sandbox.terminal` to `"lines"`: each
 tab then runs every line as a `bash` call of its own, judged before it runs, on
 its own pseudo-terminal, and shell state does not carry from one line to the
 next (variables, `export` and aliases are lost; the folder moves only as
-follows). Only a line that is just
+follows). Keys typed into a running command are not recorded; a line typed
+while it reads lines (or anywhere on the container tier) is taken out of the
+command's recorded output as the shell's are, so a password typed ahead of a
+`read -s` is not kept. This covers every answer typed into a command, not
+only passwords: each output line sharing four characters with an answer is
+recorded as `[withheld]`, and an answer edited as it was typed withholds the
+command's whole output. Only a line that is just
 `cd <folder>`, with one folder and nothing else, moves the terminal: the
 folder's quoting is read as bash reads it (`web\ app`, `"web app"`,
 `'web app'`, `$'web app'`, and `price\ \$5` for a `$` in the name, as Tab
@@ -368,8 +407,14 @@ or with a policy hook such as an extension, gets that mode without asking,
 because a managed rule is an organisation's statement that it holds, and a
 hook may refuse any command.
 A destructive line, one that always confirms, is not run on Enter: the terminal
-shows why and asks `Run it? [y/N]`, and only `y` runs it, recorded as confirmed;
-anything else cancels it and the lines queued behind it, recorded as declined.
+shows why and asks `1` No or `2` Yes, run it. Only `2` then Enter runs it,
+recorded as confirmed; `1` or Ctrl-C cancels it, recorded as declined. Either
+answer drops the lines queued behind it and anything typed after it, since
+they were typed before the answer. Nothing is chosen for Enter: Enter, a letter or a paste
+asks again, and keys typed in the first 300 ms after the question appears are
+ignored, so an answer typed behind the line is never taken. The server holds the
+same rule: a confirmation is accepted only for a line it asked about, 300 ms
+or more before.
 Any other line is approved by typing it.
 Once a line runs, the program it started owns the terminal until it exits:
 `vi`, `less`, `top` or a Python prompt gets every key as typed, Esc, the arrow
@@ -408,9 +453,10 @@ what holds the workspace, the policy and the sandbox. You do not need to ask
 the agent anything to get one: when there is no session, the page opens a
 *workbench session*, which has no prompt and waits. It is owned, listed and
 recorded like any other (its record starts with `session.started`), and the
-first message you send goes to it. **New session** lets you choose the
-permission mode before the next one starts; once a session is open its mode is
-shown and fixed.
+first message you send goes to it. **New session** starts in the configured
+permission mode, not the mode of the session that was open, and lets you
+choose another before it starts; once a session is open its mode is shown and
+fixed.
 
 After a restart, the terminal reopens the session it was on from its record. If
 that is not possible (the session was not closed cleanly, or is being continued

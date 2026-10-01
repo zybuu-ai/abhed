@@ -334,6 +334,8 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .pill.running{background:var(--running-bg);color:var(--running)}
 .pill.completed,.pill.done{background:var(--done-bg);color:var(--done)}
 .pill.waiting_approval{background:var(--waiting-bg);color:var(--waiting)}
+.pill.background{background:var(--running-bg);color:var(--running)}
+.badge{padding:1px 6px;border-radius:3px;font-size:9.5px;background:var(--waiting-bg);color:var(--waiting)}
 .pill.error,.pill.max_turns,.pill.policy_denied,.pill.retry_exhausted,
 .pill.max_budget,.pill.user_interrupt,.pill.deadline,.pill.shutdown,
 .pill.stalled{background:var(--error-bg);color:var(--error)}
@@ -491,6 +493,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 @keyframes pulse{0%,100%{height:4px;opacity:.45}50%{height:12px;opacity:1}}
 @media (prefers-reduced-motion:reduce){.thinking .bars i{animation:none;height:8px}}
 .note b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
+.note.woke{color:var(--accent)}
 
 /* ---------------------------------------------------------------- inspector */
 .insp-sec{padding:13px 15px;border-bottom:1px solid var(--line)}
@@ -753,6 +756,8 @@ let streamBody = null;   // its text node
 let es = null;           // EventSource
 let lastSeq = 0;         // highest seq rendered, for reconnect de-duplication
 let live = false;        // is the viewed session still running
+let bgLive = false;      // does it still have background tasks running, with no run
+const bgNames = new Map(); // background task_id -> its description
 // Approval cards awaiting a verdict, by call_id. A replayed session resolves
 // them from its own action.approved / action.denied events; anything still
 // here when the session ends was never answered.
@@ -862,7 +867,7 @@ async function loadProviders(){
       if(lastNoteText() !== text) note(text);
     }catch(e){
       // Refused (mid-turn, or not recorded): say why, and show the model still in use.
-      note('Model not switched: ' + String(e.message || e));
+      note('Model not switched: ' + visible(e.message || e));
       sel.value = sel.dataset.prev;
     }finally{
       sel.disabled = false;
@@ -991,7 +996,7 @@ function sessionRow(s){
 
   const q = document.createElement('div');
   q.className = 'q';
-  q.textContent = s.prompt || '(no prompt recorded)';
+  q.textContent = s.prompt ? reveal(s.prompt) : '(no prompt recorded)';
 
   const m = document.createElement('div');
   m.className = 'm';
@@ -1002,7 +1007,7 @@ function sessionRow(s){
   pill.textContent = shown.replace(/_/g,' ');
   const when = document.createElement('span');
   when.textContent = ago(s.created);
-  m.append(pill, when);
+  m.append(pill, ...listBadges(s), when);
 
   const del = document.createElement('button');
   del.type = 'button';
@@ -1074,7 +1079,7 @@ async function deleteSession(id, onFail){
     if(current === id) newChat();
     return true;
   }catch(err){
-    note('Could not delete this chat: ' + (err && err.message || err));
+    note('Could not delete this chat: ' + visible(err && err.message || err));
     onFail && onFail();
     return false;
   }
@@ -1096,6 +1101,7 @@ function ago(iso){
 // original approval request: assuming every opened session is live rebuilt
 // those as clickable prompts for decisions already made.
 function openSession(id, state){
+  offerNext('');
   // On a phone the rail covers the transcript, so opening a chat has to
   // dismiss it — otherwise the user taps a chat and still sees the list.
   setRail(false);
@@ -1140,7 +1146,7 @@ function connect(id){
     es.close(); es = null;
     // A finished session's stream closes normally once the backlog is sent.
     // Only a live session is worth reconnecting to.
-    if(live && current === id){
+    if((live || bgLive) && current === id){
       setTimeout(() => { if(current === id && !es) connect(id); }, 1500);
     }
   };
@@ -1170,11 +1176,21 @@ function newTurn(){
 function render(ev){
   const tx = $('tx');
   const p = ev.payload || {};
+  // The closing end after background work is not a second end of the run.
+  // A subagent's ask left unanswered when its work ended is answerable no more.
+  if(ev.type === 'session.ended' && p.settled){
+    bgLive = false;
+    approvals.forEach((_, id) => resolveApproval(id, 'not answered'));
+    tx.appendChild(node('note', 'background work finished'));
+    return;
+  }
 
   switch(ev.type){
+    case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
     case 'user.message': {
+      offerNext('');
       const b = node('said user');
-      b.append(node('who','you'), document.createTextNode(p.text || ''));
+      b.append(node('who','you'), document.createTextNode(reveal(p.text || '', true)));
       tx.appendChild(b);
       newTurn();
       stats.turns++;
@@ -1193,7 +1209,7 @@ function render(ev){
         streamEl.appendChild(streamBody);
         (turnEl || tx).appendChild(streamEl);
       }
-      streamBody.appendData(p.text || '');
+      streamBody.appendData(reveal(p.text || '', true));
       break;
     }
 
@@ -1203,7 +1219,8 @@ function render(ev){
         // The deltas already rendered this. Reconcile against the
         // authoritative text in case a fragment was dropped on reconnect,
         // then close the bubble.
-        if((p.text || '') !== streamBody.data) streamBody.data = p.text || '';
+        const whole = reveal(p.text || '', true);
+        if(whole !== streamBody.data) streamBody.data = whole;
         // The deltas streamed plain text; render it now that it is whole.
         const holder = document.createElement('div');
         holder.className = 'md';
@@ -1219,7 +1236,8 @@ function render(ev){
       // would otherwise print the whole reply twice. Adopt the bubble the
       // deltas built rather than trusting a variable to still be set.
       const streamed = lastStreamedBubble();
-      if(streamed && streamed.body.data.trim() === (p.text || '').trim()){
+      const shown = reveal(p.text || '', true);
+      if(streamed && streamed.body.data.trim() === shown.trim()){
         // Same text: replace the streamed plain draft with the rendered form.
         // Markdown cannot be applied to a fragment, so the deltas stream raw
         // and the finished answer is formatted here.
@@ -1229,9 +1247,9 @@ function render(ev){
         streamed.body.replaceWith(holder);
         break;
       }
-      if(streamed && (p.text || '').startsWith(streamed.body.data.trim().slice(0, 200))
+      if(streamed && shown.startsWith(streamed.body.data.trim().slice(0, 200))
          && streamed.body.data.trim() !== ''){
-        streamed.body.data = p.text || '';
+        streamed.body.data = shown;
         break;
       }
       const b = node('said');
@@ -1259,7 +1277,7 @@ function render(ev){
       const size = node('', wordCount(p.text) + ' words');
       size.style.cssText = 'margin-left:auto;font-size:10px';
       hdr.append(caret, label, size);
-      const body = node('body', p.text || '');
+      const body = node('body', reveal(p.text || '', true));
       think.append(hdr, body);
       hdr.setAttribute('role','button');
       hdr.setAttribute('tabindex','0');
@@ -1323,7 +1341,8 @@ function render(ev){
         // never instruction. Saying so in the UI keeps that visible.
         body.appendChild(node('tag','untrusted data'));
       }
-      body.appendChild(document.createTextNode(clip(p.content || '', 4000)));
+      // Tool output is untrusted: bidi, zero-width and control characters are written out.
+      body.appendChild(document.createTextNode(clip(reveal(p.content || '', true), 4000)));
       wrap.appendChild(body);
 
       if(live) showThinking('working');
@@ -1353,23 +1372,37 @@ function render(ev){
       resolveApproval(p.call_id, 'rejected', 'no');
       const wrap = calls.get(p.call_id) || turnEl || newTurn();
       wrap.classList.add('err');
-      wrap.appendChild(node('out err', 'denied — ' + (p.reason || 'no reason given')));
+      wrap.appendChild(node('out err', 'denied — ' + visible(p.reason || 'no reason given')));
       break;
     }
 
     // In the turn, as its calls are, so they read before the answer that follows them.
-    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
-    case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
+    // Task names, results and reasons are the model's or a command's text: shown, never obeyed.
+    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + visible(p.description || '')));
+      if(p.background && p.task_id) bgNames.set(p.task_id, p.description || p.task_id); break;
+    case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + visible(p.reason || ''))); break;
+    // A background task's result entering the conversation. What it says is
+    // the subagent's own summary, shown as that and never as the person's.
+    case 'subagent.notice': if(p.task_id && p.description) bgNames.set(p.task_id, p.description); tx.appendChild(noticeCard(p)); break;
+    // A turn the session started itself for finished background work: live like any other.
+    case 'session.woken': {
+      const names = (p.task_ids || []).map(id => bgNames.get(id) || id);
+      tx.appendChild(node('note woke', p.by === 'caller' ? 'continuing with background results, as asked'
+        : 'continuing with results from ' + (names.length ? names.map(n => visible(n)).join(', ') : 'background tasks')));
+      live = true; $('stop').hidden = false; newTurn(); showThinking('continuing');
+      break;
+    }
 
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.
     case 'subagent.ask': {
+      offerNext('');  // no suggestion beside an ask
       if(!p.request_id){ tx.appendChild(node('note', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
       hideThinking();
       const id = 'subagent-' + p.request_id;
       const wrap = node('call');
       const hdr = node('hdr');
-      hdr.append(node('tool', p.tool), node('arg', 'subagent ' + (p.subagent || '') + ' · ' + summarize(p.tool, p.args)));
+      hdr.append(node('tool', visible(p.tool)), node('arg', 'subagent ' + visible(p.subagent || '') + ' · ' + visible(summarize(p.tool, p.args))));
       wrap.appendChild(hdr);
       (turnEl || newTurn()).appendChild(wrap);
       calls.set(id, wrap);
@@ -1411,10 +1444,13 @@ function render(ev){
     case 'session.ended': {
       hideThinking();
       live = false;
-      // The session is over, so every remaining card is unanswerable. Leaving
+      bgLive = (p.background || 0) > 0;
+      // The run is over, so its own remaining cards are unanswerable. Leaving
       // them clickable is what made a reopened session show a dead approval
-      // prompt that swallowed every click.
-      approvals.forEach((_, id) => resolveApproval(id, 'not answered'));
+      // prompt that swallowed every click. A background subagent's ask
+      // outlives the run while background work is owed: only its own
+      // outcome, or the closing end, settles it.
+      approvals.forEach((_, id) => { if(!(bgLive && id.startsWith('subagent-'))) resolveApproval(id, 'not answered'); });
       $('stop').hidden = true;
       stats.reason = p.reason;
       paintOpenPill();
@@ -1427,7 +1463,7 @@ function render(ev){
       stats.ctxWindow = p.context_window || stats.ctxWindow;
 
       const n = node('note');
-      n.append(kv('ended', p.reason), kv('turns', p.turns));
+      n.append(kv('ended', visible(p.reason || '')), kv('turns', p.turns));
 
       // Context first, because it is the number that answers "how much room is
       // left". tokens_in beside it is a running total across every turn, so it
@@ -1459,11 +1495,16 @@ function kv(k, v){
 // draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
 // spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
 function visible(s, lines){
-  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+  return reveal(String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
     // Eight columns inside a line (a tab counts eight); indentation only from 32.
     const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
     return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
-  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+  }), lines);
+}
+// reveal is visible without the spacing rule, for text whose layout is its own: replies,
+// reasoning, a call's output, files and diffs. Tool output is untrusted, so all of it is drawn this way.
+function reveal(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1526,6 +1567,8 @@ function lastStreamedBubble(){
 // untrusted content, and a reply that read a hostile file must not be able to
 // put markup into this page.
 function md(text){
+  // Model text: control and format characters are written out before any markup is built.
+  text = reveal(String(text || ''), true);
   const esc = s => s.replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -1643,7 +1686,7 @@ function setPeek(wrap, content){
   const el = wrap.querySelector('.peek');
   if(!el) return;
   const first = String(content).split('\n').map(l => l.trim()).find(l => l) || '';
-  el.textContent = first ? '· ' + clip(first, 80).split('\n')[0] : '';
+  el.textContent = first ? '· ' + visible(clip(first, 80).split('\n')[0]) : '';
 }
 
 /* ------------------------------------------------------------------ approvals */
@@ -1719,7 +1762,7 @@ function approval(p, rid){
         return;
       }
       // Too many answers waiting is busy, not refused: the request may still wait.
-      card.appendChild(node('note', /too many answers/i.test(e.message) ? 'Busy, try again' : e.message));
+      card.appendChild(node('note', /too many answers/i.test(e.message) ? 'Busy, try again' : visible(e.message)));
       buttons.forEach(b => { b.disabled = false; });
     }
   };
@@ -1773,6 +1816,7 @@ $('go').onclick = send;
 // before, instead of starting a fresh conversation each time.
 async function send(){
   let prompt = $('q').value.trim();
+  if(prompt) offerNext('');
   // A message that is only attachments is a reasonable thing to send: the
   // question is implied by the file.
   if(!prompt && !pending.length) return;
@@ -1800,7 +1844,7 @@ async function send(){
       showThinking('waiting for the model');
     }
   }catch(e){
-    $('tx').appendChild(node('note', e.message));
+    $('tx').appendChild(node('note', visible(e.message)));
   }finally{
     $('go').disabled = false;
     $('q').focus();
@@ -1950,9 +1994,10 @@ $('q').addEventListener('input', autogrow);
 /* ---------------------------------------------------------------- drawer */
 function openDrawer(name, kind, body, numbered){
   leaveWorkbench();
-  $('dname').textContent = name;
-  $('dkind').textContent = kind || '';
+  $('dname').textContent = visible(name);
+  $('dkind').textContent = visible(kind || '');
   const pre = document.createElement('pre');
+  body = reveal(body, true);
   if(numbered){
     // read() returns numbered lines; keep the gutter separate so the code
     // itself stays selectable and copyable.
@@ -2032,6 +2077,29 @@ $('wbreload').onclick = () => openWorkbench(wb.tab);
 // While the agent works, the list of changes goes stale with every edit.
 // Reloading on a tool result keeps it honest; the delay folds a burst of
 // edits into one request.
+// listBadges are what a list row says beyond the state: background tasks
+// running, and an approval waiting on you.
+function listBadges(s){
+  const out = [];
+  if(s.background){ const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'background ' + s.background; out.push(b); }
+  if(s.pending_ask){ const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'approval waiting';
+    b.title = visible((s.pending_ask.subagent ? 'subagent ' + s.pending_ask.subagent + ': ' : '') + s.pending_ask.tool); out.push(b); }
+  return out;
+}
+
+// noticeCard shows a background result: which task, how it ended, and the
+// summary it left, as text.
+function noticeCard(p){
+  const wrap = node('call bgnotice');
+  const hdr = node('hdr');
+  const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
+  hdr.append(node('tool', 'background'), node('arg', visible(p.description || p.task_id || '') + ' finished (' + visible(p.status || p.reason || '') + turns + ')'));
+  wrap.appendChild(hdr);
+  wrap.appendChild(node('out', visible(p.content || '', true)));
+  wrap.appendChild(node('note', p.delivery === 'idle' ? 'result added to the conversation; the agent sees it with your next message' : 'result added to the conversation'));
+  return wrap;
+}
+
 function workbenchSaw(ev){
   if(!wb.open || wb.tab !== 'changes') return;
   if(ev.type !== 'observation' && ev.type !== 'session.ended') return;
@@ -2044,7 +2112,7 @@ function wbRow(depth, twisty, name){
   b.type = 'button'; b.className = 'wb-row';
   b.style.paddingLeft = (10 + depth * 12) + 'px';
   const tw = document.createElement('span'); tw.className = 'tw'; tw.textContent = twisty;
-  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name;
+  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = reveal(name);
   b.append(tw, nm);
   return b;
 }
@@ -2059,14 +2127,14 @@ async function loadDir(path, host, depth){
   const session = current;
   let listing;
   try{ listing = await api(wbURL('tree', path)); }
-  catch(e){ host.appendChild(node('wb-note', e.message)); return; }
+  catch(e){ host.appendChild(node('wb-note', visible(e.message))); return; }
   if(session !== current || !host.isConnected) return;
   if(!listing.entries.length && depth === 0) host.appendChild(node('wb-note', 'The workspace is empty.'));
   for(const e of listing.entries){
     const row = wbRow(depth, e.dir ? '▸' : '', e.name);
     host.appendChild(row);
     if(!e.dir){
-      row.title = e.path + ' · ' + fmtSize(e.size);
+      row.title = reveal(e.path) + ' · ' + fmtSize(e.size);
       row.onclick = () => { wbSelect(row); viewFile(e.path); };
       continue;
     }
@@ -2104,7 +2172,7 @@ function wbShow(name, meta){
   const back = document.createElement('button');
   back.type = 'button'; back.className = 'ghost wb-back'; back.textContent = '← Back';
   back.onclick = () => $('wb').classList.remove('viewing');
-  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; nm.title = name;
+  const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = nm.title = reveal(name);
   const mt = document.createElement('span'); mt.textContent = meta || '';
   bar.append(back, nm, mt);
   const view = node('wb-view');
@@ -2119,7 +2187,7 @@ async function viewFile(path){
   try{ f = await api(wbURL('file', path)); }
   catch(e){
     const view = wbShow(path, '');
-    if(view) view.appendChild(node('wb-note', e.message));
+    if(view) view.appendChild(node('wb-note', visible(e.message)));
     return;
   }
   if(session === current) showFile(f);
@@ -2142,7 +2210,7 @@ function showFile(f){
   lines.forEach((line, i) => {
     const g = document.createElement('span');
     g.className = 'ln'; g.textContent = String(i + 1);
-    pre.append(g, document.createTextNode(line + '\n'));
+    pre.append(g, document.createTextNode(reveal(line) + '\n'));
   });
   view.appendChild(pre);
 }
@@ -2153,9 +2221,9 @@ async function loadChanges(){
   if(!side) return;
   let res;
   try{ res = await api(wbURL('changes')); }
-  catch(e){ side.textContent = ''; side.appendChild(node('wb-note', e.message)); return; }
+  catch(e){ side.textContent = ''; side.appendChild(node('wb-note', visible(e.message))); return; }
   if(session !== current || !side.isConnected) return;
-  const selected = (side.querySelector('.wb-row[aria-current]') || {}).title;
+  const selected = ((side.querySelector('.wb-row[aria-current]') || {}).dataset || {}).path;
   side.textContent = '';
   if(!res.available){
     side.appendChild(node('wb-note', 'Changes are kept while a session is live on this ' +
@@ -2169,7 +2237,7 @@ async function loadChanges(){
   for(const f of res.files){
     const mark = {added:'A', deleted:'D'}[f.status] || 'M';
     const row = wbRow(0, mark, f.path);
-    row.title = f.path;
+    row.title = reveal(f.path); row.dataset.path = f.path;
     const ct = document.createElement('span'); ct.className = 'ct';
     const plus = document.createElement('span'); plus.className = 'plus'; plus.textContent = '+' + f.added;
     const minus = document.createElement('span'); minus.className = 'minus'; minus.textContent = '−' + f.removed;
@@ -2193,7 +2261,7 @@ function viewDiff(f){
   f.diff.replace(/\n$/, '').split('\n').forEach((line, i) => {
     // The two header lines are told apart by position: a removed line that
     // itself starts with "--" looks exactly like one.
-    box.appendChild(node(i < 2 ? 'meta' : diffClass(line), line));
+    box.appendChild(node(i < 2 ? 'meta' : diffClass(line), reveal(line)));
   });
   view.appendChild(box);
 }
@@ -2222,6 +2290,21 @@ function drawEmpty(){
 $('q').addEventListener('keydown', e => {
   if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
 });
+// A next prompt offered after a turn is the box's placeholder; Tab takes it into the box, never sends it.
+function offerNext(t){
+  const q = $('q'); if(!q) return;
+  if(q.dataset.hint == null) q.dataset.hint = q.placeholder;
+  q.dataset.next = t ? visible(String(t)).replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+  q.placeholder = q.dataset.next || q.dataset.hint;
+}
+function takeNext(e){
+  const q = $('q'), next = q.dataset.next;
+  if(e.key !== 'Tab' || e.shiftKey || !next || q.value) return false;
+  e.preventDefault(); q.value = next; offerNext(''); autogrow();
+  return true;
+}
+$('q').addEventListener('input', () => { if($('q').value) offerNext(''); });
+$('q').addEventListener('keydown', takeNext);
 
 $('stop').onclick = async () => {
   if(!current) return;

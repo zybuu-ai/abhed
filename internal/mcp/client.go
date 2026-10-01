@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,8 +132,41 @@ func (c *Client) refreshTools(ctx context.Context) error {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("parse tools/list from %s: %w", c.name, err)
 	}
-	c.tools = res.Tools
+	c.tools = keepNamed(c.name, res.Tools)
 	return nil
+}
+
+// validToolName is what a remote tool's name must look like to be offered,
+// the same rule tool_search lists names by: the name reaches prompts, the
+// approval card and "always allow" scopes.
+var validToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// WarnOut receives the warning for each tool refused for its name.
+var WarnOut io.Writer = os.Stderr
+
+var (
+	warnedMu sync.Mutex
+	warned   = map[string]bool{}
+)
+
+// keepNamed drops the tools whose names fail validToolName, warning once per
+// server and name.
+func keepNamed(server string, defs []ToolDef) []ToolDef {
+	kept := defs[:0:0]
+	for _, d := range defs {
+		if validToolName.MatchString(d.Name) {
+			kept = append(kept, d)
+			continue
+		}
+		warnedMu.Lock()
+		if id := server + "\x00" + d.Name; !warned[id] {
+			warned[id] = true
+			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q offers a tool named %+q, which is not registered: "+
+				"a tool name may hold only letters, digits, _ . and -, up to 64\n", server, d.Name)
+		}
+		warnedMu.Unlock()
+	}
+	return kept
 }
 
 func (c *Client) Tools() []ToolDef { return c.tools }

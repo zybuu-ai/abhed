@@ -61,6 +61,7 @@ func (a *scriptedACPAgent) Run(ctx context.Context, prompt string) (string, erro
 }
 func (a *scriptedACPAgent) Steer(string)                {}
 func (a *scriptedACPAgent) Flush(context.Context) error { return nil } // OnEvent is called inline
+func (a *scriptedACPAgent) CancelTasks() int            { return 0 }
 func (a *scriptedACPAgent) Close()                      {}
 
 // chosen answers a permission request with the offered option of kind, as
@@ -83,6 +84,7 @@ func chosen(params json.RawMessage, kind string) map[string]any {
 
 // acpClient drives the adapter over pipes, the way an editor would.
 type acpClient struct {
+	conn   *acpConn
 	t      *testing.T
 	in     io.Writer
 	lines  chan rpcMessage
@@ -128,7 +130,7 @@ func newACPClient(t *testing.T, answer func(string, json.RawMessage) any) *acpCl
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	c := &acpConn{out: outW, version: "test", base: "/ws", sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
-	cl := &acpClient{t: t, in: inW, lines: make(chan rpcMessage, 64), answer: answer}
+	cl := &acpClient{conn: c, t: t, in: inW, lines: make(chan rpcMessage, 64), answer: answer}
 	go func() { _ = c.serve(inR) }()
 	go func() {
 		sc := bufio.NewScanner(outR)
@@ -153,6 +155,12 @@ func newACPClient(t *testing.T, answer func(string, json.RawMessage) any) *acpCl
 func (cl *acpClient) write(m rpcMessage) {
 	b, _ := json.Marshal(m)
 	_, _ = cl.in.Write(append(b, '\n'))
+}
+
+// notify sends a notification, which has no reply.
+func (cl *acpClient) notify(method string, params any) {
+	raw, _ := json.Marshal(params)
+	cl.write(rpcMessage{JSONRPC: "2.0", Method: method, Params: raw})
 }
 
 func (cl *acpClient) request(id int, method string, params any) rpcMessage {

@@ -19,9 +19,6 @@ import (
 // and the same record as the agent's own calls. An interactive shell (pty.go)
 // is judged when it opens and is then bounded by the sandbox alone.
 
-// maxManualCommand bounds a command line typed into the workbench.
-const maxManualCommand = 8 << 10
-
 // manualSession finds the live session and the person's own tool session on it.
 func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSession, *tools.Session, bool) {
 	id := r.PathValue("id")
@@ -79,7 +76,7 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSaveBytes)
 	var req saveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "the file is too large to save from the workbench, or the request is malformed")
+		badBody(w, err, "the request is malformed")
 		return
 	}
 	v, err := s.openView()
@@ -180,6 +177,10 @@ func (s *Server) execCommand(w http.ResponseWriter, r *http.Request) {
 func writeUnrecorded(w http.ResponseWriter, err error, msg string) {
 	if errors.Is(err, errBusySession) {
 		WriteError(w, http.StatusConflict, "the session is being continued elsewhere; "+msg)
+		return
+	}
+	if errors.Is(err, errHoldFailed) {
+		writeHoldFailed(w)
 		return
 	}
 	WriteError(w, http.StatusInternalServerError, msg)

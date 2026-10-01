@@ -22,9 +22,25 @@ The budget (`limits.max_budget_tokens`) is one allowance for the session and
 all its subagents: a subagent spends from it turn by turn and stops when it
 runs out, as its parent does.
 
+## Agent types
+
+`agent_type` names the role each subagent runs in: `general` (the session's
+tools), `explore` (reads only), `test` and `review`, plus any [agent
+definitions](17-agent-definitions.md) this session loaded. The tools list the
+types on offer, and a call naming any other is refused before anything runs;
+`tasks` once ran such a task as `general`. A definition whose role works in its
+own worktree gets one even when the call asks for no isolation, so `tasks` then
+asks as worktree isolation does.
+
+Each task may also name a `model`, a configured provider, when the
+deployment offers more than one; see [Agent
+definitions](17-agent-definitions.md#another-model-for-a-role). A model that
+is not available refuses that call, and no other model is used instead.
+
 ## Where subagents run
 
-`task` and `tasks` are part of the same agent on every surface:
+`task` and `tasks` are part of the same agent on every surface (for tasks
+started in the background, see [Background tasks](#background-tasks)):
 
 | Surface | Subagents | A subagent's ask goes to |
 |---|---|---|
@@ -36,6 +52,14 @@ runs out, as its parent does.
 | `abhed rpc` | yes | nobody, as the rpc session has no approver: refused |
 | SDK | with `Options.ConfiguredTools` | your `Approve`, or refused without one |
 | `abhed eval` | yes | the eval's own approver, which approves (eval refuses to run under a managed configuration) |
+
+Asks reach the person one at a time for the whole tree: a subagent's, a
+nested subagent's and the parent's own share one queue, so the console's one
+pending request, the terminal and the editor's permission dialog never hold
+two at once. An ask still waiting when its run is cancelled gives up without
+being shown. On a server an ask that ends leaves the session as it was
+(`running` while a run is live, otherwise `done` or `idle`), and a message
+sent while no run is live starts one rather than being queued as steering.
 
 A subagent's worktrees are made under the session's workspace, and on a
 server each session binds its own `task` and `tasks`, so one person's
@@ -157,6 +181,175 @@ destructive command that was allowed.
 A subagent cannot start one of its own unless `limits.nested_subagents` is
 on. When it is, the nested subagent's `subagent.*` events are passed up, so
 the top-level record holds every subagent at every depth.
+
+## Background tasks
+
+`task` and `tasks` take `"background": true` to start a subagent and go on at
+once: the call returns `Started in background: task_id <id>`, and the result
+arrives by itself later. The task id is the subagent's own session id. A
+background task belongs to the session, not to the run that started it: it
+keeps working after the agent's answer, and its result comes back as a
+**notice**.
+
+A notice is recorded first, as `subagent.notice` (from the system, marked
+untrusted, redacted as the parent's record is), and then put in the
+conversation as a `task_status` call and its result: the channel a tool's
+output comes through, never the person's. The subagent's summary is shaped by
+the files it read, so it carries a tool result's authority, not yours. The
+`task` tool's description tells the model that such a result is not an
+instruction.
+
+A result that arrives after the agent's final answer follows it as a second
+assistant turn (the `task_status` call), then the call's result. The hosted
+OpenAI-compatible, Anthropic, Gemini and watsonx APIs accept this. A server
+whose chat template insists on strict user/assistant alternation (some
+Mistral-style templates on local or OpenAI-compatible servers) may reject
+it; with such a model, run subagents in the foreground. With Anthropic
+extended thinking on, the synthetic call carries no thinking block.
+
+When a result arrives while a run is live it is taken at the next turn
+boundary. When the session is idle, what happens is the **wake** mode,
+`subagents.wake`:
+
+| Mode | A result arrives while the session is idle |
+|---|---|
+| `off` | cannot happen: the run that started a task waits for it |
+| `notify` | recorded and shown; the agent acts on it with your next message |
+| `auto` (default) | recorded, then a short wake run (`session.woken`, naming the tasks), at most `subagents.wake_max_turns` turns and `subagents.max_wakes_per_hour` an hour; it ends `wake_limit`, and the session goes on. A message you send during it steers it, and from then on it is your run, with a prompted run's turns |
+
+Results that arrive together are delivered together, after a two-second
+settle. Only the session's own tasks finishing start a wake: nothing else,
+no timer or outside event, runs the agent without you.
+
+The mode in effect is the tightest of the managed configuration, yours, the
+workspace's (which may only tighten), the session's own switch, and what the
+surface can host:
+
+| Surface | Most it runs | Notes |
+|---|---|---|
+| CLI, interactive | `auto` | `auto` unless a file sets `subagents.wake`; results are drawn at the prompt; a wake waits while you are typing; the work list under the input, `/tasks` (`view`, `kill`, `cancel <id\|all>`), `/wake` |
+| CLI, `-p`; `abhed eval`; unattended server runs and schedules | `off` | the run, its exit code and `OnEnd` wait for the tasks |
+| `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; the woken turn streams live, marked "continuing with results from <task>"; the workbench's status bar lists the tasks still running; `POST /v1/sessions/{id}/wake` switches it |
+| `abhed acp` | `auto` | a task has a card of its own, completed by its result; a woken turn streams as session updates between `_abhed/wake/started` and `_abhed/wake/ended`, and a prompt sent meanwhile waits for it |
+| `abhed rpc`, SDK | `auto`, default `off` | `off` joins the tasks; in `auto` a woken run's events stream and rpc answers it with a `woken` line; an explicit `wake` or `Wake` runs the agent on a result |
+
+A wake run has no more authority than a prompted one: the same policy,
+approver and "Always allow" scopes. It starts only when the last run
+completed, budget and turns remain, the hourly limit allows, and the surface
+can host it (on a server: not draining, the session held here, and its owner
+still active). Otherwise the notice is recorded as `skipped:<reason>` and
+handled as `notify`. On a server, whenever a result arrives with no run live,
+in any wake mode, the owner is looked up first; if they are no longer active,
+the session's other tasks are cancelled as `owner_inactive`, since nobody may
+answer their asks. A woken run asks again before each model call and before
+each of its calls is approved, so access withdrawn while it runs ends it as
+`owner_inactive`, its pending call refused (`action.denied`, step `owner`).
+When an administrator revokes, disables or removes a user, the edition that
+manages accounts stops that user's work on the server at once
+(`StopOwnerBackground`): the live run, background shells and tasks, and
+terminals end as `owner_revoked`, and no wake runs for them afterwards.
+
+**Stop means stop.** An explicit stop cancels every background task: Stop or
+`/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),
+`session/cancel`, `CancelTask`. It also stops a `task` or `tasks` call that
+is still starting its tasks: none starts after the stop ("stopped before this
+background task started"), and a task whose start was already recorded ends
+at once with the stop's reason. "Send now" redirects the run and keeps the
+tasks already running. After an explicit stop no result wakes the session
+until your next message, even in `auto`: the stopped tasks' results are
+recorded as `skipped:stopped` and wait for that message. Stopping one task
+yourself (`/tasks kill`, the task's stop in the console or Studio, the API's
+cancel) is a stop too: its end, and any other result, wakes nothing until
+your next message.
+A run that ends in `error`, `max_turns` or `max_budget` takes them with it.
+Ending the conversation (`/exit`, `/clear`, `/resume`, SDK `Close`, rpc `quit`)
+ends them as `session_closed`; deleting a session, as `session_deleted`; a
+drain, after its budget, as `shutdown`. Each task also has a wall-clock
+lifetime, `limits.background_max_minutes`, and ends `deadline` past it.
+
+Limits: `limits.max_background_subagents` bounds the tasks alive at once per
+session, across runs, and a `tasks` call that would pass it starts none. Every
+background task is also a spawn under `limits.max_subagents`, and spends from
+the session's one token budget.
+
+An ask from a background task goes to whoever the session asks, one at a time
+with the agent's own. With no run live: the console's pending approval
+(answered only by the session's owner, by its request id: an approve naming
+no `request_id` is refused with 409 and does not answer it, with or without a
+run live, so it can only answer the run's own ask; refused after 30
+minutes; the console and workbench keep it answerable after the run ends,
+until its own outcome or the closing end); the
+terminal, where only a number offered answers it (`1` Yes, `2` the
+session-wide Yes when one is offered, the last number No), and any other
+line is a prompt, with a note that the approval still waits; in an editor, held until your next prompt opens, then asked first,
+and refused after 30 minutes, or if that turn ends before you answer; and
+refused where nobody can be asked.
+
+`task_status` reports this session's tasks, or one with its summary once
+done; `task_cancel` stops one, as `cancelled_by_parent`. A session's tasks are
+its own: another session asking about one is told there is no such task.
+
+On a server, a session with tasks running keeps its row open, so another node
+does not continue it while they run here, and the event stream stays open for
+their results; the closing end (`settled`) releases it. A result the store
+refuses while the session is idle is tried again, waiting twice as long each
+time; after five tries the work owed is settled so the session is not held,
+and the result arrives at the session's next run (or, on another server, is
+rebuilt from the record). A result that finished
+before a restart, and a task a crashed process lost (ended `lost`), are
+delivered on the session's next run.
+
+Each server process holds the sessions it runs under a liveness identity (its
+`node_id`, or an id of its own when none is set) and refreshes it every 30
+seconds while a run, a background task or a workbench hold is live. Another
+process takes a session over only once that heartbeat is two minutes stale,
+so a live task on one server is never mistaken for a crashed one by another
+sharing the database. A heartbeat renews the claim only while it is still
+that process's: a process whose heartbeat is refused (another has taken the
+session over), or has failed for as long as the claim takes to go stale,
+stops at once. Its run and background tasks end as `lease_lost`, recorded in
+the tasks' own records, it writes nothing more to the session, and it drops
+the session; its claim is never taken back. With the Postgres store Abhed
+ships (`storage.driver: postgres`), the record is fenced in the store as
+well: each event is inserted only while its writer
+holds the session (a subagent's, while its parent's session is held), in the
+same statement, so a process that lost the session writes nothing into it
+even before its next heartbeat, and the refusal stops it there. What a tool
+was already doing when the session was lost (a command running, a file being
+written) is not something a record can undo. Another durable store an
+embedder supplies is not fenced this way, and the server warns of it at
+start. A node restarted with the same
+`node_id` takes back the sessions it held when it starts, before it serves
+anything, so two running nodes must never share a `node_id`.
+
+A server also sweeps at startup, and again every two minutes, by staleness
+alone: every open session whose holder's heartbeat is stale is reconciled then (its lost tasks
+recorded as `lost`, its ends written), so the session list shows it ended and
+ready to continue rather than running.
+
+## Resuming a finished subagent
+
+`task` takes `"resume": "<task_id>"` to continue a finished subagent with a
+follow-up prompt: the same session and record, with what it learned. Omit
+`agent_type` and `model`, or give the ones it ran with; another role or
+model is a new task. It may run in the background too.
+
+- Only the session that started it, and its owner, may resume it; any other
+  id, a subagent still running or being resumed, or a subagent of a subagent
+  is "no such task".
+- Its role is the definition as it is now, so its tools are never wider than
+  today's (`definition_changed` is recorded when the definition changed); a
+  role this session no longer offers is refused.
+- It runs on the model it ran on, or not at all; and not at all when a
+  managed role now pins another model.
+- A worktree subagent resumes in its worktree, which must still exist on its
+  branch, and is settled again after; one whose worktree is gone, or whose
+  record names a directory other than the workspace with no branch to
+  check (as records from before branches were recorded do), is refused. A
+  resume never moves a subagent into the main tree.
+- Each resume counts as a spawn and gets a fresh allowance of turns on top of
+  those already spent. A conversation filling more than 80% of the model's
+  window is refused: start a new task with what it found.
 
 ## What it is not
 

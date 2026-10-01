@@ -11,6 +11,8 @@ model you point it at, and records everything it does.
 | [Configuration](02-configuration.md) | models, permissions, storage, every setting |
 | [Models and providers](03-providers.md) | the twenty providers, sampling parameters, subscriptions |
 | [Permissions and safety](04-permissions.md) | what the agent may do, and how you decide |
+| [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
+| [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
 
 ## Extending it
 
@@ -28,10 +30,14 @@ model you point it at, and records everything it does.
 | [The SDK](09-sdk.md) | embedding Abhed in a Go program |
 | [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
+| [Sessions and the local record](12-records.md) | `-c`, `-r`, rewind, checkpoints, `abhed record verify`, what tamper-evident means |
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
+| [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |
+| [Input, memory and commands](19-input-and-memory.md) | `@` files, `!` commands, `#` notes, `ABHED.md` memory, custom slash commands |
 
-Exporting the event log as OpenTelemetry traces and scheduled runs are
-Enterprise Edition features, documented with that edition.
+Scheduled runs are a Team feature, and exporting the event log as
+OpenTelemetry traces an Enterprise feature. Both are documented with the
+Team and Enterprise edition.

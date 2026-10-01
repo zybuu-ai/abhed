@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
 
 // Findings are rules over the record, not judgements by a model: the same
@@ -19,10 +20,8 @@ var (
 	// narrow: a finding that fires on every dotted word is one nobody reads.
 	hostRE = regexp.MustCompile(`(?i)\b(?:https?|ftp|ssh)://([a-z0-9][a-z0-9.-]*[a-z0-9])|\b((?:\d{1,3}\.){3}\d{1,3})\b`)
 
-	sensitive = []string{
-		"/.ssh/", "/.aws/", "/.kube/", "/.gnupg/", "/.docker/config.json", "/.netrc",
-		"/.env", "id_rsa", "id_ed25519", "/etc/shadow", "credentials.json", ".pem",
-	}
+	// sensitive are paths beyond the shared list of key and credential files.
+	sensitive = []string{"/etc/shadow"}
 
 	abnormal = map[string]string{
 		"error": "the run failed", "stalled": "the model stopped making progress",
@@ -60,11 +59,28 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 	}
 
 	// The record first: everything else in the report stands on it.
-	if len(r.Integrity.Gaps) > 0 {
-		add(Critical, "record-gap", "Events are missing from the record",
-			fmt.Sprintf("The sequence skips at %v. An append-only store does not produce gaps, "+
-				"so this record was filtered, truncated or edited before it was analysed.", r.Integrity.Gaps),
-			r.Integrity.Gaps[0])
+	if in := r.Integrity; len(in.Gaps) > 0 {
+		detail := fmt.Sprintf("The sequence skips at %v. An append-only store does not produce gaps, "+
+			"so this record was filtered, truncated or edited before it was analysed.", in.Gaps)
+		switch {
+		case in.Unsure:
+			// Failing closed: a hole HawkEYE cannot account for is reported as one.
+			detail += " This looks like a -output-format stream-json capture, which leaves out agent.delta, but it does not " +
+				"say so (its result line names nothing omitted), so HawkEYE cannot tell omitted deltas from missing events. " +
+				"Capture with -output-format json or -include-partial-messages to have the record checked whole."
+		case len(in.OmittedTypes) > 0:
+			detail += " The capture leaves out " + strings.Join(in.OmittedTypes, " and ") + ", but these gaps are not " +
+				"where those sit: right before a model.call, after what prompted it, with every call settled."
+		}
+		add(Critical, "record-gap", "Events are missing from the record", detail, in.Gaps[0])
+	}
+	if in := r.Integrity; len(in.Omitted) > 0 {
+		add(Info, "stream-omitted", "agent.delta omitted by stream-json",
+			fmt.Sprintf("The capture was written with -output-format stream-json, which leaves out %s unless "+
+				"-include-partial-messages is given. The sequence skips at %v, each time right before a model.call, "+
+				"where only those could sit; no event is missing there. An event removed from exactly such a place "+
+				"cannot be told apart: capture with -output-format json when the record must be checked whole.",
+				strings.Join(in.OmittedTypes, " and "), in.Omitted), in.Omitted[0])
 	}
 	// The record cannot tell a shell still open from a server that died with
 	// one, so an open shell changes what the finding says, not whether it is made.
@@ -85,17 +101,20 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 	failures := map[string]int{}
 	for _, c := range r.Calls {
 		low := strings.ToLower(c.Subject + " " + c.Args)
-		for _, s := range sensitive {
-			if strings.Contains(low, s) {
-				verb := "was allowed to reach"
-				sev := Warn
-				if c.Decision == "denied" {
-					verb, sev = "was stopped from reaching", Info
-				}
-				add(sev, "sensitive-path", "A call "+verb+" a credential path",
-					fmt.Sprintf("%s %s — matched %q. Decision: %s at step %q.", c.Tool, clip(c.Subject, 160), s, c.Decision, c.Step), c.Seq)
-				break
+		matched := secretfiles.InText(low)
+		for _, p := range sensitive {
+			if matched == "" && strings.Contains(low, p) {
+				matched = p
 			}
+		}
+		if matched != "" {
+			verb := "was allowed to reach"
+			sev := Warn
+			if c.Decision == "denied" {
+				verb, sev = "was stopped from reaching", Info
+			}
+			add(sev, "sensitive-path", "A call "+verb+" a credential path",
+				fmt.Sprintf("%s %s — matched %q. Decision: %s at step %q.", c.Tool, clip(c.Subject, 160), matched, c.Decision, c.Step), c.Seq)
 		}
 		if c.Decision == "denied" {
 			add(Info, "denied", "Denied: "+c.Tool,

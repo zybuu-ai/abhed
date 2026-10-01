@@ -31,4 +31,60 @@ __added.length = 0;
 render(ev(20, 'conversation.forked', 'user', {through_seq:7}));
 check('a fork marker is drawn', text().includes('forked at step 7'));
 
+// A background result and the closing end.
+__added.length = 0;
+render(ev(30, 'subagent.notice', 'system', {task_id:'t1', description:'scan logs', status:'completed', turns:1, content:'three errors'}));
+render(ev(31, 'session.ended', 'system', {reason:'completed', background:0, settled:true}));
+check('a background result is drawn with its summary', text().includes('background: scan logs finished (completed, 1 turn)') && text().includes('three errors'));
+check('the closing end is drawn as background work finishing', text().includes('background work finished'));
+// Background text is the model's or a command's: bidi and zero-width characters are written out, as on an ask card.
+const RLO = String.fromCharCode(0x202e), ZW = String.fromCharCode(0x200b);
+__added.length = 0;
+render(ev(40, 'subagent.spawned', 'system', {task_id:'t2', description:'scan' + RLO + 'gol', background:true}));
+const bar = $('s-bg');
+const barOk = bar.textContent.includes('⟨U+202E⟩') && !bar.textContent.includes(RLO) && bar.title.includes('⟨U+202E⟩') && !bar.title.includes(RLO);
+render(ev(41, 'subagent.returned', 'system', {reason:'done' + ZW}));
+render(ev(42, 'subagent.notice', 'system', {task_id:'t2', description:'scan' + RLO + 'gol', status:'completed' + ZW, content:'line one\nok' + RLO + 'txt.exe'}));
+render(ev(43, 'session.woken', 'system', {by:'policy', task_ids:['t2']}));
+const shown = text() + bar.title;
+check('background names, results and reasons show bidi and zero-width as code points',
+  !shown.includes(RLO) && !shown.includes(ZW) && text().includes('subagent started: scan⟨U+202E⟩gol') &&
+  text().includes('finished (completed⟨U+200B⟩') && text().includes('line one\nok⟨U+202E⟩txt.exe') &&
+  text().includes('continuing with results from scan⟨U+202E⟩gol') && barOk);
+// A background shell is listed in the status bar while it runs, and leaves it when it ends.
+bgTasks.clear();
+render(ev(50, 'shell.started', 'system', {shell_id:'sh_1', call_id:'c1', command:'npm run dev', description:'dev server'}));
+const runningShell = $('s-bg').textContent;
+render(ev(51, 'shell.ended', 'system', {shell_id:'sh_1', call_id:'c1', state:'exited', exit_code:0}));
+check('a background shell is in the status bar while it runs', $('s-bg').hidden === true && runningShell.includes('1 background: dev server') &&
+  $('s-bg').textContent === '' && $('s-bg').title.includes('dev server · exited'));
+// A decision's reason and scope sit under the call they settle, and are drawn written out too.
+__added.length = 0;
+const R = String.fromCharCode(0x202e), J = String.fromCharCode(0x200d);
+render(ev(60, 'action.requested', 'agent', {call_id:'a6', tool:'bash', args:{command:'ls' + J}}));
+render(ev(61, 'action.approved', 'system', {call_id:'a6', step:'rule', granted_scope:'bash:ls' + R, reason:'ok' + R}));
+render(ev(62, 'action.requested', 'agent', {call_id:'a7', tool:'bash', args:{command:'rm'}}));
+render(ev(63, 'action.denied', 'system', {call_id:'a7', step:'deny', reason:'no' + R + 'pe'}));
+const why = __added.map(n => n.textContent).join('\n');
+check('a decision\'s reason and scope show hidden characters: ' + JSON.stringify(why),
+  !why.includes(R) && !why.includes(J) && why.includes('ls⟨U+200D⟩') && why.includes('always allowing bash:ls⟨U+202E⟩ — ok⟨U+202E⟩') && why.includes('— no⟨U+202E⟩pe'));
+// A model error quotes the model's own invalid arguments: an RLO in them must not reverse the row.
+__added.length = 0;
+render(ev(70, 'model.call', 'system', {turn:1, model:'m', error:'model produced invalid JSON arguments for bash: {"description": "bd2' + R + 'gpj.exe' + String.fromCharCode(0x200b) + '"}'}));
+const merr = text();
+check('a model error shows hidden characters: ' + JSON.stringify(merr),
+  !merr.includes(R) && merr.includes('model error: model produced invalid JSON arguments for bash: {"description": "bd2⟨U+202E⟩gpj.exe⟨U+200B⟩"}'));
+// The running label names the tool, and an MCP server chooses its tools' names.
+__added.length = 0; __waits.length = 0;
+render(ev(80, 'action.requested', 'agent', {call_id:'a8', tool:'mcp_fs_read' + R + 'gpj.exe' + J, args:{}}));
+render(ev(81, 'action.approved', 'system', {call_id:'a8', step:'rule'}));
+const wl = __waits[__waits.length - 1] || '';
+check('the running label shows hidden characters in the tool name: ' + JSON.stringify(wl),
+  wl === 'Running mcp_fs_read⟨U+202E⟩gpj.exe⟨U+200D⟩');
+// A message from the record that this page did not send is drawn as said, with hidden characters written out.
+__added.length = 0;
+render(ev(82, 'user.message', 'user', {text:'fix' + R + 'txt.exe' + String.fromCharCode(0x1b) + '[2J\n    indented'}));
+const um = text();
+check('a person\'s message shows hidden characters and keeps its layout: ' + JSON.stringify(um),
+  !um.includes(R) && !um.includes(String.fromCharCode(0x1b)) && um.includes('fix⟨U+202E⟩txt.exe⟨U+001B⟩[2J\n    indented'));
 if(!ok) process.exit(1);

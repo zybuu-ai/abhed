@@ -28,7 +28,7 @@ func TestHeartbeatGoroutineDoesNotLeak(t *testing.T) {
 	before := settle()
 	for i := 0; i < 50; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
-		_ = s.heartbeatNodeEvery(ctx, "s", 5*time.Millisecond)
+		_ = s.heartbeatNodeEvery(ctx, "s", 5*time.Millisecond, nil)
 		cancel() // the run ending is what stops it
 	}
 	after := settle()

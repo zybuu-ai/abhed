@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/kubescope"
@@ -38,69 +38,14 @@ type Approver struct {
 	// and wait for a "\n" raw mode never sends (Enter is "\r"). read returns
 	// ok=false when input ended or was cancelled, which is treated as a refusal.
 	Prepare func(ctx context.Context) (read func() (string, bool), cleanup func())
+	// Arm, when set, is called as each "answer 1-N:" is shown, before read
+	// waits: an answer sent the moment the question is whole is its answer,
+	// not a line that fell before the approver started reading.
+	Arm func()
 
 	// reader is the lazily-created line reader for the non-interactive path.
 	reader *bufio.Reader
 }
-
-// Prompter routes a typed line to a pending approval.
-//
-// The interactive loop runs one reader on stdin (the line editor) and consumes
-// its lines in a select loop. An approval that read stdin itself would fight
-// that reader for bytes. Instead the approver parks on Await, the reader loop
-// hands the next line to Deliver, and there is still only one reader.
-type Prompter struct {
-	mu      sync.Mutex
-	waiting chan string
-	stop    chan struct{}
-	once    sync.Once
-}
-
-// NewPrompter returns a Prompter ready to route approval input.
-func NewPrompter() *Prompter { return &Prompter{stop: make(chan struct{})} }
-
-// Await blocks until a line is delivered, the context is cancelled, or input
-// ends. ok is false in the latter two cases.
-func (p *Prompter) Await(ctx context.Context) (string, bool) {
-	ch := make(chan string, 1)
-	p.mu.Lock()
-	p.waiting = ch
-	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		p.waiting = nil
-		p.mu.Unlock()
-	}()
-	select {
-	case s := <-ch:
-		return s, true
-	case <-ctx.Done():
-		return "", false
-	case <-p.stop:
-		return "", false
-	}
-}
-
-// Deliver hands a line to a pending Await. It reports whether one was waiting,
-// so the caller knows to consume the line rather than treat it as steering.
-func (p *Prompter) Deliver(line string) bool {
-	p.mu.Lock()
-	ch := p.waiting
-	p.mu.Unlock()
-	if ch == nil {
-		return false
-	}
-	select {
-	case ch <- line:
-		return true
-	default:
-		return false
-	}
-}
-
-// Close reports that input has ended, so any current or future Await refuses
-// rather than blocking forever.
-func (p *Prompter) Close() { p.once.Do(func() { close(p.stop) }) }
 
 // AllowList holds scopes the user approved with "always" during this session.
 type AllowList struct {
@@ -140,87 +85,120 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 	// Every model- or tool-supplied field is made visible before it is styled,
 	// so a carriage return or escape in the arguments cannot redraw the prompt.
 	s := a.Style
-	var v visibleTracker
-	header := fmt.Sprintf("\n%s %s %s\n", s.Yellow("●"), s.Bold(v.line(tool)), s.Dim(v.line(summarizeArgs(tool, args))))
-	var asked []string
+	// Everything shown comes from the model or the configuration: the
+	// command, the path and the diff are revealed — hidden characters shown
+	// as marked escapes — and the rest keeps text only, so what is approved
+	// is exactly what will run.
+	fmt.Fprintf(a.Out, "\n%s %s %s\n", s.Yellow("●"), s.Bold(VisibleLine(tool)), s.Dim(VisibleLine(summarizeArgs(tool, args))))
 	if via := agent.PipelineOf(ctx); via != "" {
-		asked = append(asked, "asked by "+v.line(via))
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by "+VisibleLine(via)))
 	}
 	if who := agent.SubagentOf(ctx); who != "" {
-		asked = append(asked, "asked by subagent: "+v.line(who))
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim("asked by subagent: "+VisibleLine(who)))
 	}
 	if res.Reason != "" {
-		asked = append(asked, v.line(res.Reason))
+		why := VisibleLine(res.Reason)
+		if res.Step != "" {
+			why += " · policy step: " + res.Step
+		}
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim(why))
 	}
-	preview := a.preview(&v, tool, args)
-	// The warning covers the whole call, not only the fields drawn above.
-	if ArgsHidden(args) {
-		v.hidden = true
-	}
-	options := "[a]ccept  [r]eject"
-	if scope != "" {
-		options += fmt.Sprintf("  [A]lways allow %s", s.Dim(v.line(scope)))
-	}
-
-	fmt.Fprint(a.Out, header)
-	if v.hidden {
-		fmt.Fprintf(a.Out, "  %s\n", s.Red(hiddenWarning))
-	}
-	for _, line := range asked {
-		fmt.Fprintf(a.Out, "  %s\n", s.Dim(line))
-	}
-	if preview != "" {
+	if preview := a.preview(tool, args); preview != "" {
 		fmt.Fprintln(a.Out, preview)
 	}
-	fmt.Fprintf(a.Out, "  %s ", options)
 
-	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
-		}
-
-		line, ok := read()
-		if !ok {
-			// Input ended or was cancelled. A cancelled context is an error the
-			// loop must see; an ended input is a refusal, not an error.
-			if err := ctx.Err(); err != nil {
-				fmt.Fprintln(a.Out)
+	// Numbered answers only, and nothing chosen for an empty line: a letter
+	// or Enter alone never approves. The spec is checked as every dialog is.
+	choices := []Choice{{ID: ChoiceYes, Label: "Yes"}}
+	if scope != "" {
+		choices = append(choices, Choice{ID: "always", Label: "Yes, and don't ask again for " + VisibleLine(scope) + " this session", Widening: true})
+	}
+	choices = append(choices, Choice{ID: ChoiceNo, Label: "No"})
+	if approvalHidden(ctx, tool, args, res) {
+		fmt.Fprintf(a.Out, "  %s\n", s.Yellow(HiddenWarning))
+	}
+	id, err := a.askNumbered(ctx, read, DialogSpec{Kind: DialogApproval, Title: tool, Choices: choices})
+	if err != nil || id == "" {
+		return false, err
+	}
+	// Each answer names the ask it answered, so the line says what it approved.
+	answered := func(how string) {
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim(how+": "+askedWhat(ctx, tool, args)))
+	}
+	switch id {
+	case "always":
+		a.Session.Add(scope)
+		agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
+		answered("always allowed " + VisibleLine(scope))
+		return true, nil
+	case ChoiceYes:
+		if res.Step == "destructive" {
+			fmt.Fprintf(a.Out, "  %s\n", s.Bold("This cannot be undone. Really run it?"))
+			id, err := a.askNumbered(ctx, read, DialogSpec{Kind: DialogConfirm, Title: "This cannot be undone",
+				Choices: []Choice{{ID: ChoiceNo, Label: "No, don't run it"}, {ID: ChoiceYes, Label: "Yes, run it", Destructive: true}}})
+			if id != ChoiceYes {
+				answered("rejected")
 				return false, err
 			}
-			// EOF (piped input, no TTY): refuse rather than silently proceeding.
-			fmt.Fprintln(a.Out)
-			return false, nil
 		}
-		switch strings.TrimSpace(line) {
-		case "a", "y":
-			// Only an explicit key accepts. Enter alone used to, so a line of
-			// typing that ended in Enter approved whatever was on screen.
+		answered("accepted")
+		return true, nil
+	}
+	answered("rejected")
+	return false, nil
+}
+
+// askNumbered prints spec's numbered choices and reads until a number in
+// range is given, returning its id. Anything else — a letter, an empty line —
+// asks again. Input ending or the context ending is no answer.
+func (a *Approver) askNumbered(ctx context.Context, read func() (string, bool), spec DialogSpec) (string, error) {
+	spec, err := spec.Normalized()
+	if err != nil {
+		return "", err
+	}
+	s := a.Style
+	for i, c := range spec.Choices {
+		fmt.Fprintf(a.Out, "  %d. %s\n", i+1, c.Label)
+	}
+	for {
+		if a.Arm != nil {
+			a.Arm()
+		}
+		fmt.Fprintf(a.Out, "  %s ", s.Dim(fmt.Sprintf("answer 1-%d:", len(spec.Choices))))
+		if err := ctx.Err(); err != nil {
 			fmt.Fprintln(a.Out)
-			return true, nil
-		case "r", "n":
+			return "", err
+		}
+		line, ok := read()
+		if !ok {
 			fmt.Fprintln(a.Out)
-			return false, nil
-		case "A":
-			if scope != "" {
-				a.Session.Add(scope)
-				agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Granted: scope})
-				fmt.Fprintln(a.Out)
-				return true, nil
+			if err := ctx.Err(); err != nil {
+				return "", err
 			}
-			fmt.Fprintf(a.Out, "\n  no scope available; [a]ccept or [r]eject: ")
-		case string(approvalHeld):
-			fmt.Fprintf(a.Out, "\n  %s\n  %s ", s.Dim("typing is kept as a steering message: Enter sends it, Ctrl-U clears it"), options)
-		case string(approvalBusy):
-			fmt.Fprintf(a.Out, "\n  %s\n  %s ", s.Dim("the line is not empty: Ctrl-U clears it, Enter sends it as steering"), options)
-		default:
-			// An unrecognised key just re-shows the choices. In raw mode a
-			// single keypress arrives with no echo, so without this a stray key
-			// looks like nothing happened.
-			fmt.Fprintf(a.Out, "\n  %s ", options)
+			return "", nil // input ended: nobody can say yes
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && n >= 1 && n <= len(spec.Choices) {
+			fmt.Fprintln(a.Out)
+			return spec.Choices[n-1].ID, nil
+		}
+		fmt.Fprintf(a.Out, "\n  %s\n", s.Dim("answer with a number"))
+	}
+}
+
+// HiddenWarning is said above an approval whose call carries characters that
+// do not print as themselves; they are shown as ⟨…⟩ escapes.
+const HiddenWarning = "⚠ this call has hidden characters, shown as ⟨…⟩ escapes; check what it will do before approving"
+
+// approvalHidden reports whether anything an approval is about carries a
+// hidden character: every key and string in the arguments, a JSON string
+// decoded, the reason, the scope, and who asked.
+func approvalHidden(ctx context.Context, tool string, args json.RawMessage, res policy.Result) bool {
+	for _, s := range []string{tool, res.Reason, res.Offer(), agent.PipelineOf(ctx), agent.SubagentOf(ctx)} {
+		if HasHidden(s) {
+			return true
 		}
 	}
+	return ArgsHidden(args)
 }
 
 // readAnswer is the default line reader for tests and non-interactive callers.
@@ -237,7 +215,7 @@ func (a *Approver) readAnswer() (string, bool) {
 }
 
 // preview renders what the action will actually do.
-func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) string {
+func (a *Approver) preview(tool string, raw json.RawMessage) string {
 	s := a.Style
 	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
@@ -257,10 +235,10 @@ func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) 
 		old, updated := str("old_string"), str("new_string")
 		var b strings.Builder
 		for _, line := range strings.Split(strings.TrimRight(old, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Red("- "+v.line(line)))
+			fmt.Fprintf(&b, "  %s\n", s.Red("- "+VisibleLine(line)))
 		}
 		for _, line := range strings.Split(strings.TrimRight(updated, "\n"), "\n") {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+v.line(line)))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+VisibleLine(line)))
 		}
 		return strings.TrimRight(b.String(), "\n")
 
@@ -273,7 +251,7 @@ func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) 
 			shown = lines[:15]
 		}
 		for _, line := range shown {
-			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+v.line(line)))
+			fmt.Fprintf(&b, "  %s\n", s.Green("+ "+VisibleLine(line)))
 		}
 		if len(lines) > 15 {
 			fmt.Fprintf(&b, "  %s\n", s.Dim(fmt.Sprintf("... %d more lines", len(lines)-15)))
@@ -281,39 +259,67 @@ func (a *Approver) preview(v *visibleTracker, tool string, raw json.RawMessage) 
 		return strings.TrimRight(b.String(), "\n")
 
 	case "bash":
-		return fmt.Sprintf("  %s", s.Dim("$ "+v.line(str("command"))))
-
-	case "ssh":
-		return fmt.Sprintf("  %s", s.Dim(v.line(str("host"))+" $ "+v.line(str("command"))))
-
-	case "web_fetch":
-		line := v.line(str("url"))
-		if method := str("method"); method != "" {
-			line = v.line(method) + " " + line
+		line := fmt.Sprintf("  %s", s.Dim("$ "+VisibleLine(str("command"))))
+		if bg, _ := m["run_in_background"].(bool); bg {
+			line += "\n  " + s.Yellow("runs in the background: it goes on after this call, until it ends, is stopped or reaches its time limit")
 		}
-		return fmt.Sprintf("  %s", s.Dim(line))
+		return line
 
+	case "ssh", "web_fetch", "task", "k8s_apply":
+		head, body := callPreview(tool, m)
+		var b strings.Builder
+		fmt.Fprintf(&b, "  %s", s.Dim(head))
+		for _, line := range body {
+			fmt.Fprintf(&b, "\n    %s", s.Dim(line))
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// askedWhat names an ask for the line that records its answer: the tool, what
+// it acts on, and the subagent that asked, if one did.
+func askedWhat(ctx context.Context, tool string, args json.RawMessage) string {
+	what := strings.TrimSpace(VisibleLine(tool) + " " + VisibleLine(summarizeArgs(tool, args)))
+	if who := agent.SubagentOf(ctx); who != "" {
+		what += " (subagent " + VisibleLine(who) + ")"
+	}
+	return what
+}
+
+// callPreview is what approving a cluster change, a subagent, a remote
+// command or a fetch will do: a heading and the lines under it, each made
+// visible as one line. Both the line prompt and the dialog draw it.
+func callPreview(tool string, m map[string]any) (string, []string) {
+	str := func(k string) string {
+		v, _ := m[k].(string)
+		return v
+	}
+	var head string
+	var body []string
+	switch tool {
+	case "ssh":
+		head = VisibleLine(str("host")) + " $ " + VisibleLine(str("command"))
+	case "web_fetch":
+		head = VisibleLine(str("url"))
+		if method := str("method"); method != "" {
+			head = VisibleLine(method) + " " + head
+		}
 	case "task":
 		kind := str("agent_type")
 		if kind == "" {
 			kind = "general"
 		}
-		return a.block(v, "subagent: "+kind, firstLines(str("prompt"), 10))
-
+		head, body = VisibleLine("subagent: "+kind), firstLines(str("prompt"), 10)
 	case "k8s_apply":
-		return a.block(v, k8sHead(m, str), k8sBody(str))
+		head, body = VisibleLine(k8sHead(m, str)), k8sBody(str)
+	default:
+		return "", nil
 	}
-	return ""
-}
-
-// block draws a dim heading and indented lines, each escaped as one line.
-func (a *Approver) block(v *visibleTracker, head string, lines []string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "  %s", a.Style.Dim(v.line(head)))
-	for _, line := range lines {
-		fmt.Fprintf(&b, "\n    %s", a.Style.Dim(v.line(line)))
+	for i, line := range body {
+		body[i] = VisibleLine(line)
 	}
-	return b.String()
+	return head, body
 }
 
 // k8sHead names what a k8s_apply changes: action, cluster, namespace, kind and name.

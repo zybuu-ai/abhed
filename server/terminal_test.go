@@ -26,6 +26,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/store"
 )
@@ -62,6 +63,9 @@ func shellBenchOpts(t *testing.T, edit func(*config.Config), opt func(*Options))
 	return wb
 }
 
+// openIdle opens a workbench session with no prompt, in tenant.
+//
+//nolint:unparam // the tenant is what a cross-tenant test would vary
 func (wb *workbench) openIdle(tenant string) string {
 	wb.t.Helper()
 	rec := httptest.NewRecorder()
@@ -300,7 +304,7 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 	if !strings.Contains(out, "got 8") {
 		t.Fatalf("the prompt did not take the input:\n%s", out)
 	}
-	time.Sleep(2 * echoWait)
+	time.Sleep(2 * termline.EchoWait)
 	for _, e := range wb.events() {
 		if strings.Contains(string(e.Payload), "hunter22") {
 			t.Fatalf("an unechoed line reached the record: %s %s", e.Type, e.Payload)
@@ -308,6 +312,103 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 	}
 	if !slices.ContainsFunc(wb.typed(), func(in agent.TerminalInput) bool { return in.Withheld != "" }) {
 		t.Fatalf("the withheld line is not marked: %+v", wb.typed())
+	}
+}
+
+// A password typed ahead of read -s, before the shell has run the line that
+// turns echo off, is withheld; so is one typed once echo is off. The lines
+// typed ahead end in Ctrl-J: one that lands while bash's line editor still
+// has the terminal keeps a bare CR, and read would wait on it for ever.
+func TestShellWithholdsAPasswordTypedAheadOfThePrompt(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"` + "\r", until: "READY"},
+		step{keys: "hunter22\r", until: "got 8"},
+		step{keys: `read -s pw; echo "also ${#pw}"` + "\r", nowait: true},
+		step{keys: "hunter33\n", until: "also 8"},
+		// Typed while the line before read -s still runs, with echo on: the
+		// terminal shows it, and the record's copy of the output must not.
+		step{keys: `echo BU""SY; end=$((SECONDS+2)); while ((SECONDS < end)); do :; done; read -s pw; echo "late ${#pw}"` + "\r", until: "BUSY"},
+		step{keys: "hunter44\n", until: "late 8"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "got 8") || !strings.Contains(out, "also 8") || !strings.Contains(out, "late 8") {
+		t.Fatalf("the reads did not take the input:\n%s", out)
+	}
+	if !strings.Contains(out, "hunter44") {
+		t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
+	}
+	time.Sleep(2 * termline.EchoWait)
+	for _, e := range wb.events() {
+		for _, pw := range []string{"hunter22", "hunter33", "hunter44"} {
+			if strings.Contains(string(e.Payload), pw) {
+				t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+			}
+		}
+	}
+}
+
+// A password typed ahead and edited as it was typed is shown by the terminal
+// as something other than its text, which cannot be found in the output; the
+// record keeps none of that output.
+func TestShellWithholdsAnEditedPasswordTypedAhead(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `echo BU""SY; end=$((SECONDS+2)); while ((SECONDS < end)); do :; done; read -s pw; echo "late ${#pw}"` + "\r", until: "BUSY"},
+		step{keys: "swordfiX\x7fsh99\n", until: "late 11"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "late 11") || !strings.Contains(out, "swordfi") {
+		t.Fatalf("the terminal did not echo the edited line, so nothing was tried:\n%s", out)
+	}
+	time.Sleep(2 * termline.EchoWait)
+	ended := false
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "swordfi") || strings.Contains(string(e.Payload), "sh99") {
+			t.Fatalf("an edited password reached the record: %s %s", e.Type, e.Payload)
+		}
+		ended = ended || (e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "output withheld"))
+	}
+	if !ended {
+		t.Fatal("the shell's end does not say its output was withheld")
+	}
+}
+
+// A password typed ahead while another program has the terminal, as sleep
+// does before read -s, is echoed by the terminal and read by the shell
+// after. It is not a shell line, so it is not recorded, but the output the
+// record keeps must not hold it either.
+func TestShellWithholdsAPasswordTypedAheadWhileAProgramRuns(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `echo BU""SY; sleep 2; read -s pw; echo "late ${#pw}"` + "\r", until: "BUSY"},
+		step{keys: "hunter55\n", until: "late 8"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "late 8") || !strings.Contains(out, "hunter55") {
+		t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
+	}
+	time.Sleep(2 * termline.EchoWait)
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "hunter55") {
+			t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+		}
+	}
+}
+
+// The same in lines mode: a single command's input is not recorded, and a
+// password it echoed before read -s turned echo off is not kept in its output.
+func TestCommandWithholdsAPasswordTypedAhead(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startPTY(`echo BU""SY; sleep 1; read -s pw; echo "late ${#pw}"`)
+	out, _ := wb.ptyOutput(start.ID, "hunter66\n")
+	if !strings.Contains(out, "late 8") || !strings.Contains(out, "hunter66") {
+		t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
+	}
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "hunter66") {
+			t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+		}
 	}
 }
 
@@ -653,7 +754,7 @@ func TestWorkbenchSessionReopensAfterRestart(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
 	dir := t.TempDir()
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
 	first := New(opts)
@@ -671,6 +772,120 @@ func TestWorkbenchSessionReopensAfterRestart(t *testing.T) {
 	}
 }
 
+// A workbench hold is a holder like a run: its claim carries this process's
+// liveness while it is held, so another process cannot take the session for
+// a crashed one, and gives it up with the hold.
+func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+
+	second := New(opts)
+	wb.h = second.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	if got := st.holderOf(wb.session); got != second.holder {
+		t.Fatalf("holder during a workbench hold: %q, want %q", got, second.holder)
+	}
+	if ok, _ := st.ClaimOrphan(context.Background(), wb.session, "another", nodeStale); ok {
+		t.Fatal("a held session was taken as an orphan")
+	}
+	second.drain()
+	if got := st.holderOf(wb.session); got != "" {
+		t.Fatalf("holder after the hold ended: %q", got)
+	}
+
+	// Deleted while held: the hold's liveness goes with it, and its timer
+	// writes nothing into the deleted record.
+	hold := manualHold
+	manualHold = 300 * time.Millisecond
+	t.Cleanup(func() { manualHold = hold })
+	third := New(opts)
+	wb.h = third.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	if got := st.holderOf(wb.session); got != third.holder {
+		t.Fatalf("holder: %q", got)
+	}
+	del := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/v1/sessions/"+wb.session, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	wb.h.ServeHTTP(del, req)
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", del.Code, del.Body)
+	}
+	if got := st.holderOf(wb.session); got != "" {
+		t.Fatalf("a deleted session is still held by %q", got)
+	}
+	time.Sleep(3 * manualHold)
+	if evs, _ := st.Events(wb.session); len(evs) != 0 {
+		t.Fatalf("the hold wrote %d events after the delete", len(evs))
+	}
+}
+
+// A workbench hold is not given back while a result is owed: given back, its
+// delivery would write to a session nobody holds.
+func TestWorkbenchHoldKeptWhileResultOwed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+	second := New(opts)
+	wb.h = second.Handler()
+	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
+		t.Fatalf("exec: %d %s", rec.Code, rec.Body)
+	}
+	second.mu.RLock()
+	live := second.running[wb.session]
+	second.mu.RUnlock()
+	live.Loop.QueueNotices([]agent.Notice{{TaskID: "t-1", Session: "t-1", CallID: "bgn_t1", Content: "done"}})
+	second.releaseHeld(wb.session, live, false)
+	live.holdMu.Lock()
+	held := live.held
+	live.holdMu.Unlock()
+	if !held || live.unclaimed.Load() {
+		t.Fatalf("the hold was given back with a result owed: held %v, unclaimed %v", held, live.unclaimed.Load())
+	}
+	second.drain()
+}
+
+// A workbench write whose claim cannot be held answers 503 with Retry-After.
+func TestWorkbenchFailedHoldAnswers503(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "proxy"
+	dir := t.TempDir()
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
+	first := New(opts)
+	wb := &workbench{t: t, h: first.Handler(), workspace: dir}
+	wb.session = wb.openIdle("acme")
+	first.drain()
+	wb.h = New(opts).Handler()
+	st.mu.Lock()
+	st.failHold = true
+	st.mu.Unlock()
+	rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo x"})
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("a workbench write with no hold: %d %s", rec.Code, rec.Body)
+	}
+}
+
 // The terminal's environment starts from the host's when the command left it
 // unset; appending TERM to nothing gave the container CLI no PATH at all.
 func TestTerminalEnvironmentKeepsTheHost(t *testing.T) {
@@ -680,100 +895,12 @@ func TestTerminalEnvironmentKeepsTheHost(t *testing.T) {
 	}
 }
 
-// The capture rebuilds a line from the keys typed, and says when it could not.
-func TestLineCaptureRebuildsTypedLines(t *testing.T) {
-	for keys, want := range map[string]struct {
-		line   string
-		edited bool
-	}{
-		"ls -la\r":                       {"ls -la", false},
-		"ls -lx\x7fa\r":                  {"ls -la", true},
-		"rm -rf x\x15echo hi\r":          {"echo hi", false},
-		"\x1b[200~git status\x1b[201~\r": {"git status", false},
-		"gi\tstatus\r":                   {"gistatus", true},
-		"\x1b[A\r":                       {"", true},
-		"echo one two\x17three\r":        {"echo one three", true},
-	} {
-		c := newLineCapture("u1", nil)
-		chunks := c.keys([]byte(keys))
-		e := chunks[len(chunks)-1].enter
-		if e == nil || e.line != want.line || e.edited != want.edited || !e.whole {
-			t.Errorf("%q: got %+v, want %q edited=%v", keys, e, want.line, want.edited)
-		}
-	}
-	c := newLineCapture("u1", nil)
-	c.output([]byte("\x1b[?1049h"))
-	if chunks := c.keys([]byte(":wq\r")); !chunks[0].enter.alt {
-		t.Error("a full-screen program's keys were taken for a shell line")
-	}
-}
-
-// When the capture cannot be sure a line was shown as typed, it keeps the line
-// without its text.
-func TestLineCaptureWithholdsWhenUnsure(t *testing.T) {
-	typed := func(keys string, echo string, known, secret bool) *enteredLine {
-		c := newLineCapture("u1", nil)
-		for i := range keys[:len(keys)-1] {
-			c.keys([]byte{keys[i]})
-			if i == 0 { // the terminal shows the given text once, as the line is typed
-				c.output([]byte(echo))
-			}
-		}
-		e := c.keys([]byte{keys[len(keys)-1]})[0].enter
-		e.known, e.secret = known, secret
-		return e
-	}
-	for name, tc := range map[string]struct {
-		e    *enteredLine
-		want bool
-	}{
-		"echoed long line":        {typed("git status\r", "git status", false, false), true},
-		"not echoed":              {typed("hunter22\r", "\r\n", true, false), false},
-		"password mode":           {typed("git status\r", "git status", true, true), false},
-		"short, terminal asked":   {typed("ls\r", "ls", true, false), true},
-		"short, terminal unknown": {typed("ls\r", "ls", false, false), false},
-		"edit at the Enter":       {typed("abcdX\x7fr\r", "abcdX", true, false), false},
-		"only the end shown":      {typed("hunter22echo hi there\r", "echo hi there", true, false), false},
-		"all but one key shown":   {typed("echo hi there\r", "echo hi the", true, false), false},
-	} {
-		if got := tc.e.echoed(); got != tc.want {
-			t.Errorf("%s: echoed() = %v, want %v (%+v)", name, got, tc.want, tc.e)
-		}
-	}
-}
-
-// A switch to the alternate screen split across two reads is still seen.
-func TestLineCaptureSeesASplitScreenSwitch(t *testing.T) {
-	c := newLineCapture("u1", nil)
-	c.output([]byte("vim\x1b[?10"))
-	c.output([]byte("49h~"))
-	if !c.alt {
-		t.Fatal("a switch split across reads was missed")
-	}
-}
-
-// A flood of lines cannot turn into a flood of events.
-func TestLineCaptureBoundsWhatWaits(t *testing.T) {
-	var got []agent.TerminalInput
-	var mu sync.Mutex
-	c := newLineCapture("u1", func(in agent.TerminalInput) { mu.Lock(); got = append(got, in); mu.Unlock() })
-	for _, k := range c.keys([]byte(strings.Repeat("abcdef\r", 500))) {
-		c.entered(k.enter)
-	}
-	c.flush()
-	mu.Lock()
-	defer mu.Unlock()
-	if len(got) != maxPending+1 || !strings.Contains(got[len(got)-1].Withheld, "436 more lines") {
-		t.Fatalf("%d events, last %+v", len(got), got[len(got)-1])
-	}
-}
-
 // Another person in the same tenant cannot reopen someone's session.
 func TestWorkbenchSessionReopensOnlyForItsOwner(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
 	dir := t.TempDir()
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	opts := Options{Workspace: dir, Config: cfg, Adapter: stubAdapter{}, Store: st,
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})}
 	first := New(opts)

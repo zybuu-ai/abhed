@@ -120,7 +120,8 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .plus{color:var(--add)}.minus{color:var(--del)}
 .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
 .dot.running{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}
+.dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}.dot.background{background:var(--warn)}
+.badge{font-size:10px;padding:0 4px;border-radius:3px;color:var(--muted)}.badge.warn{color:var(--warn)}
 .dot.done.error,.dot.done.max_turns,.dot.done.max_budget,.dot.done.retry_exhausted,.dot.done.policy_denied,.dot.done.stalled,.dot.done.deadline{background:var(--del)}
 .card{margin:6px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
 .card .t{display:flex;gap:8px;align-items:baseline}
@@ -298,6 +299,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .todo .in_progress{color:var(--accent);font-weight:600}
 .sys{font:11.5px var(--mono);color:var(--muted);text-align:center;padding:2px 0;flex:none}
 .sys.bad{color:var(--bad)}
+.sys.woke{color:var(--accent)}
 #composer{flex:none;border-top:1px solid var(--line);padding:9px 10px;position:relative}
 #q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
 #crow{display:flex;align-items:center;gap:8px;margin-top:7px;min-width:0}
@@ -459,7 +461,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 
   <footer id="status">
     <span id="s-conn" class="off">● offline</span>
-    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span>
+    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span><span id="s-bg" hidden></span>
     <span class="sp"></span>
     <span id="s-ctx" hidden>context<span id="meter"><i></i></span><span id="s-ctxn"></span></span>
     <span id="s-tok"></span>
@@ -504,6 +506,8 @@ function signInEnded(why){
 }
 
 /* ---------------------------------------------------------------- state */
+let bgLive = false; // the open session still has background tasks, with no run
+const bgTasks = new Map(); // task_id -> {name, state}, from the record
 let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let caps = null, streaming = null, streamBody = null, todoNode = null, thinkBlock = null;
 const calls = new Map();            // call_id -> {node, res, tool, subject, args, out}
@@ -668,9 +672,9 @@ function drawTabs(){
   for(const t of tabs){
     const b = el('div', 'tab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t.id === active)); b.tabIndex = 0;
     if(t.kind === 'diff') b.appendChild(el('span', 'k', 'diff'));
-    b.appendChild(el('span', 'nm', t.label)); b.title = t.path || t.label;
+    b.appendChild(el('span', 'nm', reveal(t.label))); b.title = reveal(t.path || t.label);
     if(t.dirty) b.appendChild(el('span', 'dot', '●'));
-    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.label);
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + reveal(t.label));
     x.addEventListener('click', e => { e.stopPropagation(); if(t.dirty && !x.dataset.sure){ x.dataset.sure = '1'; x.textContent = 'discard?'; return; } closeTab(t.id); });
     b.appendChild(x);
     b.addEventListener('click', () => { if(active === t.id) return; keepView(); active = t.id; drawTabs(); showTab(t); });
@@ -683,8 +687,8 @@ function drawTabs(){
 }
 function crumbs(path, meta){
   $('crumbs').hidden = !path; const c = $('crumb'); clear(c);
-  if(path) path.split('/').forEach((p, i, all) => { if(i) c.appendChild(el('span', 'sep codicon codicon-chevron-right')); c.appendChild(el('span', i === all.length - 1 ? 'leaf' : '', p)); });
-  $('crumb-meta').textContent = meta || ''; if(!path) $('crumb-pos').textContent = '';
+  if(path) path.split('/').forEach((p, i, all) => { if(i) c.appendChild(el('span', 'sep codicon codicon-chevron-right')); c.appendChild(el('span', i === all.length - 1 ? 'leaf' : '', reveal(p))); });
+  $('crumb-meta').textContent = reveal(meta || ''); if(!path) $('crumb-pos').textContent = '';
 }
 
 // Open tabs come back after a reload: which files, and which one was in front.
@@ -743,7 +747,7 @@ async function showTab(t){
       else if(t.orig.getValue() !== orig.content) t.orig.setValue(orig.content);
       crumbs(t.path, (t.deleted ? 'deleted' : !orig.existed ? 'added' : 'modified') + ' · review'); mount(t);
     }
-  }catch(e){ if(active === t.id){ crumbs(t.path, ''); if(!t.model) note(e.message); } }
+  }catch(e){ if(active === t.id){ crumbs(t.path, ''); if(!t.model) note(visible(e.message)); } }
 }
 function mount(t){
   if(t.kind === 'file'){
@@ -823,13 +827,13 @@ function replaceAll(t, text){ t.model.pushEditOperations([], [{range:t.model.get
 async function acceptText(t, text){
   try{ await api('/v1/sessions/' + current + '/accept', {method:'POST', body: JSON.stringify({path:t.path, content:text})});
     if(t.orig) t.orig.setValue(text); crumbs(t.path, 'accepted · baseline moved'); changesSoon(300); }
-  catch(e){ crumbs(t.path, 'not accepted — ' + e.message); }
+  catch(e){ crumbs(t.path, 'not accepted — ' + visible(e.message)); }
 }
 async function rejectAll(t){
   if(!t.existed){
     // The file was created by this session: rejecting it all is removing it.
     try{ await api('/v1/sessions/' + current + '/delete', {method:'POST', body: JSON.stringify({path:t.path})}); closeTab(t.id); changesSoon(300); refreshDir(parentOf(t.path)); }
-    catch(e){ crumbs(t.path, 'not removed — ' + e.message); }
+    catch(e){ crumbs(t.path, 'not removed — ' + visible(e.message)); }
     return;
   }
   replaceAll(t, t.orig.getValue()); await save(t);
@@ -842,7 +846,7 @@ async function save(t){
     const r = await api('/v1/sessions/' + current + '/file', {method:'PUT', body: JSON.stringify({path:t.path, content:t.model.getValue(), base:t.base})});
     t.base = r.hash; t.saved = version; t.dirty = t.model.getAlternativeVersionId() !== version; drawTabs();
     crumbs(t.path, 'saved · recorded as your change'); changesSoon(300); hawkSoon();
-  }catch(e){ crumbs(t.path, 'not saved — ' + e.message); }
+  }catch(e){ crumbs(t.path, 'not saved — ' + visible(e.message)); }
   t.saving = false;
 }
 const saveActive = () => save(activeTab());
@@ -865,13 +869,13 @@ async function loadTree(path, into, depth){
   if(!current){ clear(into); into.appendChild(el('div', 'empty', 'Start or open a session to browse its workspace.')); return; }
   dirs.set(path, {into, depth});
   let res; try{ res = await api('/v1/sessions/' + current + '/tree?path=' + encodeURIComponent(path)); }
-  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', e.message)); return; }
+  catch(e){ if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; } clear(into); into.appendChild(el('div', 'empty', visible(e.message))); return; }
   if(into.querySelector('.ren')){ heldLoads.set(into, () => loadTree(path, into, depth)); return; }
   clear(into);
   for(const e of res.entries){
     const row = el('button', 'row'); row.type = 'button'; row.style.paddingLeft = (8 + depth * 14) + 'px'; row.dataset.path = e.path;
     if(treeSel && treeSel.path === e.path) row.classList.add('sel');
-    row.appendChild(el('span', 'tw codicon' + (e.dir ? ' codicon-chevron-right' : ''))); row.appendChild(el('span', 'name', e.name));
+    row.appendChild(el('span', 'tw codicon' + (e.dir ? ' codicon-chevron-right' : ''))); row.appendChild(el('span', 'name', reveal(e.name)));
     row.addEventListener('contextmenu', ev => { ev.preventDefault(); selectRow(row, e); treeMenu(ev.clientX, ev.clientY, e); });
     row.addEventListener('keydown', ev => {
       if(ev.key === 'F2'){ ev.preventDefault(); renameEntry(e, row); }
@@ -962,7 +966,7 @@ function retarget(from, to){
   const t = activeTab(); drawTabs(); if(t) crumbs(t.path, 'renamed');
 }
 async function deleteEntry(e){
-  if(!confirm('Delete ' + e.path + (e.dir ? ' and everything in it' : '') + '? This is recorded as your action and cannot be undone here.')) return;
+  if(!confirm('Delete ' + reveal(e.path) + (e.dir ? ' and everything in it' : '') + '? This is recorded as your action and cannot be undone here.')) return;
   try{
     await api('/v1/sessions/' + current + '/delete', {method:'POST', body: JSON.stringify({path:e.path})});
     tabs.filter(t => t.path === e.path || t.path.startsWith(e.path + '/')).forEach(t => closeTab(t.id));
@@ -971,7 +975,7 @@ async function deleteEntry(e){
   await refreshDir(parentOf(e.path));
 }
 let treeMsgTimer = null;
-function treeError(e){ const n = $('tree-msg'); n.textContent = e.message; n.hidden = false; clearTimeout(treeMsgTimer); treeMsgTimer = setTimeout(() => { n.hidden = true; }, 8000); }
+function treeError(e){ const n = $('tree-msg'); n.textContent = visible(e.message); n.hidden = false; clearTimeout(treeMsgTimer); treeMsgTimer = setTimeout(() => { n.hidden = true; }, 8000); }
 async function copyPath(p){ try{ await navigator.clipboard.writeText(p); }catch{} }
 
 // A right-click menu over the tree, with each entry's actions.
@@ -1018,23 +1022,23 @@ async function runSearch(){
   sum.textContent = 'Searching…';
   const flags = Object.entries(sopt).filter(([, on]) => on).map(([k]) => '&' + k + '=1').join('');
   let r; try{ r = await api('/v1/sessions/' + current + '/search?q=' + encodeURIComponent(q) + flags); }
-  catch(e){ if(seq === searchSeq){ clear(box); sum.textContent = e.message; } return; }
+  catch(e){ if(seq === searchSeq){ clear(box); sum.textContent = visible(e.message); } return; }
   if(seq !== searchSeq) return;
   clear(box);
   const why = {matches:'the result limit', files:'the file limit', time:'the time limit'}[r.why] || 'a limit';
   sum.textContent = r.matches ? r.matches + (r.matches === 1 ? ' result in ' : ' results in ') + r.files.length + (r.files.length === 1 ? ' file' : ' files') +
     (r.truncated ? ' · stopped at ' + why + '; narrow the search' : '') : 'No results.';
   for(const f of r.files){
-    const head = el('button', 'row sfile'); head.type = 'button'; head.title = f.path;
-    head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', f.path.split('/').pop()));
-    head.appendChild(el('span', 'd', parentOf(f.path))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
+    const head = el('button', 'row sfile'); head.type = 'button'; head.title = reveal(f.path);
+    head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', reveal(f.path.split('/').pop())));
+    head.appendChild(el('span', 'd', reveal(parentOf(f.path)))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
     const list = el('div'); box.appendChild(head); box.appendChild(list);
     head.addEventListener('click', () => { list.hidden = !list.hidden; head.firstChild.className = 'tw codicon codicon-chevron-' + (list.hidden ? 'right' : 'down'); });
     for(const m of f.matches){
-      const row = el('button', 'row smatch'); row.type = 'button'; row.title = f.path + ':' + m.line + ':' + m.col;
+      const row = el('button', 'row smatch'); row.type = 'button'; row.title = reveal(f.path) + ':' + m.line + ':' + m.col;
       const line = el('span', 'name');
       let before = m.text.slice(0, m.from).replace(/^\s+/, ''); if(before.length > 40) before = '…' + before.slice(-40);
-      line.appendChild(document.createTextNode(before)); line.appendChild(el('mark', '', m.text.slice(m.from, m.to))); line.appendChild(document.createTextNode(m.text.slice(m.to)));
+      line.appendChild(document.createTextNode(reveal(before))); line.appendChild(el('mark', '', reveal(m.text.slice(m.from, m.to)))); line.appendChild(document.createTextNode(reveal(m.text.slice(m.to))));
       row.appendChild(line); row.addEventListener('click', () => openFile(f.path, {line:m.line, col:m.col, end:m.end}));
       list.appendChild(row);
     }
@@ -1049,7 +1053,7 @@ function findInFiles(){
 
 async function loadChanges(){
   const box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
-  let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
+  let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); return; }
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
@@ -1057,7 +1061,7 @@ async function loadChanges(){
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
-    row.appendChild(el('span', 'name mono', f.path));
+    row.appendChild(el('span', 'name mono', reveal(f.path)));
     const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
     row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
   }
@@ -1072,7 +1076,7 @@ function drawCaps(){
   const r = el('div', 'rules');
   const line = (k, v) => { const d = el('div'); d.appendChild(el('span', 'k', k)); d.appendChild(document.createTextNode(v)); r.appendChild(d); };
   line('mode', c.permissions.mode + (c.permissions.managed ? ' · managed by your organisation' : ''));
-  line('deny', c.permissions.deny.join('   ') || '—'); line('ask', c.permissions.ask.join('   ') || '—'); line('allow', c.permissions.allow.join('   ') || '—');
+  line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');
   t.appendChild(r);
   t.appendChild(el('div', 'empty', 'A deny rule holds for every tool call, the agent\'s and yours, in every mode, including auto. In your interactive terminal it only screens each line as typed. Rules are set in the server configuration.'));
   const by = {builtin:[], mcp:[], skill:[]}; c.tools.forEach(o => (by[o.source] || by.builtin).push(o));
@@ -1080,9 +1084,9 @@ function drawCaps(){
     if(!by[k].length) return;
     const g = el('div', 'group', title); g.appendChild(el('span', 'n', String(by[k].length))); t.appendChild(g);
     for(const o of by[k]){
-      const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', o.name));
+      const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(o.name)));
       top.appendChild(el('span', 'pill ' + (o.mutates ? 'mut' : 'ro'), o.mutates ? 'asks first' : 'read-only'));
-      card.appendChild(top); if(o.description) card.appendChild(el('p', '', o.description)); t.appendChild(card);
+      card.appendChild(top); if(o.description) card.appendChild(el('p', '', visible(o.description, true))); t.appendChild(card);
     }
   });
 
@@ -1092,16 +1096,16 @@ function drawCaps(){
     items.forEach(i => x.appendChild(draw(i)));
   };
   sect('Extensions', c.extensions, e => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', e.name)); top.appendChild(el('span', 'pill on', 'active'));
-    card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (e.events.join(', ') || 'all events'))); return card;
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); top.appendChild(el('span', 'pill on', 'active'));
+    card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (visible(e.events.join(', ')) || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', m.name)); top.appendChild(el('span', 'pill on', m.status)); card.appendChild(top); return card;
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status))); card.appendChild(top); return card;
   }, 'No MCP servers connected. Add one under', 'mcp.servers');
   sect('Skills', c.skills, s => {
-    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', s.name));
+    const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(s.name)));
     if(s.has_pipeline) top.appendChild(el('span', 'pill', 'pipeline')); card.appendChild(top);
-    if(s.description) card.appendChild(el('p', '', s.description)); return card;
+    if(s.description) card.appendChild(el('p', '', visible(s.description, true))); return card;
   }, 'No skills loaded. Put a SKILL.md under', '.abhed/skills/<name>/');
 }
 
@@ -1109,7 +1113,7 @@ function drawCaps(){
 async function loadHawkeye(){
   const box = $('hawkeye'), prob = $('p-problems');
   if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
-  let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', e.message)); return; }
+  let r; try{ r = await api('/v1/sessions/' + current + '/hawkeye'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); return; }
   clear(box); clear(prob); const t = r.totals, dl = el('dl', 'kv');
   [['Outcome', visible(r.outcome)],['Model', visible((r.models || []).join(' → ')) || '—'],['Turns', t.turns],['Tokens in', fmt(t.tokens_in)],['Cached', Math.round((t.cache_hit_rate || 0) * 100) + '%'],
    ['Peak context', t.context_window ? Math.round(t.peak_context * 100 / t.context_window) + '%' : fmt(t.peak_context)],
@@ -1143,6 +1147,8 @@ async function loadSessions(){
   for(const s of sessionList){
     const row = el('button', 'row'); row.type = 'button'; row.setAttribute('aria-current', String(s.id === current));
     row.appendChild(el('span', 'dot ' + s.state + (s.reason ? ' ' + s.reason : ''))); row.appendChild(el('span', 'name', sessionLabel(s)));
+    if(s.background) row.appendChild(el('span', 'badge', 'bg ' + s.background));
+    if(s.pending_ask) row.appendChild(el('span', 'badge warn', 'approval waiting'));
     row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
   }
 }
@@ -1159,7 +1165,7 @@ function resetSession(){
   if(es){ es.close(); es = null; }
   cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
   current = null; live = false; lastSeq = endedSeq = 0; recProvider = null; clearTimeout(recheckTimer); streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
-  queued.clear(); sent.length = 0; asks.clear(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
+  queued.clear(); sent.length = 0; asks.clear(); bgTasks.clear(); drawBg(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
   Object.assign(stat, {tin:0, tout:0, turns:0, ctx:0, window: caps ? caps.model.context_window : 0});
   clear($('tx')); clear($('p-events')); clear($('p-problems')); termN = evtN = 0;
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
@@ -1168,11 +1174,11 @@ function resetSession(){
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
-  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session'; if(caps && $('mode').selectedOptions[0] && $('mode').selectedOptions[0].disabled) limitModes(caps.permissions.mode);
+  modeForNewSession();
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
-const sessionLabel = s => s.prompt || 'Workbench session';
+const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';
 
 /* ---------------------------------------------------------------- model picker */
 // Shown only when more than one provider is configured. It names the model the
@@ -1228,13 +1234,13 @@ async function switchModel(){
     const s = sessionList.find(x => x.id === current); if(s){ s.provider = r.provider; s.model = r.model; }
   }catch(e){
     // Refused (mid-turn, or not recorded): say why, and show the model still in use.
-    add(el('div', 'sys bad', 'Model not switched: ' + e.message)); sel.value = sel.dataset.prev;
+    add(el('div', 'sys bad', 'Model not switched: ' + visible(e.message))); sel.value = sel.dataset.prev;
   }finally{ sel.disabled = false; }
 }
 $('mdlpick').addEventListener('change', switchModel);
 // opts.auto marks the session the page opened by itself; opts.note is shown on its terminal.
 function openSession(id, state, opts){
-  resetSession(); current = id; setLive(state === 'running' || state === 'waiting_approval');
+  resetSession(); offerNext(''); current = id; setLive(state === 'running' || state === 'waiting_approval');
   const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? sessionLabel(s) : id;
   // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
   if(s && s.mode) $('mode').value = s.mode;
@@ -1254,7 +1260,7 @@ async function createWorkbench(note){
     const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({workbench:true, mode, provider})});
     sessionList.unshift({id:r.session_id, prompt:'', state:'idle', mode, provider, model: modelOf(provider)});
     openSession(r.session_id, 'idle', {note});
-  }catch(e){ noTerminal('Could not open a workbench session: ' + e.message); }
+  }catch(e){ noTerminal('Could not open a workbench session: ' + visible(e.message)); }
 }
 $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q').focus(); if(window.innerWidth <= 900) $('app').dataset.pane = 'agent'; });
 
@@ -1266,7 +1272,7 @@ function connect(id){
   es.onopen = () => setConn(true);
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
   es.onerror = () => { if(!es) return; es.close(); es = null;
-    if(live && current === id){ connLost(true); setTimeout(() => { if(current === id && !es) connect(id); }, 1000); }
+    if((live || bgLive) && current === id){ connLost(true); setTimeout(() => { if(current === id && !es) connect(id); }, 1000); }
     else{ connLost(false); if(current === id) loadHawkeye(); } };
 }
 // Messages still queued on the server, for a page opened while a run is going.
@@ -1352,11 +1358,16 @@ function tail(p){ const parts = p.split('/').filter(Boolean); return parts.lengt
 // draw nothing (Hangul fillers, braille blank, a stray U+FE0F) as ⟨U+XXXX⟩, and a long run of
 // spaces or tabs as ⟨N spaces⟩, so a call's own text cannot reorder, hide or push away part of it.
 function visible(s, lines){
-  return String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
+  return reveal(String(s).replace(/(?<![ \t])[ \t]{2,}/g, (w, at, all) => {
     // Eight columns inside a line (a tab counts eight); indentation only from 32.
     const t = w.length - w.replaceAll('\t', '').length, n = w.length - t, k = (c, one) => c + ' ' + one + (c === 1 ? '' : 's');
     return n + 8 * t < (all[at - 1] === '\n' ? 32 : 8) ? w : '\u27e8' + [n && k(n, 'space'), t && k(t, 'tab')].filter(Boolean).join(', ') + '\u27e9';
-  }).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+  }), lines);
+}
+// reveal is visible without the spacing rule, for prose and code whose layout is its own:
+// replies, reasoning, and file names in the explorer, tabs and dialogs.
+function reveal(s, lines){
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1400,10 +1411,10 @@ function flushStream(){
   if(flushRaf){ cancelAnimationFrame(flushRaf); flushRaf = 0; }
   if(!pendText && !pendThink) return;
   const stick = nearBottom();
-  if(pendThink){ thinkLive().body.appendData(pendThink); pendThink = ''; }
+  if(pendThink){ thinkLive().body.appendData(reveal(pendThink, true)); pendThink = ''; }
   if(pendText){
     if(!streaming){ streaming = bubble('agent', 'abhed', ''); streamBody = streaming.lastChild; add(streaming); }
-    streamBody.appendData(pendText); pendText = '';
+    streamBody.appendData(reveal(pendText, true)); pendText = '';
   }
   follow(stick);
 }
@@ -1421,7 +1432,7 @@ function thinkLive(at){
 }
 function endThinking(at, whole){
   const t = thinkBlock; if(!t) return false;
-  if(whole != null && whole !== t.body.data) t.body.data = whole;
+  if(whole != null && reveal(whole, true) !== t.body.data) t.body.data = reveal(whole, true);
   if(t.live){ t.live = false; t.secs = Math.max(1, Math.round(((at || Date.now()) - t.since) / 1000)); t.node.classList.remove('live'); if(!t.pinned) t.node.open = false; }
   t.summary.textContent = '▸ thought for ' + t.secs + 's · ' + words(t.body.data) + ' words';
   return true;
@@ -1445,7 +1456,7 @@ function mdInline(parent, s){
   if(at < s.length) parent.appendChild(document.createTextNode(s.slice(at)));
 }
 function md(text){
-  const root = el('div', 'md'), lines = String(text || '').split('\n');
+  const root = el('div', 'md'), lines = reveal(String(text || ''), true).split('\n');
   let list = null, kind = '', para = null, quote = null;
   const flat = () => { list = null; kind = ''; para = null; quote = null; };
   for(let i = 0; i < lines.length; i++){
@@ -1489,7 +1500,7 @@ function md(text){
 // Every message carries an id of the page's own, echoed on the user.message
 // that records it, so matching never depends on the recorded text.
 const newCid = () => 'c-' + Array.from(crypto.getRandomValues(new Uint8Array(9)), x => x.toString(16).padStart(2, '0')).join('');
-function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = newCid(); return b; }
+function userBubble(text, state){ const b = bubble('user' + (state ? ' ' + state : ''), 'you', reveal(text, true)); b.text = text; b.cid = newCid(); return b; }
 function drawQueued(b){
   const old = b.querySelector('.qbar'); if(old) old.remove();
   const bar = el('div', 'qbar');
@@ -1525,7 +1536,7 @@ async function unqueue(b){
   if(!b.qid || !current) return false;
   b.busy = true; drawQueued(b);
   try{ await api('/v1/sessions/' + current + '/queue/' + encodeURIComponent(b.qid), {method:'DELETE'}); }
-  catch(e){ b.busy = false; if(!b.delivered){ b.qnote = 'Not withdrawn — ' + e.message; drawQueued(b); } return false; }
+  catch(e){ b.busy = false; if(!b.delivered){ b.qnote = 'Not withdrawn — ' + visible(e.message); drawQueued(b); } return false; }
   forget(b); b.remove(); return true;
 }
 // Send now: withdraw it from the queue, stop the running step, and send it
@@ -1558,7 +1569,7 @@ async function sendNow(b){
         (kept ? '; its text is back in the message box' : ''));
       return;
     }
-    failed(b, e.message);
+    failed(b, visible(e.message));
   }
 }
 
@@ -1568,7 +1579,8 @@ function render(ev){
   if(ev.type === 'agent.delta' ? pendThink : ev.type === 'agent.reasoning.delta' ? pendText : true) flushStream();
   logEvent(ev, p);
   switch(ev.type){
-  case 'user.message': { streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
+  case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
+  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', reveal(p.text || '', true)));
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
     // This page's own message means its run has started, whichever of the
@@ -1583,7 +1595,7 @@ function render(ev){
     follow(stick); break; }
   case 'agent.reasoning':
     if(thinkBlock){ endThinking(at, p.text || ''); thinkBlock = null; break; }
-    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', p.text || '')); add(d); }
+    { const d = el('details', 'think'); d.appendChild(el('summary', '', '▸ reasoning · ' + words(p.text) + ' words')); d.appendChild(el('pre', '', reveal(p.text || '', true))); add(d); }
     break;
   case 'action.requested': {
     // The chat is the conversation with the agent: what the person did by
@@ -1602,10 +1614,10 @@ function render(ev){
     if(p.requires_approval){ asks.set(p.call_id, {p, rid: ev.id, shown:false}); if(live) offerAsks(); }
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
-    if(c){ c.node.appendChild(el('div', 'why', 'allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : ''))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? c.tool : 'tool')); break; }
+    if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
+    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? reveal(c.tool) : 'tool')); break; }
   case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
-    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', 'denied · step ' + (p.step || '?') + ' — ' + (p.reason || ''))); }
+    if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + ' — ' + (p.reason || '')))); }
     settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
   case 'observation': {
     const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
@@ -1618,33 +1630,55 @@ function render(ev){
   case 'todo.updated': drawPlan(p.items || []); break;
   case 'session.started': recProvider = p.provider || null; break;
   case 'model.switched': showSwitch(p); break;
-  case 'model.call': if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
-    if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
+  // A suggestion's call is counted, but is no turn and says nothing of the context.
+  case 'model.call': if(p.purpose){ stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; drawStatus(); break; }
+    if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
+    if(p.error) add(el('div', 'sys bad', 'model error: ' + visible(p.error))); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
   case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
-  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + (p.description || ''))); break;
-  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + (p.reason || ''))); break;
+  // Task names, results and reasons are the model's or a command's text: shown, never obeyed (bidi, zero-width).
+  case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + visible(p.description || '')));
+    if(p.background && p.task_id){ bgTasks.set(p.task_id, {name: p.description || p.task_id, state:'running'}); drawBg(); } break;
+  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + visible(p.reason || ''))); break;
+  // A background shell is listed in the status bar while it runs, as a task is.
+  case 'shell.started': if(p.shell_id){ bgTasks.set(p.shell_id, {name: p.description || p.command || p.shell_id, state:'running'}); drawBg(); } break;
+  case 'shell.ended': if(p.shell_id){ bgTasks.set(p.shell_id, {name: (bgTasks.get(p.shell_id) || {}).name || p.shell_id, state: p.state || 'ended'}); drawBg(); } break;
+  // A background task's result: the subagent's summary, never the person's words.
+  case 'subagent.notice': { const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
+    add(el('div', 'sys bgnotice', 'background: ' + visible(p.description || p.task_id || '') + ' finished (' + visible(p.status || p.reason || '') + turns + '); result added to the conversation'));
+    if(p.content) add(el('div', 'sys bgbody', visible(p.content, true)));
+    if(p.task_id){ bgTasks.set(p.task_id, {name: p.description || (bgTasks.get(p.task_id) || {}).name || p.task_id, state: p.status || p.reason || 'done'}); drawBg(); } break; }
+  // A turn the session started itself for finished background work: drawn live like any other.
+  case 'session.woken': { const names = (p.task_ids || []).map(id => (bgTasks.get(id) || {}).name || id);
+    add(el('div', 'sys woke', p.by === 'caller' ? 'continuing with background results, as asked' : 'continuing with results from ' + (names.length ? names.map(n => visible(n)).join(', ') : 'background tasks')));
+    streaming = streamBody = null; if(!live){ if(bgLive) setLive(true); recheckSoon(); } if(live) waiting('Thinking'); break; }
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   // Its row stays in the chat, so a reopened session shows what was decided.
-  case 'subagent.ask': { if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
+  case 'subagent.ask': { offerNext(''); if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
     const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
-    asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live) offerAsks(); break; }
+    asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live || bgLive) offerAsks(); break; }
   case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
     if(!ok){ c.node.classList.add('denied'); } c.res.textContent = ok ? 'allowed' : 'denied';
-    c.node.appendChild(el('div', 'why', (ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
-      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')));
-    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + p.reason : '')); break; }
+    c.node.appendChild(el('div', 'why', visible((ok ? 'allowed' : 'denied') + ' · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : p.by ? ' · by ' + p.by : '') +
+      (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : ''))));
+    settleAsk(id, ok ? 'allowed' : 'denied' + (p.reason ? ' — ' + visible(p.reason) : '')); break; }
   // A queued message the run ended without reading is not coming: say so, and
   // put its text back in the box.
   case 'message.dropped': { const b = [...queued.values(), ...sent].find(x => p.client_id ? x.cid === p.client_id : p.queue_id && x.qid === p.queue_id);
     if(b && !b.delivered){ const kept = !$('q').value || $('q').value === b.text;
       failed(b, (p.reason || 'the run ended first') + (kept ? '; its text is back in the message box' : ''), 'Not delivered'); }
     break; }
-  case 'session.ended': { endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; asks.clear(); setLive(false);
-    for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
-    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + p.reason + ' · ' + (p.turns || 0) + ' turns'));
+  // The run's own asks end with it; a background subagent's ask outlives the
+  // run while background work is owed, settled by its outcome or the closing end.
+  case 'session.ended': { if(p.settled){ bgLive = false; for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · background work ended');
+      add(el('div', 'sys', 'background work finished')); break; }
+    bgLive = (p.background || 0) > 0;
+    const kept = id => bgLive && String(id).startsWith('subagent-');
+    endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; for(const id of [...asks.keys()]) if(!kept(id)) asks.delete(id); setLive(false);
+    for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns') && !kept(a.dataset.call)) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
+    add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + visible(p.reason || '') + ' · ' + (p.turns || 0) + ' turns'));
     loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); break; }
   }
 }
@@ -1667,6 +1701,12 @@ async function recheck(id){
   if(running || read){ if(!es) connect(id); if(running) return; }
   for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
 }
+// drawBg shows the open session's background tasks still running in the status bar.
+function drawBg(){
+  const n = $('s-bg'), running = [...bgTasks.values()].filter(t => t.state === 'running');
+  n.hidden = !running.length; n.textContent = running.length ? '◷ ' + running.length + ' background: ' + running.map(t => visible(t.name)).join(', ') : '';
+  n.title = [...bgTasks.values()].map(t => visible(t.name) + ' · ' + visible(t.state)).join('\n');
+}
 // subagentRow is the chat's row for a subagent's call put to an approver or
 // refused, made the first time the record names it.
 function subagentRow(id, p, at){
@@ -1684,6 +1724,8 @@ function fillCall(c){
 }
 // Long output shows its head until asked for the rest.
 function clip(text){
+  // A call's output is untrusted: bidi, zero-width and control characters are written out.
+  text = reveal(text, true);
   const lines = text.split('\n'); if(lines.length <= 24 && text.length <= 2000) return el('pre', '', text);
   const pre = el('pre', '', lines.slice(0, 24).join('\n').slice(0, 2000) + '\n…'), more = el('button', 'more', 'show all ' + lines.length + ' lines');
   more.type = 'button'; more.addEventListener('click', () => { pre.textContent = text; more.remove(); });
@@ -1693,7 +1735,7 @@ function clip(text){
 // state of the work is always the last thing above the composer.
 function drawPlan(items){
   if(!todoNode) todoNode = el('div', 'todo'); clear(todoNode); todoNode.appendChild(el('h4', '', 'Plan'));
-  items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', i.text)); todoNode.appendChild(r); });
+  items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', visible(i.text || ''))); todoNode.appendChild(r); });
   add(todoNode);
 }
 function askApproval(p, rid){
@@ -1724,7 +1766,7 @@ function askApproval(p, rid){
         if(e.status === 409){ settleAsk(p.call_id, 'no longer waiting for an answer'); return; }
         // Only the server running the session can check the answer against its request.
         if(e.status === 421){ settleAsk(p.call_id, 'not answered here · answer it on the server running this session' + (e.node ? ' (' + e.node + ')' : '')); return; }
-        a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : e.message)); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
+        a.appendChild(el('p', '', e.status === 429 ? 'Busy, try again' : visible(e.message))); btns.querySelectorAll('button').forEach(x => { x.disabled = false; }); } }); return b; };
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'));
   // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
@@ -1782,9 +1824,9 @@ function drawTermTabs(){
   const bar = $('ttabs'); clear(bar);
   for(const t of terms){
     const b = el('div', 'ttab'); b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', String(t === activeTerm)); b.tabIndex = 0;
-    const nm = el('span', 'nm', t.name); if(t.kind !== 'agent') nm.title = 'Double-click to rename'; b.appendChild(nm);
+    const nm = el('span', 'nm', reveal(t.name)); if(t.kind !== 'agent') nm.title = 'Double-click to rename'; b.appendChild(nm);
     if(t.run) b.appendChild(el('span', 'live', '●'));
-    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + t.name);
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close ' + reveal(t.name));
     x.addEventListener('click', e => { e.stopPropagation(); closeTerm(t); });
     b.appendChild(x);
     b.addEventListener('click', () => { if(activeTerm !== t) selectTerm(t); });
@@ -1865,7 +1907,7 @@ $('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.ru
 // The banner says what contains the shell, before anything is typed into it.
 function banner(t, r, note){
   const iso = r.isolation, w = s => t.term.write(s + '\r\n');
-  if(note) w('\x1b[33m' + note + '\x1b[0m');
+  if(note) w('\x1b[33m' + visible(note) + '\x1b[0m');
   if(!iso || iso.tier === 'none') w('\x1b[1;31mNO SANDBOX: commands here run directly on the host, as the server\'s user, with all of its access.\x1b[0m');
   const tier = iso ? iso.tier + (iso.backend ? ' (' + iso.backend + ')' : '') : 'unknown';
   w('\x1b[2msandbox: ' + tier + ' · workspace: ' + (r.workspace || '?') + ' · network: ' + (iso ? (iso.network ? 'on' : 'off') : '?') + '\x1b[0m');
@@ -1880,11 +1922,11 @@ async function startTerm(t, opts){
   catch(e){
     if(!terms.includes(t)) return;
     if(e.status === 409 && opts.auto && t.session === current){ createWorkbench('The last session could not be reopened on this server, so this is a new one.'); return; }
-    t.term.write('\r\n\x1b[31m' + e.message + '\x1b[0m\r\n\x1b[2mpress Enter to try again\x1b[0m\r\n'); t.dead = true; return;
+    t.term.write('\r\n\x1b[31m' + visible(e.message) + '\x1b[0m\r\n\x1b[2mpress Enter to try again\x1b[0m\r\n'); t.dead = true; return;
   }
   if(!terms.includes(t) || t.session !== current){ if(r.interactive) fetch(ptyURL(t, '/' + r.id), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); return; }
   t.term.reset(); banner(t, r, opts.note);
-  if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m\r\n'); hawkSoon(); }
+  if(r.denied){ t.term.write('\x1b[31m' + visible(r.denied) + '\x1b[0m\r\n'); hawkSoon(); }
   if(!r.interactive){ t.mode = 'lines'; t.cwd = r.cwd || '.'; promptLine(t); return; }
   t.mode = 'shell'; t.info = {isolation:r.isolation, workspace:r.workspace}; attach(t, r.id);
 }
@@ -1937,7 +1979,7 @@ function sendInput(t, d){
 }
 
 // Line by line: the page edits the line, and each one is a checked command.
-const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : t.cwd + ' ') + '$\x1b[0m ';
+const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : reveal(t.cwd) + ' ') + '$\x1b[0m ';
 // Shows the prompt, and whatever has been typed ahead of it.
 const promptLine = t => { t.term.write(linePrompt(t) + t.line); };
 // An unfinished sequence ends at a line break, so it never swallows the next line.
@@ -2064,27 +2106,36 @@ async function runLine(t, cmd, answer){
   t.busy = true;
   const body = {command:cmd, cols:t.term.cols, rows:t.term.rows}; if(answer) body[answer] = true;
   let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
-  catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
+  catch(e){ t.busy = false; t.term.write('\x1b[31m' + visible(e.message) + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
-  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
-  if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
+  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + visible(r.confirm) + '\x1b[0m\r\n'); askConfirm(t); return; }
+  if(r.denied){ t.term.write('\x1b[31m' + visible(r.denied) + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   // A cd that was not followed says so, rather than leaving the next line to run elsewhere.
-  if(r.note) t.term.write('\x1b[33m' + r.note.replace(/\p{Cc}/gu, '?') + '\x1b[0m');
+  // Lines Abhed writes into a terminal name paths and commands: escapes and bidi print, never act.
+  if(r.note) t.term.write('\x1b[33m' + visible(r.note) + '\x1b[0m');
   // The server says when a line was a cd it followed without a terminal.
   if(!r.id || r.cd){ nextLine(t); return; }
   attach(t, r.id);
 }
-// Only a typed y, then Enter, runs a command that always confirms; anything else cancels it.
+// A key this soon after the confirmation appears is ignored: it was typed for something else.
+const CONFIRM_GUARD = 300;
+const askConfirm = t => { t.line = ''; t.confirmAt = Date.now(); t.term.write('  1. No\r\n  2. Yes, run it\r\nanswer 1-2: '); };
+// Only 2, typed then Enter, runs a command that always confirms; 1 or Ctrl-C cancels it.
+// Enter or anything else asks again; nothing is chosen for Enter, and a paste is no answer.
 function confirmData(t, d){
   // Escape keys are no answer, wherever they fall in what arrived.
   d = d.replace(keySeq, '');
+  if(!d.includes('\x03') && (Date.now() - t.confirmAt < CONFIRM_GUARD)) return;
+  if(!d.includes('\x03') && [...d].length > 1){ t.term.write('\r\n\x1b[2mpasted text is no answer; type 1 or 2\x1b[0m\r\n'); askConfirm(t); return; }
   for(const ch of d){
     if(ch === '\r' || ch === '\n' || ch === '\x03'){
-      const cmd = t.confirm, yes = ch !== '\x03' && /^y$/i.test(t.line.trim());
-      t.confirm = null; t.line = ch === '\x03' ? '' : t.ahead || ''; t.ahead = '';
+      const n = ch === '\x03' ? '1' : t.line.trim();
+      if(n !== '1' && n !== '2'){ t.term.write('\r\n'); askConfirm(t); return; }
+      const cmd = t.confirm, yes = n === '2';
+      // Either answer drops what was typed behind the line, entered or not: it was typed
+      // before the question was answered, and a stray y must not be glued onto the next line.
+      t.confirm = null; t.line = ''; t.ahead = ''; t.queue = [];
       t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
-      // A declined line stops the lines queued behind it, as Ctrl-C does.
-      if(!yes) t.queue = [];
       runLine(t, cmd, yes ? 'confirmed' : 'declined'); return;
     }
     if(ch === '\x7f'){ if(t.line){ t.line = t.line.slice(0, -1); t.term.write('\b \b'); } continue; }
@@ -2097,8 +2148,8 @@ function confirmData(t, d){
 function logTerminal(cmd, p, who){
   if(who === 'you') return; // the person's own commands are already on their terminal
   if(!agentTerm){ const keep = activeTerm; agentTerm = makeTerm('agent', 'agent'); agentTerm.term.write('\x1b[2mCommands the agent ran, with their output. Read only.\x1b[0m\r\n'); if(keep) selectTerm(keep); }
-  const out = (p.content || '').slice(0, 8000);
-  // The command is the model's text: escapes in it must print, not drive the terminal.
+  const out = reveal((p.content || '').slice(0, 8000), true);
+  // The command and its output are untrusted: escapes in them must print, not drive the terminal.
   agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }
@@ -2150,13 +2201,28 @@ $('q').addEventListener('keydown', e => {
   if(e.key === 'Escape' && !$('slash').hidden){ $('slash').hidden = true; e.stopPropagation(); return; }
   if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
 });
+// A next prompt offered after a turn is the box's placeholder; Tab takes it into the box, never sends it.
+function offerNext(t){
+  const q = $('q'); if(!q) return;
+  if(q.dataset.hint == null) q.dataset.hint = q.placeholder;
+  q.dataset.next = t ? visible(String(t)).replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+  q.placeholder = q.dataset.next || q.dataset.hint;
+}
+function takeNext(e){
+  const q = $('q'), next = q.dataset.next;
+  if(e.key !== 'Tab' || e.shiftKey || !next || q.value) return false;
+  e.preventDefault(); q.value = next; offerNext(''); q.dispatchEvent(new Event('input'));
+  return true;
+}
+$('q').addEventListener('input', () => { if($('q').value) offerNext(''); });
+$('q').addEventListener('keydown', takeNext);
 $('q').addEventListener('input', () => {
   const q = $('q'), at = q.value.slice(0, q.selectionStart).match(/(?:^|\s)@([\w./-]*)$/);
   const box = $('slash'); if(!at){ if(box.dataset.mode === 'at'){ box.hidden = true; delete box.dataset.mode; } return; }
   indexFiles(); const needle = at[1].toLowerCase();
   const hits = [...known].filter(p => p.toLowerCase().includes(needle)).sort((a, b) => a.length - b.length).slice(0, 8);
   clear(box); box.dataset.mode = 'at'; box.hidden = !hits.length;
-  hits.forEach(p => { const b = el('button', 'row'); b.type = 'button'; b.appendChild(el('span', 'name mono', '@' + p));
+  hits.forEach(p => { const b = el('button', 'row'); b.type = 'button'; b.appendChild(el('span', 'name mono', '@' + reveal(p)));
     b.addEventListener('mousedown', ev => { ev.preventDefault(); const head = q.value.slice(0, q.selectionStart).replace(/@[\w./-]*$/, '@' + p + ' ');
       q.value = head + q.value.slice(q.selectionStart); q.selectionStart = q.selectionEnd = head.length; box.hidden = true; delete box.dataset.mode; q.focus(); });
     box.appendChild(b); });
@@ -2179,7 +2245,7 @@ async function withMentions(text){
 // for the next step, never a reason to cancel the step in progress.
 async function send(){
   const typed = $('q').value.trim(); if(!typed) return;
-  $('q').value = ''; $('q').style.height = 'auto'; $('slash').hidden = true;
+  offerNext(''); $('q').value = ''; $('q').style.height = 'auto'; $('slash').hidden = true;
   const id = current, busy = !!id && live;
   const b = userBubble(typed, busy ? 'queued' : 'pending'); sent.push(b);
   if(busy){ const stick = nearBottom(); if(qbox.parentNode !== tx()) tx().appendChild(qbox); qbox.appendChild(b); follow(stick); }
@@ -2190,7 +2256,7 @@ async function send(){
     if(id){
       // A workbench session is named by its first message.
       const s = sessionList.find(x => x.id === id);
-      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = typed; }
+      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = sessionLabel(s); }
       const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
       // Delivered first: the stream has already made the page live for this run.
       if(current !== id || b.delivered) return;
@@ -2210,7 +2276,7 @@ async function send(){
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value, provider, model: modelOf(provider)}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
-  }catch(e){ if(current === id){ failed(b, e.message); if(!busy) waiting(false); } }
+  }catch(e){ if(current === id){ failed(b, visible(e.message)); if(!busy) waiting(false); } }
 }
 $('stop').addEventListener('click', async () => { if(current) try{ await api('/v1/sessions/' + current + '/interrupt', {method:'POST'}); }catch{} });
 // Esc stops the run only when pressed twice: once to ask, once to confirm.
@@ -2223,6 +2289,12 @@ $('agent').addEventListener('keydown', e => {
   stopArmed = setTimeout(() => { stopArmed = 0; setLive(live); }, 2500);
 });
 $('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
+// A new session starts in the configured mode, not the open session's; the person may pick another.
+function modeForNewSession(){
+  const sel = $('mode'); sel.disabled = false; sel.title = 'Permission mode for the next session';
+  if(caps) limitModes(caps.permissions.mode);
+  $('s-mode').textContent = 'mode ' + sel.value;
+}
 // A session may start in the server's mode or narrow to plan: offer only those.
 function limitModes(m){
   const sel = $('mode');
@@ -2251,7 +2323,7 @@ function palItems(){
   out.push({k:'command', l:'New folder', h:'', run:() => newEntry(true)});
   out.push({k:'command', l:'Toggle the minimap', h:'', run:toggleMinimap});
   out.push({k:'command', l:'Review inline or side by side', h:'', run:toggleDiffLayout});
-  [...known].sort().forEach(p => out.push({k:'file', l:p, h:'', run:() => openFile(p)}));
+  [...known].sort().forEach(p => out.push({k:'file', l:reveal(p), h:'', run:() => openFile(p)}));
   sessionList.forEach(s => out.push({k:'session', l:sessionLabel(s), h:s.state, run:() => openSession(s.id, s.state)}));
   return out;
 }
@@ -2348,7 +2420,7 @@ $('switchuser').addEventListener('click', postSignOut);
 (async () => {
   welcome();
   try{ caps = await api('/v1/capabilities'); setConn(true); }
-  catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + e.message)); return; }
+  catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + visible(e.message))); return; }
   stat.window = caps.model.context_window; drawCaps();
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');

@@ -35,7 +35,7 @@ func TestStopHelper(t *testing.T) {
 	case "eval":
 		os.Exit(evalCmd(ws, filepath.Join(ws, "corpus"), filepath.Join(ws, "report.json"), ""))
 	case "acp":
-		os.Exit(acpCmd(ws, "test", ""))
+		os.Exit(acpCmd(ws, acpBuild{Version: "test", Edition: "ce"}, ""))
 	case "p":
 		os.Exit(Main([]string{"-C", ws, "-p", "go"}))
 	}
@@ -321,9 +321,10 @@ func requireHostTier(t *testing.T, ws string) {
 	}
 }
 
-// A stop signal while -p is starting up, held in an MCP connect, ends it as an
-// interrupt, 130, not by the signal's default action.
-func TestPromptStoppedDuringStartupExits130(t *testing.T) {
+// A stop signal while -p is starting up, held in an MCP connect, ends it
+// with 128 plus the signal's number, as a shell reports it, not by the
+// signal's default action.
+func TestPromptStoppedDuringStartupExitsBySignal(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
 			url, _ := stubModel(t, "")
@@ -352,9 +353,158 @@ func TestPromptStoppedDuringStartupExits130(t *testing.T) {
 				t.Fatalf("start-up never reached the MCP server:\n%s", out)
 			}
 			_ = helper.Process.Signal(sig)
-			if code := exitOf(t, helper); code != 130 {
-				t.Fatalf("exited %d, want 130:\n%s", code, out)
+			if code := exitOf(t, helper); code != 128+int(sig) {
+				t.Fatalf("exited %d, want %d:\n%s", code, 128+int(sig), out)
 			}
 		})
+	}
+}
+
+// TestStreamStopHelper runs -p reading stream-json from stdin, for the tests below.
+func TestStreamStopHelper(t *testing.T) {
+	ws := os.Getenv("ABHED_STOP_WS")
+	if os.Getenv("ABHED_STOP_HELPER") != "pstream" {
+		t.Skip("run by the stop tests")
+	}
+	os.Exit(Main([]string{"-C", ws, "-p", "-input-format", "stream-json", "-output-format", "stream-json"}))
+}
+
+// textModel answers every request with reply; entered closes at the first.
+func textModel(t *testing.T, reply string) (string, <-chan struct{}) {
+	t.Helper()
+	in := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		once.Do(func() { close(in) })
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", strconv.Quote(reply))
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, in
+}
+
+// lockedBuilder is a strings.Builder safe to read while the helper writes it.
+type lockedBuilder struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuilder) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuilder) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func startStream(t *testing.T, url string) (*exec.Cmd, io.WriteCloser, *lockedBuilder) {
+	t.Helper()
+	_, helper, stdin, _ := stopWorkspace(t, url, "pstream")
+	helper.Args = []string{os.Args[0], "-test.run=^TestStreamStopHelper$"}
+	out := &lockedBuilder{}
+	helper.Stdout, helper.Stderr = out, out
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stdin, `{"type":"user","message":{"content":"first"}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	return helper, stdin, out
+}
+
+func resultOf(t *testing.T, out string) resultLine {
+	t.Helper()
+	var res resultLine
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, `{"type":"result"`) {
+			if err := json.Unmarshal([]byte(line), &res); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if res.Type != "result" {
+		t.Fatalf("no result line:\n%s", out)
+	}
+	return res
+}
+
+// A stream-json -p run whose stdin is still open ends on SIGTERM, mid-turn
+// or waiting for the next message, with 143 and a result line.
+func TestStreamInputStopsOnSignalWithStdinOpen(t *testing.T) {
+	t.Run("mid-turn", func(t *testing.T) {
+		url, entered := stubModel(t, "")
+		helper, stdin, out := startStream(t, url)
+		defer stdin.Close()
+		select {
+		case <-entered:
+		case <-time.After(20 * time.Second):
+			_ = helper.Process.Kill()
+			_ = helper.Wait()
+			t.Fatalf("the turn never reached the model:\n%s", out)
+		}
+		_ = helper.Process.Signal(syscall.SIGTERM)
+		if code := exitOf(t, helper); code != 143 {
+			t.Fatalf("exited %d:\n%s", code, out)
+		}
+		if res := resultOf(t, out.String()); res.ExitCode != 143 {
+			t.Fatalf("result %+v", res)
+		}
+	})
+	t.Run("between turns", func(t *testing.T) {
+		url, _ := textModel(t, "first-answer")
+		helper, stdin, out := startStream(t, url)
+		defer stdin.Close()
+		deadline := time.Now().Add(20 * time.Second)
+		for !strings.Contains(out.String(), "first-answer") {
+			if time.Now().After(deadline) {
+				_ = helper.Process.Kill()
+				_ = helper.Wait()
+				t.Fatalf("no answer:\n%s", out)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		_ = helper.Process.Signal(syscall.SIGTERM)
+		if code := exitOf(t, helper); code != 143 {
+			t.Fatalf("exited %d:\n%s", code, out)
+		}
+		resultOf(t, out.String())
+	})
+	t.Run("after a failure", func(t *testing.T) {
+		helper, stdin, out := startStream(t, "http://127.0.0.1:9/v1")
+		defer stdin.Close()
+		// Stops reading after the failed turn, without waiting for stdin to end.
+		if code := exitOf(t, helper); code == 0 {
+			t.Fatalf("exited 0:\n%s", out)
+		}
+		if res := resultOf(t, out.String()); !res.IsError {
+			t.Fatalf("result %+v", res)
+		}
+	})
+}
+
+// A -p run stopped mid-turn exits with 128 plus the signal and says so in its result.
+func TestPromptStoppedMidTurnExitsBySignal(t *testing.T) {
+	url, entered := stubModel(t, "")
+	_, helper, stdin, out := stopWorkspace(t, url, "p")
+	_ = stdin.Close()
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		_ = helper.Process.Kill()
+		_ = helper.Wait()
+		t.Fatalf("the turn never reached the model:\n%s", out)
+	}
+	_ = helper.Process.Signal(syscall.SIGINT)
+	if code := exitOf(t, helper); code != 130 {
+		t.Fatalf("exited %d, want 130:\n%s", code, out)
 	}
 }

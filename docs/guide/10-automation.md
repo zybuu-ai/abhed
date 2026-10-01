@@ -7,24 +7,155 @@ Three ways to run Abhed without a person at the prompt.
 ```bash
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
 abhed -p "explain what pkg/auth does" -mode plan
-abhed -p "add a test for Valid" -output-format json > events.jsonl
+cat build.log | abhed -p "why did this fail?"
+abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
-Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
-`5` retries exhausted · `130` interrupted. A CI job can branch on those.
-`abhed -p` and the interactive CLI report `130` for any stop signal (Ctrl-C,
-SIGTERM or a hang-up), from the moment they start; `rpc`, `acp`, `eval` and `resolve` report 128 plus the
-signal's number (130, 143, 129); `serve` exits `0` once it has drained.
-`serve` ignores further signals while it drains; `-p`, `eval` and `resolve`
-end at once on a second signal.
+`-p` (or `--print`) runs one task and exits. The task is the text after
+`-p`, stdin, or both: with both, stdin is added below the task as its
+input, so `cat build.log | abhed -p "summarise"` sends the log with the
+question. Stdin is read to its end, up to 10 MiB; after three seconds with
+the pipe still open Abhed says it is waiting, so a caller that leaves stdin
+open by mistake should redirect it from `/dev/null`. Flags may come before
+or after the task.
 
-A bad invocation, such as an unknown `-output-format` (`text` or `json`), an
-unknown `-mode` or a word that is not a command, exits `2` before anything
-runs. Its stderr line tells the cases apart from a turn limit and from each
-other: `unknown -output-format`, `unknown -mode` or `unknown command`.
+A command the agent starts with `bash` and `run_in_background` is allowed
+under `-p` wherever `bash` is: the same rules and approver decide. `-p` waits
+for it: the run does not end, and the exit code is not set, until every
+background shell has ended and the agent has seen how (up to its lifetime,
+`timeout_ms` or `limits.background_max_minutes`). A shell still running when
+the run ends any other way (an error, a stop signal, `max_turns`) is killed
+with its process group before Abhed exits.
 
-There is no one to approve, so anything needing approval is refused. Name what
-may run with `-allow`, and keep the list narrow.
+Any stdin that is a pipe or a file is read, including one a script
+inherited. In a loop that reads a list on stdin, give each run its own
+stdin, or the first run takes the rest of the list:
+
+```bash
+while read f; do abhed -p "fix the lint errors in $f" < /dev/null; done < files.txt
+```
+
+`-no-stdin` does the same as `< /dev/null`. It cannot be combined with
+`-input-format stream-json`, which reads stdin by design.
+
+### Output
+
+| `-output-format` | stdout |
+|---|---|
+| `text` (default) | the answer as the terminal shows it, then a usage line |
+| `stream-json` | one recorded event per line as it happens, then a result line |
+| `json` | the same, with the streamed text fragments included |
+
+`stream-json` leaves out the text fragments (`agent.delta`) unless
+`-include-partial-messages` is given; the full reply is in `agent.message`.
+The last line of `json` and `stream-json` is the result:
+
+```json
+{"type":"result","subtype":"completed","is_error":false,"result":"…final reply…",
+ "session_id":"s-…","num_turns":3,"duration_ms":8123,"exit_code":0,
+ "usage":{"input_tokens":5120,"output_tokens":210,"cached_tokens":4096}}
+```
+
+`subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
+`retry_exhausted`, …); `error` is present when the run failed. `stream-json`
+without `-include-partial-messages` adds
+`"omitted":["agent.delta","agent.reasoning.delta"]`, the event types it left
+out, so `abhed hawkeye` can tell the gaps they leave from missing events. Policy
+decisions are events like any other, so a script sees each refusal and its
+reason.
+
+`-verbose` shows reasoning in full and writes each model call's token counts
+to stderr.
+
+### Input
+
+`-input-format stream-json` reads user messages from stdin, one JSON object
+per line, and runs each as the next turn of one conversation:
+
+```json
+{"type":"user","message":{"role":"user","content":"first question"}}
+{"type":"user","message":{"content":[{"type":"text","text":"a follow-up"}]}}
+```
+
+Lines of any other type are skipped with a note on stderr. The run ends at
+the end of stdin, after a turn that fails (later messages are not read), or
+on a stop signal, whether mid-turn or waiting for the next message, with
+the exit code below. The result line is written once, as the run ends.
+
+### Structured answers
+
+`-json-schema` takes a JSON Schema, inline or as `@path` (relative to the
+workspace, `-C`, and at most 1 MiB; a schema must be a JSON object), and makes the
+answer a JSON value that matches it ([Structured output](13-structured-output.md)).
+With `-output-format text`, stdout is only that JSON; with `json` or
+`stream-json` it is the result line's `structured_output`.
+
+### Limits and instructions
+
+- `-max-turns N` ends the run after N turns (exit `2`).
+- `-max-budget-tokens N` ends it once the run and its subagents have used N
+  tokens (exit `3`). Under a managed budget it may only lower it. There is no
+  budget in money: Abhed has no prices to count against.
+- `-append-system-prompt "…"` and `-append-system-prompt-file PATH` add
+  instructions to the system prompt.
+- `-system-prompt` and `-system-prompt-file` replace it. Both are refused
+  under a managed configuration, whose instructions the prompt carries.
+- The session's `session.started` event records which of these were used as
+  a SHA-256 of the text supplied, never the text. It also records the
+  permission `mode` the run started in, and `bypass_confirmed`, true only
+  when bypass came from a confirmed `-dangerously-skip-permissions`.
+- There is no way to run without a record.
+
+### Familiar flag spellings
+
+These are accepted as aliases, and bind exactly as Abhed's own flags do:
+a managed configuration refuses them the same way, and deny rules win.
+
+| Alias | Abhed flag |
+|---|---|
+| `-permission-mode acceptEdits\|plan\|default\|auto\|bypassPermissions` | `-mode` |
+| `-allowedTools` / `-allowed-tools "Read,Bash(npm test:*)"` | `-allow 'read,bash(npm test*)'` |
+| `-disallowedTools` / `-disallowed-tools` | `-deny` |
+| `-dangerously-skip-permissions` | `-mode bypass`, after typing `yes` on a terminal |
+
+Tool names are matched without regard to case, and a trailing `:*` in a
+pattern is a prefix. `-dangerously-skip-permissions` is refused under a
+managed configuration and wherever there is no terminal to confirm on,
+which includes `-p` in a script; `-mode bypass` is the explicit spelling.
+
+### Exit codes
+
+`abhed -p` exits with one of these:
+
+| Code | Meaning |
+|---|---|
+| `0` | completed |
+| `1` | error: the model or a tool failed, or no structured answer was delivered |
+| `2` | bad invocation, or the turn limit |
+| `3` | token budget |
+| `5` | model retries exhausted |
+| `130` | interrupted (SIGINT) |
+| `143` | terminated (SIGTERM); a hang-up is `129` |
+
+A call that policy refuses does not end the run: the refusal goes back to
+the agent, which carries on, and a run that then finishes exits `0`. To
+fail a script on a refusal, look for `action.denied` events in
+`-output-format stream-json`.
+
+`abhed -p`, `rpc`, `acp`, `eval` and `resolve` report 128 plus the stop
+signal's number, from the moment they start. The interactive CLI reports
+`130` for any stop signal. `serve` exits `0` once it has drained, and
+ignores further signals while it drains; `-p`, `eval` and `resolve` end at
+once on a second signal.
+
+A bad invocation, such as an unknown `-output-format` (`text`, `json` or
+`stream-json`), an unknown `-mode`, a flag that needs `-p` without it, or a
+word that is not a command, exits `2` before anything runs. Its stderr line
+tells the cases apart from a turn limit and from each other.
+
+There is no one to approve, so anything needing approval is refused, and
+the model is told why. Name what may run with `-allow`, and keep the list
+narrow.
 
 ## RPC
 
@@ -51,7 +182,17 @@ send(method="prompt", prompt="fix the failing tests")
 | `usage` | tokens, turns, compactions |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
-| `quit` | close |
+| `tasks` | the session's background tasks |
+| `cancel_task` | stop one background task — `task_id` |
+| `wake` | run the agent on background results waiting for it; an error when none waits |
+| `quit` | close; running background tasks end as `session_closed` |
+
+`start` takes `wake`: `off` (the default), so `prompt` answers when the work,
+background tasks and background shells included, is done; `notify`, so they
+outlive the prompt and their results arrive as event lines; or `auto`, which
+also runs the agent on a result that arrives between prompts: its events
+stream, then a line `{"type":"woken","answer":…}`. A `prompt` sent meanwhile
+waits for it.
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
@@ -146,7 +287,8 @@ fetches keep using ssh.
 Opening the request is a mutating action of its own, `forge_pr`, judged by
 policy like any other: a deny rule refuses it, an allow rule
 (`forge_pr(team/tool)`) or `-y` permits it, and otherwise you are asked at
-the terminal. No mode opens a pull request on its own. A run that changes
+the terminal by number: `1` No (keep) or `2` Yes, push, with nothing
+chosen for Enter. No mode opens a pull request on its own. A run that changes
 nothing pushes nothing, removes its worktree and its branch, and exits 2; if
 it left ignored files, the worktree and branch are kept for them. The run is
 asked not to commit, but a commit it made on its branch, on top of where it
@@ -215,18 +357,106 @@ streamed to the editor.
 
 The workspace's `.abhed/config.json` applies whole only once the person has
 trusted it; `session/new` reports the decision in
-`_meta.abhed.workspaceTrust`, with the settings it ignored, so the editor can
-ask and then run `abhed trust grant`. The editor may send
-`_meta.abhed.trust: "untrusted"` to take only what tightens; it cannot grant
-trust over the wire; pass the reported `sha256` to `abhed trust grant
+`_meta["zybuu.ai/abhed"].workspaceTrust`, with the settings it ignored, so the
+editor can ask and then run `abhed trust grant`. The editor may send
+`_meta["zybuu.ai/abhed"].trust: "untrusted"` (the older `_meta.abhed` key is
+still read) to take only what tightens; any other field there is refused, and
+it cannot grant trust over the wire; pass the reported `sha256` to `abhed trust grant
 -sha256` so only the content the person saw is trusted. Starting
 `abhed -trust-workspace acp` trusts the file of every workspace the editor
 opens for the life of the process, not only the one it was started in. See [Workspace
 trust](../architecture/workspace-trust.md).
 
-Not yet supported: `session/load` (resuming an editor session from the
-record) and editor-side modes. A conformance test drives the adapter with a
-scripted client, so no editor is needed in CI.
+Background tasks run in the configured wake mode, `auto` by default: a
+result that arrives between prompts opens a turn of its own, announced by
+`_abhed/wake/started` and closed by `_abhed/wake/ended`, its updates sent as
+a prompt's are, starting with a "Continuing with results from <task>" chunk.
+Its asks go to the editor like a prompt's; a `session/prompt` sent while it
+runs waits for it, and `session/cancel` ends it. Each task gets a `tool_call` card named
+`bg-<task id>`, open while it runs and completed (or failed) by its result,
+whether or not a prompt turn is open. A background task's ask needs an open
+prompt turn, since that is when an editor can be asked: between turns the
+task's own `bg-<task id>` card says it is waiting, and the ask goes out,
+first, when your next prompt opens, bound to that turn: it is refused if the
+turn ends before you answer, or if no turn opens within 30 minutes. A person
+can also review held asks without a prompt: `_abhed/tasks/review` sends them
+as permission requests marked `held`, refused if the review closes first.
+`session/cancel` stops every background task too, with or without a prompt
+open, and `_abhed/tasks/cancel` stops one.
+
+### Choosing the model
+
+`session/new` lists the models the configuration defines as a session
+config option, the form ACP schema v1.23.0 prefers:
+
+```json
+{"sessionId": "s-…", "configOptions": [{"id": "model", "name": "Model",
+  "category": "model", "type": "select", "currentValue": "local",
+  "options": [{"value": "local", "name": "local", "description": "qwen3:8b (ollama)"},
+              {"value": "work", "name": "work", "description": "llama-3.3-70b (openai-compatible)"}]}],
+ "models": {"currentModelId": "local", "availableModels": [
+  {"modelId": "local", "name": "local", "description": "qwen3:8b (ollama)"}, …]}}
+```
+
+Each value is a provider's name under `model.providers`; the description
+is its model id and type, never its `base_url`, key or `api_key_env`. To
+switch, the editor sends
+
+```json
+{"method": "session/set_config_option",
+ "params": {"sessionId": "s-…", "configId": "model", "value": "work"}}
+```
+
+and the reply is the full `configOptions` with the new `currentValue`. No
+`config_option_update` follows: the spec keeps that for a change the agent
+makes itself, such as a recorded `model.fallback`. `models` and `session/set_model`
+(`{"sessionId", "modelId"}`, reply `_meta["zybuu.ai/abhed"].currentModelId`)
+are the earlier unstable form, for editors that predate config options.
+
+The name is looked up in the configuration and nothing else, so an editor
+cannot point the session at an endpoint. Offered are the providers a
+trusted file defines: an untrusted workspace file adds none, and a built-in
+provider nobody configured is not listed. A managed file that sets
+`model.default` pins the model to it. A switch is refused while a prompt is
+running, for a name not offered, and for a provider whose `api_key_env`
+variable is unset, with the variable named. A switch is recorded as
+`model.switched` before the new model answers, and the conversation is kept.
+Subagents and background tasks started after a switch run on the new model,
+unless their agent definition or the call names one; a task already running
+keeps the model it started on.
+
+### Sessions, modes and Abhed Studio
+
+Sessions are kept in the local record the CLI uses (`~/.abhed/records`), so
+`session/list` shows them, `session/load` replays one (never running a tool
+again) and `session/resume` continues it without the replay; both verify the
+chain first and say whether it held in `_meta["zybuu.ai/abhed"].record`. A
+session another Abhed process is writing is refused, and one whose record
+fails verification opens read-only, to be forked. `session/close` lets a
+session go; nothing is deleted over ACP. With `storage.driver` set to
+`postgres` the record is the server's, and sessions here stay in memory.
+
+`session/new` offers the permission modes the engine allows now, as `modes`
+and as a config option of category `mode`. `session/set_mode` changes it
+within the managed ceiling and is recorded as `mode.changed` by the person;
+bypass is offered only when your own configuration starts in it.
+
+Abhed Studio uses the rest through `_abhed/*` extension methods: the event
+stream, verify and export, HawkEYE, the policy view and a dry-run explain,
+workspace trust inspection, background tasks and held asks, the sandboxed
+Abhed terminal (line by line, or an interactive shell judged and recorded
+line by line as the workbench's is), manual edits, per-hunk review and undo,
+steering and the doctor. `initialize` names the ones this engine serves in
+`agentCapabilities._meta["zybuu.ai/abhed"].features`, and `abhed version
+--json` prints the same block without starting anything. The engine
+write-protects an editor's own files in the workspace (`.vscode`,
+`.devcontainer`, `.git/config`, `.git/hooks`, `*.code-workspace`) from the
+agent, and refuses its edit to a file with unsaved changes the editor
+reported. The full surface, with what is not served yet, is in
+[the Studio contract](../architecture/studio-acp-contract.md).
+
+A conformance test drives the adapter with a scripted client, so no editor
+is needed in CI.
 
 ## Server
 
@@ -247,7 +477,15 @@ SID=$(curl -s -X POST $B/v1/sessions -d '{"prompt":"...","mode":"plan"}' | jq -r
 curl -sN $B/v1/sessions/$SID/events     # live
 curl -s  $B/v1/sessions/$SID/replay     # the full audit trail
 curl -s  $B/v1/sessions                 # your sessions, each with its state
+curl -s  $B/v1/sessions/$SID/tasks      # its background tasks
+curl -s -X POST $B/v1/sessions/$SID/tasks/<task_id>/cancel
+curl -s -X POST $B/v1/sessions/$SID/wake -d '{"wake":"off"}'   # off, notify or auto, up to the server's
 ```
+
+A session whose run has ended with background tasks still running is listed
+as `background`, with their count in `background`; an approval waiting, run
+or not, is in `pending_ask`. Its event stream stays open until the closing
+end. These endpoints, like the session's approvals, answer only its owner.
 
 A session's `state` in the list is `running`, `waiting_approval`, `idle` or
 `done`. A `done` session also has a `reason`, how its last run ended as

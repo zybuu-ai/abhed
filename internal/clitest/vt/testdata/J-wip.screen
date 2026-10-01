@@ -1,0 +1,31 @@
+size 100 30 cursor 21 2
+            ▄      ABHED  dev
+       ▗▟▙▖        deep agent harness · on-prem
+      ▗█▛▜█▖
+     ▗█▛  ▜█▖      model    gemma4:26b
+    ▗█▛▀▀▀▀▜█▖     work     /tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws
+   ▗█▛      ▜█▖    sandbox  process · no network
+  ▗██▖      ▗██▖   storage  memory (sessions do not survive restart)
+
+/ commands · @ files · ! shell · # memory · shift+tab modes · esc interrupts · ? shortcuts
+
+▲ hi
+  connection failed — retrying (attempt 2 of 4)
+  connection failed — retrying (attempt 3 of 4)
+  connection failed — retrying (attempt 4 of 4)
+
+! ended: error
+error: model call failed: call http://127.0.0.1:1/v1: Post "http://127.0.0.1:1/v1/chat/completions":
+ dial tcp 127.0.0.1:1: connect: connection refused
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▲
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                                        gemma4:26b
+
+
+
+
+
+

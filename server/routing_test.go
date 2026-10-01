@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func (f *fakeRouter) NodeFor(_ context.Context, sessionID string, _ time.Duratio
 func TestRoutingIsOffWithoutANodeID(t *testing.T) {
 	s := &Server{store: &fakeRouter{}, opts: Options{}}
 	if _, ok := s.router(); ok {
-		t.Fatal("routing engaged with no NodeID; a single-node deployment would start claiming")
+		t.Fatal("routing engaged with no NodeID; a single-node deployment would answer 421s")
 	}
 	if got := s.elsewhere(context.Background(), "s-1"); got != "" {
 		t.Fatalf("elsewhere = %q with routing off, want empty", got)
@@ -98,15 +99,22 @@ func TestElsewhereEmptyWhenNoNodeHoldsIt(t *testing.T) {
 	}
 }
 
-// A claim that cannot be written is logged and ignored — refusing to start a
-// turn because bookkeeping failed is worse than a misrouted request.
-func TestClaimFailureDoesNotStopTheTurn(t *testing.T) {
+// A claim that cannot be written fails the hold: the claim is also the
+// liveness another process reads, and a session held with none could be
+// taken over as a crashed one while it runs here.
+func TestClaimFailureFailsTheHold(t *testing.T) {
 	f := &fakeRouter{err: errors.New("write failed")}
-	s := &Server{store: f, opts: Options{NodeID: "node-a"}, log: discardLogger()}
-	s.claimNode(context.Background(), "s-1") // must not panic
-	s.releaseNode("s-1")                     // must not panic
-	if len(f.claimed) != 1 || len(f.released) != 1 {
-		t.Fatalf("claimed %v released %v, want one of each attempted", f.claimed, f.released)
+	s := &Server{store: f, opts: Options{NodeID: "node-a"}, holder: "node-a", log: discardLogger()}
+	if err := s.claimNode(context.Background(), "s-1"); err == nil {
+		t.Fatal("a failed claim was reported as held")
+	}
+	live := &liveSession{ID: "s-1"}
+	if err := s.holdNode(live); err == nil || live.beatStop != nil {
+		t.Fatalf("hold with a failed claim: err %v, heartbeat started %v", err, live.beatStop != nil)
+	}
+	s.releaseNode("s-1") // logged, not fatal
+	if len(f.claimed) != 2 || len(f.released) != 1 {
+		t.Fatalf("claimed %v released %v", f.claimed, f.released)
 	}
 }
 
@@ -341,7 +349,7 @@ func TestHeartbeatRefreshesTheClaim(t *testing.T) {
 	// identical.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := s.heartbeatNodeEvery(ctx, "s-beat", 20*time.Millisecond)
+	stop := s.heartbeatNodeEvery(ctx, "s-beat", 20*time.Millisecond, nil)
 	defer stop()
 
 	// Wait for refreshes rather than for a duration: under -race the build is
@@ -375,7 +383,7 @@ func TestHeartbeatStopIsIdempotent(t *testing.T) {
 		running: map[string]*liveSession{},
 		opts:    Options{NodeID: "node-a"},
 	}
-	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Hour)
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Hour, nil)
 	stop()
 	stop()
 }
@@ -388,7 +396,63 @@ func TestHeartbeatIsInertWithoutARouter(t *testing.T) {
 		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		running: map[string]*liveSession{},
 	}
-	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Millisecond)
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", time.Millisecond, nil)
 	time.Sleep(20 * time.Millisecond)
 	stop()
+}
+
+// fencingRouter is a store whose renewals report whether the row is still
+// the holder's, or fail.
+type fencingRouter struct {
+	countingRouter
+	held atomic.Bool
+	fail atomic.Bool
+}
+
+func (f *fencingRouter) RenewNode(context.Context, string, string) (bool, error) {
+	if f.fail.Load() {
+		return false, errors.New("store unavailable")
+	}
+	return f.held.Load(), nil
+}
+
+// A heartbeat the store refuses (another process took the session) loses
+// the lease at once; failing beats lose it only once the claim would read
+// as stale to others. Either way it is lost once, and the beating ends.
+func TestHeartbeatLosesTheLease(t *testing.T) {
+	oldStale := nodeStale
+	nodeStale = 300 * time.Millisecond
+	defer func() { nodeStale = oldStale }()
+	s := &Server{log: discardLogger(), running: map[string]*liveSession{}, holder: "me"}
+
+	f := &fencingRouter{}
+	s.store = f
+	lost := make(chan time.Time, 4)
+	stop := s.heartbeatNodeEvery(context.Background(), "s-1", 20*time.Millisecond, func() { lost <- time.Now() })
+	defer stop()
+	select {
+	case <-lost:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a refused renewal did not lose the lease")
+	}
+
+	g := &fencingRouter{}
+	g.held.Store(true)
+	g.fail.Store(true)
+	s.store = g
+	start := time.Now()
+	stop2 := s.heartbeatNodeEvery(context.Background(), "s-2", 20*time.Millisecond, func() { lost <- time.Now() })
+	defer stop2()
+	select {
+	case at := <-lost:
+		if at.Sub(start) < nodeStale-40*time.Millisecond {
+			t.Fatalf("lost after %v of failures, before the claim could read as stale", at.Sub(start))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("failing renewals never lost the lease")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(lost) != 0 {
+		t.Fatal("the lease was lost more than once")
+	}
 }

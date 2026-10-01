@@ -46,7 +46,7 @@ globalThis.__root = new El('div');
 	}
 }
 
-// A destructive line waits at [y/N] and only y confirms it; a running program
+// A destructive line waits at a numbered question and only 2 confirms it; a running program
 // gets every key raw, and Tab completes from the workspace listing.
 func TestIDELineTerminalConfirmsDestructiveLines(t *testing.T) {
 	harness := `globalThis.__sent = []; globalThis.__replies = []; globalThis.__attached = null;
@@ -89,13 +89,17 @@ func TestIDEChatLeavesOutThePersonsOwnCalls(t *testing.T) {
 globalThis.__root = new El('div');
 El.prototype.addEventListener = () => {};
 globalThis.__added = []; globalThis.__logged = 0; globalThis.__changes = 0; globalThis.__agentTerm = [];
-let live = true, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
-const calls = new Map(), mineCalls = new Set();
+let live = true, bgLive = false, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
+const calls = new Map(), mineCalls = new Set(), bgTasks = new Map(), ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
+const setLive = on => { live = on; }, recheckSoon = () => {};
 const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
-const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}, askApproval = () => {};
+const tx = () => __root;
+globalThis.__waits = []; const claim = () => null, asks = new Map();
+const logEvent = () => { __logged++; }, waiting = l => { if(l) __waits.push(l); }, settleAsk = () => {}, askApproval = () => {};
 const hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => { __changes++; };
 const fillCall = () => {}, drawPlan = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
 const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); };
+const stat = {turns:0, tin:0, tout:0, ctx:0, window:0}, drawStatus = () => {};
 `
 	if out, err := runConsoleCases(t, "ide-render", harness, "ide_render_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's chat render failed:\n%s", out)
@@ -110,6 +114,26 @@ const makeTerm = () => agentTerm, selectTerm = () => {};
 `
 	if out, err := runConsoleCases(t, "ide-term", harness, "ide_term_cases.mjs"); err != nil {
 		t.Fatalf("the agent terminal failed:\n%s", out)
+	}
+}
+
+// An opened call's output is untrusted and drawn with hidden characters written
+// out, as the plan is: eval round 2 found a background task's description echoed
+// in "Started in background" drawn with its bidi and zero-width characters applied.
+func TestIDEShowsHiddenCharactersInCallOutput(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+globalThis.__added = [];
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.removeChild = function(n){ this.childNodes.splice(this.childNodes.indexOf(n), 1); n.parentNode = null; return n; };
+El.prototype.remove = function(){ const p = this.parentNode; if(p) p.removeChild(this); };
+El.prototype.insertBefore = function(n, ref){ const i = this.childNodes.indexOf(ref); n.parentNode = this; if(i < 0) this.childNodes.push(n); else this.childNodes.splice(i, 0, n); return n; };
+let todoNode = null;
+const add = n => { __added.push(n); };
+`
+	if out, err := runConsoleCases(t, "ide-call", harness, "ide_call_cases.mjs"); err != nil {
+		t.Fatalf("an opened call drew hidden characters:\n%s", out)
 	}
 }
 
@@ -166,13 +190,13 @@ El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[typ
 globalThis.__focused = []; El.prototype.focus = function(){ __focused.push(this); };
 El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
 Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
-let current = null, live = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
+let current = null, live = false, bgLive = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '', sessionList = [{id:'s1', prompt:'x'}];
-const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map();
+const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map(), bgTasks = new Map();
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
 const tx = () => __root, qbox = new El('div'), add = n => __root.appendChild(n);
 let cid = 0; const bubble = (cls, who, text) => { const m = new El('div'); m.className = 'msg ' + cls; m.textContent = text || ''; return m; };
-const userBubble = (text, state) => { const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = 'c' + (++cid); return b; };
+const newCid = () => 'c' + (++cid);
 globalThis.__connected = []; let signInGone = false, leaving = false;
 const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = id => { __connected.push(id); };
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
@@ -205,7 +229,7 @@ const api = async (url, opts) => {
 // drops, a shell's stream and a failed request all send the page to ask.
 func TestIDEShowsWhenTheServerHasGone(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
-let current = 's1', live = true, es = null, lastSeq = 0, leaving = false, activeTerm = null;
+let current = 's1', live = true, bgLive = false, es = null, lastSeq = 0, leaving = false, activeTerm = null;
 let connState = null, connTimer = 0, connWait = 0, signedIn = false, signInGone = false;
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
 const el = (tag, cls, text) => { const n = new El(tag); if(cls) n.className = cls; if(text != null) n.textContent = text; return n; };
@@ -475,9 +499,15 @@ func TestSettingsListsTheToolsSessionsGet(t *testing.T) {
 func TestIDEOffersOnlyAllowedModes(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
 Object.defineProperty(El.prototype, 'options', { get(){ return this.childNodes; } });
-const sel = new El('select'); const $ = () => sel;
+const sel = new El('select'), status = new El('span'); const $ = id => id === 's-mode' ? status : sel;
+let caps = null;
 for(const m of ['default', 'plan', 'accept-edits', 'auto']){ const o = new El('option'); o.value = m; sel.appendChild(o); }
 `
+	_, reset, found := strings.Cut(ideHTML, "function resetSession(){")
+	reset, _, _ = strings.Cut(reset, "\n}\n")
+	if !found || !strings.Contains(reset, "modeForNewSession();") {
+		t.Error("a new session does not go back to the configured mode")
+	}
 	if out, err := runConsoleCases(t, "ide-modes", harness, "ide_modes_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's mode selector failed:\n%s", out)
 	}
@@ -503,5 +533,74 @@ const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:
 `
 	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's panels failed:\n%s", out)
+	}
+}
+
+// Every place the workbench draws a file name, and the live reply and
+// reasoning, writes hidden characters out through reveal.
+func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
+	for fn, wants := range map[string][]string{
+		"function drawTabs(){":             {"el('span', 'nm', reveal(t.label))", "b.title = reveal(", "'Close ' + reveal(t.label)"},
+		"function crumbs(path, meta){":     {"reveal(p)"},
+		"function flushStream(){":          {"appendData(reveal(pendThink, true))", "appendData(reveal(pendText, true))"},
+		"async function loadChanges(){":    {"reveal(f.path)"},
+		"function endThinking(at, whole){": {"t.body.data = reveal(whole, true)"},
+	} {
+		start := strings.Index(ideHTML, fn)
+		if start < 0 {
+			t.Fatalf("%s is missing", fn)
+		}
+		body := ideHTML[start : start+strings.Index(ideHTML[start:], "\n}\n")]
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does not reveal: want %q", fn, want)
+			}
+		}
+	}
+	if !strings.Contains(ideHTML, "confirm('Delete ' + reveal(e.path)") {
+		t.Error("the delete dialog draws the path raw")
+	}
+}
+
+// Where no page harness reaches, the source must still draw untrusted text through
+// visible() or reveal(): the console's drawer, and the workbench's tool cards,
+// search results, session titles, breadcrumb note, palette and @ list.
+func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
+	for _, c := range []struct{ page, src, want string }{
+		{"console", consoleHTML, "  body = reveal(body, true);\n  if(numbered){"},
+		{"console", consoleHTML, "$('dname').textContent = visible(name);"},
+		{"console", consoleHTML, "q.textContent = s.prompt ? reveal(s.prompt) : '(no prompt recorded)';"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(o.name)));"},
+		{"ide", ideHTML, "card.appendChild(el('p', '', visible(o.description, true)));"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status)));"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(s.name)));"},
+		{"ide", ideHTML, "top.appendChild(el('b', '', visible(e.name)));"},
+		{"ide", ideHTML, "el('mark', '', reveal(m.text.slice(m.from, m.to)))"},
+		{"ide", ideHTML, "const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';"},
+		{"ide", ideHTML, "$('crumb-meta').textContent = reveal(meta || '');"},
+		{"ide", ideHTML, "$('attl').textContent = sessionLabel(s); }"},
+		{"ide", ideHTML, "if(note) w('\\x1b[33m' + visible(note) + '\\x1b[0m');"},
+		{"ide", ideHTML, "out.push({k:'file', l:reveal(p), h:'', run:() => openFile(p)})"},
+		{"ide", ideHTML, "head.type = 'button'; head.title = reveal(f.path);"},
+		{"ide", ideHTML, "b.appendChild(el('span', 'name mono', '@' + reveal(p)));"},
+		{"ide", ideHTML, "'Hooks: ' + (visible(e.events.join(', ')) || 'all events')"},
+		{"ide", ideHTML, "if(!t.model) note(visible(e.message));"},
+		{"ide", ideHTML, "line('deny', visible(c.permissions.deny.join('   ')) || '—'); line('ask', visible(c.permissions.ask.join('   ')) || '—'); line('allow', visible(c.permissions.allow.join('   ')) || '—');"},
+		{"ide", ideHTML, "x.setAttribute('aria-label', 'Close ' + reveal(t.name));"},
+	} {
+		if !strings.Contains(c.src, c.want) {
+			t.Errorf("%s no longer draws this through the helper: %s", c.page, c.want)
+		}
+	}
+	// Every error message is drawn through the helper; only a regular
+	// expression's test reads one raw.
+	message := regexp.MustCompile(`\b(?:e|err)\.message`)
+	drawn := regexp.MustCompile(`(?:visible|reveal)\((?:err && )?(?:e|err)\.message|\.test\(e\.message\)`)
+	for page, src := range map[string]string{"console": consoleHTML, "ide": ideHTML} {
+		for _, line := range strings.Split(src, "\n") {
+			if len(message.FindAllString(line, -1)) != len(drawn.FindAllString(line, -1)) {
+				t.Errorf("%s draws an error message raw: %s", page, strings.TrimSpace(line))
+			}
+		}
 	}
 }

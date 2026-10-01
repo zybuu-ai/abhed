@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -102,6 +103,16 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 
 		case EvModelCall:
 			// Each model call is a new assistant turn, even one whose calls were all refused.
+			lastAssistant = nil
+
+		case EvSubagentNotice:
+			// A background result: the task_status call and its result, as the
+			// live conversation received them.
+			var n Notice
+			if json.Unmarshal(ev.Payload, &n) != nil || n.CallID == "" {
+				continue
+			}
+			msgs = append(msgs, noticeMessages(n)...)
 			lastAssistant = nil
 
 		case EvObservation:
@@ -226,13 +237,24 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	l.StopSuggestion() // it was made for the conversation being cut
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
+	// A task still running would go on writing into the conversation the fork
+	// leaves, and act on what the fork resets. Refused rather than cancelled:
+	// a fork does not silently end work. Checked under the run lock, which
+	// every spawn is made under.
+	if running := l.Background.running(); len(running) > 0 {
+		return 0, fmt.Errorf("background tasks are still running: %s; wait for them to finish or cancel them, then fork",
+			strings.Join(running, ", "))
+	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
 		return 0, err
 	}
 	// A login made after the fork point would outlive the turns that made it,
 	// so a fork starts with none; the conversation logs in again.
 	l.Session.ResetScoped()
-	l.Restore(msgs)
+	l.messages = msgs
 	return len(msgs), nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -144,8 +145,7 @@ func TestExploreProfileCannotWrite(t *testing.T) {
 
 func TestTaskToolRejectsEmptyPrompt(t *testing.T) {
 	tool := Task{
-		Spawn:    func(context.Context, SubagentRequest) (string, error) { return "", nil },
-		Profiles: Profiles,
+		Spawn: func(context.Context, SubagentRequest) (string, error) { return "", nil },
 	}
 	args, _ := json.Marshal(taskArgs{Description: "something"})
 	res := tool.Run(context.Background(), nil, args)
@@ -156,8 +156,7 @@ func TestTaskToolRejectsEmptyPrompt(t *testing.T) {
 
 func TestTaskToolRejectsUnknownAgentType(t *testing.T) {
 	tool := Task{
-		Spawn:    func(context.Context, SubagentRequest) (string, error) { return "ok", nil },
-		Profiles: Profiles,
+		Spawn: func(context.Context, SubagentRequest) (string, error) { return "ok", nil },
 	}
 	args, _ := json.Marshal(taskArgs{Prompt: "do it", Description: "x", AgentType: "wizard"})
 	res := tool.Run(context.Background(), nil, args)
@@ -223,6 +222,32 @@ func TestWorktreeSubagentKeepsTheSyntaxMode(t *testing.T) {
 	}
 }
 
+// A subagent in its own worktree keeps the parent's guard, which is told the
+// worktree's roots, so the editor's files there are out of its reach too.
+func TestWorktreeSubagentKeepsTheGuard(t *testing.T) {
+	child := tempDir(t)
+	p := filepath.Join(child, "kept.txt")
+	var roots []string
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("write", map[string]string{"path": p, "content": "theirs"})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Session.Guard = func(path string, r []string) error {
+		roots = r
+		return errors.New("kept by the guard")
+	}
+	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", Workspace: child}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); err == nil {
+		t.Fatal("the child wrote past its parent's guard")
+	}
+	real, _ := filepath.EvalSymlinks(child)
+	if !slices.Contains(roots, real) {
+		t.Fatalf("the guard was not told the worktree: %v", roots)
+	}
+}
+
 // askingApprover stands in for the person at the prompt and says no.
 type askingApprover struct {
 	mu    sync.Mutex
@@ -265,8 +290,8 @@ func taskTree(t *testing.T, adapter model.Adapter, appr Approver, parentStore, c
 		Session: sess, Store: childStore, Budget: NewBudget(1_000_000, 10, nested),
 		Config: DefaultConfig(), Workspace: dir,
 	}
-	reg.Add(Task{Spawn: f.Spawn, Profiles: Profiles})
-	reg.Add(Tasks{Spawn: f.Spawn, Profiles: Profiles, Workspace: dir})
+	reg.Add(Task{Spawn: f.Spawn})
+	reg.Add(Tasks{Spawn: f.Spawn, Workspace: dir})
 	return NewLoop(adapter, reg, pol, appr, sess, NewRecorder(parentStore, "parent", ""), DefaultConfig()), dir, f
 }
 
@@ -772,6 +797,29 @@ func TestSubagentAskNamesItsTarget(t *testing.T) {
 	}
 	if asks[0].Target != "cluster prod at https://api.prod.example:6443" {
 		t.Fatalf("subagent.ask does not name the target: %+v", asks[0])
+	}
+}
+
+// A background subagent in its own worktree is still the parent's
+// conversation, as a foreground one is: it sees the parent's login.
+func TestBackgroundWorktreeSubagentInheritsScopedState(t *testing.T) {
+	var saw any
+	f := subFactory(t, []scriptedTurn{
+		{calls: []model.ToolCall{call("probe", map[string]string{})}},
+		{text: "done"},
+	}, NewBudget(1_000_000, 10, false))
+	f.Tools.Add(scopedProbe{saw: &saw})
+	f.Session.Scoped(scopedProbeKey{}, func() any { return "parent's login" })
+	l := NewLoop(f.Adapter, f.Tools, f.Policy, f.Approver, f.Session, NewRecorder(f.Store, "parent", ""), DefaultConfig())
+	NewBackground(l, BackgroundPolicy{Wake: WakeNotify, MaxLive: 4})
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	if _, err := f.SpawnBackground(l.asParent(context.Background()),
+		SubagentRequest{Prompt: "x", Description: "y", Workspace: tempDir(t)}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the background child to end", func() bool { return l.Background.Live() == 0 })
+	if saw != "parent's login" {
+		t.Fatalf("the background worktree subagent saw %v, not its parent's login", saw)
 	}
 }
 

@@ -10,7 +10,28 @@ import (
 )
 
 // killGroup kills the process group pgid; replaced in tests.
-var killGroup = func(pgid int) error { return syscall.Kill(-pgid, syscall.SIGKILL) }
+var killGroup = killGroupNow
+
+// sysKill is kill(2); replaced in tests of killGroupNow.
+var sysKill = syscall.Kill
+
+// killGroupNow signals only the target groupTarget allows.
+func killGroupNow(pgid int) error {
+	target, err := groupTarget(pgid)
+	if err != nil {
+		return err
+	}
+	return sysKill(target, syscall.SIGKILL)
+}
+
+// groupTarget is the kill(2) target for group pgid. It refuses 0 and 1 and a
+// negative id, which would name the caller's own group, init's, or every process.
+func groupTarget(pgid int) (int, error) {
+	if pgid <= 1 || pgid == syscall.Getpgrp() {
+		return 0, syscall.EINVAL
+	}
+	return -pgid, nil
+}
 
 // EndWithCommand runs cmd in a session of its own, which a cancel kills whole,
 // together with every process descended from it.

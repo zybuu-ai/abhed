@@ -148,3 +148,23 @@ func TestRPCRefusesATierItCannotHonour(t *testing.T) {
 		t.Fatalf("rpc started without the configured sandbox:\n%s", out)
 	}
 }
+
+// rpc's start options meet the managed file as the flags do: under managed
+// permissions an allow list is refused and the session does not start.
+func TestRPCStartAllowRefusedUnderManagedPermissions(t *testing.T) {
+	managedConfig(t, `{"permissions": {"deny": ["bash(curl*)"]}}`)
+	ws := t.TempDir()
+	cfg := `{"model": {"default": "fake", "providers": {"fake": {"type": "openai-compatible",
+		"base_url": "http://127.0.0.1:1", "model": "m"}}}}`
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
+	out := runRPC(t, ws, `{"id":"1","method":"start","allow":["bash(touch *)"]}`, `{"id":"2","method":"quit"}`)
+	if strings.Contains(out, `"type":"ready"`) || !strings.Contains(out, "permissions.allow") {
+		t.Fatalf("rpc started with an allow rule under managed permissions:\n%s", out)
+	}
+}

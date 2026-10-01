@@ -176,6 +176,7 @@ var subcommands = []subcommand{
 	{name: "providers", about: "list the model provider types this build supports"},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},
+	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},
 	{name: "hawkeye", about: "report on a session, from its id or an exported events file", trust: true},
 	{name: "migrate", about: "apply the database schema as the owning role", trust: true},
 	{name: "resolve", about: "work on a forge issue in its own branch and open a pull request", trust: true},

@@ -24,11 +24,11 @@ func TestConsoleRenderNoDuplicateReply(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
 const tx = new El('div'); tx.id='tx';
 globalThis.__root = tx;
-const els = { tx };
+const els = { tx, stop: new El('button') };
 globalThis.$ = id => els[id] || null;
-let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', es=null;
+let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', bgLive=false, es=null;
 globalThis.__connected = []; const connect = id => { __connected.push(id); };
-const calls = new Map();
+const calls = new Map(), bgNames = new Map();
 let approvals = new Map();
 const stats = {turns:0,tin:0,tout:0,cached:0,tools:{},reason:null,compactions:0};
 globalThis.hideThinking = ()=>{};
@@ -53,11 +53,11 @@ func TestConsoleAsksForASubagent(t *testing.T) {
 El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
 const tx = new El('div'); tx.id='tx';
 globalThis.__root = tx;
-const els = { tx };
+const els = { tx, stop: new El('button') };
 globalThis.$ = id => els[id] || null;
-let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', es=null;
+let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', bgLive=false, es=null;
 globalThis.__connected = []; const connect = id => { __connected.push(id); };
-const calls = new Map();
+const calls = new Map(), bgNames = new Map();
 let approvals = new Map();
 const stats = {turns:0,tin:0,tout:0,cached:0,tools:{},reason:null,compactions:0};
 globalThis.hideThinking = ()=>{};
@@ -301,5 +301,31 @@ func TestIDEModelPicker(t *testing.T) {
 		if !strings.Contains(ideHTML, want) {
 			t.Errorf("the workbench starts a session without the model the picker shows: no %s", want)
 		}
+	}
+}
+
+// The rail's rows carry the badges: background tasks and a waiting approval,
+// in the console and in the workbench.
+func TestListRowsShowBackgroundBadges(t *testing.T) {
+	if !strings.Contains(consoleHTML, "m.append(pill, ...listBadges(s), when)") {
+		t.Fatal("the console's list rows do not show the background and approval badges")
+	}
+	if !strings.Contains(ideHTML, "if(s.background) row.appendChild(") || !strings.Contains(ideHTML, "if(s.pending_ask) row.appendChild(") {
+		t.Fatal("the workbench's list rows do not show the background and approval badges")
+	}
+}
+
+// The console reopens a dropped event stream while a run is live or
+// background work is owed, and not for a finished session.
+func TestConsoleReconnectsWhileBackgroundOwed(t *testing.T) {
+	harness := `
+globalThis.__streams = [];
+globalThis.EventSource = class { constructor(url){ this.url = url; __streams.push(this); } close(){} };
+globalThis.setTimeout = f => f();
+let es = null, lastSeq = 0, live = false, bgLive = false, current = null;
+const render = () => {}, workbenchSaw = () => {};
+`
+	if out, err := runConsoleCases(t, "conn", harness, "console_conn_cases.mjs"); err != nil {
+		t.Fatalf("the console's reconnect failed:\n%s", out)
 	}
 }

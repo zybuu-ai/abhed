@@ -76,6 +76,15 @@ const (
 	// into the parent's record, so the person asked sees it where they are
 	// watching; see SubagentAsk. Its answer follows as subagent.action.
 	EvSubagentAsk EventType = "subagent.ask"
+	// EvSubagentNotice is a background child's result entering the
+	// conversation, recorded before it is applied; see Notice. Fork rebuilds
+	// it as a task_status call and its result.
+	EvSubagentNotice EventType = "subagent.notice"
+	// EvSessionWoken marks a run no person prompted, started for background
+	// results; see SessionWoken. It carries no message.
+	EvSessionWoken EventType = "session.woken"
+	// EvWakeSet records a change of the session's wake mode; see WakeSet.
+	EvWakeSet EventType = "session.wake_set"
 )
 
 type Actor string
@@ -120,12 +129,15 @@ const (
 	// TermDeadline: the run's own time limit passed, as the eval harness sets
 	// one. Nobody stopped it and the node did not go away.
 	TermDeadline TerminalReason = "deadline"
+	// TermWakeLimit: a wake run used its turns. The session goes on, and so
+	// do its background children.
+	TermWakeLimit TerminalReason = "wake_limit"
 )
 
 // ExitCode maps a terminal reason to a process exit code for headless runs.
 func (r TerminalReason) ExitCode() int {
 	switch r {
-	case TermCompleted:
+	case TermCompleted, TermWakeLimit:
 		return 0
 	case TermMaxTurns:
 		return 2
@@ -220,6 +232,8 @@ type Message struct {
 	// ClientID is an id the sender chose for the message, echoed so a client
 	// can match its own message without comparing text.
 	ClientID string `json:"client_id,omitempty"`
+	// Steered marks a message sent while a run was working, to redirect it.
+	Steered bool `json:"steered,omitempty"`
 }
 
 // DroppedMessage is a queued message the model never saw. It is not a
@@ -268,6 +282,9 @@ type ModelCall struct {
 	// still writing when the limit ended it, so what it said is not an answer.
 	CutOff bool   `json:"cut_off,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Purpose names a call outside the conversation, as "suggestion"; empty
+	// is a turn of the conversation itself.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // ModelSwitched is a session moving to another configured provider. Provider
@@ -293,15 +310,32 @@ func ProviderOf(events []Event) string {
 	return ""
 }
 
+// SubagentProvider is the configured provider a subagent's record says it
+// ran on: the one its own subagent.spawned names. Empty when it ran on its
+// parent's model and the parent's provider was not known.
+func SubagentProvider(events []Event) string {
+	for _, e := range events {
+		if e.Type == EvSubagentSpawned {
+			var p struct {
+				Provider string `json:"provider"`
+			}
+			_ = json.Unmarshal(e.Payload, &p)
+			return p.Provider
+		}
+	}
+	return ""
+}
+
 // LastModel is the model the record last names: a call's, a switch's, or the start's.
 func LastModel(events []Event) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
 		case EvModelCall, EvModelSwitched, EvSessionStarted:
 			var p struct {
-				Model string `json:"model"`
+				Model   string `json:"model"`
+				Purpose string `json:"purpose"`
 			}
-			if json.Unmarshal(events[i].Payload, &p) == nil && p.Model != "" {
+			if json.Unmarshal(events[i].Payload, &p) == nil && p.Model != "" && p.Purpose == "" {
 				return p.Model
 			}
 		}
@@ -331,6 +365,21 @@ type SessionEnded struct {
 	// without knowing which model answered. Zero when the adapter does not
 	// report one, which is also when compaction never fires.
 	ContextWindow int `json:"context_window,omitempty"`
+
+	// Background is what the session still owed when the run ended:
+	// background children running, results not yet delivered, and a wake
+	// being started. A session owing any is not over: a closing end with
+	// Settled follows once it is all done.
+	Background int `json:"background,omitempty"`
+	// Settled marks the closing end recorded after background work finished.
+	Settled bool `json:"settled,omitempty"`
+	// Detail says more of how a run was stopped, as an Interrupt cause names it.
+	Detail string `json:"detail,omitempty"`
+	// Suggesting marks a run's end that a next-prompt suggestion follows: its
+	// model.call (purpose suggestion) comes after, last.
+	Suggesting bool `json:"suggesting,omitempty"`
+	// Recovered marks an end written by reconciliation after a crash.
+	Recovered bool `json:"recovered,omitempty"`
 }
 
 // Todo is one item in the agent's task list.

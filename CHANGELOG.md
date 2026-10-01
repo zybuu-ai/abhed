@@ -6,6 +6,901 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-10-02
+
+### Security
+
+- A password typed ahead of `read -s` in the workbench shell or Studio's
+  interactive terminal could reach the record in clear, three ways.
+  - On the container tier, where the terminal cannot be asked, a line typed
+    while a command still ran was recorded with its text. It is now recorded
+    without its text unless the output had come back to a line ending in
+    `$ ` or `# `; so is a line on the process and none tiers when the
+    terminal could not be asked.
+  - On the process and none tiers, a line typed while another program had
+    the terminal (`sleep 2; read -s pw`) was not recorded, but the terminal
+    echoed it into the recorded output. When that program left the terminal
+    reading lines, the line is now taken out of the output as below; keys
+    typed into a program reading raw keys (an editor, a REPL) are not. The
+    same holds for a single command run in the workbench's `lines` mode.
+  - On every tier, a line recorded without its text could still be in the
+    latest output that the shell's end records: arriving after bash had
+    handed the terminal back with echo on and before `read -s` turned echo
+    off, it was echoed. Whether it was depended on timing, so slower
+    machines leaked it more often. Each line of that output holding four or
+    more characters in a row of a withheld line is now replaced by
+    `[withheld]`, and when a withheld line was edited as it was typed, the
+    output is withheld whole. Pieces shorter than four characters split
+    apart by other output are not caught (docs/guide/16-workbench.md).
+- The console and `/ide` drew a tool call's output with its bidi, isolate,
+  joiner, zero-width and control characters applied, so a background task's
+  description echoed in "Started in background" could reorder or hide part
+  of the line in the call's peek and output. Every call's output, peek and
+  header, replies and reasoning, the person's messages, decision reasons,
+  the agent's terminal tab, the refusals, reasons and notes Abhed writes
+  into a line terminal and the directory in its prompt, file names
+  (Explorer, tabs, search, the command palette and the `@` list), file and
+  diff lines, search results, session titles, the running label, MCP,
+  skill and extension names, the permission rules in `/ide`'s Tools panel
+  and the server's error notes now show those characters as `⟨U+XXXX⟩`,
+  keeping newlines, tabs and indentation.
+- `/ide` drew a model error with the model's own invalid tool arguments
+  quoted as given, so an RLO in them reversed the row. It is now written out
+  like any other record text.
+- An MCP server's tool names were taken as given, so a name holding an RLO
+  or other hidden characters reached the prompt and the "always allow"
+  scope as given (1.2.2 and earlier; the approval card already escaped it). A remote tool is now registered
+  only when its name is letters, digits, `_`, `.` and `-`, up to 64, the rule
+  `tool_search` already lists names by; any other is left out with a
+  warning naming the server and the escaped name.
+- A managed file that set `permissions` but not `permissions.allow` still let
+  (as 1.2.2 documented; now tightened) `-allow`, the SDK's `Options.Allow`, rpc's `start`, and the allow lists in
+  `~/.abhed/config.json` and a trusted workspace's `.abhed/config.json` add
+  allow rules. Every path, including the new `-allowedTools` and
+  `/permissions allow`, now refuses an allow rule when the managed file sets
+  any `permissions` setting, and the two files' allow rules are left out
+  with a warning naming each rule and its file.
+- Over ACP, the agent can no longer change an editor's own files in the
+  workspace; this affects ACP editors in 1.2.2 and earlier. The file tools
+  refuse `.vscode/**`, `.devcontainer/**` and `*.code-workspace`, and any
+  `.git` with its `config` and `hooks/**` at any depth, so a nested
+  repository's too, in any case and through links, and the
+  config and hooks of the git folder a `.git` file names. They refuse to
+  create any of these as well as to change them. The sandbox keeps the
+  agent's commands from writing those that exist, and from renaming `.git`,
+  `.vscode` or `.devcontainer`, at the workspace's given and resolved paths.
+  Nested repositories are found when the session starts, up to six folders
+  deep, 64 repositories and 20,000 entries looked at, `node_modules` left
+  out. On macOS commands also
+  cannot create these paths, nor any `.git`, `.git/config` or `.git/hooks` at
+  any depth, so a repository cloned or initialised later is held too, and
+  `git init` or `git clone` inside the workspace is refused there. On Linux
+  (bubblewrap) and in containers a command can still create a missing
+  `.vscode`, `.devcontainer` or `.git`, or a repository the search did not
+  find; on every platform a command can create a new `*.code-workspace`. An
+  edit or write to a file the editor reports as having unsaved changes
+  (`_abhed/buffers/dirty`) is refused.
+- In Studio's interactive terminal and the web IDE's, a line entered before
+  the shell is back at its prompt, as a password typed ahead of `read -s`, is
+  recorded withheld rather than as text.
+- `session/new` refuses an `_meta` field it does not know instead of ignoring
+  it, and the MCP servers an editor names are not started; the reply lists
+  them in `mcpServersRefused`.
+- A held ask a person reviews from Abhed Studio is bound to its request like
+  any other: an option id offered for another request is refused, and an
+  ask still open when the review closes or the person stops is refused,
+  never approved.
+- A `tool_call` or `permission_request` extension that crashes or times out
+  now fails closed: the call it failed on is refused, and while it is not
+  running every call it would have screened is asked. It was skipped before,
+  so its veto silently stopped applying.
+- `-add-dir`, `additional_dirs` and `/add-dir` refuse a credential folder such
+  as `~/.ssh`, a folder that holds the home directory, and one that holds
+  `~/.abhed` or a configured state file, and any `.abhed` folder itself;
+  before, only `/` and the home directory itself were refused. A folder
+  that holds the workspace, as a monorepo's root does, is still allowed.
+  `/add-dir` adds only the folder it checked and showed, so a path swapped for
+  a link while the person answers is refused.
+- An extension that answered `ask` about a call a deny rule or plan mode
+  refuses turned the refusal into a question, which a person could then
+  approve: hooks were evaluated first, and their ask ended the evaluation.
+  A hook's ask now applies only after the deny rules and plan mode. Its
+  refusal is still final, and an `allow` in its reply approves nothing.
+- The 300 ms guard from 1.2.2's approval prompt now also covers the new
+  approval dialog. In 1.2.2 a decision key counted only alone, on an empty
+  line, 300 ms after the choices were drawn and with 300 ms of quiet on
+  either side, and Enter never answered. In the dialog no key, arrows and
+  Enter included, counts for the first 300 ms the question is on screen; a
+  number counts only with 300 ms of quiet on either side, so typing or a key
+  held down never answers, and a number that fails this chooses nothing and
+  leaves nothing selected; nothing is selected at first; and Enter never
+  approves: on a highlighted No it declines, on a Yes it answers nothing.
+  Found before release, in the new dialog: `j` and `k` moved the selection
+  with no quiet rule, so `j` then Enter approved, and a number refused for
+  the keys around it stayed selected for a later Enter. No letter moves the
+  selection now. Approvals are answered by number only, in the dialog and
+  in the line mode alike: no letter approves. Only the answers offered can be
+  chosen. A destructive command needs a second, numbered Yes, whose default
+  is No. Every other question the CLI asks is numbered too, the workspace
+  trust prompt included (1 don't trust, 2 trust, 3 view): no letter or word
+  answers one. An approval whose call carries a hidden character anywhere
+  (an argument, a key, a JSON string inside one, the reason, the scope, who
+  asked) shows it as an escape and warns above the answers.
+- Text from the model, from tools, from the workspace (a git branch) and
+  from a status line command is drawn with every control and format
+  character removed, rune by rune, keeping only text and colour: C0 and C1
+  controls, OSC, DCS and other escapes, bidi overrides and isolates,
+  zero-width and tag characters. Conceal (SGR 8) is dropped from colour, and in
+  what programs print, so is a colour that sets the text to its background's
+  colour when both are explicit: printed text cannot be made invisible. Every row the terminal draws passes
+  through the same filter, and so does everything the line mode prints on a
+  terminal (piped input, `TERM=dumb`): its approvals, replies, tool output
+  and what commands print. In an approval and in a diff nothing is dropped:
+  hidden characters are shown as marked escapes (`⟨\r⟩`, `⟨U+200B⟩`), so a
+  command cannot show one thing and run another. Tests send OSC 52, OSC 0,
+  OSC 8, screen erases, C1 sequences and joiner-hidden controls through
+  every field that reaches the screen, in the dialog and in the line mode,
+  and find none of them on the wire.
+
+### Upgrading
+
+The first nineteen items change how an existing setup behaves; read them
+before upgrading.
+
+1. **Answers are numbers only, for piped and scripted input too.** 1.2.2's
+   line prompt took letters; these now ask again, and input that ends
+   unanswered refuses.
+   - Approvals: `1` Yes, `2` the session-wide Yes when one is offered, and
+     the last number No. `a`/`y`, `r`/`n` and `A` no longer answer.
+   - Workspace trust: `1` don't trust, `2` trust, `3` view the file, where it
+     took `t`, `d` and `v`.
+   - The confirmations of `abhed record prune` and of the push in
+     `abhed resolve`: `1` No (keep), `2` Yes, where they asked `[y/N]`.
+     `-yes` and `-y` still skip them.
+   - First-run setup's yes-or-no questions (memory notes, a key over plain
+     http, a key variable that is not set): `1` No, `2` Yes, where they took
+     `y`/`n` and Enter for No.
+   - First-run setup's last question, whether to write
+     `~/.abhed/config.json`: `1` No (don't write), `2` Yes. It took Enter as
+     yes; Enter or a letter now asks again, and input that ends writes
+     nothing.
+2. **Piped lines that start with `!` or `#` are no longer sent to the
+   model.** They run a shell command or save a note, as typed ones do. A
+   script that sent such lines as text should indent them or put them after
+   other text.
+3. **Wake is on by default.** `subagents.wake` defaults to `auto` in the
+   interactive CLI, in `abhed serve` (the console and workbench) and in
+   `abhed acp` (Abhed Studio and other editors): when a background task
+   finishes while the session is idle, the agent continues with the result
+   on its own, and spends tokens doing so. Set
+   `"subagents": {"wake": "notify"}` to restore 1.2.2's behaviour; a
+   managed configuration that does not set it gets the new default, so
+   admins who relied on the old behaviour should pin it there before
+   upgrading. `abhed rpc` and the SDK still
+   default to `off`.
+4. **Next-prompt suggestions are on by default.** Each completed turn makes
+   one extra model call, recorded as a `model.call` with
+   `purpose: suggestion` and counted in the session's tokens and budget.
+   `"suggest": {"enabled": false}` turns them off. A `suggest.model` on a
+   different endpoint receives the redacted last message and reply.
+5. **The command line now writes sessions to disk**, in a local record under
+   `~/.abhed/records`, when `storage.driver` is not `postgres`; before, they
+   were kept in memory and lost when it exited. The record includes
+   unredacted copies of files as they were before each agent edit, so
+   `/undo` and `/rewind` can put them back; files that hold keys and files a
+   read deny rule covers are not copied. The directory is created, private
+   to you, on first use, and records are kept until `abhed record prune`
+   removes them. `abhed serve` still keeps memory unless configured
+   otherwise.
+6. **Server API: `request_id` is required on subagent approvals.** A client
+   answering a subagent's ask (`POST /v1/sessions/{id}/approve`) must name
+   its `request_id`, from the `subagent.ask` event; an answer naming none is
+   refused with 409, with or without a run live. The console, workbench, CLI
+   and ACP already send it.
+7. **Shared Postgres: stop every node of an older release before starting a
+   node of this one.** Older nodes keep no holder on the sessions they run,
+   and a new node's startup sweep reconciles an open session with no holder
+   once nothing has been written to it for two minutes; a long tool call on
+   an old node can look like that. New nodes write the holder with the
+   session's row and heartbeat it.
+8. **Extensions fail closed.** A `tool_call` or `permission_request`
+   extension that has stopped (crashed, hung or was closed) now makes each
+   call it would have screened ask, where it was skipped before; in a
+   headless run, which cannot ask, those calls are refused. `/hooks` and the
+   serve banner show which one stopped. A hook's `ask` no longer overrides a
+   deny rule or plan mode.
+9. **Headless output.** `abhed -p` exits with 128 plus the stop signal's
+   number (143 for SIGTERM), where it was 130 for every signal. `json` and
+   `stream-json` output end with a `{"type":"result",…}` line. `stream-json`
+   omits `agent.delta` fragments unless `-include-partial-messages` is
+   given.
+10. **ACP editors.**
+    - `session/new` refuses an `_meta` field it does not know.
+    - MCP servers an editor names are not started; the reply lists them in
+      `mcpServersRefused`.
+    - The workspace trust report moved to `_meta["zybuu.ai/abhed"]`;
+      `_meta.abhed` is still read on input for one more release.
+    - Stop reasons come from the run's terminal reason.
+    - Writes to `.vscode/**`, `.devcontainer/**`, `.git/config`,
+      `.git/hooks/**`, `*.code-workspace` and files with unsaved changes in
+      the editor are refused.
+11. **`-add-dir`, `additional_dirs` and `/add-dir`** refuse credential
+    folders, any folder that holds the home directory or `~/.abhed`, and any
+    `.abhed` folder.
+12. **The interactive CLI counts `limits.max_turns` per message** unless the
+    managed configuration sets it.
+13. **`/export` with no path writes to `~/.abhed/exports`**, not the
+    workspace; a relative path is taken from the workspace, and a path
+    outside it asks first. An export is refused for a record that fails
+    verification.
+14. **An edit or write without a prior read is refused before the approval
+    prompt**, with the reason.
+15. **Server API: a request body over the size cap gets 413**, not 400, with
+    the cap in the error. A client that treated any 400 as a bad body should
+    handle 413 too.
+16. **`abhed hawkeye` exits 3 when a session from the local record, or a
+    `.jsonl` export of it, fails verification**, as it already did for a
+    record with a gap. A failing export exited 0 before; a local-record
+    session could not be read at all.
+17. **A managed `permissions` setting locks added allow rules.** When the
+    managed file sets any `permissions` key (mode, deny, ask or allow),
+    `-allow`, `-allowedTools`, `/permissions allow`, the SDK's
+    `Options.Allow` (`sdk.New` returns a `*config.ManagedError`) and rpc's
+    `start` with allow rules are refused. In 1.2.2, `-allow`,
+    `Options.Allow` and rpc `start` were refused only when the file set
+    `permissions.allow`; `-allowedTools` and `/permissions allow` are new in
+    1.2.3. Allow rules in `~/.abhed/config.json` and a workspace's
+    `.abhed/config.json` are also dropped, each with a warning naming the
+    rule and its file; the built-in allow rules stay. Put the rules in the
+    managed file's `permissions.allow` instead. A call those rules approved
+    now asks, and in `-p`, rpc and scheduled runs, with no one to ask, it is
+    refused. When any file rule is dropped, all the built-in allow rules come
+    back, even ones the file had left out; an ask or deny rule, not a shorter
+    allow list, keeps a built-in rule from applying. A person's "Yes, and don't
+    ask again" answer to a prompt is not a rule and still applies for the
+    session.
+18. **On macOS, commands in an ACP editor's workspace (Abhed Studio) cannot
+    create any `.git`, `.vscode` or `.devcontainer`**, so `git init` and
+    `git clone` inside the workspace fail. Run them in a terminal outside
+    the editor, or clone outside the workspace and open that folder.
+19. **MCP tools are registered only with plain names**: letters, digits, `_`,
+    `.` and `-`, at most 64 characters. A server tool named otherwise is left
+    out, with a warning on standard error naming the server and the tool.
+    MCP allows longer names; a tool named past 64 characters is left out.
+
+Also:
+
+- The line terminal's destructive-command confirmation is numbered, where it
+  asked `Run it? [y/N]`: `1` No, `2` Yes, run it, then Enter. Enter, a letter
+  or a paste asks again, and keys in the first 300 ms after it appears are
+  ignored. A client of the terminal endpoint must send `confirmed` for a line
+  it was asked about at least 300 ms before; an earlier or unasked
+  confirmation is asked again.
+- `/undo` records each file it puts back as `file.restored`, and is held to
+  deny rules on `write`.
+- On macOS the local record syncs with `fsync`, as SQLite does by default,
+  not the drive-cache flush Go's `File.Sync` asks for there. After a power
+  cut, a session's head can then have survived while lines the drive had
+  cached did not: the session reports lines missing and is not written to
+  again. `abhed -r <session>` goes on from it, after a yes, in a new session
+  that names it; the original stays as it is, or `abhed record prune`
+  removes it with a tombstone. If the index's head is lost the same way, no
+  new session starts until the index is looked at: `abhed record verify`
+  names the line; moving `index.jsonl` and `index.head` aside keeps them as
+  evidence and starts a new index, and a session file from the old one goes
+  on with `abhed -r <file>`, copied into a new session.
+
+### Fixed
+
+- The interactive CLI could turn the first Enter into a new line instead of
+  sending the task. A terminal answering a start-up question late, as it can
+  on a loaded machine or a slow link, sent its answer straight after the
+  Enter, which read as more pasted text. Only text following an Enter now
+  makes it a new line. A task typed before the prompt appeared, Enter
+  included, is now sent too: the Enter used to arrive through the cooked
+  terminal as Ctrl-J, which only started a new line.
+- After a command such as `/model`, the interactive CLI's footer could keep
+  showing the old model until the next key: it was redrawn before the
+  command's own events were drawn. It now waits a moment for them first.
+- With piped input, an approval's answer sent as soon as `answer 1-N:`
+  showed could be taken as steering for the run, since the approver had not
+  yet started waiting. It now waits from the moment that line shows; a line
+  sent before the question was asked still steers.
+- In the workbench shell and Studio's interactive terminal, a command typed
+  at the prompt could be recorded without its text: the shell's echo could
+  come back before Abhed began following the line, so the echo was missed.
+  The line is now followed before the shell is handed it.
+- An event stream that opened while its session was recording could miss
+  the event recorded between reading the backlog and subscribing, until the
+  next event arrived; a quiet session never showed it. The stream now
+  subscribes first.
+- A single-role server applying its schema at start, or `abhed migrate`,
+  could deadlock with a live node on the same database (1.2.2 and earlier):
+  the schema altered sessions before events, while an append takes them the
+  other way round. Postgres then failed one side, losing the event or the
+  start. Applying the schema now takes each table it alters without waiting
+  and tries again while one is busy, one server at a time, so it neither
+  deadlocks with appends, orphan claims or the statistics query, nor holds
+  up appends behind it.
+- Found before release: a wake run could act for a user whose access had
+  been revoked. A woken run now asks for its owner again before each model
+  call and before each call is approved, and ends as `owner_inactive` once
+  the owner has lost access; no next-prompt suggestion is made for them
+  either. `StopOwnerBackground` lets an edition stop a revoked owner's live
+  run, background shells, tasks and terminals at once, recorded as
+  `owner_revoked`. A session whose owner is restored makes no wake or
+  suggestion until a background result is next delivered while it is idle,
+  or the session is deleted or the server restarts.
+- `abhed hawkeye` on a `-p -output-format stream-json` capture reported the
+  gaps stream-json leaves where `agent.delta` was as missing events, critical,
+  and exited 3. The result line now names what it left out (`omitted`), and
+  a gap where only those could sit is reported as "agent.delta omitted by
+  stream-json". Any other gap is still critical, and a capture that may have
+  left deltas out without saying so is reported as one HawkEYE cannot tell.
+- In `/ide`'s line terminal, a key typed behind a destructive line was kept
+  after the line was confirmed and glued onto the next one, so `y` then `ls`
+  ran `yls`. Confirming now drops what was typed behind the line and the
+  lines queued after it, as declining does.
+- On a server with Postgres, a workbench hold on a session the server had
+  started was released two minutes after the first manual write, not the
+  last, so a repeated `session.ended` landed in the middle of terminal or
+  review work. Every manual write now extends the hold.
+- With more than 40 MCP tools, models never found them: `tool_search` named
+  no server and no tool. Its description now lists the servers and their
+  tool names (names only, plain characters, about 2.5 KB at most, the rest
+  counted), and the system prompt says to use it when tools are deferred.
+- With MCP tools deferred, a live-data question went past a listed tool:
+  the prompt's web line sent it to `web_search`, and with no web tool its
+  no-web line said to answer from memory, so a deferred weather tool was
+  rarely reached, and never with the web off. The prompt now puts the
+  connected-services line first and tells the model to call `tool_search`
+  for live or current data, or whenever a listed tool could fit, before its
+  own knowledge, the web or the files; its web, no-web and current-fact
+  lines defer to that. Without deferred tools the prompt is unchanged.
+- `tasks` ran a task naming an unknown `agent_type` as the general role; it
+  now refuses the call before anything runs, as `task` does.
+- A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
+  cap is now never above its parent's.
+- The parent loop's own asks now share the one-at-a-time queue its
+  subagents use, so a person is never asked two things at once by the tree.
+- On the server, an approval that ended always set the session to
+  `running`, even when no run was live; it now restores `running`, `idle` or
+  `done` as fits. A message sent while an ask was pending and no run was
+  live was queued as steering into a loop that was not running; it now
+  starts a run.
+- A server process that died mid-run left its session's row open, and no
+  node could ever continue it. The next message to such a session now takes
+  it over, when its holder's heartbeat has gone stale, and records the ends
+  the crashed process never wrote (`recovered`; lost background tasks as
+  `lost`). Every process holds its sessions under a liveness identity (its
+  node id, or an id of its own when none is set) and heartbeats them,
+  workbench holds included; the takeover is one conditional update that
+  writes the new holder, so of two processes exactly one wins. The
+  heartbeat is fenced: it renews only a claim that is still this process's,
+  and a process that finds its claim taken, or cannot renew it for the
+  stale window, stops its run and tasks as `lease_lost` and writes nothing
+  more to the session. On Postgres each append is also fenced in the store,
+  in the insert itself, so a process that lost a session cannot add to its
+  record even before its next heartbeat. A claim is never taken from
+  another live holder. A
+  started session's row is written with its holder, and a row with none is
+  an orphan only once its last event is two minutes old, on the database's
+  clock. A hold that
+  cannot be recorded now fails the start, message or wake (503 for a
+  message) instead of running unseen. `abhed serve` also sweeps at startup,
+  reconciling every open session whose holder's heartbeat is stale.
+- Continuing a session elsewhere reset its token and spawn allowance; the
+  budget now goes on from what its record says it spent.
+- With an event tap set (as telemetry sets one), the server looked for the
+  store's durable approvals, session deletion, holders and routing on the
+  tap and found none, so they were off. They are now looked for on the store
+  under the tap, and switch on behind a tap as without one.
+- A server turn continued by a message never refreshed or released this
+  node's claim on the session; every run now holds it, with its heartbeat,
+  while it or a background task is live.
+- With input piped in as lines, the line after an approval prompt was taken
+  as its answer whatever it said. Only a number offered answers now; any
+  other line steers the run (or, with no run live, is a prompt), with a note
+  that the approval still waits.
+
+### Added
+
+- The `-p` result line of `-output-format stream-json` names the event types
+  it left out, in `omitted`.
+- The terminal lists the conversation's work under the input: `main`, then
+  each subagent (foreground and background) and background job, nested under
+  what started it, with its type, title, what it is doing now, how long it
+  has run and its input tokens; `●` running, `✓` done, `✕` failed, `○`
+  cancelled, and `↓ N more` past five. With nothing typed, ↓ and ↑ select a
+  row (↑ from `main` is still history; Ctrl-P/Ctrl-N always are), Enter opens
+  its record read-only and Esc goes back to `main`. A message typed with a
+  running subagent selected goes to it as your message, recorded in its own
+  record; one that cannot take messages says so and the message goes to
+  `main`. A background subagent or job that ends leaves one line in the
+  transcript (`● Agent "…" finished · 5m 27s`, `● Background task "…"
+  completed (exit code 0)`). `/tasks` (also `/bashes`) numbers all of it,
+  with `/tasks view <n>` and `/tasks kill <n>`. The line mode (`TERM=dumb`,
+  piped input) has the notices and `/tasks`, no panel.
+- The terminal's note that a background result was delivered now reads
+  `result of "…" added to the conversation (completed, 1 turn)`.
+- Background shells: `bash` takes `run_in_background`, which starts the
+  command and returns at once with a shell id, through the same rules,
+  approval, sandbox, secrets and redaction as a foreground command. New tools
+  `shell_output` (new output since the last read, the state and exit code,
+  optionally waiting) and `shell_kill` (stops its whole process group). Shells
+  are listed and stopped with the background tasks on every surface (`kind:
+  "shell"`), the agent is told when one ends as it is of a background task's
+  result, and each is killed when the session closes, on a stop and when Abhed
+  exits. `limits.background_shells` (default 4) bounds them; plan mode refuses
+  them; `-p` waits for them. Recorded as `shell.started` and `shell.ended`.
+- After a turn completes, the terminal, the workbench, the console and Abhed
+  Studio suggest a next prompt: the input shows it dimmed, Tab (or → on the
+  empty line in the terminal) puts it in the input, and it is never sent on
+  its own. One small model call makes it, from the record's redacted text,
+  after the turn has ended: the end, the reply and the prompt never wait for
+  it, and the next prompt, a wake, typing or closing the session cancels it.
+  It is recorded after the run's `session.ended` (marked `suggesting`) as the
+  new `suggestion.offered` event, then the call as a `model.call` with
+  `purpose: suggestion`, counted in the session's tokens and budget. The text is cleaned of control and format
+  characters and capped at 80 characters. The call asks for low reasoning
+  effort and thinking off wherever the provider takes them, and asks once
+  more without them if the model refuses. None is offered that tells
+  anyone to ignore, bypass or override a policy, an approval, a rule, the
+  sandbox or safety, suggests something destructive (delete, `rm -rf`,
+  force-push, drop, wipe, disable), or asks to print, show or send a secret: it is model text, which what the agent
+  read can shape, and it is never sent unless the person sends it. None is made for `-p`, `rpc`,
+  unattended runs, or after an error, a stop or while an approval waits.
+  `suggest.enabled` turns it off (a managed `false` binds) and
+  `suggest.model` names a cheaper provider; the SDK opts in with
+  `Options.Suggest`, and ACP lists `suggestions` in its features.
+- The engine side of the Abhed Studio contract
+  (docs/architecture/studio-acp-contract.md, `apiLevel` 1). `abhed acp`
+  keeps sessions in the local record, so `session/list`, `session/load`
+  (a replay that runs nothing again), `session/resume` and `session/close`
+  work, with the chain verified first; a record that fails opens read-only,
+  to be forked. `initialize` names the engine, its edition and every area it
+  serves in `agentCapabilities._meta["zybuu.ai/abhed"]`, and
+  `abhed version --json` prints the same block. New `_abhed/*` methods serve
+  rename, fork and compact; the event stream; verify, export and HawkEYE;
+  modes (`session/set_mode`); the policy view and a dry-run explain; trust
+  inspection; background tasks (list, cancel, review of held asks); the
+  sandboxed Abhed terminal, line by line or as an interactive shell judged
+  and recorded line by line; manual edits; per-hunk review and undo;
+  steering and the queue; and the doctor (also `abhed doctor --json`).
+  Every action a person takes through them is recorded `by: user`. What is
+  not served yet is listed in the contract's §11.
+- `available_commands_update` lists the built-in commands, your custom
+  commands, a trusted workspace's, and skills; running one is recorded as
+  `command.invoked`.
+- Permission requests carry the rule that asked, the pipeline step that made
+  the call, and for an edit or write the diff it would make, redacted.
+- The managed key `studio.disable_host_terminal` removes Abhed Studio's host
+  terminal, which is neither sandboxed nor recorded.
+- Interactive input acts as the person, through policy and the record. See
+  `docs/guide/19-input-and-memory.md`.
+  - `@path`, `@path:10-20` and `@dir/` attach files, read by the read and
+    glob tools as the person's call: the workspace boundary, links that
+    leave it, Abhed's state, read deny rules and redaction all apply. A
+    refused mention stops the message and says why. Up to 256 KB per file;
+    each is recorded as `input.mention` with its SHA-256.
+  - `!cmd` runs a shell command as the person's bash call, in the sandbox and
+    under deny rules and plan mode; a destructive one asks. Its output joins
+    the next message.
+  - `# note` saves a note to `ABHED.md`, `ABHED.local.md` or
+    `~/.abhed/ABHED.md`, chosen each time, redacted and recorded as
+    `memory.written`.
+  - Attached files and command output reach the model in blocks whose tag
+    carries a random suffix, labelled as data the person attached, not
+    instructions.
+  - A line that starts with `!` or `#` is no longer sent to the model as a
+    message, in piped input too: a script that sent such lines as text should
+    indent them or put them after other text.
+- Memory: `ABHED.md` files load in the order user, project (`AGENTS.md`
+  where a directory has no `ABHED.md`, labelled so), local, rules, auto and
+  managed last. `@path` imports follow `memory.import_depth` (default 5, at
+  most 10) and stay in the workspace. `rules.dirs` names rule files, which a
+  `paths` header scopes. Each conversation records `memory.loaded` with every
+  file's hash. Surfaces with no read rules to ask (the server, the SDK, eval)
+  follow no import. `/memory` lists, shows and adds; `/import <path>` appends a
+  file the person names to `ABHED.md` after showing it. No other tool's files
+  are read otherwise.
+- Auto memory, off unless the person turns it on (`/memory auto on` or
+  `memory.auto`; a managed value binds, a workspace may only turn it off).
+  The agent's `memory_write` saves are judged as changes (they ask unless
+  a rule or the mode allows them), redacted, shown, recorded as
+  `memory.written` by the agent, and loaded later, fenced, as the agent's
+  notes.
+- Custom slash commands from `/etc/abhed/commands`, `~/.abhed/commands` and
+  `commands.dirs`, and from a workspace's `.abhed/commands`, or any
+  commands directory inside the workspace, once the person trusts exactly
+  that content (`/commands trust`). `$ARGUMENTS`, `$1`..`$9`,
+  `@` files and inline shell lines (each asks) in the body;
+  `allowed-tools` narrows the turn's tools and `model` picks a configured
+  provider. Built-in names always win. Recorded as `command.invoked`.
+- `/init` has the agent write `ABHED.md` from the repository; `/context`
+  breaks the context window down by system prompt, memory, tools, MCP tools
+  and messages; `/compact <focus>` tells the summary what to keep.
+- `ask_user`: in an interactive session the agent can ask the person a
+  multiple-choice question. It is not an approval and is never answered for
+  the person.
+- `/output-style` appends a style from `~/.abhed/styles` or
+  `/etc/abhed/styles` to the prompt for the rest of the session.
+- CLI governance: every change of permission mode goes through one
+  controller and is recorded as `mode.changed`, with how it was made (`flag`,
+  `slash`, `shift-tab`, `plan-exit`). The Shift-Tab cycle is default,
+  accept-edits and plan, and never reaches auto or bypass; a managed
+  `cli.mode_cycle` can only take modes out of it. `/mode auto` asks first,
+  with no as the default, and is refused over a managed mode. `/mode` alone
+  says what auto approves, by rule, and what still asks.
+- Plan mode ends in a plan the person decides on. The agent presents it with
+  the new `exit_plan` tool, offered only in plan mode, which records
+  `plan.proposed` and changes nothing. The CLI asks: yes and accept edits,
+  yes and ask before each change, or keep planning, the default. Auto and
+  bypass are never offered. The answer is recorded as `plan.decided`, and an
+  accepted plan moves the mode, recorded as `mode.changed` via `plan-exit`.
+- `/permissions` lists the rules in force with the layer each came from
+  (managed, user, workspace, flag, default, session). `/permissions
+  allow|ask|deny <rule>` adds a rule for this session only, recorded as
+  `permission.changed`; `/clear` and `/resume` end it. A session allow is
+  asked about, twice when it approves every call to a tool, is refused where
+  the managed configuration sets the permissions, and is evaluated after the
+  configured allow rules, so it cannot lift a deny rule, a destructive
+  command, an ask rule or plan mode. `/permissions explain <tool> <what>` is a
+  dry run that names the decision, step, rule and reason.
+- `/add-dir <dir>` adds a directory for the session, read-only or read-write,
+  after showing it with its links resolved. It is bound by a managed
+  `additional_dirs` as `-add-dir` is, refuses Abhed's state, the record,
+  credential folders and any folder holding the home directory, and is
+  recorded as `workspace.dir_added`.
+- Hooks: extensions can take `user_prompt_submit` and `permission_request`,
+  which may block and never approve, and `turn_end`, `subagent_end` and
+  `notification`, which only observe, in the interactive CLI. `match` narrows
+  `tool_call` and `permission_request` to calls a permission rule matches, as
+  a deny rule would match them, and `async` sends
+  observe-only events without waiting. A subagent's calls go through the
+  parent's `permission_request` hooks. A `user_prompt_submit` hook that has
+  stopped fails open, and the CLI says so. Each hook that blocks, forces an ask
+  or annotates is recorded as `hook.fired`. `/hooks` lists the extensions
+  with their layer, events, matcher and status. A managed `hooks.disabled`
+  now takes effect: extensions keep only the tools they provide.
+- `policy.Result` names the rule that decided (`Rule`), and `action.approved`
+  and `action.denied` record it as `rule` when a deny, ask or allow rule
+  decided.
+- A durable, tamper-evident local record, shared by the command line and
+  the SDK (`store/local`). See `docs/guide/12-records.md`.
+  - One append-only file per session. Each line is canonical JSON with
+    `prev` and `hash` (SHA-256). `abhed record verify` fails, naming the
+    event, on an edited, removed, moved or repeated line, on lines the head
+    counts cut from the end, on a head or index that no longer matches, and
+    on a listed session whose file is gone.
+  - It cannot show lines written after the last sync being cut, and it is
+    only as strong as the head and index files, which the same owner can
+    rewrite. It is evident against the agent and against accidental or
+    partial edits, and verifiable offline. It is not proof against the
+    machine's owner.
+  - A record that fails is never written to again; reading, verifying,
+    exporting or opening it changes nothing, and going on from it is a
+    recorded fork into a new session.
+  - Secrets are redacted before the first write. Directories are `0700` and
+    files `0600`. The agent's file tools and sandbox tiers refuse the
+    record: `~/.abhed/records`, a managed `record.dir`, a linked records
+    directory's real path, and an SDK agent's record.
+  - One process writes a session at a time, by a lock the system drops
+    when the process exits; the record belongs on a local disk. A crash's
+    unfinished last line is cut off, only past what the head counts, and
+    recorded as `record.repaired`.
+- `abhed record list|show|verify|export|prune`. A `.jsonl` export carries
+  the stored head and whether the record verified; a failing record exports
+  only with `-unverified`, marked. An export never writes through a link or
+  into the record. `prune` asks first and leaves a tombstone saying what it
+  found.
+- `-c`/`--continue`, `-r`/`--resume [id|name|file]` (a picker with no
+  argument), `-n`/`--name` and `--fork-session`, also with `-p`. Resuming a
+  record that fails verification shows it unverified, and with a yes goes on
+  in a new session that names it.
+- `/rewind` takes code, the conversation or both back to before a prompt.
+  The conversation side is a recorded `conversation.forked`, never a
+  deletion, and rewinding to the first prompt is a fork at step 0 in the
+  same session. Each file put back is recorded as the person's action, put
+  to policy, then as `file.restored` with hashes before and after, and
+  keeps its mode.
+- Checkpoints before each agent edit are kept in the record's blobs, so
+  `/undo` and `/rewind` work after `abhed -c`. Files a read deny rule covers
+  or that hold keys are not copied.
+- `/rename`, `/branch` and `/clear [name]`. A branch opens with
+  `session.branched` and a copy of the conversation and its undo history;
+  the original is left as it was.
+- HawkEYE's sensitive-path finding and the checkpoint skip share one list of
+  key and credential file names, matched without case against each part of
+  a path in the call, where HawkEYE used to match fixed substrings; it now
+  also names `.envrc`, `*.env`, `.git-credentials`, `.pgpass`, `*.tfvars`,
+  `.azure/` and more, and no longer matches a name only inside a longer word.
+- SDK: `Options.Store` and `OpenLocalRecord`, so an embedded agent can keep
+  the local record. Its directory becomes state for that agent, and `New`
+  refuses one inside the workspace or any other folder the agent's commands
+  can write.
+- `record.dir` and `record.retention_days` are in effect, from the managed
+  configuration only.
+- `/agents`, `/skills`, `/mcp` and `/tools` show what the session has and
+  where each came from; `/mcp restart <server>` reconnects one. `/doctor`
+  runs the doctor's checks inside a session, `/release-notes` shows the
+  changelog built into the binary, and `/bug` prints a prefilled issue link
+  with secrets and the home directory redacted, sending nothing.
+- With more than 40 MCP tools, they are offered through a `tool_search`
+  tool and loaded when found, so a large server does not fill the context.
+  Every call is still policed and recorded.
+- `docs/guide/18-cli.md`: the command line, its flags and commands.
+- `statusline.command` runs a command of yours for the status line. It reads
+  the session's status as JSON on stdin (model, provider, mode, context,
+  tokens, sandbox, record, branch, background tasks) and its first line is
+  shown in the footer on a terminal, after each task in piped sessions,
+  and in `/status`. It runs under the process
+  sandbox with the network off, whatever the session allows, for at most
+  300 ms, and not at all where that sandbox is missing. A script it names
+  by path is pinned at the start of the session, refused where the agent
+  could change it or in Abhed's state, and not run once swapped. Only text and
+  colour of its output reach the terminal. A workspace's statusline needs
+  trust.
+- `/model` with no name offers the configured models with their model id,
+  context window and whether they are local; a managed `model.default` is
+  not switched. `/effort low|medium|high|on|off|default` sets the reasoning
+  effort, or thinking on and off, where the provider supports it.
+- A fallback model: `model.fallback` and `-fallback-model` name configured
+  providers to move to, in order, when the model is unreachable or refuses
+  access (401, 403, 404, 429, 5xx). The move is recorded as
+  `model.fallback`. Only offered providers are used, and a managed
+  `model.default` is left only for the fallbacks the managed configuration
+  names; `-fallback-model` is then ignored with a warning.
+- `/status`: model, mode, sandbox, record, session, context, turn limit and
+  its semantics, token budget, background tasks, workspace trust, and the
+  managed settings. `/usage` (and `/cost`) adds prefill saving and a
+  breakdown by subagent and tool source.
+- `/config` shows each setting and where it comes from; `/config set` writes
+  a setting into your own `~/.abhed/config.json`. A change that lets the
+  agent do more than your own file does asks first, even when the session
+  already does it, and a managed setting is refused.
+- The interactive CLI is rebuilt around an input box that stays on screen
+  while the agent works ([The terminal](docs/guide/20-terminal.md)):
+  - Replies stream as they are written, formatted as they arrive: headings,
+    lists, emphasis, tables, and highlighted code blocks that stay blocks
+    when they arrive in pieces. Prose wraps between words.
+  - Multi-line messages (Shift+Enter, Alt+Enter, Ctrl-J, `\` then Enter);
+    a large paste is one placeholder and one message; history is kept per
+    workspace, with Ctrl-R search; shell editing keys, undo, `$EDITOR` with
+    Ctrl-G, and optional vim editing (`/vim`).
+  - Accented letters, CJK, emoji and flags are typed, measured and deleted
+    as the characters they are.
+  - Tool calls show the first and last lines of their output, and edits and
+    writes a diff with line numbers and context, in every mode; Ctrl-O shows
+    the whole transcript with everything in full. Paths are relative to the
+    workspace.
+  - Approvals are a numbered dialog that shows the change, why it is asked,
+    the policy step, and who asked; it stays in the transcript with the
+    answer.
+  - A footer shows the permission mode, the model, how full the context
+    is, the session's tokens, background tasks and the git branch;
+    `statusline.command` replaces its second row with a command's output.
+  - Shift-Tab steps through default, accept-edits and plan, never auto or
+    bypass.
+  - Dark, light, high-contrast and colour-blind themes, chosen from the
+    terminal's background or with `/theme`.
+  - The Surface the slash commands draw and ask through is the terminal:
+    blocks, guarded dialogs, pickers and full-screen panels.
+- Configuration keys for the interactive CLI, all in effect (above):
+  `statusline.command`, `cli.mode_cycle`, `commands.dirs`, `rules.dirs`,
+  `memory.auto`, `memory.import_depth`, `record.dir`,
+  `record.retention_days` and `hooks.disabled`. `cli.mode_cycle`,
+  `record.*` and `hooks.disabled` are managed only: the user's file or a
+  workspace's is set aside with a warning. A workspace may only turn
+  `memory.auto` off, trusted or not, and auto memory is off unless turned
+  on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace need
+  trust.
+- A first run on a terminal with no configuration offers to set one up: a
+  local Ollama model, or an OpenAI-compatible endpoint by URL and the name
+  of the variable holding its key (an answer that looks like a key is
+  refused, and a variable that is not set is taken only on a yes). It checks the
+  model can call a tool, asks once about auto memory (No by default), and
+  writes only `~/.abhed/config.json`, after confirming.
+- Headless runs read stdin. `cat build.log | abhed -p "why did this fail?"`
+  sends the log below the task; with no task, stdin is the task. Flags may
+  follow the task, and `-p` alone takes the task from stdin. In a loop that
+  reads a list on stdin, redirect each run from `/dev/null`, or pass
+  `-no-stdin`, so the first run does not take the rest of the list.
+- A task on the command line opens an interactive session with it:
+  `abhed "fix the tests"` or `abhed -- fix the tests`. A single bare word
+  that is not a command is still refused, now with a hint.
+- `-output-format stream-json`: one event per line, without the streamed
+  fragments unless `-include-partial-messages` is given. `json` and
+  `stream-json` end with a result line: the final reply, the terminal
+  reason, the exit code, turns, duration and token usage.
+- `-input-format stream-json` reads user messages from stdin, one per line,
+  as the turns of one conversation.
+- `-json-schema` (inline or `@file`) delivers a `-p` answer as JSON that
+  matches the schema.
+- `-max-budget-tokens`, `-append-system-prompt[-file]`,
+  `-system-prompt[-file]` and `-verbose`. Replacing the system prompt is
+  refused under a managed configuration; a new `session.started` event
+  records which was used, by SHA-256.
+- Familiar flag spellings: `-permission-mode`, `-allowedTools`,
+  `-disallowedTools` and `-dangerously-skip-permissions`. They bind as
+  Abhed's own flags do; the last asks for `yes` on a terminal, is refused
+  under a managed configuration and without a terminal, and deny rules
+  still apply in the mode it sets.
+- `abhed acp`: an editor can list the configured models and switch between
+  them mid-session. `session/new` returns a `configOptions` model selector
+  (category `model`), and `session/set_config_option` switches it, answering
+  with the full options. Editors on the older
+  unstable API get `models` in `session/new` and `session/set_model`. Each
+  choice is a configured provider's name, described by its model id and
+  type, never its endpoint or key. Only providers a trusted configuration
+  defines are offered, and a managed `model.default` pins the model. A
+  switch is refused while a prompt runs, for an unknown name, and for a
+  provider whose `api_key_env` is unset, naming the variable. It is recorded
+  as `model.switched`.
+- SDK: `Agent.Models` and `Agent.SwitchModelNamed` list and choose the
+  configured models by name, with `ErrUnknownModel` and `ErrSwitchDuringRun`.
+- Background subagents. `task` and `tasks` take `background: true`: the
+  call returns at once, the task outlives the run, and its result comes back
+  as a `subagent.notice` (recorded first, untrusted, redacted), delivered as
+  a `task_status` call and result, never as the person's message.
+  `subagents.wake` (`off`, `notify`, `auto`) says what a result does while
+  the session is idle; `auto` runs a short wake run (`session.woken`,
+  `wake_limit`) within `subagents.max_wakes_per_hour` and
+  `subagents.wake_max_turns`. It is `auto` by default in the interactive
+  CLI, `abhed serve` and `abhed acp` (see Changed); `abhed rpc` and the SDK
+  default to `off`, and `-p`, eval and unattended runs join their tasks.
+  `notify` keeps 1.2.2's behaviour: the result is recorded and waits for
+  your next message. New limits
+  `limits.max_background_subagents` (4) and `limits.background_max_minutes`
+  (60, at most 480). New tools `task_status` and `task_cancel`. An explicit
+  stop cancels every background task, stops a `task` or `tasks` call still
+  starting its tasks, and holds wakes until the next prompted run; "send
+  now" keeps them. A `tasks` call starts all its background tasks or none.
+  A fork is refused while background tasks run.
+- Resuming a finished subagent: `task` takes `resume`, a task id of this
+  session's, and continues that subagent's own conversation with a new
+  prompt, on the model it ran on, in its worktree, under its role as it is
+  now. It never falls back to the main tree, and a managed role's current
+  model pin binds it. A managed `model.default` pins every subagent's model.
+- Server: the session state `background`; `GET /v1/sessions/{id}/tasks`,
+  `POST /v1/sessions/{id}/tasks/{task}/cancel` and `POST
+  /v1/sessions/{id}/wake`, owner only; the session list's `background` and
+  `pending_ask`; `Options.OwnerActive`. The console and workbench draw
+  background results, wakes and the closing end, and list background counts
+  and waiting approvals. `session.ended` gains `background` (what is still owed:
+  tasks running, results not yet delivered, a wake starting), `settled`
+  and `recovered`; in Postgres a session with background tasks running keeps its
+  row open until the closing end, and a store may implement `ClaimOrphan`.
+- CLI: results drawn at the prompt, `/tasks`, `/wake`; Ctrl-C twice at the
+  prompt cancels background tasks. rpc: `start.wake`, `tasks`,
+  `cancel_task`, `wake`. SDK: `Options.Background`, `Background`,
+  `CancelTask`, `CancelTasks`, `WaitBackground`, `Wake`,
+  `ErrNothingToWake`. ACP: a card per background task; an ask made between
+  prompt turns waits for the next one.
+- Agent definitions: markdown files whose frontmatter names a subagent role
+  (`name`, `description`, `tools`, `disallowed_tools`, `model`, `max_turns`,
+  `isolation`, `permission_mode`) and whose body is its instructions. They
+  load from the managed `/etc/abhed/agents`, then a workspace's
+  `.abhed/agents` when the workspace is trusted for that content, then
+  `agents.dirs` (default `~/.abhed/agents`); a higher level wins a name and
+  the shadowed file is named. `task` and `tasks` offer them beside the
+  built-in roles, on every surface (the SDK with `ConfiguredTools`; `eval`
+  keeps the built-in roles). See the new guide, Agent definitions.
+- Every key only narrows: a tool the session lacks refuses the spawn and is
+  named, `permission_mode` (`plan` or `default`) applies only where it
+  narrows, `max_turns` caps the role and binds the call, a `worktree` role
+  gets its own checkout. The built-in names are reserved. A key concerning
+  authority that Abhed does not honour (`hooks`, `mcpServers`,
+  `permissions`, allow or deny keys, sandbox settings), a wider mode, or a
+  model that is not a configured provider refuses the definition.
+- A subagent may run on another configured provider: `model` on the `task`
+  and `tasks` calls, or in a definition. It is a provider name, never an
+  endpoint; on a server only a provider sessions may run on. A model that
+  cannot be had refuses the call, with no fallback and no spawn counted. The
+  `model` property is offered only when more than one provider is.
+- Configuration keys `agents.dirs` (never from an untrusted workspace file)
+  and `agents.disabled` (an untrusted file may set it only to true).
+- `POST /v1/admin/agents/reload` reads the definitions again for sessions
+  started afterwards; a running session keeps the set it started with.
+- `subagent.spawned` records `definition`, `definition_source`,
+  `definition_sha256`, `tools`, `model` and `provider`; `subagent.returned`
+  records `model` and `provider`.
+- `abhed trust grant -agents-sha256 H`. The trust report (ACP, rpc, SDK)
+  gains `agents`, `agents_sha256`, `agents_trusted`, `agents_reason` and
+  `agents_problems`; the config package adds `GrantReviewed`,
+  `RecordDecision` and `RefreshAgents`.
+
+### Changed
+
+- In `/ide`'s terminal, answers typed into a running command are now taken
+  out of the recorded output, not only passwords: each output line sharing
+  four characters with an answer is recorded as `[withheld]`, and an answer
+  edited as it was typed withholds the whole output. The person still sees
+  everything live.
+- In the terminal, Esc and Ctrl-C now say what they left: Esc ends the turn
+  and keeps background shells and tasks ("Interrupted · background shells
+  kept"), Ctrl-C stops them too ("… stopped"). Both still end as
+  `user_interrupt`; `session.ended` gains `detail` to tell them apart.
+- A background task that finishes while the session is idle now wakes the
+  agent: `subagents.wake` defaults to `auto` (it was `notify`), so the agent
+  continues with the result on its own instead of waiting for your next
+  message. The usual limits hold: `subagents.max_wakes_per_hour`,
+  `subagents.wake_max_turns`, a stop holds wakes until your next message
+  (stopping one task with `/tasks kill` or a task's stop included),
+  asks still come to you, and only the session's own tasks wake it. Set
+  `"wake": "notify"` for the old behaviour; the managed configuration can
+  hold it there. The console and workbench draw the woken turn live, marked
+  "continuing with results from <task>", with its asks offered, and the
+  workbench lists running background tasks in its status bar.
+- Abhed Studio and other ACP editors wake too: a woken turn streams as
+  session updates between `_abhed/wake/started` and `_abhed/wake/ended`, and
+  a prompt sent meanwhile waits for it. rpc takes `start.wake: "auto"` and
+  answers a woken run with a `woken` line; the SDK takes `Background: "auto"`
+  and `HostWake`, and `CancelTasks` ends a wake run in progress. rpc and the
+  SDK still default to joining their tasks.
+
+- Approvals and the line mode write a hidden character in one form wherever
+  it is shown: `⟨\r⟩`, `⟨\e⟩`, `⟨U+200B⟩`, and a byte that is not UTF-8 as
+  `⟨\xff⟩`, where 1.2.2's line prompt wrote `\r` and `\x1b`. A tab is drawn
+  as four spaces. A run of blanks eight columns wide or more (32 at the start
+  of a line) is still counted, as `⟨32 spaces⟩`, and still raises the
+  hidden-character warning. The approval dialog previews `ssh`, `web_fetch`,
+  `task` and `k8s_apply` calls as the line prompt does.
+- `abhed acp` writes the workspace trust report under
+  `_meta["zybuu.ai/abhed"]`; the older `_meta.abhed` key is still read on
+  input for one more release. Stop reasons now come from the run's
+  terminal reason: `max_budget` is `max_tokens`, an interrupt is
+  `cancelled`, and an error is no longer read from its text.
+- The interactive CLI's `limits.max_turns` applies to each message, so a long
+  conversation no longer runs out for good; a message that reaches it says
+  how to go on. A managed `limits.max_turns` still bounds the whole
+  conversation. Headless runs and the server are unchanged.
+- An edit or write the tool would refuse for want of a read (an existing file
+  not read this session, one changed since, an edit of a missing file) is now
+  refused before the approval prompt, with the reason, so an approval is
+  never spent on a call that cannot succeed.
+- The interactive CLI starts in about 50 ms whatever container runtime is
+  installed: the sandbox is chosen behind the prompt when the process tier
+  meets the configured minimum, and commands wait for the choice. It took
+  2.6 s with a podman machine that was not running.
+- A model endpoint that is down is named at start-up with what to do, and a
+  task fails at once with the same advice. Model errors no longer print a Go
+  dial error or the endpoint's response body.
+- `abhed -p` exits with 128 plus the stop signal's number (143 for SIGTERM,
+  129 for a hang-up) instead of 130 for every signal, as `rpc`, `acp`,
+  `eval` and `resolve` already did. `json` output gains a final result line.
+- The interactive CLI:
+  - Esc stops a running turn and never swallows the next key; Ctrl-C clears
+    the line, then stops a turn, and at an empty prompt pressed twice exits.
+  - On a terminal the per-reply usage line and the "steering" notices are
+    gone: the footer and the input box carry them. Piped sessions print
+    them as before.
+  - Redraws send only what changed: typing at the end of the line is one
+    byte a key where the whole prompt was redrawn before, and a resize
+    redraws the screen at the new width rather than leaving the old one's
+    rows behind.
+  - The startup banner keeps each fact on one row at narrow widths.
+- Workspace trust covers `.abhed/agents` with a hash of its own, decided
+  apart from `config.json`: the prompt, `abhed trust` and `abhed doctor` show
+  each definition's name, model and tools, and declining new definitions
+  keeps a file already trusted. A trust record from an earlier version
+  decides nothing about definitions, so a workspace without them is not
+  asked again. A definition that is a link, has a second name or is larger
+  than 64 KiB is refused.
+- `agent_type` on `task` and `tasks` is an enum of the session's agent types,
+  and the `task` description lists each with when to use it.
+- Skills are read by a frontmatter reader shared with agent definitions;
+  they parse as before.
+- An agent definition's key reads the same quoted or not. A key that reads
+  like an honoured one (such as `denied_tools`), or a restriction nested under
+  another key, refuses the definition. A managed definition's name stays
+  reserved even when that file does not load, and its model binds the call.
+  `disallowed_tools` removes every tool a name could mean, `recall` too.
+- The event stream of a session with background tasks running stays open
+  past its run's end, until the closing end.
+- The interactive CLI follows a conversation's events for as long as it is
+  open, not per task.
+
 ## [1.2.2] - 2026-10-01
 
 ### Security

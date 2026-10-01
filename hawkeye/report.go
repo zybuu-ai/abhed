@@ -197,4 +197,11 @@ type Integrity struct {
 	Gaps     []int64 `json:"gaps,omitempty"`
 	Ordered  bool    `json:"ordered"`
 	HasEnd   bool    `json:"has_end"`
+	// Omitted are gaps where only the event types the capture says it left out
+	// (OmittedTypes: stream-json's deltas) could sit. They are not missing events.
+	Omitted      []int64  `json:"omitted,omitempty"`
+	OmittedTypes []string `json:"omitted_types,omitempty"`
+	// Unsure is set when a gap could be omitted deltas but the capture does not
+	// say it left any out: HawkEYE cannot tell, and counts it as missing.
+	Unsure bool `json:"unsure,omitempty"`
 }

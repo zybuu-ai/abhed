@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/embedded"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -28,6 +30,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	out := json.NewEncoder(os.Stdout)
+	// Taken once: emit runs on the agent's event goroutine, which can still be
+	// delivering an event after this returns.
+	errOut := os.Stderr
 
 	stopper := cancelOnStop(stopExits)
 	defer stopper.stop()
@@ -39,7 +44,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		outMu.Lock()
 		defer outMu.Unlock()
 		if err := out.Encode(v); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: rpc write failed: %v\n", err)
+			fmt.Fprintf(errOut, "abhed: rpc write failed: %v\n", err)
 		}
 	}
 
@@ -127,7 +132,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if done {
 				undelivered("input ended before another prompt")
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "abhed: rpc read failed: %v\n", err)
+					fmt.Fprintf(errOut, "abhed: rpc read failed: %v\n", err)
 					return 1
 				}
 				return 0
@@ -154,6 +159,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if ws == "" {
 				ws = workspace
 			}
+			// made is the agent New returns; a wake starts only after a run of it.
+			var made *abhed.Agent
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: trust, AllowDefaultModel: true,
 				Allow: req.Allow, Deny: req.Deny,
@@ -165,13 +172,36 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				ConfiguredLimits: true,
 				// Stdout is the protocol; what the tool set skipped goes to stderr.
 				Warn: warnf,
+				// off (the default), notify, or auto: a result between
+				// prompts starts a wake run, answered with a woken line.
+				Background: req.Wake,
+				HostWake: func(_ []string, run func(context.Context) (string, error)) bool {
+					go func() {
+						done := stopper.busy()
+						defer done()
+						answer, err := run(ctx)
+						if errors.Is(err, agent.ErrNothingToWake) {
+							return
+						}
+						flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
+						_ = made.Flush(flushed)
+						cancelFlush()
+						r := rpcResponse{Type: "woken", Answer: answer}
+						if err != nil {
+							r.Error = err.Error()
+						}
+						emit(r)
+					}()
+					return true
+				},
 				// Events are forwarded as they happen so a caller can render
 				// progress rather than waiting for the final answer.
 				OnEvent: func(ev agent.Event) {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
 			}
-			na, err := abhed.New(ctx, opts)
+			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc"}), opts)
+			made = na
 			cur = q.sess
 			mu.Lock()
 			if err != nil {
@@ -239,6 +269,46 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		case "providers":
 			emit(rpcResponse{ID: req.ID, Type: "providers", Providers: abhed.Providers()})
 
+		case "tasks":
+			if a == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			tasks := a.Background()
+			if tasks == nil {
+				tasks = []abhed.TaskInfo{}
+			}
+			emit(rpcResponse{ID: req.ID, Type: "tasks", Tasks: tasks})
+
+		case "cancel_task":
+			if a == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			if err := a.CancelTask(req.TaskID); err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error()})
+				continue
+			}
+			emit(rpcResponse{ID: req.ID, Type: "cancelled"})
+
+		case "wake":
+			// Runs the agent on background results waiting for it, as the caller asks.
+			if a == nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: "no session"})
+				continue
+			}
+			done := stopper.busy()
+			answer, err := a.Wake(ctx)
+			flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
+			_ = a.Flush(flushed)
+			cancelFlush()
+			if err != nil {
+				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error(), Answer: answer})
+			} else {
+				emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer})
+			}
+			done()
+
 		case "quit":
 			undelivered("the session quit before another prompt")
 			emit(rpcResponse{ID: req.ID, Type: "bye"})
@@ -247,7 +317,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		default:
 			emit(rpcResponse{ID: req.ID, Type: "error",
 				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, "+
-					"usage, export, providers or quit", req.Method)})
+					"usage, export, providers, tasks, cancel_task, wake or quit", req.Method)})
 		}
 	}
 }
@@ -313,6 +383,10 @@ type rpcRequest struct {
 	Mode      string   `json:"mode,omitempty"`
 	Allow     []string `json:"allow,omitempty"`
 	Deny      []string `json:"deny,omitempty"`
+	// Wake, on start, is off (the default), notify or auto; TaskID names
+	// a background task for cancel_task.
+	Wake   string `json:"wake,omitempty"`
+	TaskID string `json:"task_id,omitempty"`
 }
 
 type rpcResponse struct {
@@ -323,6 +397,8 @@ type rpcResponse struct {
 	Event     *agent.Event `json:"event,omitempty"`
 	Usage     *agent.Usage `json:"usage,omitempty"`
 	Providers []string     `json:"providers,omitempty"`
+	// Tasks answers tasks: the session's background tasks.
+	Tasks []abhed.TaskInfo `json:"tasks,omitempty"`
 	// WorkspaceTrust, on ready, says whether the workspace file applied whole.
 	WorkspaceTrust *config.WorkspaceTrust `json:"workspace_trust,omitempty"`
 }

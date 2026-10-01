@@ -72,7 +72,7 @@ func TestDoctorVerdictOnUnknownKeys(t *testing.T) {
 	if printUnknown(&b, cfg) || b.Len() != 0 {
 		t.Fatalf("a configuration with no unknown keys printed: %q", b.String())
 	}
-	if code := doctorVerdict(&b, false); code != 0 || !strings.Contains(b.String(), "Ready.") {
+	if code := doctorVerdict(&b, configCheck{}); code != 0 || !strings.Contains(b.String(), "Ready.") {
 		t.Fatalf("clean verdict %d: %q", code, b.String())
 	}
 	b.Reset()
@@ -82,8 +82,33 @@ func TestDoctorVerdictOnUnknownKeys(t *testing.T) {
 		!strings.Contains(b.String(), "            /w/.abhed/config.json: unknown key zzz") {
 		t.Fatalf("unknown keys not listed: %q", b.String())
 	}
-	if code := doctorVerdict(&b, true); code != 1 || !strings.Contains(b.String(), "Not ready") {
+	if code := doctorVerdict(&b, configCheck{unknown: true}); code != 1 || !strings.Contains(b.String(), "keys nothing reads") {
 		t.Fatalf("verdict with unknown keys %d: %q", code, b.String())
+	}
+}
+
+// Every setting is in effect now, so none keeps the doctor from calling
+// the configuration ready; the verdict still says so, rather than calling
+// them unread, should a setting be reserved again. An unknown key fails it.
+func TestDoctorVerdictOnKeysNotYetInEffect(t *testing.T) {
+	var b strings.Builder
+	cfg := config.Default()
+	cfg.SetKeys = []string{"hooks.disabled", "statusline.command", "record.dir", "cli.mode_cycle"}
+	if f := configFindings(&b, cfg); f != (configCheck{}) {
+		t.Fatalf("findings %+v for settings in effect", f)
+	}
+	b.Reset()
+	if code := doctorVerdict(&b, configCheck{notInEffect: true}); code != 1 || !strings.Contains(b.String(), "does not act on yet") || strings.Contains(b.String(), "nothing reads") {
+		t.Fatalf("verdict %d: %q", code, b.String())
+	}
+	cfg.Unknown = []config.UnknownKey{{File: "/w/.abhed/config.json", Path: "zzz"}}
+	b.Reset()
+	if f := configFindings(&b, cfg); f != (configCheck{unknown: true}) {
+		t.Fatalf("an unknown key with nothing reserved: %+v", f)
+	}
+	b.Reset()
+	if code := doctorVerdict(&b, configCheck{unknown: true}); code != 1 || !strings.Contains(b.String(), "nothing reads") {
+		t.Fatalf("unknown: %d %q", code, b.String())
 	}
 }
 
@@ -197,5 +222,20 @@ func TestDoctorFailsWhenTheSandboxCannotBeBuilt(t *testing.T) {
 	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
 	if code != 1 || !strings.Contains(out, "checking sandbox exec... FAILED") || strings.Contains(out, "SKIPPED") || strings.Contains(out, "Ready.") {
 		t.Fatalf("the doctor did not fail on the sandbox (%d):\n%s", code, out)
+	}
+}
+
+// Nothing is reserved: with every setting set, the doctor reports none
+// as not yet in effect.
+func TestDoctorNamesSettingsNotYetInEffect(t *testing.T) {
+	var b strings.Builder
+	if printNotInEffect(&b, config.Default()) || b.Len() != 0 {
+		t.Fatalf("the defaults were reported: %q", b.String())
+	}
+	cfg := config.Default()
+	cfg.SetKeys = []string{"statusline.command", "record.dir", "record.retention_days", "memory.auto", "memory.import_depth",
+		"model.default", "hooks.disabled", "cli.mode_cycle", "commands.dirs", "rules.dirs"}
+	if printNotInEffect(&b, cfg) || b.Len() != 0 {
+		t.Fatalf("a setting in effect was reported:\n%s", b.String())
 	}
 }

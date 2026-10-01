@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -180,4 +182,117 @@ func TestApplyWithoutManagedIsUnchanged(t *testing.T) {
 		!strings.Contains(strings.Join(got.Permissions.Allow, " "), "bash(*)") || got.AdditionalDirs[0] != "/tmp" {
 		t.Errorf("overrides not applied: %+v", got.Permissions)
 	}
+}
+
+// Wake defaults to auto, and a managed notify holds over a user's auto.
+func TestManagedWakeHoldsOverUser(t *testing.T) {
+	withManaged(t, `{}`)
+	if cfg, err := Load(t.TempDir()); err != nil || cfg.Subagents.Wake != "auto" {
+		t.Fatalf("default wake %q, %v", cfg.Subagents.Wake, err)
+	}
+	withManaged(t, `{"subagents": {"wake": "notify"}}`)
+	writeConfig(t, os.Getenv("HOME"), `{"subagents": {"wake": "auto"}}`)
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Subagents.Wake != "notify" || !cfg.ManagedSets("subagents.wake") {
+		t.Fatalf("wake %q with a managed notify", cfg.Subagents.Wake)
+	}
+}
+
+// A managed file that sets any permissions key, not only the allow list,
+// leaves no caller able to add an allow rule.
+func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
+	for _, key := range []string{"permissions.mode", "permissions.deny", "permissions.ask", "permissions"} {
+		c := managedCfg(key)
+		if !c.AllowLocked() {
+			t.Errorf("%s: allow rules not locked", key)
+		}
+		_, err := c.Apply(Overrides{Allow: []string{"bash(touch *)"}})
+		refused(t, err, "permissions.allow")
+	}
+	c := managedCfg("limits.max_turns", "sandbox.min_tier")
+	if got, err := c.Apply(Overrides{Allow: []string{"bash(touch *)"}}); err != nil || c.AllowLocked() ||
+		!strings.Contains(strings.Join(got.Permissions.Allow, " "), "bash(touch *)") {
+		t.Errorf("a managed file without permissions refused an allow rule: %v", err)
+	}
+}
+
+// Under a managed file that sets any permissions setting but not
+// permissions.allow, the allow rules the user's and a trusted workspace's
+// files add are left out and each is named; the defaults stay.
+func TestManagedLockDropsFileAllowRules(t *testing.T) {
+	for name, body := range map[string]string{
+		"deny only": `{"permissions":{"deny":["bash(curl*)"]}}`,
+		"mode only": `{"permissions":{"mode":"default"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			withManaged(t, body)
+			home, ws := trustHome(t, `{"permissions":{"allow":["bash(rm*)"]}}`,
+				`{"permissions":{"allow":["bash(rm*)","bash(*)"]}}`)
+			var warned bytes.Buffer
+			warnOut = &warned
+			t.Cleanup(func() { warnOut = os.Stderr })
+			cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cfg.AllowLocked() || !cfg.Workspace.Trusted {
+				t.Fatalf("locked %v trusted %v", cfg.AllowLocked(), cfg.Workspace.Trusted)
+			}
+			if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) || cfg.Sets("permissions.allow") {
+				t.Fatalf("allow %v; want exactly the built-in rules", cfg.Permissions.Allow)
+			}
+			userFile := filepath.Join(home, ".abhed", "config.json")
+			for rule, file := range map[string]string{"bash(rm*)": userFile, "bash(*)": cfg.Workspace.File} {
+				if !slices.ContainsFunc(cfg.SetAside, func(k SetAsideKey) bool {
+					return k.Key == "permissions.allow" && k.Value == rule && k.File == file
+				}) {
+					t.Errorf("%s from %s not set aside: %+v", rule, file, cfg.SetAside)
+				}
+				if want := file + " sets permissions.allow " + rule; !strings.Contains(warned.String(), want) {
+					t.Errorf("no warning %q:\n%s", want, warned.String())
+				}
+			}
+		})
+	}
+
+	t.Run("defaults stay", func(t *testing.T) {
+		withManaged(t, `{"permissions":{"deny":["bash(curl*)"]}}`)
+		_, ws := trustHome(t, "", "")
+		cfg, err := Load(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) || len(cfg.SetAside) != 0 {
+			t.Fatalf("allow %v, aside %v; want the defaults and nothing set aside", cfg.Permissions.Allow, cfg.SetAside)
+		}
+	})
+
+	t.Run("managed allow list", func(t *testing.T) {
+		withManaged(t, `{"permissions":{"deny":["bash(curl*)"],"allow":["bash(go test*)"]}}`)
+		_, ws := trustHome(t, `{"permissions":{"allow":["bash(rm*)"]}}`, `{"permissions":{"allow":["bash(*)"]}}`)
+		cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(cfg.Permissions.Allow, []string{"bash(go test*)"}) || len(cfg.SetAside) != 0 {
+			t.Fatalf("allow %v, aside %v; want exactly the managed list", cfg.Permissions.Allow, cfg.SetAside)
+		}
+	})
+
+	t.Run("no managed file", func(t *testing.T) {
+		old := managed.ConfigFile
+		managed.ConfigFile = filepath.Join(t.TempDir(), "absent.json")
+		t.Cleanup(func() { managed.ConfigFile = old })
+		_, ws := trustHome(t, `{"permissions":{"allow":["bash(rm*)"]}}`, `{"permissions":{"allow":["bash(rm*)","bash(*)"]}}`)
+		cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(cfg.Permissions.Allow, []string{"bash(rm*)", "bash(*)"}) || len(cfg.SetAside) != 0 {
+			t.Fatalf("allow %v, aside %v; want the files' rules unchanged", cfg.Permissions.Allow, cfg.SetAside)
+		}
+	})
 }

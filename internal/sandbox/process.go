@@ -133,7 +133,9 @@ func (s *Process) seatbeltProfile() string {
 
 	b.WriteString(";; Writes are confined to the workspace and standard temp dirs.\n")
 	b.WriteString("(deny file-write*)\n")
-	fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", s.policy.Workspace)
+	for _, ws := range s.workspaces() {
+		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", ws)
+	}
 	for _, p := range append(tempAreas[:len(tempAreas):len(tempAreas)], "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/urandom", "/dev/dtracehelper") {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", p)
 	}
@@ -157,12 +159,14 @@ func (s *Process) seatbeltProfile() string {
 	// The harness's own state is out of reach for commands, as it is for the
 	// file tools: the later rule wins, so this holds inside the workspace allow.
 	b.WriteString("\n;; Abhed's own configuration, users and keys.\n")
-	state := filepath.Join(s.policy.Workspace, stateDir)
-	fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", state)
-	fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", state)
-	// A stat of it succeeds, so pytest, ls -R and git pass it by; listing
-	// it and reading what it holds do not.
-	fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
+	for _, ws := range s.workspaces() {
+		state := filepath.Join(ws, stateDir)
+		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", state)
+		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", state)
+		// A stat of it succeeds, so pytest, ls -R and git pass it by; listing
+		// it and reading what it holds do not.
+		fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(home, stateDir))
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(home, stateDir))
@@ -170,6 +174,21 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(home, stateDir, "skills"))
 	}
 
+	protected := formsOf(s.policy.WriteProtected)
+	for _, p := range protected {
+		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
+	}
+	// Their folders stay where they are, though what else they hold is writable.
+	for _, p := range holders(s.workspaces(), protected) {
+		fmt.Fprintf(&b, "(deny file-write* (literal %q))\n", p)
+	}
+	if s.policy.ProtectGit {
+		// Every .git at any depth, and its config and hooks, in any case.
+		for _, ws := range s.workspaces() {
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s/(%s|%s)(/|$)\"))\n", regexQuote(ws), anyCase(".git"), anyCase("config"), anyCase("hooks"))
+			fmt.Fprintf(&b, "(deny file-write* (regex #\"^%s/(.+/)?%s$\"))\n", regexQuote(ws), anyCase(".git"))
+		}
+	}
 	for _, p := range s.statePaths() {
 		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
@@ -185,6 +204,14 @@ func (s *Process) seatbeltProfile() string {
 		b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.SystemConfiguration\") (global-name-prefix \"com.apple.network\"))\n")
 	}
 
+	// Last, so they win over the denies above; read, never written.
+	if files := s.readableFiles(); len(files) > 0 {
+		b.WriteString("\n;; Files named to be readable, such as a statusline script.\n")
+		for _, f := range files {
+			fmt.Fprintf(&b, "(allow file-read* (literal %q))\n", f)
+		}
+	}
+
 	b.WriteString("\n;; Never writable, regardless of workspace location.\n")
 	for _, p := range []string{"/etc", "/System", "/usr", "/bin", "/sbin", "/Library/LaunchDaemons"} {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
@@ -198,6 +225,18 @@ func (s *Process) seatbeltProfile() string {
 		}
 	}
 	return b.String()
+}
+
+// readableFiles are the policy's readable files that are still the files
+// pinned; one swapped since is left out, so its allow goes with it.
+func (s *Process) readableFiles() []string {
+	var out []string
+	for _, f := range s.policy.ReadableFiles {
+		if f.Same() {
+			out = append(out, f.Path)
+		}
+	}
+	return out
 }
 
 // bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev in
@@ -282,7 +321,18 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		if !s.policy.AllowNetwork {
 			args = append(args, "--unshare-net")
 		}
-		for _, p := range s.policy.ReadOnlyPaths {
+		// A folder holding a protected path is bound onto itself first: a
+		// mount point cannot be renamed or removed, and stays writable. A
+		// .git file, which names the git folder, is bound read-only.
+		protected := s.protectedInside()
+		for _, p := range holders(s.workspaces(), protected) {
+			if info, err := os.Lstat(p); err == nil && info.IsDir() {
+				args = append(args, "--bind", p, p)
+			} else if err == nil && info.Mode().IsRegular() {
+				args = append(args, "--ro-bind", p, p)
+			}
+		}
+		for _, p := range append(s.policy.ReadOnlyPaths[:len(s.policy.ReadOnlyPaths):len(s.policy.ReadOnlyPaths)], protected...) {
 			args = append(args, "--ro-bind-try", p, p)
 		}
 		// State kept outside .abhed is hidden where a bind above would show
@@ -296,6 +346,11 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			} else if err == nil {
 				args = append(args, "--ro-bind", "/dev/null", p)
 			}
+		}
+		// Bound last and read-only, so a file named readable shows even
+		// where a mount above would hide its folder.
+		for _, f := range s.readableFiles() {
+			args = append(args, "--ro-bind", f, f)
 		}
 		args = append(args, argv...)
 
@@ -341,6 +396,21 @@ func (s *Process) procLimit() uint64 {
 		limit = soft
 	}
 	return limit
+}
+
+// workspaces are the workspace as given and with its links resolved.
+func (s *Process) workspaces() []string { return PathForms(s.policy.Workspace) }
+
+// protectedInside are the write-protected paths, in both forms, that lie in
+// the workspace; a mount for one outside it would only show it to the command.
+func (s *Process) protectedInside() []string {
+	var out []string
+	for _, p := range formsOf(s.policy.WriteProtected) {
+		if insideAny(p, s.workspaces()) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // statePaths returns the policy's state paths, each also as its links

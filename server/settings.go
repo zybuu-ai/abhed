@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -11,9 +12,11 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/skills"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // Changing what the agent can do, without a restart.
@@ -46,7 +49,10 @@ type mutable struct {
 	mu       sync.RWMutex
 	registry *tools.Registry
 	skills   *skills.Registry
-	gateway  *mcp.Gateway
+	// agents are the subagent types a new session offers; a running session
+	// keeps the set it started with.
+	agents  *agent.Definitions
+	gateway *mcp.Gateway
 	// cfg is the live configuration. Copied out under the read lock rather
 	// than shared, because config.Config is a value type read from request
 	// handlers on every session creation.
@@ -57,6 +63,16 @@ func (m *mutable) snapshot() (*tools.Registry, *skills.Registry, config.Config) 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.registry, m.skills, m.cfg
+}
+
+// agentDefs is the subagent types a session started now offers.
+func (m *mutable) agentDefs() *agent.Definitions {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.agents == nil {
+		return agent.BuiltinDefinitions()
+	}
+	return m.agents
 }
 
 func (m *mutable) toolRegistry() *tools.Registry {
@@ -186,6 +202,40 @@ func (s *Server) reloadSkills(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ----------------------------------------------------------------- agents
+
+// reloadAgents reads the subagent definitions again: the managed directory,
+// the workspace's when its current content is trusted, and the operator's
+// directories. Only sessions started afterwards see the result; a running
+// session keeps what its prompt and record say it was offered.
+//
+// Like skills, it rescans what an operator put there; a definition is never
+// accepted over HTTP.
+func (s *Server) reloadAgents(w http.ResponseWriter, r *http.Request) {
+	_, _, cfg := s.state.snapshot()
+	var msgs []string
+	defs := toolset.LoadAgents(cfg, config.RefreshAgents(cfg.Workspace), func(format string, args ...any) {
+		msgs = append(msgs, fmt.Sprintf(format, args...))
+	})
+	s.state.mu.Lock()
+	s.state.agents = defs
+	s.state.mu.Unlock()
+
+	names := []string{}
+	for _, d := range defs.Loaded() {
+		names = append(names, d.Name)
+	}
+	s.adminAudit(r, "agents.reloaded", "", map[string]any{"count": len(names), "errors": len(msgs)})
+	if msgs == nil {
+		msgs = []string{}
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"loaded":   len(names),
+		"agents":   names,
+		"warnings": msgs,
+	})
+}
+
 // -------------------------------------------------------------------- mcp
 
 type mcpRequest struct {
@@ -204,7 +254,7 @@ type mcpRequest struct {
 func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 	var req mcpRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request")
+		badBody(w, err, "invalid request")
 		return
 	}
 	if (req.Command == "") == (req.URL == "") {

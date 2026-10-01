@@ -39,6 +39,8 @@ configuration](#trusting-the-workspace-configuration).
 | `storage` | in-memory or Postgres |
 | `auth` | who may use a server deployment |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
+| `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
+| `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
@@ -47,7 +49,10 @@ configuration](#trusting-the-workspace-configuration).
 | `retrieval`, `rag` | the local index, and external corpora |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
+| `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
+| `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
+| `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 
 ## Context
 
@@ -92,7 +97,8 @@ compaction keeps recent turns up to about half the window, so below roughly
 every turn, each a summary call and a lost prefix cache.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
-after compaction. Project conventions belong there.
+after compaction. Project conventions belong there. The full order, imports
+and rules are in [Memory](19-input-and-memory.md#memory).
 
 **Size `context_window` for what the model can actually hold.** A local server
 reports the size it chose at startup; asking for more does not fail loudly, it
@@ -117,6 +123,52 @@ subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
+
+## Background tasks
+
+```json
+"limits": {
+  "max_background_subagents": 4,
+  "background_max_minutes": 60,
+  "background_shells": 4
+},
+"subagents": {
+  "wake": "auto",
+  "max_wakes_per_hour": 4,
+  "wake_max_turns": 8
+}
+```
+
+`max_background_subagents` bounds a session's background tasks alive at once,
+across its runs; zero allows none. `background_max_minutes` is each task's
+lifetime, at most 480, and a background shell's too.
+`background_shells` bounds the commands started with `run_in_background`
+running at once; zero allows none (see [Tools](05-tools.md#background-commands)).
+`wake` is `off`, `notify` or `auto` (the default):
+what a result arriving while the session is idle does. `auto` runs the agent
+on it, up to `wake_max_turns` turns and `max_wakes_per_hour` times an hour
+(zero never wakes); `notify` only records it for your next message. A
+surface may allow less: `-p`, eval and unattended runs are always `off`, and
+rpc and the SDK join their tasks unless the caller asks for more. The managed
+configuration can hold it at `notify` or `off`, and an untrusted workspace
+file may only lower these limits and tighten `wake`. See
+[Parallel subagents](14-parallel-subagents.md#background-tasks).
+
+## Agents
+
+```json
+"agents": {
+  "dirs": ["~/.abhed/agents", "/srv/team/agents"],
+  "disabled": false
+}
+```
+
+`dirs` are directories of subagent definitions, `*.md` files; a later
+directory wins a name. Unset, it is `~/.abhed/agents`. `disabled: true` loads
+only the organisation's `/etc/abhed/agents`. An untrusted workspace file may
+set `disabled: true` but not `dirs`. Definitions are read when a session
+starts; on a server, `POST /v1/admin/agents/reload` reads them again for the
+sessions started after it. See [Agent definitions](17-agent-definitions.md).
 
 ## Sandbox
 
@@ -194,6 +246,55 @@ the model puts in a URL. `max_chars` is the most text
 one call returns; unset means 20,000, and the most is 100,000. A longer page
 is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 
+## Suggestions
+
+```json
+"suggest": {
+  "enabled": true,
+  "model": "small"
+}
+```
+
+After a turn completes in the interactive terminal, the workbench, the console
+or Abhed Studio, one small model call guesses what the person may ask next,
+and the input shows it dimmed until they take it (Tab) or type. It is never
+sent on its own. The call reads the person's last message, the agent's final
+reply and the names of the tools used, as the record holds them (stored
+secrets redacted), and asks for one line of at most 80 characters in the
+person's language. Its reply is cleaned of control and format characters, and
+dropped if it is empty, a `/` command, a `!` shell line, would repeat a
+stored secret (checked on the whole reply, before it is cut), or tells you or
+the agent to ignore, bypass or override a policy, an approval, a rule, the
+sandbox or safety, suggests something destructive (delete, `rm -rf`,
+force-push, drop, wipe, disable, …), or asks to print, show, echo or send a
+secret (a stored secret's name, or a key, token, password or credential):
+better none than a risky one. A
+suggestion is the model's text, which what the agent read can shape; it is
+never sent unless you choose to send it. The call is
+made after the turn has ended, so nothing waits for it; the next prompt, a
+wake, typing or closing the session cancels it. The record keeps the
+suggestion as `suggestion.offered` after the run's `session.ended`, then the
+call as a `model.call` with `purpose: suggestion`, counted in the session's
+tokens and budget.
+
+Suggestions are on by default, so each completed turn costs one extra model
+call. If `suggest.model` names a provider on a different endpoint from the
+session's, that endpoint receives those excerpts of the conversation: the
+person's last message and the agent's final reply, redacted. On an
+air-gapped setup, name a provider inside the same boundary or turn
+suggestions off.
+
+| Key | Default | |
+|---|---|---|
+| `enabled` | `true` | `false` turns suggestions off. A workspace file may only turn them off, and a managed `false` binds |
+| `model` | the session's | a configured provider to ask instead, such as a smaller, cheaper model. Not taken from a workspace file until it is trusted. A name the managed file's model pin does not allow turns suggestions off |
+
+None is made for `-p`, `abhed rpc`, a scheduled or unattended run, or an
+embedded agent unless it sets `Options.Suggest`; nor after an error or a
+stop, during a wake, while an approval waits, or while the person is typing;
+an ask that arrives while it is being made stops it, and one that arrives
+after it was offered takes it away.
+
 ## Storage
 
 ```json
@@ -204,8 +305,22 @@ is read in parts. See [Tools](05-tools.md#reading-a-web-page).
 }
 ```
 
-`memory` (the default) loses sessions when the process exits. `postgres` makes
-them durable and replayable, and is what `/sessions`, `/resume` and audit need.
+Without `postgres`, the command line keeps sessions in the local record under
+`~/.abhed/records` (see [Sessions and the local record](12-records.md)), and
+`abhed serve` keeps them in memory, which loses them when the process exits.
+`postgres` makes them durable and replayable for a server and for teams.
+
+Two settings about the local record are taken only from the managed
+configuration:
+
+```json
+"record": { "dir": "/srv/abhed/records", "retention_days": 90 }
+```
+
+`record.dir` moves the record, and is state the agent cannot reach.
+`record.retention_days` prunes sessions last used longer ago than that when
+the record is opened, leaving a tombstone for each. Unset, nothing is removed
+unless you run `abhed record prune`.
 
 **Two roles, not one.** The audit record is only as protected as the role that
 writes it. Database triggers refuse an `UPDATE`, a `DELETE` or a `TRUNCATE` on
@@ -351,6 +466,13 @@ such as `permissions.deny`, replaces the lower files' list; so does a map
 entry, such as one provider under `model.providers`. Its presence makes the
 policy engine managed: `bypass` mode is refused wherever it comes from.
 
+When the managed file sets any `permissions` setting but not
+`permissions.allow`, the allow rules `~/.abhed/config.json` and a trusted
+workspace's `.abhed/config.json` add are left out, and Abhed warns at startup
+naming each rule and its file; the built-in allow rules stay. Put rules the
+organisation accepts in the managed `permissions.allow`. When the managed file
+sets `permissions.allow`, exactly its list applies.
+
 What a caller sets over the files, the CLI's flags and the SDK's `Options`,
 may tighten what the managed file set and never loosen it:
 
@@ -359,7 +481,7 @@ may tighten what the managed file set and never loosen it:
 | `permissions.mode` | choose `plan` or the managed mode; `bypass` is refused even when the file does not set a mode |
 | `tools.syntax_check` | make it stricter only (`off` < `report` < `refuse`) |
 | `limits.max_turns` | lower it |
-| `permissions.allow` | add nothing |
+| `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` and `-allowedTools` flags, `/permissions allow`, `Options.Allow`, rpc `start`); the user's and workspace's files' allow rules are dropped with a warning |
 | `additional_dirs` | add nothing |
 | `permissions.deny` | add rules; the managed ones stay |
 
@@ -390,6 +512,8 @@ The environment variables in step 4 still apply over the managed file: they
 name a deployment's endpoint and credentials, which whoever runs the process
 controls. Nor is the model: `-model` and the console's picker choose among the
 providers any file defines, and the SDK's `Provider` names any endpoint.
+An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
+exception: a managed `model.default` pins them to that model.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say.
@@ -432,6 +556,13 @@ server open.
 - **`abhed trust`** shows the file and what it would change. `abhed trust
   grant` trusts it, `abhed trust revoke` forgets the decision, and `abhed trust
   list` lists every decision.
+
+A workspace's subagent definitions in `.abhed/agents/*.md` are covered by the
+same decision, with a hash of their own: until you trust them they are not
+loaded, and the warning names each one as `agents/<name>`. A definition can
+choose a model, and so where your code is sent. Declining new definitions
+keeps a file you already trusted. See [Agent
+definitions](17-agent-definitions.md).
 
 Trust is for the file's exact contents: after an edit it is asked about again.
 `abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and

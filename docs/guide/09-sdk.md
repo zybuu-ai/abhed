@@ -40,6 +40,7 @@ answer, err := a.Run(ctx, "fix the failing tests")
 | `Flush` | wait until `OnEvent` has returned for every event recorded so far |
 | `Usage` | tokens, turns, cache hit rate, compactions |
 | `ExportHTML` | a self-contained transcript |
+| `Models`, `SwitchModelNamed` | list the configured models, and move the conversation to one by its configured name, recorded as `model.switched`. Only providers a trusted configuration file defines are listed, never a built-in nobody configured, and a managed `model.default` pins the model. An unknown name is `ErrUnknownModel`, a switch while a run is in progress is `ErrSwitchDuringRun`, and a provider whose `api_key_env` is unset is an error naming the variable |
 | `SetModel` | swap providers mid-conversation; the switch is recorded as `model.switched`, and one the record refuses is an error and is not made |
 | `Providers` | the provider types this build supports |
 
@@ -77,6 +78,39 @@ A subagent's own events stay in the agent's store; `Events` and `OnEvent`
 carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
 `subagent.action` and `subagent.returned` stand for them, as the CLI's JSON
 output does.
+
+### Background tasks
+
+With `ConfiguredTools`, `Options.Background` says what a background task
+does. `"off"`, the default, joins it: `Run` returns when the work, the
+task's included, is done, as it always has, and cancelling `Run`'s context
+stops everything. `"notify"` lets a task outlive `Run`: its result is recorded
+and reaches `OnEvent` as a `subagent.notice` when it ends, and the next `Run`,
+or `Wake`, sees it. `"auto"` does too, and a result that arrives while no run
+is in progress starts a wake run on its own, its events to `OnEvent`.
+`HostWake`, when set, is given that run to start on the host's own terms
+(the editor integration opens a turn for it); nil runs it on the agent's own
+goroutine. `CancelTasks` also ends a wake run in progress and holds the next
+until `Run`.
+
+| Method | |
+|---|---|
+| `Background()` | the tasks, with status, model, turns and, when done, the summary |
+| `CancelTask(id)`, `CancelTasks()` | stop one, or all, as a person's stop; `CancelTasks` ends a wake run too |
+| `WaitBackground(ctx)` | wait until none is running |
+| `Wake(ctx)` | run the agent on the results waiting, recorded as `session.woken` by the caller; `ErrNothingToWake` when none waits |
+
+`Approve` may be called for a task's ask at any time until `Close`, after
+`Run` has returned included. `Close` cancels running tasks as
+`session_closed` and waits a moment for them to record their end.
+
+With `ConfiguredTools` the subagents offer the [agent
+definitions](17-agent-definitions.md) the CLI would load: the managed
+directory, `ConfigDir`'s `.abhed/agents` when that workspace is trusted, and
+`agents.dirs`. A subagent may run on another provider the configuration
+names, never on an endpoint. With `Options.Provider` set, the agent's own
+model is the only one, so no subagent chooses another: a definition naming a
+model does not load, and a call naming one is refused.
 
 ## Who settled a call
 
@@ -167,7 +201,8 @@ returns `abhed.ErrUntrustedModel` rather than run on a different model; set
 | `SyntaxCheck` | replaces `tools.syntax_check` (`refuse`, `report`, `off`) | if the file sets it, only as strict or stricter (`off` < `report` < `refuse`) |
 | `MaxTurns` | replaces the default turn limit | if the file sets `limits.max_turns`, at most that; zero uses it |
 | `ConfiguredLimits` | when `MaxTurns` is zero, the files' `limits.max_turns` binds, as for the CLI; off, it does not | the same, the managed value still the ceiling |
-| `Allow` | added to `permissions.allow` | refused if the file sets `permissions.allow` |
+| `Allow` | added to `permissions.allow` | refused if the file sets any `permissions` setting (mode, deny, ask or allow) |
+| `Suggest` | after each completed `Run`, one small model call offers a next prompt as a `suggestion.offered` event, delivered after `Run` returns (the next `Run` or `Close` cancels it), unless `suggest.enabled` is false; off by default | a managed `suggest.enabled: false` binds |
 | `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
 | `Extensions` | added to the configured ones | added; an extension can only veto |
 

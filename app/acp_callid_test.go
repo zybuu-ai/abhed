@@ -90,6 +90,8 @@ func (a *callsAgent) Run(ctx context.Context, _ string) (string, error) {
 	return "", nil
 }
 
+func (a *callsAgent) CancelTasks() int { return 0 }
+
 func (a *callsAgent) Flush(context.Context) error {
 	a.mu.Lock()
 	q := a.queue
@@ -292,7 +294,7 @@ func TestACPAnswersNotOfferedAreRefusedBySystem(t *testing.T) {
 		{"unreadable", defaultAsk, "yes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &acpSession{id: "s1", always: map[string]bool{}}
+			s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
 			c, _ := answeringConn(t, func(json.RawMessage) any { return tc.reply })
 			ctx, answer := agent.ExpectAnswer(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"))
 			ok, err := c.askEditor(ctx, s, "bash", json.RawMessage(`{"command":"ls"}`), tc.d)
@@ -369,7 +371,7 @@ func TestACPWithheldRequestIsRefusedWithoutAsking(t *testing.T) {
 	c, asked := answeringConn(t, func(json.RawMessage) any {
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:ev-a"}}
 	})
-	s := &acpSession{id: "s1", always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
 	withheld := abhed.Event{ID: "ev-a", Type: agent.EvActionRequested, Payload: json.RawMessage(`{"withheld":"x"}`)}
 	ctx, answer := agent.ExpectAnswer(agent.WithRequested(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"), withheld))
@@ -387,7 +389,7 @@ func TestACPUnshownScopeIsNotOffered(t *testing.T) {
 		params = p
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:ev-a"}}
 	})
-	s := &acpSession{id: "s1", always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
 	rec, _ := json.Marshal(agent.ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`)})
 	ctx, answer := agent.ExpectAnswer(agent.WithRequested(agent.WithCallID(agent.WithRequestID(context.Background(), "ev-a"), "c1"),
@@ -429,7 +431,7 @@ func TestACPCallWithoutAnIDIsAsked(t *testing.T) {
 		params = p
 		return chosen(p, "allow_once")
 	})
-	s := &acpSession{id: "s1", always: map[string]bool{}}
+	s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
 	d := abhed.Decision{Decision: policy.Ask, Step: "default", Scope: "bash(ls *)", Reason: "ls needs approval"}
 	rec, _ := json.Marshal(agent.ActionRequested{Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`), Reason: d.Reason, Scope: d.Offer()})
 	ctx := agent.WithRequested(agent.WithRequestID(context.Background(), "ev-a"), abhed.Event{ID: "ev-a", Payload: rec})
@@ -489,7 +491,7 @@ func TestACPDestructiveCommandIsMarkedWhateverTheStep(t *testing.T) {
 			params = p
 			return chosen(p, "reject_once")
 		})
-		s := &acpSession{id: "s1", always: map[string]bool{}}
+		s := &acpSession{id: "s1", cancel: func() {}, always: map[string]bool{}}
 		args, _ := json.Marshal(map[string]string{"command": tc.command})
 		d := abhed.Decision{Decision: policy.Ask, Step: tc.step, Reason: "asked by " + tc.step}
 		if _, err := c.askEditor(context.Background(), s, "bash", args, d); err != nil {

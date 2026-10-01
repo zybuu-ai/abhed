@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Tool is one callable capability exposed to the model.
@@ -205,6 +206,99 @@ func (r *Registry) Subset(names ...string) *Registry {
 	return sub
 }
 
+// SubsetStrict returns a registry limited to the tools names match, in this
+// registry's order, and the names that matched nothing. A name matches
+// case-folded ("Read" is read), then ignoring underscores and dashes when that
+// is unambiguous ("WebSearch" is web_search). mcp__<server>__* is the only
+// wildcard, and it must match at least one tool.
+//
+// Unlike Subset it reports what it could not find: a list a person wrote
+// that names a tool this session lacks must refuse, not quietly give a role
+// fewer tools than its author meant.
+func (r *Registry) SubsetStrict(names []string) (*Registry, []string) {
+	keep := map[string]bool{}
+	var missing []string
+	for _, n := range names {
+		found := r.match(n)
+		if len(found) == 0 {
+			missing = append(missing, n)
+		}
+		for _, f := range found {
+			keep[f] = true
+		}
+	}
+	sub := &Registry{tools: make(map[string]Tool)}
+	for _, n := range r.order {
+		if keep[n] {
+			sub.Add(r.tools[n])
+		}
+	}
+	return sub, missing
+}
+
+// Without returns a copy of the registry without the tools names match. A
+// subtraction takes every tool a name could mean: where SubsetStrict refuses
+// an ambiguous name, removing both is the narrower reading.
+func (r *Registry) Without(names []string) *Registry {
+	drop := map[string]bool{}
+	for _, n := range names {
+		for _, f := range r.match(n) {
+			drop[f] = true
+		}
+		for _, f := range r.folded(n) {
+			drop[f] = true
+		}
+	}
+	out := &Registry{tools: make(map[string]Tool)}
+	for _, n := range r.order {
+		if !drop[n] {
+			out.Add(r.tools[n])
+		}
+	}
+	return out
+}
+
+// match finds the tools one written name stands for.
+func (r *Registry) match(name string) []string {
+	if server, ok := strings.CutPrefix(name, "mcp__"); ok && strings.HasSuffix(server, "__*") {
+		prefix := "mcp__" + strings.TrimSuffix(server, "*")
+		var out []string
+		for _, n := range r.order {
+			if strings.HasPrefix(n, prefix) && len(n) > len(prefix) {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	if strings.Contains(name, "*") {
+		return nil
+	}
+	for _, n := range r.order {
+		if strings.EqualFold(n, name) {
+			return []string{n}
+		}
+	}
+	out := r.folded(name)
+	if len(out) != 1 {
+		return nil // none, or ambiguous: never guess between two tools
+	}
+	return out
+}
+
+// folded is every tool whose name matches ignoring case, underscores and dashes.
+func (r *Registry) folded(name string) []string {
+	fold := func(s string) string {
+		return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(s))
+	}
+	var out []string
+	for _, n := range r.order {
+		if fold(n) == fold(name) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // Definition is the JSON shape sent to the model.
 type Definition struct {
 	Name        string          `json:"name"`
@@ -212,10 +306,22 @@ type Definition struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+// Hidden is a tool that is registered, and so callable and policed, but not
+// offered to the model until it asks for it: a deferred MCP tool before a
+// tool search loads it.
+type Hidden interface {
+	Hidden() bool
+}
+
+// Definitions are the tools offered to the model, in registration order,
+// leaving out those that are hidden for now.
 func (r *Registry) Definitions() []Definition {
 	out := make([]Definition, 0, len(r.order))
 	for _, n := range r.order {
 		t := r.tools[n]
+		if h, ok := t.(Hidden); ok && h.Hidden() {
+			continue
+		}
 		out = append(out, Definition{
 			Name:        t.Name(),
 			Description: t.Description(),

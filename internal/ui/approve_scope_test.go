@@ -27,7 +27,7 @@ func TestRememberedScopeIsReportedToTheLoop(t *testing.T) {
 func TestAskRuleIgnoresARememberedScope(t *testing.T) {
 	for _, step := range []string{"ask", "destructive", "screen"} {
 		var out strings.Builder
-		a := &Approver{In: strings.NewReader("r\n"), Out: &out, Style: NewStyle(io.Discard), Session: NewAllowList()}
+		a := &Approver{In: strings.NewReader("2\n2\n"), Out: &out, Style: NewStyle(io.Discard), Session: NewAllowList()}
 		a.Session.Add("bash(git tag *)")
 		ctx, answer := agent.ExpectAnswer(context.Background())
 		res := policy.Result{Decision: policy.Ask, Step: step, Scope: "bash(git tag *)", Reason: "matched ask rule bash(git tag*)"}
@@ -35,15 +35,15 @@ func TestAskRuleIgnoresARememberedScope(t *testing.T) {
 		if err != nil || ok || answer.By == agent.BySessionScope {
 			t.Fatalf("step %s: ok %v err %v answer %+v", step, ok, err, answer)
 		}
-		if strings.Contains(out.String(), "Always allow") {
+		if strings.Contains(out.String(), "don't ask again") {
 			t.Fatalf("step %s offered always-allow: %q", step, out.String())
 		}
 	}
 }
 
-// Choosing [A]lways is recorded on the approval that granted it.
+// Choosing "don't ask again" is recorded on the approval that granted it.
 func TestAlwaysRecordsTheGrantedScope(t *testing.T) {
-	a := &Approver{In: strings.NewReader("A\n"), Out: io.Discard, Style: NewStyle(io.Discard), Session: NewAllowList()}
+	a := &Approver{In: strings.NewReader("2\n"), Out: io.Discard, Style: NewStyle(io.Discard), Session: NewAllowList()}
 	ctx, answer := agent.ExpectAnswer(context.Background())
 	res := policy.Result{Decision: policy.Ask, Step: "default", Scope: "bash(mkdir *)"}
 	if ok, err := a.Approve(ctx, "bash", nil, res); err != nil || !ok {

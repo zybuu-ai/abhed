@@ -43,6 +43,27 @@ func (l *Loop) approverFor(ctx context.Context) Approver {
 	return l.Approver
 }
 
+// askerFor is approverFor on the tree's one queue. A subagent's approver and a
+// pipeline step's are already on it; the loop's own asks join it here, so a
+// person is never put two questions at once by a parent and its children.
+func (l *Loop) askerFor(ctx context.Context) Approver {
+	a := l.approverFor(ctx)
+	if _, queued := a.(oneAtATime); queued {
+		return a
+	}
+	return oneAtATime{Approver: a, asks: l.askQueue(ctx)}
+}
+
+// askQueue is the queue the asks under this loop share: the one of the loop
+// that spawned it, when there is one, else its own.
+func (l *Loop) askQueue(ctx context.Context) chan struct{} {
+	if p, ok := ctx.Value(parentKey{}).(*parentLink); ok && p.asks != nil {
+		return p.asks
+	}
+	l.asksOnce.Do(func() { l.asks = make(chan struct{}, 1) })
+	return l.asks
+}
+
 // Steps runs one pipeline's tool steps on the loop whose skill call started it,
 // as that loop runs the model's calls: its policy, session, depth and record.
 type Steps struct {

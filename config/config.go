@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -32,6 +33,8 @@ type Config struct {
 	Context     ContextConfig     `json:"context"`
 	RAG         RAGConfig         `json:"rag,omitempty"`
 	Skills      SkillsConfig      `json:"skills,omitempty"`
+	Agents      AgentsConfig      `json:"agents,omitempty"`
+	Subagents   SubagentsConfig   `json:"subagents"`
 	K8s         K8sConfig         `json:"k8s,omitempty"`
 	SSH         SSHConfig         `json:"ssh,omitempty"`
 	Limits      LimitsConfig      `json:"limits"`
@@ -52,6 +55,25 @@ type Config struct {
 	Auth      AuthConfig       `json:"auth"`
 	Tools     ToolsConfig      `json:"tools,omitempty"`
 
+	// CLI tunes the interactive command line.
+	CLI CLIConfig `json:"cli,omitempty"`
+	// Commands are directories of custom slash commands.
+	Commands CommandsConfig `json:"commands,omitempty"`
+	// Rules are directories of path-scoped instructions.
+	Rules RulesConfig `json:"rules,omitempty"`
+	// Statusline is a command that draws the status line.
+	Statusline StatuslineConfig `json:"statusline,omitempty"`
+	// Memory governs what the agent remembers between sessions.
+	Memory MemoryConfig `json:"memory,omitempty"`
+	// Record is where the local record is kept and for how long.
+	Record RecordConfig `json:"record,omitempty"`
+	// Hooks governs the extension hooks.
+	Hooks HooksConfig `json:"hooks,omitempty"`
+	// Studio governs what Abhed Studio may offer beside the agent.
+	Studio StudioConfig `json:"studio,omitempty"`
+	// Suggest governs the next-prompt suggestion shown after a turn.
+	Suggest SuggestConfig `json:"suggest,omitempty"`
+
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
 	// ManagedKeys are the settings the managed file made, as sorted dotted
@@ -63,11 +85,202 @@ type Config struct {
 	SetKeys []string `json:"-"`
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
+	// SetAside are settings a file made that its layer may not make, such
+	// as a managed-only key in the user's file; each was left out.
+	SetAside []SetAsideKey `json:"-"`
+	// ruleLayers names the layer each permission rule came from; see RuleLayer.
+	ruleLayers map[string]string
 }
+
+// CLIConfig tunes the interactive command line.
+type CLIConfig struct {
+	// ModeCycle is the modes Shift-Tab steps through, from default,
+	// accept-edits and plan. Managed only, and it can only remove modes:
+	// auto and bypass are never in the cycle.
+	ModeCycle []string `json:"mode_cycle,omitempty"`
+}
+
+// CommandsConfig lists directories of custom slash commands.
+type CommandsConfig struct {
+	Dirs []string `json:"dirs,omitempty"`
+}
+
+// RulesConfig lists directories of path-scoped rule files.
+type RulesConfig struct {
+	Dirs []string `json:"dirs,omitempty"`
+}
+
+// StatuslineConfig is a command run to draw the status line. It gets the
+// status as JSON on stdin.
+type StatuslineConfig struct {
+	Command string `json:"command,omitempty"`
+}
+
+// MemoryConfig governs what the agent remembers between sessions.
+type MemoryConfig struct {
+	// Auto lets the agent write its own memory files. Off unless turned on:
+	// a memory the agent writes is a way for injected text to persist. A
+	// workspace may only turn it off, and a managed value binds.
+	Auto bool `json:"auto,omitempty"`
+	// ImportDepth bounds how deep @imports in memory files are followed.
+	// Zero means the default, 5; at most 10.
+	ImportDepth int `json:"import_depth,omitempty"`
+}
+
+// RecordConfig is where the local record lives and how long it is kept.
+// Both are managed only: the record is the audit trail.
+type RecordConfig struct {
+	// Dir replaces ~/.abhed/records.
+	Dir string `json:"dir,omitempty"`
+	// RetentionDays, when positive, is how long a session is kept before a
+	// prune may remove it. Zero keeps the record until it is pruned by hand.
+	RetentionDays int `json:"retention_days,omitempty"`
+	// Also are records an embedder hands in beside Dir, never read from a
+	// file; they are state as Dir is.
+	Also []string `json:"-"`
+}
+
+// SuggestConfig governs the next-prompt suggestion an interactive surface
+// shows after a completed turn. Headless runs never make one.
+type SuggestConfig struct {
+	// Enabled is on by default; a workspace may only turn it off, and a
+	// managed false binds.
+	Enabled bool `json:"enabled"`
+	// Model names a configured provider to ask instead of the session's own.
+	Model string `json:"model,omitempty"`
+}
+
+// StudioConfig is what the organisation allows Abhed Studio beside the agent.
+type StudioConfig struct {
+	// DisableHostTerminal removes Studio's own host shell, which is neither
+	// sandboxed nor recorded. Managed only.
+	DisableHostTerminal bool `json:"disable_host_terminal,omitempty"`
+}
+
+// HooksConfig governs the extension hooks.
+type HooksConfig struct {
+	// Disabled switches every hook off. Managed only; only true means anything.
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// SetAsideKey is a setting a file made that was left out, and why.
+type SetAsideKey struct {
+	File string
+	Key  string
+	// Value is the entry left out of a list, such as one allow rule; empty
+	// when the whole setting was.
+	Value  string
+	Reason string
+}
+
+func (k SetAsideKey) String() string {
+	if k.Value != "" {
+		return fmt.Sprintf("%s sets %s %s, which is ignored: %s", Printable(k.File), k.Key, Printable(k.Value), k.Reason)
+	}
+	return fmt.Sprintf("%s sets %s, which is ignored: %s", Printable(k.File), k.Key, k.Reason)
+}
+
+// managedOnly are the settings only the managed configuration may make. The
+// same key in the user's file or a trusted workspace's is set aside.
+var managedOnly = map[string]string{
+	"cli.mode_cycle":               "only the managed configuration narrows the Shift-Tab modes",
+	"record.dir":                   "only the managed configuration moves the record",
+	"record.retention_days":        "only the managed configuration sets how long the record is kept",
+	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
+	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
+}
+
+// ManagedOnly reports whether only the managed configuration may make the
+// setting at path.
+func ManagedOnly(path string) bool {
+	_, ok := managedOnly[path]
+	return ok
+}
+
+// clearManagedOnly resets a managed-only setting to its default.
+func clearManagedOnly(c *Config, key string) {
+	switch key {
+	case "cli.mode_cycle":
+		c.CLI.ModeCycle = nil
+	case "record.dir":
+		c.Record.Dir = ""
+	case "record.retention_days":
+		c.Record.RetentionDays = 0
+	case "hooks.disabled":
+		c.Hooks.Disabled = false
+	case "studio.disable_host_terminal":
+		c.Studio.DisableHostTerminal = false
+	}
+}
+
+// setAside leaves out the managed-only settings the files merged so far
+// made, crediting them to file. It runs before the managed file is merged,
+// so every managed-only value present came from a lower layer.
+func setAside(c *Config, file string) {
+	kept := c.SetKeys[:0:0]
+	for _, k := range c.SetKeys {
+		if why, ok := managedOnly[k]; ok {
+			clearManagedOnly(c, k)
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: k, Reason: why})
+			continue
+		}
+		kept = append(kept, k)
+	}
+	c.SetKeys = kept
+}
+
+// warnSetAside writes each set-aside setting once per process.
+func warnSetAside(keys []SetAsideKey) {
+	warnedMu.Lock()
+	defer warnedMu.Unlock()
+	for _, k := range keys {
+		if id := "aside\x00" + k.File + "\x00" + k.Key + "\x00" + k.Value; !warned[id] {
+			warned[id] = true
+			fmt.Fprintf(warnOut, "abhed: warning: %s\n", k)
+		}
+	}
+}
+
+// DefaultModeCycle is the Shift-Tab cycle when nothing narrows it. Auto and
+// bypass are never in it: they are chosen on purpose, not by a stray key.
+var DefaultModeCycle = []string{"default", "accept-edits", "plan"}
+
+// ModeCycle is the modes Shift-Tab offers, in order: the default cycle, less
+// any the managed cli.mode_cycle leaves out.
+func (c Config) ModeCycle() []string {
+	if len(c.CLI.ModeCycle) == 0 {
+		return slices.Clone(DefaultModeCycle)
+	}
+	var out []string
+	for _, m := range DefaultModeCycle {
+		if slices.Contains(c.CLI.ModeCycle, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// MemoryImportDepth is how deep memory imports are followed.
+func (c Config) MemoryImportDepth() int {
+	if c.Memory.ImportDepth <= 0 {
+		return defaultImportDepth
+	}
+	return c.Memory.ImportDepth
+}
+
+const (
+	defaultImportDepth = 5
+	// maxImportDepth bounds memory imports: each level is files read into
+	// every prompt, and a chain deeper than this is a mistake or an attack.
+	maxImportDepth = 10
+)
 
 type ModelConfig struct {
 	Default   string                    `json:"default"`
 	Providers map[string]ProviderConfig `json:"providers"`
+	// Fallback names configured providers, in order, to move to when the
+	// default is unreachable or refuses access. The move is recorded.
+	Fallback []string `json:"fallback,omitempty"`
 }
 
 type ProviderConfig struct {
@@ -142,6 +355,11 @@ type ExtensionConfig struct {
 	Events    []string          `json:"events,omitempty"`
 	TimeoutMS int               `json:"timeout_ms,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
+	// Match narrows tool_call and permission_request to the calls a rule
+	// matches, e.g. bash(git *).
+	Match []string `json:"match,omitempty"`
+	// Async sends the events that only observe without waiting.
+	Async bool `json:"async,omitempty"`
 }
 
 // CustomProviderConfig adds a model provider from configuration.
@@ -373,6 +591,19 @@ type SkillsConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
+// AgentsConfig points at directories of subagent definitions: markdown files
+// naming a role, its tools and model, with the role's instructions as the body.
+//
+// A workspace's own .abhed/agents loads only when the person trusted that
+// exact content; the organisation's /etc/abhed/agents always loads.
+type AgentsConfig struct {
+	// Dirs hold *.md definitions. Defaults to ~/.abhed/agents when unset. A
+	// later directory wins a name.
+	Dirs []string `json:"dirs,omitempty"`
+	// Disabled loads only the organisation's managed definitions.
+	Disabled bool `json:"disabled,omitempty"`
+}
+
 // K8sConfig enables cluster access. Off by default: reaching a cluster is an
 // authorization decision, and the credentials already on the machine are not
 // a reason to hand them to an agent without being asked.
@@ -524,6 +755,12 @@ type SandboxConfig struct {
 	// TerminalIdleMinutes ends a workbench shell nobody has watched for this
 	// long. Zero means 30.
 	TerminalIdleMinutes int `json:"terminal_idle_minutes,omitempty"`
+	// WriteProtected are workspace paths commands may not write, set by the
+	// surface that runs the session, never by a file.
+	WriteProtected []string `json:"-"`
+	// ProtectGit write-protects every git folder's config and hooks in the
+	// workspace, at any depth; set as WriteProtected is.
+	ProtectGit bool `json:"-"`
 }
 
 type LimitsConfig struct {
@@ -537,6 +774,29 @@ type LimitsConfig struct {
 	// MaxParallelSubagents bounds how many of a `tasks` call's subagents run
 	// at once. Zero means all of them, up to the tool's own cap of eight.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
+	// MaxBackgroundSubagents bounds a session's background subagents alive
+	// at once, across its runs. Zero allows none. Default 4.
+	MaxBackgroundSubagents int `json:"max_background_subagents"`
+	// BackgroundMaxMinutes is each background subagent's wall-clock
+	// lifetime. Zero means 60; at most 480.
+	BackgroundMaxMinutes int `json:"background_max_minutes,omitempty"`
+	// BackgroundShells bounds a session's commands run with run_in_background
+	// at once. Zero allows none. Default 4.
+	BackgroundShells int `json:"background_shells"`
+}
+
+// SubagentsConfig is what a background subagent's result does when it
+// arrives while the session is idle.
+type SubagentsConfig struct {
+	// Wake is off, notify or auto. auto, the default, starts a short run that
+	// acts on the result; notify records it for the person's next message; off
+	// makes a run wait for its background subagents. A surface may allow
+	// less: -p, eval and unattended runs are always off.
+	Wake string `json:"wake,omitempty"`
+	// MaxWakesPerHour bounds automatic wake runs per session. Zero never wakes. Default 4.
+	MaxWakesPerHour int `json:"max_wakes_per_hour"`
+	// WakeMaxTurns caps one wake run. Zero means 8.
+	WakeMaxTurns int `json:"wake_max_turns,omitempty"`
 }
 
 func Default() Config {
@@ -591,8 +851,11 @@ func Default() Config {
 		Limits: LimitsConfig{
 			MaxTurns: 100, MaxTokens: 8192, MaxBudgetTokens: 0,
 			MaxSubagents: 20, NestedSubagents: false,
+			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
+			BackgroundShells: 4,
 		},
-		Storage: StorageConfig{Driver: "memory", Tenant: "default", MaxConns: 10},
+		Subagents: SubagentsConfig{Wake: "auto", MaxWakesPerHour: 4, WakeMaxTurns: 8},
+		Storage:   StorageConfig{Driver: "memory", Tenant: "default", MaxConns: 10},
 		// Secure by default: a cookie that would travel over plain HTTP has
 		// to be asked for. Browsers accept Secure cookies on localhost, so
 		// local development does not need the exception it used to get.
@@ -606,6 +869,7 @@ func Default() Config {
 		// Off by default: Abhed runs air-gapped, and web search is the one tool
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
+		Suggest:   SuggestConfig{Enabled: true},
 	}
 }
 
@@ -618,6 +882,7 @@ func Load(workspace string) (Config, error) {
 // LoadWith is Load with the caller's say over the workspace file.
 func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	cfg := Default()
+	cfg.noteRuleLayer(LayerDefault)
 
 	var userFile string
 	if home, err := os.UserHomeDir(); err == nil {
@@ -625,20 +890,27 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if err := mergeFile(&cfg, userFile); err != nil {
 			return cfg, err
 		}
+		setAside(&cfg, userFile)
+		cfg.noteRuleLayer(LayerUser)
 	}
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
 	cfg.Workspace = st
 	if err != nil {
 		return cfg, err
 	}
+	cfg.noteRuleLayer(LayerWorkspace)
 
 	// Managed config is applied last and marks the engine as org-controlled.
 	if err := mergeManaged(&cfg); err != nil {
 		return cfg, err
 	}
+	cfg.noteRuleLayer(LayerManaged)
+	dropLockedAllow(&cfg, userFile, cfg.Workspace.File)
 
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
+	warnSetAside(cfg.SetAside)
+	warnNotYetInEffect(cfg)
 	warnNeverAllows(cfg.Permissions.Allow)
 	if !o.Quiet {
 		warnUntrusted(cfg.Workspace)
@@ -788,6 +1060,33 @@ type ToolsConfig struct {
 }
 
 func (c Config) Validate() error {
+	switch c.Subagents.Wake {
+	case "", "off", "notify", "auto":
+	default:
+		return fmt.Errorf("subagents.wake is %q; use off, notify or auto", c.Subagents.Wake)
+	}
+	for _, m := range c.CLI.ModeCycle {
+		if !slices.Contains(DefaultModeCycle, m) {
+			return fmt.Errorf("cli.mode_cycle may only leave modes out of %s; %q is not one of them",
+				strings.Join(DefaultModeCycle, ", "), m)
+		}
+	}
+	if c.Record.RetentionDays < 0 {
+		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
+	}
+	if c.Memory.ImportDepth < 0 || c.Memory.ImportDepth > maxImportDepth {
+		return fmt.Errorf("memory.import_depth is %d; use 0 for the default of %d, or a depth up to %d",
+			c.Memory.ImportDepth, defaultImportDepth, maxImportDepth)
+	}
+	if m := c.Suggest.Model; m != "" {
+		if _, found := c.Model.Providers[m]; !found {
+			return fmt.Errorf("suggest.model is %q, which is not a configured provider; available: %s",
+				m, strings.Join(providerNames(c.Model.Providers), ", "))
+		}
+	}
+	if c.Limits.BackgroundMaxMinutes > 480 {
+		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
+	}
 	p, err := c.Provider()
 	if err != nil {
 		return err

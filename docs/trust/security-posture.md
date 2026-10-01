@@ -180,7 +180,8 @@ inside it. So, for the terminal:
 - the sandbox is the enforcement boundary;
 - `bash` deny rules are a screen: the server rebuilds each line from the keys
   it forwards and refuses a matching line before its Enter reaches the shell
-  (`server/terminal.go`, `shellInput` in `server/pty.go`), recording the
+  (`internal/termline`, `shellInput` in `server/pty.go`, and the same in
+  `app/acp_shell.go` for Abhed Studio's interactive terminal), recording the
   refusal. It does not see what the shell makes of the line: history recall
   (arrow keys, `!!`, Ctrl-R, Ctrl-O), completion, variables and other
   expansions, a line continued with `\` (`rm -rf \` then `/` passes both
@@ -496,7 +497,10 @@ Stated plainly rather than buried:
   database, and a finished session can be continued on any of them (see
   `docs/guide/11-sessions.md`). Nothing moves work off a server that stops:
   its running turns end with it and are recorded as interrupted, and the
-  session can be continued from there.
+  session can be continued from there. Its background subagents end with it
+  too: the server that next takes the session over (by a message, or its
+  sweep once the stopped server's claim is stale) records them as `lost`,
+  and their work is not resumed on its own.
 - **A small team.** Zybuu is a small company. There is no security team, no
   on-call rotation, and no bus-factor mitigation beyond what is written down
   in this repository. See `SECURITY.md` for the

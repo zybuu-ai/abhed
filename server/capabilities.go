@@ -210,12 +210,16 @@ type capExtension struct {
 // bound to its own record, policy and budget; any list of tools includes them.
 func (s *Server) perSessionTools() []capTool {
 	var out []capTool
-	// recall goes on the loop's own copy of the registry, given a record.
+	// recall is bound to one session's record, so the loop adds it to its own
+	// copy of the registry and the shared one never holds it. The agent has
+	// it all the same, and a list that left it out would be wrong.
 	if s.store != nil {
 		out = append(out, capTool{Name: "recall", Source: "builtin",
 			Description: "Read this session's own record, to get back text that has left the context window."})
 	}
-	for _, t := range []tools.Tool{agent.Task{Profiles: agent.Profiles}, agent.Tasks{}} {
+	// task and tasks are bound to one session's record, policy and budget in
+	// the same way, and every session has them.
+	for _, t := range []tools.Tool{agent.Task{Agents: s.state.agentDefs()}, agent.Tasks{}} {
 		out = append(out, capTool{Name: t.Name(), Description: firstSentence(t.Description()),
 			Mutates: t.Mutates(), Source: "builtin"})
 	}

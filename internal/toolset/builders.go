@@ -5,11 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -105,6 +112,85 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 		warn("%v", err)
 	}
 	return reg, reg.Listing()
+}
+
+// AgentRoots are the operator's definition directories: agents.dirs, or
+// ~/.abhed/agents. None when definitions are disabled.
+func AgentRoots(cfg config.Config) []string {
+	if cfg.Agents.Disabled {
+		return nil
+	}
+	if dirs := cfg.Agents.Dirs; len(dirs) > 0 {
+		return dirs
+	}
+	return []string{"~/.abhed/agents"}
+}
+
+// OfferedModels are the provider names a subagent may be given: configured,
+// and offered to sessions.
+func OfferedModels(cfg config.Config) []string {
+	var out []string
+	for name := range cfg.Model.Providers {
+		if cfg.Offered(name) && !pinnedAway(cfg, name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pinnedAway reports a provider other than the one a managed model.default
+// pins every model choice to.
+func pinnedAway(cfg config.Config, name string) bool {
+	return cfg.ManagedSets("model.default") && name != cfg.Model.Default
+}
+
+// ModelResolver is a subagent factory's model choice over the configuration:
+// a name is looked up among the offered, configured providers and never
+// treated as an endpoint. A managed model.default pins it, as it pins the
+// session's own model. Its key comes from this process's environment, as
+// the session's own does. An untrusted workspace file cannot add a provider,
+// so it cannot add a name here.
+func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
+	offered := OfferedModels(cfg)
+	return func(name string) (model.Adapter, error) {
+		avail := strings.Join(offered, ", ")
+		if pinnedAway(cfg, name) {
+			return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
+		}
+		if !slices.Contains(offered, name) {
+			return nil, fmt.Errorf("it is not a configured provider; available: %s", avail)
+		}
+		p, err := cfg.ProviderNamed(name)
+		if err != nil {
+			return nil, fmt.Errorf("%w; available: %s", err, avail)
+		}
+		a, err := p.Adapter()
+		if err != nil {
+			return nil, fmt.Errorf("%w; available: %s", err, avail)
+		}
+		return a, nil
+	}
+}
+
+// LoadAgents loads the subagent definitions with the built-in roles: the
+// managed ones, the workspace's when ws says they are trusted, and the
+// operator's. One that does not load is reported, not fatal.
+func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, warn func(string, ...any)) *agent.Definitions {
+	o := agentdefs.Options{
+		ManagedDir: managed.AgentsDir,
+		Dirs:       AgentRoots(cfg),
+		Disabled:   cfg.Agents.Disabled,
+		Models:     OfferedModels(cfg),
+	}
+	if ws.AgentsTrusted {
+		o.Workspace = ws.AgentFiles()
+	}
+	defs, errs := agentdefs.Load(o)
+	for _, err := range errs {
+		warn("%v", err)
+	}
+	return agent.WithDefinitions(defs...)
 }
 
 // InfraTools constructs the cluster and remote-host tools. Both are off by
