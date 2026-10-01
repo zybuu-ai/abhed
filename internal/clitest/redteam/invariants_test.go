@@ -155,11 +155,20 @@ func TestInvariantManagedPolicyWins(t *testing.T) {
 // path are not attached, and ! of a destructive command asks.
 func TestInvariantMentionsBangAndCommandsGoThroughPolicy(t *testing.T) {
 	h := start(t, clitest.Opts{Args: []string{"-deny", "read(secret/**)"}, Script: `text "ok"`})
-	for _, line := range []string{"look at @secret/key.txt", "look at @.abhed/config.json", "!rm -rf build"} {
-		h.Type(line)
+	// Each line waits for the one before: lines sent together read as a paste.
+	for _, step := range []struct{ line, want string }{
+		{"look at @secret/key.txt", "● ok"},
+		{"look at @.abhed/config.json", "● (end of script)"},
+	} {
+		h.Type(step.line)
 		h.Key(clitest.Enter)
+		h.WaitText(step.want)
+		h.Settle()
 	}
-	h.WaitText("rm -rf build")
+	h.Type("!rm -rf build")
+	h.Key(clitest.Enter)
+	answer(h, "Run this command?", "2") // No
+	h.WaitText("Not run: not confirmed")
 	r := h.Record()
 	for _, e := range r.Events {
 		if e.Type == agent.EvInputMention {
