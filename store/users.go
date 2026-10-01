@@ -87,29 +87,18 @@ func migrateUsersSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := tx.Exec(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return fmt.Errorf("account keys migration: %w", err)
 	}
-	var clashes []string
-	for _, q := range []struct{ key, sql string }{
-		{"username", `SELECT lower(username), string_agg(username, ', ' ORDER BY username)
-			FROM users GROUP BY 1 HAVING count(*) > 1`},
-		{"email", `SELECT lower(btrim(email)), string_agg(username, ', ' ORDER BY username)
-			FROM users WHERE btrim(email) <> '' GROUP BY 1 HAVING count(*) > 1`},
-	} {
-		rows, err := tx.Query(ctx, q.sql)
-		if err != nil {
-			return fmt.Errorf("account keys migration: %w", err)
-		}
-		for rows.Next() {
-			var key, names string
-			if err := rows.Scan(&key, &names); err != nil {
-				rows.Close()
-				return fmt.Errorf("account keys migration: %w", err)
-			}
-			clashes = append(clashes, fmt.Sprintf("accounts %s share the %s %q", names, q.key, key))
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("account keys migration: %w", err)
-		}
+	if err := applyAccountKeys(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// applyAccountKeys refuses existing accounts that share a key, naming them,
+// else adds the version 5 indexes and records the version, in tx.
+func applyAccountKeys(ctx context.Context, tx pgx.Tx) error {
+	clashes, err := accountKeyClashes(ctx, tx)
+	if err != nil {
+		return err
 	}
 	if len(clashes) > 0 {
 		return fmt.Errorf("cannot make account usernames and emails unique (schema version 5): %s. "+
@@ -123,7 +112,37 @@ func migrateUsersSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		accountKeysSchemaVersion); err != nil {
 		return fmt.Errorf("account keys migration: %w", err)
 	}
-	return tx.Commit(ctx)
+	return nil
+}
+
+// accountKeyClashes names the accounts that already share a username or an
+// email, ignoring case, which the version 5 indexes would refuse.
+func accountKeyClashes(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	var clashes []string
+	for _, q := range []struct{ key, sql string }{
+		{"username", `SELECT lower(username), string_agg(username, ', ' ORDER BY username)
+			FROM users GROUP BY 1 HAVING count(*) > 1`},
+		{"email", `SELECT lower(btrim(email)), string_agg(username, ', ' ORDER BY username)
+			FROM users WHERE btrim(email) <> '' GROUP BY 1 HAVING count(*) > 1`},
+	} {
+		rows, err := tx.Query(ctx, q.sql)
+		if err != nil {
+			return nil, fmt.Errorf("account keys migration: %w", err)
+		}
+		for rows.Next() {
+			var key, names string
+			if err := rows.Scan(&key, &names); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("account keys migration: %w", err)
+			}
+			clashes = append(clashes, fmt.Sprintf("accounts %s share the %s %q", names, q.key, key))
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("account keys migration: %w", err)
+		}
+	}
+	return clashes, nil
 }
 
 // errAccountKeysNotMigrated is Open's answer for a database without version 5.

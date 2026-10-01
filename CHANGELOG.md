@@ -433,6 +433,12 @@ All notable changes to Abhed are recorded here. The format follows
   SELECT lower(btrim(email)), count(*) FROM users
     WHERE btrim(email) <> '' GROUP BY 1 HAVING count(*) > 1;
   ```
+  To fix one, give each extra account another address, or clear it (the
+  email grants nothing), for example:
+  ```sql
+  UPDATE users SET email = 'carol.2@example.com' WHERE username = 'carol2';
+  UPDATE users SET email = '' WHERE username = 'old-test-account';
+  ```
 - The migration looks at each owner key on existing session rows and the
   local accounts **in that row's tenant** whose username or email is that key,
   without regard to case. What it does with a match depends on whether local
