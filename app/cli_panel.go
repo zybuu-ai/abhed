@@ -24,6 +24,7 @@ type jobRow struct {
 	Agent      bool
 	Background bool
 	Title      string
+	Command    string // a shell's command, redacted
 	Activity   string
 	Status     string // running, completed, failed, cancelled
 	Reason     string
@@ -125,7 +126,7 @@ func (p *workPanel) jobs() []jobRow {
 			continue
 		}
 		j := jobRow{ID: t.ID, Kind: t.Kind, Agent: t.Kind != agent.KindShell, Background: true,
-			Title: t.Description, Activity: t.LastLine, Status: t.Status, Reason: t.Reason,
+			Title: t.Description, Command: t.Command, Activity: t.LastLine, Status: t.Status, Reason: t.Reason,
 			Started: t.Started, ExitCode: t.ExitCode, Summary: t.Summary}
 		if j.Agent {
 			j.Kind = orDefault(t.AgentType, "agent")
@@ -269,7 +270,11 @@ func (p *workPanel) recordText(j jobRow) string {
 			return strings.TrimRight(b.String(), "\n")
 		}
 	}
-	fmt.Fprintf(&b, "%s: %s\nstatus: %s", sanitizeLine(j.Kind), sanitizeLine(j.Title), j.Status)
+	fmt.Fprintf(&b, "%s: %s\n", sanitizeLine(j.Kind), sanitizeLine(j.Title))
+	if j.Command != "" {
+		fmt.Fprintf(&b, "command: %s\n", sanitizeLine(j.Command))
+	}
+	fmt.Fprintf(&b, "status: %s", j.Status)
 	if j.ExitCode != nil {
 		fmt.Fprintf(&b, " (exit code %d)", *j.ExitCode)
 	}

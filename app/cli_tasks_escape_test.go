@@ -50,3 +50,18 @@ func TestACPTaskInfoEscapes(t *testing.T) {
 		t.Errorf("last_line keeps a newline: %q", v)
 	}
 }
+
+// /tasks names a background shell's command beside its description, escaped,
+// and its view says it too.
+func TestTasksShowShellCommand(t *testing.T) {
+	j := jobRow{ID: "sh_1", Kind: "shell", Background: true, Title: "dev server",
+		Command: "npm run dev\x1b[2J", Status: "running", Started: time.Now()}
+	p := newWorkPanel(nil, nil, nil)
+	row := taskLine(ui.Style{}, 1, j, p)
+	if !strings.Contains(row, "dev server") || !strings.Contains(row, "$ npm run dev⟨\\e⟩[2J") {
+		t.Fatalf("row %q", row)
+	}
+	if rec := p.recordText(j); !strings.Contains(rec, "command: npm run dev⟨\\e⟩[2J") {
+		t.Fatalf("view %q", rec)
+	}
+}
