@@ -83,6 +83,9 @@ Two changes need action before upgrading:
 - The confirmations of `abhed record prune` and of the push in `abhed resolve`
   are numbered too, where they asked `[y/N]`: `1` No (keep), `2` Yes. `y` and
   Enter ask again, and input that ends refuses; `-yes` and `-y` still skip them.
+- First-run setup asks its three yes-or-no questions by number too (memory
+  notes, a key over plain http, a key variable that is not set): `1` No,
+  `2` Yes, where it took `y`/`n` and Enter for No.
 - API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
   must name its `request_id`, from the `subagent.ask` event: an answer
   naming none is refused with 409, with or without a run live. The console,

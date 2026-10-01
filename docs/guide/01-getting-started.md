@@ -34,13 +34,14 @@ anywhere, it offers to set one up:
   written: an answer that looks like a key (a known prefix such as `sk-`,
   `hf_`, `gsk_` or `AIza`, or a long run of mixed letters and digits) is
   refused and not echoed, and a name that is not set in your shell is taken
-  only if you answer yes. Before a key goes to another machine over plain
-  `http://`, it asks, defaulting to no.
+  only if you answer `2` Yes. Before a key goes to another machine over plain
+  `http://`, it asks `1` No or `2` Yes, send it.
 - It checks that the model can call a tool, since a model that cannot will
   do little as an agent.
 - It asks once whether the agent may keep memory notes of its own between
-  sessions. The answer defaults to No: a note the agent writes is a way for
-  text planted in a file to persist.
+  sessions, `1` No or `2` Yes: a note the agent writes is a way for text
+  planted in a file to persist. These questions take a number only; Enter or
+  a letter asks again, and input that ends writes nothing.
 - It writes only your own `~/.abhed/config.json` (mode 0600), and only after
   you confirm. `s` skips it and writes nothing.
 

@@ -162,13 +162,13 @@ func TestEndpointRefusesAPastedKey(t *testing.T) {
 	}
 }
 
-// A variable that is not set is taken only on a yes; no answer is a no.
+// A variable that is not set is taken only on 2; Enter and letters ask again.
 func TestEndpointAsksAboutAnUnsetVariable(t *testing.T) {
 	t.Setenv("ABHED_TEST_UNSET_VAR", "")
-	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_UNSET_VAR\n\n\nm\n"); p.APIKeyEnv != "" {
+	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_UNSET_VAR\n\ny\n1\n\nm\n"); p.APIKeyEnv != "" {
 		t.Fatalf("taken without a yes:\n%s", out)
 	}
-	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_UNSET_VAR\ny\nm\n"); p.APIKeyEnv != "ABHED_TEST_UNSET_VAR" {
+	if p, out := endpointWith(t, "http://127.0.0.1:9/v1\nABHED_TEST_UNSET_VAR\n2\nm\n"); p.APIKeyEnv != "ABHED_TEST_UNSET_VAR" {
 		t.Fatalf("not taken after a yes:\n%s", out)
 	}
 	t.Setenv("ABHED_TEST_SET_VAR", "value")
@@ -180,7 +180,7 @@ func TestEndpointAsksAboutAnUnsetVariable(t *testing.T) {
 // A key is not sent in the clear to another machine without a yes.
 func TestEndpointWarnsBeforeAKeyGoesOverHTTP(t *testing.T) {
 	t.Setenv("ABHED_TEST_SET_VAR", "value")
-	p, out := endpointWith(t, "http://192.0.2.1:9/v1\nABHED_TEST_SET_VAR\n\nhttp://127.0.0.1:9/v1\nABHED_TEST_SET_VAR\nm\n")
+	p, out := endpointWith(t, "http://192.0.2.1:9/v1\nABHED_TEST_SET_VAR\n\ny\n1\nhttp://127.0.0.1:9/v1\nABHED_TEST_SET_VAR\nm\n")
 	if !strings.Contains(out, "unencrypted") || p.BaseURL != "http://127.0.0.1:9/v1" {
 		t.Fatalf("%+v\n%s", p, out)
 	}
@@ -209,5 +209,19 @@ func TestEndpointModelNamesAreEscaped(t *testing.T) {
 	_, out := endpointWith(t, srv.URL+"\n\ngood\n")
 	if strings.ContainsAny(out, "\x1b\x07\u202e") || !strings.Contains(out, `evil\u001b`) {
 		t.Fatalf("%q", out)
+	}
+}
+
+// A key goes over plain http only on 2, and input that ends refuses.
+func TestEndpointHTTPKeyNeedsTheYesNumber(t *testing.T) {
+	t.Setenv("ABHED_TEST_SET_VAR", "value")
+	p, out := endpointWith(t, "http://192.0.2.1:9/v1\nABHED_TEST_SET_VAR\n2\nm\n")
+	if p.BaseURL != "http://192.0.2.1:9/v1" || !strings.Contains(out, "  1. No\n  2. Yes, send it\nanswer 1-2: ") {
+		t.Fatalf("%+v\n%s", p, out)
+	}
+	var b strings.Builder
+	o := onboarding{in: strings.NewReader("http://192.0.2.1:9/v1\nABHED_TEST_SET_VAR\n\n"), out: &b, ctx: context.Background()}
+	if _, _, err := o.endpoint(); err == nil {
+		t.Fatalf("ended input went ahead:\n%s", b.String())
 	}
 }

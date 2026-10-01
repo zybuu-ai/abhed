@@ -497,14 +497,12 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "it answered without calling the tool. Abhed works through tools, so this model will do little; a larger or tool-trained one is better.")
 	}
 
-	auto := false
-	ans, err := o.ask("\nLet the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them (y/N)", "n")
+	auto, err := o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes")
 	if err != nil {
 		return err
 	}
-	auto = strings.HasPrefix(strings.ToLower(ans), "y")
 
-	ans, err = o.ask("Write this to ~/.abhed/config.json? (Y/n)", "y")
+	ans, err := o.ask("Write this to ~/.abhed/config.json? (Y/n)", "y")
 	if err != nil {
 		return err
 	}
@@ -542,7 +540,7 @@ func (o onboarding) endpoint() (string, config.ProviderConfig, error) {
 			break
 		}
 		// Plain http to another machine would carry the key readable on the way.
-		ok, err := o.confirm(fmt.Sprintf("  %s is plain http on another machine, so the key would be sent unencrypted. Send it anyway? (y/N)", config.PrintableURL(p.BaseURL)))
+		ok, err := o.confirm(fmt.Sprintf("%s is plain http on another machine, so the key would be sent unencrypted. Send it anyway?", config.PrintableURL(p.BaseURL)), "Yes, send it")
 		if err != nil {
 			return "", p, err
 		}
@@ -595,7 +593,7 @@ func (o onboarding) keyName() (string, error) {
 		if os.Getenv(v) != "" {
 			return v, nil
 		}
-		ok, err := o.confirm(fmt.Sprintf("  $%s is not set in this shell. Use that name anyway, and set it before starting Abhed? (y/N)", v))
+		ok, err := o.confirm(fmt.Sprintf("$%s is not set in this shell. Use that name anyway, and set it before starting Abhed?", v), "Yes, use it")
 		if err != nil {
 			return "", err
 		}
@@ -605,13 +603,11 @@ func (o onboarding) keyName() (string, error) {
 	}
 }
 
-// confirm asks a yes-or-no question whose default is no.
-func (o onboarding) confirm(q string) (bool, error) {
-	ans, err := o.ask(q, "n")
-	if err != nil {
-		return false, err
-	}
-	return strings.HasPrefix(strings.ToLower(ans), "y"), nil
+// confirm asks 1 No / 2 yes by number, with nothing chosen for Enter;
+// input that ends is an error, so nothing goes ahead.
+func (o onboarding) confirm(q, yes string) (bool, error) {
+	n, err := askNumbered(o.in, o.out, q, []string{"No", yes})
+	return err == nil && n == 1, err
 }
 
 // keyPrefixes start the keys of well-known services; no variable name does.
