@@ -231,6 +231,12 @@ Also:
 
 ### Fixed
 
+- `abhed hawkeye` on a `-p -output-format stream-json` capture reported the
+  gaps stream-json leaves where `agent.delta` was as missing events, critical,
+  and exited 3. The result line now names what it left out (`omitted`), and
+  a gap where only those could sit is reported as "agent.delta omitted by
+  stream-json". Any other gap is still critical, and a capture that may have
+  left deltas out without saying so is reported as one HawkEYE cannot tell.
 - In `/ide`'s line terminal, a key typed behind a destructive line was kept
   after the line was confirmed and glued onto the next one, so `y` then `ls`
   ran `yls`. Confirming now drops what was typed behind the line and the

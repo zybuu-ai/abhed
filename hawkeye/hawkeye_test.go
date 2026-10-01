@@ -2,6 +2,7 @@ package hawkeye
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -485,5 +486,62 @@ func TestReportShowsHiddenCharacters(t *testing.T) {
 	}
 	if r.Calls[0].Subject != spoof || r.Findings[0].Detail != spoof {
 		t.Error("rendering changed the report itself")
+	}
+}
+
+// In a capture that says it left deltas out, a gap is excused only where deltas
+// sit: right before a model.call, after what prompted it, with every call settled.
+// Two calls in one turn: losing the second's result leaves a gap of that shape
+// after the first's, and the unsettled call is what gives it away.
+func TestOmittedDeltasExcuseOnlyTheirOwnGaps(t *testing.T) {
+	omits := Options{Omitted: []string{"agent.delta", "agent.reasoning.delta"}}
+	build := func() *rec {
+		r := (&rec{}).user("x").model(100, 0, 8192)
+		r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "a", Tool: "read", Args: json.RawMessage(`{"path":"a"}`)})
+		r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "b", Tool: "read", Args: json.RawMessage(`{"path":"b"}`)})
+		r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "a", Tool: "read", Content: "a"})
+		r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "b", Tool: "read", Content: "b"})
+		r.add(agent.EvAgentDelta, agent.ActorAgent, agent.Trusted, agent.Message{Text: "done"})
+		return r.model(120, 0, 8192).add(agent.EvAgentMessage, agent.ActorAgent, agent.Trusted, agent.Message{Text: "done"}).end(agent.TermCompleted)
+	}
+	without := func(evs []agent.Event, types ...agent.EventType) []agent.Event {
+		var out []agent.Event
+		for _, e := range evs {
+			if !slices.Contains(types, e.Type) {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	full := build().evs
+	streamed := without(full, agent.EvAgentDelta)
+
+	got := AnalyzeWith("s-test", streamed, omits)
+	if len(got.Integrity.Gaps) != 0 || len(got.Integrity.Omitted) != 1 || has(got, "record-gap") != nil || has(got, "stream-omitted") == nil {
+		t.Fatalf("omitted deltas: %+v %+v", got.Integrity, got.Findings)
+	}
+	// Without the capture saying so, the same gap is a hole.
+	if got := Analyze("s-test", streamed); has(got, "record-gap") == nil {
+		t.Fatalf("a gap with nothing said of it was excused: %+v", got.Findings)
+	}
+	if got := AnalyzeWith("s-test", streamed, Options{Unsure: true}); !got.Integrity.Unsure || has(got, "record-gap") == nil ||
+		!strings.Contains(has(got, "record-gap").Detail, "cannot tell") {
+		t.Fatalf("an unsure capture did not fail closed: %+v %+v", got.Integrity, got.Findings)
+	}
+	// The second call's result gone too: the gap still ends at a model.call after
+	// an observation, but call b was never settled, so it is missing events.
+	var cut []agent.Event
+	for _, e := range streamed {
+		if e.Type == agent.EvObservation && strings.Contains(string(e.Payload), `"call_id":"b"`) {
+			continue
+		}
+		cut = append(cut, e)
+	}
+	if got := AnalyzeWith("s-test", cut, omits); has(got, "record-gap") == nil || len(got.Integrity.Omitted) != 0 {
+		t.Fatalf("a lost result was excused as deltas: %+v %+v", got.Integrity, got.Findings)
+	}
+	// A gap that does not end at a model.call is never deltas.
+	if got := AnalyzeWith("s-test", without(streamed, agent.EvAgentMessage), omits); has(got, "record-gap") == nil {
+		t.Fatalf("a lost message was excused as deltas: %+v", got.Findings)
 	}
 }

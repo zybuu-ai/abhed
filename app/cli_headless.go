@@ -346,6 +346,9 @@ type resultLine struct {
 	DurationMS int64           `json:"duration_ms"`
 	ExitCode   int             `json:"exit_code"`
 	Usage      resultUsage     `json:"usage"`
+	// Omitted names the event types this output left out, so a reader of the
+	// capture can tell a gap where they sat from a missing event.
+	Omitted []agent.EventType `json:"omitted,omitempty"`
 }
 
 type resultUsage struct {
@@ -486,6 +489,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
+		}
+		if o.format == "stream-json" && !o.partial {
+			res.Omitted = []agent.EventType{agent.EvAgentDelta, agent.EvAgentReasoningDelta}
 		}
 		if err != nil {
 			res.Error = friendlyModelError(err, o.providerName, o.provider)

@@ -59,11 +59,28 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 	}
 
 	// The record first: everything else in the report stands on it.
-	if len(r.Integrity.Gaps) > 0 {
-		add(Critical, "record-gap", "Events are missing from the record",
-			fmt.Sprintf("The sequence skips at %v. An append-only store does not produce gaps, "+
-				"so this record was filtered, truncated or edited before it was analysed.", r.Integrity.Gaps),
-			r.Integrity.Gaps[0])
+	if in := r.Integrity; len(in.Gaps) > 0 {
+		detail := fmt.Sprintf("The sequence skips at %v. An append-only store does not produce gaps, "+
+			"so this record was filtered, truncated or edited before it was analysed.", in.Gaps)
+		switch {
+		case in.Unsure:
+			// Failing closed: a hole HawkEYE cannot account for is reported as one.
+			detail += " This looks like a -output-format stream-json capture, which leaves out agent.delta, but it does not " +
+				"say so (its result line names nothing omitted), so HawkEYE cannot tell omitted deltas from missing events. " +
+				"Capture with -output-format json or -include-partial-messages to have the record checked whole."
+		case len(in.OmittedTypes) > 0:
+			detail += " The capture leaves out " + strings.Join(in.OmittedTypes, " and ") + ", but these gaps are not " +
+				"where those sit: right before a model.call, after what prompted it, with every call settled."
+		}
+		add(Critical, "record-gap", "Events are missing from the record", detail, in.Gaps[0])
+	}
+	if in := r.Integrity; len(in.Omitted) > 0 {
+		add(Info, "stream-omitted", "agent.delta omitted by stream-json",
+			fmt.Sprintf("The capture was written with -output-format stream-json, which leaves out %s unless "+
+				"-include-partial-messages is given. The sequence skips at %v, each time right before a model.call, "+
+				"where only those could sit; no event is missing there. An event removed from exactly such a place "+
+				"cannot be told apart: capture with -output-format json when the record must be checked whole.",
+				strings.Join(in.OmittedTypes, " and "), in.Omitted), in.Omitted[0])
 	}
 	// The record cannot tell a shell still open from a server that died with
 	// one, so an open shell changes what the finding says, not whether it is made.

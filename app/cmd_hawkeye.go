@@ -17,33 +17,54 @@ import (
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
+// capture is what a -p run's output says of itself beyond its events.
+type capture struct {
+	result  bool     // it ends with a result line
+	omitted []string // the event types its result line says were left out
+}
+
 // parseEvents reads a record as /export writes it, one JSON array or the
 // local record's lines with their head as a trailer, or as -output-format
 // json streams it, one event per line. The trailer is no event; it is skipped.
 func parseEvents(data []byte) ([]agent.Event, error) {
+	events, _, err := parseCapture(data)
+	return events, err
+}
+
+// parseCapture is parseEvents, with what a -p run's result line says.
+func parseCapture(data []byte) ([]agent.Event, capture, error) {
 	var events []agent.Event
+	var c capture
 	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '[' {
-		return events, json.Unmarshal(trimmed, &events)
+		return events, c, json.Unmarshal(trimmed, &events)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	for {
 		var raw json.RawMessage
 		err := dec.Decode(&raw)
 		if errors.Is(err, io.EOF) {
-			return events, nil
+			return events, c, nil
 		}
 		if err != nil {
-			return nil, err
+			return nil, c, err
 		}
-		if isRecordTrailer(raw) || isResultLine(raw) {
+		if isRecordTrailer(raw) {
+			continue
+		}
+		if isResultLine(raw) {
+			var l struct {
+				Omitted []string `json:"omitted"`
+			}
+			_ = json.Unmarshal(raw, &l)
+			c.result, c.omitted = true, l.Omitted
 			continue
 		}
 		var ev agent.Event
 		if err := json.Unmarshal(raw, &ev); err != nil {
-			return nil, err
+			return nil, c, err
 		}
 		if ev.Type == "" || ev.SessionID == "" {
-			return nil, fmt.Errorf("event %d has no type or session", len(events)+1)
+			return nil, c, fmt.Errorf("event %d has no type or session", len(events)+1)
 		}
 		events = append(events, ev)
 	}
@@ -84,16 +105,19 @@ func hawkeyeCmd(workspace string, args []string, trust config.TrustChoice) int {
 	target := fl.Arg(0)
 
 	var events []agent.Event
+	var opt hawkeye.Options
 	id := target
 	broken := ""
 	if data, err := os.ReadFile(target); err == nil { //nolint:gosec // the operator names the file
-		if events, err = parseEvents(data); err != nil {
+		var c capture
+		if events, c, err = parseCapture(data); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %s is not an events file (an /export array or -output-format json lines): %v\n", target, err)
 			return 1
 		}
 		if len(events) > 0 {
 			id = events[0].SessionID
 		}
+		opt = captureOptions(c, events)
 		// An export of the local record carries its head: the copy is checked against it.
 		if hasRecordTrailer(data) {
 			rep, err := local.VerifyFile(target)
@@ -138,7 +162,7 @@ func hawkeyeCmd(workspace string, args []string, trust config.TrustChoice) int {
 	if broken != "" {
 		fmt.Printf("record: FAILED verification: %s\n\n", broken)
 	}
-	rep := hawkeye.Analyze(id, events)
+	rep := hawkeye.AnalyzeWith(id, events, opt)
 	fmt.Print(hawkeye.Text(rep))
 	if *out != "" {
 		if err := writeHawkeye(*out, rep); err != nil {
@@ -156,6 +180,24 @@ func hawkeyeCmd(workspace string, args []string, trust config.TrustChoice) int {
 		}
 	}
 	return 0
+}
+
+// captureOptions says what a -p capture left out. A result line that names it is
+// taken at its word. One that names nothing, on a capture with no deltas in it, may
+// be stream-json from a run that did not say so: HawkEYE cannot tell, and says so.
+func captureOptions(c capture, events []agent.Event) hawkeye.Options {
+	if !c.result {
+		return hawkeye.Options{}
+	}
+	if len(c.omitted) > 0 {
+		return hawkeye.Options{Omitted: c.omitted}
+	}
+	for _, e := range events {
+		if e.Type == agent.EvAgentDelta || e.Type == agent.EvAgentReasoningDelta {
+			return hawkeye.Options{}
+		}
+	}
+	return hawkeye.Options{Unsure: true}
 }
 
 // hasRecordTrailer reports whether the file's last line is a record head.

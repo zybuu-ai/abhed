@@ -21,7 +21,7 @@ machine from an exported file, long after the session ran.
 abhed hawkeye session.json               # later, on any machine
 abhed hawkeye -o report.html session.json
 
-# On a headless run's event stream
+# On a headless run's event stream, json or stream-json
 abhed -p "fix the tests" -output-format json > events.jsonl
 abhed hawkeye events.jsonl
 
@@ -44,6 +44,32 @@ tenant gets a 404, because a report carries every tool result in the session.
 `abhed hawkeye` exits **3** when the record has a gap in it, or when a session
 from the local record or a `.jsonl` export of it fails verification, so a
 pipeline can refuse a record that is not whole.
+
+### A stream-json capture
+
+`-output-format stream-json` leaves out `agent.delta` and
+`agent.reasoning.delta` unless `-include-partial-messages` is given, so its
+sequence numbers skip where those were. Its result line says so, with
+`"omitted":["agent.delta","agent.reasoning.delta"]`, and HawkEYE reads that:
+a gap where only deltas could sit is reported as **agent.delta omitted by
+stream-json**, an info finding, and is no reason to exit 3. Deltas stream while
+the model answers and are recorded just before its `model.call`, after the
+event that prompted it (the message, a tool's result, a denial, a background
+result, a wake, a compaction or a model switch) and once every call asked for
+has a result or a denial. Any other gap is still `record-gap`, critical:
+a missing `observation`, `model.call`, `user.message` or `agent.message`
+leaves a gap that deltas cannot fill.
+
+HawkEYE fails closed when it cannot tell. A capture that ends with a result
+line naming nothing omitted and holds no deltas may be stream-json from an
+older `abhed`, or a json capture of a model that streamed nothing; a gap of
+the delta shape in it is reported as `record-gap`, critical, and says that
+HawkEYE cannot tell omitted deltas from missing events.
+
+An event removed from exactly where deltas sit cannot be told from them. When
+a record must be checked whole, capture with `-output-format json` or
+`-include-partial-messages`, or check the local record or a `.jsonl` export
+of it, which is verified against its head.
 
 ## What the report contains
 
@@ -76,6 +102,7 @@ and none of them is a model's opinion.
 | Code | Severity | Fires when |
 |---|---|---|
 | `record-gap` | critical | the event sequence skips — the record was filtered, truncated or edited |
+| `stream-omitted` | info | a stream-json capture skips only where the deltas it says it left out sit |
 | `borrowed-host` | warn | an allowed call names a host the user never mentioned and that first appeared in tool output |
 | `sensitive-path` | warn / info | a call reached, or was stopped from reaching, a credential path |
 | `broken-edit` | info | an `edit` or `write` was refused, because it would have left a file that parsed no longer parsing or its new text was a pasted diff; the file was left as it was |

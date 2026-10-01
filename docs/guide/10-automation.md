@@ -57,7 +57,10 @@ The last line of `json` and `stream-json` is the result:
 ```
 
 `subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
-`retry_exhausted`, …); `error` is present when the run failed. Policy
+`retry_exhausted`, …); `error` is present when the run failed. `stream-json`
+without `-include-partial-messages` adds
+`"omitted":["agent.delta","agent.reasoning.delta"]`, the event types it left
+out, so `abhed hawkeye` can tell the gaps they leave from missing events. Policy
 decisions are events like any other, so a script sees each refusal and its
 reason.
 
