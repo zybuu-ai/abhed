@@ -203,7 +203,9 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	if _, err := p.pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	_, err := migrateOwners(ctx, p.pool, p.owners)
+	// A single-role server reads accounts from this database; it warns rather
+	// than refuse, since it cannot be migrated any other way.
+	_, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: p.owners, AllowNoAccounts: true})
 	return err
 }
 

@@ -2432,6 +2432,29 @@ func usersFile(cfg config.Config, workspace string) string {
 	return filepath.Join(workspace, ".abhed", "users.json")
 }
 
+// fileOwnerAccounts reads the accounts file the owner migration also counts:
+// auth.users_file when set, else the default file if one exists. Postgres
+// serves accounts from its table, but a file can hold accounts made before
+// the move to Postgres, or never imported.
+func fileOwnerAccounts(cfg config.Config, workspace string) ([]*auth.User, string, error) {
+	path := usersFile(cfg, workspace)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		if cfg.Auth.UsersFile != "" {
+			fmt.Fprintf(os.Stderr, "abhed: auth.users_file %s does not exist; using the users table alone\n", path)
+		}
+		return nil, "", nil
+	}
+	fs, err := auth.NewFileUserStore(path)
+	if err != nil {
+		return nil, "", err
+	}
+	users, err := fs.List(context.Background())
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", path, err)
+	}
+	return users, path, nil
+}
+
 // ownerPolicy is what the owner migration may assume: local accounts were
 // the only way in only when auth.mode is local with no provider beside it.
 // Anything else, or nothing configured, cannot rule out another writer.
@@ -3052,8 +3075,9 @@ func migrateCmd(workspace string, args []string, extensions []store.Extension, t
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	owners := fs.String("owners", "", "what to do with sessions keyed by a local account's name or email: "+
 		"local-only (move them to the account) or unclaim; default from auth.mode")
+	noAccounts := fs.Bool("force-no-accounts", false, "run a local-only owner migration that finds no accounts")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: abhed migrate [--owners=local-only|unclaim]")
+		fmt.Fprintln(os.Stderr, "usage: abhed migrate [--owners=local-only|unclaim] [--force-no-accounts]")
 		return 2
 	}
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
@@ -3083,10 +3107,29 @@ func migrateCmd(workspace string, args []string, extensions []store.Extension, t
 		}
 	}
 	fmt.Printf("Session owners: %s (%s).\n", policy, ownerPolicyWhy(cfg, *owners != ""))
-	if err := store.Provision(context.Background(), store.ProvisionConfig{
+	fileAccounts, filePath, err := fileOwnerAccounts(cfg, workspace)
+	if err != nil {
+		fail(err)
+	}
+	err = store.Provision(context.Background(), store.ProvisionConfig{
 		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User, Extensions: extensions,
-		Owners: policy,
-	}); err != nil {
+		Owners: policy, OwnerAccounts: fileAccounts, AllowNoAccounts: *noAccounts,
+		AccountsFound: func(table, extra, distinct int) {
+			from := fmt.Sprintf("%d in the users table", table)
+			if filePath != "" {
+				from += fmt.Sprintf(", %d in %s", extra, filePath)
+			}
+			fmt.Printf("Local accounts for the owner migration: %d (%s).\n", distinct, from)
+			if distinct == 0 && policy == store.OwnersLocalOnly {
+				fmt.Fprintln(os.Stderr, "abhed: WARNING: no local accounts found; sessions under old owners cannot be moved to anyone")
+			}
+		},
+	})
+	if errors.Is(err, store.ErrNoOwnerAccounts) {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err != nil {
 		fail(err)
 	}
 	fmt.Printf("Schema applied. %q may insert and read events and cannot change or remove them.\n"+

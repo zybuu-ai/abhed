@@ -442,6 +442,13 @@ All notable changes to Abhed are recorded here. The format follows
     account (`local:<username>`), so a person keeps the sessions made under
     their email or their name. A key several accounts hold (an account whose
     email was another's name or email) becomes `unclaimed:<old key>`.
+  - The accounts it matches against are those in the Postgres `users` table
+    and, when `auth.users_file` is set (or the default `users.json` exists),
+    those in that file, one per username, each in its own tenant. `abhed
+    migrate` prints how many it found and where. Under `local-only` with no
+    account found while sessions under old owners exist, it refuses, since
+    every one of them would be stranded; pass `--owners=unclaim` or
+    `--force-no-accounts` to go on anyway.
   - `--owners=unclaim`, the default for every other `auth.mode` (`proxy`,
     `oidc`, local with a provider, or none): every matching key becomes
     `unclaimed:<old key>`. A proxy user or single sign-on identity could have

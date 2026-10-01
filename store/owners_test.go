@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -116,7 +117,7 @@ func TestOwnerMigrationIsRecordedAndRunsOnce(t *testing.T) {
 	if err != nil || !done {
 		t.Fatalf("schema version 4 not recorded after Open: %v %v", done, err)
 	}
-	remaps, err := migrateOwners(ctx, p.pool, OwnersLocalOnly)
+	remaps, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: OwnersLocalOnly})
 	if err != nil || remaps != nil {
 		t.Fatalf("second run: %+v %v", remaps, err)
 	}
@@ -214,5 +215,67 @@ func TestParseOwnerPolicy(t *testing.T) {
 	}
 	if _, err := ParseOwnerPolicy("move"); err == nil {
 		t.Error("an unknown policy was accepted")
+	}
+}
+
+// Accounts from a users file join the table's; the table wins a username both
+// hold, in any case.
+func TestMergeAccounts(t *testing.T) {
+	table := []*auth.User{{Username: "bob", Email: "bob@table.test"}}
+	file := []*auth.User{{Username: "BOB", Email: "bob@file.test"}, {Username: "ann", Tenant: "t2"}, nil, {}}
+	got := mergeAccounts(table, file)
+	if len(got) != 2 || got[0].Email != "bob@table.test" || got[1].Username != "ann" || got[1].Tenant != "t2" {
+		t.Fatalf("merged %+v", got)
+	}
+	if len(mergeAccounts(nil, nil)) != 0 {
+		t.Fatal("nothing merged into something")
+	}
+}
+
+// A local-only move with no accounts refuses while old rows exist, unless
+// forced; with no old rows it has nothing to strand.
+func TestNoAccountsRefusesToStrandSessions(t *testing.T) {
+	if err := noAccounts(3, false); !errors.Is(err, ErrNoOwnerAccounts) {
+		t.Fatalf("3 stranded rows: %v", err)
+	}
+	if err := noAccounts(3, true); err != nil {
+		t.Fatalf("forced: %v", err)
+	}
+	if err := noAccounts(0, false); err != nil {
+		t.Fatalf("a fresh database: %v", err)
+	}
+}
+
+// The count behind the refusal sees every tenant and skips owners no account
+// ever held.
+func TestLegacyOwnedRowsCountsEveryTenant(t *testing.T) {
+	p := openStore(t, "default")
+	ctx := context.Background()
+	x := strings.ToLower(testID(t, "l"))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	before, err := legacyOwnedRows(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`); err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range [][2]string{{"default", "bob" + x}, {"t2" + x, "ann" + x + "@x.test"},
+		{"default", "anonymous"}, {"default", "agent"}, {"default", "local:bob" + x}, {"default", "oidc:" + x}} {
+		if _, err := tx.Exec(ctx, `INSERT INTO sessions (id, tenant_id, user_id, workspace, model)
+			VALUES ($1, $2, $3, '/w', 'm')`, testID(t, "sess-leg-")+strconv.Itoa(i), r[0], r[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := legacyOwnedRows(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after-before != 2 {
+		t.Fatalf("counted %d new legacy rows, want 2", after-before)
 	}
 }

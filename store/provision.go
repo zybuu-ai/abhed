@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/zybuu-ai/abhed/auth"
 )
 
 // The record is only as protected as the role that writes it. Triggers refuse
@@ -48,6 +50,11 @@ type ProvisionConfig struct {
 	// Owners is what the owner migration may do with rows keyed by a local
 	// account's name or email; empty means OwnersUnclaim.
 	Owners OwnerPolicy
+	// OwnerAccounts, AllowNoAccounts and AccountsFound are passed to the
+	// owner migration; see OwnerMigration.
+	OwnerAccounts   []*auth.User
+	AllowNoAccounts bool
+	AccountsFound   func(table, extra, distinct int)
 }
 
 // Provision applies the schema as the owner and grants the runtime role what
@@ -97,7 +104,8 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 		}
 	}
 
-	if _, err := migrateOwners(ctx, pool, cfg.Owners); err != nil {
+	if _, err := migrateOwners(ctx, pool, OwnerMigration{Policy: cfg.Owners,
+		Accounts: cfg.OwnerAccounts, AllowNoAccounts: cfg.AllowNoAccounts, Found: cfg.AccountsFound}); err != nil {
 		return err
 	}
 
