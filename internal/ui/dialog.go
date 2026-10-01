@@ -20,8 +20,12 @@ type dialogState struct {
 	shownAt  time.Time // when it was first drawn; zero until then
 	pending  int       // a number key waiting to stand alone, or -1
 	pendingN int
-	note     string
-	done     chan int
+	// before is the selection a pending number replaced, put back if it fails;
+	// byArrow says an arrow, after the guard, made the selection.
+	before  int
+	byArrow bool
+	note    string
+	done    chan int
 }
 
 func (s *dialogState) index(id string) int {
@@ -125,14 +129,8 @@ func (d *dock) resolve(i int) {
 
 // dialogKey applies a key to the dialog on screen.
 //
-// Nothing counts until the dialog has been on screen for approvalGuard:
-// not a number, not an arrow, not Enter. After that, a number
-// must stand alone — no key within approvalGuard before it, and none within
-// approvalGuard after it — and Enter needs approvalGuard since the key before
-// it, an arrow included. A paste is never a choice. A key held down repeats
-// far faster than that,
-// so a held key never answers, and neither does typing that was meant for
-// the prompt when the dialog appeared.
+// Nothing counts for approvalGuard after the dialog shows; then a number must
+// stand alone, no letter moves, and Enter never approves (see 18-terminal.md).
 //
 // Ctrl-C is the one exception: it declines at once, which is always safe.
 func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
@@ -145,8 +143,9 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 		return
 	}
 	if st.pending >= 0 {
-		// Another key followed a number before it stood alone: typing.
-		st.pending = -1
+		// Another key followed a number before it stood alone: typing. The
+		// number chose nothing, so it leaves nothing selected for Enter.
+		st.pending, st.sel, st.byArrow = -1, st.before, false
 		st.note = "keys pressed together are ignored; press one number"
 		return
 	}
@@ -154,24 +153,31 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 	switch {
 	case k.code == kEsc:
 		d.resolve(st.cancelIndex())
-	case k.code == kUp || k.code == kNone && (k.r == keyCtrlP || k.r == 'k'):
+	// No letter moves the selection: typed text must never choose.
+	case k.code == kUp || k.code == kNone && k.r == keyCtrlP:
 		if st.sel < 0 {
 			st.sel = len(st.spec.Choices)
 		}
 		st.sel = (st.sel + len(st.spec.Choices) - 1) % len(st.spec.Choices)
-		st.note = ""
-	case k.code == kDown || k.code == kNone && (k.r == keyCtrlN || k.r == 'j'):
+		st.byArrow, st.note = true, ""
+	case k.code == kDown || k.code == kNone && k.r == keyCtrlN:
 		st.sel = (st.sel + 1) % len(st.spec.Choices)
-		st.note = ""
+		st.byArrow, st.note = true, ""
 	case k.code == kNone && k.r == keyCtrlO:
 		d.openDialogPager(st)
 	case k.code == kNone && k.r == keyEnter:
-		if st.sel < 0 {
+		// An approval or a confirm is answered by its number; Enter may only
+		// decline. A choice takes Enter on what an arrow selected.
+		strict := st.spec.Kind == DialogApproval || st.spec.Kind == DialogConfirm
+		switch {
+		case st.sel < 0 || strict && st.sel != st.cancelIndex():
+			st.note = "press the number of your answer"
+			return
+		case !strict && !st.byArrow:
 			st.note = "choose with a number, or ↑↓ then Enter"
 			return
-		}
-		// An arrow is a key, so Enter straight after one is not quiet.
-		if !quiet {
+		case !quiet:
+			// An arrow is a key, so Enter straight after one is not quiet.
 			st.note = "too quick after another key; press Enter again"
 			return
 		}
@@ -185,6 +191,7 @@ func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {
 			st.note = "too quick after another key; press it again"
 			return
 		}
+		st.before = st.sel
 		st.sel = i
 		st.pending = i
 		st.pendingN++

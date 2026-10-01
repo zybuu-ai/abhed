@@ -114,7 +114,7 @@ func TestDialogBareEnterNeverApproves(t *testing.T) {
 	if id, ok := dr.answered(); ok {
 		t.Fatalf("a bare Enter answered %q", id)
 	}
-	dr.waitText("choose with a number")
+	dr.waitText("press the number of your answer")
 	if strings.Contains(dr.term.Text(), "❯") {
 		t.Fatalf("a choice is highlighted before any was made:\n%s", dr.term.Dump())
 	}
@@ -137,10 +137,17 @@ func TestDialogIgnoresEveryKeyAtFirst(t *testing.T) {
 	}
 }
 
+// choiceSpec is approvalSpec as a plain choice, where Enter takes what an arrow selected.
+func choiceSpec() DialogSpec {
+	spec := approvalSpec()
+	spec.Kind = DialogChoice
+	return spec
+}
+
 // After the first 300 ms, ↓ then Enter at once is still not an answer: Enter
 // needs 300 ms since the last arrow.
 func TestDialogEnterNeedsAPauseAfterAnArrow(t *testing.T) {
-	dr := openDialog(t, approvalSpec())
+	dr := openDialog(t, choiceSpec())
 	dr.clock.advance(time.Second)
 	dr.key("\x1b[B") // to "yes"
 	dr.key("\x1b[B") // to "always"
@@ -456,7 +463,7 @@ func TestDialogNeedsQuietBefore(t *testing.T) {
 		t.Fatalf("x then 1 answered %q", id)
 	}
 
-	dr2 := openDialog(t, approvalSpec())
+	dr2 := openDialog(t, choiceSpec())
 	dr2.clock.advance(time.Second)
 	dr2.key("\x1b[B") // select Yes
 	dr2.clock.advance(time.Second)
@@ -670,5 +677,94 @@ func TestApprovalSaysBackground(t *testing.T) {
 	fg := json.RawMessage(`{"command":"npm test"}`)
 	if spec := a.spec(context.Background(), "bash", fg, policy.Result{Decision: policy.Ask}, a.header("bash", fg)); strings.Contains(spec.Ask+spec.Title, "background") {
 		t.Fatalf("a foreground command says background: %q %q", spec.Ask, spec.Title)
+	}
+}
+
+// Letters and typed text never move an approval's selection, and Enter never
+// approves: j/k, a sentence and a pause, then Enter, answer nothing.
+func TestApprovalLettersNeverChoose(t *testing.T) {
+	for _, typed := range []string{"j", "k", "jj", "ok just go ahead"} {
+		dr := openDialog(t, approvalSpec())
+		dr.clock.advance(time.Second)
+		for _, r := range typed {
+			dr.key(string(r))
+			dr.clock.advance(150 * time.Millisecond)
+		}
+		dr.clock.advance(time.Second)
+		dr.key("\r")
+		dr.clock.advance(time.Second)
+		dr.timers.advance(time.Second)
+		if id, ok := dr.answered(); ok {
+			t.Fatalf("%q then Enter answered %q", typed, id)
+		}
+	}
+}
+
+// An arrow may move the highlight, but Enter on Yes still approves nothing;
+// Enter on No declines.
+func TestApprovalEnterOnlyDeclines(t *testing.T) {
+	dr := openDialog(t, approvalSpec())
+	dr.clock.advance(time.Second)
+	dr.key("\x1b[B") // Yes
+	dr.clock.advance(time.Second)
+	dr.key("\r")
+	dr.clock.advance(time.Second)
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("Enter on a highlighted Yes answered %q", id)
+	}
+	dr.key("\x1b[A") // round to No
+	dr.clock.advance(time.Second)
+	dr.key("\r")
+	if id, _ := dr.answered(); id != "no" {
+		t.Fatalf("Enter on No answered %q", id)
+	}
+}
+
+// A number in a burst chooses nothing: a lone Enter after it answers nothing.
+func TestApprovalBurstNumberLeavesNoSelection(t *testing.T) {
+	dr := openDialog(t, approvalSpec())
+	dr.clock.advance(time.Second)
+	dr.key("1")
+	dr.clock.advance(50 * time.Millisecond)
+	dr.key("\r")
+	dr.clock.advance(2 * time.Second)
+	dr.timers.advance(2 * time.Second)
+	dr.key("\r")
+	dr.clock.advance(time.Second)
+	dr.timers.advance(time.Second)
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("a burst 1 then a lone Enter answered %q", id)
+	}
+	if strings.Contains(dr.term.Text(), "❯") {
+		t.Fatalf("the burst left a selection:\n%s", dr.term.Dump())
+	}
+}
+
+// The destructive second question: j never reaches Yes, Enter answers No.
+func TestConfirmLettersNeverReachYes(t *testing.T) {
+	spec := DialogSpec{Kind: DialogConfirm, Title: "rm -rf build", Ask: "Run it?", Default: "no",
+		Choices: []Choice{{ID: "no", Label: "No"}, {ID: "yes", Label: "Yes, run it"}}}
+	dr := openDialog(t, spec)
+	dr.clock.advance(time.Second)
+	dr.key("j")
+	dr.clock.advance(time.Second)
+	dr.key("\r")
+	if id, _ := dr.answered(); id != "no" {
+		t.Fatalf("j then Enter answered %q", id)
+	}
+}
+
+// A pasted number chooses nothing either: a lone Enter after it answers nothing.
+func TestApprovalPasteThenEnterAnswersNothing(t *testing.T) {
+	dr := openDialog(t, approvalSpec())
+	dr.clock.advance(time.Second)
+	dr.key("\x1b[200~1\x1b[201~")
+	dr.clock.advance(time.Second)
+	dr.timers.advance(time.Second)
+	dr.key("\r")
+	dr.clock.advance(time.Second)
+	dr.timers.advance(time.Second)
+	if id, ok := dr.answered(); ok {
+		t.Fatalf("a pasted 1 then Enter answered %q", id)
 	}
 }

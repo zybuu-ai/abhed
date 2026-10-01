@@ -39,10 +39,12 @@ All notable changes to Abhed are recorded here. The format follows
 - The interactive approval can no longer be answered by a key pressed as it
   appears. No key, arrows and Enter included, counts for the first 300 ms the
   question is on screen; a number counts only with 300 ms of quiet on either
-  side, so typing or a key held down never answers; Enter needs 300 ms since
-  the last arrow; and nothing is selected at first, so Enter alone answers
-  nothing. Approvals are answered by number only, in the dialog and in the
-  line mode alike: no letter approves. Only the answers offered can be
+  side, so typing or a key held down never answers, and a number that fails
+  this chooses nothing and leaves nothing selected; nothing is selected at
+  first; no letter moves the selection (`j` and `k` did); and Enter never
+  approves: on a highlighted No it declines, on a Yes it answers nothing.
+  Approvals are answered by number only, in the dialog and in the line mode
+  alike: no letter approves. Only the answers offered can be
   chosen. A destructive command needs a second, numbered Yes, whose default
   is No. Every other question the CLI asks is numbered too, the workspace
   trust prompt included (1 don't trust, 2 trust, 3 view): no letter or word
