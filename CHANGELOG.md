@@ -243,7 +243,8 @@ Also:
   either. `StopOwnerBackground` lets an edition stop a revoked owner's live
   run, background shells, tasks and terminals at once, recorded as
   `owner_revoked`. A session whose owner is restored makes no wake or
-  suggestion until it is reopened or the server restarts.
+  suggestion until a background result is next delivered while it is idle,
+  or the session is deleted or the server restarts.
 - `abhed hawkeye` on a `-p -output-format stream-json` capture reported the
   gaps stream-json leaves where `agent.delta` was as missing events, critical,
   and exited 3. The result line now names what it left out (`omitted`), and

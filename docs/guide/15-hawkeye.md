@@ -56,9 +56,10 @@ stream-json**, an info finding, and is no reason to exit 3. Deltas stream while
 the model answers and are recorded just before its `model.call`, after the
 event that prompted it (the message, a tool's result, a denial, a background
 result, a wake, a compaction or a model switch) and once every call asked for
-has a result or a denial. Any other gap is still `record-gap`, critical:
-a missing `observation`, `model.call`, `user.message` or `agent.message`
-leaves a gap that deltas cannot fill.
+has a result or a denial. Any other gap is still `record-gap`, critical, such
+as a missing `observation` or `agent.message`. A `user.message` or a retried
+`model.call` removed from right before a `model.call` cannot be told from
+omitted deltas, since stream-json carries no per-event hash.
 
 HawkEYE fails closed when it cannot tell. A capture that ends with a result
 line naming nothing omitted and holds no deltas may be stream-json from an
