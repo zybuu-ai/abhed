@@ -1297,7 +1297,17 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	// Ownership and mode come from the stored row when there is one.
 	var rec store.SessionRecord
-	if s.sessions != nil {
+	if g, ok := s.sessions.(sessionGetter); ok {
+		// By id, so a session older than any bounded list still opens.
+		r, err := g.GetSession(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errNoSession
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read sessions: %w", err)
+		}
+		rec = r
+	} else if s.sessions != nil {
 		recs, err := s.sessions.ListSessions(ctx, 500)
 		if err != nil {
 			return nil, fmt.Errorf("read sessions: %w", err)
@@ -1657,7 +1667,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	// A durable store also returns sessions from before this process started,
 	// which is what makes audit useful after a restart.
 	if s.sessions != nil {
-		records, err := s.sessions.ListSessions(r.Context(), 200)
+		records, err := s.listOwned(r.Context(), user, 200)
 		if err == nil {
 			out := make([]sessionSummary, 0, len(records))
 			for _, rec := range records {
@@ -1788,9 +1798,61 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 	return false
 }
 
+// scheduledForAdmin reports whether the caller is an administrator and id is
+// a scheduled run in their tenant: a session no identity owns, which only an
+// administrator may read, never continue.
+func (s *Server) scheduledForAdmin(r *http.Request, id string) (store.SessionRecord, bool) {
+	g, ok := s.sessions.(sessionGetter)
+	if !ok || !s.IsAdmin(r) {
+		return store.SessionRecord{}, false
+	}
+	rec, err := g.GetSession(r.Context(), id)
+	if err != nil || rec.Tenant != TenantOf(r.Context()) || !strings.HasPrefix(rec.User, auth.SchedulePrefix) {
+		return store.SessionRecord{}, false
+	}
+	return rec, true
+}
+
+// mayRead is mayAccess for reading a session's record, which an administrator
+// may also do for a scheduled run.
+func (s *Server) mayRead(r *http.Request, id string) bool {
+	if s.mayAccess(r, id) {
+		return true
+	}
+	_, ok := s.scheduledForAdmin(r, id)
+	return ok
+}
+
+// readable is mayRead for a handler that serves the record, auditing an
+// administrator's read of a scheduled run as what.
+func (s *Server) readable(r *http.Request, id, what string) bool {
+	if s.mayAccess(r, id) {
+		return true
+	}
+	rec, ok := s.scheduledForAdmin(r, id)
+	if ok {
+		s.adminAudit(r, "session.read", id, map[string]any{"owner": rec.User, "via": what})
+	}
+	return ok
+}
+
 // sessionGetter is a store that finds one session row by id.
 type sessionGetter interface {
 	GetSession(ctx context.Context, id string) (store.SessionRecord, error)
+}
+
+// ownerLister is a store that can list one owner's sessions in its query.
+type ownerLister interface {
+	ListSessionsOwnedBy(ctx context.Context, owner string, limit int) ([]store.SessionRecord, error)
+}
+
+// listOwned lists the newest sessions user may see. The owner is filtered in
+// the store where it can be, so the tenant's newest do not crowd theirs out.
+func (s *Server) listOwned(ctx context.Context, user string, limit int) ([]store.SessionRecord, error) {
+	if ol, ok := s.sessions.(ownerLister); ok && user != "" && user != auth.Anonymous && !auth.OwnsNothing(user) {
+		return ol.ListSessionsOwnedBy(ctx, user, limit)
+	}
+	return s.sessions.ListSessions(ctx, limit)
 }
 
 // ownsStored reports whether the caller owns a session this node is not
@@ -1841,7 +1903,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		// Not running is not the same as not ours. Ownership is checked
 		// against the stored record before any event is streamed, or a
 		// finished session becomes readable by anyone who knows its id.
-		if !s.mayAccess(r, id) {
+		if !s.readable(r, id, "events") {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
@@ -1901,7 +1963,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Authorised again while it runs, not only when it opened: every write
 	// below goes through guard.allowed, and a refusal ends the stream.
-	guard := s.guardStream(r, id)
+	guard := s.guardReadStream(r, id)
 	defer guard.stop()
 
 	// The store drops events for a subscriber that falls behind rather than
@@ -1993,7 +2055,7 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 	// against the stored record: row-level security scopes the query by tenant,
 	// never by user, so without this any signed-in account could replay a
 	// colleague's full transcript by id.
-	if !s.mayAccess(r, id) {
+	if !s.readable(r, id, "replay") {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -2014,7 +2076,7 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 // same ownership check — a report carries every tool result in the session.
 func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.mayAccess(r, id) {
+	if !s.readable(r, id, "hawkeye") {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}

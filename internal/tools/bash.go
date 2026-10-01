@@ -410,7 +410,7 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
-	if b.network() == networkOff && networkFailure(content) {
+	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
 		content += "\n\n" + networkHint
 	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
 		content += "\n\n" + hint
@@ -473,6 +473,30 @@ func networkFailure(output string) bool {
 		}
 	}
 	return false
+}
+
+// networkClients are programs that reach for the network, where a command
+// starts.
+var networkClients = regexp.MustCompile(`(?:^|[;|&(]|\$\()\s*(?:sudo\s+|env\s+|command\s+|exec\s+)?` +
+	`(?:curl|wget|git\s+(?:fetch|clone|pull|push|ls-remote|submodule)|npm|npx|yarn|pnpm|pip3?|python3?|uv|` +
+	`go\s+(?:get|install|mod)|cargo|gem|bundle|composer|apt(?:-get)?|apk|brew|ssh|scp|sftp|rsync|nc|ncat|` +
+	`ping|dig|nslookup|host|http|node|deno|bun|docker|podman|helm|kubectl|aws|gcloud|az)\b`)
+
+// networkFailed reports whether a command failed for want of the network. A
+// command that succeeded counts only when a network client ran and the failure
+// is in its last lines: a log being read can mention a network error.
+func networkFailed(command, output string, exitCode int) bool {
+	if exitCode != 0 {
+		return networkFailure(output)
+	}
+	if !networkClients.MatchString(command) {
+		return false
+	}
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	return networkFailure(strings.Join(lines, "\n"))
 }
 
 // networkHint says why a command that reached for the network failed. Without

@@ -175,7 +175,9 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 
 	older, recent := messages[:split], messages[split:]
 
-	if len(older) == 0 {
+	// One message summarised into one leaves the history the same length: the
+	// previous summary, re-summarised, for a paid call that changes nothing.
+	if len(older) < 2 {
 		return messages, Compaction{}, nil // nothing worth summarizing yet
 	}
 

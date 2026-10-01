@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Canonical is a shell command with the tricks that hide its words undone,
@@ -182,7 +183,7 @@ func ansiC(command string, i int) (string, int) {
 				j++
 			}
 			if n, err := strconv.ParseUint(command[i+1:j], 16, 32); err == nil {
-				b.WriteRune(rune(n))
+				b.WriteRune(runeOf(n))
 				i = j - 1
 			} else {
 				b.WriteByte(e)
@@ -193,7 +194,7 @@ func ansiC(command string, i int) (string, int) {
 				j++
 			}
 			n, _ := strconv.ParseUint(command[i:j], 8, 32)
-			b.WriteRune(rune(n))
+			b.WriteRune(runeOf(n))
 			i = j - 1
 		default:
 			b.WriteByte(e)
@@ -241,4 +242,13 @@ func namesExpansion(w string) bool {
 		}
 	}
 	return false
+}
+
+// runeOf is n as a rune, or the replacement character past the last one, as
+// WriteRune would write for it anyway.
+func runeOf(n uint64) rune {
+	if n > unicode.MaxRune {
+		return unicode.ReplacementChar
+	}
+	return rune(n)
 }

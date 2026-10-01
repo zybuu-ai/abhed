@@ -146,7 +146,10 @@ stays open; unset means 30.
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
 reason (a name that does not resolve, no route to a host) ends with a note
-saying so and pointing at `web_search` and `web_fetch`.
+saying so and pointing at `web_search` and `web_fetch`. A command that exits 0
+gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
+`npm`, `pip` and the like) and the failure is in its last five lines, so
+output that merely mentions such an error, a log being read, does not.
 
 ## Web fetch
 
