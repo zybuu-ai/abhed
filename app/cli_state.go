@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -9,7 +10,9 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
 )
@@ -77,6 +80,27 @@ type cliState struct {
 	// verification, was copied into, with the events copied.
 	copiedID     string
 	copiedEvents []agent.Event
+	// sandbox is the session's sandbox, chosen behind the prompt.
+	sandbox *lazySandbox
+	// version is the binary's, for /release-notes and /bug.
+	version string
+	// set and registry are the session's tools, for the panels.
+	set      *toolset.Set
+	registry *tools.Registry
+	// statuslineWarned is set once a failing statusline command was named.
+	statuslineWarned bool
+	// statuslineSB is the statusline's own sandbox, chosen at its first run.
+	// statuslineRoots are the granted folders it was judged against; a
+	// change to them judges it again. statuslineMu guards all of these.
+	statuslineMu     sync.Mutex
+	statuslineJudged bool
+	statuslineRoots  []string
+	statuslineSB     sandbox.Sandbox
+	statuslineErr    error
+	// statuslineCmd is what runs, and statuslinePin the script it names,
+	// checked again before each run.
+	statuslineCmd string
+	statuslinePin sandbox.ReadableFile
 }
 
 // follow draws the conversation's events as they are recorded, for as long as

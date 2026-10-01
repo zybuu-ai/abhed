@@ -45,4 +45,9 @@ type StatusModel struct {
 	Record      RecordStatus `json:"record"`
 	SessionName string       `json:"session_name,omitempty"`
 	GitBranch   string       `json:"git_branch,omitempty"`
+
+	// Custom is the statusline command's output, sanitized to text and SGR
+	// styles, when one is configured; the footer shows it in place of its
+	// own. It is not part of what the command reads.
+	Custom string `json:"-"`
 }

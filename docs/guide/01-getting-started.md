@@ -24,7 +24,27 @@ ollama serve
 ollama pull qwen3-coder:30b
 ```
 
-Then, in the directory you want the agent to work in:
+The first time you run `abhed` on a terminal with no configuration
+anywhere, it offers to set one up:
+
+- It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
+  its models.
+- Or it takes an OpenAI-compatible endpoint: its base URL, and the **name**
+  of the environment variable that holds its key. A key itself is never
+  written: an answer that looks like a key (a known prefix such as `sk-`,
+  `hf_`, `gsk_` or `AIza`, or a long run of mixed letters and digits) is
+  refused and not echoed, and a name that is not set in your shell is taken
+  only if you answer yes. Before a key goes to another machine over plain
+  `http://`, it asks, defaulting to no.
+- It checks that the model can call a tool, since a model that cannot will
+  do little as an agent.
+- It asks once whether the agent may keep memory notes of its own between
+  sessions. The answer defaults to No: a note the agent writes is a way for
+  text planted in a file to persist.
+- It writes only your own `~/.abhed/config.json` (mode 0600), and only after
+  you confirm. `s` skips it and writes nothing.
+
+Or, in the directory you want the agent to work in:
 
 ```bash
 abhed init      # writes .abhed/config.json
@@ -50,8 +70,16 @@ Ready.
 abhed
 ```
 
+The session opens at once: a check for a container runtime, and for the
+model endpoint, run behind the prompt. The banner says `process or stronger
+(checking)` until the sandbox is chosen, and commands wait for that choice.
+An endpoint that is down is named with what to do about it, and a task
+then fails at once rather than after the retries.
+
 Type a task. Abhed reads code, runs commands, edits files, and asks before
-anything it is not permitted to do unattended.
+anything it is not permitted to do unattended. A quoted task on the command
+line starts the session with it: `abhed "the tests in pkg/auth are failing"`,
+or `abhed -- the tests in pkg/auth are failing`.
 
 ```
 ⬢ the tests in pkg/auth are failing — find out why and fix it
@@ -133,16 +161,18 @@ continues the last one in this workspace, and `abhed -r` picks one. See
 ```bash
 abhed -p "explain what pkg/auth does" -mode plan
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
-abhed -p "add a test for Valid" -output-format json > events.jsonl
+git diff | abhed -p "review this change"
+abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
-Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
-`5` retries exhausted · `130` interrupted.
+`-p` runs one task and exits with a code a script can branch on. The output
+formats, stdin, structured answers, limits and every exit code are in
+[Automation](10-automation.md#headless).
 
-`-output-format` is `text` or `json`, one event per line; any other value is
-refused, as is an unknown `-mode`. A word after the flags must be a command (`abhed -h` lists them,
-`abhed version` prints the version): anything else exits 2 rather than
-opening a session, so pass a prompt with `-p`.
+A single word after the flags must be a command (`abhed -h` lists them,
+`abhed version` prints the version). Anything else exits 2 with a hint
+rather than opening a session: quote a task, put it after `--`, or pass it
+with `-p`.
 
 ## Next
 

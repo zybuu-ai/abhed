@@ -38,3 +38,6 @@ docs/research/
 /app/*.jsonl
 /*.jsonl
 abhed-session-*.html
+
+# A statusline test's home, removed when the test ends.
+app/.statusline-home-*

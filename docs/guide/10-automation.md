@@ -7,24 +7,140 @@ Three ways to run Abhed without a person at the prompt.
 ```bash
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
 abhed -p "explain what pkg/auth does" -mode plan
-abhed -p "add a test for Valid" -output-format json > events.jsonl
+cat build.log | abhed -p "why did this fail?"
+abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
-Exit codes: `0` completed · `2` turn limit · `3` budget · `4` policy denied ·
-`5` retries exhausted · `130` interrupted. A CI job can branch on those.
-`abhed -p` and the interactive CLI report `130` for any stop signal (Ctrl-C,
-SIGTERM or a hang-up), from the moment they start; `rpc`, `acp`, `eval` and `resolve` report 128 plus the
-signal's number (130, 143, 129); `serve` exits `0` once it has drained.
-`serve` ignores further signals while it drains; `-p`, `eval` and `resolve`
-end at once on a second signal.
+`-p` (or `--print`) runs one task and exits. The task is the text after
+`-p`, stdin, or both: with both, stdin is added below the task as its
+input, so `cat build.log | abhed -p "summarise"` sends the log with the
+question. Stdin is read to its end, up to 10 MiB; after three seconds with
+the pipe still open Abhed says it is waiting, so a caller that leaves stdin
+open by mistake should redirect it from `/dev/null`. Flags may come before
+or after the task.
 
-A bad invocation, such as an unknown `-output-format` (`text` or `json`), an
-unknown `-mode` or a word that is not a command, exits `2` before anything
-runs. Its stderr line tells the cases apart from a turn limit and from each
-other: `unknown -output-format`, `unknown -mode` or `unknown command`.
+Any stdin that is a pipe or a file is read, including one a script
+inherited. In a loop that reads a list on stdin, give each run its own
+stdin, or the first run takes the rest of the list:
 
-There is no one to approve, so anything needing approval is refused. Name what
-may run with `-allow`, and keep the list narrow.
+```bash
+while read f; do abhed -p "fix the lint errors in $f" < /dev/null; done < files.txt
+```
+
+`-no-stdin` does the same as `< /dev/null`. It cannot be combined with
+`-input-format stream-json`, which reads stdin by design.
+
+### Output
+
+| `-output-format` | stdout |
+|---|---|
+| `text` (default) | the answer as the terminal shows it, then a usage line |
+| `stream-json` | one recorded event per line as it happens, then a result line |
+| `json` | the same, with the streamed text fragments included |
+
+`stream-json` leaves out the text fragments (`agent.delta`) unless
+`-include-partial-messages` is given; the full reply is in `agent.message`.
+The last line of `json` and `stream-json` is the result:
+
+```json
+{"type":"result","subtype":"completed","is_error":false,"result":"…final reply…",
+ "session_id":"s-…","num_turns":3,"duration_ms":8123,"exit_code":0,
+ "usage":{"input_tokens":5120,"output_tokens":210,"cached_tokens":4096}}
+```
+
+`subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
+`policy_denied`, …); `error` is present when the run failed. Policy
+decisions are events like any other, so a script sees each refusal and its
+reason.
+
+`-verbose` shows reasoning in full and writes each model call's token counts
+to stderr.
+
+### Input
+
+`-input-format stream-json` reads user messages from stdin, one JSON object
+per line, and runs each as the next turn of one conversation:
+
+```json
+{"type":"user","message":{"role":"user","content":"first question"}}
+{"type":"user","message":{"content":[{"type":"text","text":"a follow-up"}]}}
+```
+
+Lines of any other type are skipped with a note on stderr. The run ends at
+the end of stdin, after a turn that fails (later messages are not read), or
+on a stop signal, whether mid-turn or waiting for the next message, with
+the exit code below. The result line is written once, as the run ends.
+
+### Structured answers
+
+`-json-schema` takes a JSON Schema, inline or as `@path` (relative to the
+workspace, `-C`, and at most 1 MiB; a schema must be a JSON object), and makes the
+answer a JSON value that matches it ([Structured output](13-structured-output.md)).
+With `-output-format text`, stdout is only that JSON; with `json` or
+`stream-json` it is the result line's `structured_output`.
+
+### Limits and instructions
+
+- `-max-turns N` ends the run after N turns (exit `2`).
+- `-max-budget-tokens N` ends it once the run and its subagents have used N
+  tokens (exit `3`). Under a managed budget it may only lower it. There is no
+  budget in money: Abhed has no prices to count against.
+- `-append-system-prompt "…"` and `-append-system-prompt-file PATH` add
+  instructions to the system prompt.
+- `-system-prompt` and `-system-prompt-file` replace it. Both are refused
+  under a managed configuration, whose instructions the prompt carries.
+- The session's `session.started` event records which of these were used as
+  a SHA-256 of the text supplied, never the text. It also records the
+  permission `mode` the run started in, and `bypass_confirmed`, true only
+  when bypass came from a confirmed `-dangerously-skip-permissions`.
+- There is no way to run without a record.
+
+### Familiar flag spellings
+
+These are accepted as aliases, and bind exactly as Abhed's own flags do:
+a managed configuration refuses them the same way, and deny rules win.
+
+| Alias | Abhed flag |
+|---|---|
+| `-permission-mode acceptEdits\|plan\|default\|auto\|bypassPermissions` | `-mode` |
+| `-allowedTools` / `-allowed-tools "Read,Bash(npm test:*)"` | `-allow 'read,bash(npm test*)'` |
+| `-disallowedTools` / `-disallowed-tools` | `-deny` |
+| `-dangerously-skip-permissions` | `-mode bypass`, after typing `yes` on a terminal |
+
+Tool names are matched without regard to case, and a trailing `:*` in a
+pattern is a prefix. `-dangerously-skip-permissions` is refused under a
+managed configuration and wherever there is no terminal to confirm on,
+which includes `-p` in a script; `-mode bypass` is the explicit spelling.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | completed |
+| `1` | error: the model or a tool failed, or no structured answer was delivered |
+| `2` | bad invocation, or the turn limit |
+| `3` | token budget |
+| `4` | refused by policy |
+| `5` | model retries exhausted |
+| `6` | shutdown |
+| `7` | deadline |
+| `130` | interrupted (SIGINT) |
+| `143` | terminated (SIGTERM); a hang-up is `129` |
+
+`abhed -p`, `rpc`, `acp`, `eval` and `resolve` report 128 plus the stop
+signal's number, from the moment they start. The interactive CLI reports
+`130` for any stop signal. `serve` exits `0` once it has drained, and
+ignores further signals while it drains; `-p`, `eval` and `resolve` end at
+once on a second signal.
+
+A bad invocation, such as an unknown `-output-format` (`text`, `json` or
+`stream-json`), an unknown `-mode`, a flag that needs `-p` without it, or a
+word that is not a command, exits `2` before anything runs. Its stderr line
+tells the cases apart from a turn limit and from each other.
+
+There is no one to approve, so anything needing approval is refused, and
+the model is told why. Name what may run with `-allow`, and keep the list
+narrow.
 
 ## RPC
 

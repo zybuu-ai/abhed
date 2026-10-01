@@ -35,3 +35,16 @@ is, and its result is recorded and tagged untrusted.
 A server that will not start is reported and skipped; the agent runs without it
 rather than refusing to start. Tool lists are fetched lazily on first use, so an
 unreachable server costs nothing until something needs it.
+
+In a session, `/mcp` lists each enabled server, connected or with the reason
+it is not, and its tools; `/mcp restart <server>` reconnects one, and the
+tools already offered reach the new connection.
+
+## Many tools
+
+With more than 40 MCP tools across the servers, the model is not given each
+one. It gets a `tool_search` tool instead, which finds tools by the words in
+their names and descriptions and loads the ones it returns, with their
+parameters, from the next step. A loaded tool is policed, approved and
+recorded like any other, and a tool the model never searched for can still
+only run through policy.

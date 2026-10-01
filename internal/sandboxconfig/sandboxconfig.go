@@ -18,8 +18,18 @@ import (
 // Build selects an execution backend meeting the configured minimum tier; Select
 // never downgrades. stateRoots' .abhed is state too, as a worktree's repository's is.
 func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Sandbox, error) {
-	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
+	p, err := Policy(cfg, workspace, stateRoots...)
+	if err != nil {
 		return nil, err
+	}
+	return sandbox.Select(p)
+}
+
+// Policy is the sandbox policy a configuration asks for, after checking its
+// state paths. Build selects a backend for it.
+func Policy(cfg config.Config, workspace string, stateRoots ...string) (sandbox.Policy, error) {
+	if err := CheckStatePaths(cfg, workspace, stateRoots...); err != nil {
+		return sandbox.Policy{}, err
 	}
 	p := sandbox.DefaultPolicy(workspace)
 	if cfg.Sandbox.MinTier != "" {
@@ -39,7 +49,7 @@ func Build(cfg config.Config, workspace string, stateRoots ...string) (sandbox.S
 	if cfg.Sandbox.MaxProcs > 0 {
 		p.MaxProcs = cfg.Sandbox.MaxProcs
 	}
-	return sandbox.Select(p)
+	return p, nil
 }
 
 // StatePaths are the files holding Abhed's state that a configuration can put

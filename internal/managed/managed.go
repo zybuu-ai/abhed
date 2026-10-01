@@ -4,9 +4,33 @@
 // and nothing outside the module can move it.
 package managed
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // ConfigFile is the managed configuration. Every layer below it yields to it.
 var ConfigFile = "/etc/abhed/config.json"
 
 // AgentsDir holds the organisation's subagent definitions. They load first
 // and no workspace or operator definition can take their names.
 var AgentsDir = "/etc/abhed/agents"
+
+// testDirEnv is set only by the end-to-end test build (-ldflags -X): the
+// variable naming an absolute directory for one run's managed files. A
+// release build leaves it empty and never reads the environment for this.
+var testDirEnv string
+
+func init() { applyTestDir() }
+
+// applyTestDir moves the managed paths to the test build's directory, and
+// does nothing in any other build.
+func applyTestDir() {
+	if testDirEnv == "" {
+		return
+	}
+	if d := os.Getenv(testDirEnv); filepath.IsAbs(d) {
+		ConfigFile = filepath.Join(d, "config.json")
+		AgentsDir = filepath.Join(d, "agents")
+	}
+}

@@ -8,9 +8,7 @@ import "fmt"
 //
 // The track that wires a setting deletes its entry here in the same change,
 // and its test that the setting takes effect replaces the warning.
-var notYetInEffect = []string{
-	"statusline", // the statusline command (status)
-}
+var notYetInEffect = []string{}
 
 // NotYetInEffect lists the settings the configuration's files made that this
 // version does not act on yet, as dotted paths.

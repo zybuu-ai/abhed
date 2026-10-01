@@ -2,8 +2,9 @@
 // scripted model, for end-to-end tests of the interactive CLI: what reaches
 // the screen, how many bytes it took, how fast, and what the record holds.
 //
-// This file is the API every track writes its tests against. Until the
-// harness is built, Start skips the test that calls it.
+// This file is the API every track writes its tests against; harness.go,
+// stub.go, record.go, golden.go and budget.go implement it, and vt is the
+// terminal emulator the screen comes from.
 //
 // A test looks like:
 //
@@ -14,16 +15,27 @@
 //	if got := h.Record().Types(); ... {}
 //	h.Exit(0)
 //
-// The binary runs with HOME in a temporary directory, TERM=xterm-256color, a
-// fixed clock, a stub podman on PATH and a config pointing at the stub model.
-// There is no real model, proxy or network: only loopback.
+// The binary is built once per test process (with -race when the tests
+// are). It runs with HOME and the workspace in a temporary directory,
+// TERM=xterm-256color, LANG=en_US.UTF-8, a stub podman first on a minimal
+// PATH, proxies pointing at a closed port, and a user config naming the
+// stub model. There is no real model, proxy or network: only loopback.
+// The environment is built from nothing, so no variable of the person
+// running the tests reaches the binary.
+//
+// A test that waits on another track's work calls Pending with the plan
+// item; CI accepts a skip only for the items listed in ABHED_CLITEST_PENDING
+// in the workflow, so a test that stops running fails the build.
+//
+// In the strings of Args, Env, UserConfig and Managed, {{MODEL_URL}} is the
+// stub's base URL, {{HOME}} the run's HOME and {{WS}} its workspace.
 package clitest
 
 import (
-	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/clitest/vt"
 )
 
 // Opts configure one run.
@@ -47,6 +59,24 @@ type Opts struct {
 	NoSyncOutput bool
 	// Piped runs with stdin and stdout as pipes instead of a terminal.
 	Piped bool
+	// Stdin, with Piped, is written to the binary's stdin, which is then
+	// closed unless KeepStdin is set; Type then writes more.
+	Stdin     string
+	KeepStdin bool
+	// StdinFile, with Piped, is opened as the binary's stdin instead, as a
+	// shell's < file does; Stdin is then unused.
+	StdinFile string
+
+	// NoConfig starts with no user config at all, as a first run does.
+	NoConfig bool
+	// UserConfig replaces DefaultUserConfig as ~/.abhed/config.json.
+	UserConfig string
+	// Podman is the body of the stub podman script ("" exits 1 at once);
+	// "sleep 3" makes a slow one.
+	Podman string
+	// Setup runs after the files are written and before the binary starts,
+	// to add files to the home or the workspace.
+	Setup func(home, ws string)
 }
 
 // Script is the stub model's behaviour, one step per line:
@@ -57,7 +87,8 @@ type Opts struct {
 //	delay 30ms               wait before the next step
 //	stall 5s                 send nothing for this long
 //	error 500                answer with this HTTP status
-//	usage in=1200 cached=900 report token usage
+//	usage in=1200 cached=900 out=40   report token usage
+//	# a comment
 //
 // A blank line ends one model turn; the next request gets the next turn.
 type Script string
@@ -129,11 +160,49 @@ type Harness interface {
 	// Requests are what the binary sent the stub model, in order.
 	Requests() []Request
 
-	// Record is the session's record, read and verified.
+	// Record is the session's record, read and verified. Until the local
+	// record exists it marks the test pending on C1.
 	Record() Record
 	// Exit closes input, waits for the binary to end and fails the test
 	// unless it exits with code.
 	Exit(code int)
+
+	// Wait waits for the binary to end on its own and returns its code.
+	Wait(timeout time.Duration) int
+	// WaitOutput waits until the ANSI-stripped output holds text, wherever
+	// it has scrolled to, and returns how long after the spawn it appeared.
+	WaitOutput(text string) time.Duration
+	// FirstSeen is how long after the spawn the output first held text.
+	FirstSeen(text string) (time.Duration, bool)
+	// WaitQuiet waits until nothing is written for quiet, at most max;
+	// WaitSettled first waits for a write after since.
+	WaitQuiet(quiet, max time.Duration)
+	// Settle waits for the binary to stop writing, before typing the next
+	// command.
+	Settle()
+	WaitSettled(since time.Time, quiet, max time.Duration)
+	// Output is every byte written; Stdout and Stderr are the streams of a
+	// piped run.
+	Output() []byte
+	Stdout() string
+	Stderr() string
+	// Home and Workspace are the run's directories; Started is the spawn.
+	Home() string
+	Workspace() string
+	Started() time.Time
+	// Stub is the scripted model.
+	Stub() *Stub
+
+	// Normalize replaces the run's directories, times, token counts, ids,
+	// hashes and spinner frames with placeholders.
+	Normalize(text string) string
+	// ScreenGolden and AttrsGolden are the normalized screen (after the
+	// scrollback) and its style runs, drawn again with the run directory at
+	// a fixed width; AssertGoldens compares them, and the record golden when
+	// evs is not nil, with testdata/golden/<scenario>/ (-update rewrites).
+	ScreenGolden() string
+	AttrsGolden() string
+	AssertGoldens(scenario string, evs []agent.Event)
 }
 
 // Screen is the emulator's view of the terminal.
@@ -152,6 +221,9 @@ type Screen interface {
 	Cursor() (row, col int)
 	// Title is the last title the binary set.
 	Title() string
+	// Modes are the terminal modes the binary set: bracketed paste,
+	// synchronized output, the alternate screen, cursor visibility.
+	Modes() vt.Modes
 }
 
 // Cell is one character cell.
@@ -194,12 +266,4 @@ func (r Record) Types() []agent.EventType {
 		out[i] = e.Type
 	}
 	return out
-}
-
-// Start builds the binary once per test process, runs it and returns the
-// harness. It skips the test until the harness is built.
-func Start(t testing.TB, o Opts) Harness {
-	t.Helper()
-	t.Skip("clitest: the pty harness is not built yet")
-	return nil
 }

@@ -687,8 +687,48 @@ Two changes need action before upgrading:
   can write.
 - `record.dir` and `record.retention_days` are in effect, from the managed
   configuration only.
+- `/agents`, `/skills`, `/mcp` and `/tools` show what the session has and
+  where each came from; `/mcp restart <server>` reconnects one. `/doctor`
+  runs the doctor's checks inside a session, `/release-notes` shows the
+  changelog built into the binary, and `/bug` prints a prefilled issue link
+  with secrets and the home directory redacted, sending nothing.
+- With more than 40 MCP tools, they are offered through a `tool_search`
+  tool and loaded when found, so a large server does not fill the context.
+  Every call is still policed and recorded.
+- `docs/guide/18-cli.md`: the command line, its flags and commands.
+
+- `statusline.command` runs a command of yours for the status line. It reads
+  the session's status as JSON on stdin (model, provider, mode, context,
+  tokens, sandbox, record, branch, background tasks) and its first line is
+  shown after each task and in `/status`. It runs under the process
+  sandbox with the network off, whatever the session allows, for at most
+  300 ms, and not at all where that sandbox is missing. A script it names
+  by path is pinned at the start of the session, refused where the agent
+  could change it or in Abhed's state, and not run once swapped. Only text and
+  colour of its output reach the terminal. A workspace's statusline needs
+  trust.
+
+- `/model` with no name offers the configured models with their model id,
+  context window and whether they are local; a managed `model.default` is
+  not switched. `/effort low|medium|high|on|off|default` sets the reasoning
+  effort, or thinking on and off, where the provider supports it.
+- A fallback model: `model.fallback` and `-fallback-model` name configured
+  providers to move to, in order, when the model is unreachable or refuses
+  access (401, 403, 404, 429, 5xx). The move is recorded as
+  `model.fallback`. Only offered providers are used, and a managed
+  `model.default` is left only for the fallbacks the managed configuration
+  names; `-fallback-model` is then ignored with a warning.
+- `/status`: model, mode, sandbox, record, session, context, turn limit and
+  its semantics, token budget, background tasks, workspace trust, and the
+  managed settings. `/usage` (and `/cost`) adds prefill saving and a
+  breakdown by subagent and tool source.
+- `/config` shows each setting and where it comes from; `/config set` writes
+  a setting into your own `~/.abhed/config.json`. A change that lets the
+  agent do more than your own file does asks first, even when the session
+  already does it, and a managed setting is refused.
+
 - Configuration keys reserved for the interactive CLI: `cli.mode_cycle`,
-  `commands.dirs`, `rules.dirs`, `statusline.command`, `memory.auto`,
+  `commands.dirs`, `rules.dirs`, `memory.auto`,
   `memory.import_depth`, `record.dir`, `record.retention_days` and
   `hooks.disabled`. They are accepted so a file that sets them stays valid.
   All but `statusline` are now in effect (above); this version does not act
@@ -701,6 +741,39 @@ Two changes need action before upgrading:
   turned on. `commands.dirs`, `rules.dirs` and `statusline` in a workspace
   need trust. `commands.dirs`, `rules.dirs`, `memory.auto` and
   `memory.import_depth` now take effect.
+  need trust.
+- A first run on a terminal with no configuration offers to set one up: a
+  local Ollama model, or an OpenAI-compatible endpoint by URL and the name
+  of the variable holding its key (an answer that looks like a key is
+  refused, and a variable that is not set is taken only on a yes). It checks the
+  model can call a tool, asks once about auto memory (No by default), and
+  writes only `~/.abhed/config.json`, after confirming.
+- Headless runs read stdin. `cat build.log | abhed -p "why did this fail?"`
+  sends the log below the task; with no task, stdin is the task. Flags may
+  follow the task, and `-p` alone takes the task from stdin. In a loop that
+  reads a list on stdin, redirect each run from `/dev/null`, or pass
+  `-no-stdin`, so the first run does not take the rest of the list.
+- A task on the command line opens an interactive session with it:
+  `abhed "fix the tests"` or `abhed -- fix the tests`. A single bare word
+  that is not a command is still refused, now with a hint.
+- `-output-format stream-json`: one event per line, without the streamed
+  fragments unless `-include-partial-messages` is given. `json` and
+  `stream-json` end with a result line: the final reply, the terminal
+  reason, the exit code, turns, duration and token usage.
+- `-input-format stream-json` reads user messages from stdin, one per line,
+  as the turns of one conversation.
+- `-json-schema` (inline or `@file`) delivers a `-p` answer as JSON that
+  matches the schema.
+- `-max-budget-tokens`, `-append-system-prompt[-file]`,
+  `-system-prompt[-file]` and `-verbose`. Replacing the system prompt is
+  refused under a managed configuration; a new `session.started` event
+  records which was used, by SHA-256.
+- Familiar flag spellings: `-permission-mode`, `-allowedTools`,
+  `-disallowedTools` and `-dangerously-skip-permissions`. They bind as
+  Abhed's own flags do; the last asks for `yes` on a terminal, is refused
+  under a managed configuration and without a terminal, and deny rules
+  still apply in the mode it sets.
+
 - `abhed acp`: an editor can list the configured models and switch between
   them mid-session. `session/new` returns a `configOptions` model selector
   (category `model`), and `session/set_config_option` switches it, answering
@@ -873,6 +946,18 @@ Two changes need action before upgrading:
   not read this session, one changed since, an edit of a missing file) is now
   refused before the approval prompt, with the reason, so an approval is
   never spent on a call that cannot succeed.
+- The interactive CLI starts in about 50 ms whatever container runtime is
+  installed: the sandbox is chosen behind the prompt when the process tier
+  meets the configured minimum, and commands wait for the choice. It took
+  2.6 s with a podman machine that was not running.
+- A model endpoint that is down is named at start-up with what to do, and a
+  task fails at once with the same advice. Model errors no longer print a Go
+  dial error or the endpoint's response body.
+
+- `abhed -p` exits with 128 plus the stop signal's number (143 for SIGTERM,
+  129 for a hang-up) instead of 130 for every signal, as `rpc`, `acp`,
+  `eval` and `resolve` already did. `json` output gains a final result line.
+
 - The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
   system prompt, loop settings and budget in one place, so a surface differs
   from the CLI only where it says why. The server now applies

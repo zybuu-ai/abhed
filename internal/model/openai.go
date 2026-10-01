@@ -309,14 +309,14 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 	if err != nil {
 		se := &StatusError{}
 		if errors.As(err, &se) {
-			return nil, fmt.Errorf("endpoint returned %s", se.Error())
+			return nil, fmt.Errorf("endpoint returned %w", se)
 		}
 		return nil, fmt.Errorf("call %s: %w", c.BaseURL, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return nil, fmt.Errorf("endpoint returned %w", &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg)), Attempts: 1})
 	}
 
 	out := make(chan Chunk, 64)

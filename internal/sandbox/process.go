@@ -185,6 +185,14 @@ func (s *Process) seatbeltProfile() string {
 		b.WriteString("(deny mach-lookup (global-name-prefix \"com.apple.SystemConfiguration\") (global-name-prefix \"com.apple.network\"))\n")
 	}
 
+	// Last, so they win over the denies above; read, never written.
+	if files := s.readableFiles(); len(files) > 0 {
+		b.WriteString("\n;; Files named to be readable, such as a statusline script.\n")
+		for _, f := range files {
+			fmt.Fprintf(&b, "(allow file-read* (literal %q))\n", f)
+		}
+	}
+
 	b.WriteString("\n;; Never writable, regardless of workspace location.\n")
 	for _, p := range []string{"/etc", "/System", "/usr", "/bin", "/sbin", "/Library/LaunchDaemons"} {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
@@ -198,6 +206,18 @@ func (s *Process) seatbeltProfile() string {
 		}
 	}
 	return b.String()
+}
+
+// readableFiles are the policy's readable files that are still the files
+// pinned; one swapped since is left out, so its allow goes with it.
+func (s *Process) readableFiles() []string {
+	var out []string
+	for _, f := range s.policy.ReadableFiles {
+		if f.Same() {
+			out = append(out, f.Path)
+		}
+	}
+	return out
 }
 
 // bwrapFreshOK reports whether bwrap can mount a fresh /proc and /dev in
@@ -296,6 +316,11 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			} else if err == nil {
 				args = append(args, "--ro-bind", "/dev/null", p)
 			}
+		}
+		// Bound last and read-only, so a file named readable shows even
+		// where a mount above would hide its folder.
+		for _, f := range s.readableFiles() {
+			args = append(args, "--ro-bind", f, f)
 		}
 		args = append(args, argv...)
 

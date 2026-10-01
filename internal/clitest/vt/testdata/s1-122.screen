@@ -1,0 +1,31 @@
+size 100 30 cursor 29 2
+  ▗██▖      ▗██▖   storage  memory (sessions do not survive restart)
+
+Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits.
+
+▲ hi there
+
+Hello from the stub. You said: hi there
+
+1 turns · 1200 in / 80 out tokens
+
+▲ /help
+  /mode <name>       default | accept-edits | plan | auto
+  /undo              revert the last turn's file changes
+  /diff              files changed this session
+  /cost              tokens, cache hit rate, compactions this session
+  /compact [hint]    compact the context now
+  /clear             start a new conversation and session, keep the workspace
+  /memory            show the ABHED.md files in effect
+  /model [name]      show or switch the model, keeping the conversation
+  /sessions          list recent sessions (durable store)
+  /resume <id>       replay a past session and continue its conversation
+  /tree              show the session's steps, with the numbers /fork takes
+  /fork [step]       rebuild the conversation up to a step and continue from it
+  /export [path]     write the transcript (.html by default, .json for events)
+  /hawkeye [path]    what this session did: tokens, policy decisions, findings
+  /think             show or collapse the model's reasoning
+  /cwd               show the workspace root
+  /help              this list
+  /quit              exit
+▲

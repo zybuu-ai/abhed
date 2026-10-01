@@ -1,0 +1,18 @@
+──── screen ────
+            ▄      ABHED  dev
+       ▗▟▙▖        deep agent harness · on-prem
+      ▗█▛▜█▖
+     ▗█▛  ▜█▖      model    stub-model
+    ▗█▛▀▀▀▀▜█▖     work     ‹ws›
+   ▗█▛      ▜█▖    sandbox  ‹tier› · no network
+  ▗██▖      ▗██▖   storage  memory (sessions do not survive restart)
+
+Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits.
+
+▲ hi
+
+Hello from the stub.
+
+‹n› turns · ‹n› in / ‹n› out tokens · 75% cached (4.0x prefill)
+
+▲

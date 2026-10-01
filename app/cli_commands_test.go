@@ -15,13 +15,14 @@ import (
 )
 
 // The registry lists the commands exactly as the static list did before it,
-// so /help, completion and the menu are unchanged by the move.
+// so /help, completion and the menu are unchanged by the move. /cost is now
+// an alias of /usage, which takes its place.
 func TestRegistryKeepsTheHelpList(t *testing.T) {
 	want := []ui.Command{
 		{Name: "/mode", Args: "<name>", Help: "default | accept-edits | plan | auto"},
 		{Name: "/undo", Help: "revert the last turn's file changes"},
 		{Name: "/diff", Help: "files changed this session"},
-		{Name: "/cost", Help: "tokens, cache hit rate, compactions this session"},
+		{Name: "/usage", Help: "tokens, cache hit rate, prefill saving, and by subagent and tool source"},
 		{Name: "/compact", Args: "[focus]", Help: "compact the context now, keeping what focus names"},
 		{Name: "/clear", Args: "[name]", Help: "end this session and start a new one; nothing is deleted"},
 		{Name: "/tasks", Args: "[cancel <id|all>]", Help: "list background tasks, or cancel them"},

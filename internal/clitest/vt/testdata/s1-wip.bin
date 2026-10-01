@@ -1,0 +1,153 @@
+  [1m          [0m[38;5;202m▄[0m[1m   [0m   [1mABHED[0m  [2mdev[0m
+  [1m     ▗▟[0m[38;5;202m▙▖[0m[1m     [0m   [2mdeep agent harness · on-prem[0m
+  [1m    ▗█▛[0m[38;5;202m▜█▖[0m[1m    [0m   
+  [1m   ▗█▛  [0m[38;5;202m▜█▖[0m[1m   [0m   [2mmodel    [0mstub-1
+  [1m  ▗█▛[0m[38;5;202m▀▀▀▀[0m[1m▜█▖  [0m   [2mwork     [0m/tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws
+  [1m ▗█▛      ▜█▖ [0m   [2msandbox  [0mprocess · no network
+  [1m▗██▖      ▗██▖[0m   [2mstorage  [0mmemory (sessions do not survive restart)
+
+[2m/ commands · @ files · ! shell · # memory · shift+tab modes · esc interrupts · ? shortcuts[0m
+
+[?2004h[>1u[?2026h[?25l[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[2C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m h
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[3C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[4C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[5C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi t
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[6C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi th
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[7C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi the
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[8C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi ther
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[9C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m hi there
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[10C[?25h[?2026l[1A[J[38;5;202m▲[0m [2mhi there[0m
+[?25h[?2026h[?25l[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[2C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[2C[?25h[?2026l[1A[J
+[?2026h[?25l[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[2C[?25h[?2026l[?2026h[?25l[1A[J[38;5;202m⠙[0m [38;5;202mThinking…[0m [2m(0s · ↓ 7 tokens · esc to interrupt)[0m
+
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                                            [2mstub-1[0m[2A[2C[?25h[?2026l[3A[JHello from the stub. You said: hi there
+
+[?2026h[?25l[J[38;5;202m⠙[0m [38;5;202mThinking…[0m [2m(0s · ↓ 7 tokens · esc to interrupt)[0m
+
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[?2026h[?25l[3A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[1A[J
+[?2026h[?25l[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m /
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [38;5;202m/mode[0m      [2mshow or set: default | accept-edits | plan | auto[0m
+  [38;5;202m/undo[0m      [2mrevert the last turn's file changes[0m
+  [38;5;202m/diff[0m      [2mfiles changed this session[0m
+  [38;5;202m/cost[0m      [2mtokens, cache hit rate, compactions this session[0m
+  [38;5;202m/compact[0m   [2mcompact the context now[0m
+  [38;5;202m/clear[0m     [2mstart a new conversation and session, keep the workspace[0m
+  [38;5;202m/memory[0m    [2mshow the ABHED.md files in effect[0m
+  [38;5;202m/model[0m     [2mshow or switch the model, keeping the conversation[0m
+  [2m… 27 more[0m[10A[3C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m /
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [38;5;202m/mode[0m      [2mshow or set: default | accept-edits | plan | auto[0m
+  [38;5;202m/undo[0m      [2mrevert the last turn's file changes[0m
+  [38;5;202m/diff[0m      [2mfiles changed this session[0m
+  [38;5;202m/cost[0m      [2mtokens, cache hit rate, compactions this session[0m
+  [38;5;202m/compact[0m   [2mcompact the context now[0m
+  [38;5;202m/clear[0m     [2mstart a new conversation and session, keep the workspace[0m
+  [38;5;202m/memory[0m    [2mshow the ABHED.md files in effect[0m
+  [38;5;202m/model[0m     [2mshow or switch the model, keeping the conversation[0m
+  [2m… 27 more[0m[10A[3C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m /h
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [38;5;202m/hawkeye[0m   [2mwhat this session did: tokens, policy decisions, findings[0m
+  [38;5;202m/help[0m      [2mthis list[0m
+  [38;5;202m/think[0m     [2mshow or collapse the model's reasoning[0m[4A[4C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m /he
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [38;5;202m/help[0m      [2mthis list[0m
+  [38;5;202m/hawkeye[0m   [2mwhat this session did: tokens, policy decisions, findings[0m[3A[5C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m /hel
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [38;5;202m/help[0m   [2mthis list[0m[2A[6C[?25h[?2026l[?2026h[?25l[1A[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m /help
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [38;5;202m/help[0m   [2mthis list[0m[2A[7C[?25h[?2026l[1A[J[38;5;202m▲[0m [2m/help[0m
+[?25h[?2026h[?25l[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[1A[J  /mode [name]          [2mshow or set: default | accept-edits | plan | auto[0m
+  /undo                 [2mrevert the last turn's file changes[0m
+  /diff                 [2mfiles changed this session[0m
+  /cost                 [2mtokens, cache hit rate, compactions this session[0m
+  /compact [hint]       [2mcompact the context now[0m
+  /clear                [2mstart a new conversation and session, keep the workspace[0m
+  /memory               [2mshow the ABHED.md files in effect[0m
+  /model [name]         [2mshow or switch the model, keeping the conversation[0m
+  /sessions             [2mlist recent sessions (durable store)[0m
+  /resume <id>          [2mreplay a past session and continue its conversation[0m
+  /tree                 [2mshow the session's steps, with the numbers /fork takes[0m
+  /fork [step]          [2mrebuild the conversation up to a step and continue from it[0m
+  /export [path]        [2mwrite the transcript (.html by default, .json for events)[0m
+  /hawkeye [path]       [2mwhat this session did: tokens, policy decisions, findings[0m
+  /think                [2mshow or collapse the model's reasoning[0m
+  /cwd                  [2mshow the workspace root[0m
+  /init                 [2manalyze the codebase and write ABHED.md for future sessions[0m
+  /review [focus]       [2mreview the changes on this branch[0m
+  /security-review [focus] [2msecurity review of the changes on this branch[0m
+  /rewind [n]           [2mgo back to an earlier message, optionally restoring files (esc esc)[0m
+  /context              [2mwhat is using the context window[0m
+  /status               [2mmodel, mode, workspace, storage and session at a glance[0m
+  /permissions [allow|ask|deny rule] [2mshow the rules in effect, or add one for this session[0m
+  /add-dir <path>       [2mlet the agent read and write another directory[0m
+  /agents               [2mthe subagents the task tool can start[0m
+  /mcp                  [2mconnected MCP servers and their tools[0m
+  /tools                [2mevery tool the agent has[0m
+  /todos                [2mthe agent's current todo list (ctrl+t)[0m
+  /copy                 [2mcopy the last answer to the clipboard[0m
+  /usage                [2msame as /cost[0m
+  /doctor               [2mcheck the configuration, model and sandbox[0m
+  /terminal-setup       [2mmake Shift+Enter insert a newline in your terminal[0m
+  /bug                  [2mwhere to report a problem[0m
+  /help                 [2mthis list[0m
+  /quit                 [2mexit[0m
+[?2026h[?25l[J[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[38;5;202m▲[0m 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [2m? for shortcuts[0m                                                               [2mstub-1 · [0m[2m3% context[0m[2A[2C[?25h[?2026l[<u[?2004l

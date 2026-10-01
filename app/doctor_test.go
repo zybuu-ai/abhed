@@ -72,7 +72,7 @@ func TestDoctorVerdictOnUnknownKeys(t *testing.T) {
 	if printUnknown(&b, cfg) || b.Len() != 0 {
 		t.Fatalf("a configuration with no unknown keys printed: %q", b.String())
 	}
-	if code := doctorVerdict(&b, false); code != 0 || !strings.Contains(b.String(), "Ready.") {
+	if code := doctorVerdict(&b, configCheck{}); code != 0 || !strings.Contains(b.String(), "Ready.") {
 		t.Fatalf("clean verdict %d: %q", code, b.String())
 	}
 	b.Reset()
@@ -82,8 +82,36 @@ func TestDoctorVerdictOnUnknownKeys(t *testing.T) {
 		!strings.Contains(b.String(), "            /w/.abhed/config.json: unknown key zzz") {
 		t.Fatalf("unknown keys not listed: %q", b.String())
 	}
-	if code := doctorVerdict(&b, true); code != 1 || !strings.Contains(b.String(), "Not ready") {
+	if code := doctorVerdict(&b, configCheck{unknown: true}); code != 1 || !strings.Contains(b.String(), "keys nothing reads") {
 		t.Fatalf("verdict with unknown keys %d: %q", code, b.String())
+	}
+}
+
+// Keys set but not yet in effect keep the doctor from calling the
+// configuration ready, and the verdict says so rather than calling them
+// unread; an unknown key alone still fails it.
+func TestDoctorVerdictOnKeysNotYetInEffect(t *testing.T) {
+	var b strings.Builder
+	cfg := config.Default()
+	cfg.SetKeys = []string{"hooks.disabled"}
+	f := configFindings(&b, cfg)
+	if f != (configCheck{notInEffect: true}) {
+		t.Fatalf("findings %+v", f)
+	}
+	b.Reset()
+	if code := doctorVerdict(&b, f); code != 1 || !strings.Contains(b.String(), "does not act on yet") || strings.Contains(b.String(), "nothing reads") {
+		t.Fatalf("verdict %d: %q", code, b.String())
+	}
+	cfg = config.Default()
+	cfg.Unknown = []config.UnknownKey{{File: "/w/.abhed/config.json", Path: "zzz"}}
+	if f := configFindings(&b, cfg); f != (configCheck{unknown: true}) {
+		t.Fatalf("an unknown key with nothing reserved: %+v", f)
+	}
+	cfg.SetKeys = []string{"record.dir"}
+	b.Reset()
+	f = configFindings(&b, cfg)
+	if code := doctorVerdict(&b, f); code != 1 || !strings.Contains(b.String(), "nothing reads") || !strings.Contains(b.String(), "does not act on yet") {
+		t.Fatalf("both: %d %q", code, b.String())
 	}
 }
 

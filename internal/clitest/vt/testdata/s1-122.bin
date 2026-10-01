@@ -1,0 +1,59 @@
+  [1m          [0m[38;5;202m▄[0m[1m   [0m   [1mABHED[0m  [2mdev[0m
+  [1m     ▗▟[0m[38;5;202m▙▖[0m[1m     [0m   [2mdeep agent harness · on-prem[0m
+  [1m    ▗█▛[0m[38;5;202m▜█▖[0m[1m    [0m   
+  [1m   ▗█▛  [0m[38;5;202m▜█▖[0m[1m   [0m   [2mmodel    [0mstub-1
+  [1m  ▗█▛[0m[38;5;202m▀▀▀▀[0m[1m▜█▖  [0m   [2mwork     [0m/tmp/audit/wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww/ws
+  [1m ▗█▛      ▜█▖ [0m   [2msandbox  [0mprocess · no network
+  [1m▗██▖      ▗██▖[0m   [2mstorage  [0mmemory (sessions do not survive restart)
+
+[2mType a task, or /help. Ctrl-C interrupts, Ctrl-D exits.[0m
+
+[J[38;5;202m▲[0m [2C[J[38;5;202m▲[0m h[3C[J[38;5;202m▲[0m hi[4C[J[38;5;202m▲[0m hi [5C[J[38;5;202m▲[0m hi t[6C[J[38;5;202m▲[0m hi th[7C[J[38;5;202m▲[0m hi the[8C[J[38;5;202m▲[0m hi ther[9C[J[38;5;202m▲[0m hi there[10C
+[J[38;5;202m▲[0m [2C[J[2K
+[JHello from the stub. You said: hi there
+
+[J[38;5;202m▲[0m [2C[J[38;5;202m▲[0m [2C[J[2m1 turns · 1200 in / 80 out tokens[0m
+
+[J[38;5;202m▲[0m [2C[J[38;5;202m▲[0m /
+  [38;5;202m/mode <name>      [0m  [2mdefault | accept-edits | plan | auto[0m
+  [38;5;202m/undo             [0m  [2mrevert the last turn's file changes[0m
+  [38;5;202m/diff             [0m  [2mfiles changed this session[0m
+  [38;5;202m/cost             [0m  [2mtokens, cache hit rate, compactions this session[0m
+  [38;5;202m/compact [hint]   [0m  [2mcompact the context now[0m
+  [38;5;202m/clear            [0m  [2mstart a new conversation and session, keep the workspace[0m
+  [38;5;202m/memory           [0m  [2mshow the ABHED.md files in effect[0m
+  [38;5;202m/model [name]     [0m  [2mshow or switch the model, keeping the conversation[0m
+  [2m… 10 more[0m[9A[3C[J[38;5;202m▲[0m [2C[J[38;5;202m▲[0m /
+  [38;5;202m/mode <name>      [0m  [2mdefault | accept-edits | plan | auto[0m
+  [38;5;202m/undo             [0m  [2mrevert the last turn's file changes[0m
+  [38;5;202m/diff             [0m  [2mfiles changed this session[0m
+  [38;5;202m/cost             [0m  [2mtokens, cache hit rate, compactions this session[0m
+  [38;5;202m/compact [hint]   [0m  [2mcompact the context now[0m
+  [38;5;202m/clear            [0m  [2mstart a new conversation and session, keep the workspace[0m
+  [38;5;202m/memory           [0m  [2mshow the ABHED.md files in effect[0m
+  [38;5;202m/model [name]     [0m  [2mshow or switch the model, keeping the conversation[0m
+  [2m… 10 more[0m[9A[3C[J[38;5;202m▲[0m /h
+  [38;5;202m/hawkeye [path]   [0m  [2mwhat this session did: tokens, policy decisions, findings[0m
+  [38;5;202m/help             [0m  [2mthis list[0m[2A[4C[J[38;5;202m▲[0m /he
+  [38;5;202m/help             [0m  [2mthis list[0m[1A[5C[J[38;5;202m▲[0m /hel
+  [38;5;202m/help             [0m  [2mthis list[0m[1A[6C[J[38;5;202m▲[0m /help
+  [38;5;202m/help             [0m  [2mthis list[0m[1A[7C[J
+[J[38;5;202m▲[0m [2C[J  /mode <name>       [2mdefault | accept-edits | plan | auto[0m
+  /undo              [2mrevert the last turn's file changes[0m
+  /diff              [2mfiles changed this session[0m
+  /cost              [2mtokens, cache hit rate, compactions this session[0m
+  /compact [hint]    [2mcompact the context now[0m
+  /clear             [2mstart a new conversation and session, keep the workspace[0m
+  /memory            [2mshow the ABHED.md files in effect[0m
+  /model [name]      [2mshow or switch the model, keeping the conversation[0m
+  /sessions          [2mlist recent sessions (durable store)[0m
+  /resume <id>       [2mreplay a past session and continue its conversation[0m
+  /tree              [2mshow the session's steps, with the numbers /fork takes[0m
+  /fork [step]       [2mrebuild the conversation up to a step and continue from it[0m
+  /export [path]     [2mwrite the transcript (.html by default, .json for events)[0m
+  /hawkeye [path]    [2mwhat this session did: tokens, policy decisions, findings[0m
+  /think             [2mshow or collapse the model's reasoning[0m
+  /cwd               [2mshow the workspace root[0m
+  /help              [2mthis list[0m
+  /quit              [2mexit[0m
+[J[38;5;202m▲[0m [2C

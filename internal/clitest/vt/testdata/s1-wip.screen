@@ -1,0 +1,31 @@
+size 100 30 cursor 27 2
+  /resume <id>          replay a past session and continue its conversation
+  /tree                 show the session's steps, with the numbers /fork takes
+  /fork [step]          rebuild the conversation up to a step and continue from it
+  /export [path]        write the transcript (.html by default, .json for events)
+  /hawkeye [path]       what this session did: tokens, policy decisions, findings
+  /think                show or collapse the model's reasoning
+  /cwd                  show the workspace root
+  /init                 analyze the codebase and write ABHED.md for future sessions
+  /review [focus]       review the changes on this branch
+  /security-review [focus] security review of the changes on this branch
+  /rewind [n]           go back to an earlier message, optionally restoring files (esc esc)
+  /context              what is using the context window
+  /status               model, mode, workspace, storage and session at a glance
+  /permissions [allow|ask|deny rule] show the rules in effect, or add one for this session
+  /add-dir <path>       let the agent read and write another directory
+  /agents               the subagents the task tool can start
+  /mcp                  connected MCP servers and their tools
+  /tools                every tool the agent has
+  /todos                the agent's current todo list (ctrl+t)
+  /copy                 copy the last answer to the clipboard
+  /usage                same as /cost
+  /doctor               check the configuration, model and sandbox
+  /terminal-setup       make Shift+Enter insert a newline in your terminal
+  /bug                  where to report a problem
+  /help                 this list
+  /quit                 exit
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▲
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                                                               stub-1 · 3% context

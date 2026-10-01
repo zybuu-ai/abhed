@@ -22,20 +22,23 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	adapter model.Adapter, registry *tools.Registry, pol *policy.Engine,
 	approver agent.Approver, sess *tools.Session, cfg agent.Config,
 	appCfg config.Config, provider config.ProviderConfig, workspace string,
-	budget *agent.Budget, extHost *extension.Host) int {
+	budget *agent.Budget, extHost *extension.Host, start interactiveStart) int {
 
 	s := r.Style()
 	cfg.TurnsPerMessage = turnsPerMessage(appCfg, cfg.MaxTurns)
-	sandboxLabel := "none"
-	if sb, err := buildSandbox(appCfg, workspace); err == nil {
-		sandboxLabel = string(sb.Tier())
-		if !appCfg.Sandbox.AllowNetwork {
-			sandboxLabel += " · no network"
-		}
+	sandboxLabel := start.sandbox.Label()
+	if !appCfg.Sandbox.AllowNetwork {
+		sandboxLabel += " · no network"
 	}
 	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
 		sandboxLabel, storageLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits."))
+	// The endpoint check started with the session. A server that is down is
+	// named now, before the line editor takes the terminal; one still being
+	// dialled is left to the first task, which fails at once if it is down.
+	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
+		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
+	}
 
 	// Input is read on its own goroutine so a line typed while the agent is
 	// working can steer it. Reading inline meant the prompt was simply not
@@ -99,6 +102,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		store: store, appCfg: appCfg, sess: sess,
 		workspace: sess.Root, adapter: adapter, provider: provider, overlay: pol.Session,
 		turnLimit: cfg.MaxTurns, hooks: extHost, pol: pol,
+		sandbox: start.sandbox, set: start.set, registry: registry, version: a.version,
 	}
 	if ap, ok := approver.(*ui.Approver); ok {
 		sessionState.scopes = ap.Session
@@ -115,6 +119,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
 		rec.Redact = openVault().Redactor()
+		start.onOpen(rec)
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
@@ -285,7 +290,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.accumulate(spent)
 
 		if line := runErrorLine(runErr, woken); line != "" {
-			fmt.Printf("%s %s\n", s.Red("error:"), line)
+			fmt.Printf("%s %s\n", s.Red("error:"), friendlyModelError(runErr, sessionState.appCfg.Model.Default, sessionState.provider))
 		}
 		woken = false
 		if runErr == nil {
@@ -293,6 +298,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		settleTurn(sessionState, runErr)
 		printUsage(r, spent)
+		// A configured statusline, until the terminal UI draws a footer.
+		if line := sessionState.statusLine(ctx, string(pol.Mode)); line != "" {
+			fmt.Printf("%s\n", s.Dim(line))
+		}
 		if runReason == agent.TermMaxTurns {
 			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns)))
 		}
@@ -312,6 +321,11 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		return 0, false
 	}
 
+	// A task given on the command line is the first line, as if typed.
+	firstCh := make(chan string, 1)
+	if start.first != "" {
+		firstCh <- start.first
+	}
 	prompted := false
 	for {
 		// A turn a command asked for runs before the next line (input track).
@@ -378,6 +392,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				return code
 			}
 			continue
+		case line = <-firstCh:
+			fmt.Printf("%s%s\n", ui.Prompt(s), line)
 		case line = <-lines:
 			prompted = false
 		}
@@ -433,6 +449,18 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 		}
 	}
+}
+
+// interactiveStart is what the command line gives an interactive session:
+// a first task, and what session.started records.
+type interactiveStart struct {
+	first   string
+	sandbox *lazySandbox
+	probe   *endpointProbe
+	set     *toolset.Set
+	// onOpen runs for each conversation's recorder: it records the start
+	// and binds where a model fallback is recorded.
+	onOpen func(rec *agent.Recorder)
 }
 
 // turnOutcome is how a turn's run ended.
