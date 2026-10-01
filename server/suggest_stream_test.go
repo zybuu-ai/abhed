@@ -45,7 +45,6 @@ func TestStreamCarriesSuggestionAfterEnd(t *testing.T) {
 	g := &gatedSuggest{gate: make(chan struct{})}
 	b := newBGServerWith(t, nil, func(_ *config.Config, o *Options) { o.Adapter = g })
 	id := b.start("hi", false)
-	<-b.ended
 	waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
 
 	srv := httptest.NewServer(b.h)
@@ -93,6 +92,11 @@ func TestStreamCarriesSuggestionAfterEnd(t *testing.T) {
 	close(g.gate)
 	waitLine(`"type":"suggestion.offered"`)
 	waitLine(`"purpose":"suggestion"`)
+	select {
+	case <-b.ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run's end was never reported")
+	}
 	for deadline := time.After(10 * time.Second); ; {
 		select {
 		case _, ok := <-lines:

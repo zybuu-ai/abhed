@@ -146,7 +146,7 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 	if !ok || lastEndSeq(events) < lastRunSeq(events) {
 		end = SessionEnded{Reason: TermShutdown, Turns: end.Turns, TokensIn: end.TokensIn, TokensOut: end.TokensOut}
 	}
-	end.Background, end.Settled, end.Recovered = 0, settled, true
+	end.Background, end.Settled, end.Recovered, end.Suggesting = 0, settled, true, false
 	_, err := parent.Record(EvSessionEnded, ActorSystem, Trusted, end)
 	return err
 }

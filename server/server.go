@@ -1132,6 +1132,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		for live.settle(runCtx, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
+		waitSuggestion(live)
 		s.releaseAndLetGo(live)
 		if spec.OnEnd != nil {
 			spec.OnEnd(string(reason), err)
@@ -1647,7 +1648,7 @@ var manualHold = 2 * time.Minute
 func priorEnd(events []agent.Event, rec store.SessionRecord) json.RawMessage {
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type == agent.EvSessionEnded {
-			return events[i].Payload
+			return withoutSuggesting(events[i].Payload)
 		}
 	}
 	reason := agent.TerminalReason(rec.TerminalReason)
@@ -1656,6 +1657,19 @@ func priorEnd(events []agent.Event, rec store.SessionRecord) json.RawMessage {
 	}
 	end, _ := json.Marshal(agent.SessionEnded{Reason: reason, Turns: rec.Turns})
 	return end
+}
+
+// withoutSuggesting is an end recorded again: no suggestion follows it.
+func withoutSuggesting(p json.RawMessage) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(p, &m) != nil || m["suggesting"] == nil {
+		return p
+	}
+	delete(m, "suggesting")
+	if out, err := json.Marshal(m); err == nil {
+		return out
+	}
+	return p
 }
 
 // claimForWrite is an unclaimed session's recorder gate: the first write
@@ -2584,10 +2598,7 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		for live.settle(ctx, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
-		// The suggestion records after the end: the node keeps the session until it has.
-		waitCtx, waitCancel := context.WithTimeout(context.Background(), suggestWait)
-		live.Loop.WaitSuggestion(waitCtx)
-		waitCancel()
+		waitSuggestion(live)
 		s.releaseAndLetGo(live)
 		switch {
 		case errors.Is(err, agent.ErrNothingToWake):
@@ -4078,6 +4089,14 @@ const turnEndWait = 5 * time.Second
 // suggestWait bounds how long a run's node waits for its suggestion to be
 // recorded before letting the session go.
 const suggestWait = 10 * time.Second
+
+// waitSuggestion keeps the session on this node until the suggestion that
+// follows its run's end is recorded, so that write is never a stranger's.
+func waitSuggestion(live *liveSession) {
+	ctx, cancel := context.WithTimeout(context.Background(), suggestWait)
+	defer cancel()
+	live.Loop.WaitSuggestion(ctx)
+}
 
 // cancelRunning ends every running turn as a shutdown and waits, up to
 // turnEndWait, for each to record session.ended.

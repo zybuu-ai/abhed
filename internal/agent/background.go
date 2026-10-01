@@ -941,7 +941,7 @@ func (b *Background) settleIfDue() bool {
 	if !due {
 		return false
 	}
-	end.Background, end.Settled = 0, true
+	end.Background, end.Settled, end.Suggesting = 0, true, false
 	b.loop.record(EvSessionEnded, ActorSystem, end)
 	return true
 }
