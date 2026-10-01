@@ -103,3 +103,14 @@ func TestEvalIsRefusedUnderAManagedFile(t *testing.T) {
 		t.Errorf("an empty corpus with no managed configuration exits %d", code)
 	}
 }
+
+// A managed file that sets permissions but not permissions.allow still
+// refuses -allow, as /permissions allow already did.
+func TestManagedPermissionsRefuseTheAllowFlag(t *testing.T) {
+	managedConfig(t, `{"permissions": {"mode": "default", "deny": ["bash(curl*)"], "ask": ["bash(git push*)"]}}`)
+	_, err := loadFlags(t, "", 0, "bash(touch *)", "", "")
+	var me *config.ManagedError
+	if !errors.As(err, &me) || me.Key != "permissions.allow" {
+		t.Fatalf("-allow under managed permissions: %v", err)
+	}
+}

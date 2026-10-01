@@ -462,7 +462,7 @@ may tighten what the managed file set and never loosen it:
 | `permissions.mode` | choose `plan` or the managed mode; `bypass` is refused even when the file does not set a mode |
 | `tools.syntax_check` | make it stricter only (`off` < `report` < `refuse`) |
 | `limits.max_turns` | lower it |
-| `permissions.allow` | add nothing |
+| `permissions.allow` | add nothing when the file sets any `permissions` setting (the `-allow` flag, `/permissions allow`, `Options.Allow`, rpc `start`) |
 | `additional_dirs` | add nothing |
 | `permissions.deny` | add rules; the managed ones stay |
 

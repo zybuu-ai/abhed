@@ -8,6 +8,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A managed file that set `permissions` but not `permissions.allow` still let
+  `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
+  while `/permissions allow` refused them. Every path now refuses an allow
+  rule when the managed file sets any `permissions` setting.
 - Over ACP, the agent can no longer change an editor's own files in the
   workspace: the file tools refuse `.vscode/**`, `.devcontainer/**` and
   `*.code-workspace`, and any `.git` with its `config` and `hooks/**` at any
@@ -191,6 +195,14 @@ Also:
 
 ### Fixed
 
+- On a server with Postgres, a workbench hold on a session the server had
+  started was released two minutes after the first manual write, not the
+  last, so a repeated `session.ended` landed in the middle of terminal or
+  review work. Every manual write now extends the hold.
+- With more than 40 MCP tools, models never found them: `tool_search` named
+  no server and no tool. Its description now lists the servers and their
+  tool names (names only, plain characters, about 2.5 KB at most, the rest
+  counted), and the system prompt says to use it when tools are deferred.
 - `tasks` ran a task naming an unknown `agent_type` as the general role; it
   now refuses the call before anything runs, as `task` does.
 - A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's

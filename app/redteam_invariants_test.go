@@ -160,6 +160,13 @@ func TestRedTeamManagedPolicyWins(t *testing.T) {
 	if len(surface.asked) != 0 || len(events()) != 0 || env.pol.Mode != policy.ModeDefault {
 		t.Fatalf("asked %d, recorded %d, mode %s", len(surface.asked), len(events()), env.pol.Mode)
 	}
+	// Managed deny rules alone lock the allow rules, as they do for -allow.
+	denyOnly := config.Default()
+	denyOnly.Managed, denyOnly.ManagedKeys = true, []string{"permissions.deny"}
+	env, surface, _ = permEnv(t, denyOnly, "yes", "yes")
+	if _, err := slashPermissions(ctx, env, []string{"allow", "bash(touch *)"}); err == nil || len(surface.asked) != 0 {
+		t.Errorf("/permissions allow under managed deny rules: %v, asked %d", err, len(surface.asked))
+	}
 	// Any managed file refuses bypass, whatever it sets.
 	other := config.Default()
 	other.Managed, other.ManagedKeys = true, []string{"sandbox.min_tier"}

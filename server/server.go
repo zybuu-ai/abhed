@@ -1305,11 +1305,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		if live.fenced.Load() {
 			return errLeaseLost
 		}
-		// A session let go after its run is claimed again by its next write.
-		if live.unclaimed.Load() {
-			return s.claimForWrite(sessionID, live)
-		}
-		return nil
+		// A session let go after its run is claimed again by its next write,
+		// and every later write keeps a workbench hold from running out.
+		return s.claimForWrite(sessionID, live)
 	}
 
 	// The prompt, loop settings and budget as the CLI builds them. The prompt

@@ -274,3 +274,35 @@ func TestOnePostgresWithATapEveryMessageRuns(t *testing.T) {
 	}
 	b.ad.release("one")
 }
+
+// A workbench hold on a session this process created runs from the last
+// manual write, not the first: a write late in the hold extends it.
+func TestOnePostgresWorkbenchHoldRunsFromTheLastWrite(t *testing.T) {
+	hold := manualHold
+	manualHold = 1200 * time.Millisecond
+	t.Cleanup(func() { manualHold = hold })
+	a := newBGServer(t, openSharedPG(t))
+	id := a.start("hello", false)
+	<-a.ended
+	live := a.live(id)
+	waitUntil(t, "let go", func() bool { return live.unclaimed.Load() })
+	ends := func() int { return countType(a.events(id), agent.EvSessionEnded) }
+	before := ends()
+	write := func() {
+		t.Helper()
+		if _, err := live.Loop.Recorder.Record(agent.EvChangeAccepted, agent.ActorUser, agent.Trusted, map[string]any{"path": "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write() // claims the session and starts the hold
+	if live.unclaimed.Load() {
+		t.Fatal("a workbench write did not claim the session")
+	}
+	time.Sleep(manualHold * 3 / 4) // t+90s of a two-minute hold
+	write()
+	time.Sleep(manualHold / 2) // past the first write's hold, inside the second's
+	if n := ends(); n != before {
+		t.Fatalf("the hold was released %v after the first write, before the last one's ran out", manualHold*5/4)
+	}
+	waitUntil(t, "the release", func() bool { return ends() == before+1 && live.unclaimed.Load() })
+}
