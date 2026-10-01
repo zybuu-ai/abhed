@@ -1345,6 +1345,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget
 	loop.Provider = live.provider
+	// A person at the console or the IDE is offered a next prompt; an unattended run is not.
+	if !spec.Unattended {
+		loop.Suggest = toolset.Suggester(s.opts.Config)
+	}
 	live.Loop = loop
 	return live, loop, nil
 }

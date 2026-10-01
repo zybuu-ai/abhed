@@ -136,6 +136,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop.SetAdapter(sessionState.adapter)
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
+		loop.Suggest = cliSuggester(sessionState.appCfg, editor)
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.

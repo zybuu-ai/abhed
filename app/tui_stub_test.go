@@ -30,6 +30,10 @@ type tuiStub struct {
 	lastPrompt string
 	// hold, when set, pauses a reply before its first text until released.
 	hold chan struct{}
+	// suggestion answers the next-prompt call, "" as NONE; suggestCalls
+	// counts those calls, which requests leaves out.
+	suggestion   string
+	suggestCalls int
 }
 
 type stubStep struct {
@@ -165,6 +169,10 @@ func (s *tuiStub) serve(w http.ResponseWriter, r *http.Request) {
 		} `json:"messages"`
 	}
 	_ = json.Unmarshal(body, &req)
+	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(string(req.Messages[0].Content), "predict the next message") {
+		s.suggest(w)
+		return
+	}
 	user, last, results := "", "", 0
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		m := req.Messages[i]
@@ -261,4 +269,19 @@ func (s *tuiStub) prompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastPrompt
+}
+
+// suggest answers the next-prompt call with the scripted suggestion.
+func (s *tuiStub) suggest(w http.ResponseWriter) {
+	s.mu.Lock()
+	s.suggestCalls++
+	text := s.suggestion
+	s.mu.Unlock()
+	if text == "" {
+		text = "NONE"
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	b, _ := json.Marshal(map[string]any{"id": "x", "object": "chat.completion.chunk", "model": "stub-1",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": text}, "finish_reason": "stop"}}})
+	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", b)
 }

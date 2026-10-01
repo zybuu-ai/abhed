@@ -21,7 +21,8 @@ numbered prompts answered with a line.
 | Ctrl-U, Ctrl-K, Ctrl-W, Alt-D | cut to the start, to the end, the word before, the word after |
 | Ctrl-Y | paste back what was cut |
 | Ctrl-_ | undo |
-| Tab | complete a command or a path after `@`; after a paste placeholder, open it |
+| Tab | complete a command or a path after `@`; after a paste placeholder, open it; on an empty line, take the suggested next prompt |
+| → at the end of an empty line | take the suggested next prompt |
 | Ctrl-G | edit the message in `$VISUAL` or `$EDITOR` |
 | Ctrl-L | clear the screen; the session is kept |
 | `?` on an empty line | these keys, briefly |
@@ -40,6 +41,17 @@ typing; that is recognised by its speed and treated the same way, except
 that such a paste ending in a newline is sent at once, since nothing after
 the last Enter tells it from one pressed by hand. Turn on bracketed paste
 in the terminal to avoid that.
+
+**A suggested next prompt.** When a turn completes, the input shows a dimmed
+guess at what you may ask next, such as *Run the tests*. Tab, or → on the
+empty line, puts it in the input to edit or send; it is never sent for you,
+and Enter on an empty line still sends nothing. Typing anything dismisses it,
+and the next turn replaces it. It comes from one small model call after the
+turn, which the record keeps as a `model.call` with `purpose: suggestion` and
+counts in the session's tokens and budget. None is made after an error or a
+stop, while an approval waits, while you are typing, or when no input box is
+drawn (piped input, `-p`). `suggest.enabled: false` turns it off
+([Configuration](02-configuration.md#suggestions)).
 
 **History** is kept per workspace, in `~/.abhed/history/`, readable only by
 you (0600, never opened through a link). A vault secret in a prompt is

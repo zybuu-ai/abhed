@@ -10,6 +10,8 @@ import (
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
+func init() { liveFeatures = append(liveFeatures, "suggestions") }
+
 // forward maps the record's events onto session/update notifications as
 // they are recorded.
 func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
@@ -234,6 +236,14 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			entries = append(entries, map[string]any{"content": it.Text, "priority": "medium", "status": st})
 		}
 		update(map[string]any{"sessionUpdate": "plan", "entries": entries})
+	case agent.EvSuggestionOffered:
+		// A next prompt for the editor's input, before the reply that ends the turn.
+		var p agent.SuggestionOffered
+		if replay || json.Unmarshal(ev.Payload, &p) != nil || p.Text == "" {
+			break
+		}
+		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(""),
+			"_meta": map[string]any{acpMetaKey: map[string]any{"suggestion": agent.CleanSuggestion(p.Text)}}})
 	case agent.EvModelCall:
 		if replay {
 			break
@@ -245,7 +255,8 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		s.totalOut += p.TokensOut
 		totalIn, totalOut := s.totalIn, s.totalOut
 		s.mu.Unlock()
-		if p.ContextWindow > 0 {
+		// A suggestion's call is counted, but says nothing of the context.
+		if p.ContextWindow > 0 && p.Purpose == "" {
 			// No cost: the engine has no price table, and invents none.
 			update(map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow,
 				"_meta": map[string]any{acpMetaKey: map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,

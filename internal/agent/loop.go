@@ -247,6 +247,8 @@ type Loop struct {
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
 	Budget *Budget
+	// Suggest, when set, offers a next prompt after a completed run.
+	Suggest *Suggester
 
 	// Background is the session's background children; nil runs none.
 	Background *Background
@@ -704,6 +706,10 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 				if l.waitBackground(ctx) || ctx.Err() != nil {
 					continue
 				}
+			}
+			// A message that arrived during the suggestion is answered now.
+			if reason == TermCompleted && l.offerSuggestion(ctx) && l.hasWork() {
+				continue
 			}
 			return l.finish(reason), nil
 		}

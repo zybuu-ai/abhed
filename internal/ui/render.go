@@ -169,10 +169,13 @@ func (r *Renderer) Event(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &c) == nil && c.Error == "" {
 			r.usageMu.Lock()
 			defer r.usageMu.Unlock()
-			if c.Model != "" {
+			// A call outside the conversation costs tokens but says nothing of its context.
+			if c.Model != "" && c.Purpose == "" {
 				r.usage.Model = c.Model
 			}
-			r.usage.ContextTokens = c.TokensIn
+			if c.Purpose == "" {
+				r.usage.ContextTokens = c.TokensIn
+			}
 			if c.ContextWindow > 0 {
 				r.usage.ContextWindow = c.ContextWindow
 			}
@@ -296,6 +299,12 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 
 	case agent.EvSessionWoken:
 		d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("woke to act on background results")})
+
+	case agent.EvSuggestionOffered:
+		var p agent.SuggestionOffered
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			d.offerNext(p.Text)
+		}
 
 	case agent.EvSessionEnded:
 		var e agent.SessionEnded

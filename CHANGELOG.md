@@ -201,6 +201,18 @@ Two changes need action before upgrading:
   result, and each is killed when the session closes, on a stop and when Abhed
   exits. `limits.background_shells` (default 4) bounds them; plan mode refuses
   them; `-p` waits for them. Recorded as `shell.started` and `shell.ended`.
+- After a turn completes, the terminal, the workbench, the console and Abhed
+  Studio suggest a next prompt: the input shows it dimmed, Tab (or → on the
+  empty line in the terminal) puts it in the input, and it is never sent on
+  its own. One small model call makes it, from the record's redacted text;
+  the call is recorded as a `model.call` with `purpose: suggestion` and
+  counted in the session's tokens and budget, and the suggestion as the new
+  `suggestion.offered` event. The text is cleaned of control and format
+  characters and capped at 80 characters. None is made for `-p`, `rpc`,
+  unattended runs, or after an error, a stop or while an approval waits.
+  `suggest.enabled` turns it off (a managed `false` binds) and
+  `suggest.model` names a cheaper provider; the SDK opts in with
+  `Options.Suggest`, and ACP lists `suggestions` in its features.
 - The engine side of the Abhed Studio contract
   (docs/architecture/studio-acp-contract.md, `apiLevel` 1). `abhed acp`
   keeps sessions in the local record, so `session/list`, `session/load`

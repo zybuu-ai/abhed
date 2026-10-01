@@ -71,6 +71,8 @@ type Config struct {
 	Hooks HooksConfig `json:"hooks,omitempty"`
 	// Studio governs what Abhed Studio may offer beside the agent.
 	Studio StudioConfig `json:"studio,omitempty"`
+	// Suggest governs the next-prompt suggestion shown after a turn.
+	Suggest SuggestConfig `json:"suggest,omitempty"`
 
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
@@ -136,6 +138,16 @@ type RecordConfig struct {
 	// Also are records an embedder hands in beside Dir, never read from a
 	// file; they are state as Dir is.
 	Also []string `json:"-"`
+}
+
+// SuggestConfig governs the next-prompt suggestion an interactive surface
+// shows after a completed turn. Headless runs never make one.
+type SuggestConfig struct {
+	// Enabled is on by default; a workspace may only turn it off, and a
+	// managed false binds.
+	Enabled bool `json:"enabled"`
+	// Model names a configured provider to ask instead of the session's own.
+	Model string `json:"model,omitempty"`
 }
 
 // HooksConfig governs the extension hooks.
@@ -848,6 +860,7 @@ func Default() Config {
 		// Off by default: Abhed runs air-gapped, and web search is the one tool
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
+		Suggest:   SuggestConfig{Enabled: true},
 	}
 }
 
@@ -1054,6 +1067,12 @@ func (c Config) Validate() error {
 	if c.Memory.ImportDepth < 0 || c.Memory.ImportDepth > maxImportDepth {
 		return fmt.Errorf("memory.import_depth is %d; use 0 for the default of %d, or a depth up to %d",
 			c.Memory.ImportDepth, defaultImportDepth, maxImportDepth)
+	}
+	if m := c.Suggest.Model; m != "" {
+		if _, found := c.Model.Providers[m]; !found {
+			return fmt.Errorf("suggest.model is %q, which is not a configured provider; available: %s",
+				m, strings.Join(providerNames(c.Model.Providers), ", "))
+		}
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
