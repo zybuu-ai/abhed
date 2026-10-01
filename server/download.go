@@ -266,7 +266,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 
 	// A running session is stopped first. Deleting the transcript of a run that
 	// is still appending to it would leave rows behind after the delete.
-	if live, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+	if live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); ok {
 		live.mu.Lock()
 		c := live.cancel
 		live.mu.Unlock()

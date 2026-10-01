@@ -17,7 +17,7 @@ type rpcConv struct {
 	lines chan string
 }
 
-func startRPC(t *testing.T, ws string) *rpcConv {
+func startRPCConv(t *testing.T, ws string) *rpcConv {
 	t.Helper()
 	inR, inW, err := os.Pipe()
 	if err != nil {
@@ -78,7 +78,7 @@ func (c *rpcConv) until(match func(map[string]any) bool) map[string]any {
 func TestRPCTasksCancelWake(t *testing.T) {
 	m := &bgModelServer{childDelay: time.Minute}
 	ws := bgWorkspace(t, m.start(t), "")
-	c := startRPC(t, ws)
+	c := startRPCConv(t, ws)
 	if r := c.send("1", `{"id":"1","method":"start","wake":"notify"}`); r["type"] != "ready" {
 		t.Fatalf("start: %v", r)
 	}

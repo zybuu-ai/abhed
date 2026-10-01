@@ -140,7 +140,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
 		Workspace: workspace,
-		Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+		Bash: tools.Bash{Sandbox: sb.Command,
 			Isolation: tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork},
 			RanUnder:  func() string { return string(sb.Tier()) }},
 		Parts: toolset.All,
@@ -164,7 +164,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
-		Redact: vault.Redactor(), Definitions: set.Agents, Background: true,
+		Redact: vault.Session(), Definitions: set.Agents, Background: true,
 		// A subagent may run on another configured model, never an endpoint.
 		Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg),
 	}

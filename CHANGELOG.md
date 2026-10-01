@@ -20,7 +20,6 @@ All notable changes to Abhed are recorded here. The format follows
   any other: an option id offered for another request is refused, and an
   ask still open when the review closes or the person stops is refused,
   never approved.
-
 - A `tool_call` or `permission_request` extension that crashes or times out
   now fails closed: the call it failed on is refused, and while it is not
   running every call it would have screened is asked. It was skipped before,
@@ -66,206 +65,6 @@ All notable changes to Abhed are recorded here. The format follows
   every field that reaches the screen, in the dialog and in the line mode,
   and find none of them on the wire.
 
-- In every release up to and including 1.2.1, a repository could ship a
-  `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
-  `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
-  could set bypass or auto mode, add allow rules, point a provider's
-  `base_url` at another server so the code went there, start `extensions`
-  and `mcp` processes, turn `sandbox.allow_network` on or lower
-  `sandbox.min_tier`. A workspace's configuration is now untrusted until the
-  person trusts its exact contents.
-  - Trust is keyed by the workspace's canonical path and the SHA-256 of the
-    file, and stored in `~/.abhed/trust.json`, which the agent's tools and
-    every sandbox tier already keep the agent out of.
-  - An untrusted file contributes only what tightens: deny and ask rules, a
-    narrower mode, a stronger sandbox tier, network off, lower limits, a
-    stricter syntax check, and turning features off. Every other setting is
-    ignored and named on stderr and in `abhed doctor`.
-  - Settings under `auth`, `storage` and `server`, whose defaults are the
-    loosest values, fail closed: `serve`, `user` and `migrate` refuse to run
-    without them.
-  - Ignored values are shown with credentials redacted, and text from the
-    file is escaped so it cannot draw lines of its own in the prompt.
-  - The managed configuration still wins over everything, and the user's own
-    `~/.abhed/config.json` is trusted as before.
-  - Commands the agent runs on the host no longer inherit
-    `ABHED_TRUST_WORKSPACE`.
-  - The design and the classification of every setting are in
-    `docs/architecture/workspace-trust.md`.
-- A skill's pipeline ran its tool steps with no policy, approval or record.
-  Affects every release from 0.1.0 through 1.2.1, in the CLI (`abhed` and
-  `abhed -p`); the server, console and SDK never ran pipelines. A step called
-  the tool directly, so deny and ask rules, plan mode, destructive-command
-  confirmation, extension hooks, the monitor, the approver and the `secrets`
-  allow rule were all skipped. A step could run `bash`, `write` or any other
-  registered tool with arguments templated from the request and from earlier
-  steps' output. File-tool path checks and a configured sandbox still
-  applied. Nothing about the step reached the record, and a pipeline's model
-  steps were sent tool output before secret values were stripped from it.
-  Each tool step is now put through the loop that called the skill, as that
-  loop's own call is: its policy, hooks, the monitor and the approver, one
-  ask at a time across the session, and its session, depth and record. A
-  pipeline a subagent starts is judged as that subagent, so a `task` step in
-  it is a nested spawn and `nested_subagents` still applies. A step that
-  needs approval in a headless run, or with no approver, is refused. Each
-  step is recorded with `via` naming the skill's pipeline, which HawkEYE
-  shows, and an approval prompt says which pipeline asks. A step's timeout
-  starts once it is approved. Model steps and gates get their whole prompt
-  with secrets redacted. A pipeline is refused rather than run when no
-  session's `skill` call started it, when a step calls the `skill` tool, or
-  when it would start beneath another pipeline's step, which bounds
-  skill, pipeline and subagent recursion.
-- A tool call's arguments could be read one way by policy and another by the
-  tool. Policy took the subject from the exact key `command` (or `path`,
-  `pattern`, ...), while the tools decode into Go structs, which match keys
-  whatever their case and keep the last of a repeated key. So
-  `{"command":"echo safe","Command":"touch x"}` was judged, shown for
-  approval and recorded as `echo safe`, and ran `touch x`. The same held for
-  `write`, `edit` and `read` paths, and a `command` key added to a `write`
-  call was judged in place of its path. This got past deny, ask and allow
-  rules and the destructive-command confirmation, in every mode, and a
-  prompt-injected model can write such arguments. Affected: every release,
-  0.1.0 through 1.2.1.
-  - Arguments are now decoded once, strictly, before policy. A repeated key,
-    two keys that differ only in case (at any depth, with case folded as Go
-    folds it), data after the object, or arguments that are not an object
-    are refused. Every tool refuses a key spelled like a declared one in
-    another case, and an undeclared `command`, `path` or other key policy
-    reads. `bash`, `read`, `write`, `edit`, `glob`, `grep` and `todo` drop
-    any other key their schema does not name before policy, so they run
-    exactly what was judged; the record names the keys dropped.
-  - The accepted arguments are re-encoded once. Policy, hooks, the monitor,
-    the approver, the record, the transcript and the tool, including what is
-    sent to an MCP server or extension, all get those same bytes.
-  - A refusal is recorded as a denial at step `args`. The request's `args`
-    is `{}` and the arguments as sent are in its `raw_args`, as text, so a
-    resumed session replays the call with arguments its provider accepts.
-    The model is told the arguments were malformed. A resumed session also
-    replays as `{}` any recorded arguments that are not one object.
-  - `policy.Evaluate` also denies ambiguous arguments at step `args` for
-    callers outside the loop, such as the workbench, and reads a lone key in
-    another case as the tool would.
-- Sessions started through the SDK did not redact stored secrets. In 1.2.1
-  and earlier, `sdk.New` built its recorder with no redactor, so a value from
-  the secrets store (`abhed secret`) that appeared in a tool's output, or in
-  a call the model made, was kept as it was. This affected every session run
-  on the SDK: embedded agents, `abhed acp`, `abhed rpc` and `abhed resolve`.
-  The value could appear in:
-  - the event record (`Events`, `ExportHTML`, the `rpc` export);
-  - `OnEvent`, the `rpc` event lines and the `session/update` stream sent to
-    an ACP editor;
-  - ACP permission requests and the arguments passed to `Approve`;
-  - the answer from `Run` and `rpc`, `ErrNoResult.LastMessage` from
-    `RunJSON`, and the agent's messages that `resolve` prints;
-  - the tool output sent back to the model.
-
-  The terminal, the server and console, and `abhed eval` were not affected.
-  SDK sessions now redact with the same store as the CLI, and there is no
-  option to turn it off. A server built with no `Options.Redact`, or a
-  subagent factory with no `Redact`, now redacts too: the server uses the
-  secrets store, and the subagent redacts as its parent does. The `abhed`
-  binary always set both, so this only affects a program that embeds these
-  packages.
-- A secrets store that existed but could not be loaded made every path, the
-  CLI included, run with nothing to redact. That covers a store that was
-  empty (0 bytes), corrupt, readable by others or unreadable. Now the
-  terminal, the server, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse
-  to start with an error that names the file and the fix, and `abhed doctor`
-  reports the store as not ready. A missing store still means no secrets.
-  If the store breaks while `abhed serve` runs, each new session starts but
-  withholds every event payload, and the server logs why, until the file is
-  fixed; a server built with no `Options.Redact` does the same. See
-  Upgrading.
-- The store is now opened once and checked on the open file. A FIFO or
-  device at its path is refused instead of blocking or reading without end,
-  and a store over 1 MiB is refused.
-- `abhed serve` read the store once at start, so a secret added while it ran
-  was not redacted until a restart. Each server session now reads the store
-  when it starts. CLI subagents redact with their conversation's reading
-  rather than the one taken when the process started.
-- The SDK's `Approve` is now given the decision's reason and scope redacted,
-  as well as the arguments.
-- `abhed secret set` refuses a value under 8 characters. A shorter value
-  already stored still has its values redacted, but no longer has matching
-  JSON object keys rewritten, which broke decoding events for SDK and `rpc`
-  readers.
-- A cluster login or SSH host added during a conversation belonged to the
-  whole process, not the session. On `abhed serve`, where every user's
-  sessions share one process, one user's `k8s_login` token became the
-  credential every other user's `k8s_get` and `k8s_apply` used, and a host
-  one session added with `ssh_connect` could be run on from every session,
-  or replace an operator's host of the same name for all of them. The token
-  was also an argument to `k8s_login`, so it was kept in the record's
-  `action.requested`, and from there in exports, the event stream, the
-  console, OTLP and HawkEYE, shown in the approval prompt, and sent back to
-  the model on every turn. `k8s_login` also sent the token to whatever
-  server URL the model gave, with TLS verification off, so a
-  prompt-injected model could name its own host and a person approving
-  what read as a login handed the token over. And `ssh_connect`'s
-  `password_env` read any variable in Abhed's own environment, provider
-  keys included, as the password for a host the model named, and
-  `accept_host_key` let it go to whoever answered. Affected: every release,
-  0.1.0 through 1.2.1.
-  - A login and a connected host now belong to the conversation that made
-    them, its subagents included. They are closed when the session is
-    deleted, when the terminal starts another conversation with `/clear` or
-    `/resume`, and when a conversation is forked. Both tools refuse when
-    there is no session to hold them.
-  - `k8s_login` takes `token_secret`, the name of a token stored with
-    `abhed secret set`, instead of `token`; `ssh_connect` takes
-    `password_secret` instead of `password_env`. Each name needs its own
-    `secret(NAME)` allow rule, as a `bash` secret does. Rules apply to the
-    whole deployment, so on `abhed serve` any session there may name a
-    secret the rules allow; what is per session is the login made with it.
-    The tools never ask the model for a value, so the record holds names.
-  - A `token` or `password` sent anyway is dropped before policy reads the
-    call, and a value where a secret's name belongs is recorded as
-    `[withheld: not a secret name]`. Arguments to either tool refused as
-    malformed are not kept in `raw_args`. A value the model writes where
-    nothing expects one, such as in `cluster`, `namespace`, a dropped key's
-    name, or a call to a tool this deployment does not have, is still
-    recorded as written, as it already stands in the model's own reply;
-    paste credentials into `abhed secret set`, not into the chat. The one
-    exception is a call to an unknown tool whose name is, ignoring case,
-    within one letter of `k8s_login`, `ssh_connect` or another tool that
-    takes secrets, contains one of those names, or is within one letter of
-    one behind a namespace such as `functions.`, `default_api.` or `mcp__x__`:
-    its arguments are recorded as `[withheld: unknown credential tool]`.
-  - `k8s_login` takes `cluster`, a name from the new `k8s.clusters`, instead
-    of `server`. A URL or an undeclared name is refused before the secret is
-    read or any request is made. TLS is verified against the system roots
-    plus the cluster's `ca_file` or `k8s.ca_file`, and the server must be
-    `https://`. A cluster's `insecure_skip_tls_verify` is config only and is
-    named on stderr at start, in `abhed doctor`, in the `abhed serve` banner
-    and in the approval prompt.
-  - `k8s_get` and `k8s_apply` take `cluster`, a declared cluster the session
-    logged in to. A login token goes only on that cluster's own client, never
-    on a kubeconfig client, whose TLS settings and exec credential are not
-    the ones approved. With one login and no `cluster` or `context`, the
-    login is used; with several, the call must name one.
-  - A session's logins close their connections when the session is
-    deleted or a login is replaced, and idle connections time out.
-  - `k8s.clusters` is checked when the configuration loads: names must be
-    present and distinct ignoring case, and servers `https://` URLs.
-  - The approval prompt's reason, and the new `target` field of
-    `action.requested`, name the cluster and server a token goes to and how
-    its certificate is checked.
-  - `ssh_connect` sends a stored password only to a host whose key is
-    already in `known_hosts`, and refuses one with `accept_host_key`.
-  - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses, in
-    any case, and a name that is not plain ASCII. The approval for an `ssh`
-    command names the account and address it runs on, which is what to
-    check: ASCII look-alikes such as `pr0d` still pass as names.
-  - The approval for a `k8s_apply` write names the cluster, its server, and
-    whether this session's login or a kubeconfig context's own credential
-    is used. A user or password written into a server URL is left out, and
-    the write goes to the server the approval named even if the kubeconfig
-    changes in between. Building it runs nothing: a kubeconfig `exec`
-    credential helper runs when a request is first sent, so a call that is
-    denied, refused in plan mode or rejected runs no helper.
-  - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
-    included, are the operator's configuration and work as before.
-
 ### Upgrading
 
 Two changes need action before upgrading:
@@ -275,19 +74,22 @@ Two changes need action before upgrading:
 - **Stop every older node before starting a new one on a shared Postgres.**
   New nodes reconcile open sessions that older nodes, which keep no holder,
   may still be running.
-
+- Anything that pipes answers into the command line's questions must send
+  numbers. 1.2.2's line prompt took `a`/`y`, `r`/`n` and `A` for an approval
+  and `t`, `d` and `v` for workspace trust; these now ask again, and input
+  that ends unanswered refuses. An approval is `1` Yes, `2` the session-wide
+  Yes when one is offered, and the last number No; the trust question is `1`
+  don't trust, `2` trust, `3` view the file.
 - API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
   must name its `request_id`, from the `subagent.ask` event: an answer
   naming none is refused with 409, with or without a run live. The console,
   workbench, CLI and ACP already send it.
-
 - Servers sharing one Postgres: stop every node of an older release before
   starting a node of this one. Older nodes keep no holder on the sessions
   they run, and a new node's startup sweep reconciles an open session with
   no holder once nothing has been written to it for two minutes; a long
   tool call on an old node can look like that. New nodes write the holder
   with the session's row and heartbeat it.
-
 - A `tool_call` extension that has stopped (crashed, hung or was closed)
   now makes each call it would have screened ask, where it was skipped
   before; in a headless run, which cannot ask, those calls are refused.
@@ -316,226 +118,9 @@ Two changes need action before upgrading:
   names the line; moving `index.jsonl` and `index.head` aside keeps them as
   evidence and starts a new index, and a session file from the old one goes
   on with `abhed -r <file>`, copied into a new session.
-- `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
-  asks in default mode, is refused in plan mode, and is refused where nobody
-  can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
-  names `tasks`. A script that relied on `-p` making worktrees needs
-  `-allow tasks` or the rule in its configuration.
-- `abhed rpc` and `abhed acp` sessions now have the CLI's tool set: they
-  start the MCP servers and extensions a trusted workspace configuration
-  names, load its skills, and can run subagents. A CI job on `abhed rpc`
-  whose configuration names a server or extension it never started before
-  now starts it.
-- `Postgres.CreateSubagentSession` records a subagent's row with its
-  parent session's id; `CreateSubSession` is unchanged and records none.
-  `ListSessions` leaves out rows with a parent
-  and returns `ParentID`; deleting a session marks its subagents' rows
-  deleted too.
-- With no `allowed_hosts`, each `web_fetch` call asks in the default,
-  accept-edits, auto and plan modes unless an allow rule such as
-  `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
-  to any site; "always allow" is offered for any URL on the site. Bypass
-  (unless a managed policy disables it) runs it, a run with no one to ask
-  refuses it, and `abhed eval`, which approves every ask, fetches. With `allowed_hosts` set, calls to those
-  hosts do not ask on the scheme's default port; a URL naming another port
-  asks.
-- `url` is now a policy subject for MCP and extension tools. A tool whose
-  only subject-like argument is `url` is matched on that URL, so deny and
-  ask rules written as `mcp__x(https://…/*)` that never fired now do, and an
-  allow rule written that way now approves calls it did not before. Re-read
-  such rules before upgrading.
-- An argument named `url` that a tool's schema does not declare is now
-  refused, as the other subject keys are, rather than passed through.
-- ACP editors must answer a permission request with one of the option ids it
-  offers. The ids are no longer the fixed `once`, `always` and `reject`; they
-  are bound to the request, and any other answer is refused. An editor that
-  picks from the offered options, as the protocol intends, needs no change.
-- A cancelled or unreadable ACP editor reply is now recorded `by: system`
-  with its reason, not as a reviewer's denial. A request whose recorded copy
-  was withheld is refused without asking and recorded the same way.
-- An ACP editor that read the tool name from a `tool_call` update's root
-  `name` field reads it from `_meta["zybuu.ai/abhed"].tool`. The spec does not
-  allow custom root fields.
-- A secrets store that exists but cannot be loaded now stops sessions from
-  starting: the terminal and `-p`, `abhed serve`, `eval`, `acp`, `rpc`,
-  `resolve` and `sdk.New` all refuse. Before upgrading, run `abhed doctor`
-  from 1.2.2: it reports the store and exits 1 without starting anything.
-  The fix depends on the case:
-  - readable by others: `chmod 600` the file;
-  - empty (0 bytes), as `touch ~/.abhed/secrets.json` leaves it: write `{}`
-    to it or delete it;
-  - not valid JSON, over 1 MiB, or not a regular file: fix it, or remove it
-    and add the secrets again with `abhed secret set`.
-- An editor using `abhed acp`, and a CI job running `abhed rpc` or
-  `abhed resolve`, now fails at start over such a store where it used to
-  run. The editor's log or the job's output shows the message.
-- Embedders:
-  - `sdk.New` can return this error.
-  - `Approve` now receives the arguments, reason and scope with stored
-    values redacted.
-  - What `Run`, `RunJSON` and `RunStructured` return is redacted. A redacted
-    structured answer may no longer match a `pattern`, `enum` or length in
-    the caller's schema, and one whose redaction fails comes back as
-    `{"withheld": ...}`, which will not decode into the caller's type.
-  - A program that builds `server.Options` or an `agent.SubagentFactory`
-    without `Redact` now redacts.
-- `abhed secret set` refuses a value under 8 characters. Values already
-  stored keep working.
-- Workspace configuration files are untrusted after the upgrade, including
-  ones you wrote yourself. Until you trust a workspace's
-  `.abhed/config.json`, only its tightening settings apply, and a warning
-  names every setting that was ignored. The first interactive `abhed` in each
-  such workspace asks once, lists what the file would change, and offers to
-  trust it, not trust it, or show it. Elsewhere:
-  - Run `abhed trust` in the workspace to see the file and what it would
-    change, then `abhed trust grant` to trust it.
-  - A deployment or CI job that keeps its settings (storage, auth, providers,
-    MCP servers, extensions) in the workspace file must either run `abhed
-    trust grant` once as the user it runs as, or start with
-    `-trust-workspace` (before the subcommand, or as the first argument
-    after it) or
-    `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
-    `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
-    migrate` refuse to start and say how to go on, rather than run with no
-    sign-in or an in-memory record. Every other command goes on without
-    the ignored settings, with a warning on stderr: a headless run (`-p`,
-    `rpc`, `acp`, `resolve`) uses the built-in or user default model and
-    endpoint instead of the file's, without its MCP servers and extensions,
-    and in the default mode instead of the file's. A CI job can therefore
-    run a different model with fewer tools and still exit 0. A failed run
-    repeats that the file's model settings were ignored.
-  - Grants are stored in `~/.abhed/trust.json` of the user who runs Abhed.
-    In a container or CI runner whose home directory does not persist, a
-    grant is lost with it: use `-trust-workspace` or
-    `ABHED_TRUST_WORKSPACE=1` for that step, or move the settings to the
-    managed file. Set the variable for a single step, not in a shell
-    profile.
-    Settings kept in `~/.abhed/config.json` or the managed
-    `/etc/abhed/config.json` are unaffected.
-  - Editors on ACP: `session/new` now reports the decision in
-    `_meta.abhed.workspaceTrust`.
-- SDK: a `ConfigDir` file is untrusted in the same way, so an embedding
-  program that keeps its providers, MCP servers or extensions there loses
-  them, with a line on stderr (or, for the model, an error from `New`),
-  until it trusts the file. Set
-  `Options.WorkspaceTrust` to `config.TrustGranted` when the program owns
-  that file, or trust it once with `abhed trust grant`.
-  `Agent.WorkspaceTrust()` reports the decision and what was ignored. When
-  the ignored settings include the model and no `Options.Provider` is given,
-  `New` returns `ErrUntrustedModel` instead of running on another model;
-  set `Options.AllowDefaultModel` to run on the default anyway.
-- A permission rule that does not parse now stops every command from
-  loading the configuration. `serve` and `resolve` used to drop it, and every
-  rule after it in the same list, without a word. Check with `abhed doctor`
-  before restarting a server, so a bad rule is found before it refuses to start.
-- The default configuration asks before a bash command that mentions
-  `ABHED_TRUST_WORKSPACE` or `trust-workspace`. A configuration that sets
-  its own `permissions.ask` list replaces these.
-- `abhed init` trusts the file it writes. After an edit, trust it again.
-- Tool calls whose arguments repeat a key, spell a key two ways, or carry an
-  argument policy reads that the tool does not declare are now refused at
-  step `args`, and the model is asked to retry. Extra keys the built-in
-  tools do not take, such as `timeout` on `bash` or `file_path` on `read`,
-  are dropped rather than refused and listed in the request's
-  `dropped_args`. An MCP or extension tool whose schema sets
-  `additionalProperties: false` now has undeclared keys refused.
-- `action.requested` gains `raw_args` and `dropped_args`.
-- Skill pipelines (up to 1.2.1 only the CLI ran them): a tool step that
-  policy would ask about is refused in `abhed -p` and anywhere else with no
-  approver, so a CI job whose pipeline runs such steps needs allow rules for
-  them. A pipeline that calls the `skill` tool, runs with no calling loop,
-  or would start beneath another pipeline's step is refused, and the skill
-  falls back to its instructions.
-  A step's timeout now starts after its approval.
-- `k8s_login` no longer accepts a token, and `ssh_connect` no longer accepts
-  `password_env`. Store the credential once on the machine Abhed runs on,
-  add a rule for it, and give the agent its name:
-  ```
-  abhed secret set OCP_TOKEN
-  "allow": ["secret(OCP_TOKEN)"]
-  ```
-  Then ask the agent to log in to the cluster by name. A token pasted into
-  a chat is still in that message's record; store it instead. On `abhed
-  serve`, secrets are the operator's, so users ask the operator to store
-  one, and any session on the deployment may name a secret the rules allow;
-  a login made with it holds for that session only. Log in again in each
-  new session, after `/clear`, `/resume` or a fork in the terminal, and
-  after a server restart.
-- `k8s_login` reaches only clusters declared in `k8s.clusters`, and takes
-  `cluster` (a name) instead of `server`. With none declared it refuses.
-  Declare each cluster people log in to, with its CA if the system roots do
-  not verify it:
-  ```json
-  "k8s": {"clusters": [{"name": "prod",
-                        "server": "https://api.prod.example.com:6443",
-                        "ca_file": "/etc/abhed/prod-ca.pem"}]}
-  ```
-  A cluster whose certificate verified nothing before, such as an OpenShift
-  lab with a self-signed CA, now fails the login with a certificate error
-  until its CA is configured, or until the operator sets
-  `insecure_skip_tls_verify` on it. Clusters in an untrusted workspace
-  `.abhed/config.json` are ignored. A configuration whose clusters repeat a
-  name, leave one empty, or give a server that is not `https://`, or that
-  carries a user or password, is refused when it loads.
-- After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
-  the kubeconfig's own credential, not the login. Name the logged-in
-  cluster as `cluster` instead. A session logged in to several clusters
-  must name one on each call.
-- A host added with `ssh_connect` is usable only in the session that added
-  it, and a name used in `ssh.hosts`, in any case, cannot be reused for
-  one, nor can a name that is not plain ASCII. A password
-  needs the host's key in `known_hosts` first; connect once with `ssh`, or
-  use a key file.
-- `action.requested` gains `target`.
-- A kubeconfig `exec` credential helper now runs when Abhed first sends a
-  request to that cluster, not when the context is opened. `abhed doctor`
-  and the `abhed serve` banner no longer run it, so a helper that fails is
-  reported by the first cluster call instead.
-- `abhed serve` now starts the configured extensions; their veto applies to
-  every console and workbench session, and their tools are offered there.
-- Embedders: `limits.max_budget_tokens`, `limits.max_tokens`,
-  `context.compact_at` and `context.offload_at` now apply. With
-  `Options.ConfiguredTools` the built-in prompt carries the workspace's
-  `ABHED.md` memory files, as the CLI's does; without it, as before, it
-  carries none. `abhed rpc` and `abhed acp` set it.
-- SDK: `Agent.Fork` returns `ErrForkDuringRun` while `Run`, `Continue`,
-  `RunJSON` or `RunStructured` is in progress. A fork ends the session's
-  logins and rewrites the conversation, so it must come after the run returns.
 
 ### Fixed
 
-- `abhed acp`: a permission request's `toolCallId` is now the id of the
-  `tool_call` it asks about, and that `tool_call` is sent first. The id was
-  derived from the tool name and argument length, so it matched no tool call
-  and two calls could share it.
-- `abhed acp`: an answer is bound to its request. An answer naming an option
-  not offered for that call, including *Always allow* where it was withheld
-  (which approved once before), is refused. A refused, cancelled or unreadable
-  answer is recorded as refused by the system, not as a reviewer's rejection.
-- `abhed acp`: a call the model wrote as prose, which has no call id, is
-  named by its `requestId` in its `tool_call`, permission request and
-  updates. Such calls all had the id `""`.
-- The SDK's `RunJSON` and `RunStructured` never delivered a result: the loop
-  runs on its own copy of the tool registry, and the `result` tool was added
-  to the original, so every run ended with `ErrNoResult`. This dates from
-  1.0.0.
-- `abhed resolve` could close its session before it printed the agent's last
-  messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
-- `abhed serve` did not start the configured extensions, so their veto did
-  not apply to console or workbench sessions and their tools were missing.
-- The SDK's `todo` tool recorded nothing, so an ACP editor's plan panel never
-  updated. It now records `todo.updated` on every surface.
-- The CLI's subagents spent from a budget of their own, apart from the
-  session's, so `limits.max_budget_tokens` did not count their spend against
-  the conversation and the conversation's against them. There is now one
-  budget, and a subagent stops when it runs out rather than after.
-- A subagent's `todo` list replaced its parent's; it is now kept in the
-  subagent's own record.
-- A skill reloaded in the server's settings reached the next session's
-  prompt but not its `skill` tool, which kept the skills loaded at start.
-- A CLI subagent's session row in Postgres did not name its parent, so it
-  was listed as a session of user `agent`, and deleting the conversation
-  left it behind.
 - `tasks` ran a task naming an unknown `agent_type` as the general role; it
   now refuses the call before anything runs, as `task` does.
 - A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
@@ -607,7 +192,6 @@ Two changes need action before upgrading:
   the call, and for an edit or write the diff it would make, redacted.
 - The managed key `studio.disable_host_terminal` removes Abhed Studio's host
   terminal, which is neither sandboxed nor recorded.
-
 - Interactive input acts as the person, through policy and the record. See
   `docs/guide/18-input-and-memory.md`.
   - `@path`, `@path:10-20` and `@dir/` attach files, read by the read and
@@ -762,7 +346,6 @@ Two changes need action before upgrading:
   tool and loaded when found, so a large server does not fill the context.
   Every call is still policed and recorded.
 - `docs/guide/18-cli.md`: the command line, its flags and commands.
-
 - `statusline.command` runs a command of yours for the status line. It reads
   the session's status as JSON on stdin (model, provider, mode, context,
   tokens, sandbox, record, branch, background tasks) and its first line is
@@ -774,7 +357,6 @@ Two changes need action before upgrading:
   could change it or in Abhed's state, and not run once swapped. Only text and
   colour of its output reach the terminal. A workspace's statusline needs
   trust.
-
 - `/model` with no name offers the configured models with their model id,
   context window and whether they are local; a managed `model.default` is
   not switched. `/effort low|medium|high|on|off|default` sets the reasoning
@@ -793,7 +375,6 @@ Two changes need action before upgrading:
   a setting into your own `~/.abhed/config.json`. A change that lets the
   agent do more than your own file does asks first, even when the session
   already does it, and a managed setting is refused.
-
 - The interactive CLI is rebuilt around an input box that stays on screen
   while the agent works ([The terminal](docs/guide/18-terminal.md)):
   - Replies stream as they are written, formatted as they arrive: headings,
@@ -821,7 +402,6 @@ Two changes need action before upgrading:
     terminal's background or with `/theme`.
   - The Surface the slash commands draw and ask through is the terminal:
     blocks, guarded dialogs, pickers and full-screen panels.
-
 - Configuration keys for the interactive CLI, all in effect (above):
   `statusline.command`, `cli.mode_cycle`, `commands.dirs`, `rules.dirs`,
   `memory.auto`, `memory.import_depth`, `record.dir`,
@@ -862,7 +442,6 @@ Two changes need action before upgrading:
   Abhed's own flags do; the last asks for `yes` on a terminal, is refused
   under a managed configuration and without a terminal, and deny rules
   still apply in the mode it sets.
-
 - `abhed acp`: an editor can list the configured models and switch between
   them mid-session. `session/new` returns a `configOptions` model selector
   (category `model`), and `session/set_config_option` switches it, answering
@@ -911,87 +490,6 @@ Two changes need action before upgrading:
   `CancelTask`, `CancelTasks`, `WaitBackground`, `Wake`,
   `ErrNothingToWake`. ACP: a card per background task; an ask made between
   prompt turns waits for the next one.
-
-- `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
-  carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
-  `requestId`. `destructive` is true for any command with no undo, whichever
-  step asked. The title, `rawInput` and reason shown are the recorded copy.
-- SDK: `CallIDOf` and `RequestIDOf` name, inside `Options.Approve`, the call
-  and the recorded request being asked about.
-- `abhed trust` shows, grants, revokes and lists trust decisions;
-  `abhed trust grant -sha256 H` grants only the content that was reviewed.
-  `-trust-workspace` trusts the workspace file for one run.
-- ACP `session/new` reports `_meta.abhed.workspaceTrust` and accepts
-  `_meta.abhed.trust: "untrusted"`. The rpc `ready` event carries
-  `workspace_trust`. The SDK adds `Options.WorkspaceTrust` and
-  `Agent.WorkspaceTrust()`, and the config package adds `LoadWith`,
-  `InspectWorkspace`, `GrantTrust`, `DeclineTrust`, `RevokeTrust`,
-  `InitWorkspace`, `Printable`, `PrintableText` and `PrintableURL`.
-- The record's `action.requested` carries `raw_args` (refused arguments as
-  text) and `dropped_args` (keys a built-in tool dropped); the SDK's
-  `ActionRequested` gains `RawArgs` and `Dropped`. Refusals of malformed
-  arguments are recorded at the new policy step `args`.
-- The record's `action.requested` carries `via` when the harness issued a
-  call for the agent, such as `skill research pipeline`; the SDK's
-  `ActionRequested` and HawkEYE's `calls[].via` show it, and an approval
-  prompt names the pipeline that asks.
-- Subagents (`task`, `tasks`) in the console and workbench, `abhed rpc`,
-  `abhed acp` and the SDK, with the CLI's guarantees: the parent session's
-  policy judges each call, the budget and `limits.max_parallel_subagents`
-  are the session's, worktrees are made in the session's workspace, and
-  `subagent.*` events are in the parent's record. A subagent's ask goes to
-  whoever the session asks: the person in the console, on the parent
-  session's prompt; the ACP editor's permission dialog; the SDK's `Approve`.
-  With nobody to ask (an unattended server run, `rpc`, an SDK agent without
-  `Approve`) it is refused. On a server with durable storage a subagent's
-  session row is its parent's owner's, names the parent, and is not listed.
-- `subagent.ask` in the parent's record: a subagent's call waiting on the
-  approver, with the call, reason, scope and the `request_id` an answer
-  names. `subagent.action` gains `request_id`.
-- Skill pipelines run in console and workbench sessions, their steps put
-  through the session's loop as from the CLI.
-- SDK: `Options.ConfiguredTools` gives an embedded agent the CLI's tool set as
-  the configuration enables it: subagents, MCP servers, extension tools,
-  skills and pipelines, web search, the code index, rag corpora, Kubernetes
-  and SSH. Off by default; `abhed rpc` and `abhed acp` turn it on.
-- `abhed acp`: a subagent's ask is a permission request on a `tool_call`
-  named `subagent-<request id>`, sent first, and its answer settles that call.
-- `server.Options.Extensions` puts running extensions' veto and compaction
-  summary on every session. The capabilities list names `task` and `tasks`,
-  and gives each configured extension's `status` (`running`, `stopped` or
-  `not started`); the serve banner names one that is not running.
-- The console and workbench say on a subagent's approval card that *Always
-  allow* covers the whole session, the agent and every subagent.
-- `web_fetch`: reads one http or https page through Abhed, not the
-  sandboxed shell, and returns its text (HTML reduced to headings,
-  paragraphs, lists and links), in parts of up to `web_fetch.max_chars`
-  characters. Off by default and enabled on its own with
-  `web_fetch.enabled`; `web_fetch.allowed_hosts` limits it to named hosts.
-  It refuses other schemes, any loopback, private, link-local, metadata or
-  reserved address (checked where it connects, on every redirect hop), a
-  URL holding a stored secret in any case, and a URL not written in its one
-  form: no surrounding spaces; a port as a plain number, the default left
-  out; an address as four decimal numbers or compressed IPv6, never IPv4 as
-  IPv6 or as one number, and no host ending in a number that is not an IPv4
-  address; and no `.`, `..`, empty, dots-only or control-character path
-  segment, raw or encoded, and no encoded slash. So a rule on a host or port
-  cannot be stepped around by respelling it, nor a rule on a path prefix by
-  dot, encoding or Unicode respellings; path rules still match
-  case-sensitively and a query exactly as written. `web_fetch(http*://host/*)`
-  covers both schemes. A redirect to anything but the same URL (or its
-  https upgrade) is handed back as a new call. Policy rules match the URL:
-  `url` is now a subject key.
-- Subagents in the console, `abhed rpc`, `abhed acp` and the SDK use the
-  cluster logins and connected hosts of the session that started them,
-  never another session's. The SDK's `Close`, a new `start` on `abhed rpc`
-  and the end of an `abhed acp` connection close the ones an embedded agent
-  made.
-- `subagent.ask` carries the subagent's `target`: where its call sends a
-  credential, as the subagent's own `action.requested` names it.
-- SDK: `Options.Warn` receives what the tool set skipped or found unsafe as
-  it was built: an MCP server or extension that did not start, a cluster or
-  host that skips verification. `abhed rpc` and `abhed acp` write these to
-  stderr, as the terminal does; their stdout stays the protocol.
 - Agent definitions: markdown files whose frontmatter names a subagent role
   (`name`, `description`, `tools`, `disallowed_tools`, `model`, `max_turns`,
   `isolation`, `permission_mode`) and whose body is its instructions. They
@@ -1027,12 +525,18 @@ Two changes need action before upgrading:
 
 ### Changed
 
+- Approvals and the line mode write a hidden character in one form wherever
+  it is shown: `⟨\r⟩`, `⟨\e⟩`, `⟨U+200B⟩`, and a byte that is not UTF-8 as
+  `⟨\xff⟩`, where 1.2.2's line prompt wrote `\r` and `\x1b`. A tab is drawn
+  as four spaces. A run of blanks eight columns wide or more (32 at the start
+  of a line) is still counted, as `⟨32 spaces⟩`, and still raises the
+  hidden-character warning. The approval dialog previews `ssh`, `web_fetch`,
+  `task` and `k8s_apply` calls as the line prompt does.
 - `abhed acp` writes the workspace trust report under
   `_meta["zybuu.ai/abhed"]`; the older `_meta.abhed` key is still read on
   input for one more release. Stop reasons now come from the run's
   terminal reason: `max_budget` is `max_tokens`, an interrupt is
   `cancelled`, and an error is no longer read from its text.
-
 - The interactive CLI's `limits.max_turns` applies to each message, so a long
   conversation no longer runs out for good; a message that reaches it says
   how to go on. A managed `limits.max_turns` still bounds the whole
@@ -1048,7 +552,6 @@ Two changes need action before upgrading:
 - A model endpoint that is down is named at start-up with what to do, and a
   task fails at once with the same advice. Model errors no longer print a Go
   dial error or the endpoint's response body.
-
 - `abhed -p` exits with 128 plus the stop signal's number (143 for SIGTERM,
   129 for a hang-up) instead of 130 for every signal, as `rpc`, `acp`,
   `eval` and `resolve` already did. `json` output gains a final result line.
@@ -1063,6 +566,967 @@ Two changes need action before upgrading:
     redraws the screen at the new width rather than leaving the old one's
     rows behind.
   - The startup banner keeps each fact on one row at narrow widths.
+- Workspace trust covers `.abhed/agents` with a hash of its own, decided
+  apart from `config.json`: the prompt, `abhed trust` and `abhed doctor` show
+  each definition's name, model and tools, and declining new definitions
+  keeps a file already trusted. A trust record from an earlier version
+  decides nothing about definitions, so a workspace without them is not
+  asked again. A definition that is a link, has a second name or is larger
+  than 64 KiB is refused.
+- `agent_type` on `task` and `tasks` is an enum of the session's agent types,
+  and the `task` description lists each with when to use it.
+- Skills are read by a frontmatter reader shared with agent definitions;
+  they parse as before.
+- An agent definition's key reads the same quoted or not. A key that reads
+  like an honoured one (such as `denied_tools`), or a restriction nested under
+  another key, refuses the definition. A managed definition's name stays
+  reserved even when that file does not load, and its model binds the call.
+  `disallowed_tools` removes every tool a name could mean, `recall` too.
+- The event stream of a session with background tasks running stays open
+  past its run's end, until the closing end.
+- The interactive CLI follows a conversation's events for as long as it is
+  open, not per task.
+
+## [1.2.2] - 2026-10-01
+
+### Security
+
+- The /console approval card drew a call's arguments in a box that
+  scrolled sideways, so a run of spaces pushed the tail of a command, such
+  as `&& tar czf ...`, out of view, and approving ran it. The card now wraps,
+  and on the card, /ide's prompt and the terminal prompt a run of eight or
+  more columns of spaces or tabs inside a line is shown as a count such as
+  `⟨260 spaces⟩` and raises the hidden-characters warning. Indentation after
+  a newline is left as it is up to 32 columns. Characters that draw nothing
+  (Hangul fillers, braille blank, U+034F, a U+FE0F not after a symbol) are
+  now written out as `⟨U+XXXX⟩` like other hidden characters, and /ide shows
+  an argument the warning is about when its prompt does not draw it.
+  Affects earlier releases.
+- Bidi and zero-width characters in a tool call were drawn raw in the /ide
+  Events and HawkEYE panels, the HawkEYE HTML report and `abhed hawkeye`,
+  so a right-to-left override made `;fs- mr` read as `rm -sf`. These views
+  now write them out as `⟨U+XXXX⟩`, as the approval prompts do. The JSON
+  report keeps the record's text as it is. Affects earlier releases.
+- The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
+  redacted with the secrets stored when a session started, while bash reads
+  the store at each call. A secret stored or changed during a session, and
+  allowed by a `secret(...)` rule, was handed to bash and its value reached
+  the record and every later model request. These surfaces now follow the
+  store as the SDK, `abhed acp` and `abhed rpc` already did: a value is
+  redacted from the moment it is stored, and stays redacted once changed or
+  removed. Affects earlier releases.
+- A backslash-newline line continuation, or an expansion that splits words,
+  hid a command from the deny, destructive and ask-rule checks, so bypass
+  mode ran `rm \<newline>-rf dir`, `rm -\<newline>rf dir`,
+  `git reset \<newline>--hard`, `rm${IFS}-rf${IFS}dir` and `git \<newline>stash`
+  past an ask rule for `git stash*`. Every check now also reads the command
+  as the shell splits it: continuations joined (outside single quotes, also
+  inside a word), `$IFS` and `${IFS...}` read as a space, tabs, carriage
+  returns and form feeds as spaces, `$'...'` decoded, and a brace list
+  such as `{rm,-rf,dir}` as its words. A program named by an expansion
+  (`$x`), or an IFS set to a value and then expanded, always asks. Where
+  deny or ask rules are set, a command whose words were split or glued this
+  way asks, and no allow rule matches a command that needed more than its
+  continuations joined. The prompt still shows the command as written, and
+  its reason says when continuations were joined. Affects earlier releases.
+- `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
+  spelled long (`rm --recursive --force dir`), was not treated as a command
+  with no undo, so bypass mode ran it without asking. Those flags now count
+  wherever they appear before `--`, long ones by any prefix GNU rm accepts
+  (`--rec`, `--forc`). An rm argument holding `$` or a backtick, whose value
+  is not known until it runs (`rm $F build`), is asked about too. Affects
+  earlier releases.
+- A local account could take over another account's sessions by giving
+  itself that person's email, or their username, as its own email. The
+  server owned a session by the caller's email whenever one was set, and a
+  local account's email was neither checked nor unique: the person typed it
+  at invite or open sign-up, and an administrator could give two accounts
+  the same one. Such an account listed and replayed the other's sessions,
+  their subagent records and secrets-bearing transcripts, interrupted them,
+  and answered their pending approvals, which ran and were recorded as the
+  victim's. Affects every release up to and including 1.2.1 with local
+  accounts. Session ownership now comes from one function,
+  `auth.Identity.Owner`, for the session list and every per-session route,
+  approvals and the approver in the record, subagent rows, stream rechecks
+  and audit lines:
+  - A local account owns its sessions as `local:<username>`; its email plays
+    no part.
+  - A single sign-on identity owns them by its email only when the provider
+    verified it (OIDC `email_verified: true`, GitHub's verified primary
+    email), as before; otherwise by `<provider>:<subject>`.
+  - A trusted proxy's request is owned by `X-Abhed-Email` when the proxy
+    sends one, with or without `X-Abhed-User`, else by `X-Abhed-User`. A
+    request with only an email that is not an address owns nothing, rather
+    than every session in the tenant as `anonymous` does.
+  - A subject from a proxy or an unnamed provider that reads like another
+    namespace (`local:`, `unclaimed:`, `oidc:`, `github:` and the like) is
+    moved under its own (`proxy:local:bob`), and an identity whose provider
+    names no subject owns nothing.
+  - An owner that is an email address is lowercased, so a provider that
+    changes the case of an address keeps one owner.
+  - A local account's email must be a plain address that no other account
+    holds or is named, compared without regard to case, at `user add`,
+    invite and open sign-up, and an administrator's account creation.
+  Existing session rows are moved or unclaimed once by `abhed migrate`; see
+  Upgrading.
+- A trusted proxy that named its user `anonymous` (`X-Abhed-User:
+  anonymous`) was the owner a request has when authentication is off, which
+  owns every session in the tenant: it listed, replayed and answered the
+  approvals of everyone's sessions there. A proxy user or unnamed-provider
+  subject spelled like an owner with a meaning of its own (`anonymous`,
+  `agent`, the owner of the CLI's subagent rows, in any case) is now an
+  ordinary user, `proxy:anonymous` or `subject:agent`. Only a request that
+  names no one is `anonymous`. A local account of that name was already
+  `local:anonymous`. Affects earlier releases.
+- A request that names no one who can own a session (a proxy's email that is
+  not an address, a provider that sent no subject) is refused with 401 on
+  every `/v1/` route, rather than creating sessions it could never open.
+- A local account made under the name or email of one that was removed
+  inherited the removed account's agent sessions. Released versions owned a
+  session by the account's email, otherwise by its username, so a new
+  account given either inherited them. Affects earlier releases. With
+  owners now `local:<username>`, the same would hold for a reused username.
+  Removing an account (`abhed user remove`, or an
+  edition's administrator) now moves the sessions it owned in its tenant to
+  `unclaimed:local:<username>` in the same transaction as the delete, and the
+  server's running ones with them. No identity owns an unclaimed session; an
+  operator gives one back with
+  `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:local:<username>'`
+  as the owning role. A server that holds the removed account's sessions in
+  memory lets go of them without a restart, even when the account was
+  removed by another process: with session rows, each held session is
+  checked against its row and takes the row's owner; with or without them,
+  the sessions are released when the server finds the account gone, or when
+  an account made again under the name signs in, which it must before it can
+  reach anything.
+- A person signed out, removed, taken out of `auth.require_group` or refused
+  by an access check kept receiving every event of a session on a
+  `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
+  terminal on `GET /v1/sessions/{id}/pty/{pty}`, while each new request of
+  theirs was refused. Both streams now rerun the request's own authentication
+  and the session ownership check while they run: at once when local accounts
+  end or change a session on the same server, before any write once the last
+  check is 10 seconds old, and on a timer. A refused stream ends with an
+  `event: refused`. An edition's own sign-in layer can end streams at once
+  with `Server.RecheckStreams`. Affects earlier releases.
+- An extension hook's `ask` no longer comes before deny rules and plan
+  mode, where it could turn a refusal into a question a person might
+  accept; a hook's `allow` is no opinion. A hook can now only tighten a
+  decision. Affects earlier releases.
+- Approval prompts now show hidden and control characters instead of letting
+  them rewrite what is displayed. A tool call's own text could carry a
+  carriage return, escape sequence, backspace or zero-width or bidi character
+  that redrew the prompt, so `touch pwned #…` read as `$ ls -la` and a write's
+  preview hid the line it added. The CLI prompt and tool lines, the console
+  and IDE approval cards and the `acp` permission title now print such
+  characters as escapes (`\r`, `\x1b`, `⟨U+200D⟩`) and say the call contains
+  them. That warning covers every argument, including ones no preview draws,
+  and the CLI prompt now previews `k8s_apply`, `task`, `ssh` and `web_fetch`.
+  Affects earlier releases.
+- In every release up to and including 1.2.1, a repository could ship a
+  `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
+  `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
+  could set bypass or auto mode, add allow rules, point a provider's
+  `base_url` at another server so the code went there, start `extensions`
+  and `mcp` processes, turn `sandbox.allow_network` on or lower
+  `sandbox.min_tier`. A workspace's configuration is now untrusted until the
+  person trusts its exact contents.
+  - Trust is keyed by the workspace's canonical path and the SHA-256 of the
+    file, and stored in `~/.abhed/trust.json`, which the agent's tools and
+    every sandbox tier already keep the agent out of.
+  - An untrusted file contributes only what tightens: deny and ask rules, a
+    narrower mode, a stronger sandbox tier, network off, lower limits, a
+    stricter syntax check, and turning features off. Every other setting is
+    ignored and named on stderr and in `abhed doctor`.
+  - Settings under `auth`, `storage` and `server`, whose defaults are the
+    loosest values, fail closed: `serve`, `user` and `migrate` refuse to run
+    without them.
+  - Ignored values are shown with credentials redacted, and text from the
+    file is escaped so it cannot draw lines of its own in the prompt.
+  - The managed configuration still wins over everything, and the user's own
+    `~/.abhed/config.json` is trusted as before.
+  - Commands the agent runs on the host no longer inherit
+    `ABHED_TRUST_WORKSPACE`.
+  - The design and the classification of every setting are in
+    `docs/architecture/workspace-trust.md`.
+- A skill's pipeline ran its tool steps with no policy, approval or record.
+  Affects every release from 0.1.0 through 1.2.1, in the CLI (`abhed` and
+  `abhed -p`); the server, console and SDK never ran pipelines. A step called
+  the tool directly, so deny and ask rules, plan mode, destructive-command
+  confirmation, extension hooks, the monitor, the approver and the `secrets`
+  allow rule were all skipped. A step could run `bash`, `write` or any other
+  registered tool with arguments templated from the request and from earlier
+  steps' output. File-tool path checks and a configured sandbox still
+  applied. Nothing about the step reached the record, and a pipeline's model
+  steps were sent tool output before secret values were stripped from it.
+  Each tool step is now put through the loop that called the skill, as that
+  loop's own call is: its policy, hooks, the monitor and the approver, one
+  ask at a time across the session, and its session, depth and record. A
+  pipeline a subagent starts is judged as that subagent, so a `task` step in
+  it is a nested spawn and `nested_subagents` still applies. A step that
+  needs approval in a headless run, or with no approver, is refused. Each
+  step is recorded with `via` naming the skill's pipeline, which HawkEYE
+  shows, and an approval prompt says which pipeline asks. A step's timeout
+  starts once it is approved. Model steps and gates get their whole prompt
+  with secrets redacted. A pipeline is refused rather than run when no
+  session's `skill` call started it, when a step calls the `skill` tool, or
+  when it would start beneath another pipeline's step, which bounds
+  skill, pipeline and subagent recursion.
+- A tool call's arguments could be read one way by policy and another by the
+  tool. Policy took the subject from the exact key `command` (or `path`,
+  `pattern`, ...), while the tools decode into Go structs, which match keys
+  whatever their case and keep the last of a repeated key. So
+  `{"command":"echo safe","Command":"touch x"}` was judged, shown for
+  approval and recorded as `echo safe`, and ran `touch x`. The same held for
+  `write`, `edit` and `read` paths, and a `command` key added to a `write`
+  call was judged in place of its path. This got past deny, ask and allow
+  rules and the destructive-command confirmation, in every mode, and a
+  prompt-injected model can write such arguments. Affected: every release,
+  0.1.0 through 1.2.1.
+  - Arguments are now decoded once, strictly, before policy. A repeated key,
+    two keys that differ only in case (at any depth, with case folded as Go
+    folds it), data after the object, or arguments that are not an object
+    are refused. Every tool refuses a key spelled like a declared one in
+    another case, and an undeclared `command`, `path` or other key policy
+    reads. `bash`, `read`, `write`, `edit`, `glob`, `grep` and `todo` drop
+    any other key their schema does not name before policy, so they run
+    exactly what was judged; the record names the keys dropped.
+  - The accepted arguments are re-encoded once. Policy, hooks, the monitor,
+    the approver, the record, the transcript and the tool, including what is
+    sent to an MCP server or extension, all get those same bytes.
+  - A refusal is recorded as a denial at step `args`. The request's `args`
+    is `{}` and the arguments as sent are in its `raw_args`, as text, so a
+    resumed session replays the call with arguments its provider accepts.
+    The model is told the arguments were malformed. A resumed session also
+    replays as `{}` any recorded arguments that are not one object.
+  - `policy.Evaluate` also denies ambiguous arguments at step `args` for
+    callers outside the loop, such as the workbench, and reads a lone key in
+    another case as the tool would.
+- Sessions started through the SDK did not redact stored secrets. In 1.2.1
+  and earlier, `sdk.New` built its recorder with no redactor, so a value from
+  the secrets store (`abhed secret`) that appeared in a tool's output, or in
+  a call the model made, was kept as it was. This affected every session run
+  on the SDK: embedded agents, `abhed acp`, `abhed rpc` and `abhed resolve`.
+  The value could appear in:
+  - the event record (`Events`, `ExportHTML`, the `rpc` export);
+  - `OnEvent`, the `rpc` event lines and the `session/update` stream sent to
+    an ACP editor;
+  - ACP permission requests and the arguments passed to `Approve`;
+  - the answer from `Run` and `rpc`, `ErrNoResult.LastMessage` from
+    `RunJSON`, and the agent's messages that `resolve` prints;
+  - the tool output sent back to the model.
+
+  The terminal, the server and console, and `abhed eval` were not affected.
+  SDK sessions now redact with the same store as the CLI, and there is no
+  option to turn it off. A server built with no `Options.Redact`, or a
+  subagent factory with no `Redact`, now redacts too: the server uses the
+  secrets store, and the subagent redacts as its parent does. The `abhed`
+  binary always set both, so this only affects a program that embeds these
+  packages.
+- A secrets store that existed but could not be loaded made every path, the
+  CLI included, run with nothing to redact. That covers a store that was
+  empty (0 bytes), corrupt, readable by others or unreadable. Now the
+  terminal, the server, `eval`, `acp`, `rpc`, `resolve` and the SDK refuse
+  to start with an error that names the file and the fix, and `abhed doctor`
+  reports the store as not ready. A missing store still means no secrets.
+  If the store breaks while `abhed serve` runs, each new session starts but
+  withholds every event payload, and the server logs why, until the file is
+  fixed; a server built with no `Options.Redact` does the same. See
+  Upgrading.
+- The store is now opened once and checked on the open file. A FIFO or
+  device at its path is refused instead of blocking or reading without end,
+  and a store over 1 MiB is refused.
+- `abhed serve` read the store once at start, so a secret added while it ran
+  was not redacted until a restart. Each server session now reads the store
+  when it starts. CLI subagents redact with their conversation's reading
+  rather than the one taken when the process started.
+- `web_search` sent its query to the search provider as the model wrote
+  it, so a stored secret in the query, whether a prompt injection put it
+  there or the model did, reached the provider's logs although the record
+  showed `[secret:NAME]`. A query that holds a stored value, as written,
+  percent-encoded or in another case, is now refused before any request,
+  naming the secret and never its value, and a store that cannot be read
+  refuses every query, as `web_fetch` does for a URL. Affected: 1.0.0,
+  which added the secrets store, through 1.2.1.
+- A `write` or `edit` whose path held a stored secret ran as asked, in
+  auto, accept-edits and bypass modes without a prompt, so the value became
+  a file name anyone who can list the directory reads. Such a call is now
+  refused, naming the check and the secret, whether the agent makes it or a
+  person at the workbench does: the editor's save and the explorer's New
+  file, New folder and Rename (its new name) are checked too. `bash` is not
+  checked, so a command can still create such a file. The path is
+  matched as written, in its case, against stored values of 12 characters
+  or more, so a short value such as `postgres` does not refuse ordinary
+  files; a stored value of 8 to 11 characters can still become a file name
+  in a mode that approves writes without asking. While the secrets store
+  cannot be loaded, every `write` and `edit` is refused. Affects earlier
+  releases.
+- An SDK session, and so an `abhed rpc` or `abhed acp` session, redacted
+  with the values stored when it started, while `bash` reads the store at
+  each call. A secret stored during a long session and allowed by a rule
+  reached the record, the stream and the model unredacted. SDK redaction
+  now reads the store again whenever the file changes (its size, times or
+  inode), keeps redacting every value it has loaded during the session after
+  it is rotated or removed, and withholds every payload while the store
+  cannot be loaded.
+- The SDK's `Approve` is now given the decision's reason and scope redacted,
+  as well as the arguments.
+- `abhed secret set` refuses a value under 8 characters. A shorter value
+  already stored still has its values redacted, but no longer has matching
+  JSON object keys rewritten, which broke decoding events for SDK and `rpc`
+  readers.
+- A cluster login or SSH host added during a conversation belonged to the
+  whole process, not the session. On `abhed serve`, where every user's
+  sessions share one process, one user's `k8s_login` token became the
+  credential every other user's `k8s_get` and `k8s_apply` used, and a host
+  one session added with `ssh_connect` could be run on from every session,
+  or replace an operator's host of the same name for all of them. The token
+  was also an argument to `k8s_login`, so it was kept in the record's
+  `action.requested`, and from there in exports, the event stream, the
+  console, OTLP and HawkEYE, shown in the approval prompt, and sent back to
+  the model on every turn. `k8s_login` also sent the token to whatever
+  server URL the model gave, with TLS verification off, so a
+  prompt-injected model could name its own host and a person approving
+  what read as a login handed the token over. And `ssh_connect`'s
+  `password_env` read any variable in Abhed's own environment, provider
+  keys included, as the password for a host the model named, and
+  `accept_host_key` let it go to whoever answered. Affected: every release,
+  0.1.0 through 1.2.1.
+  - A login and a connected host now belong to the conversation that made
+    them, its subagents included. They are closed when the session is
+    deleted, when the terminal starts another conversation with `/clear` or
+    `/resume`, and when a conversation is forked. Both tools refuse when
+    there is no session to hold them.
+  - `k8s_login` takes `token_secret`, the name of a token stored with
+    `abhed secret set`, instead of `token`; `ssh_connect` takes
+    `password_secret` instead of `password_env`. Each name needs its own
+    `secret(NAME)` allow rule, as a `bash` secret does. Rules apply to the
+    whole deployment, so on `abhed serve` any session there may name a
+    secret the rules allow; what is per session is the login made with it.
+    The tools never ask the model for a value, so the record holds names.
+  - A `token` or `password` sent anyway is dropped before policy reads the
+    call, and a value where a secret's name belongs is recorded as
+    `[withheld: not a secret name]`. Arguments to either tool refused as
+    malformed are not kept in `raw_args`. A value the model writes where
+    nothing expects one, such as in `cluster`, `namespace`, a dropped key's
+    name, or a call to a tool this deployment does not have, is still
+    recorded as written, as it already stands in the model's own reply;
+    paste credentials into `abhed secret set`, not into the chat. The one
+    exception is a call to an unknown tool whose name is, ignoring case,
+    within one letter of `k8s_login`, `ssh_connect` or another tool that
+    takes secrets, contains one of those names, or is within one letter of
+    one behind a namespace such as `functions.`, `default_api.` or `mcp__x__`:
+    its arguments are recorded as `[withheld: unknown credential tool]`.
+  - `k8s_login` takes `cluster`, a name from the new `k8s.clusters`, instead
+    of `server`. A URL or an undeclared name is refused before the secret is
+    read or any request is made. TLS is verified against the system roots
+    plus the cluster's `ca_file` or `k8s.ca_file`, and the server must be
+    `https://`. A cluster's `insecure_skip_tls_verify` is config only and is
+    named on stderr at start, in `abhed doctor`, in the `abhed serve` banner
+    and in the approval prompt.
+  - `k8s_get` and `k8s_apply` take `cluster`, a declared cluster the session
+    logged in to. A login token goes only on that cluster's own client, never
+    on a kubeconfig client, whose TLS settings and exec credential are not
+    the ones approved. With one login and no `cluster` or `context`, the
+    login is used; with several, the call must name one.
+  - A session's logins close their connections when the session is
+    deleted or a login is replaced, and idle connections time out.
+  - `k8s.clusters` is checked when the configuration loads: names must be
+    present and distinct ignoring case, and servers `https://` URLs.
+  - The approval prompt's reason, and the new `target` field of
+    `action.requested`, name the cluster and server a token goes to and how
+    its certificate is checked.
+  - `ssh_connect` sends a stored password only to a host whose key is
+    already in `known_hosts`, and refuses one with `accept_host_key`.
+  - `ssh_connect` refuses a name an operator's `ssh.hosts` entry uses, in
+    any case, and a name that is not plain ASCII. The approval for an `ssh`
+    command names the account and address it runs on, which is what to
+    check: ASCII look-alikes such as `pr0d` still pass as names.
+  - The approval for a `k8s_apply` write names the cluster, its server, and
+    whether this session's login or a kubeconfig context's own credential
+    is used. A user or password written into a server URL is left out, and
+    the write goes to the server the approval named even if the kubeconfig
+    changes in between. Building it runs nothing: a kubeconfig `exec`
+    credential helper runs when a request is first sent, so a call that is
+    denied, refused in plan mode or rejected runs no helper.
+  - The kubeconfig, `ABHED_K8S_TOKEN` and `ssh.hosts`, `password_env`
+    included, are the operator's configuration and work as before.
+  - `k8s_get` and `k8s_apply` put the namespace, the name, and an apply's
+    kind and apiVersion into the request path as the model wrote them, so
+    `namespace: "kube-system/secrets?"` or `name: "../secrets"` reached a
+    resource other than the one the call named and its rules judged, and a
+    deny on Secrets did not hold. Affected: earlier releases. A namespace
+    must now be a namespace name or `*`, a name must be one path segment
+    (no `/`, `?`, `#`, `%`, `..`, whitespace or control character), and a
+    kind and apiVersion must read as such; anything else is refused at step
+    `args` before any rule reads the call or any request is sent. Each
+    segment is also escaped in the path, and a label selector is
+    query-encoded.
+  - A `k8s_apply` manifest that repeated a key in another case was judged
+    as one object and applied as another. The rules read the manifest the
+    way a Go struct does, ignoring case and taking the last key, while the
+    tool and the API server read the exact key. So
+    `{"kind":"ClusterRoleBinding","Kind":"ConfigMap",...}` passed
+    `allow k8s_apply(lab/dev/*)` as a ConfigMap, with no prompt, and wrote a
+    ClusterRoleBinding; `metadata` and `namespace` had the same gap. No
+    release is affected: 1.2.1 and earlier did not read the manifest for
+    the rules. The manifest is now decoded once, strictly:
+    a key repeated at any depth, in any case, and `kind`, `apiVersion`,
+    `metadata`, `name` or `namespace` spelled in another case, are refused
+    at step `args` before any rule reads the call or any request is sent.
+    The rules, the approval, the record and the request all use one
+    canonical encoding of it, and the bytes sent are the bytes judged.
+  - Permission rules and "always allow" read `k8s_login` by its namespace,
+    or by nothing when none was given, not by where the token went. A rule
+    naming a cluster, such as `deny k8s_login(prod)`, never fired, and
+    "always allow" on a login to one cluster offered `k8s_login(NAMESPACE)`
+    or the whole tool, and then approved logins to every other cluster
+    without asking. `k8s_get` and `k8s_apply` were read by resource and
+    action alone, so "always allow" on a write to one cluster covered the
+    same write to every cluster. Affected: 0.1.0 through 1.2.1. These tools
+    are now read by cluster first: `k8s_login(prod)`,
+    `k8s_get(prod/NAMESPACE/RESOURCE)` and
+    `k8s_apply(prod/NAMESPACE/ACTION)`, a kubeconfig context as
+    `context:NAME`. Each call is first put in the form it runs in, and
+    recorded that way, with the arguments Abhed set listed in `resolved`:
+    the session's only login as its cluster, the resource's plural
+    (`Secret` reads `secrets`), and the namespace it would use when it names
+    none, the manifest's for an `apply`. A call on every namespace (`*`) is
+    matched by a deny or ask rule on any namespace. A cluster-scoped object
+    (a namespace, a node, a ClusterRoleBinding and the like) reads as
+    `prod/-/ACTION`, so no rule on a namespace covers it, and any namespace
+    the call names is dropped. One judged as going to the kubeconfig is
+    refused if a login was made in between. See Upgrading.
+
+### Upgrading
+
+- Two migrations stop a server from starting until they have run: the
+  session owner migration (schema version 4) and the account key indexes
+  (schema version 5). Stop every server on the old release, then run
+  `abhed migrate` as the owner, then start this release. `serve` and `user`
+  running as the runtime role refuse to start until both have run, and a
+  `storage.single_role` server runs both at start. An old node left running
+  during a rolling upgrade writes sessions under the old owners after the
+  migration, and those sessions are then reachable by no one.
+- A relative `auth.users_file` now resolves against the workspace for
+  `serve`, `user` and `migrate`, not against the directory each was started
+  in. A deployment that relied on the start directory should give the path
+  in full.
+- Version 5 makes usernames and emails unique without regard to case, on
+  Postgres. If two existing accounts already share one, `abhed migrate`
+  names them and stops, and runs once all but one have another email or are
+  removed. Check for duplicates before the maintenance window, as the owning
+  role:
+  ```sql
+  SELECT lower(username), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;
+  SELECT lower(btrim(email)), count(*) FROM users
+    WHERE btrim(email) <> '' GROUP BY 1 HAVING count(*) > 1;
+  ```
+  To fix one, give each extra account another address, or clear it (the
+  email grants nothing), for example:
+  ```sql
+  UPDATE users SET email = 'carol.2@example.com' WHERE username = 'carol2';
+  UPDATE users SET email = '' WHERE username = 'old-test-account';
+  ```
+- The migration looks at each owner key on existing session rows and the
+  local accounts **in that row's tenant** whose username or email is that key,
+  without regard to case. What it does with a match depends on whether local
+  accounts were the only way in, which `abhed migrate` prints and logs:
+  - `--owners=local-only`, the default when `auth.mode` is `local` with no
+    provider beside it: a key exactly one account holds moves to that
+    account (`local:<username>`), so a person keeps the sessions made under
+    their email or their name. A key several accounts hold (an account whose
+    email was another's name or email) becomes `unclaimed:<old key>`.
+  - The accounts it matches against are those in the Postgres `users` table
+    and, when `auth.users_file` is set (or the default `users.json` exists),
+    those in that file, one per username, each in its own tenant. `abhed
+    migrate` prints how many it found and where. Under `local-only` with no
+    account found while sessions under old owners exist, it refuses, since
+    every one of them would be stranded; pass `--owners=unclaim` or
+    `--force-no-accounts` to go on anyway.
+  - `--owners=unclaim`, the default for every other `auth.mode` (`proxy`,
+    `oidc`, local with a provider, or none): every matching key becomes
+    `unclaimed:<old key>`. A proxy user or single sign-on identity could have
+    written under that name or address, which a local account may merely have
+    typed, so no row is given to an account. Pass `--owners=local-only` only
+    if you know local accounts wrote every such row.
+  - Unclaimed rows cannot be opened through the session API (and the CLI
+    will not resume one, whatever `$USER` is); administrators see their
+    events in the audit. The migration logs each
+    key with its tenant and the accounts it matched. An operator who knows
+    the owner moves them with
+    `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:<old key>'`
+    as the owning role (run `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`
+    first and `FORCE` after, or it sees one tenant only).
+  - A key no account in the row's tenant names is left alone: single sign-on,
+    proxy, CLI and schedule rows keep their owner, except that an OIDC
+    identity whose provider does not send `email_verified: true` is now owned
+    by `oidc:<subject>`, so its sessions from before stay under its email.
+  - Rows owned by `anonymous` and the CLI's subagent rows (`agent`) never
+    move, even to an account of that name.
+  - The default policy reads the configuration `abhed migrate` runs with.
+    If anything other than local accounts has ever signed people in to this
+    database, pass `--owners=unclaim`, whatever `auth.mode` says now.
+  - Rows written by a proxy or unnamed-provider subject that begins with a
+    reserved prefix (`local:`, `unclaimed:`, `oidc:` and the like), or is
+    `anonymous` or `agent` in any case, are not migrated. That caller now
+    owns new sessions under `proxy:` or `subject:`; its old rows stay under
+    the old key, and an operator moves them by hand if they are wanted.
+  - A key no account in the row's tenant names, but an account in another
+    tenant does, is left alone and logged: a custom tenant resolver may have
+    written that account's rows outside its `users.tenant`.
+  Under `local-only`, a session the CLI recorded under an OS user name that
+  is also an account's name moves to that account, and the CLI still resumes
+  it. The event record is append-only and keeps the approver names it was
+  written with.
+- Workspace configuration files are untrusted after the upgrade, including
+  ones you wrote yourself. Until you trust a workspace's
+  `.abhed/config.json`, only its tightening settings apply, and a warning
+  names every setting that was ignored. The first interactive `abhed` in each
+  such workspace asks once, lists what the file would change, and offers to
+  trust it, not trust it, or show it. Elsewhere:
+  - Run `abhed trust` in the workspace to see the file and what it would
+    change, then `abhed trust grant` to trust it.
+  - A deployment or CI job that keeps its settings (storage, auth, providers,
+    MCP servers, extensions) in the workspace file must either run `abhed
+    trust grant` once as the user it runs as, or start with
+    `-trust-workspace` (before the subcommand, or as the first argument
+    after it) or
+    `ABHED_TRUST_WORKSPACE=1`. If an untrusted file sets anything under
+    `auth`, `storage` or `server`, `abhed serve`, `abhed user` and `abhed
+    migrate` refuse to start and say how to go on, rather than run with no
+    sign-in or an in-memory record. Every other command goes on without
+    the ignored settings, with a warning on stderr: a headless run (`-p`,
+    `rpc`, `acp`, `resolve`) uses the built-in or user default model and
+    endpoint instead of the file's, without its MCP servers and extensions,
+    and in the default mode instead of the file's. A CI job can therefore
+    run a different model with fewer tools and still exit 0. A failed run
+    repeats that the file's model settings were ignored.
+  - Grants are stored in `~/.abhed/trust.json` of the user who runs Abhed.
+    In a container or CI runner whose home directory does not persist, a
+    grant is lost with it: use `-trust-workspace` or
+    `ABHED_TRUST_WORKSPACE=1` for that step, or move the settings to the
+    managed file. Set the variable for a single step, not in a shell
+    profile.
+    Settings kept in `~/.abhed/config.json` or the managed
+    `/etc/abhed/config.json` are unaffected.
+  - Editors on ACP: `session/new` now reports the decision in
+    `_meta.abhed.workspaceTrust`.
+- The same migration lowercases every session owner that is a plain email
+  (an `@` and no `:`), in every tenant, with the same fold the server applies
+  to a caller, because an owner email is now
+  compared in lower case: a single sign-on or proxy identity whose provider
+  sent `Alice@Example.COM` keeps the sessions stored under that spelling.
+  Rows under several spellings of one address become one owner, and the
+  migration logs each such address with the spellings it merged. Namespaced
+  owners (`local:`, `unclaimed:`, `oidc:`, `github:`) and non-address owners
+  are left as they are.
+- The approver in the record, the `by` of administrative audit lines and the
+  `user` of a session in `GET /v1/sessions` are now the owner above, such as
+  `local:alice`, not the email. `/v1/whoami` returns it as `owner`.
+- `auth.Identity` has `Provider` and `EmailVerified`. An embedding
+  application's own `auth.Provider` that does not set them is owned by the
+  identity's subject, never its email.
+- Existing local accounts keep whatever email they have, even an invalid
+  one; it no longer grants anything. In a users file a duplicate email is
+  kept too. On Postgres a username or email that two accounts share, without
+  regard to case, stops `abhed migrate` until it is resolved (see the first
+  item).
+- `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
+  asks in default mode, is refused in plan mode, and is refused where nobody
+  can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
+  names `tasks`. A script that relied on `-p` making worktrees needs
+  `-allow tasks` or the rule in its configuration.
+- `rm` with an argument holding `$` or a backtick (`rm $F build`) is now
+  treated as a command with no undo, so it asks, in bypass mode too, and is
+  refused where nobody can be asked.
+- A command whose program is named by an expansion (`$x args`), or that sets
+  IFS and then expands it, always asks. Where deny or ask rules are set, a
+  command whose words were split or glued by line continuations, `$IFS`,
+  `$'...'` or brace lists asks, and an allow rule no longer matches a
+  command that needed more than its continuations joined. Unattended scripts
+  that run such commands need rewriting in plain form.
+- A request that names no one who can own a session (a proxy's
+  `X-Abhed-Email` that is not an address with no `X-Abhed-User`, or a
+  provider that sends no subject) is refused with 401 on every `/v1/` route.
+  Check a proxy's headers before upgrading.
+- `abhed rpc` and `abhed acp` sessions now have the CLI's tool set: they
+  start the MCP servers and extensions a trusted workspace configuration
+  names, load its skills, and can run subagents. A CI job on `abhed rpc`
+  whose configuration names a server or extension it never started before
+  now starts it.
+- `Postgres.CreateSubagentSession` records a subagent's row with its
+  parent session's id; `CreateSubSession` is unchanged and records none.
+  `ListSessions` leaves out rows with a parent
+  and returns `ParentID`; deleting a session marks its subagents' rows
+  deleted too.
+- `url` is now a policy subject for MCP and extension tools. A tool whose
+  only subject-like argument is `url` is matched on that URL, so deny and
+  ask rules written as `mcp__x(https://…/*)` that never fired now do, and an
+  allow rule written that way now approves calls it did not before. Re-read
+  such rules before upgrading.
+- An argument named `url` that a tool's schema does not declare is now
+  refused, as the other subject keys are, rather than passed through.
+- ACP editors must answer a permission request with one of the option ids it
+  offers. The ids are no longer the fixed `once`, `always` and `reject`; they
+  are bound to the request, and any other answer is refused. An editor that
+  picks from the offered options, as the protocol intends, needs no change.
+- A cancelled or unreadable ACP editor reply is now recorded `by: system`
+  with its reason, not as a reviewer's denial. A request whose recorded copy
+  was withheld is refused without asking and recorded the same way.
+- An ACP editor that read the tool name from a `tool_call` update's root
+  `name` field reads it from `_meta["zybuu.ai/abhed"].tool`. The spec does not
+  allow custom root fields.
+- A secrets store that exists but cannot be loaded now stops sessions from
+  starting: the terminal and `-p`, `abhed serve`, `eval`, `acp`, `rpc`,
+  `resolve` and `sdk.New` all refuse. Before upgrading, run `abhed doctor`
+  from 1.2.2: it reports the store and exits 1 without starting anything.
+  The fix depends on the case:
+  - readable by others: `chmod 600` the file;
+  - empty (0 bytes), as `touch ~/.abhed/secrets.json` leaves it: write `{}`
+    to it or delete it;
+  - not valid JSON, over 1 MiB, or not a regular file: fix it, or remove it
+    and add the secrets again with `abhed secret set`.
+- An editor using `abhed acp`, and a CI job running `abhed rpc` or
+  `abhed resolve`, now fails at start over such a store where it used to
+  run. The editor's log or the job's output shows the message.
+- Embedders:
+  - `sdk.New` can return this error.
+  - `Approve` now receives the arguments, reason and scope with stored
+    values redacted.
+  - What `Run`, `RunJSON` and `RunStructured` return is redacted. A redacted
+    structured answer may no longer match a `pattern`, `enum` or length in
+    the caller's schema, and one whose redaction fails comes back as
+    `{"withheld": ...}`, which will not decode into the caller's type.
+  - A program that builds `server.Options` or an `agent.SubagentFactory`
+    without `Redact` now redacts.
+- `abhed secret set` refuses a value under 8 characters. Values already
+  stored keep working.
+- SDK: a `ConfigDir` file is untrusted in the same way, so an embedding
+  program that keeps its providers, MCP servers or extensions there loses
+  them, with a line on stderr (or, for the model, an error from `New`),
+  until it trusts the file. Set
+  `Options.WorkspaceTrust` to `config.TrustGranted` when the program owns
+  that file, or trust it once with `abhed trust grant`.
+  `Agent.WorkspaceTrust()` reports the decision and what was ignored. When
+  the ignored settings include the model and no `Options.Provider` is given,
+  `New` returns `ErrUntrustedModel` instead of running on another model;
+  set `Options.AllowDefaultModel` to run on the default anyway.
+- A permission rule that does not parse now stops every command from
+  loading the configuration. `serve` and `resolve` used to drop it, and every
+  rule after it in the same list, without a word. Check with `abhed doctor`
+  before restarting a server, so a bad rule is found before it refuses to start.
+- The default configuration asks before a bash command that mentions
+  `ABHED_TRUST_WORKSPACE` or `trust-workspace`. A configuration that sets
+  its own `permissions.ask` list replaces these.
+- `abhed init` trusts the file it writes. After an edit, trust it again.
+- Tool calls whose arguments repeat a key, spell a key two ways, or carry an
+  argument policy reads that the tool does not declare are now refused at
+  step `args`, and the model is asked to retry. Extra keys the built-in
+  tools do not take, such as `timeout` on `bash` or `file_path` on `read`,
+  are dropped rather than refused and listed in the request's
+  `dropped_args`. An MCP or extension tool whose schema sets
+  `additionalProperties: false` now has undeclared keys refused.
+- `action.requested` gains `raw_args` and `dropped_args`.
+- Skill pipelines (up to 1.2.1 only the CLI ran them): a tool step that
+  policy would ask about is refused in `abhed -p` and anywhere else with no
+  approver, so a CI job whose pipeline runs such steps needs allow rules for
+  them. A pipeline that calls the `skill` tool, runs with no calling loop,
+  or would start beneath another pipeline's step is refused, and the skill
+  falls back to its instructions.
+  A step's timeout now starts after its approval.
+- `k8s_login` no longer accepts a token, and `ssh_connect` no longer accepts
+  `password_env`. Store the credential once on the machine Abhed runs on,
+  add a rule for it, and give the agent its name:
+  ```
+  abhed secret set OCP_TOKEN
+  "allow": ["secret(OCP_TOKEN)"]
+  ```
+  Then ask the agent to log in to the cluster by name. A token pasted into
+  a chat is still in that message's record; store it instead. On `abhed
+  serve`, secrets are the operator's, so users ask the operator to store
+  one, and any session on the deployment may name a secret the rules allow;
+  a login made with it holds for that session only. Log in again in each
+  new session, after `/clear`, `/resume` or a fork in the terminal, and
+  after a server restart.
+- `k8s_login` reaches only clusters declared in `k8s.clusters`, and takes
+  `cluster` (a name) instead of `server`. With none declared it refuses.
+  Declare each cluster people log in to, with its CA if the system roots do
+  not verify it:
+  ```json
+  "k8s": {"clusters": [{"name": "prod",
+                        "server": "https://api.prod.example.com:6443",
+                        "ca_file": "/etc/abhed/prod-ca.pem"}]}
+  ```
+  A cluster whose certificate verified nothing before, such as an OpenShift
+  lab with a self-signed CA, now fails the login with a certificate error
+  until its CA is configured, or until the operator sets
+  `insecure_skip_tls_verify` on it. Clusters in an untrusted workspace
+  `.abhed/config.json` are ignored. A configuration whose clusters repeat a
+  name, leave one empty, or give a server that is not `https://`, or that
+  carries a user or password, is refused when it loads.
+- Rules on `k8s_login`, `k8s_get` and `k8s_apply` read the cluster first
+  (see [Rules on a cluster](docs/ops/infrastructure.md#rules-on-a-cluster)).
+  An allow rule written on the subject each tool had before (the namespace
+  for `k8s_login`, the resource for `k8s_get`, the action for `k8s_apply`),
+  such as `allow k8s_login(demo)` or `allow k8s_apply(scale)`, no longer
+  approves anything; write `k8s_login(lab)` or `k8s_apply(lab/*/scale)`.
+  Deny and ask rules written that way still apply. A `k8s.clusters` name holding `/`,
+  `:`, `*` or `?` is refused when the configuration loads.
+- `k8s_apply` refuses a manifest whose kind's scope Abhed does not know,
+  custom resources included, since a rule could not tell whether it lands in
+  a namespace. Apply those with `kubectl` through `bash`.
+- After a login, `k8s_get` and `k8s_apply` given a kubeconfig `context` use
+  the kubeconfig's own credential, not the login. Name the logged-in
+  cluster as `cluster` instead. A session logged in to several clusters
+  must name one on each call.
+- A host added with `ssh_connect` is usable only in the session that added
+  it, and a name used in `ssh.hosts`, in any case, cannot be reused for
+  one, nor can a name that is not plain ASCII. A password
+  needs the host's key in `known_hosts` first; connect once with `ssh`, or
+  use a key file.
+- `action.requested` gains `target`.
+- A kubeconfig `exec` credential helper now runs when Abhed first sends a
+  request to that cluster, not when the context is opened. `abhed doctor`
+  and the `abhed serve` banner no longer run it, so a helper that fails is
+  reported by the first cluster call instead.
+- `abhed serve` now starts the configured extensions; their veto applies to
+  every console and workbench session, and their tools are offered there.
+- Embedders: `limits.max_budget_tokens`, `limits.max_tokens`,
+  `context.compact_at` and `context.offload_at` now apply. With
+  `Options.ConfiguredTools` the built-in prompt carries the workspace's
+  `ABHED.md` memory files, as the CLI's does; without it, as before, it
+  carries none. `abhed rpc` and `abhed acp` set it.
+- SDK: `Agent.Fork` returns `ErrForkDuringRun` while `Run`, `Continue`,
+  `RunJSON` or `RunStructured` is in progress. A fork ends the session's
+  logins and rewrites the conversation, so it must come after the run returns.
+
+### Fixed
+
+- A command run in the container sandbox did not receive the secrets named in `secrets`, so it ran with them empty. They are now passed to the container by name; the value never appears in the container engine's arguments.
+- The in-memory and Postgres event stores could panic the writer when a
+  stream reader left at the moment an event was published.
+- /ide offered every permission mode, though a session may start only in
+  the server's mode or in plan, and after the server refused one the status
+  bar still named it. The selector now offers only those two, as /console
+  does, and a refusal puts it and the status bar back on the server's mode.
+- A second /ide tab on a session whose run had ended asked the server every
+  four seconds whether a new run had started, so a turn another tab began
+  and finished in between was not drawn until a later one. The session
+  state now carries its turn count, and a tab that sees it move reads the
+  missed turn back from the record. It also asks every two seconds.
+- /console kept a card answered in another tab open, with live buttons,
+  after the run ended when its stream had gone. A 409 on an answer now
+  reopens the stream, whose replay settles or retires the card, as /ide
+  already did.
+- `abhed serve` on Postgres could leave an event, such as a parallel
+  subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
+  took their seq before writing, so a later seq could commit first; the
+  stream read the record on the gap, moved past it, and then skipped the
+  earlier one when it landed. A session's events are now written and
+  published in seq order.
+- `abhed rpc` and `abhed acp` ignored `limits.max_turns` from the user's and
+  a trusted workspace's configuration, which bind the CLI and the server: a
+  limit of 2 ran 16 turns. They now take it as the CLI does. An untrusted
+  workspace can still only lower it, and a managed value stays the ceiling.
+- `abhed rpc`: a `steer` sent while a prompt ran was read only after the run
+  ended, so it never redirected it. Input is now read while a prompt runs. A
+  `steer` goes to the session of the last `start` sent and is answered at
+  once: `steered` when the running prompt will read it before its answer,
+  `queued` when that session's next prompt will. A queued steer never read is
+  named in an error line when the session ends. Any other request, a second
+  `prompt` included, waits its turn and is answered in the order sent, up to
+  256 waiting.
+- `bash`: the note that the sandbox has no network was left off when a
+  pipeline ended in success, as `curl … | head` does; it now follows the
+  network failure whatever the exit code.
+- A context over `compact_at` with nothing older than the kept turns recorded
+  `compaction.started` with no `compaction.completed`. `started` is now
+  recorded only when a summary is about to be written.
+- A context whose only history older than the kept turns was the previous
+  summary still recorded `compaction.started` with no completion, and paid
+  for a summary it then threw away. One message is no longer summarised, so
+  neither is recorded, and every `started` is followed by a `completed`. A
+  `/compact` with nothing to summarise says so and records nothing; it
+  recorded a `compaction.completed` of 0 tokens and counted it.
+- Two `abhed user add` runs on Postgres, or two sign-ups, could both create
+  the same account: the later replaced the first's password and email, and
+  emails differing only in case were both accepted. An account is now created
+  by an insert that fails on a username or email another account holds,
+  without regard to case (schema version 5; see Upgrading).
+- The CLI resumed an `unclaimed:` session when `$USER` was set to its owner
+  string. An `unclaimed:` or `nobody:` session is now refused whatever
+  `$USER` is.
+- `GET /v1/sessions` read the tenant's 200 newest sessions and then kept the
+  caller's, so a person whose sessions were all older listed none, though
+  each opened. The owner is now filtered in the query. A session older than
+  the newest 500 can now be continued too.
+- With the secrets store unreadable mid-serve, an ask from the session's own
+  agent was put to the approver with its record withheld; the workbench drew
+  no card and the run waited until interrupted. Such an ask is now refused by
+  the system, saying why, as a subagent's already was.
+- An administrator got 404 replaying a scheduled run (scheduled runs come
+  from the Team edition's schedules), which no identity owns. An administrator may now read one in their tenant by id (`replay`,
+  `events`, `hawkeye`), never continue it, and each read is recorded as
+  `session.read` in the admin audit.
+- The admin Settings tab listed the shared tools and left out `recall`,
+  `task` and `tasks`, which every session gets. It now lists what
+  capabilities does.
+- `bash`: the note that the sandbox has no network was added to successful
+  output that only mentioned a network error, such as a log being read. A
+  command that exits 0 now gets it only when a network client ran and the
+  failure is in its last lines.
+- Docs: `compact_at` below about 0.3 compacts on almost every turn
+  (docs/guide/02-configuration.md).
+- `abhed acp`: a permission request's `toolCallId` is now the id of the
+  `tool_call` it asks about, and that `tool_call` is sent first. The id was
+  derived from the tool name and argument length, so it matched no tool call
+  and two calls could share it.
+- `abhed acp`: an answer is bound to its request. An answer naming an option
+  not offered for that call, including *Always allow* where it was withheld
+  (which approved once before), is refused. A refused, cancelled or unreadable
+  answer is recorded as refused by the system, not as a reviewer's rejection.
+- `abhed acp`: a call the model wrote as prose, which has no call id, is
+  named by its `requestId` in its `tool_call`, permission request and
+  updates. Such calls all had the id `""`.
+- The SDK's `RunJSON` and `RunStructured` never delivered a result: the loop
+  runs on its own copy of the tool registry, and the `result` tool was added
+  to the original, so every run ended with `ErrNoResult`. This dates from
+  1.0.0.
+- `bash` in SDK sessions, and so in `abhed rpc`, `abhed acp` and `abhed
+  resolve`, could not use a stored secret: it answered "No secrets are
+  configured on this deployment" and its description named none. It now
+  reads the secrets store by name as the CLI's does, and each name still
+  needs its own `secret(NAME)` allow rule.
+- A second `/ide` tab stopped following a session once the run it opened
+  into ended: a turn started from another tab, and its approval, never
+  appeared in it, though its status bar still read connected. A page open
+  on a session with no run now asks the server every few seconds and
+  follows the next turn.
+- The console's mode selector always started on `default`, and a server
+  lets a client choose only its configured mode or `plan`, so on a server
+  configured with another mode the first message was refused (403). It now
+  starts on the configured mode and offers only it and `plan`.
+- `abhed resolve` could close its session before it printed the agent's last
+  messages, so they were lost. It now waits for them, as `rpc` and `acp` do.
+- `abhed serve` did not start the configured extensions, so their veto did
+  not apply to console or workbench sessions and their tools were missing.
+- The SDK's `todo` tool recorded nothing, so an ACP editor's plan panel never
+  updated. It now records `todo.updated` on every surface.
+- The CLI's subagents spent from a budget of their own, apart from the
+  session's, so `limits.max_budget_tokens` did not count their spend against
+  the conversation and the conversation's against them. There is now one
+  budget, and a subagent stops when it runs out rather than after.
+- A subagent's `todo` list replaced its parent's; it is now kept in the
+  subagent's own record.
+- A skill reloaded in the server's settings reached the next session's
+  prompt but not its `skill` tool, which kept the skills loaded at start.
+- A CLI subagent's session row in Postgres did not name its parent, so it
+  was listed as a session of user `agent`, and deleting the conversation
+  left it behind.
+
+### Added
+
+- SDK: `Agent.Queued` counts steering messages not yet delivered, and
+  `Agent.RunQueued` runs them when one arrived as the last run ended.
+- SDK: `Options.ConfiguredLimits` takes `limits.max_turns` from the
+  configuration, as the CLI does; `rpc` and `acp` set it. Embedders that leave
+  it off keep today's behaviour: only a managed value binds, and a nonzero
+  `Options.MaxTurns` wins over the files, below the managed ceiling.
+- `abhed acp`: a permission request's `toolCall._meta["zybuu.ai/abhed"]`
+  carries the `tool`, the policy `step`, `reason`, `destructive`, `scope` and
+  `requestId`. `destructive` is true for any command with no undo, whichever
+  step asked. The title, `rawInput` and reason shown are the recorded copy.
+- SDK: `CallIDOf` and `RequestIDOf` name, inside `Options.Approve`, the call
+  and the recorded request being asked about.
+- `abhed trust` shows, grants, revokes and lists trust decisions;
+  `abhed trust grant -sha256 H` grants only the content that was reviewed.
+  `-trust-workspace` trusts the workspace file for one run.
+- ACP `session/new` reports `_meta.abhed.workspaceTrust` and accepts
+  `_meta.abhed.trust: "untrusted"`. The rpc `ready` event carries
+  `workspace_trust`. The SDK adds `Options.WorkspaceTrust` and
+  `Agent.WorkspaceTrust()`, and the config package adds `LoadWith`,
+  `InspectWorkspace`, `GrantTrust`, `DeclineTrust`, `RevokeTrust`,
+  `InitWorkspace`, `Printable`, `PrintableText` and `PrintableURL`.
+- The record's `action.requested` carries `raw_args` (refused arguments as
+  text) and `dropped_args` (keys a built-in tool dropped); the SDK's
+  `ActionRequested` gains `RawArgs` and `Dropped`. Refusals of malformed
+  arguments are recorded at the new policy step `args`.
+- The record's `action.requested` carries `via` when the harness issued a
+  call for the agent, such as `skill research pipeline`; the SDK's
+  `ActionRequested` and HawkEYE's `calls[].via` show it, and an approval
+  prompt names the pipeline that asks.
+- Subagents (`task`, `tasks`) in the console and workbench, `abhed rpc`,
+  `abhed acp` and the SDK, with the CLI's guarantees: the parent session's
+  policy judges each call, the budget and `limits.max_parallel_subagents`
+  are the session's, worktrees are made in the session's workspace, and
+  `subagent.*` events are in the parent's record. A subagent's ask goes to
+  whoever the session asks: the person in the console, on the parent
+  session's prompt; the ACP editor's permission dialog; the SDK's `Approve`.
+  With nobody to ask (an unattended server run, `rpc`, an SDK agent without
+  `Approve`) it is refused. On a server with durable storage a subagent's
+  session row is its parent's owner's, names the parent, and is not listed.
+- `subagent.ask` in the parent's record: a subagent's call waiting on the
+  approver, with the call, reason, scope and the `request_id` an answer
+  names. Subagents running together are asked one at a time, and each ask is
+  written when its turn comes. An ask that cannot be written there, because
+  the parent's record refused the write or the request's payload was
+  withheld, is not put to anyone: the call is denied by the system at step
+  `ask`. `subagent.action` gains `request_id`.
+- Skill pipelines run in console and workbench sessions, their steps put
+  through the session's loop as from the CLI.
+- SDK: `Options.ConfiguredTools` gives an embedded agent the CLI's tool set as
+  the configuration enables it: subagents, MCP servers, extension tools,
+  skills and pipelines, web search, the code index, rag corpora, Kubernetes
+  and SSH. Off by default; `abhed rpc` and `abhed acp` turn it on.
+- `abhed acp`: a subagent's ask is a permission request on a `tool_call`
+  named `subagent-<request id>`, sent first, and its answer settles that call.
+- `server.Options.Extensions` puts running extensions' veto and compaction
+  summary on every session. The capabilities list names `task` and `tasks`,
+  and gives each configured extension's `status` (`running`, `stopped` or
+  `not started`); the serve banner names one that is not running.
+- The console and workbench say on a subagent's approval card that *Always
+  allow* covers the whole session, the agent and every subagent.
+- `web_fetch`: reads one http or https page through Abhed, not the
+  sandboxed shell, and returns its text (HTML reduced to headings,
+  paragraphs, lists and links), in parts of up to `web_fetch.max_chars`
+  characters. Off by default and enabled on its own with
+  `web_fetch.enabled`; `web_fetch.allowed_hosts` limits it to named hosts.
+  It refuses other schemes, any loopback, private, link-local, metadata or
+  reserved address (checked where it connects, on every redirect hop), a
+  URL holding a stored secret in any case, and a URL not written in its one
+  form: no surrounding spaces; a port as a plain number, the default left
+  out; an address as four decimal numbers or compressed IPv6, never IPv4 as
+  IPv6 or as one number, and no host ending in a number that is not an IPv4
+  address; and no `.`, `..`, empty, dots-only or control-character path
+  segment, raw or encoded, and no encoded slash. So a rule on a host or port
+  cannot be stepped around by respelling it, nor a rule on a path prefix by
+  dot, encoding or Unicode respellings; path rules still match
+  case-sensitively and a query exactly as written. `web_fetch(http*://host/*)`
+  covers both schemes. A redirect to anything but the same URL (or its
+  https upgrade) is handed back as a new call. Policy rules match the URL:
+  `url` is now a subject key.
+- `web_fetch` asks by default. With no `allowed_hosts`, each call asks in
+  the default, accept-edits, auto and plan modes unless an allow rule such
+  as `web_fetch(https://docs.python.org/*)` matches, since a URL can carry
+  data to any site; "always allow" is offered for any URL on the site.
+  Bypass (unless a managed policy disables it) runs it, a run with no one to
+  ask refuses it, and `abhed eval`, which approves every ask, fetches. With
+  `allowed_hosts` set, calls to those hosts do not ask on the scheme's
+  default port; a URL naming another port asks.
+- Subagents in the console, `abhed rpc`, `abhed acp` and the SDK use the
+  cluster logins and connected hosts of the session that started them,
+  never another session's. The SDK's `Close`, a new `start` on `abhed rpc`
+  and the end of an `abhed acp` connection close the ones an embedded agent
+  made.
+- `subagent.ask` carries the subagent's `target`: where its call sends a
+  credential, as the subagent's own `action.requested` names it.
+- SDK: `Options.Warn` receives what the tool set skipped or found unsafe as
+  it was built: an MCP server or extension that did not start, a cluster or
+  host that skips verification. `abhed rpc` and `abhed acp` write these to
+  stderr, as the terminal does; their stdout stays the protocol.
+
+### Changed
 
 - The CLI, the server, `rpc`, `acp`, `eval` and the SDK build their tools,
   system prompt, loop settings and budget in one place, so a surface differs
@@ -1089,26 +1553,6 @@ Two changes need action before upgrading:
   set, as the server's already did.
 - `abhed serve` and `abhed doctor` report web fetch, and the console's
   overview shows it.
-- Workspace trust covers `.abhed/agents` with a hash of its own, decided
-  apart from `config.json`: the prompt, `abhed trust` and `abhed doctor` show
-  each definition's name, model and tools, and declining new definitions
-  keeps a file already trusted. A trust record from an earlier version
-  decides nothing about definitions, so a workspace without them is not
-  asked again. A definition that is a link, has a second name or is larger
-  than 64 KiB is refused.
-- `agent_type` on `task` and `tasks` is an enum of the session's agent types,
-  and the `task` description lists each with when to use it.
-- Skills are read by a frontmatter reader shared with agent definitions;
-  they parse as before.
-- An agent definition's key reads the same quoted or not. A key that reads
-  like an honoured one (such as `denied_tools`), or a restriction nested under
-  another key, refuses the definition. A managed definition's name stays
-  reserved even when that file does not load, and its model binds the call.
-  `disallowed_tools` removes every tool a name could mean, `recall` too.
-- The event stream of a session with background tasks running stays open
-  past its run's end, until the closing end.
-- The interactive CLI follows a conversation's events for as long as it is
-  open, not per task.
 
 ## [1.2.1] - 2026-09-28
 

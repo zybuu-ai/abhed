@@ -117,7 +117,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// record until /clear, and /fork and /resume change what it continues from.
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
-		rec.Redact = openVault().Redactor()
+		// Read again as the store changes: bash reads it at each call.
+		rec.Redact = openVault().Session()
 		start.onOpen(rec)
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.

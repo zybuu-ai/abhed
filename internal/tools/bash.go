@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -193,6 +194,20 @@ var destructivePatterns = []struct {
 // IsDestructive reports whether a command needs confirmation regardless of
 // permission mode. Exported so the policy engine can consult it.
 func IsDestructive(command string) (string, bool) {
+	// The command is read as written and as canonicalised; each only adds a match.
+	canon := CanonicalCommand(command).Text
+	if what, ok := destructiveText(command); ok {
+		return what, true
+	}
+	if canon != command {
+		if what, ok := destructiveText(canon); ok {
+			return what, true
+		}
+	}
+	return hiddenWords(command, canon)
+}
+
+func destructiveText(command string) (string, bool) {
 	// Where case is ignored, the program names are lowered too; that only adds a match.
 	folded := foldProgramNames(command)
 	for _, d := range destructivePatterns {
@@ -200,7 +215,60 @@ func IsDestructive(command string) (string, bool) {
 			return d.what, true
 		}
 	}
+	if rmForced(command) {
+		return "recursive/forced delete", true
+	}
 	return gitDestructive(command)
+}
+
+// rmForced finds rm's recursive or force flags anywhere among its words, as
+// GNU rm reads them: after operands, and long options by any prefix.
+func rmForced(command string) bool {
+	for _, part := range strings.Split(rmBreaks.Replace(command), "\n") {
+		words := strings.Fields(shellQuotes.Replace(part))
+		for i, w := range words {
+			if strings.TrimSuffix(CommandName(path.Base(w)), ".exe") != "rm" {
+				continue
+			}
+			for _, a := range words[i+1:] {
+				if a == "--" {
+					break
+				}
+				if rmArgForces(a) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// rmBreaks splits commands but keeps backticks in their word, so a
+// substitution among rm's arguments is seen as one.
+var rmBreaks = strings.NewReplacer(";", "\n", "&", "\n", "|", "\n", "(", "\n", ")", "\n")
+
+// rmArgForces reports whether one of rm's arguments is, or may expand to, a
+// recursive or force flag. A $ or backtick is a value not known until it runs.
+func rmArgForces(a string) bool {
+	switch {
+	case strings.ContainsAny(a, "$`"):
+		return true
+	case strings.HasPrefix(a, "--"):
+		// getopt_long takes any unambiguous prefix: --rec is --recursive.
+		name, _, _ := strings.Cut(a, "=")
+		if len(name) < 3 {
+			return false
+		}
+		for _, full := range []string{"--recursive", "--force"} {
+			if strings.HasPrefix(full, name) {
+				return true
+			}
+		}
+		return false
+	case strings.HasPrefix(a, "-"):
+		return strings.ContainsAny(a[1:], "rRf")
+	}
+	return false
 }
 
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
@@ -274,6 +342,14 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 			return errf("%v", err)
 		}
 		cmd.Env = append(cmd.Env, env...)
+		names := make([]string, 0, len(env))
+		for _, kv := range env {
+			if k, _, ok := strings.Cut(kv, "="); ok {
+				names = append(names, k)
+			}
+		}
+		// A container sees only what is forwarded to it by name.
+		sandbox.ForwardEnv(cmd, names)
 	}
 
 	output, err := newBashOutput(cmd)
@@ -347,7 +423,8 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
 	// On the host the same text is the operating system's refusal, not a sandbox's.
-	if exitCode != 0 && b.network() == networkOff && networkFailure(content) {
+	// Any exit code: a pipeline's last command can succeed after curl failed.
+	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
 		content += "\n\n" + networkHint
 	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
 		content += "\n\n" + hint
@@ -410,6 +487,30 @@ func networkFailure(output string) bool {
 		}
 	}
 	return false
+}
+
+// networkClients are programs that reach for the network, where a command
+// starts.
+var networkClients = regexp.MustCompile(`(?:^|[;|&(]|\$\()\s*(?:sudo\s+|env\s+|command\s+|exec\s+)?` +
+	`(?:curl|wget|git\s+(?:fetch|clone|pull|push|ls-remote|submodule)|npm|npx|yarn|pnpm|pip3?|python3?|uv|` +
+	`go\s+(?:get|install|mod)|cargo|gem|bundle|composer|apt(?:-get)?|apk|brew|ssh|scp|sftp|rsync|nc|ncat|` +
+	`ping|dig|nslookup|host|http|node|deno|bun|docker|podman|helm|kubectl|aws|gcloud|az)\b`)
+
+// networkFailed reports whether a command failed for want of the network. A
+// command that succeeded counts only when a network client ran and the failure
+// is in its last lines: a log being read can mention a network error.
+func networkFailed(command, output string, exitCode int) bool {
+	if exitCode != 0 {
+		return networkFailure(output)
+	}
+	if !networkClients.MatchString(command) {
+		return false
+	}
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	return networkFailure(strings.Join(lines, "\n"))
 }
 
 // networkHint says why a command that reached for the network failed. Without

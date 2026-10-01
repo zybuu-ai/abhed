@@ -84,15 +84,24 @@ func RequestedOf(ctx context.Context) (Requested, bool) {
 	if !ok {
 		return Requested{}, false
 	}
+	return requestedFrom(ev), true
+}
+
+// requestedFrom reads a recorded action.requested, or reports it withheld.
+func requestedFrom(ev Event) Requested {
 	var p ActionRequested
 	var held struct {
 		Withheld *string `json:"withheld"`
 	}
 	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
-		return Requested{Withheld: true}, true
+		return Requested{Withheld: true}
 	}
-	return Requested{ActionRequested: p}, true
+	return Requested{ActionRequested: p}
 }
+
+// withheldAsk is the refusal of an ask whose record was withheld: no one can
+// be shown what they would approve, so no one is asked.
+const withheldAsk = "the request's record was withheld (redaction could not run), so it was not put to anyone"
 
 // WithRequested carries the recorded action.requested an Approver is asked about.
 func WithRequested(ctx context.Context, ev Event) context.Context {
@@ -722,15 +731,20 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return err
 	}
 
-	l.record(EvCompactStarted, ActorSystem, Compaction{
-		BeforeTokens: used, Trigger: "auto",
+	// Started is recorded only once there is something to summarise; every
+	// return after it records a completion (the caller records errors).
+	begun := false
+	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+		begun = true
+		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
-
-	compacted, info, err := l.Compactor.Compact(ctx, "auto", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return err
 	}
 	if len(compacted) == len(l.messages) {
+		if begun {
+			l.record(EvCompactDone, ActorSystem, map[string]string{"skipped": "no change", "trigger": "auto"})
+		}
 		return nil // nothing was summarized
 	}
 
@@ -739,6 +753,9 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
+
+// ErrNothingToCompact is Compact finding no older history to summarise.
+var ErrNothingToCompact = errors.New("nothing to compact yet")
 
 // Compact forces compaction now, for the /compact command.
 func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
@@ -753,6 +770,10 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	compacted, info, err := l.Compactor.Compact(ctx, "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
+	}
+	// As for automatic compaction, nothing summarised records nothing.
+	if len(compacted) == len(l.messages) {
+		return Compaction{}, ErrNothingToCompact
 	}
 	l.messages = compacted
 	l.usage.Compactions++
@@ -1154,12 +1175,32 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// Before policy, approval, the record and history see it: a credential
 	// where a secret's name belongs is never kept.
 	canon = tools.WithholdSecretValues(tool, canon)
+	// A destination the call leaves to the session is named before policy
+	// judges it, so a rule on it holds and the approval covers only it.
+	var resolved []string
+	var unresolvable error
+	if r, ok := tool.(tools.ArgResolver); ok {
+		out, which, err := r.ResolveArgs(l.Session, canon)
+		switch {
+		case err != nil:
+			unresolvable = err
+		case out != nil:
+			if again, _, err := tools.CanonicalArgs(tool, out); err == nil {
+				canon, resolved = again, which
+			}
+		}
+	}
 	c.Args, call.Args = canon, canon
+	if unresolvable != nil {
+		return l.refuseUnresolvable(ctx, call, unresolvable)
+	}
 
 	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
 	if refused := l.secretsRefused(tool, call); refused != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
+	} else if refused := l.pathSecretRefused(call); refused != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
 
@@ -1198,6 +1239,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		Scope:            decision.Offer(),
 		Via:              viaOf(ctx),
 		Dropped:          dropped,
+		Resolved:         resolved,
 		Target:           target,
 	})
 	if err != nil {
@@ -1223,6 +1265,12 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}, ""
 
 	case policy.Ask:
+		if requestedFrom(asked).Withheld {
+			l.record(EvActionDenied, ActorSystem, map[string]string{
+				"call_id": call.ID, "reason": withheldAsk, "step": "ask", "by": BySystem,
+			})
+			return false, tools.Result{Content: "Denied: " + withheldAsk + ". The call was not run.", IsError: true}, ""
+		}
 		if why := l.permissionRefused(ctx, call, decision); why != "" {
 			l.record(EvActionDenied, ActorSystem, map[string]string{
 				"call_id": call.ID, "reason": why, "step": "hook", "by": ByPolicy,
@@ -1394,6 +1442,20 @@ func (l *Loop) refuseArgs(ctx context.Context, tool tools.Tool, call model.ToolC
 		Content: fmt.Sprintf("Refused: %s. Nothing was run. Send one JSON object with each argument once, spelled exactly as in the tool's schema.", why),
 		IsError: true,
 	}, ""
+}
+
+// refuseUnresolvable records a call whose arguments cannot be put in the form
+// the tool runs, as the model sent them, and refuses it before any rule reads it.
+func (l *Loop) refuseUnresolvable(ctx context.Context, call model.ToolCall, why error) (bool, tools.Result, TerminalReason) {
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: call.Args, Reason: why.Error(), Via: viaOf(ctx),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why.Error(), "step": "args", "by": BySystem,
+	})
+	return false, tools.Result{Content: fmt.Sprintf("Refused: %s. Nothing was run.", why), IsError: true}, ""
 }
 
 // invoke runs an already-authorized tool and records its observation.
@@ -1829,6 +1891,49 @@ func (l *Loop) secretsRefused(tool tools.Tool, call model.ToolCall) string {
 		if !allowed {
 			return fmt.Sprintf("secret %s is not permitted: a secret needs its own allow rule, secret(%s), in every mode", name, name)
 		}
+	}
+	return ""
+}
+
+// pathSecretRefused refuses a write or edit whose path holds a stored value: a
+// file's name is seen by whoever can list the directory, and by the record.
+func (l *Loop) pathSecretRefused(call model.ToolCall) string {
+	if call.Name != "write" && call.Name != "edit" {
+		return ""
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(call.Args, &a) != nil {
+		return ""
+	}
+	return l.pathHoldsSecret(a.Path)
+}
+
+// pathHoldsSecret is pathSecretRefused's check of one path, "" when it passes.
+func (l *Loop) pathHoldsSecret(path string) string {
+	if path == "" {
+		return ""
+	}
+	red := l.Recorder.redactor()
+	if red == nil {
+		return ""
+	}
+	const unreadable = "refused by the check that keeps stored secrets out of file names: the secrets store could not be read, so the path cannot be checked"
+	if f, ok := red.(interface{ FindInPath(string) (string, bool) }); ok {
+		if label, found := f.FindInPath(path); found {
+			if label == "" {
+				return unreadable
+			}
+			return fmt.Sprintf("refused by the check that keeps stored secrets out of file names: the path contains the stored secret %s", label)
+		}
+		return ""
+	}
+	quoted, _ := json.Marshal(path)
+	if out := red.Redact(quoted); out == nil {
+		return unreadable
+	} else if string(out) != string(quoted) {
+		return "refused by the check that keeps stored secrets out of file names: the path contains a stored secret"
 	}
 	return ""
 }

@@ -426,16 +426,41 @@ func sanitize(s string, keepSGR bool) string {
 
 // reveal is sanitize for text a person approves: a command, a diff, a path.
 // Nothing is dropped; what would be hidden is shown as a marked escape — \r,
-// \e, ⟨U+200B⟩ — so what is on screen is exactly what will run.
-func reveal(s string) string {
+// \e, ⟨U+200B⟩, a byte that is not UTF-8 as ⟨\xff⟩ — so what is on screen is
+// exactly what will run.
+func reveal(s string) string { return revealText(s, true, false) }
+
+// revealText is reveal with two choices: keepNewline leaves a newline as it
+// is, else it is shown as ⟨\n⟩; runs writes a long run of spaces or tabs,
+// which could push the rest of a line out of view, as a count: ⟨32 spaces⟩.
+func revealText(s string, keepNewline, runs bool) string {
 	var b strings.Builder
-	rs := []rune(s)
-	for i, r := range rs {
+	rs, bad := decodeRunes(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		if bad[i] != 0 {
+			fmt.Fprintf(&b, "⟨\\x%02x⟩", bad[i])
+			continue
+		}
+		if r == ' ' || r == '\t' {
+			end, mark := blankRun(rs, i)
+			if runs && mark != "" {
+				b.WriteString(mark)
+			} else {
+				b.WriteString(strings.ReplaceAll(string(rs[i:end]), "\t", "    "))
+			}
+			i = end - 1
+			continue
+		}
+		var prev rune
+		if i > 0 {
+			prev = rs[i-1]
+		}
 		switch {
-		case r == '\n':
+		case r == '\n' && keepNewline:
 			b.WriteByte('\n')
-		case r == '\t':
-			b.WriteString("    ")
+		case r == '\n':
+			b.WriteString("⟨\\n⟩")
 		case r == 0x200d && keepJoiner(rs, i):
 			b.WriteRune(r)
 		case r == '\r':
@@ -448,13 +473,90 @@ func reveal(s string) string {
 			b.WriteString("⟨\\e⟩")
 		case r == 0:
 			b.WriteString("⟨\\0⟩")
-		case hiddenRune(r) || r == 0x200d:
+		case hiddenRune(r) || r == 0x200d || drawsNothing(r, prev):
 			fmt.Fprintf(&b, "⟨U+%04X⟩", r)
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// decodeRunes splits s into runes, with the byte of each that is not UTF-8
+// in bad (0 where the rune is whole), so it can be shown rather than become
+// a replacement character.
+func decodeRunes(s string) ([]rune, []byte) {
+	rs := make([]rune, 0, len(s))
+	bad := make([]byte, 0, len(s))
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && n <= 1 {
+			rs, bad = append(rs, utf8.RuneError), append(bad, s[i])
+			i++
+			continue
+		}
+		rs, bad = append(rs, r), append(bad, 0)
+		i += n
+	}
+	return rs, bad
+}
+
+// drawsNothing reports a printable rune that shows as blank or as nothing:
+// the Hangul fillers, the blank braille pattern, the combining grapheme
+// joiner. U+FE0F asks for emoji style, so it is shown raw only after a
+// symbol it can apply to.
+func drawsNothing(r, prev rune) bool {
+	switch r {
+	case 0x034f, 0x115f, 0x1160, 0x2800, 0x3164, 0xffa0:
+		return true
+	case 0xfe0f:
+		return !emojiBase(prev)
+	}
+	return false
+}
+
+func emojiBase(r rune) bool {
+	return unicode.In(r, unicode.So, unicode.Sm) || r >= '0' && r <= '9' || r == '#' || r == '*' ||
+		r == 0x203c || r == 0x2049 || r == 0x2139
+}
+
+// blankRun reads the spaces and tabs from rs[i], returning where they end
+// and, for a run of eight columns or more (a tab counts eight), a marker to
+// show instead. Indentation at the start of a line is marked only from 32
+// columns.
+func blankRun(rs []rune, i int) (int, string) {
+	j, sp, tb := i, 0, 0
+	for ; j < len(rs) && (rs[j] == ' ' || rs[j] == '\t'); j++ {
+		if rs[j] == ' ' {
+			sp++
+		} else {
+			tb++
+		}
+	}
+	limit := 8
+	if i > 0 && rs[i-1] == '\n' {
+		limit = 32
+	}
+	if sp+tb < 2 || sp+8*tb < limit {
+		return j, ""
+	}
+	return j, "⟨" + runCount(sp, tb) + "⟩"
+}
+
+func runCount(sp, tb int) string {
+	part := func(n int, one, many string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %s", n, many)
+	}
+	switch {
+	case tb == 0:
+		return part(sp, "space", "spaces")
+	case sp == 0:
+		return part(tb, "tab", "tabs")
+	}
+	return part(sp, "space", "spaces") + ", " + part(tb, "tab", "tabs")
 }
 
 // safeSGR accepts only parameters that are digits and separators.

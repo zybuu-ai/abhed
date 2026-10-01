@@ -306,7 +306,7 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 	case "hawkeye":
 		return hawkeyeCmd(workspace, rest[1:], a.trust)
 	case "migrate":
-		return migrateCmd(workspace, a.migrate, a.trust)
+		return migrateCmd(workspace, rest[1:], a.migrate, a.trust)
 	case "resolve":
 		return resolveCmd(workspace, rest[1:], a.trust)
 	case "acp":

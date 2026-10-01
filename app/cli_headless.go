@@ -320,7 +320,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		return 1 // a run with no session row would write into another's record
 	}
 	rec := agent.NewRecorder(store, sessionID, "")
-	rec.Redact = openVault().Redactor()
+	// Read again as the store changes: bash reads it at each call.
+	rec.Redact = openVault().Session()
 	streaming := o.format != "text"
 	quietText := !streaming && o.schema != nil
 

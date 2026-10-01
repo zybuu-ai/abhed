@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,25 @@ const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); 
 	}
 }
 
+// The agent's terminal prints a command's escapes rather than obeying them.
+func TestIDEAgentTerminalShowsCommandEscapes(t *testing.T) {
+	harness := `globalThis.__w = [];
+let agentTerm = {term: {write: s => __w.push(s)}}, activeTerm = null, termN = 0;
+const makeTerm = () => agentTerm, selectTerm = () => {};
+`
+	if out, err := runConsoleCases(t, "ide-term", harness, "ide_term_cases.mjs"); err != nil {
+		t.Fatalf("the agent terminal failed:\n%s", out)
+	}
+}
+
+// An approval card and a call row name what the call is about: a web_fetch
+// by its URL, not its arguments as JSON.
+func TestIDENamesACallBySubject(t *testing.T) {
+	if out, err := runConsoleCases(t, "ide-subject", "", "ide_subject_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's call subjects failed:\n%s", out)
+	}
+}
+
 // New file in a just-opened folder keeps its name input when the folder's
 // listing arrives after it; the removal used to race the input's blur.
 func TestIDENewFileSurvivesTheFolderLoading(t *testing.T) {
@@ -154,11 +174,12 @@ const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
 const tx = () => __root, qbox = new El('div'), add = n => __root.appendChild(n);
 let cid = 0; const bubble = (cls, who, text) => { const m = new El('div'); m.className = 'msg ' + cls; m.textContent = text || ''; return m; };
 const userBubble = (text, state) => { const b = bubble('user' + (state ? ' ' + state : ''), 'you', text); b.text = text; b.cid = 'c' + (++cid); return b; };
-const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = () => {};
+globalThis.__connected = []; let signInGone = false, leaving = false;
+const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = id => { __connected.push(id); };
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
 const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
-const requestAnimationFrame = f => f();
+const requestAnimationFrame = f => f(), idleTurns = new Map();
 // api answers the session list from __sessions, after the next of __delays;
 // a route given to __defer answers when the test resolves it.
 let __sessions = [], __delays = []; const __pending = {};
@@ -169,11 +190,15 @@ const api = async (url, opts) => {
   if(opts && opts.body) __posted.push({route, body: JSON.parse(opts.body)});
   if(__pending[route]){ const p = __pending[route]; delete __pending[route]; return p; }
   if(url === '/v1/sessions'){ const snap = __sessions, d = __delays.shift() || 0; if(d) await new Promise(r => setTimeout(r, d)); return snap; }
+  const st = /^\/v1\/sessions\/([^/]+)\/state$/.exec(url); if(st){ const s = __sessions.find(x => x.id === st[1]); if(!s) throw Object.assign(new Error('session not found'), {status:404}); return {id:s.id, state:s.state, turns:s.turns}; }
   return [];
 };
 `
 	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_chat_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's approval prompt failed:\n%s", out)
+	}
+	if !strings.Contains(ideHTML, "setInterval(watchIdle, ") {
+		t.Error("nothing watches a session with no run")
 	}
 }
 
@@ -402,5 +427,82 @@ func TestIDEVendorEveryComponentUnpacks(t *testing.T) {
 	}
 	if seen < 10 {
 		t.Fatalf("only %d components embedded", seen)
+	}
+}
+
+// Settings lists the tools capabilities does: a session's own recall, task
+// and tasks included, not only the shared registry's.
+func TestSettingsListsTheToolsSessionsGet(t *testing.T) {
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})})
+	get := func(path string, v any) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", path, nil)
+		if path == "/v1/admin/settings" {
+			s.getSettings(rec, req) // the admin check is not what is tested
+		} else {
+			s.Handler().ServeHTTP(rec, req)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", path, rec.Code, rec.Body)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var c capabilities
+	var st settingsView
+	get("/v1/capabilities", &c)
+	get("/v1/admin/settings", &st)
+	var want []string
+	for _, tool := range c.Tools {
+		want = append(want, tool.Name)
+	}
+	sort.Strings(want)
+	got := append([]string(nil), st.Tools...)
+	sort.Strings(got)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("settings lists %v; sessions get %v", got, want)
+	}
+	for _, name := range []string{"recall", "task", "tasks"} {
+		if !strings.Contains(" "+strings.Join(got, " ")+" ", " "+name+" ") {
+			t.Fatalf("settings leaves out %s: %v", name, got)
+		}
+	}
+}
+
+// The /ide mode selector offers only the server's mode and plan, and a refused
+// send puts the selector and the status bar back on the mode a session gets.
+func TestIDEOffersOnlyAllowedModes(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+Object.defineProperty(El.prototype, 'options', { get(){ return this.childNodes; } });
+const sel = new El('select'); const $ = () => sel;
+for(const m of ['default', 'plan', 'accept-edits', 'auto']){ const o = new El('option'); o.value = m; sel.appendChild(o); }
+`
+	if out, err := runConsoleCases(t, "ide-modes", harness, "ide_modes_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's mode selector failed:\n%s", out)
+	}
+	for _, want := range []string{"limitModes(caps.permissions.mode); $('s-mode').textContent = 'mode ' + caps.permissions.mode; } throw e; }", "limitModes(caps.permissions.mode);\n  await loadProviders();"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("ide.html no longer has %q", want)
+		}
+	}
+}
+
+// The Events and HawkEYE panels show a record's hidden characters rather than obey them.
+func TestIDEPanelsShowHiddenCharacters(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+Object.defineProperty(El.prototype, 'childElementCount', { get(){ return this.childNodes.filter(c => c.nodeType === 1).length; } });
+Object.defineProperty(El.prototype, 'firstElementChild', { get(){ return this.childNodes.find(c => c.nodeType === 1) || null; } });
+El.prototype.remove = function(){ const p = this.parentNode; if(p) p.childNodes.splice(p.childNodes.indexOf(this), 1); };
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); return c; };
+Object.defineProperty(El.prototype, 'firstChild', { get(){ return this.childNodes[0] || null; } });
+const nodes = {}; const $ = id => nodes[id] || (nodes[id] = new El('div'));
+const EVT_MAX = 500; let evtN = 0, current = 's1';
+const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:{turns:1, tokens_in:1}, offloads:[],
+  policy:{allowed:1, denied:0, by_step:{'default\u2066':1}}, findings:[{severity:'warn', title:'t\u200b', detail:';fs- mr\u202e', seq:3}]});
+`
+	if out, err := runConsoleCases(t, "ide-panels", harness, "ide_panels_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's panels failed:\n%s", out)
 	}
 }

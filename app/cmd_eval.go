@@ -90,7 +90,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		// depends on the harness and the task and not on what those reach.
 		set := toolset.Build(ctx, cfg, toolset.Options{
 			Workspace: ws,
-			Bash: tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+			Bash: tools.Bash{Sandbox: sb.Command,
 				Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}},
 			Parts: toolset.Skills | toolset.WebSearch | toolset.WebFetch,
 			Vault: vault,
@@ -113,7 +113,8 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		store := agent.NewMemStore()
 		sessionID := "eval-" + task.ID
 		rec := agent.NewRecorder(store, sessionID, "")
-		rec.Redact = vault.Redactor()
+		red := vault.Session()
+		rec.Redact = red
 
 		loopCfg := agent.DefaultConfig()
 		if task.MaxTurns > 0 {
@@ -124,7 +125,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 
 		budget := toolset.Budget(cfg)
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor(), Definitions: set.Agents}
+			Budget: budget, Config: loopCfg, Workspace: ws, Redact: red, Definitions: set.Agents}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.Names())
 

@@ -90,7 +90,10 @@ built, not passed as an argument.
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
 step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
-and the token estimate is approximate.
+and the token estimate is approximate. Not much below 0.5 either: a
+compaction keeps recent turns up to about half the window, so below roughly
+0.3 what it keeps is already over the threshold and it compacts on almost
+every turn, each a summary call and a lost prefix cache.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
 after compaction. Project conventions belong there. The full order, imports
@@ -188,7 +191,10 @@ stays open; unset means 30.
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
 reason (a name that does not resolve, no route to a host) ends with a note
-saying so and pointing at `web_search` and `web_fetch`.
+saying so and pointing at `web_search` and `web_fetch`. A command that exits 0
+gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
+`npm`, `pip` and the like) and the failure is in its last five lines, so
+output that merely mentions such an error, a log being read, does not.
 
 ## Web fetch
 
@@ -350,7 +356,9 @@ signed out, and a group added or removed applies at once. Removing
 administrator rights through `POST /v1/admin/users/admin` also ends that
 person's sessions, on every server sharing the account store: at once on the
 one that removed them, and within about 2 seconds on the others over
-Postgres.
+Postgres. An event or terminal stream already open is authorised again while
+it runs, and ends when its sign-in would now be refused: at once for a change
+made on the same server, within 10 seconds otherwise.
 
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,

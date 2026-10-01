@@ -87,9 +87,9 @@ func (a *DialogApprover) rel(p string) string {
 }
 
 func (a *DialogApprover) header(tool string, args json.RawMessage) string {
-	sum := reveal(summarizeArgsRel(tool, args, a.rel))
+	sum := VisibleLine(summarizeArgsRel(tool, args, a.rel))
 	if tool == "bash" {
-		cmd := reveal(str(args, "command"))
+		cmd := Visible(str(args, "command"))
 		sum = firstLine(cmd)
 		if len([]rune(sum)) > 80 {
 			sum = string([]rune(sum)[:79]) + "…"
@@ -108,13 +108,13 @@ func (a *DialogApprover) header(tool string, args json.RawMessage) string {
 func (a *DialogApprover) showScope(scope string) string {
 	open, close := strings.IndexByte(scope, '('), strings.LastIndexByte(scope, ')')
 	if open < 0 || close < open {
-		return reveal(scope)
+		return VisibleLine(scope)
 	}
 	inner := scope[open+1 : close]
 	if filepath.IsAbs(inner) {
 		inner = a.rel(inner)
 	}
-	return reveal(scope[:open+1] + inner + scope[close:])
+	return VisibleLine(scope[:open+1] + inner + scope[close:])
 }
 
 func str(args json.RawMessage, key string) string {
@@ -150,7 +150,7 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 	question := fmt.Sprintf("Allow %s?", toolTitle(tool))
 	switch tool {
 	case "bash":
-		body = append(body, viewBlock(&commandBlock{command: reveal(str(args, "command"))}))
+		body = append(body, viewBlock(&commandBlock{command: Visible(str(args, "command"))}))
 		question = "Run this command?"
 	case "edit", "write":
 		path := str(args, "path")
@@ -159,15 +159,23 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 		}
 		switch {
 		case tool == "write" && a.missing(path):
-			question = "Create " + reveal(a.rel(path)) + "?"
+			question = "Create " + VisibleLine(a.rel(path)) + "?"
 		case tool == "write":
-			question = "Overwrite " + reveal(a.rel(path)) + "?"
+			question = "Overwrite " + VisibleLine(a.rel(path)) + "?"
 		default:
-			question = "Make this edit to " + reveal(a.rel(path)) + "?"
+			question = "Make this edit to " + VisibleLine(a.rel(path)) + "?"
 		}
 	default:
+		// What the call will do, as the line prompt previews it, then every
+		// argument as sent.
+		var m map[string]any
+		if json.Unmarshal(args, &m) == nil {
+			if head, lines := callPreview(tool, m); head != "" {
+				body = append(body, viewBlock(&commandBlock{command: strings.Join(append([]string{head}, lines...), "\n"), plain: true}))
+			}
+		}
 		if raw := strings.TrimSpace(string(args)); raw != "" && raw != "{}" {
-			body = append(body, viewBlock(&commandBlock{command: reveal(raw), plain: true}))
+			body = append(body, viewBlock(&commandBlock{command: Visible(raw), plain: true}))
 		}
 	}
 
@@ -204,7 +212,7 @@ func (a *DialogApprover) confirm(ctx context.Context, args json.RawMessage, res 
 		Kind:  DialogConfirm,
 		Title: "This cannot be undone",
 		Why:   VisibleLine(res.Reason),
-		Body:  []Block{viewBlock(&commandBlock{command: reveal(str(args, "command"))})},
+		Body:  []Block{viewBlock(&commandBlock{command: Visible(str(args, "command"))})},
 		Ask:   "Really run it?",
 		Choices: []Choice{
 			{ID: "no", Label: "No, don't run it"},

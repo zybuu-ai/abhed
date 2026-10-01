@@ -5,12 +5,14 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -396,16 +398,47 @@ func storedSession(ctx context.Context, st *cliState, id string) (store.SessionR
 	return rec, err == nil, err
 }
 
-// ownedHere refuses a session recorded for another user or tenant.
+// ownedHere refuses a session recorded for another user or tenant. A CLI
+// subagent's row is recorded as store.SubagentUser, and is owned by whoever
+// owns the session that started it; a parent that cannot be found owns nothing.
 func ownedHere(ctx context.Context, st *cliState, id string) error {
 	rec, ok, err := storedSession(ctx, st, id)
 	if err != nil || !ok {
 		return err
 	}
-	if rec.User != cliUser() || rec.Tenant != cliTenant(st.appCfg) {
+	tenant := cliTenant(st.appCfg)
+	owner := rec
+	for hops := 0; owner.User == store.SubagentUser && owner.ParentID != "" && owner.Tenant == tenant && hops < 16; hops++ {
+		parent, found, err := storedSession(ctx, st, owner.ParentID)
+		if errors.Is(err, store.ErrNotFound) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("could not check who owns session %s: %w", id, err)
+		}
+		if !found {
+			break
+		}
+		owner = parent
+	}
+	// A subagent's row whose chain ends without a person owns nothing, even
+	// for a user who happens to be named like the subagent rows are.
+	// A session the owner migration moved to the same-named account is still this user's.
+	mine := owner.User == cliUser() || owner.User == auth.LocalOwner(cliUser())
+	// An unclaimed or nobody row is no one's, whatever $USER says.
+	if ownsNoOne(owner.User) || ownsNoOne(rec.User) {
+		mine = false
+	}
+	if owner.User == store.SubagentUser || !mine || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
+}
+
+// ownsNoOne reports whether owner is an unclaimed or nobody key, in any case.
+func ownsNoOne(owner string) bool {
+	o := strings.ToLower(strings.TrimSpace(owner))
+	return strings.HasPrefix(o, auth.UnclaimedPrefix) || strings.HasPrefix(o, auth.NobodyPrefix)
 }
 
 // claimResumed claims a resumed session as its first task starts: only one
@@ -637,6 +670,15 @@ func releaseConversation(st *cliState) {
 func storeConfig(cfg config.Config) store.Config {
 	sc := store.DefaultConfig(cfg.Storage.DSN)
 	sc.SingleRole = cfg.Storage.SingleRole
+	sc.Owners = ownerPolicy(cfg)
+	if cfg.Storage.SingleRole {
+		// A single-role start migrates owners itself, so it reads the
+		// users_file too; a configured one it cannot read stops the start.
+		sc.OwnerAccounts = func() ([]*auth.User, error) {
+			users, _, err := fileOwnerAccounts(cfg, cfg.Workspace.Workspace, false)
+			return users, err
+		}
+	}
 	if cfg.Storage.Tenant != "" {
 		sc.Tenant = cfg.Storage.Tenant
 	}

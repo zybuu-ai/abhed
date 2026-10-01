@@ -620,6 +620,8 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Workspace: o.cwd, ConfigDir: o.cwd, Sandbox: true, WorkspaceTrust: o.trust, AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
+		// The configuration's turn limit binds, as it does from the terminal.
+		ConfiguredLimits: true,
 		// Stdout is the protocol; what the tool set skipped goes to stderr.
 		Warn: warnf,
 		// Background tasks outlive a turn and report as they finish; the
@@ -891,10 +893,15 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if via != "" {
 		meta["via"] = via
 	}
-	title := toolTitle(tool, shown)
+	raw := rawToolTitle(tool, shown)
 	if sub != "" {
 		meta["subagent"] = sub
-		title = "subagent " + ui.VisibleLine(sub) + ": " + title
+		raw = "subagent " + sub + ": " + raw
+	}
+	title := ui.VisibleLine(raw)
+	// The note covers the whole call: every argument, the reason, scope and asker.
+	if ui.HasHidden(raw) || ui.ArgsHidden(args) || ui.ArgsHidden(shown) || anyHidden(reason, scope, shownScope, sub, agent.PipelineOf(ctx)) {
+		title += " (contains hidden or control characters)"
 	}
 	if offerAlways {
 		meta["scope"] = shownScope
@@ -1081,9 +1088,13 @@ func toolKind(tool string) string {
 	return "other"
 }
 
-// toolTitle is a call's one-line title. Its text came from the model, so
-// every character that would not print as itself is written out (§1.2).
+// toolTitle is text an editor shows as the card's heading, so control and
+// format characters are written out rather than left to hide part of the call.
 func toolTitle(tool string, args json.RawMessage) string {
+	return ui.VisibleLine(rawToolTitle(tool, args))
+}
+
+func rawToolTitle(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
 	for _, k := range []string{"command", "path", "pattern", "query"} {
@@ -1112,4 +1123,13 @@ func acpID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func anyHidden(fields ...string) bool {
+	for _, f := range fields {
+		if ui.HasHidden(f) {
+			return true
+		}
+	}
+	return false
 }

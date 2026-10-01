@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -255,5 +256,29 @@ func TestAdminResetForcesChange(t *testing.T) {
 	got, _ = l.Authenticate(ctx, "ada", "chosen-by-the-user")
 	if got.MustChange {
 		t.Error("MustChange still set after the user chose their own password")
+	}
+}
+
+// Concurrent creates through two LocalAuths sharing a store: one wins.
+func TestCreateUserAcrossInstancesOneWins(t *testing.T) {
+	store := NewMemoryUserStore()
+	a, b := NewLocalAuth(store, time.Hour, false), NewLocalAuth(store, time.Hour, false)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, la := range []*LocalAuth{a, b} {
+		wg.Add(1)
+		go func(i int, la *LocalAuth) {
+			defer wg.Done()
+			errs[i] = la.CreateUser(context.Background(), User{Username: "dup", Email: "d@example.test"}, "long enough pw")
+		}(i, la)
+	}
+	wg.Wait()
+	if (errs[0] == nil) == (errs[1] == nil) {
+		t.Fatalf("errs = %v; want exactly one success", errs)
+	}
+	for _, err := range errs {
+		if err != nil && !errors.Is(err, ErrUserExists) {
+			t.Fatalf("loser's error = %v, want ErrUserExists", err)
+		}
 	}
 }

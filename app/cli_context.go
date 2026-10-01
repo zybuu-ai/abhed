@@ -53,6 +53,10 @@ func slashCompact(ctx context.Context, fields []string, r *ui.Renderer,
 		st.loop.Compactor.SetFocus("")
 	}
 	release()
+	if errors.Is(err, agent.ErrNothingToCompact) {
+		fmt.Println(s.Dim("  nothing to compact yet"))
+		return false
+	}
 	if err != nil {
 		fmt.Printf("  %s %v\n", s.Red("✕"), err)
 		return false

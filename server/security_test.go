@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -323,6 +324,101 @@ func TestSessionListIsPerUser(t *testing.T) {
 	if got := list("alice"); !strings.Contains(got, "alice private prompt") {
 		t.Fatalf("alice cannot see her own session:\n%s", got)
 	}
+}
+
+// A proxy user named like a reserved owner ("anonymous", "agent") is an
+// ordinary user, not the no-auth caller who sees the whole tenant.
+func TestProxyUserNamedLikeAReservedOwner(t *testing.T) {
+	s := proxyServer(t)
+	send := func(method, path, user, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-Abhed-User", user)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	rec := send("POST", "/v1/sessions", "alice", `{"prompt":"alice private prompt"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create: %d", rec.Code)
+	}
+	var created struct {
+		ID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("create: %v %s", err, rec.Body)
+	}
+	time.Sleep(200 * time.Millisecond)
+	for _, user := range []string{"anonymous", "ANONYMOUS", "Anonymous", " anonymous ", "\tanonymous", "agent", "AGENT", " agent "} {
+		if got := send("GET", "/v1/sessions", user, "").Body.String(); strings.Contains(got, "alice private prompt") {
+			t.Errorf("proxy user %q lists alice's session:\n%s", user, got)
+		}
+		if code := send("GET", "/v1/sessions/"+created.ID, user, "").Code; code != http.StatusNotFound {
+			t.Errorf("proxy user %q opens alice's session: %d", user, code)
+		}
+		if code := send("POST", "/v1/sessions/"+created.ID+"/approve", user, `{"approved":false}`).Code; code != http.StatusNotFound {
+			t.Errorf("proxy user %q answers alice's approval: %d", user, code)
+		}
+		if code := send("POST", "/v1/sessions/"+created.ID+"/messages", user, `{"prompt":"steer"}`).Code; code != http.StatusNotFound {
+			t.Errorf("proxy user %q steers alice's session: %d", user, code)
+		}
+	}
+	send("POST", "/v1/sessions", "anonymous", `{"prompt":"anon own prompt"}`)
+	time.Sleep(200 * time.Millisecond)
+	if got := send("GET", "/v1/sessions", "anonymous", "").Body.String(); !strings.Contains(got, "anon own prompt") {
+		t.Errorf("proxy user anonymous cannot see its own session:\n%s", got)
+	}
+}
+
+// A proxy request that names no one who can own (an email that is not an
+// address) is refused before it can create a session it could never open.
+func TestNobodyCallerIsRefused(t *testing.T) {
+	s := proxyServer(t)
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/v1/sessions", `{"prompt":"orphan"}`},
+		{"GET", "/v1/sessions", ""},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("X-Abhed-Email", "not-an-address")
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: %d, want 401", tc.method, tc.path, rec.Code)
+		}
+	}
+	s.mu.RLock()
+	n := len(s.running)
+	s.mu.RUnlock()
+	if n != 0 {
+		t.Errorf("%d session(s) created for a caller who names no one", n)
+	}
+}
+
+// A removed account's running sessions go to no one, so an account made
+// again under the same name does not inherit them.
+func TestReleaseSessionsUnclaimsLiveSessions(t *testing.T) {
+	s := proxyServer(t)
+	s.mu.Lock()
+	s.running["a"] = &liveSession{ID: "a", Tenant: "default", User: "local:bob"}
+	s.running["b"] = &liveSession{ID: "b", Tenant: "other", User: "local:bob"}
+	s.running["c"] = &liveSession{ID: "c", Tenant: "default", User: "local:carol"}
+	s.mu.Unlock()
+	if n := s.ReleaseSessions("default", "local:bob"); n != 1 {
+		t.Fatalf("released %d, want 1", n)
+	}
+	if _, ok := s.session(context.Background(), "a", "default", "local:bob"); ok {
+		t.Error("a new bob still owns the old bob's session")
+	}
+	if s.running["a"].User != "unclaimed:local:bob" || s.running["b"].User != "local:bob" || s.running["c"].User != "local:carol" {
+		t.Errorf("owners after release: %q %q %q", s.running["a"].User, s.running["b"].User, s.running["c"].User)
+	}
+	if n := s.ReleaseSessions("default", "anonymous"); n != 0 {
+		t.Errorf("released %d for the no-auth owner", n)
+	}
+	s.mu.Lock()
+	delete(s.running, "a")
+	delete(s.running, "b")
+	delete(s.running, "c")
+	s.mu.Unlock()
 }
 
 // The list and the single-session fetch must agree. A list more permissive than

@@ -166,11 +166,14 @@ operator's store (`~/.abhed/secrets.json`, or `ABHED_SECRETS_FILE`) becomes
 `[secret:NAME]` before it reaches the record, `OnEvent`, the model, the
 arguments and decision passed to `Approve`, or what `Run` and `RunJSON` return.
 The SDK has no option to turn this off, and `New` returns an error when the
-store exists but cannot be loaded. The store is read once, when `New` is
-called. A structured answer is redacted after it is validated, so a redacted
+store exists but cannot be loaded. The store is read when `New` is
+called and again whenever the file changes, so a secret added during the
+session is redacted from then on. A structured answer is redacted after it is validated, so a redacted
 answer may no longer match the caller's schema, for example a `pattern`, an
 `enum` or a length bound. One whose redaction fails comes back as
-`{"withheld": ...}`, which will not decode into the caller's type. See [Secrets](04-permissions.md#secrets).
+`{"withheld": ...}`, which will not decode into the caller's type. `bash` can
+use a stored secret by name, as from the command line, when a
+`secret(NAME)` rule allows it. See [Secrets](04-permissions.md#secrets).
 
 Edits that would break a file's syntax are refused, as from the command line;
 see [Tools](05-tools.md#an-edit-that-would-break-the-file).
@@ -193,6 +196,7 @@ returns `abhed.ErrUntrustedModel` rather than run on a different model; set
 | `Mode` | replaces `permissions.mode` | `bypass` is refused; if the file sets `permissions.mode`, only that mode or `plan` |
 | `SyntaxCheck` | replaces `tools.syntax_check` (`refuse`, `report`, `off`) | if the file sets it, only as strict or stricter (`off` < `report` < `refuse`) |
 | `MaxTurns` | replaces the default turn limit | if the file sets `limits.max_turns`, at most that; zero uses it |
+| `ConfiguredLimits` | when `MaxTurns` is zero, the files' `limits.max_turns` binds, as for the CLI; off, it does not | the same, the managed value still the ceiling |
 | `Allow` | added to `permissions.allow` | refused if the file sets `permissions.allow` |
 | `Deny` | added to `permissions.deny` | added; the file's deny rules stay |
 | `Extensions` | added to the configured ones | added; an extension can only veto |

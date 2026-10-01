@@ -223,7 +223,7 @@ func showFile(out io.Writer, st config.WorkspaceTrust) {
 		return
 	}
 	if config.HashOf(data) != st.SHA256 {
-		fmt.Fprintln(out, "The file changed while you were being asked. Answer d, and run abhed again to review the new version.")
+		fmt.Fprintln(out, "The file changed while you were being asked. Answer 1 (No), and run abhed again to review the new version.")
 		return
 	}
 	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.PrintableText(string(bytes.TrimRight(data, "\n"))))

@@ -212,3 +212,41 @@ func TestSandboxOptionBuildsTheConfiguredTier(t *testing.T) {
 	}
 	a.Close()
 }
+
+// ConfiguredLimits takes the file's turn limit, as the CLI does; an explicit
+// MaxTurns still wins, and the managed value stays the ceiling.
+func TestConfiguredLimitsTakeTheFileTurns(t *testing.T) {
+	build := func(managedBody string, opts Options) int {
+		t.Helper()
+		managedFile(t, managedBody)
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, ".abhed"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".abhed", "config.json"), []byte(`{"limits": {"max_turns": 7}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		opts.Workspace, opts.ConfigDir, opts.Provider = dir, dir, testProvider
+		opts.WorkspaceTrust = config.TrustGranted
+		a, err := New(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Close()
+		return a.loop.Config.MaxTurns
+	}
+	for _, c := range []struct {
+		managed string
+		opts    Options
+		want    int
+	}{
+		{"", Options{}, 100},
+		{"", Options{ConfiguredLimits: true}, 7},
+		{"", Options{ConfiguredLimits: true, MaxTurns: 20}, 20},
+		{`{"limits": {"max_turns": 5}}`, Options{ConfiguredLimits: true}, 5},
+	} {
+		if got := build(c.managed, c.opts); got != c.want {
+			t.Errorf("managed %q, %+v: turns %d, want %d", c.managed, c.opts, got, c.want)
+		}
+	}
+}

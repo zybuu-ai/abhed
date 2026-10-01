@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
@@ -507,7 +508,7 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &a) != nil {
 			return
 		}
-		fmt.Fprintf(r.w, "%s %s %s\n", s.Accent("●"), s.Bold(sanitize(a.Tool, false)), s.Dim(reveal(summarizeArgs(a.Tool, a.Args))))
+		fmt.Fprintf(r.w, "%s %s %s\n", s.Accent("●"), s.Bold(VisibleLine(a.Tool)), s.Dim(VisibleLine(summarizeArgs(a.Tool, a.Args))))
 
 	case agent.EvObservation:
 		var o agent.Observation
@@ -515,8 +516,8 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			return
 		}
 		if o.IsError {
-			for _, line := range firstLines(sanitize(o.Content, false), 8) {
-				fmt.Fprintf(r.w, "  %s %s\n", s.Red("│"), line)
+			for _, line := range firstLines(o.Content, 8) {
+				fmt.Fprintf(r.w, "  %s %s\n", s.Red("│"), VisibleLine(line))
 			}
 			return
 		}
@@ -524,13 +525,13 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			return
 		}
 		if o.ExitCode != nil && *o.ExitCode != 0 {
-			for _, line := range firstLines(sanitize(o.Content, false), 12) {
-				fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("│"), line)
+			for _, line := range firstLines(o.Content, 12) {
+				fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("│"), VisibleLine(line))
 			}
 			return
 		}
 		if summary := observationSummary(o); summary != "" {
-			fmt.Fprintf(r.w, "  %s %s\n", s.Dim("└"), s.Dim(sanitize(summary, false)))
+			fmt.Fprintf(r.w, "  %s %s\n", s.Dim("└"), s.Dim(VisibleLine(summary)))
 		}
 
 	case agent.EvActionDenied:
@@ -632,10 +633,11 @@ func firstLines(s string, n int) []string {
 	return lines
 }
 
+// truncate counts runes, so a cut never splits a character into stray bytes.
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string([]rune(s)[:n]) + "..."
 }

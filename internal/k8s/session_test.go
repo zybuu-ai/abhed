@@ -71,12 +71,12 @@ func TestLoginIsScopedToTheSession(t *testing.T) {
 				t.Fatalf("session A could not log in: %s", res.Content)
 			}
 			get, _ := json.Marshal(map[string]string{"resource": "nodes"})
-			if res := (GetTool{M: mgr}).Run(context.Background(), a, get); res.IsError {
+			if res := (GetTool{M: mgr}).Run(context.Background(), a, resolved(t, GetTool{M: mgr}, a, get)); res.IsError {
 				t.Fatalf("session A cannot use its own login: %s", res.Content)
 			}
 
 			before := len(seen())
-			res := GetTool{M: mgr}.Run(context.Background(), b, get)
+			res := GetTool{M: mgr}.Run(context.Background(), b, resolved(t, GetTool{M: mgr}, b, get))
 			if !res.IsError {
 				t.Fatalf("session B read the cluster with session A's login: %s", res.Content)
 			}
@@ -383,7 +383,7 @@ func TestApplyTargetNamesClusterServerAndCredential(t *testing.T) {
 		t.Fatal(res.Content)
 	}
 	for _, raw := range []string{`{"action":"delete","cluster":"prod"}`, `{"action":"delete"}`} {
-		got := apply.Target(sess, json.RawMessage(raw))
+		got := apply.Target(sess, resolved(t, apply, sess, json.RawMessage(raw)))
 		for _, want := range []string{"cluster prod at " + srv.URL, "this session's login", "TLS verified"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s: target %q does not name %q", raw, got, want)
@@ -546,4 +546,14 @@ func TestUnreachableErrorCarriesNoQuery(t *testing.T) {
 			t.Fatalf("the error repeats the server's query: %v", err)
 		}
 	}
+}
+
+// resolved is what the loop passes on: the arguments with the session's only
+// login named when the call names no cluster or context.
+func resolved(t *testing.T, r tools.ArgResolver, sess *tools.Session, raw json.RawMessage) json.RawMessage {
+	t.Helper()
+	if out, _, _ := r.ResolveArgs(sess, raw); out != nil {
+		return out
+	}
+	return raw
 }

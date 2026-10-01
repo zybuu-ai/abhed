@@ -106,7 +106,10 @@ the other proxy variables, since through a proxy it could not check where
 the connection goes.
 
 `web_search`'s description points at `web_fetch` only when both are on, and
-the system prompt names only the web tools the session has.
+the system prompt names only the web tools the session has. A search query
+that holds a stored secret, as written, percent-encoded or in another case,
+is refused before it reaches the provider, as a URL holding one is for
+`web_fetch`.
 
 ### An edit that would break the file
 

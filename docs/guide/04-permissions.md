@@ -308,7 +308,7 @@ A deny pattern matches the words as written, so it is easy to step around.
 
 - an absolute or relative path to the program: `/usr/bin/curl x`
 - a command handed to another shell: `bash -c 'curl x'`, `sh -c "curl x"`
-- a quoted or escaped name: `'curl' x`, `$'curl' x`, `\curl x`, `c\url x`
+- a quoted or escaped name: `'curl' x`, `"cu"rl x`, `\curl x`, `c\url x`
 - flags in another place or split up: `bash(rm -rf *)` does not match
   `rm x -rf` or `rm -r -f x`
 
@@ -472,6 +472,13 @@ command, which must be asked about every time and needs a second Yes. When a
 skill's pipeline or a subagent asked, the question says which. How a key
 counts as an answer is in [The terminal](18-terminal.md#approvals).
 
+Text in the prompt comes from the model, so it is shown as written, not
+obeyed. A carriage return, escape sequence, backspace, zero-width or bidi
+character is printed as an escape such as `\r`, `\x1b` or `⟨U+200D⟩`, and the
+prompt adds `! this call contains hidden or control characters`. The console
+and the IDE do the same on their approval cards, and an editor over `acp` gets
+the same escapes in the permission request's title.
+
 The record names the scope on the approval that chose it (`granted_scope`),
 and in the console and the API the person who answered (`approver`); a call a
 remembered scope let through later is `by: session-scope` with that `scope`.
@@ -585,6 +592,16 @@ that occur close together hold the text back until the last one is complete.
 Text that cannot be redacted is never written as it was: it becomes
 `[redacted: output withheld]`.
 
+**File paths.** A `write` or `edit` whose path holds a stored secret is
+refused, in every mode, whether the agent or a person at the workbench makes
+it: the editor's save, and the explorer's New file, New folder and the new
+name of a Rename, are checked the same way. `bash` is not: a command can still
+create a file whose name holds a value the person typed or the agent built. The path is matched as written, in its case, and
+only against values of 12 characters or more, so a value such as `postgres`
+does not refuse ordinary files. A value of 8 to 11 characters can therefore
+still become a file name in a mode that approves writes without asking;
+store longer values, or leave writes to ask.
+
 Every way of running a session redacts with the same store: the terminal, the
 server and the console, `abhed acp`, `abhed rpc`, `abhed resolve`, `abhed eval`,
 subagents and the [SDK](09-sdk.md). There is no setting that turns it off. In
@@ -603,11 +620,13 @@ server runs, each new or resumed session still starts, but every event payload
 it records is withheld, and the server logs why, until the file is fixed. The
 same happens for the next conversation in a terminal that is already running.
 
-The store is read when each session starts: each terminal conversation, each
-server session (new or resumed), each SDK agent and each eval task. A subagent
-redacts as its parent does. A secret stored during a session is redacted from
-the next session on, with no restart. `abhed acp` and `abhed rpc` read it once
-per agent: each ACP session and each rpc `start`.
+Redaction follows the store for the whole session, as bash does: the store is
+read again whenever the file changes, in each terminal conversation (`-p`
+included), each server session (new or resumed), each SDK agent, each ACP
+session, each rpc `start` and each eval task. A secret stored or changed during
+a session is redacted from that moment on, with no restart, and a value seen
+during the session stays redacted after it is changed or removed. A subagent
+redacts as its parent does.
 
 `abhed secret set` refuses a value under 8 characters, which would also match
 ordinary text. A shorter value stored before that rule is still redacted, but

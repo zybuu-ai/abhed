@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 
@@ -12,7 +14,15 @@ import (
 
 // migrateCmd applies the schema as the owning role and grants the runtime role
 // what the server needs. It is the one place the owner's credentials are used.
-func migrateCmd(workspace string, extensions []store.Extension, trust config.TrustChoice) int {
+func migrateCmd(workspace string, args []string, extensions []store.Extension, trust config.TrustChoice) int {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	owners := fs.String("owners", "", "what to do with sessions keyed by a local account's name or email: "+
+		"local-only (move them to the account) or unclaim; default from auth.mode")
+	noAccounts := fs.Bool("force-no-accounts", false, "run a local-only owner migration that finds no accounts")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "usage: abhed migrate [--owners=local-only|unclaim] [--force-no-accounts]")
+		return 2
+	}
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
 	if err == nil {
 		err = cfg.Workspace.DeploymentError("migrate")
@@ -33,9 +43,36 @@ func migrateCmd(workspace string, extensions []store.Extension, trust config.Tru
 	if err != nil {
 		fail(fmt.Errorf("storage.dsn: %w", err))
 	}
-	if err := store.Provision(context.Background(), store.ProvisionConfig{
+	policy := ownerPolicy(cfg)
+	if *owners != "" {
+		if policy, err = store.ParseOwnerPolicy(*owners); err != nil {
+			fail(err)
+		}
+	}
+	fmt.Printf("Session owners: %s (%s).\n", policy, ownerPolicyWhy(cfg, *owners != ""))
+	fileAccounts, filePath, err := fileOwnerAccounts(cfg, workspace, *noAccounts)
+	if err != nil {
+		fail(err)
+	}
+	err = provision(context.Background(), store.ProvisionConfig{
 		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User, Extensions: extensions,
-	}); err != nil {
+		Owners: policy, OwnerAccounts: fileAccounts, AllowNoAccounts: *noAccounts,
+		AccountsFound: func(table, extra, distinct int) {
+			from := fmt.Sprintf("%d in the users table", table)
+			if filePath != "" {
+				from += fmt.Sprintf(", %d in %s", extra, filePath)
+			}
+			fmt.Printf("Local accounts for the owner migration: %d (%s).\n", distinct, from)
+			if distinct == 0 && policy == store.OwnersLocalOnly {
+				fmt.Fprintln(os.Stderr, "abhed: WARNING: no local accounts found; sessions under old owners cannot be moved to anyone")
+			}
+		},
+	})
+	if errors.Is(err, store.ErrNoOwnerAccounts) {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	if err != nil {
 		fail(err)
 	}
 	fmt.Printf("Schema applied. %q may insert and read events and cannot change or remove them.\n"+

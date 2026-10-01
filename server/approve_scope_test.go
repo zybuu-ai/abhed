@@ -183,7 +183,7 @@ func TestAnApprovalOverHTTPNamesTheSignedInApprover(t *testing.T) {
 		cookie *http.Cookie
 		want   string
 	}{
-		{"signed in", signed, cookie, "alice"},
+		{"signed in", signed, cookie, "local:alice"},
 		{"no one signed in", testServer(t), nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -59,7 +59,7 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 
 // WebSearchTool constructs the web search tool when enabled. Returns nil, nil
 // when the operator has left it off, which is the default.
-func WebSearchTool(cfg config.Config) (*websearch.Tool, error) {
+func WebSearchTool(cfg config.Config, vault *secrets.Store) (*websearch.Tool, error) {
 	if !cfg.WebSearch.Enabled {
 		return nil, nil
 	}
@@ -76,7 +76,13 @@ func WebSearchTool(cfg config.Config) (*websearch.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &websearch.Tool{Provider: p, Limit: cfg.WebSearch.MaxResults}, nil
+	load := func() (*secrets.Redactor, error) {
+		return nil, errors.New("no secrets store")
+	}
+	if vault != nil {
+		load = vault.LoadRedactor
+	}
+	return &websearch.Tool{Provider: p, Limit: cfg.WebSearch.MaxResults, Secrets: load}, nil
 }
 
 // SkillRoots is where skills are looked FOR, as distinct from SkillDirs, which

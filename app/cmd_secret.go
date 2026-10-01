@@ -22,16 +22,6 @@ func vaultLoads() error {
 	return err
 }
 
-// vaultNames lists what the model may ask for. An unreadable store lists
-// nothing: the failure surfaces when a secret is used, with its reason.
-func vaultNames(v *secrets.Store) []string {
-	names, err := v.Names()
-	if err != nil {
-		return nil
-	}
-	return names
-}
-
 // secretCmd manages the store: set NAME (value on stdin or prompted), list, rm NAME.
 func secretCmd(args []string) int {
 	vault := openVault()

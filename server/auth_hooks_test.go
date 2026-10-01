@@ -111,7 +111,7 @@ func TestAdminMutationsReachTheAuditHook(t *testing.T) {
 		t.Fatalf("audit = %+v", g.audit)
 	}
 	for i, a := range want {
-		if g.audit[i].action != a || g.audit[i].by != "alice@example.com" {
+		if g.audit[i].action != a || g.audit[i].by != "local:alice" {
 			t.Errorf("audit[%d] = %+v, want %s by alice", i, g.audit[i], a)
 		}
 	}

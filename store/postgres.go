@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
@@ -47,6 +48,9 @@ type Postgres struct {
 	// is on the sign-in path.
 	usersOnce sync.Once
 	usersErr  error
+
+	owners        OwnerPolicy
+	ownerAccounts func() ([]*auth.User, error)
 }
 
 type Config struct {
@@ -63,6 +67,13 @@ type Config struct {
 	// mistakes and not against whoever holds the server's credentials. Off by
 	// default; an operator turns it on knowing that.
 	SingleRole bool
+	// Owners is what a single-role start's owner migration may do with rows
+	// keyed by a local account's name or email; empty means OwnersUnclaim.
+	Owners OwnerPolicy
+	// OwnerAccounts, when set, gives a single-role start's owner migration
+	// the local accounts kept outside the users table. Called only when the
+	// migration runs; its error stops the start.
+	OwnerAccounts func() ([]*auth.User, error)
 }
 
 func DefaultConfig(dsn string) Config {
@@ -129,7 +140,7 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event)}
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
 			pool.Close()
@@ -168,6 +179,20 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		return nil, fmt.Errorf("the database schema is older than this server: %s missing. "+
 			"Run `abhed migrate` as the owner (see docs/guide/02-configuration.md)", strings.Join(missing, ", "))
 	}
+	if done, err := checkOwnersMigrated(ctx, pool); err != nil || !done {
+		pool.Close()
+		if err == nil {
+			err = errOwnersNotMigrated
+		}
+		return nil, err
+	}
+	if done, err := checkAccountKeysMigrated(ctx, pool); err != nil || !done {
+		pool.Close()
+		if err == nil {
+			err = errAccountKeysNotMigrated
+		}
+		return nil, err
+	}
 	p.protected = true
 	return p, nil
 }
@@ -183,7 +208,11 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	if _, err := p.pool.Exec(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
-	return nil
+	// A single-role server reads accounts from this database; it warns rather
+	// than refuse, since it cannot be migrated any other way.
+	_, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: p.owners, AllowNoAccounts: true,
+		LoadAccounts: p.ownerAccounts})
+	return err
 }
 
 func (p *Postgres) Close() { p.pool.Close() }
@@ -265,11 +294,15 @@ func (p *Postgres) CreateSubSession(ctx context.Context, id, description string)
 	return p.CreateSubagentSession(ctx, id, "", description)
 }
 
+// SubagentUser is the user a CLI subagent's row is recorded as; the session
+// named by its ParentID says whose it is.
+const SubagentUser = auth.Subagent
+
 // CreateSubagentSession is CreateSubSession with the spawning session's id,
 // so the row is listed and deleted with its parent.
 func (p *Postgres) CreateSubagentSession(ctx context.Context, id, parentID, description string) error {
 	return p.CreateSession(ctx, SessionRecord{
-		ID: id, Tenant: p.tenant, User: "agent",
+		ID: id, Tenant: p.tenant, User: SubagentUser,
 		Workspace: description, Model: "subagent", Mode: "auto",
 		ParentID: parentID, StartedAt: time.Now().UTC(),
 	})
@@ -490,6 +523,16 @@ func (p *Postgres) Since(sessionID string, seq int64) ([]agent.Event, error) {
 // ListSessions returns recent sessions for the current tenant. RLS restricts
 // the result even if this query were wrong.
 func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord, error) {
+	return p.listSessions(ctx, "", limit)
+}
+
+// ListSessionsOwnedBy is ListSessions for one owner, filtered in the query so
+// an owner's older sessions are not crowded out by the rest of the tenant's.
+func (p *Postgres) ListSessionsOwnedBy(ctx context.Context, owner string, limit int) ([]SessionRecord, error) {
+	return p.listSessions(ctx, owner, limit)
+}
+
+func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([]SessionRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -499,7 +542,8 @@ func (p *Postgres) ListSessions(ctx context.Context, limit int) ([]SessionRecord
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
 		       context_tokens, context_window, COALESCE(parent_id,'')
 		FROM sessions WHERE deleted_at IS NULL AND parent_id IS NULL
-		ORDER BY started_at DESC LIMIT $1`, limit)
+		  AND ($2 = '' OR user_id = $2)
+		ORDER BY started_at DESC LIMIT $1`, limit, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -917,10 +961,11 @@ func (p *Postgres) Unsubscribe(sessionID string, ch <-chan agent.Event) {
 }
 
 func (p *Postgres) publish(ev agent.Event) {
+	// Sent under the lock: Unsubscribe closes the channel under it, and a
+	// send racing that close panics. The sends never block, so this is cheap.
 	p.mu.RLock()
-	subs := append([]chan agent.Event(nil), p.subs[ev.SessionID]...)
-	p.mu.RUnlock()
-	for _, ch := range subs {
+	defer p.mu.RUnlock()
+	for _, ch := range p.subs[ev.SessionID] {
 		select {
 		case ch <- ev:
 		default: // never block the agent loop on a slow consumer

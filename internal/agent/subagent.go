@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -600,7 +601,11 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		rec.Redact = parent.rec.redactor()
 	}
 	if parent != nil {
-		rec.tap = mirrorInto(parent, sessionID, req.Description)
+		rec.tap = mirrorInto(parent, sessionID)
+		if o, ok := approver.(oneAtATime); ok {
+			o.asking = askInto(parent, sessionID, req.Description)
+			approver = o
+		}
 	}
 
 	profile, role := "main", ""
@@ -892,12 +897,19 @@ func (l *Loop) asParent(ctx context.Context) context.Context {
 
 // record writes to the parent's record; a nil link has none.
 func (p *parentLink) record(t EventType, actor Actor, payload any) {
+	_ = p.recordErr(t, actor, payload)
+}
+
+// recordErr is record, reporting a write the parent's record refused.
+func (p *parentLink) recordErr(t EventType, actor Actor, payload any) error {
 	if p == nil {
-		return
+		return nil
 	}
-	if _, err := p.rec.Record(t, actor, Trusted, payload); err != nil && p.fail != nil {
+	_, err := p.rec.Record(t, actor, Trusted, payload)
+	if err != nil && p.fail != nil {
 		p.fail(err)
 	}
+	return err
 }
 
 // oneAtATime serializes asks: sibling subagents run together, but a person
@@ -908,6 +920,10 @@ type oneAtATime struct {
 	who  string
 	via  string // the pipeline asking, when a pipeline step asks
 	task string // the background task asking, when one does
+	// asking records that the call is now the one put to the person, once it
+	// has its turn: a sibling's ask still queued behind it is not offered. An
+	// ask it cannot record is not put: nobody watching could see it.
+	asking func(ctx context.Context) error
 }
 
 func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessage, res policy.Result) (bool, error) {
@@ -929,6 +945,11 @@ func (o oneAtATime) Approve(ctx context.Context, tool string, args json.RawMessa
 	if o.task != "" {
 		ctx = WithBackgroundTask(ctx, o.task)
 	}
+	if o.asking != nil {
+		if err := o.asking(ctx); err != nil {
+			return false, fmt.Errorf("the ask could not be offered in the parent's record, so it was not put to anyone: %w", err)
+		}
+	}
 	return o.Approver.Approve(ctx, tool, args, res)
 }
 
@@ -944,6 +965,30 @@ func WithBackgroundTask(ctx context.Context, taskID string) context.Context {
 func BackgroundTaskOf(ctx context.Context) string {
 	s, _ := ctx.Value(backgroundTaskKey{}).(string)
 	return s
+}
+
+// askInto writes a subagent's call to the parent's record as subagent.ask
+// when it is put to the approver, so a console or editor watching the parent
+// shows the request the run is waiting on, and only that one.
+func askInto(parent *parentLink, child, description string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		ev, ok := ctx.Value(requestedKey{}).(Event)
+		if !ok {
+			return errors.New("no recorded request to offer")
+		}
+		var held struct {
+			Withheld *string `json:"withheld"`
+		}
+		var a ActionRequested
+		if json.Unmarshal(ev.Payload, &a) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
+			return errors.New("the request's record was withheld, so it cannot be shown")
+		}
+		return parent.recordErr(EvSubagentAsk, ev.Actor, SubagentAsk{
+			Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
+			Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
+			Reason: a.Reason, Scope: a.Scope, Via: a.Via, Target: a.Target,
+		})
+	}
 }
 
 type subagentKey struct{}
@@ -998,7 +1043,7 @@ type SubagentAsk struct {
 
 // mirrorInto copies the child's settled calls that matter to an audit into
 // the parent's record as they happen.
-func mirrorInto(parent *parentLink, child, description string) func(Event) {
+func mirrorInto(parent *parentLink, child string) func(Event) {
 	var mu sync.Mutex
 	type request struct {
 		ActionRequested
@@ -1023,15 +1068,7 @@ func mirrorInto(parent *parentLink, child, description string) func(Event) {
 				mu.Lock()
 				asked[a.CallID] = request{a, ev.ID}
 				mu.Unlock()
-				// Written before the approver is asked, so a console or editor
-				// watching the parent can show the request it is waiting on.
-				if a.RequiresApproval {
-					parent.record(EvSubagentAsk, ev.Actor, SubagentAsk{
-						Session: child, Subagent: description, RequestID: ev.ID, CallID: a.CallID,
-						Tool: a.Tool, Args: a.Args, Subject: policy.Subject(a.Tool, a.Args),
-						Reason: a.Reason, Scope: a.Scope, Via: a.Via, Target: a.Target,
-					})
-				}
+				// Its subagent.ask is written by askInto when its turn to be asked comes.
 			}
 		case EvActionApproved, EvActionDenied:
 			var d map[string]string

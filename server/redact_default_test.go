@@ -185,3 +185,28 @@ func freshSession(wb *workbench) string {
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	return created.SessionID
 }
+
+// A server session redacts a secret stored, or changed, after it started, as
+// bash can be handed it at any call; a removed value stays redacted.
+func TestServerSessionFollowsTheSecretsStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"FIRST_TOKEN":"fake-first-value-11aa"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{opts: Options{Redact: secrets.Open(path).Live()}}
+	red := s.sessionRedactor()
+	for _, v := range []string{"fake-added-mid-session-5e1f", "fake-changed-mid-session-77c0"} {
+		if err := secrets.Open(path).Set("LATE_TOKEN", v); err != nil {
+			t.Fatal(err)
+		}
+		if out := string(red.Redact([]byte(`{"x":"` + v + `"}`))); strings.Contains(out, v) {
+			t.Fatalf("a value stored mid-session was recorded: %s", out)
+		}
+	}
+	if err := secrets.Open(path).Remove("LATE_TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+	if out := string(red.Redact([]byte(`{"x":"fake-added-mid-session-5e1f"}`))); strings.Contains(out, "fake-added") {
+		t.Fatalf("a removed value was recorded: %s", out)
+	}
+}

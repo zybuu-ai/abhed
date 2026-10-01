@@ -24,6 +24,9 @@ func TestConversationHelper(t *testing.T) {
 	if ws == "" {
 		t.Skip("run by the conversation tests")
 	}
+	if home := os.Getenv("ABHED_CONV_HOME"); home != "" {
+		t.Setenv("HOME", home) // TestMain gave this process a home of its own
+	}
 	os.Exit(Main([]string{"-C", ws}))
 }
 
@@ -80,9 +83,16 @@ func startCLIConfig(t *testing.T, reply func(w io.Writer, n int, body string), c
 	return startCLIPrepared(t, reply, config, nil)
 }
 
+// startCLIEnv is startCLIConfig with env added to the helper's environment, where it wins.
+func startCLIEnv(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, env ...string) *cliSession {
+	t.Helper()
+	return startCLIPrepared(t, reply, config, nil, env...)
+}
+
 // startCLIPrepared is startCLIConfig with prep run on the workspace before
-// the process starts, for files it reads at start-up.
-func startCLIPrepared(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, prep func(ws, home string)) *cliSession {
+// the process starts, for files it reads at start-up, and env added to the
+// helper's environment, where it wins.
+func startCLIPrepared(t *testing.T, reply func(w io.Writer, n int, body string), config func(url string) string, prep func(ws, home string), env ...string) *cliSession {
 	t.Helper()
 	c := &cliSession{t: t, out: &syncBuffer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +125,7 @@ func startCLIPrepared(t *testing.T, reply func(w io.Writer, n int, body string),
 	c.cmd = exec.Command(os.Args[0], "-test.run=^TestConversationHelper$")
 	c.cmd.Env = append(os.Environ(), "ABHED_CONV_WS="+ws, "HOME="+home, "ABHED_CONV_KEEP_HOME=1", "USERPROFILE="+t.TempDir(),
 		"ABHED_TRUST_WORKSPACE=1") // the test wrote this configuration
+	c.cmd.Env = append(c.cmd.Env, env...)
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

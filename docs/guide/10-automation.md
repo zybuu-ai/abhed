@@ -178,7 +178,17 @@ and their results arrive as event lines. rpc never starts a run on its own.
 
 Events stream as they happen rather than only at the end, so a caller can render
 progress. `steer` is why this is a persistent process rather than one request
-per run.
+per run. A `steer` goes to the session of the last `start` sent, even one
+not yet answered. It is answered at once: `steered` when a prompt is running
+and will read it before its answer, `queued` when it will lead that
+session's next prompt instead. A queued steer the session never reads, because
+`quit`, the end of input or a new `start` came first, is named in an
+`{"type":"error"}` line rather than dropped silently. Every other request, a
+second `prompt` included, waits for the running prompt and is answered in the
+order sent; up to 256 may wait, and one beyond that is answered with an error.
+
+`limits.max_turns` binds as it does for the CLI, from the user's file or a
+trusted workspace's; an untrusted workspace can only lower it.
 
 The session has the CLI's tool set, subagents, MCP servers, skills and the
 other tools the configuration enables included. There is no approver, so a

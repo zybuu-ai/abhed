@@ -190,27 +190,13 @@ func (t *Tool) secretFree(raw string) error {
 	if err != nil {
 		return errors.New("the secrets store could not be read, so the URL cannot be checked for a stored value; not fetched")
 	}
-	forms := []string{raw}
-	for s := raw; ; {
-		next, err := url.QueryUnescape(s)
-		if err != nil || next == s || len(forms) > 4 {
-			break
-		}
-		forms = append(forms, next)
-		s = next
-	}
-	if p, err := url.PathUnescape(raw); err == nil {
-		forms = append(forms, p)
-	}
 	// Case is ignored: a host is lower-cased on the way out, so a value written
 	// into a subdomain would otherwise pass.
-	for _, f := range forms {
-		if label, found := red.FindFold(f); found {
-			if label == "" {
-				return errors.New("the secrets store could not be read, so the URL cannot be checked for a stored value; not fetched")
-			}
-			return fmt.Errorf("the URL contains the stored secret %s; a secret is never sent in a URL", label)
+	if label, found := red.FindSent(raw); found {
+		if label == "" {
+			return errors.New("the secrets store could not be read, so the URL cannot be checked for a stored value; not fetched")
 		}
+		return fmt.Errorf("the URL contains the stored secret %s; a secret is never sent in a URL", label)
 	}
 	return nil
 }

@@ -91,7 +91,7 @@ func (a *App) doctor(workspace string) int {
 	vaultErr := vaultLoads()
 	if vaultErr != nil {
 		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
-	} else if names := vaultNames(openVault()); len(names) > 0 {
+	} else if names := toolset.VaultNames(openVault()); len(names) > 0 {
 		fmt.Printf("secrets     %d stored in %s\n", len(names), openVault().Path())
 	}
 	if reg, _ := toolset.LoadSkills(cfg, warnf); reg.Len() > 0 {

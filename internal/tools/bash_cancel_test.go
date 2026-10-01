@@ -270,7 +270,7 @@ func TestBashTimeoutEndsADetachedChild(t *testing.T) {
 }
 
 // A command that failed reaching for the network in a sandbox without one is
-// told why, and pointed at the web tools; nothing else is.
+// told why, and pointed at the web tools, even when a pipe hid the exit code.
 func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 	s, dir := setup(t)
 	none := sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command
@@ -289,7 +289,10 @@ func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 		{"network on", on, curl, false},
 		{"on the host", Bash{}, curl, false},
 		{"undescribed sandbox", Bash{Sandbox: none}, curl, false},
-		{"succeeded", off, `echo "Could not resolve host: in a log file"`, false},
+		{"piped, exit 0", off, `curl() { echo "curl: (6) Could not resolve host: example.com"; }; curl x | head -n 1`, true},
+		{"a log read, exit 0", off, `printf 'curl: (6) Could not resolve host: x\nretrying\n'; echo done`, false},
+		{"failure early, exit 0", off, `curl() { :; }; curl x; printf 'Could not resolve host: x\n1\n2\n3\n4\n5\n6\n'`, false},
+		{"python piped, exit 0", off, `python3 -c 'pass' 2>/dev/null; echo "urlopen error [Errno 8] nodename nor servname provided, or not known" | tail -n 1`, true},
 		{"a local server not running", off, `echo "curl: (7) Failed to connect to localhost port 8080"; exit 7`, false},
 		{"an ordinary failure", off, `echo "FAIL: TestParse"; exit 1`, false},
 		{"a rust build error", off, `echo "error[E0433]: failed to resolve: use of undeclared crate or module ` + "`serde`" + `"; exit 101`, false},

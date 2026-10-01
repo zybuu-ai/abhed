@@ -189,7 +189,7 @@ func writeUnrecorded(w http.ResponseWriter, err error, msg string) {
 // liveOrReopened is the session running here, or one from before a restart
 // opened unclaimed from its record; on failure, the status and message to answer with.
 func (s *Server) liveOrReopened(r *http.Request, id string) (*liveSession, int, string) {
-	if live, found := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); found {
+	if live, found := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); found {
 		return live, 0, ""
 	}
 	if !s.mayAccess(r, id) {
@@ -199,7 +199,7 @@ func (s *Server) liveOrReopened(r *http.Request, id string) (*liveSession, int, 
 	resumed, err := s.resumeSession(r.Context(), id, "", UserOf(r.Context()), TenantOf(r.Context()), false)
 	if errors.Is(err, errBusySession) {
 		// Another request may have reopened it a moment ago.
-		if l, ok := s.session(id, TenantOf(r.Context()), UserOf(r.Context())); ok {
+		if l, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context())); ok {
 			resumed, err = l, nil
 		}
 	}

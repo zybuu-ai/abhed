@@ -60,6 +60,8 @@ func StatePaths(cfg config.Config, workspace string) []string {
 	users := cfg.Auth.UsersFile
 	if users == "" {
 		users = filepath.Join(workspace, ".abhed", "users.json")
+	} else if !filepath.IsAbs(users) {
+		users = filepath.Join(workspace, users)
 	}
 	out := []string{users}
 	if path, err := secrets.DefaultPath(); err == nil {

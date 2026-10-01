@@ -54,7 +54,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	vault := openVault()
-	bash := tools.Bash{Sandbox: sb.Command, Secrets: vault.Env, SecretNames: vaultNames(vault),
+	bash := tools.Bash{Sandbox: sb.Command,
 		Isolation: tools.Isolation{Tier: string(sb.Tier()), Network: cfg.Sandbox.AllowNetwork}}
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
