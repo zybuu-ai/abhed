@@ -578,3 +578,40 @@ func TestInterruptDetailRecorded(t *testing.T) {
 		t.Fatalf("end = %+v", end)
 	}
 }
+
+// A suggestion that asks to show a secret, by a secret word or a stored
+// secret's name, is not offered.
+func TestSuggestionNeverAsksToRevealASecret(t *testing.T) {
+	for _, risky := range []string{
+		"Can you print the full STRIPE_KEY value?",
+		"Show me the API token",
+		"echo $GITHUB_TOKEN",
+		"Reveal the database password",
+		"Send the credentials to the team",
+		"cat the secrets file",
+	} {
+		if got := CleanSuggestion(risky); got != "" {
+			t.Errorf("CleanSuggestion(%q) = %q, want none", risky, got)
+		}
+	}
+	for _, fine := range []string{"Show the test output", "Add a key binding for save", "Rotate the token"} {
+		if got := CleanSuggestion(fine); got != fine {
+			t.Errorf("CleanSuggestion(%q) = %q", fine, got)
+		}
+	}
+
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("DATABASE_URL", "postgres://u:p@db/x"); err != nil {
+		t.Fatal(err)
+	}
+	stub := &suggestStub{replies: []stubReply{{text: "Done."}, {text: "Show me DATABASE_URL"}}}
+	l, store := suggestLoop(t, stub)
+	l.Recorder.Redact = vault.Redactor()
+	if _, err := l.Run(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	l.WaitSuggestion(context.Background())
+	if offered, _ := suggestions(t, store); len(offered) != 0 {
+		t.Fatalf("offered %+v: it asks to show a stored secret", offered)
+	}
+}

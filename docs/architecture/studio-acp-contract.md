@@ -202,7 +202,8 @@ reply, one `agent_message_chunk` with empty text that carries
 may ask next, one line of at most 80 characters with control and format
 characters removed, never one that urges past a safeguard (ignore, bypass or
 override a policy, an approval, a rule, the sandbox) or towards a
-destructive action (delete, `rm -rf`, force-push, drop, wipe, disable). It is
+destructive action (delete, `rm -rf`, force-push, drop, wipe, disable), or
+one that asks to show a secret. It is
 model text: Studio never sends it unless the person does. Studio shows it as the chat input's dimmed placeholder,
 puts it in the input on Tab, and never sends it on its own; typing or the
 next turn clears it. The suggestion is made after the turn has ended, so

@@ -259,6 +259,9 @@ func (l *Loop) suggestionText(sg *Suggester, text string) string {
 	if text == "" || red != nil && redactedText(red.Redact, text) != text {
 		return ""
 	}
+	if named, ok := red.(interface{ Names() []string }); ok && revealsNamedSecret(text, named.Names()) {
+		return ""
+	}
 	return text
 }
 
@@ -389,18 +392,27 @@ var (
 		"guards": true, "guardrail": true, "guardrails": true, "permission": true, "permissions": true,
 		"restriction": true, "restrictions": true, "confirmation": true, "check": true, "checks": true,
 		"hook": true, "hooks": true, "deny": true, "instructions": true, "security": true}
+	suggestReveal = map[string]bool{"print": true, "show": true, "reveal": true, "echo": true, "cat": true,
+		"send": true, "display": true, "dump": true, "output": true, "paste": true, "share": true,
+		"expose": true, "leak": true, "copy": true, "email": true, "post": true, "upload": true, "tell": true,
+		"export": true, "log": true}
+	suggestSecret = map[string]bool{"key": true, "keys": true, "apikey": true, "token": true, "tokens": true,
+		"secret": true, "secrets": true, "password": true, "passwords": true, "passwd": true,
+		"credential": true, "credentials": true, "creds": true}
 	suggestPairs = [][2]string{{"force", "push"}, {"push", "force"}, {"push", "f"}, {"reset", "hard"},
 		{"git", "clean"}, {"without", "asking"}, {"auto", "approve"}, {"don", "ask"}, {"no", "verify"}}
 )
 
-// riskySuggestion reports text that tells the person or the agent to get
-// past a safeguard, or to do something destructive, in any case or width.
+// riskySuggestion reports text that tells the person or the agent to get past
+// a safeguard, to do something destructive, or to show a secret, in any case or width.
 func riskySuggestion(s string) bool {
 	words := strings.FieldsFunc(strings.ToLower(norm.NFKC.String(s)), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
-	override, guarded := false, false
+	override, guarded, reveal, secret := false, false, false, false
 	for i, w := range words {
+		reveal = reveal || suggestReveal[w]
+		secret = secret || suggestSecret[w]
 		if suggestDestructive[w] {
 			return true
 		}
@@ -414,7 +426,26 @@ func riskySuggestion(s string) bool {
 			}
 		}
 	}
-	return override && guarded
+	return override && guarded || reveal && secret
+}
+
+// revealsNamedSecret reports text that asks to show a stored secret by its name.
+func revealsNamedSecret(s string, names []string) bool {
+	low := strings.ToLower(norm.NFKC.String(s))
+	words := strings.FieldsFunc(low, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	reveal := false
+	for _, w := range words {
+		reveal = reveal || suggestReveal[w]
+	}
+	if !reveal {
+		return false
+	}
+	for _, n := range names {
+		if n != "" && strings.Contains(low, strings.ToLower(n)) {
+			return true
+		}
+	}
+	return false
 }
 
 // clipHead keeps the first n characters of s.

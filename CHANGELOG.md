@@ -223,8 +223,8 @@ Two changes need action before upgrading:
   `purpose: suggestion`, counted in the session's tokens and budget. The text is cleaned of control and format
   characters and capped at 80 characters, and none is offered that tells
   anyone to ignore, bypass or override a policy, an approval, a rule, the
-  sandbox or safety, or suggests something destructive (delete, `rm -rf`,
-  force-push, drop, wipe, disable): it is model text, which what the agent
+  sandbox or safety, suggests something destructive (delete, `rm -rf`,
+  force-push, drop, wipe, disable), or asks to print, show or send a secret: it is model text, which what the agent
   read can shape, and it is never sent unless the person sends it. None is made for `-p`, `rpc`,
   unattended runs, or after an error, a stop or while an approval waits.
   `suggest.enabled` turns it off (a managed `false` binds) and

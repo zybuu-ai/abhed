@@ -357,6 +357,9 @@ func (f *Fresh) Redact(b []byte) []byte { return f.Current().Redact(b) }
 // Span is Current().Span.
 func (f *Fresh) Span() int { return f.Current().Span() }
 
+// Names is Current().Names.
+func (f *Fresh) Names() []string { return f.Current().Names() }
+
 // Pending is Current().Pending.
 func (f *Fresh) Pending(s string) int { return f.Current().Pending(s) }
 
@@ -477,6 +480,20 @@ func (r *Redactor) Span() int {
 		return 0
 	}
 	return len(r.pairs[0].needle)
+}
+
+// Names are the names of the stored values, never the values.
+func (r *Redactor) Names() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range r.pairs {
+		name := strings.TrimSuffix(strings.TrimPrefix(p.label, "[secret:"), "]")
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // Pending is how many bytes at the end of s could be the start of a stored

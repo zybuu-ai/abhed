@@ -265,8 +265,10 @@ person's language. Its reply is cleaned of control and format characters, and
 dropped if it is empty, a `/` command, a `!` shell line, would repeat a
 stored secret (checked on the whole reply, before it is cut), or tells you or
 the agent to ignore, bypass or override a policy, an approval, a rule, the
-sandbox or safety, or suggests something destructive (delete, `rm -rf`,
-force-push, drop, wipe, disable, …): better none than a risky one. A
+sandbox or safety, suggests something destructive (delete, `rm -rf`,
+force-push, drop, wipe, disable, …), or asks to print, show, echo or send a
+secret (a stored secret's name, or a key, token, password or credential):
+better none than a risky one. A
 suggestion is the model's text, which what the agent read can shape; it is
 never sent unless you choose to send it. The call is
 made after the turn has ended, so nothing waits for it; the next prompt, a
