@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A wake run could act for a user whose access had been revoked: the owner
+  was looked up only before the wake started, and an edition whose accounts
+  the server could not see found every owner active. A woken run now asks
+  again before each model call and before each call is approved, and ends as
+  `owner_inactive` once the owner has lost access. `StopOwnerBackground`
+  lets an edition stop a revoked owner's live run, background shells, tasks
+  and terminals at once, recorded as `owner_revoked`; no wake follows.
+
 - Over ACP, the agent can no longer change an editor's own files in the
   workspace: the file tools refuse `.vscode/**`, `.devcontainer/**`,
   `.git/config`, `.git/hooks/**` and `*.code-workspace`, and the sandbox keeps
