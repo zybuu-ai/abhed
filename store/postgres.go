@@ -205,14 +205,49 @@ func (p *Postgres) RecordProtected() bool { return p.protected }
 // which matters for an air-gapped install where a separate migration step is
 // one more thing to get wrong.
 func (p *Postgres) Migrate(ctx context.Context) error {
-	if _, err := p.pool.Exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+	if err := applySchema(ctx, p.pool); err != nil {
+		return err
 	}
 	// A single-role server reads accounts from this database; it warns rather
 	// than refuse, since it cannot be migrated any other way.
 	_, err := migrateOwners(ctx, p.pool, OwnerMigration{Policy: p.owners, AllowNoAccounts: true,
 		LoadAccounts: p.ownerAccounts})
 	return err
+}
+
+// lockForSchema takes the tables the schema alters in the order an append
+// takes them: an append holds events and then checks its session, while the
+// schema alters sessions before events. Locked the other way round, a server
+// starting beside a live one deadlocked with its appends.
+const lockForSchema = `
+SELECT pg_advisory_xact_lock(hashtext('abhed.schema'));
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions'] LOOP
+    IF to_regclass(t) IS NOT NULL THEN
+      EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE', t);
+    END IF;
+  END LOOP;
+END $$;`
+
+// applySchema applies schema.sql in one transaction, one server at a time.
+func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, lockForSchema); err != nil {
+		return fmt.Errorf("apply schema: lock the tables: %w", err)
+	}
+	if _, err := tx.Exec(ctx, schemaSQL); err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	return nil
 }
 
 func (p *Postgres) Close() { p.pool.Close() }

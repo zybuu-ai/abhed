@@ -88,8 +88,8 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"CREATE ROLE %s LOGIN PASSWORD '…'", cfg.RuntimeRole, pgx.Identifier{cfg.RuntimeRole}.Sanitize())
 	}
 
-	if _, err := pool.Exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+	if err := applySchema(ctx, pool); err != nil {
+		return err
 	}
 	if err := migrateUsersSchema(ctx, pool); err != nil {
 		return err
