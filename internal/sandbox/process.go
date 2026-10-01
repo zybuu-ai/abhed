@@ -398,8 +398,6 @@ func (s *Process) procLimit() uint64 {
 	return limit
 }
 
-// statePaths returns the policy's state paths, each also as its links
-// resolve, since a profile rule names the path the kernel sees.
 // workspaces are the workspace as given and with its links resolved.
 func (s *Process) workspaces() []string { return PathForms(s.policy.Workspace) }
 
@@ -415,6 +413,8 @@ func (s *Process) protectedInside() []string {
 	return out
 }
 
+// statePaths returns the policy's state paths, each also as its links
+// resolve, since a profile rule names the path the kernel sees.
 func (s *Process) statePaths() []string {
 	var out []string
 	for _, p := range s.policy.StatePaths {

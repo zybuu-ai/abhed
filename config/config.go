@@ -150,7 +150,6 @@ type SuggestConfig struct {
 	Model string `json:"model,omitempty"`
 }
 
-// HooksConfig governs the extension hooks.
 // StudioConfig is what the organisation allows Abhed Studio beside the agent.
 type StudioConfig struct {
 	// DisableHostTerminal removes Studio's own host shell, which is neither
@@ -158,6 +157,7 @@ type StudioConfig struct {
 	DisableHostTerminal bool `json:"disable_host_terminal,omitempty"`
 }
 
+// HooksConfig governs the extension hooks.
 type HooksConfig struct {
 	// Disabled switches every hook off. Managed only; only true means anything.
 	Disabled bool `json:"disabled,omitempty"`

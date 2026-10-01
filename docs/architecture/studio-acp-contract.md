@@ -963,7 +963,8 @@ Where the engine differs from the sections above:
    paths that exist when the session starts, at the workspace's given and
    resolved paths, and cannot rename or remove `.git`, `.vscode` or
    `.devcontainer`. Nested repositories are searched for at the start, up to
-   six folders deep and 64 repositories, skipping `node_modules`. On macOS the
+   six folders deep, 64 repositories and 20,000 entries looked at, skipping
+   `node_modules`. On macOS the
    sandbox also refuses any `.git`, `.git/config` and `.git/hooks` at any
    depth by pattern, so a repository made later is held and `git init` or
    `git clone` in the workspace fails, and refuses creating a missing

@@ -131,7 +131,7 @@ func (d *dock) resolve(i int) {
 // dialogKey applies a key to the dialog on screen.
 //
 // Nothing counts for approvalGuard after the dialog shows; then a number must
-// stand alone, no letter moves, and Enter never approves (see 18-terminal.md).
+// stand alone, no letter moves, and Enter never approves (see 20-terminal.md).
 //
 // Ctrl-C is the one exception: it declines at once, which is always safe.
 func (d *dock) dialogKey(k key, at time.Time, gap time.Duration) {

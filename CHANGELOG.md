@@ -28,7 +28,8 @@ All notable changes to Abhed are recorded here. The format follows
   agent's commands from writing those that exist, and from renaming `.git`,
   `.vscode` or `.devcontainer`, at the workspace's given and resolved paths.
   Nested repositories are found when the session starts, up to six folders
-  deep and 64 repositories, `node_modules` left out. On macOS commands also
+  deep, 64 repositories and 20,000 entries looked at, `node_modules` left
+  out. On macOS commands also
   cannot create these paths, nor any `.git`, `.git/config` or `.git/hooks` at
   any depth, so a repository cloned or initialised later is held too, and
   `git init` or `git clone` inside the workspace is refused there. On Linux
@@ -96,7 +97,7 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
-The first fourteen items change how an existing setup behaves; read them
+The first sixteen items change how an existing setup behaves; read them
 before upgrading.
 
 1. **Answers are numbers only, for piped and scripted input too.** 1.2.2's
@@ -187,6 +188,13 @@ before upgrading.
     verification.
 14. **An edit or write without a prior read is refused before the approval
     prompt**, with the reason.
+15. **Server API: a request body over the size cap gets 413**, not 400, with
+    the cap in the error. A client that treated any 400 as a bad body should
+    handle 413 too.
+16. **`abhed hawkeye` exits 3 when a session from the local record, or a
+    `.jsonl` export of it, fails verification**, as it already did for a
+    record with a gap. A failing export exited 0 before; a local-record
+    session could not be read at all.
 
 Also:
 

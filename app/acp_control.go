@@ -580,9 +580,10 @@ func gitOwn(rest []string) bool {
 }
 
 // dirtyGuard refuses an agent's edit or write to a file the person has
-// unsaved changes to in Studio, or to one of the editor's own files.
+// unsaved changes to in Studio, or to one of the editor's own files. roots
+// is what the tools session passes, copied under its lock.
 func (s *acpSession) dirtyGuard(path string, roots []string) error {
-	if editorFile(path, append(s.roots(), roots...), s.protected) {
+	if editorFile(path, roots, s.protected) {
 		return errEditorFile
 	}
 	s.mu.Lock()
