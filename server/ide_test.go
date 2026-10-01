@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -425,5 +426,46 @@ func TestIDEVendorEveryComponentUnpacks(t *testing.T) {
 	}
 	if seen < 10 {
 		t.Fatalf("only %d components embedded", seen)
+	}
+}
+
+// Settings lists the tools capabilities does: a session's own recall, task
+// and tasks included, not only the shared registry's.
+func TestSettingsListsTheToolsSessionsGet(t *testing.T) {
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}, tools.Bash{})})
+	get := func(path string, v any) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", path, nil)
+		if path == "/v1/admin/settings" {
+			s.getSettings(rec, req) // the admin check is not what is tested
+		} else {
+			s.Handler().ServeHTTP(rec, req)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", path, rec.Code, rec.Body)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var c capabilities
+	var st settingsView
+	get("/v1/capabilities", &c)
+	get("/v1/admin/settings", &st)
+	var want []string
+	for _, tool := range c.Tools {
+		want = append(want, tool.Name)
+	}
+	sort.Strings(want)
+	got := append([]string(nil), st.Tools...)
+	sort.Strings(got)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("settings lists %v; sessions get %v", got, want)
+	}
+	for _, name := range []string{"recall", "task", "tasks"} {
+		if !strings.Contains(" "+strings.Join(got, " ")+" ", " "+name+" ") {
+			t.Fatalf("settings leaves out %s: %v", name, got)
+		}
 	}
 }
