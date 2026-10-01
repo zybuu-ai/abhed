@@ -254,6 +254,19 @@ func (s *Store) Live() *Live { return &Live{Redactor: s.Redactor(), store: s} }
 // Load reads the store again, as LoadRedactor does.
 func (l *Live) Load() (*Redactor, error) { return l.store.LoadRedactor() }
 
+// Session is a Fresh redactor for one session, starting from the store as it is now.
+func (l *Live) Session() (*Fresh, error) {
+	r, err := l.store.LoadRedactor()
+	if err != nil {
+		return nil, err
+	}
+	return l.store.Fresh(r), nil
+}
+
+// Session is a Fresh redactor starting from the store as it is now; a store
+// that cannot be loaded withholds every payload until it loads again.
+func (s *Store) Session() *Fresh { return s.Fresh(s.Redactor()) }
+
 // Fresh redacts with the values stored at each call, reading the store again
 // whenever the file has changed, for a session that runs while secrets are
 // added: a value bash can be given must be redacted from that moment on.

@@ -182,8 +182,9 @@ func TestGitDiscardsAreDestructive(t *testing.T) {
 		"echo $(date) reset --hard":                      false,
 		"$(pwd)/run.sh --reset":                          false,
 		"make -C $(git rev-parse --show-toplevel) clean": false,
-		"$MAKE clean -f Makefile":                        false,
 		"echo $(which git) reset --hard":                 false,
+		// A variable as the program may split into any command and its flags.
+		"$MAKE clean -f Makefile": true,
 
 		// The program found past shell keywords, eval and a runner option's value.
 		"if true; then git wipe; fi":        true,

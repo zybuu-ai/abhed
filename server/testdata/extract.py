@@ -34,7 +34,7 @@ sets = {
     'ask': ['function node(cls, text){','function md(text){','function lastStreamedBubble(){','function wordCount(s){',
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
-          'function shortPath(p){','function kv(k, v){','function visible(s, lines){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){'],
+          'function shortPath(p){','function kv(k, v){','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function approval(p, rid){','function resolveApproval(callID, outcome, kind, title){','function recheckSoon(){'],
     'state': ['function shownState(s){','function paintOpenPill(){'],
     'mode': ['async function loadMode(){'],
     'workbench': ['function node(cls, text){','function fmtSize(n){','function wbShow(name, meta){',
@@ -42,7 +42,7 @@ sets = {
     # From ide.html: the markdown renderer for replies.
     'ide-md': ['const el = (tag, cls, text) => {','function mdInline(parent, s){','function md(text){'],
     # From ide.html: sending, the run's live state and the approval prompt.
-    'ide-chat': ['const el = (tag, cls, text) => {','function visible(s, lines){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
+    'ide-chat': ['const el = (tag, cls, text) => {','function visible(s, lines){','function argsJSON(v){','function hasHidden(v, depth = 0){','function setLive(on){','function offerAsks(){','function forget(b){',
           'function claim(p){','function failed(b, msg, head){','async function unqueue(b){','async function sendNow(b){','async function send(){',
           'function render(ev){','function recheckSoon(){','async function recheck(id){','function askApproval(p, rid){','function focusSoon(){','function settleAsk(callID, how){',
           'function subagentRow(id, p, at){','async function watchIdle(){'],
@@ -53,6 +53,10 @@ sets = {
           'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
           'async function newEntry(folder){'],
     'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
+    'ide-modes': ['function limitModes(m){'],
+    # From ide.html: the Events and HawkEYE panels, which draw record text.
+    'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function tail(p){','function subjectOf(tool, args){',
+          'function logEvent(ev, p){','async function loadHawkeye(){'],
     'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function hasHidden(v, depth = 0){','function render(ev){','function subagentRow(id, p, at){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],

@@ -456,3 +456,34 @@ func TestReportNamesTheModelsUsed(t *testing.T) {
 		t.Fatal("the HTML report does not name the models")
 	}
 }
+
+// A call's own bidi or zero-width characters are shown, not obeyed, in the
+// page and the terminal report; the report value itself is left as recorded.
+func TestReportShowsHiddenCharacters(t *testing.T) {
+	spoof := ";fs- mr\u202e x\u200b"
+	r := Report{SessionID: "s1", Prompt: "p\u2066", Outcome: "completed",
+		Calls:     []Call{{Seq: 3, Tool: "bash", Args: `{"command":"` + spoof + `"}`, Subject: spoof, Decision: "allowed", Reason: "r\u202e", Ran: true, Output: "a\u202eb\ncol1        col2"}},
+		Findings:  []Finding{{Severity: Warn, Title: "t\u200d", Detail: spoof}},
+		Subagents: []Subagent{{Seq: 4, Description: "d\u2800\u3164"}},
+	}
+	page, err := HTML(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{"html": page, "text": Text(r)} {
+		for _, c := range []rune{0x202e, 0x200b, 0x2066, 0x200d, 0x2800, 0x3164} {
+			if strings.ContainsRune(out, c) {
+				t.Errorf("%s report draws %U raw", name, c)
+			}
+		}
+		if !strings.Contains(out, "⟨U+202E⟩") && !strings.Contains(out, "⟨U&#43;202E⟩") {
+			t.Errorf("%s report does not show the RLO", name)
+		}
+	}
+	if !strings.Contains(page, "col1        col2") {
+		t.Error("tool output columns were collapsed in the page")
+	}
+	if r.Calls[0].Subject != spoof || r.Findings[0].Detail != spoof {
+		t.Error("rendering changed the report itself")
+	}
+}

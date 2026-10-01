@@ -340,7 +340,7 @@ func run(a *App, workspace, prompt, modeFlag, modelFlag string, maxTurns int, fo
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
-		Redact: vault.Redactor(),
+		Redact: vault.Session(),
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 	loopCfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, set.SkillListing, registry.Names())
@@ -401,7 +401,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, jsonO
 		return 1 // a run with no session row would write into another's record
 	}
 	rec := agent.NewRecorder(store, sessionID, "")
-	rec.Redact = openVault().Redactor()
+	// Read again as the store changes: bash reads it at each call.
+	rec.Redact = openVault().Session()
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
@@ -529,7 +530,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// record until /clear, and /fork and /resume change what it continues from.
 	sessionState.open = func(id string) *agent.Loop {
 		rec := agent.NewRecorder(store, id, "")
-		rec.Redact = openVault().Redactor()
+		// Read again as the store changes: bash reads it at each call.
+		rec.Redact = openVault().Session()
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
@@ -921,6 +923,10 @@ func handleCommand(ctx context.Context, line string, r *ui.Renderer,
 		}
 		info, err := st.loop.Compact(ctx)
 		release()
+		if errors.Is(err, agent.ErrNothingToCompact) {
+			fmt.Println(s.Dim("  nothing to compact yet"))
+			return false
+		}
 		if err != nil {
 			fmt.Printf("  %s %v\n", s.Red("✕"), err)
 			return false
@@ -1579,7 +1585,8 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		store := agent.NewMemStore()
 		sessionID := "eval-" + task.ID
 		rec := agent.NewRecorder(store, sessionID, "")
-		rec.Redact = vault.Redactor()
+		red := vault.Session()
+		rec.Redact = red
 
 		loopCfg := agent.DefaultConfig()
 		if task.MaxTurns > 0 {
@@ -1590,7 +1597,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 
 		budget := toolset.Budget(cfg)
 		factory := &agent.SubagentFactory{Adapter: adapter, Policy: pol, Session: sess, Store: store,
-			Budget: budget, Config: loopCfg, Workspace: ws, Redact: vault.Redactor()}
+			Budget: budget, Config: loopCfg, Workspace: ws, Redact: red}
 		registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 		loopCfg.SystemPrompt = toolset.SystemPrompt(ws, adapter, set.SkillListing, registry.Names())
 
@@ -1841,7 +1848,8 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			fmt.Fprintln(os.Stderr, "usage: abhed user remove <username>")
 			return 2
 		}
-		if err := us.Delete(ctx, args[1]); err != nil {
+		moved, err := auth.RemoveUser(ctx, us, args[1])
+		if err != nil {
 			if errors.Is(err, auth.ErrNoSuchUser) {
 				fmt.Fprintf(os.Stderr, "abhed: no such user: %s\n", args[1])
 			} else {
@@ -1850,6 +1858,10 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			return 1
 		}
 		fmt.Printf("removed %s\n", args[1])
+		if moved > 0 {
+			fmt.Printf("  %d session(s) now owned by %s\n", moved,
+				auth.UnclaimedOwner(auth.LocalOwner(args[1])))
+		}
 
 	case "import":
 		// Switching storage.driver from memory/file to postgres leaves every
@@ -2182,10 +2194,20 @@ func ownedHere(ctx context.Context, st *cliState, id string) error {
 	// for a user who happens to be named like the subagent rows are.
 	// A session the owner migration moved to the same-named account is still this user's.
 	mine := owner.User == cliUser() || owner.User == auth.LocalOwner(cliUser())
+	// An unclaimed or nobody row is no one's, whatever $USER says.
+	if ownsNoOne(owner.User) || ownsNoOne(rec.User) {
+		mine = false
+	}
 	if owner.User == store.SubagentUser || !mine || rec.Tenant != tenant || owner.Tenant != tenant {
 		return fmt.Errorf("session %s belongs to another user", id)
 	}
 	return nil
+}
+
+// ownsNoOne reports whether owner is an unclaimed or nobody key, in any case.
+func ownsNoOne(owner string) bool {
+	o := strings.ToLower(strings.TrimSpace(owner))
+	return strings.HasPrefix(o, auth.UnclaimedPrefix) || strings.HasPrefix(o, auth.NobodyPrefix)
 }
 
 // claimResumed claims a resumed session as its first task starts: only one

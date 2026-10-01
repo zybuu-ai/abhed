@@ -79,15 +79,24 @@ func RequestedOf(ctx context.Context) (Requested, bool) {
 	if !ok {
 		return Requested{}, false
 	}
+	return requestedFrom(ev), true
+}
+
+// requestedFrom reads a recorded action.requested, or reports it withheld.
+func requestedFrom(ev Event) Requested {
 	var p ActionRequested
 	var held struct {
 		Withheld *string `json:"withheld"`
 	}
 	if json.Unmarshal(ev.Payload, &p) != nil || json.Unmarshal(ev.Payload, &held) != nil || held.Withheld != nil {
-		return Requested{Withheld: true}, true
+		return Requested{Withheld: true}
 	}
-	return Requested{ActionRequested: p}, true
+	return Requested{ActionRequested: p}
 }
+
+// withheldAsk is the refusal of an ask whose record was withheld: no one can
+// be shown what they would approve, so no one is asked.
+const withheldAsk = "the request's record was withheld (redaction could not run), so it was not put to anyone"
 
 // WithRequested carries the recorded action.requested an Approver is asked about.
 func WithRequested(ctx context.Context, ev Event) context.Context {
@@ -571,15 +580,20 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		return err
 	}
 
-	// Started is recorded only once there is something to summarise, so every
-	// compaction.started is followed by its completion.
+	// Started is recorded only once there is something to summarise; every
+	// return after it records a completion (the caller records errors).
+	begun := false
 	compacted, info, err := l.Compactor.CompactWith(ctx, "auto", l.Config.SystemPrompt, l.messages, used, func() {
+		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
 	if err != nil {
 		return err
 	}
 	if len(compacted) == len(l.messages) {
+		if begun {
+			l.record(EvCompactDone, ActorSystem, map[string]string{"skipped": "no change", "trigger": "auto"})
+		}
 		return nil // nothing was summarized
 	}
 
@@ -588,6 +602,9 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
+
+// ErrNothingToCompact is Compact finding no older history to summarise.
+var ErrNothingToCompact = errors.New("nothing to compact yet")
 
 // Compact forces compaction now, for the /compact command.
 func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
@@ -600,6 +617,10 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	compacted, info, err := l.Compactor.Compact(ctx, "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
+	}
+	// As for automatic compaction, nothing summarised records nothing.
+	if len(compacted) == len(l.messages) {
+		return Compaction{}, ErrNothingToCompact
 	}
 	l.messages = compacted
 	l.usage.Compactions++
@@ -1077,6 +1098,12 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}, ""
 
 	case policy.Ask:
+		if requestedFrom(asked).Withheld {
+			l.record(EvActionDenied, ActorSystem, map[string]string{
+				"call_id": call.ID, "reason": withheldAsk, "step": "ask", "by": BySystem,
+			})
+			return false, tools.Result{Content: "Denied: " + withheldAsk + ". The call was not run.", IsError: true}, ""
+		}
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
 		approved, err := l.approverFor(ctx).Approve(actx, call.Name, call.Args, decision)
@@ -1648,7 +1675,15 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 	var a struct {
 		Path string `json:"path"`
 	}
-	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
+	if json.Unmarshal(call.Args, &a) != nil {
+		return ""
+	}
+	return l.pathHoldsSecret(a.Path)
+}
+
+// pathHoldsSecret is pathSecretRefused's check of one path, "" when it passes.
+func (l *Loop) pathHoldsSecret(path string) string {
+	if path == "" {
 		return ""
 	}
 	red := l.Recorder.redactor()
@@ -1657,7 +1692,7 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 	}
 	const unreadable = "refused by the check that keeps stored secrets out of file names: the secrets store could not be read, so the path cannot be checked"
 	if f, ok := red.(interface{ FindInPath(string) (string, bool) }); ok {
-		if label, found := f.FindInPath(a.Path); found {
+		if label, found := f.FindInPath(path); found {
 			if label == "" {
 				return unreadable
 			}
@@ -1665,7 +1700,7 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 		}
 		return ""
 	}
-	quoted, _ := json.Marshal(a.Path)
+	quoted, _ := json.Marshal(path)
 	if out := red.Redact(quoted); out == nil {
 		return unreadable
 	} else if string(out) != string(quoted) {

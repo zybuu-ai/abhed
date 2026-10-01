@@ -274,6 +274,17 @@ es = {}; __routes.length = 0; live = false;
 watchIdle(); await tick();
 check('a page with a stream open does not ask', __routes.length === 0);
 
+// A turn that started and ended between two asks is read back from the record
+// when the server's turn count moves, rather than waiting for the next one.
+fresh('s24', false); es = null; __connected.length = 0; idleTurns.clear();
+__sessions = [{id:'s24', state:'idle', turns:2}];
+watchIdle(); await tick(); __connected.length = 0; es = null;
+watchIdle(); await tick();
+check('an idle session whose count is unchanged is left alone', !live && __connected.length === 0);
+__sessions = [{id:'s24', state:'idle', turns:3}];
+watchIdle(); await tick();
+check('a quick turn another tab ran is read back', !live && __connected.length === 1 && __connected[0] === 's24');
+
 // An ask with no request id is not drawn as a card anyone could answer.
 fresh('s23', true);
 render(ev(1, 'subagent.ask', {session:'child', subagent:'x', call_id:'k9', tool:'bash', args:{command:'touch nid'}}));
@@ -318,6 +329,19 @@ fresh('s31', true);
   calls.forEach(([tool, args], i) => render(ev(1 + i, 'action.requested', {call_id:'h' + i, tool, args, requires_approval:true})));
   const warned = open().map(a => a.textContent.includes('hidden or control characters'));
   check('a hidden character anywhere in the args raises the warning: ' + warned, warned.length === 4 && warned.every(Boolean));
+}
+
+// A run of spaces is counted on the prompt, and a field the prompt does not
+// draw is shown when it is what carries the hidden characters.
+fresh('s32', true);
+{
+  render(ev(1, 'action.requested', {call_id:'w1', tool:'bash', args:{command:'git status --short' + ' '.repeat(260) + '&& tar czf p.tgz internal'}, requires_approval:true}));
+  const t = open()[0] ? open()[0].textContent : '';
+  check('a long run of spaces is counted on the prompt and warned',
+    t.includes('git status --short⟨260 spaces⟩&& tar czf p.tgz internal') && t.includes('hidden or control characters'));
+  render(ev(2, 'action.requested', {call_id:'w2', tool:'bash', args:{command:'ls', description:'list\u202e files'}, requires_approval:true}));
+  const d = open()[1] ? open()[1].textContent : '';
+  check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
 }
 
 if(!ok) process.exit(1);

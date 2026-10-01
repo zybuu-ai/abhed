@@ -26,7 +26,7 @@ const ownerSchemaVersion = 4
 
 // UnclaimedPrefix marks a session whose old owner key more than one account
 // could have held. No identity owns it; the database still has it.
-const UnclaimedPrefix = "unclaimed:"
+const UnclaimedPrefix = auth.UnclaimedPrefix
 
 // OwnerPolicy says what the migration may do with a row whose old owner key
 // is a local account's username or email.
@@ -75,6 +75,17 @@ func ownersMigrated(ctx context.Context, q interface {
 	var done bool
 	err := q.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM schema_version WHERE version = $1)`, ownerSchemaVersion).Scan(&done)
+	if err != nil {
+		return false, fmt.Errorf("check schema version: %w", err)
+	}
+	return done, nil
+}
+
+// checkAccountKeysMigrated is Open's check that schema version 5 is recorded.
+var checkAccountKeysMigrated = func(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var done bool
+	err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_version WHERE version = $1)`, accountKeysSchemaVersion).Scan(&done)
 	if err != nil {
 		return false, fmt.Errorf("check schema version: %w", err)
 	}
@@ -176,6 +187,7 @@ func remapOwners(ctx context.Context, tx pgx.Tx, accounts []*auth.User, policy O
 		}
 		holders[k][strings.ToLower(username)] = true
 	}
+	elsewhere := map[string][]string{} // folded key → "tenant/username" of every holder
 	for _, u := range accounts {
 		tenant := u.Tenant
 		if tenant == "" {
@@ -183,6 +195,11 @@ func remapOwners(ctx context.Context, tx pgx.Tx, accounts []*auth.User, policy O
 		}
 		hold(tenant, u.Username, u.Username)
 		hold(tenant, u.Email, u.Username)
+		for _, key := range []string{u.Username, u.Email} {
+			if key = strings.ToLower(strings.TrimSpace(key)); key != "" {
+				elsewhere[key] = append(elsewhere[key], tenant+"/"+strings.ToLower(u.Username))
+			}
+		}
 	}
 	if len(holders) == 0 {
 		return nil, nil
@@ -212,8 +229,17 @@ func remapOwners(ctx context.Context, tx pgx.Tx, accounts []*auth.User, policy O
 
 	var out []OwnerRemap
 	for _, k := range keys {
-		names := holders[slot{k.tenant, strings.ToLower(strings.TrimSpace(k.key))}]
-		if reservedOwners[k.key] || len(names) == 0 {
+		folded := strings.ToLower(strings.TrimSpace(k.key))
+		names := holders[slot{k.tenant, folded}]
+		if reservedOwners[k.key] {
+			continue
+		}
+		if len(names) == 0 {
+			// A tenant resolver may have written an account's rows outside users.tenant.
+			if others := elsewhere[folded]; len(others) > 0 {
+				slog.Warn("owner migration: key left as it was; an account in another tenant has this name or email",
+					"tenant", k.tenant, "key", k.key, "accounts", others)
+			}
 			continue
 		}
 		r := OwnerRemap{Tenant: k.tenant, From: k.key}

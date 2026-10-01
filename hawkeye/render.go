@@ -41,7 +41,7 @@ var page = template.Must(template.New("report").Funcs(template.FuncMap{
 // HTML renders the report as one self-contained page.
 func HTML(r Report) (string, error) {
 	var b bytes.Buffer
-	if err := page.Execute(&b, r); err != nil {
+	if err := page.Execute(&b, shown(r)); err != nil {
 		return "", err
 	}
 	return b.String(), nil
@@ -49,6 +49,7 @@ func HTML(r Report) (string, error) {
 
 // Text renders the report for a terminal.
 func Text(r Report) string {
+	r = shown(r)
 	var b strings.Builder
 	t := r.Totals
 	fmt.Fprintf(&b, "HawkEYE · %s\n", r.SessionID)

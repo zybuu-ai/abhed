@@ -40,7 +40,7 @@ func TestSessionStateIsTheOwnersAndFoundById(t *testing.T) {
 	}
 	rows = append(rows, store.SessionRecord{ID: "s-mine", Tenant: "default", User: "priya"})
 	s := &Server{sessions: rows, running: map[string]*liveSession{
-		"s-live": {ID: "s-live", Tenant: "default", User: "priya", State: "waiting_approval"},
+		"s-live": {ID: "s-live", Tenant: "default", User: "priya", State: "waiting_approval", Turns: 3},
 	}, log: discardLogger()}
 	get := func(id, tenant, user string) (int, sessionStateResponse) {
 		rec := httptest.NewRecorder()
@@ -54,7 +54,7 @@ func TestSessionStateIsTheOwnersAndFoundById(t *testing.T) {
 	if code, st := get("s-mine", "default", "priya"); code != http.StatusOK || st.State != "running" {
 		t.Fatalf("the owner's stored session in a busy tenant: %d %+v", code, st)
 	}
-	if code, st := get("s-live", "default", "priya"); code != http.StatusOK || st.State != "waiting_approval" {
+	if code, st := get("s-live", "default", "priya"); code != http.StatusOK || st.State != "waiting_approval" || st.Turns != 3 {
 		t.Fatalf("the owner's live session: %d %+v", code, st)
 	}
 	for _, c := range []struct{ id, tenant, user string }{

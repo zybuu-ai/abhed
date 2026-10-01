@@ -592,3 +592,16 @@ func TestCLIOwnsItsMigratedSessions(t *testing.T) {
 		t.Errorf("another account's session was owned here: %v", err)
 	}
 }
+
+// An unclaimed or nobody row is refused even when $USER is spelled like it.
+func TestCLIRefusesUnclaimedOwnerViaUser(t *testing.T) {
+	st, rs, _, _ := resumeRig(t, "me", "default")
+	ended := time.Now()
+	for _, owner := range []string{"unclaimed:bob@example.test", "nobody:local", "Unclaimed:Bob"} {
+		rs.rows["s-x"] = store.SessionRecord{ID: "s-x", User: owner, Tenant: "default", EndedAt: &ended}
+		t.Setenv("USER", owner)
+		if err := ownedHere(context.Background(), st, "s-x"); err == nil || !strings.Contains(err.Error(), "another user") {
+			t.Errorf("$USER=%q resumed a row owned by %q: %v", owner, owner, err)
+		}
+	}
+}

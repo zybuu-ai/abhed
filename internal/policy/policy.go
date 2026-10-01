@@ -491,8 +491,19 @@ func (e *Engine) pathRules(tool string) bool {
 	return false
 }
 
-// Evaluate applies the ordered decision flow.
+// Evaluate applies the ordered decision flow. A prompt shows the command as
+// written; its reason notes continuations the checks joined.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
+	res := e.evaluate(tool, mutates, args)
+	if res.Decision == Ask && tool == "bash" {
+		if _, subject, err := subjectOf(args); err == nil && tools.CanonicalCommand(subject).Joined {
+			res.Reason += " (the command continues lines with backslash-newline; it was checked joined)"
+		}
+	}
+	return res
+}
+
+func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Result {
 	key, subject, err := subjectOf(args)
 	if err != nil {
 		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
@@ -501,10 +512,24 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 	// approves only a simple command, and never a multi-line subject.
 	subjects, narrowAllows, complete := []string{subject}, !strings.ContainsAny(subject, "\n\r"), true
 	allowSubjects := []string{subject}
+	var canon tools.Canonical
 	switch {
 	case tool == "bash":
+		// Every step sees the command as written and as the shell splits it,
+		// continuations joined; an allow rule sees no more than the joined form.
+		canon = tools.CanonicalCommand(subject)
 		subjects, complete = commandSegments(subject)
 		narrowAllows = !hasShellControl(subject)
+		if canon.Text != subject {
+			more, whole := commandSegments(canon.Text)
+			subjects, complete = append(subjects, more...), complete && whole
+		}
+		if canon.Joined && !canon.Reworded {
+			allowSubjects, narrowAllows = []string{canon.Text}, !hasShellControl(canon.Text)
+		}
+		if canon.Reworded {
+			narrowAllows = false
+		}
 	case key == "path" && e.pathRules(tool):
 		subjects, allowSubjects = e.pathSubjects(subject)
 	}
@@ -589,6 +614,11 @@ func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		if matches(r, tool, subjects) {
 			return Result{Decision: Ask, Reason: fmt.Sprintf("matched ask rule %s", r), Scope: "", Step: "ask"}
 		}
+	}
+
+	// Words split or glued by an expansion may hide a part a rule would match.
+	if canon.Hidden && e.rulesSeeParts(tool) {
+		return Result{Decision: Ask, Reason: "the command builds its words with an expansion, brace list or IFS, so its parts cannot be checked against the rules", Scope: "", Step: "screen"}
 	}
 
 	// A hook's ask comes after the destructive, screen and ask-rule prompts, so

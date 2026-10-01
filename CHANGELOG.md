@@ -8,6 +8,43 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- The /console approval card drew a call's arguments in a box that
+  scrolled sideways, so a run of spaces pushed the tail of a command, such
+  as `&& tar czf ...`, out of view, and approving ran it. The card now wraps,
+  and on the card, /ide's prompt and the terminal prompt a run of eight or
+  more columns of spaces or tabs inside a line is shown as a count such as
+  `⟨260 spaces⟩` and raises the hidden-characters warning. Indentation after
+  a newline is left as it is up to 32 columns. Characters that draw nothing
+  (Hangul fillers, braille blank, U+034F, a U+FE0F not after a symbol) are
+  now written out as `⟨U+XXXX⟩` like other hidden characters, and /ide shows
+  an argument the warning is about when its prompt does not draw it.
+- Bidi and zero-width characters in a tool call were drawn raw in the /ide
+  Events and HawkEYE panels, the HawkEYE HTML report and `abhed hawkeye`,
+  so a right-to-left override made `;fs- mr` read as `rm -sf`. These views
+  now write them out as `⟨U+XXXX⟩`, as the approval prompts do. The JSON
+  report keeps the record's text as it is.
+- The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
+  redacted with the secrets stored when a session started, while bash reads
+  the store at each call. A secret stored or changed during a session, and
+  allowed by a `secret(...)` rule, was handed to bash and its value reached
+  the record and every later model request. These surfaces now follow the
+  store as the SDK, `abhed acp` and `abhed rpc` already did: a value is
+  redacted from the moment it is stored, and stays redacted once changed or
+  removed.
+- A backslash-newline line continuation, or an expansion that splits words,
+  hid a command from the deny, destructive and ask-rule checks, so bypass
+  mode ran `rm \<newline>-rf dir`, `rm -\<newline>rf dir`,
+  `git reset \<newline>--hard`, `rm${IFS}-rf${IFS}dir` and `git \<newline>stash`
+  past an ask rule for `git stash*`. Every check now also reads the command
+  as the shell splits it: continuations joined (outside single quotes, also
+  inside a word), `$IFS` and `${IFS...}` read as a space, tabs, carriage
+  returns and form feeds as spaces, `$'...'` decoded, and a brace list
+  such as `{rm,-rf,dir}` as its words. A program named by an expansion
+  (`$x`), or an IFS set to a value and then expanded, always asks. Where
+  deny or ask rules are set, a command whose words were split or glued this
+  way asks, and no allow rule matches a command that needed more than its
+  continuations joined. The prompt still shows the command as written, and
+  its reason says when continuations were joined.
 - `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
   spelled long (`rm --recursive --force dir`), was not treated as a command
   with no undo, so bypass mode ran it without asking. Those flags now count
@@ -47,6 +84,29 @@ All notable changes to Abhed are recorded here. The format follows
     invite and open sign-up, and an administrator's account creation.
   Existing session rows move to their account's new owner once, by `abhed
   migrate`; see Upgrading.
+- A trusted proxy that named its user `anonymous` (`X-Abhed-User:
+  anonymous`) was the owner a request has when authentication is off, which
+  owns every session in the tenant: it listed, replayed and answered the
+  approvals of everyone's sessions there. A proxy user or unnamed-provider
+  subject spelled like an owner with a meaning of its own (`anonymous`,
+  `agent`, the owner of the CLI's subagent rows, in any case) is now an
+  ordinary user, `proxy:anonymous` or `subject:agent`. Only a request that
+  names no one is `anonymous`. A local account of that name was already
+  `local:anonymous`.
+- A request that names no one who can own a session (a proxy's email that is
+  not an address, a provider that sent no subject) is refused with 401 on
+  every `/v1/` route, rather than creating sessions it could never open.
+- A local account made under the name of one that was removed inherited the
+  removed account's agent sessions, since both owned them as
+  `local:<username>`. Removing an account (`abhed user remove`, or an
+  edition's administrator) now moves the sessions it owned in its tenant to
+  `unclaimed:local:<username>` in the same transaction as the delete, and the
+  server's running ones with them. No identity owns an unclaimed session; an
+  operator gives one back with
+  `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:local:<username>'`
+  as the owning role. Sessions kept only in memory, on a server other than
+  the one the account was removed through, keep their owner until that
+  server restarts.
 - A person signed out, removed, taken out of `auth.require_group` or refused
   by an access check kept receiving every event of a session on a
   `GET /v1/sessions/{id}/events` stream opened before, and every byte of a
@@ -197,7 +257,10 @@ All notable changes to Abhed are recorded here. The format follows
 - A `write` or `edit` whose path held a stored secret ran as asked, in
   auto, accept-edits and bypass modes without a prompt, so the value became
   a file name anyone who can list the directory reads. Such a call is now
-  refused on every surface, naming the check and the secret. The path is
+  refused, naming the check and the secret, whether the agent makes it or a
+  person at the workbench does: the editor's save and the explorer's New
+  file, New folder and Rename (its new name) are checked too. `bash` is not
+  checked, so a command can still create such a file. The path is
   matched as written, in its case, against stored values of 12 characters
   or more, so a short value such as `postgres` does not refuse ordinary
   files; a stored value of 8 to 11 characters can still become a file name
@@ -345,7 +408,11 @@ All notable changes to Abhed are recorded here. The format follows
 - Stop every server on the old release, then run `abhed migrate` as the
   owner, then start this release. `serve` and `user` running as the runtime
   role refuse to start until the session owner migration (schema version 4)
-  has run, and a `storage.single_role` server runs it at start. An old node
+  and the account key indexes (schema version 5) have run, and a
+  `storage.single_role` server runs both at start. Version 5 makes usernames
+  and emails unique without regard to case; if two existing accounts already
+  share one, `abhed migrate` names them and stops, and runs once all but one
+  have another email or are removed. An old node
   left running during a rolling upgrade writes sessions under the old owners
   after the migration, and those sessions are then reachable by no one.
 - The migration looks at each owner key on existing session rows and the
@@ -363,7 +430,9 @@ All notable changes to Abhed are recorded here. The format follows
     written under that name or address, which a local account may merely have
     typed, so no row is given to an account. Pass `--owners=local-only` only
     if you know local accounts wrote every such row.
-  - Unclaimed rows cannot be opened through the API. The migration logs each
+  - Unclaimed rows cannot be opened through the session API (and the CLI
+    will not resume one, whatever `$USER` is); administrators see their
+    events in the audit. The migration logs each
     key with its tenant and the accounts it matched. An operator who knows
     the owner moves them with
     `UPDATE sessions SET user_id = 'local:<username>' WHERE user_id = 'unclaimed:<old key>'`
@@ -375,6 +444,17 @@ All notable changes to Abhed are recorded here. The format follows
     by `oidc:<subject>`, so its sessions from before stay under its email.
   - Rows owned by `anonymous` and the CLI's subagent rows (`agent`) never
     move, even to an account of that name.
+  - The default policy reads the configuration `abhed migrate` runs with.
+    If anything other than local accounts has ever signed people in to this
+    database, pass `--owners=unclaim`, whatever `auth.mode` says now.
+  - Rows written by a proxy or unnamed-provider subject that begins with a
+    reserved prefix (`local:`, `unclaimed:`, `oidc:` and the like), or is
+    `anonymous` or `agent` in any case, are not migrated. That caller now
+    owns new sessions under `proxy:` or `subject:`; its old rows stay under
+    the old key, and an operator moves them by hand if they are wanted.
+  - A key no account in the row's tenant names, but an account in another
+    tenant does, is left alone and logged: a custom tenant resolver may have
+    written that account's rows outside its `users.tenant`.
   Under `local-only`, a session the CLI recorded under an OS user name that
   is also an account's name moves to that account, and the CLI still resumes
   it. The event record is append-only and keeps the approver names it was
@@ -595,6 +675,25 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- /ide offered every permission mode, though a session may start only in
+  the server's mode or in plan, and after the server refused one the status
+  bar still named it. The selector now offers only those two, as /console
+  does, and a refusal puts it and the status bar back on the server's mode.
+- A second /ide tab on a session whose run had ended asked the server every
+  four seconds whether a new run had started, so a turn another tab began
+  and finished in between was not drawn until a later one. The session
+  state now carries its turn count, and a tab that sees it move reads the
+  missed turn back from the record. It also asks every two seconds.
+- /console kept a card answered in another tab open, with live buttons,
+  after the run ended when its stream had gone. A 409 on an answer now
+  reopens the stream, whose replay settles or retires the card, as /ide
+  already did.
+- `abhed serve` on Postgres could leave an event, such as a parallel
+  subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
+  took their seq before writing, so a later seq could commit first; the
+  stream read the record on the gap, moved past it, and then skipped the
+  earlier one when it landed. A session's events are now written and
+  published in seq order.
 - `abhed rpc` and `abhed acp` ignored `limits.max_turns` from the user's and
   a trusted workspace's configuration, which bind the CLI and the server: a
   limit of 2 ran 16 turns. They now take it as the CLI does. An untrusted
@@ -613,6 +712,39 @@ All notable changes to Abhed are recorded here. The format follows
 - A context over `compact_at` with nothing older than the kept turns recorded
   `compaction.started` with no `compaction.completed`. `started` is now
   recorded only when a summary is about to be written.
+- A context whose only history older than the kept turns was the previous
+  summary still recorded `compaction.started` with no completion, and paid
+  for a summary it then threw away. One message is no longer summarised, so
+  neither is recorded, and every `started` is followed by a `completed`. A
+  `/compact` with nothing to summarise says so and records nothing; it
+  recorded a `compaction.completed` of 0 tokens and counted it.
+- Two `abhed user add` runs on Postgres, or two sign-ups, could both create
+  the same account: the later replaced the first's password and email, and
+  emails differing only in case were both accepted. An account is now created
+  by an insert that fails on a username or email another account holds,
+  without regard to case (schema version 5; see Upgrading).
+- The CLI resumed an `unclaimed:` session when `$USER` was set to its owner
+  string. An `unclaimed:` or `nobody:` session is now refused whatever
+  `$USER` is.
+- `GET /v1/sessions` read the tenant's 200 newest sessions and then kept the
+  caller's, so a person whose sessions were all older listed none, though
+  each opened. The owner is now filtered in the query. A session older than
+  the newest 500 can now be continued too.
+- With the secrets store unreadable mid-serve, an ask from the session's own
+  agent was put to the approver with its record withheld; the workbench drew
+  no card and the run waited until interrupted. Such an ask is now refused by
+  the system, saying why, as a subagent's already was.
+- An administrator got 404 replaying a scheduled run, which no identity
+  owns. An administrator may now read one in their tenant by id (`replay`,
+  `events`, `hawkeye`), never continue it, and each read is recorded as
+  `session.read` in the admin audit.
+- The admin Settings tab listed the shared tools and left out `recall`,
+  `task` and `tasks`, which every session gets. It now lists what
+  capabilities does.
+- `bash`: the note that the sandbox has no network was added to successful
+  output that only mentioned a network error, such as a log being read. A
+  command that exits 0 now gets it only when a network client ran and the
+  failure is in its last lines.
 - Docs: `compact_at` below about 0.3 compacts on almost every turn
   (docs/guide/02-configuration.md).
 - `abhed acp`: a permission request's `toolCallId` is now the id of the

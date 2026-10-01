@@ -52,6 +52,7 @@ type streamGuard struct {
 	s         *Server
 	r         *http.Request
 	sessionID string
+	read      bool // a read-only stream, checked as mayRead
 	user      string
 	tenant    string
 	every     time.Duration
@@ -66,9 +67,18 @@ type streamGuard struct {
 // guardStream registers a guard for r's stream of sessionID. The caller must
 // call its stop when the stream ends.
 func (s *Server) guardStream(r *http.Request, sessionID string) *streamGuard {
+	return s.newStreamGuard(r, sessionID, false)
+}
+
+// guardReadStream is guardStream for a stream that only reads the record.
+func (s *Server) guardReadStream(r *http.Request, sessionID string) *streamGuard {
+	return s.newStreamGuard(r, sessionID, true)
+}
+
+func (s *Server) newStreamGuard(r *http.Request, sessionID string, read bool) *streamGuard {
 	every := s.streamRecheck()
 	g := &streamGuard{
-		s: s, r: r, sessionID: sessionID,
+		s: s, r: r, sessionID: sessionID, read: read,
 		user: UserOf(r.Context()), tenant: TenantOf(r.Context()),
 		every: every, last: time.Now(), ticker: time.NewTicker(every),
 		wake: make(chan struct{}, 1), stale: make(chan struct{}, 1),
@@ -146,7 +156,11 @@ func (g *streamGuard) check() error {
 	if group := g.s.opts.Config.Auth.RequireGroup; group != "" && (id == nil || !slices.Contains(id.Groups, group)) {
 		return notMember(group)
 	}
-	if !g.s.mayAccess(g.r.WithContext(ctx), g.sessionID) {
+	may := g.s.mayAccess
+	if g.read {
+		may = g.s.mayRead
+	}
+	if !may(g.r.WithContext(ctx), g.sessionID) {
 		return errStreamSession
 	}
 	g.last = time.Now()
