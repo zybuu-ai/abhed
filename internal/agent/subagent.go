@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -600,8 +601,16 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	if parent != nil && parent.rec.redactor() != nil {
 		rec.Redact = parent.rec.redactor()
 	}
+	var work *Work
+	if parent != nil && parent.loop != nil {
+		work = parent.loop.Work
+	}
 	if parent != nil {
 		rec.tap = mirrorInto(parent, sessionID)
+		if work != nil {
+			mirror := rec.tap
+			rec.tap = func(ev Event) { mirror(ev); work.observe(sessionID, ev) }
+		}
 		if o, ok := approver.(oneAtATime); ok {
 			o.asking = askInto(parent, sessionID, req.Description)
 			approver = o
@@ -666,6 +675,7 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		sub.Tools = sub.Tools.Without(def.DisallowedTools)
 	}
 	sub.depth = depth + 1
+	sub.Work = work
 	sub.Provider = provider
 	// A subagent's calls reach the same person, so the same hooks screen them.
 	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
@@ -708,7 +718,9 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 // execute runs a prepared child to its end, records its return in both
 // records, and gives back its summary as the parent should read it.
 func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
+	c.track()
 	reason, err := c.sub.Run(ctx, c.req.Prompt)
+	c.untrack(reason, err)
 	usage := c.sub.Usage()
 	returned := map[string]any{
 		"description": c.req.Description,
@@ -1118,4 +1130,34 @@ func childPolicy(pol *policy.Engine, session *tools.Session) *policy.Engine {
 		return roots
 	}
 	return &child
+}
+
+// track lists the child in the conversation's work as its run starts.
+func (c *child) track() {
+	if c.sub.Work == nil {
+		return
+	}
+	parent := ""
+	if c.parent != nil && c.parent.rec != nil {
+		parent = c.parent.rec.sessionID
+	}
+	bg, _ := c.extra["background"].(bool)
+	c.sub.Work.start(WorkItem{ID: c.sessionID, Parent: parent, Kind: WorkAgent, AgentType: c.req.AgentType,
+		Title: c.req.Description, Background: bg, Started: time.Now()}, c.sub)
+}
+
+// untrack marks the child's run over, with any message it never took.
+func (c *child) untrack(reason TerminalReason, err error) {
+	if c.sub.Work == nil {
+		return
+	}
+	status := noticeStatus(reason)
+	if err != nil {
+		status = "failed"
+	}
+	var left []string
+	for _, q := range c.sub.takeSteering() {
+		left = append(left, q.Text)
+	}
+	c.sub.Work.end(c.sessionID, status, string(reason), left)
 }

@@ -250,6 +250,9 @@ type Loop struct {
 
 	// Background is the session's background children; nil runs none.
 	Background *Background
+	// Work lists the conversation's subagents as they run, for a surface;
+	// nil keeps no list. A subagent's loop shares its parent's.
+	Work *Work
 	// runMu is held for a whole run, and by anything else that changes the
 	// conversation, so a notice delivered while the session is idle lands in
 	// the record and the messages in the same order.
