@@ -30,6 +30,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	out := json.NewEncoder(os.Stdout)
+	// Taken once: emit runs on the agent's event goroutine, which can still be
+	// delivering an event after this returns.
+	errOut := os.Stderr
 
 	stopper := cancelOnStop(stopExits)
 	defer stopper.stop()
@@ -41,7 +44,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		outMu.Lock()
 		defer outMu.Unlock()
 		if err := out.Encode(v); err != nil {
-			fmt.Fprintf(os.Stderr, "abhed: rpc write failed: %v\n", err)
+			fmt.Fprintf(errOut, "abhed: rpc write failed: %v\n", err)
 		}
 	}
 
@@ -129,7 +132,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if done {
 				undelivered("input ended before another prompt")
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "abhed: rpc read failed: %v\n", err)
+					fmt.Fprintf(errOut, "abhed: rpc read failed: %v\n", err)
 					return 1
 				}
 				return 0
