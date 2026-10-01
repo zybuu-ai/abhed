@@ -202,6 +202,50 @@ func TestLocalAccountBackgroundSurvivesAndWakes(t *testing.T) {
 	}
 }
 
+// On a multi-user local-accounts server a wake's ask waits for its owner:
+// another account cannot answer it and nothing approves it on its own.
+func TestLocalAccountWakeAskReachesOnlyItsOwner(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	cfg.Subagents.Wake = "auto"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	for _, name := range []string{"bob", "carol"} {
+		if err := local.CreateUser(context.Background(), auth.User{Username: name}, "correct-horse-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ad := newBGAdapter("one")
+	ad.askOnWake = true
+	st := agent.NewMemStore()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: ad, Registry: tools.NewRegistry(tools.Read{}, tools.Bash{}), Store: st,
+		Auth: &auth.Middleware{Providers: []auth.Provider{local}, PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
+	g := &gateRig{h: s.Handler(), local: local}
+	bob, carol := g.signIn(t, "bob"), g.signIn(t, "carol")
+	rec := g.do(bob, "POST", "/v1/sessions", `{"prompt":"bg:one"}`)
+	var created createResponse
+	if json.Unmarshal(rec.Body.Bytes(), &created) != nil || created.SessionID == "" {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	id := created.SessionID
+	b := &bgServer{t: t, s: s, h: s.Handler(), ad: ad, store: st}
+	waitUntil(t, "the turn to end with the task running", func() bool { return b.state(id) == "background" })
+	ad.release("one")
+	waitUntil(t, "the wake's ask", func() bool { return b.state(id) == "waiting_approval" })
+	if rec := g.do(carol, "POST", "/v1/sessions/"+id+"/approve", `{"approved":true}`); rec.Code < 300 {
+		t.Fatalf("another account answered the wake's ask: %d", rec.Code)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for _, a := range payloadsOf(b.events(id), agent.EvActionApproved) {
+		if a["call_id"] != "tone" {
+			t.Fatalf("the wake's ask was approved without its owner: %v", a)
+		}
+	}
+	if rec := g.do(bob, "POST", "/v1/sessions/"+id+"/approve", `{"approved":false}`); rec.Code >= 300 {
+		t.Fatalf("the owner's answer: %d %s", rec.Code, rec.Body)
+	}
+	waitUntil(t, "done", func() bool { return b.state(id) == "done" })
+}
+
 // A wake run that stopped at its cap with a person's message queued after
 // its last look runs again for the message, as a completed run does.
 func TestWakeLimitWithQueuedMessageRunsOn(t *testing.T) {
