@@ -176,10 +176,13 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	args, _ := json.Marshal(map[string]string{"command": req.Command, "description": "typed into the workbench terminal"})
 	answer := agent.Unanswered
 	switch {
-	case req.Confirmed:
+	case req.Confirmed && answerable(live, req.Command):
 		answer = agent.Confirmed
 	case req.Declined:
 		answer = agent.Declined
+	}
+	if answer != agent.Unanswered {
+		delete(live.lineAsks, req.Command)
 	}
 	tool, refused, confirm, err := live.Loop.ManualAuthorizeTyped(id, args, answer)
 	if errors.Is(err, agent.ErrNothingToDecline) {
@@ -191,6 +194,10 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if confirm != "" {
+		if live.lineAsks == nil || len(live.lineAsks) >= 64 {
+			live.lineAsks = map[string]time.Time{}
+		}
+		live.lineAsks[req.Command] = time.Now()
 		WriteJSON(w, http.StatusOK, ptyStartResponse{Confirm: confirm, Cwd: sess.Rel(sess.Cwd)})
 		return
 	}
@@ -234,6 +241,17 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, ptyStartResponse{ID: run.id, Cwd: sess.Rel(sess.Cwd)})
+}
+
+// lineConfirmGuard is how long after asking a confirmation may answer it, so
+// a key typed behind the line as the question appears is never the answer.
+const lineConfirmGuard = 300 * time.Millisecond
+
+// answerable reports whether command was asked about, at least lineConfirmGuard ago.
+// A confirmation that is not is no answer: the line is asked about again.
+func answerable(live *liveSession, command string) bool {
+	at, ok := live.lineAsks[command]
+	return ok && time.Since(at) >= lineConfirmGuard
 }
 
 // terminalsFull refuses another terminal when the session runs maxTerminals.

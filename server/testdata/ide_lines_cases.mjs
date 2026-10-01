@@ -15,25 +15,55 @@ const term = (wrapped = 0, pending = null) => {
 };
 const CONFIRM = {confirm:'recursive/forced delete — always requires confirmation', cwd:'.'};
 
-// y runs the line, sent again with confirmed; the prompt says why.
+const guard = () => new Promise(r => setTimeout(r, CONFIRM_GUARD + 20));
+
+// 2 then Enter runs the line, sent again with confirmed; the prompt says why and numbers the answers.
 let {out, t} = term();
 __sent.length = 0; __replies.push(CONFIRM, {id:'u2', cwd:'.'});
 linesData(t, 'rm -rf x\r'); await tick();
 check('a destructive line is sent once, with no answer', __sent.length === 1 && !('confirmed' in __sent[0]) && !('declined' in __sent[0]));
-check('the prompt shows the reason and asks', t.confirm === 'rm -rf x' && out.join('').includes('always requires confirmation') && out.join('').includes('Run it? [y/N]'));
+check('the prompt shows the reason and numbers the answers', t.confirm === 'rm -rf x' && out.join('').includes('always requires confirmation') &&
+  out.join('').includes('1. No') && out.join('').includes('2. Yes, run it') && !out.join('').includes('[y/N]'));
 check('arrow keys do nothing at the prompt', lineKeys(t, {type:'keydown', key:'ArrowUp'}) === false && t.line === '');
-linesData(t, 'y'); linesData(t, '\r'); await tick();
-check('y sends it again, confirmed', __sent.length === 2 && __sent[1].confirmed === true && !('declined' in __sent[1]) && __sent[1].command === 'rm -rf x');
+await guard();
+linesData(t, '2'); linesData(t, '\r'); await tick();
+check('2 sends it again, confirmed', __sent.length === 2 && __sent[1].confirmed === true && !('declined' in __sent[1]) && __sent[1].command === 'rm -rf x');
 check('a confirmed line runs', __attached === 'u2' && !t.confirm);
 check('the line is in the history once', t.hist.length === 1);
 
-// Anything but y declines, and clears the lines queued behind it.
-for(const answer of ['yes\r', '\r', 'n\r', '\x03']){
+// Keys typed right behind the line, as the prompt appears, are ignored: no answer is taken from them.
+({out, t} = term());
+__sent.length = 0; __attached = null; __replies.push(CONFIRM);
+linesData(t, 'rm -rf x\r'); await tick();
+for(const k of ['2', '\r', 'y', '\r']) linesData(t, k);
+check('an answer typed inside the guard is ignored', __sent.length === 1 && t.confirm === 'rm -rf x' && t.line === '');
+
+// Enter, a letter, y, yes or 22 asks again; nothing is chosen for Enter.
+for(const answer of ['\r', 'y\r', 'n\r', 'yes\r', '22\r']){
+  ({out, t} = term());
+  __sent.length = 0; __attached = null; __replies.push(CONFIRM);
+  linesData(t, 'rm -rf x\r'); await tick(); await guard();
+  for(const k of answer) linesData(t, k);
+  await tick();
+  check(JSON.stringify(answer) + ' asks again and sends nothing', __sent.length === 1 && t.confirm === 'rm -rf x' && out.join('').split('answer 1-2').length === 3);
+}
+
+// A paste is no answer, even of 2 and Enter.
+({out, t} = term());
+__sent.length = 0; __replies.push(CONFIRM);
+linesData(t, 'rm -rf x\r'); await tick(); await guard();
+linesData(t, '2\r'); await tick();
+check('a pasted 2 is no answer', __sent.length === 1 && t.confirm === 'rm -rf x' && out.join('').includes('pasted text is no answer'));
+
+// 1 or Ctrl-C declines, and clears the lines queued behind it.
+for(const answer of ['1\r', '\x03']){
   ({out, t} = term());
   __sent.length = 0; __attached = null; __replies.push(CONFIRM, {id:'u3', denied:'Not run: not confirmed', cwd:'.'});
   linesData(t, 'rm -rf x\recho next\r'); await tick();
   check(JSON.stringify(answer) + ': one line waits behind the prompt', t.queue.length === 1);
-  linesData(t, answer); await tick();
+  if(answer !== '\x03') await guard();
+  for(const k of answer) linesData(t, k);
+  await tick();
   check(JSON.stringify(answer) + ' declines', __sent.length === 2 && __sent[1].declined === true && !('confirmed' in __sent[1]));
   check(JSON.stringify(answer) + ' runs nothing and drops the queue', __attached === null && t.queue.length === 0 && __sent.every(b => b.command !== 'echo next'));
 }
@@ -43,7 +73,7 @@ for(const answer of ['yes\r', '\r', 'n\r', '\x03']){
 __sent.length = 0; __replies.push(CONFIRM, {id:'u4', cwd:'.'});
 linesData(t, 'rm -rf x\r'); t.line = 'git st'; await tick();
 check('type-ahead is set aside at the prompt', t.confirm && t.line === '');
-linesData(t, 'y\r'); await tick();
+await guard(); linesData(t, '2'); linesData(t, '\r'); await tick();
 check('type-ahead comes back after the answer', t.line === 'git st');
 
 // An ordinary line runs on Enter, as before.
@@ -249,7 +279,7 @@ __sent.length = 0; __replies.push({cwd:'.'}, {cwd:'.'});
 linesData(t, 'echo a\x1b]junk\recho b\x1b\r'); await tick(); await tick();
 check('an unfinished escape does not swallow the next line', __sent.map(b => b.command).join('|') === 'echo a|echo b');
 
-// The [y/N] prompt still takes only its answer: no completion, no raw keys.
+// The numbered prompt still takes only its answer: no completion, no raw keys.
 ({out, t} = term());
 __sent.length = 0; __listed.length = 0; __replies.push(CONFIRM, {id:'u7', cwd:'.'});
 linesData(t, 'rm -rf te\r'); await tick();
@@ -257,15 +287,15 @@ k = key('Tab');
 check('Tab at the prompt completes nothing and keeps focus', lineKeys(t, k.e) === false && k.stopped() && (await tick(), __listed.length === 0) && t.line === '');
 linesData(t, '\x1b[A'); linesData(t, '\x1b');
 check('escape keys at the prompt are ignored', t.line === '' && t.confirm === 'rm -rf te');
-linesData(t, 'y\r'); await tick();
-check('the prompt still runs on y', __sent.length === 2 && __sent[1].confirmed === true && __attached === 'u7');
+await guard(); linesData(t, '2'); linesData(t, '\r'); await tick();
+check('the prompt still runs on 2', __sent.length === 2 && __sent[1].confirmed === true && __attached === 'u7');
 
 // An escape key arriving with the answer is dropped, not taken as the answer.
 ({out, t} = term());
 __sent.length = 0; __replies.push(CONFIRM, {id:'u11', cwd:'.'});
-linesData(t, 'rm -rf te\r'); await tick();
-linesData(t, 'y\x1b[A\x1b[D\r'); await tick();
-check('y with arrows mixed in still confirms, and the arrows are no text', __sent.length === 2 && __sent[1].confirmed === true);
+linesData(t, 'rm -rf te\r'); await tick(); await guard();
+linesData(t, '2\x1b[A'); linesData(t, '\x1b[D\r'); await tick();
+check('2 with arrows mixed in still confirms, and the arrows are no text', __sent.length === 2 && __sent[1].confirmed === true);
 
 // While a line is still being judged, history keys wait.
 ({out, t} = term()); t.hist = ['echo hi']; t.at = 1; t.busy = true;

@@ -2097,7 +2097,7 @@ async function runLine(t, cmd, answer){
   let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ t.busy = false; t.term.write('\x1b[31m' + e.message + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
-  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\nRun it? [y/N] '); return; }
+  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\n'); askConfirm(t); return; }
   if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   // A cd that was not followed says so, rather than leaving the next line to run elsewhere.
   if(r.note) t.term.write('\x1b[33m' + r.note.replace(/\p{Cc}/gu, '?') + '\x1b[0m');
@@ -2105,13 +2105,21 @@ async function runLine(t, cmd, answer){
   if(!r.id || r.cd){ nextLine(t); return; }
   attach(t, r.id);
 }
-// Only a typed y, then Enter, runs a command that always confirms; anything else cancels it.
+// A key this soon after the confirmation appears is ignored: it was typed for something else.
+const CONFIRM_GUARD = 300;
+const askConfirm = t => { t.line = ''; t.confirmAt = Date.now(); t.term.write('  1. No\r\n  2. Yes, run it\r\nanswer 1-2: '); };
+// Only 2, typed then Enter, runs a command that always confirms; 1 or Ctrl-C cancels it.
+// Enter or anything else asks again; nothing is chosen for Enter, and a paste is no answer.
 function confirmData(t, d){
   // Escape keys are no answer, wherever they fall in what arrived.
   d = d.replace(keySeq, '');
+  if(!d.includes('\x03') && (Date.now() - t.confirmAt < CONFIRM_GUARD)) return;
+  if(!d.includes('\x03') && [...d].length > 1){ t.term.write('\r\n\x1b[2mpasted text is no answer; type 1 or 2\x1b[0m\r\n'); askConfirm(t); return; }
   for(const ch of d){
     if(ch === '\r' || ch === '\n' || ch === '\x03'){
-      const cmd = t.confirm, yes = ch !== '\x03' && /^y$/i.test(t.line.trim());
+      const n = ch === '\x03' ? '1' : t.line.trim();
+      if(n !== '1' && n !== '2'){ t.term.write('\r\n'); askConfirm(t); return; }
+      const cmd = t.confirm, yes = n === '2';
       t.confirm = null; t.line = ch === '\x03' ? '' : t.ahead || ''; t.ahead = '';
       t.term.write(ch === '\x03' ? '^C\r\n' : '\r\n');
       // A declined line stops the lines queued behind it, as Ctrl-C does.

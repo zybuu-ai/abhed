@@ -69,7 +69,7 @@ sets = {
     'ide-term': ['function visible(s, lines){','function logTerminal(cmd, p, who){'],
     # From ide.html: the line-by-line terminal and its confirmation prompt.
     'ide-lines': ['const linePrompt = ','const promptLine = ','const keySeq = ','function linesData(t, d){','function nextLine(t){',
-          'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','function confirmData(t, d){'],
+          'function lineKeys(t, e){','async function completeLine(t){','const unsafeName = ','function wrappedRows(t){','function unclosed(s){','const shellQuote = ','async function runLine(t, cmd, answer){','const CONFIRM_GUARD = ','const askConfirm = ','function confirmData(t, d){'],
 }
 seen=set(); out=[]
 for fn in sets[which]:

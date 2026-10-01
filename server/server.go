@@ -349,6 +349,8 @@ type liveSession struct {
 	// runs their calls one at a time so two commands never share a cd.
 	manual   *tools.Session
 	manualMu sync.Mutex
+	// lineAsks is when each destructive terminal line was last asked about, under manualMu.
+	lineAsks map[string]time.Time
 	// shellMu orders the start of interactive shells, which need no manualMu.
 	shellMu sync.Mutex
 	// ptys are the person's commands running on a terminal.

@@ -90,6 +90,12 @@ Two changes need action before upgrading:
   is numbered as well: `1` No (don't write), `2` Yes, write it. It took
   Enter as yes; Enter or a letter now asks again, and input that ends writes
   nothing.
+- The line terminal's destructive-command confirmation is numbered, where it
+  asked `Run it? [y/N]`: `1` No, `2` Yes, run it, then Enter. Enter, a letter
+  or a paste asks again, and keys in the first 300 ms after it appears are
+  ignored. A client of the terminal endpoint must send `confirmed` for a line
+  it was asked about at least 300 ms before; an earlier or unasked
+  confirmation is asked again.
 - API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
   must name its `request_id`, from the `subagent.ask` event: an answer
   naming none is refused with 409, with or without a run live. The console,

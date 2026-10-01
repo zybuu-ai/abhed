@@ -46,7 +46,7 @@ globalThis.__root = new El('div');
 	}
 }
 
-// A destructive line waits at [y/N] and only y confirms it; a running program
+// A destructive line waits at a numbered question and only 2 confirms it; a running program
 // gets every key raw, and Tab completes from the workspace listing.
 func TestIDELineTerminalConfirmsDestructiveLines(t *testing.T) {
 	harness := `globalThis.__sent = []; globalThis.__replies = []; globalThis.__attached = null;
