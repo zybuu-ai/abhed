@@ -22,7 +22,7 @@ func setupTerminal(editor *ui.LineReader, r *ui.Renderer, workspace string) {
 	// A vault secret in a prompt is withheld from the history file as it is
 	// from the record.
 	h := ui.LoadHistory(ui.HistoryPath(workspace))
-	red := openVault().Redactor()
+	red := openVault().Session()
 	h.SetRedact(func(s string) string { return string(red.Redact([]byte(s))) })
 	editor.SetHistory(h)
 }

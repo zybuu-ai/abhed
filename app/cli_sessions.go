@@ -613,10 +613,10 @@ func openStore(ctx context.Context, cfg config.Config) (server.EventStore, func(
 
 // openRecord opens the local record the configuration names: the managed
 // record.dir, or ~/.abhed/records, for this tenant and user, redacting with
-// the secrets store before anything is written. A managed
+// the secrets store, read again as it changes, before anything is written. A managed
 // record.retention_days prunes what is older, leaving tombstones.
 func openRecord(cfg config.Config) (*local.Store, error) {
-	rec, err := local.Open(local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Redactor()})
+	rec, err := local.Open(local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Session()})
 	if err != nil {
 		return nil, fmt.Errorf("open the local record: %w", err)
 	}
