@@ -198,3 +198,21 @@ func TestManagedWakeHoldsOverUser(t *testing.T) {
 		t.Fatalf("wake %q with a managed notify", cfg.Subagents.Wake)
 	}
 }
+
+// A managed file that sets any permissions key, not only the allow list,
+// leaves no caller able to add an allow rule.
+func TestAllowRefusedUnderAnyManagedPermission(t *testing.T) {
+	for _, key := range []string{"permissions.mode", "permissions.deny", "permissions.ask", "permissions"} {
+		c := managedCfg(key)
+		if !c.AllowLocked() {
+			t.Errorf("%s: allow rules not locked", key)
+		}
+		_, err := c.Apply(Overrides{Allow: []string{"bash(touch *)"}})
+		refused(t, err, "permissions.allow")
+	}
+	c := managedCfg("limits.max_turns", "sandbox.min_tier")
+	if got, err := c.Apply(Overrides{Allow: []string{"bash(touch *)"}}); err != nil || c.AllowLocked() ||
+		!strings.Contains(strings.Join(got.Permissions.Allow, " "), "bash(touch *)") {
+		t.Errorf("a managed file without permissions refused an allow rule: %v", err)
+	}
+}

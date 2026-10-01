@@ -124,7 +124,7 @@ func addSessionRule(ctx context.Context, e *cmdEnv, list, rule string) error {
 	}
 	if list == policy.ListAllow {
 		cfg := e.st.appCfg
-		if cfg.ManagedSets("permissions") {
+		if cfg.AllowLocked() {
 			return fmt.Errorf("the managed configuration sets the permission rules, so this session may not add allow rules (set in %s)", managed.ConfigFile)
 		}
 		if policy.NeverAllows(rule) {

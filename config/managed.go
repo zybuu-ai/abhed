@@ -112,6 +112,10 @@ func (c Config) ManagedSets(path string) bool {
 	return false
 }
 
+// AllowLocked reports whether no caller may add allow rules: the managed
+// configuration sets a permissions key, whichever one. Every surface asks this.
+func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
+
 // Offered reports whether a provider is one to offer for choosing: the default,
 // one not built in, or a built-in one a configuration file names.
 func (c Config) Offered(name string) bool {
@@ -215,9 +219,9 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		}
 		c.Memory.Auto = *o.MemoryAuto
 	}
-	if len(o.Allow) > 0 && c.ManagedSets("permissions.allow") {
+	if len(o.Allow) > 0 && c.AllowLocked() {
 		return c, refuse("permissions.allow", strings.Join(o.Allow, ","),
-			"the managed configuration sets the allow rules, which may not be added to")
+			"the managed configuration sets the permissions, so allow rules may not be added")
 	}
 	if len(o.AdditionalDirs) > 0 && c.ManagedSets("additional_dirs") {
 		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),

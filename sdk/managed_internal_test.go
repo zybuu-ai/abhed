@@ -115,20 +115,27 @@ func TestManagedSyntaxCheckIsPinned(t *testing.T) {
 
 func TestEmbedderDenyRulesAreAdditive(t *testing.T) {
 	managedFile(t, `{"permissions": {"deny": ["bash(curl*)"], "ask": ["bash(git push*)"]}}`)
-	as, errs := newAgents(t, Options{Mode: "auto", Deny: []string{"bash(wget*)"}, Allow: []string{"bash(git*)"}})
+	as, errs := newAgents(t, Options{Mode: "auto", Deny: []string{"bash(wget*)"}})
 	for i, a := range as {
 		if errs[i] != nil {
 			t.Fatal(errs[i])
 		}
 		for cmd, want := range map[string]policy.Decision{
 			"curl http://x": policy.Deny, "wget http://x": policy.Deny,
-			"git push origin": policy.Ask, "git status": policy.Allow,
+			"git push origin": policy.Ask,
 		} {
 			if got := decide(a, "bash", cmd); got != want {
 				t.Errorf("case %d: %s decided %v, want %v", i, cmd, got, want)
 			}
 		}
 	}
+}
+
+// Managed permissions without an allow list still lock Options.Allow.
+func TestManagedPermissionsRefuseEmbedderAllow(t *testing.T) {
+	managedFile(t, `{"permissions": {"mode": "default", "deny": ["bash(curl*)"]}}`)
+	_, errs := newAgents(t, Options{Allow: []string{"bash(touch *)"}})
+	wantRefused(t, errs, "permissions.allow")
 }
 
 func TestManagedAllowAndTurnsBind(t *testing.T) {

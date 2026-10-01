@@ -8,6 +8,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A managed file that set `permissions` but not `permissions.allow` still let
+  `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
+  while `/permissions allow` refused them. Every path now refuses an allow
+  rule when the managed file sets any `permissions` setting.
 - Over ACP, the agent can no longer change an editor's own files in the
   workspace: the file tools refuse `.vscode/**`, `.devcontainer/**`,
   `.git/config`, `.git/hooks/**` and `*.code-workspace`, and the sandbox keeps
