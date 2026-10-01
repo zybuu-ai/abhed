@@ -100,6 +100,9 @@ an untrusted workspace file made that were ignored are named under it.
 the decision, the step, the rule and the reason policy would give, for
 example `deny · step deny · bash(curl *) · denied by rule bash(curl *)`.
 Hooks are not asked, since that would show them a call that is not being made.
+A `read`, `write` or `edit` the tool itself would refuse, a path outside the
+reachable folders or one kept from the agent such as Abhed's own state, shows
+as `refused · by the <tool> tool`, with what policy alone would have said.
 
 ### Adding a directory: `/add-dir`
 
@@ -376,8 +379,8 @@ Every call goes through the same steps, and the order is the design:
    an alias run through a git whose name comes from a substitution; a git
    named by a variable (`$G reset --hard`) or by a substitution that does not
    spell git (`$(echo … | base64 -d)`);
-   `git commit --amend`, which the reflog can undo; and a command spelled so
-   the shell builds the words, such as `git${IFS}…`
+   `git commit --amend`, which the reflog can undo; and a command that
+   sets `IFS` itself and then builds its words with it
    - no scope is offered for a destructive command, and none remembered
      satisfies it
    - a command too long or complex to split into its parts asks while a patterned

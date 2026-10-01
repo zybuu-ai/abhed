@@ -211,7 +211,29 @@ func explainDecision(e *cmdEnv, tool, what string) string {
 	if rule == "" {
 		rule = "no rule"
 	}
-	return fmt.Sprintf("%s · step %s · %s · %s (mode %s; hooks not consulted)", res.Decision, res.Step, rule, res.Reason, e.pol.Mode)
+	line := fmt.Sprintf("%s · step %s · %s · %s (mode %s; hooks not consulted)", res.Decision, res.Step, rule, res.Reason, e.pol.Mode)
+	if why := toolRefusal(e, tool, what); why != "" {
+		return fmt.Sprintf("refused · by the %s tool · %s; policy alone: %s", tool, why, line)
+	}
+	return line
+}
+
+// toolRefusal is why a file tool would itself refuse the path, whatever
+// policy decides: one outside the reachable folders, or one its guard keeps.
+func toolRefusal(e *cmdEnv, tool, path string) string {
+	if e.sess == nil || (tool != "read" && tool != "write" && tool != "edit") {
+		return ""
+	}
+	p, err := e.sess.Resolve(path)
+	if err != nil {
+		return err.Error()
+	}
+	if tool != "read" && e.sess.Guard != nil {
+		if err := e.sess.Guard(p); err != nil {
+			return err.Error()
+		}
+	}
+	return ""
 }
 
 // mutatesTool reports whether a call can change things, from the session's
