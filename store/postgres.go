@@ -243,8 +243,11 @@ const schemaAttempts = 100
 func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 	var err error
 	for attempt := range schemaAttempts {
-		if err = applySchemaOnce(ctx, pool); err == nil || !lockBusy(err) {
-			return err
+		if err = applySchemaOnce(ctx, pool); err == nil {
+			return nil
+		}
+		if !lockBusy(err) {
+			return fmt.Errorf("apply schema: %w", err)
 		}
 		wait := time.Duration(min(attempt+1, 20)) * 10 * time.Millisecond
 		select {
@@ -253,7 +256,8 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 		case <-time.After(wait):
 		}
 	}
-	return fmt.Errorf("apply schema: the tables stayed busy after %d attempts: %w", schemaAttempts, err)
+	return fmt.Errorf("apply schema: the tables stayed busy after %d attempts; "+
+		"retry once the query or transaction holding them has ended: %w", schemaAttempts, err)
 }
 
 // lockBusy is a lock not granted at once (55P03) or a deadlock (40P01): the
@@ -263,22 +267,21 @@ func lockBusy(err error) bool {
 	return errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "40P01")
 }
 
+// applySchemaOnce is one try; its errors name the step, and applySchema says
+// which job failed.
 func applySchemaOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, lockForSchema); err != nil {
-		return fmt.Errorf("apply schema: lock the tables: %w", err)
+		return fmt.Errorf("lock the tables: %w", err)
 	}
 	if _, err := tx.Exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (p *Postgres) Close() { p.pool.Close() }
