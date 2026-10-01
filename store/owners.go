@@ -136,31 +136,7 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool, m OwnerMigration) ([
 	if done, err := ownersMigrated(ctx, tx); err != nil || done {
 		return nil, err
 	}
-	table, err := ownerAccounts(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	accounts := mergeAccounts(table, m.Accounts)
-	slog.Info("session owner migration accounts", "users_table", len(table),
-		"elsewhere", len(m.Accounts), "distinct", len(accounts))
-	if m.Found != nil {
-		m.Found(len(table), len(m.Accounts), len(accounts))
-	}
-	if len(accounts) == 0 && policy == OwnersLocalOnly {
-		stranded, err := legacyOwnedRows(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		if err := noAccounts(stranded, m.AllowNoAccounts); err != nil {
-			return nil, err
-		}
-	}
-	slog.Info("migrating session owners (schema version 4)", "owners", string(policy))
-	remaps, err := remapOwners(ctx, tx, accounts, policy)
-	if err != nil {
-		return nil, err
-	}
-	folds, err := foldEmailOwners(ctx, tx)
+	remaps, folds, err := runOwnerMigration(ctx, tx, m, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -176,22 +152,78 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool, m OwnerMigration) ([
 	return remaps, nil
 }
 
-// mergeAccounts is the table's accounts plus those given whose username the
-// table lacks, compared without regard to case.
-func mergeAccounts(table, extra []*auth.User) []*auth.User {
-	seen := map[string]bool{}
-	var out []*auth.User
-	for _, list := range [][]*auth.User{table, extra} {
-		for _, u := range list {
-			if u == nil || u.Username == "" || seen[strings.ToLower(u.Username)] {
-				continue
-			}
-			k := strings.ToLower(u.Username)
-			seen[k] = true
-			out = append(out, u)
+// runOwnerMigration is the move itself, inside the caller's transaction:
+// the accounts gathered, the refusal to strand every row, the remap and the
+// email fold.
+func runOwnerMigration(ctx context.Context, tx pgx.Tx, m OwnerMigration, policy OwnerPolicy) ([]OwnerRemap, []EmailFold, error) {
+	table, err := ownerAccounts(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	accounts := mergeAccounts(table, m.Accounts)
+	distinct := distinctUsernames(accounts)
+	slog.Info("session owner migration accounts", "users_table", len(table),
+		"elsewhere", len(m.Accounts), "distinct", distinct)
+	if m.Found != nil {
+		m.Found(len(table), len(m.Accounts), distinct)
+	}
+	if len(accounts) == 0 && policy == OwnersLocalOnly {
+		stranded, err := legacyOwnedRows(ctx, tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := noAccounts(stranded, m.AllowNoAccounts); err != nil {
+			return nil, nil, err
 		}
 	}
+	slog.Info("migrating session owners (schema version 4)", "owners", string(policy))
+	remaps, err := remapOwners(ctx, tx, accounts, policy)
+	if err != nil {
+		return nil, nil, err
+	}
+	folds, err := foldEmailOwners(ctx, tx)
+	return remaps, folds, err
+}
+
+// mergeAccounts is the table's accounts plus those given. One the table also
+// holds, by username in any case, is kept only in the table's tenant, so its
+// email in the file still counts there; one in another tenant is dropped.
+func mergeAccounts(table, extra []*auth.User) []*auth.User {
+	tenant := map[string]string{}
+	var out []*auth.User
+	for _, u := range table {
+		if u == nil || u.Username == "" {
+			continue
+		}
+		tenant[strings.ToLower(u.Username)] = tenantOr(u.Tenant)
+		out = append(out, u)
+	}
+	for _, u := range extra {
+		if u == nil || u.Username == "" {
+			continue
+		}
+		if t, held := tenant[strings.ToLower(u.Username)]; held && t != tenantOr(u.Tenant) {
+			continue
+		}
+		out = append(out, u)
+	}
 	return out
+}
+
+func tenantOr(t string) string {
+	if t == "" {
+		return "default"
+	}
+	return t
+}
+
+// distinctUsernames counts accounts by username, without regard to case.
+func distinctUsernames(us []*auth.User) int {
+	seen := map[string]bool{}
+	for _, u := range us {
+		seen[strings.ToLower(u.Username)] = true
+	}
+	return len(seen)
 }
 
 // noAccounts is the verdict on a local-only move that found no account.

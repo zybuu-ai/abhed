@@ -2426,33 +2426,57 @@ func userStore(cfg config.Config, workspace string) (auth.UserStore, error) {
 // usersFile is where local accounts live: the configured path, else beside
 // the workspace config.
 func usersFile(cfg config.Config, workspace string) string {
-	if cfg.Auth.UsersFile != "" {
-		return cfg.Auth.UsersFile
+	if p := cfg.Auth.UsersFile; p != "" {
+		// Relative to the workspace, so serve, user and migrate find one file
+		// whichever directory each was started in.
+		if !filepath.IsAbs(p) {
+			return filepath.Join(workspace, p)
+		}
+		return p
 	}
 	return filepath.Join(workspace, ".abhed", "users.json")
 }
+
+// provision is store.Provision, a variable so a test can see what migrate
+// hands it without a database of its own.
+var provision = store.Provision
 
 // fileOwnerAccounts reads the accounts file the owner migration also counts:
 // auth.users_file when set, else the default file if one exists. Postgres
 // serves accounts from its table, but a file can hold accounts made before
 // the move to Postgres, or never imported.
-func fileOwnerAccounts(cfg config.Config, workspace string) ([]*auth.User, string, error) {
+func fileOwnerAccounts(cfg config.Config, workspace string, force bool) ([]*auth.User, string, error) {
 	path := usersFile(cfg, workspace)
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		if cfg.Auth.UsersFile != "" {
-			fmt.Fprintf(os.Stderr, "abhed: auth.users_file %s does not exist; using the users table alone\n", path)
-		}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) && cfg.Auth.UsersFile == "" {
 		return nil, "", nil
+	}
+	users, err := readUsersFile(path)
+	if err != nil {
+		// A configured file that cannot be read would leave its accounts'
+		// sessions stranded once version 4 is recorded.
+		if cfg.Auth.UsersFile == "" || !force {
+			return nil, "", fmt.Errorf("auth.users_file: %w; fix it, or pass --force-no-accounts to migrate without its accounts", err)
+		}
+		fmt.Fprintf(os.Stderr, "abhed: WARNING: %v; going on without its accounts (--force-no-accounts)\n", err)
+		return nil, "", nil
+	}
+	return users, path, nil
+}
+
+// readUsersFile lists the accounts in an existing users file.
+func readUsersFile(path string) ([]*auth.User, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
 	}
 	fs, err := auth.NewFileUserStore(path)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	users, err := fs.List(context.Background())
 	if err != nil {
-		return nil, "", fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	return users, path, nil
+	return users, nil
 }
 
 // ownerPolicy is what the owner migration may assume: local accounts were
@@ -3107,11 +3131,11 @@ func migrateCmd(workspace string, args []string, extensions []store.Extension, t
 		}
 	}
 	fmt.Printf("Session owners: %s (%s).\n", policy, ownerPolicyWhy(cfg, *owners != ""))
-	fileAccounts, filePath, err := fileOwnerAccounts(cfg, workspace)
+	fileAccounts, filePath, err := fileOwnerAccounts(cfg, workspace, *noAccounts)
 	if err != nil {
 		fail(err)
 	}
-	err = store.Provision(context.Background(), store.ProvisionConfig{
+	err = provision(context.Background(), store.ProvisionConfig{
 		OwnerDSN: cfg.Storage.MigrateDSN, RuntimeRole: runtime.User, Extensions: extensions,
 		Owners: policy, OwnerAccounts: fileAccounts, AllowNoAccounts: *noAccounts,
 		AccountsFound: func(table, extra, distinct int) {
