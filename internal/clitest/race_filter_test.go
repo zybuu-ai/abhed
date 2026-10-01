@@ -42,7 +42,7 @@ func TestCleanupMarksTheKnownRacePending(t *testing.T) {
 	if *runPending {
 		t.Skip("run without -clitest-run-pending")
 	}
-	if rec := cleanupAfter(t, editorRace); rec.skipped != "clitest: pending (A1): the binary reported the line editor's known data race" {
+	if rec := cleanupAfter(t, editorRace); rec.skipped != "clitest: pending (editor): the binary reported the line editor's known data race" {
 		t.Fatalf("known race: skipped %q, errored %q", rec.skipped, rec.errored)
 	}
 	other := "WARNING: DATA RACE\nRead at 0x2 by goroutine 9:\n  github.com/zybuu-ai/abhed/internal/agent.(*Loop).Run()\n==================\n"

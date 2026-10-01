@@ -67,54 +67,98 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
-Two changes need action before upgrading:
+The first fourteen items change how an existing setup behaves; read them
+before upgrading.
 
-- **`request_id` is now required on subagent approvals.** An answer to a
-  subagent's ask that names no `request_id` is refused with 409.
-- **Stop every older node before starting a new one on a shared Postgres.**
-  New nodes reconcile open sessions that older nodes, which keep no holder,
-  may still be running.
-- Anything that pipes answers into the command line's questions must send
-  numbers. 1.2.2's line prompt took `a`/`y`, `r`/`n` and `A` for an approval
-  and `t`, `d` and `v` for workspace trust; these now ask again, and input
-  that ends unanswered refuses. An approval is `1` Yes, `2` the session-wide
-  Yes when one is offered, and the last number No; the trust question is `1`
-  don't trust, `2` trust, `3` view the file.
-- The confirmations of `abhed record prune` and of the push in `abhed resolve`
-  are numbered too, where they asked `[y/N]`: `1` No (keep), `2` Yes. `y` and
-  Enter ask again, and input that ends refuses; `-yes` and `-y` still skip them.
-- First-run setup asks its three yes-or-no questions by number too (memory
-  notes, a key over plain http, a key variable that is not set): `1` No,
-  `2` Yes, where it took `y`/`n` and Enter for No.
-- First-run setup's last question, whether to write `~/.abhed/config.json`,
-  is numbered as well: `1` No (don't write), `2` Yes, write it. It took
-  Enter as yes; Enter or a letter now asks again, and input that ends writes
-  nothing.
-- API clients answering a subagent's approval (`POST /v1/sessions/{id}/approve`)
-  must name its `request_id`, from the `subagent.ask` event: an answer
-  naming none is refused with 409, with or without a run live. The console,
-  workbench, CLI and ACP already send it.
-- Servers sharing one Postgres: stop every node of an older release before
-  starting a node of this one. Older nodes keep no holder on the sessions
-  they run, and a new node's startup sweep reconciles an open session with
-  no holder once nothing has been written to it for two minutes; a long
-  tool call on an old node can look like that. New nodes write the holder
-  with the session's row and heartbeat it.
-- A `tool_call` extension that has stopped (crashed, hung or was closed)
-  now makes each call it would have screened ask, where it was skipped
-  before; in a headless run, which cannot ask, those calls are refused.
-  `/hooks` and the serve banner show which one stopped.
-- The interactive CLI counts `limits.max_turns` per message unless the
-  managed configuration sets it.
-- The command line now keeps sessions in a local record under
-  `~/.abhed/records` when `storage.driver` is not `postgres`, where before
-  they were kept in memory and lost when it exited. Nothing to do: the
-  directory is created, private to you, on first use, and records are kept
-  until `abhed record prune` removes them. `abhed serve` still keeps memory
-  unless configured otherwise.
-- `/export` with no path now writes to `~/.abhed/exports`, not the
-  workspace; a relative path is taken from the workspace, and a path outside
-  it asks first. An export is refused for a record that fails verification.
+1. **Answers are numbers only, for piped and scripted input too.** 1.2.2's
+   line prompt took letters; these now ask again, and input that ends
+   unanswered refuses.
+   - Approvals: `1` Yes, `2` the session-wide Yes when one is offered, and
+     the last number No. `a`/`y`, `r`/`n` and `A` no longer answer.
+   - Workspace trust: `1` don't trust, `2` trust, `3` view the file, where it
+     took `t`, `d` and `v`.
+   - The confirmations of `abhed record prune` and of the push in
+     `abhed resolve`: `1` No (keep), `2` Yes, where they asked `[y/N]`.
+     `-yes` and `-y` still skip them.
+   - First-run setup's yes-or-no questions (memory notes, a key over plain
+     http, a key variable that is not set): `1` No, `2` Yes, where they took
+     `y`/`n` and Enter for No.
+   - First-run setup's last question, whether to write
+     `~/.abhed/config.json`: `1` No (don't write), `2` Yes. It took Enter as
+     yes; Enter or a letter now asks again, and input that ends writes
+     nothing.
+2. **Piped lines that start with `!` or `#` are no longer sent to the
+   model.** They run a shell command or save a note, as typed ones do. A
+   script that sent such lines as text should indent them or put them after
+   other text.
+3. **Wake is on by default.** `subagents.wake` defaults to `auto` in the
+   interactive CLI, in `abhed serve` (the console and workbench) and in
+   `abhed acp` (Abhed Studio and other editors): when a background task
+   finishes while the session is idle, the agent continues with the result
+   on its own, and spends tokens doing so. Set
+   `"subagents": {"wake": "notify"}` to restore 1.2.2's behaviour; the
+   managed configuration can hold it there. `abhed rpc` and the SDK still
+   default to `off`.
+4. **Next-prompt suggestions are on by default.** Each completed turn makes
+   one extra model call, recorded as a `model.call` with
+   `purpose: suggestion` and counted in the session's tokens and budget.
+   `"suggest": {"enabled": false}` turns them off. A `suggest.model` on a
+   different endpoint receives the redacted last message and reply.
+5. **The command line now writes sessions to disk**, in a local record under
+   `~/.abhed/records`, when `storage.driver` is not `postgres`; before, they
+   were kept in memory and lost when it exited. The record includes
+   unredacted copies of files as they were before each agent edit, so
+   `/undo` and `/rewind` can put them back; files that hold keys and files a
+   read deny rule covers are not copied. The directory is created, private
+   to you, on first use, and records are kept until `abhed record prune`
+   removes them. `abhed serve` still keeps memory unless configured
+   otherwise.
+6. **Server API: `request_id` is required on subagent approvals.** A client
+   answering a subagent's ask (`POST /v1/sessions/{id}/approve`) must name
+   its `request_id`, from the `subagent.ask` event; an answer naming none is
+   refused with 409, with or without a run live. The console, workbench, CLI
+   and ACP already send it.
+7. **Shared Postgres: stop every node of an older release before starting a
+   node of this one.** Older nodes keep no holder on the sessions they run,
+   and a new node's startup sweep reconciles an open session with no holder
+   once nothing has been written to it for two minutes; a long tool call on
+   an old node can look like that. New nodes write the holder with the
+   session's row and heartbeat it.
+8. **Extensions fail closed.** A `tool_call` or `permission_request`
+   extension that has stopped (crashed, hung or was closed) now makes each
+   call it would have screened ask, where it was skipped before; in a
+   headless run, which cannot ask, those calls are refused. `/hooks` and the
+   serve banner show which one stopped. A hook's `ask` no longer overrides a
+   deny rule or plan mode.
+9. **Headless output.** `abhed -p` exits with 128 plus the stop signal's
+   number (143 for SIGTERM), where it was 130 for every signal. `json` and
+   `stream-json` output end with a `{"type":"result",…}` line. `stream-json`
+   omits `agent.delta` fragments unless `-include-partial-messages` is
+   given.
+10. **ACP editors.**
+    - `session/new` refuses an `_meta` field it does not know.
+    - MCP servers an editor names are not started; the reply lists them in
+      `mcpServersRefused`.
+    - The workspace trust report moved to `_meta["zybuu.ai/abhed"]`;
+      `_meta.abhed` is still read on input for one more release.
+    - Stop reasons come from the run's terminal reason.
+    - Writes to `.vscode/**`, `.devcontainer/**`, `.git/config`,
+      `.git/hooks/**`, `*.code-workspace` and files with unsaved changes in
+      the editor are refused.
+11. **`-add-dir`, `additional_dirs` and `/add-dir`** refuse credential
+    folders, any folder that holds the home directory or `~/.abhed`, and any
+    `.abhed` folder.
+12. **The interactive CLI counts `limits.max_turns` per message** unless the
+    managed configuration sets it.
+13. **`/export` with no path writes to `~/.abhed/exports`**, not the
+    workspace; a relative path is taken from the workspace, and a path
+    outside it asks first. An export is refused for a record that fails
+    verification.
+14. **An edit or write without a prior read is refused before the approval
+    prompt**, with the reason.
+
+Also:
+
 - `/undo` records each file it puts back as `file.restored`, and is held to
   deny rules on `write`.
 - On macOS the local record syncs with `fsync`, as SQLite does by default,
@@ -173,9 +217,9 @@ Two changes need action before upgrading:
   node's claim on the session; every run now holds it, with its heartbeat,
   while it or a background task is live.
 - With input piped in as lines, the line after an approval prompt was taken
-  as its answer whatever it said. Only a line that is exactly `a`, `y`, `r`,
-  `n` or `A` answers now; any other line steers the run (or, with no run
-  live, is a prompt), with a note that the approval still waits.
+  as its answer whatever it said. Only a number offered answers now; any
+  other line steers the run (or, with no run live, is a prompt), with a note
+  that the approval still waits.
 
 ### Added
 
@@ -241,7 +285,7 @@ Two changes need action before upgrading:
 - The managed key `studio.disable_host_terminal` removes Abhed Studio's host
   terminal, which is neither sandboxed nor recorded.
 - Interactive input acts as the person, through policy and the record. See
-  `docs/guide/18-input-and-memory.md`.
+  `docs/guide/19-input-and-memory.md`.
   - `@path`, `@path:10-20` and `@dir/` attach files, read by the read and
     glob tools as the person's call: the workspace boundary, links that
     leave it, Abhed's state, read deny rules and redaction all apply. A
@@ -424,7 +468,7 @@ Two changes need action before upgrading:
   agent do more than your own file does asks first, even when the session
   already does it, and a managed setting is refused.
 - The interactive CLI is rebuilt around an input box that stays on screen
-  while the agent works ([The terminal](docs/guide/18-terminal.md)):
+  while the agent works ([The terminal](docs/guide/20-terminal.md)):
   - Replies stream as they are written, formatted as they arrive: headings,
     lists, emphasis, tables, and highlighted code blocks that stay blocks
     when they arrive in pieces. Prose wraps between words.
@@ -507,11 +551,14 @@ Two changes need action before upgrading:
   call returns at once, the task outlives the run, and its result comes back
   as a `subagent.notice` (recorded first, untrusted, redacted), delivered as
   a `task_status` call and result, never as the person's message.
-  `subagents.wake` (`off`, `notify` by default, `auto`) says what a result
-  does while the session is idle; `auto` runs a short wake run
-  (`session.woken`, `wake_limit`) within `subagents.max_wakes_per_hour` and
-  `subagents.wake_max_turns`. `-p`, eval and unattended runs join their
-  tasks; editors, rpc and the SDK never wake on their own. New limits
+  `subagents.wake` (`off`, `notify`, `auto`) says what a result does while
+  the session is idle; `auto` runs a short wake run (`session.woken`,
+  `wake_limit`) within `subagents.max_wakes_per_hour` and
+  `subagents.wake_max_turns`. It is `auto` by default in the interactive
+  CLI, `abhed serve` and `abhed acp` (see Changed); `abhed rpc` and the SDK
+  default to `off`, and `-p`, eval and unattended runs join their tasks.
+  `notify` keeps 1.2.2's behaviour: the result is recorded and waits for
+  your next message. New limits
   `limits.max_background_subagents` (4) and `limits.background_max_minutes`
   (60, at most 480). New tools `task_status` and `task_cancel`. An explicit
   stop cancels every background task, stops a `task` or `tasks` call still

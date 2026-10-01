@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail when an end-to-end CLI test skipped for a reason CI does not accept.
 
-A skipped test reads like a passing one, and the plan counts these tests as
+A skipped test reads like a passing one, and these tests count as
 evidence. Reads `go test -json` output on stdin. A skip is accepted only when
 the test logged a line of exactly the form
 
@@ -89,19 +89,19 @@ def self_test():
             d["Output"] = out
         return json.dumps(d)
 
-    ok_run = [ev("pass", "TestA"), ev("output", "TestB", "    x_test.go:9: clitest: pending (A1): editor\n"),
+    ok_run = [ev("pass", "TestA"), ev("output", "TestB", "    x_test.go:9: clitest: pending (editor): editor\n"),
               ev("skip", "TestB"), ev("pass")]
     cases = [
-        ("a listed pending skip", ok_run, {"A1"}, True),
+        ("a listed pending skip", ok_run, {"editor"}, True),
         ("an unlisted pending skip", ok_run, set(), False),
         ("the marker inside other output", [ev("pass", "TestA"),
-            ev("output", "TestB", "        screen: clitest: pending (A1): x\n"), ev("skip", "TestB"), ev("pass")], {"A1"}, False),
+            ev("output", "TestB", "        screen: clitest: pending (editor): x\n"), ev("skip", "TestB"), ev("pass")], {"editor"}, False),
         ("the marker mid-line", [ev("pass", "TestA"),
-            ev("output", "TestB", "    x.go:1: got clitest: pending (A1): x\n"), ev("skip", "TestB"), ev("pass")], {"A1"}, False),
+            ev("output", "TestB", "    x.go:1: got clitest: pending (editor): x\n"), ev("skip", "TestB"), ev("pass")], {"editor"}, False),
         ("a package that did not build", [ev("pass", "TestA", pkg="q"), ev("pass", pkg="q"),
-            ev("output", out="p/x_test.go:1:1: undefined: y\n"), ev("fail")], {"A1"}, False),
+            ev("output", out="p/x_test.go:1:1: undefined: y\n"), ev("fail")], {"editor"}, False),
         ("a build-fail event", [ev("pass", "TestA"), ev("pass"),
-            json.dumps({"Action": "build-fail", "ImportPath": "q [q.test]"})], {"A1"}, False),
+            json.dumps({"Action": "build-fail", "ImportPath": "q [q.test]"})], {"editor"}, False),
         ("a package where no test ran", [ev("pass", "TestA", pkg="q"), ev("pass", pkg="q"), ev("pass")], set(), False),
         ("nothing at all", [], set(), False),
     ]

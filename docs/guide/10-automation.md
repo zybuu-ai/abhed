@@ -57,7 +57,7 @@ The last line of `json` and `stream-json` is the result:
 ```
 
 `subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
-`policy_denied`, …); `error` is present when the run failed. Policy
+`retry_exhausted`, …); `error` is present when the run failed. Policy
 decisions are events like any other, so a script sees each refusal and its
 reason.
 
@@ -122,18 +122,22 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 
 ### Exit codes
 
+`abhed -p` exits with one of these:
+
 | Code | Meaning |
 |---|---|
 | `0` | completed |
 | `1` | error: the model or a tool failed, or no structured answer was delivered |
 | `2` | bad invocation, or the turn limit |
 | `3` | token budget |
-| `4` | refused by policy |
 | `5` | model retries exhausted |
-| `6` | shutdown |
-| `7` | deadline |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
+
+A call that policy refuses does not end the run: the refusal goes back to
+the agent, which carries on, and a run that then finishes exits `0`. To
+fail a script on a refusal, look for `action.denied` events in
+`-output-format stream-json`.
 
 `abhed -p`, `rpc`, `acp`, `eval` and `resolve` report 128 plus the stop
 signal's number, from the moment they start. The interactive CLI reports

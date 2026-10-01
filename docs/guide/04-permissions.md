@@ -470,7 +470,7 @@ question has Yes and No only: approve it once, or write the rule yourself.
 The same holds for a call that matched an ask rule and for a destructive
 command, which must be asked about every time and needs a second Yes. When a
 skill's pipeline or a subagent asked, the question says which. How a key
-counts as an answer is in [The terminal](18-terminal.md#approvals).
+counts as an answer is in [The terminal](20-terminal.md#approvals).
 
 Text in the prompt comes from the model, so it is shown as written, not
 obeyed. A carriage return, escape sequence, backspace, zero-width or bidi

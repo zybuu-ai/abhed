@@ -124,7 +124,7 @@ command offers no "always", and asks a second time, with No as the default.
 The question, the diff and your answer stay in the transcript.
 
 With input piped in as lines, the same holds line by line: only a line that
-is exactly `a`, `y`, `r`, `n` or `A` answers a waiting approval. Any other
+is one of the numbers offered answers a waiting approval. Any other
 line is never taken as the answer because of where it falls: during a run it
 steers the run, and with no run live (a background task's ask) it is sent to
 the model as a prompt. Either way a note says the approval is still waiting.
@@ -140,7 +140,7 @@ Up and Ctrl-R reach the prompts you sent in this workspace, in this session
 and earlier ones. Shift-Tab steps through the default, accept-edits and plan
 modes; the footer always shows which is on. Ctrl-C clears the line, stops a
 running turn, and at an empty prompt pressed twice exits. Every key is in
-[The terminal](18-terminal.md).
+[The terminal](20-terminal.md).
 
 | Command | |
 |---|---|
@@ -165,7 +165,7 @@ running turn, and at an empty prompt pressed twice exits. Every key is in
 | `/model [name]` | show or switch the model, keeping the conversation |
 
 `@path` attaches a file, `!cmd` runs a shell command and `# note` saves a
-note to memory; see [Input, memory and commands](18-input-and-memory.md).
+note to memory; see [Input, memory and commands](19-input-and-memory.md).
 
 Sessions are kept in a local record and survive the process: `abhed -c`
 continues the last one in this workspace, and `abhed -r` picks one. See
