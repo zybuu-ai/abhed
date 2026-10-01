@@ -638,6 +638,8 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
+			// The editor's files in the worktree are as out of reach as the parent's.
+			session.Guard = f.Session.Guard
 			// Still the parent's conversation: a login it made carries over.
 			session.InheritScoped(f.Session)
 		}

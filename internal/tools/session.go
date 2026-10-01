@@ -44,8 +44,9 @@ type Session struct {
 	Checkpoint func(path string, before []byte, existed bool)
 
 	// Guard, when set, may refuse a change edit or write is about to make to
-	// path, such as a file a person has unsaved edits to; nil allows all.
-	Guard func(path string) error
+	// path, such as a file a person has unsaved edits to; nil allows all. It
+	// is given the session's roots, as resolved and as given.
+	Guard func(path string, roots []string) error
 
 	// Syntax is what edit and write do with a change that breaks a file's
 	// syntax. The zero value refuses it.
@@ -157,7 +158,7 @@ func (s *Session) guard(path string) error {
 	if s.Guard == nil {
 		return nil
 	}
-	return s.Guard(path)
+	return s.Guard(path, append(s.allowedRoots(), s.lexicalRoots()...))
 }
 
 // snapshot captures a file's current content before it is modified. Called by
@@ -201,6 +202,7 @@ func (s *Session) Fork() *Session {
 		Roots:      append([]string(nil), s.Roots...),
 		Checkpoint: s.Checkpoint,
 		Syntax:     s.Syntax,
+		Guard:      s.Guard,
 		reads:      make(map[string]string),
 		scoped:     s.scopedLocked(),
 	}
