@@ -245,6 +245,16 @@ func fallbackChain(cfg config.Config, flag string) ([]string, []string) {
 		return nil, warn
 	}
 	offered := toolset.OfferedModels(cfg)
+	if cfg.ManagedSets("model.default") {
+		// A managed model pins every other choice to it, but the fallbacks
+		// the managed configuration names are its own choice.
+		offered = nil
+		for _, n := range names {
+			if _, ok := cfg.Model.Providers[n]; ok && cfg.Offered(n) {
+				offered = append(offered, n)
+			}
+		}
+	}
 	var chain []string
 	for _, n := range names {
 		switch {
