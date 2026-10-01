@@ -1798,6 +1798,44 @@ func (s *Server) mayAccess(r *http.Request, id string) bool {
 	return false
 }
 
+// scheduledForAdmin reports whether the caller is an administrator and id is
+// a scheduled run in their tenant: a session no identity owns, which only an
+// administrator may read, never continue.
+func (s *Server) scheduledForAdmin(r *http.Request, id string) (store.SessionRecord, bool) {
+	g, ok := s.sessions.(sessionGetter)
+	if !ok || !s.IsAdmin(r) {
+		return store.SessionRecord{}, false
+	}
+	rec, err := g.GetSession(r.Context(), id)
+	if err != nil || rec.Tenant != TenantOf(r.Context()) || !strings.HasPrefix(rec.User, auth.SchedulePrefix) {
+		return store.SessionRecord{}, false
+	}
+	return rec, true
+}
+
+// mayRead is mayAccess for reading a session's record, which an administrator
+// may also do for a scheduled run.
+func (s *Server) mayRead(r *http.Request, id string) bool {
+	if s.mayAccess(r, id) {
+		return true
+	}
+	_, ok := s.scheduledForAdmin(r, id)
+	return ok
+}
+
+// readable is mayRead for a handler that serves the record, auditing an
+// administrator's read of a scheduled run as what.
+func (s *Server) readable(r *http.Request, id, what string) bool {
+	if s.mayAccess(r, id) {
+		return true
+	}
+	rec, ok := s.scheduledForAdmin(r, id)
+	if ok {
+		s.adminAudit(r, "session.read", id, map[string]any{"owner": rec.User, "via": what})
+	}
+	return ok
+}
+
 // sessionGetter is a store that finds one session row by id.
 type sessionGetter interface {
 	GetSession(ctx context.Context, id string) (store.SessionRecord, error)
@@ -1865,7 +1903,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		// Not running is not the same as not ours. Ownership is checked
 		// against the stored record before any event is streamed, or a
 		// finished session becomes readable by anyone who knows its id.
-		if !s.mayAccess(r, id) {
+		if !s.readable(r, id, "events") {
 			WriteError(w, http.StatusNotFound, "session not found")
 			return
 		}
@@ -1925,7 +1963,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Authorised again while it runs, not only when it opened: every write
 	// below goes through guard.allowed, and a refusal ends the stream.
-	guard := s.guardStream(r, id)
+	guard := s.guardReadStream(r, id)
 	defer guard.stop()
 
 	// The store drops events for a subscriber that falls behind rather than
@@ -2017,7 +2055,7 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 	// against the stored record: row-level security scopes the query by tenant,
 	// never by user, so without this any signed-in account could replay a
 	// colleague's full transcript by id.
-	if !s.mayAccess(r, id) {
+	if !s.readable(r, id, "replay") {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -2038,7 +2076,7 @@ func (s *Server) replaySession(w http.ResponseWriter, r *http.Request) {
 // same ownership check — a report carries every tool result in the session.
 func (s *Server) hawkeyeSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.mayAccess(r, id) {
+	if !s.readable(r, id, "hawkeye") {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}

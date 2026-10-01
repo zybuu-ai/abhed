@@ -706,6 +706,13 @@ All notable changes to Abhed are recorded here. The format follows
   agent was put to the approver with its record withheld; the workbench drew
   no card and the run waited until interrupted. Such an ask is now refused by
   the system, saying why, as a subagent's already was.
+- An administrator got 404 replaying a scheduled run, which no identity
+  owns. An administrator may now read one in their tenant by id (`replay`,
+  `events`, `hawkeye`), never continue it, and each read is recorded as
+  `session.read` in the admin audit.
+- The admin Settings tab listed the shared tools and left out `recall`,
+  `task` and `tasks`, which every session gets. It now lists what
+  capabilities does.
 - `bash`: the note that the sandbox has no network was added to successful
   output that only mentioned a network error, such as a log being read. A
   command that exits 0 now gets it only when a network client ran and the

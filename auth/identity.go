@@ -50,6 +50,9 @@ const UnclaimedPrefix = "unclaimed:"
 // no-identity and subagent cases produce them; a subject equal to one is namespaced.
 var reservedOwners = []string{Anonymous, Subagent}
 
+// SchedulePrefix begins the owner of a scheduled run, which no identity owns.
+const SchedulePrefix = "schedule:"
+
 // NobodyPrefix begins the owner of an identity that names no subject. It
 // owns nothing: ownership checks refuse it rather than match it.
 const NobodyPrefix = "nobody:"
@@ -57,7 +60,7 @@ const NobodyPrefix = "nobody:"
 // reservedPrefixes are the namespaces owners are built in. A subject from a
 // proxy or an unnamed provider that starts with one is namespaced again.
 var reservedPrefixes = []string{"local:", UnclaimedPrefix, "oidc:", "github:", "proxy:",
-	"subject:", "schedule:", NobodyPrefix}
+	"subject:", SchedulePrefix, NobodyPrefix}
 
 // Owner is the principal that owns what this identity creates: sessions,
 // approvals it answers, and the rows its subagents write. It is the one
