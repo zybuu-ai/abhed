@@ -2863,8 +2863,8 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 	}
 	s.mu.RUnlock()
 	n := 0
-	var ran []chan struct{}
-	for _, live := range hit {
+	ran := make([]chan struct{}, len(hit))
+	for i, live := range hit {
 		live.ownerGone.Store(true)
 		stopped := 0
 		live.mu.Lock()
@@ -2872,7 +2872,7 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		live.mu.Unlock()
 		if stop != nil && run != nil {
 			stop(agent.StopCause{Reason: agent.TermOwnerRevoked})
-			ran = append(ran, run)
+			ran[i] = run
 			stopped++
 		}
 		if live.Loop != nil {
@@ -2885,14 +2885,28 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		}
 		n += stopped
 	}
-	for _, ch := range ran {
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return n
-		case <-time.After(turnEndWait):
-		}
+	// One deadline for every run, so the admin's request waits at most turnEndWait.
+	wctx, cancel := context.WithTimeout(ctx, turnEndWait)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i, live := range hit {
+		wg.Add(1)
+		go func(live *liveSession, run chan struct{}) {
+			defer wg.Done()
+			if run != nil {
+				select {
+				case <-run:
+				case <-wctx.Done():
+				}
+			}
+			// After the run: a suggestion it started as it ended is stopped too,
+			// so no model call is made for the revoked owner.
+			if live.Loop != nil {
+				live.Loop.StopSuggestion()
+			}
+		}(live, ran[i])
 	}
+	wg.Wait()
 	return n
 }
 

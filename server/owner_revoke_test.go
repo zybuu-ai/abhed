@@ -176,3 +176,20 @@ func TestStopOwnerBackgroundStopsOnlyThatOwner(t *testing.T) {
 		t.Fatal("a wake ran for an owner whose access was revoked")
 	}
 }
+
+// A revoke stops a suggestion still being made: none is offered, and nothing
+// is recorded once StopOwnerBackground returns, even when the model answers.
+func TestStopOwnerBackgroundStopsTheSuggestion(t *testing.T) {
+	g := &gatedSuggest{gate: make(chan struct{})}
+	b := newBGServerWith(t, nil, func(_ *config.Config, o *Options) { o.Adapter = g })
+	id := b.start("hi", false)
+	waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
+	b.s.StopOwnerBackground(context.Background(), "acme", "alice")
+	n := len(b.events(id))
+	close(g.gate)
+	time.Sleep(300 * time.Millisecond)
+	evs := b.events(id)
+	if countType(evs, agent.EvSuggestionOffered) != 0 || len(evs) != n {
+		t.Fatalf("recorded after the revoke: %d events, then %d", n, len(evs))
+	}
+}
