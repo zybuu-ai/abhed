@@ -156,6 +156,11 @@ func (g *streamGuard) check() error {
 	if group := g.s.opts.Config.Auth.RequireGroup; group != "" && (id == nil || !slices.Contains(id.Groups, group)) {
 		return notMember(group)
 	}
+	// Judged as the identity just rechecked: the one the stream opened with
+	// may since have lost the admin group a read of a scheduled run needs.
+	if id != nil {
+		ctx = auth.WithIdentity(ctx, id)
+	}
 	may := g.s.mayAccess
 	if g.read {
 		may = g.s.mayRead
