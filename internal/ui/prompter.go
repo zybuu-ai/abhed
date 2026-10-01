@@ -25,9 +25,11 @@ func NewPrompter() *Prompter { return &Prompter{stop: make(chan struct{})} }
 // Await blocks until a line is delivered, the context is cancelled, or input
 // ends. ok is false in the latter two cases.
 func (p *Prompter) Await(ctx context.Context) (string, bool) {
-	ch := make(chan string, 1)
 	p.mu.Lock()
-	p.waiting = ch
+	if p.waiting == nil {
+		p.waiting = make(chan string, 1)
+	}
+	ch := p.waiting
 	p.mu.Unlock()
 	defer func() {
 		p.mu.Lock()
@@ -42,6 +44,24 @@ func (p *Prompter) Await(ctx context.Context) (string, bool) {
 	case <-p.stop:
 		return "", false
 	}
+}
+
+// Arm makes the approver count as waiting from now, before Await: it is
+// called as the question's last line is shown, so an answer sent the moment
+// it shows is taken as one. Disarm undoes it if Await is never reached.
+func (p *Prompter) Arm() {
+	p.mu.Lock()
+	if p.waiting == nil {
+		p.waiting = make(chan string, 1)
+	}
+	p.mu.Unlock()
+}
+
+// Disarm ends an Arm that no Await followed.
+func (p *Prompter) Disarm() {
+	p.mu.Lock()
+	p.waiting = nil
+	p.mu.Unlock()
 }
 
 // Deliver hands a line to a pending Await. It reports whether one was waiting,

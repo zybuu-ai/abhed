@@ -72,12 +72,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			// handed over by the steering loop's prompter.Deliver.
 			read := func() (string, bool) { return prompter.Await(ctx) }
 			cleanup := func() {
+				prompter.Disarm()
 				if wasThinking {
 					r.StartThinking()
 				}
 			}
 			return read, cleanup
 		}
+		ap.Arm = prompter.Arm
 		// On a terminal the question is the dock's guarded dialog.
 		approver = dialogApprover(ap, editor, r, sess)
 	}

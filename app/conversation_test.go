@@ -404,7 +404,8 @@ func TestCLIAlwaysAllowEndsWithClear(t *testing.T) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"made\"}}]}\n\n")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
 	})
-	asked := func() int { return strings.Count(c.out.String(), "2. Yes, and don't ask again") }
+	// The answer is sent once the question is whole: a line sent sooner steers.
+	asked := func() int { return strings.Count(c.out.String(), "answer 1-3:") }
 	finished := func() int { return strings.Count(c.out.String(), " in / ") }
 
 	fmt.Fprintln(c.stdin, "Make the folder.")

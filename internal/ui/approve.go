@@ -38,6 +38,10 @@ type Approver struct {
 	// and wait for a "\n" raw mode never sends (Enter is "\r"). read returns
 	// ok=false when input ended or was cancelled, which is treated as a refusal.
 	Prepare func(ctx context.Context) (read func() (string, bool), cleanup func())
+	// Arm, when set, is called as each "answer 1-N:" is shown, before read
+	// waits: an answer sent the moment the question is whole is its answer,
+	// not a line that fell before the approver started reading.
+	Arm func()
 
 	// reader is the lazily-created line reader for the non-interactive path.
 	reader *bufio.Reader
@@ -157,6 +161,9 @@ func (a *Approver) askNumbered(ctx context.Context, read func() (string, bool), 
 		fmt.Fprintf(a.Out, "  %d. %s\n", i+1, c.Label)
 	}
 	for {
+		if a.Arm != nil {
+			a.Arm()
+		}
 		fmt.Fprintf(a.Out, "  %s ", s.Dim(fmt.Sprintf("answer 1-%d:", len(spec.Choices))))
 		if err := ctx.Err(); err != nil {
 			fmt.Fprintln(a.Out)
