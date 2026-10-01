@@ -46,7 +46,11 @@ With more than 40 MCP tools across the servers, the model is not given each
 one. It gets a `tool_search` tool instead, whose description lists each
 server and its tool names (names only; a name with anything but letters,
 digits, `_`, `.` and `-`, or past about 2.5 KB of names, is counted rather
-than shown), and the system prompt says to use it. `tool_search` finds tools
+than shown). The system prompt tells the model to check those tools first:
+for a request about live or current data, or one a listed tool could fit, it
+calls `tool_search` before it answers from its own knowledge or searches the
+web or the files, and falls back to the web or memory only when nothing fits.
+`tool_search` finds tools
 by the words in their names and descriptions and loads the ones it returns,
 with their parameters, from the next step. A loaded tool is policed, approved and
 recorded like any other, and a tool the model never searched for can still

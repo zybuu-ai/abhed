@@ -11,8 +11,8 @@ import (
 )
 
 // CorePrompt is layer 1 of the prompt stack (docs §07): stable across all
-// sessions and tenants, and therefore part of the cached prefix. {{web}} is
-// replaced by what the session's web tools allow; see webSources.
+// sessions and tenants, and therefore part of the cached prefix. {{current}}
+// and {{web}} are replaced by what the session's tools allow; see sources.
 //
 // Every rule here is paid on every request of every session forever, so each
 // one must change behavior. Aspirations ("be helpful") change nothing; rules
@@ -33,8 +33,7 @@ the question is about the workspace. Judge what the user actually wants:
   answer depends on current fact, or your own knowledge. Do not grep the repository
   for it.
 - A question about current or changing fact (a release, a version, an API as it
-  stands today, anything after your training cutoff) — check the web if you have a
-  web tool (see below); if not, answer from what you know and say it is unchecked.
+  stands today, anything after your training cutoff) — {{current}}
 - A request to change something — follow the working method below.
 
 Choosing the wrong source is the most common failure, and it runs in both directions.
@@ -96,6 +95,8 @@ say so and say which you trust.
   did not explicitly request.`
 
 const (
+	currentLine = `check the web if you have a
+  web tool (see below); if not, answer from what you know and say it is unchecked.`
 	webSearchLine = `- Web search: invoke web_search on your own judgement whenever the answer
   depends on information you do not reliably have: current versions, recent releases,
   changing APIs, anything post-cutoff, or a specific fact you would otherwise hedge
@@ -107,41 +108,55 @@ const (
   know and say that you could not check it.`
 )
 
-// webSources is the prompt's line on the web, naming only the web tools the
-// session has: naming one it lacks sends the model looking for it, or to curl.
-func webSources(names []string) string {
-	var search, fetch bool
+// With MCP tools behind tool_search, the connected-services line comes first
+// and the lines on the web and own knowledge defer to it: otherwise a live-data
+// question goes to the web, or to memory, past a listed tool that answers it.
+const (
+	deferredCurrentLine = `first call tool_search with a
+  keyword from the question (see below); if nothing fits, check the web if you have
+  a web tool; if not, answer from what you know and say it is unchecked.`
+	toolSearchLine = `- Connected services: MCP tools not offered directly are listed by server in
+  tool_search's description: live data and status, accounts, tickets, billing and
+  the like. Check them first. For a request about live or current data, or one a
+  listed tool could fit, call tool_search with a keyword from the request (it is
+  cheap and also searches the tools' descriptions) before your own knowledge, the
+  web or the files; use the web or memory only when it finds nothing that fits.
+  Never say you cannot get live or current data before you have called it.`
+	deferredWebSearchLine = `- Web search: for what tool_search finds no tool for, invoke web_search
+  on your own judgement whenever the answer depends on information you do not
+  reliably have: current versions, recent releases, changing APIs, anything
+  post-cutoff, or a specific fact you would otherwise hedge about.`
+	deferredNoWebLine = `- The web: this session has no web tool. For current fact that tool_search
+  finds no tool for, answer from what you know and say that you could
+  not check it.`
+)
+
+// sources returns the prompt's {{current}} and {{web}} text for the session's
+// tools. It names only the web tools the session has: naming one it lacks
+// sends the model looking for it, or to curl.
+func sources(names []string) (current, web string) {
+	var search, fetch, deferred bool
 	for _, n := range names {
 		search = search || n == "web_search"
 		fetch = fetch || n == "web_fetch"
+		deferred = deferred || n == "tool_search"
 	}
-	switch {
-	case search && fetch:
-		return webSearchLine + "\n" + webFetchLine
-	case search:
-		return webSearchLine
-	case fetch:
-		return webFetchLine
+	current, searchLine, none := currentLine, webSearchLine, noWebLine
+	var lines []string
+	if deferred {
+		current, searchLine, none = deferredCurrentLine, deferredWebSearchLine, deferredNoWebLine
+		lines = append(lines, toolSearchLine)
 	}
-	return noWebLine
-}
-
-// toolSearchLine points the model at the MCP tools that are offered only
-// through tool_search, which it otherwise never calls.
-const toolSearchLine = `
-- Connected services: the MCP servers' tools (trackers, tickets, billing and the
-  like) are listed by name in tool_search's description. When a request may concern
-  such a system, call tool_search with a name or keyword to load the tool, before
-  searching the files or saying you have no such tool.`
-
-// mcpSources is the prompt's line on deferred MCP tools, empty without them.
-func mcpSources(names []string) string {
-	for _, n := range names {
-		if n == "tool_search" {
-			return toolSearchLine
-		}
+	if search {
+		lines = append(lines, searchLine)
 	}
-	return ""
+	if fetch {
+		lines = append(lines, webFetchLine)
+	}
+	if !search && !fetch {
+		lines = append(lines, none)
+	}
+	return current, strings.Join(lines, "\n")
 }
 
 // Profile is layer 2: role-specific behavior for subagents. A narrow role with
@@ -207,7 +222,8 @@ type BuildOptions struct {
 func BuildSystemPrompt(opts BuildOptions) string {
 	var b strings.Builder
 
-	b.WriteString(strings.Replace(CorePrompt, "{{web}}", webSources(opts.Tools)+mcpSources(opts.Tools), 1))
+	current, web := sources(opts.Tools)
+	b.WriteString(strings.NewReplacer("{{current}}", current, "{{web}}", web).Replace(CorePrompt))
 
 	role := opts.Role
 	if p, found := Profiles[opts.Profile]; found && role == "" {

@@ -249,6 +249,14 @@ Also:
   no server and no tool. Its description now lists the servers and their
   tool names (names only, plain characters, about 2.5 KB at most, the rest
   counted), and the system prompt says to use it when tools are deferred.
+- With MCP tools deferred, a live-data question went past a listed tool:
+  the prompt's web line sent it to `web_search`, and with no web tool its
+  no-web line said to answer from memory, so a deferred weather tool was
+  rarely reached, and never with the web off. The prompt now puts the
+  connected-services line first and tells the model to call `tool_search`
+  for live or current data, or whenever a listed tool could fit, before its
+  own knowledge, the web or the files; its web, no-web and current-fact
+  lines defer to that. Without deferred tools the prompt is unchanged.
 - `tasks` ran a task naming an unknown `agent_type` as the general role; it
   now refuses the call before anything runs, as `task` does.
 - A `task` call's `max_turns` could exceed `limits.max_turns`; a subagent's
