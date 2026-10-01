@@ -1907,7 +1907,7 @@ $('t-kill').addEventListener('click', () => { const t = activeTerm; if(t && t.ru
 // The banner says what contains the shell, before anything is typed into it.
 function banner(t, r, note){
   const iso = r.isolation, w = s => t.term.write(s + '\r\n');
-  if(note) w('\x1b[33m' + note + '\x1b[0m');
+  if(note) w('\x1b[33m' + visible(note) + '\x1b[0m');
   if(!iso || iso.tier === 'none') w('\x1b[1;31mNO SANDBOX: commands here run directly on the host, as the server\'s user, with all of its access.\x1b[0m');
   const tier = iso ? iso.tier + (iso.backend ? ' (' + iso.backend + ')' : '') : 'unknown';
   w('\x1b[2msandbox: ' + tier + ' · workspace: ' + (r.workspace || '?') + ' · network: ' + (iso ? (iso.network ? 'on' : 'off') : '?') + '\x1b[0m');
@@ -1926,7 +1926,7 @@ async function startTerm(t, opts){
   }
   if(!terms.includes(t) || t.session !== current){ if(r.interactive) fetch(ptyURL(t, '/' + r.id), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); return; }
   t.term.reset(); banner(t, r, opts.note);
-  if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m\r\n'); hawkSoon(); }
+  if(r.denied){ t.term.write('\x1b[31m' + visible(r.denied) + '\x1b[0m\r\n'); hawkSoon(); }
   if(!r.interactive){ t.mode = 'lines'; t.cwd = r.cwd || '.'; promptLine(t); return; }
   t.mode = 'shell'; t.info = {isolation:r.isolation, workspace:r.workspace}; attach(t, r.id);
 }
@@ -2108,10 +2108,11 @@ async function runLine(t, cmd, answer){
   let r; try{ r = await api(ptyURL(t), {method:'POST', body: JSON.stringify(body)}); }
   catch(e){ t.busy = false; t.term.write('\x1b[31m' + visible(e.message) + '\x1b[0m'); t.queue = []; promptLine(t); return; }
   t.busy = false; t.cwd = r.cwd || '.';
-  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + r.confirm + '\x1b[0m\r\n'); askConfirm(t); return; }
-  if(r.denied){ t.term.write('\x1b[31m' + r.denied + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
+  if(r.confirm){ t.confirm = cmd; t.ahead = t.line; t.line = ''; t.term.write('\x1b[33m' + visible(r.confirm) + '\x1b[0m\r\n'); askConfirm(t); return; }
+  if(r.denied){ t.term.write('\x1b[31m' + visible(r.denied) + '\x1b[0m'); hawkSoon(); nextLine(t); return; }
   // A cd that was not followed says so, rather than leaving the next line to run elsewhere.
-  if(r.note) t.term.write('\x1b[33m' + r.note.replace(/\p{Cc}/gu, '?') + '\x1b[0m');
+  // Lines Abhed writes into a terminal name paths and commands: escapes and bidi print, never act.
+  if(r.note) t.term.write('\x1b[33m' + visible(r.note) + '\x1b[0m');
   // The server says when a line was a cd it followed without a terminal.
   if(!r.id || r.cd){ nextLine(t); return; }
   attach(t, r.id);
@@ -2255,7 +2256,7 @@ async function send(){
     if(id){
       // A workbench session is named by its first message.
       const s = sessionList.find(x => x.id === id);
-      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = typed; }
+      if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = sessionLabel(s); }
       const r = await api('/v1/sessions/' + id + '/messages', {method:'POST', body: JSON.stringify({prompt: b.prompt, client_id: b.cid})});
       // Delivered first: the stream has already made the page live for this run.
       if(current !== id || b.delivered) return;

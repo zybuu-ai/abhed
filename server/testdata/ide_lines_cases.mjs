@@ -299,7 +299,7 @@ check('the escaped $ cd moves the prompt at once', __attached === null && t.cwd 
 ({out, t} = term());
 __replies.push({id:'u9', cwd:'.', cd:true, note:'cd: no such directory: gone\x1b[8m; still in .'});
 linesData(t, 'cd gone\r'); await tick();
-check('a cd that was not followed says why', out.join('').includes('\x1b[33mcd: no such directory: gone?[8m; still in .\x1b[0m') && t.cwd === '.');
+check('a cd that was not followed says why', out.join('').includes('\x1b[33mcd: no such directory: gone⟨U+001B⟩[8m; still in .\x1b[0m') && t.cwd === '.');
 
 // A pasted line with an unfinished escape in it still ends at its line break.
 ({out, t} = term());
@@ -330,5 +330,20 @@ check('2 with arrows mixed in still confirms, and the arrows are no text', __sen
 check('ArrowUp while a line runs is ignored', lineKeys(t, key('ArrowUp').e) === false && t.line === '' && t.at === 1);
 t.busy = false; t.queue = [{cmd:'ls', shown:false}];
 check('and while lines wait in the queue', lineKeys(t, key('ArrowUp').e) === false && t.line === '');
+
+// What Abhed itself writes into the terminal, a refusal, a confirmation's reason or a
+// note, is the server's text quoting the line: escapes and bidi print, never act.
+{
+  const R = String.fromCharCode(0x202e), E = String.fromCharCode(0x1b), B = String.fromCharCode(7);
+  for(const [label, reply] of [['a refusal', {denied:'Not run: rm' + R + 'x' + E + '[2J' + B, cwd:'.'}],
+    ['a confirmation', {confirm:'delete' + R + 'x' + E + '[2J' + B, cwd:'.'}], ['a note', {id:'u7n', note:'now in' + R + 'x' + E + '[2J' + B, cwd:'.'}]]){
+    ({out, t} = term());
+    __sent.length = 0; __attached = null; __replies.length = 0; __replies.push(reply);
+    linesData(t, 'ls x\r'); await tick();
+    const said = out.join('');
+    check(label + ' is written out in the terminal: ' + JSON.stringify(said),
+      said.includes('⟨U+202E⟩x⟨U+001B⟩[2J⟨U+0007⟩') && !said.includes(R) && !said.includes(B) && !said.includes(E + '[2J'));
+  }
+}
 
 process.exit(ok ? 0 : 1);

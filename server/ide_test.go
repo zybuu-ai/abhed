@@ -577,6 +577,8 @@ func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
 		{"ide", ideHTML, "el('mark', '', reveal(m.text.slice(m.from, m.to)))"},
 		{"ide", ideHTML, "const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';"},
 		{"ide", ideHTML, "$('crumb-meta').textContent = reveal(meta || '');"},
+		{"ide", ideHTML, "$('attl').textContent = sessionLabel(s); }"},
+		{"ide", ideHTML, "if(note) w('\\x1b[33m' + visible(note) + '\\x1b[0m');"},
 	} {
 		if !strings.Contains(c.src, c.want) {
 			t.Errorf("%s no longer draws this through the helper: %s", c.page, c.want)

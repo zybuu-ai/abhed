@@ -13,6 +13,7 @@ All notable changes to Abhed are recorded here. The format follows
   description echoed in "Started in background" could reorder or hide part
   of the line in the call's peek and output. Every call's output, peek and
   header, replies and reasoning, decision reasons, the agent's terminal tab,
+  the refusals, reasons and notes Abhed writes into a line terminal,
   file names, file and diff lines, search results, session titles and MCP,
   skill and extension names now show those characters as `⟨U+XXXX⟩`,
   keeping newlines, tabs and indentation.
