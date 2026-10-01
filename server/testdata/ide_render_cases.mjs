@@ -51,4 +51,11 @@ check('background names, results and reasons show bidi and zero-width as code po
   !shown.includes(RLO) && !shown.includes(ZW) && text().includes('subagent started: scan⟨U+202E⟩gol') &&
   text().includes('finished (completed⟨U+200B⟩') && text().includes('line one\nok⟨U+202E⟩txt.exe') &&
   text().includes('continuing with results from scan⟨U+202E⟩gol') && barOk);
+// A background shell is listed in the status bar while it runs, and leaves it when it ends.
+bgTasks.clear();
+render(ev(50, 'shell.started', 'system', {shell_id:'sh_1', call_id:'c1', command:'npm run dev', description:'dev server'}));
+const runningShell = $('s-bg').textContent;
+render(ev(51, 'shell.ended', 'system', {shell_id:'sh_1', call_id:'c1', state:'exited', exit_code:0}));
+check('a background shell is in the status bar while it runs', $('s-bg').hidden === true && runningShell.includes('1 background: dev server') &&
+  $('s-bg').textContent === '' && $('s-bg').title.includes('dev server · exited'));
 if(!ok) process.exit(1);

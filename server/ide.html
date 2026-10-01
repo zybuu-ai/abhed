@@ -1637,6 +1637,9 @@ function render(ev){
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + visible(p.description || '')));
     if(p.background && p.task_id){ bgTasks.set(p.task_id, {name: p.description || p.task_id, state:'running'}); drawBg(); } break;
   case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + visible(p.reason || ''))); break;
+  // A background shell is listed in the status bar while it runs, as a task is.
+  case 'shell.started': if(p.shell_id){ bgTasks.set(p.shell_id, {name: p.description || p.command || p.shell_id, state:'running'}); drawBg(); } break;
+  case 'shell.ended': if(p.shell_id){ bgTasks.set(p.shell_id, {name: (bgTasks.get(p.shell_id) || {}).name || p.shell_id, state: p.state || 'ended'}); drawBg(); } break;
   // A background task's result: the subagent's summary, never the person's words.
   case 'subagent.notice': { const turns = p.turns ? ', ' + p.turns + ' turn' + (p.turns === 1 ? '' : 's') : '';
     add(el('div', 'sys bgnotice', 'background: ' + visible(p.description || p.task_id || '') + ' finished (' + visible(p.status || p.reason || '') + turns + '); result added to the conversation'));
