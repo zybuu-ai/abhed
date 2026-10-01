@@ -16,6 +16,20 @@ All notable changes to Abhed are recorded here. The format follows
   store as the SDK, `abhed acp` and `abhed rpc` already did: a value is
   redacted from the moment it is stored, and stays redacted once changed or
   removed.
+- A backslash-newline line continuation, or an expansion that splits words,
+  hid a command from the deny, destructive and ask-rule checks, so bypass
+  mode ran `rm \<newline>-rf dir`, `rm -\<newline>rf dir`,
+  `git reset \<newline>--hard`, `rm${IFS}-rf${IFS}dir` and `git \<newline>stash`
+  past an ask rule for `git stash*`. Every check now also reads the command
+  as the shell splits it: continuations joined (outside single quotes, also
+  inside a word), `$IFS` and `${IFS...}` read as a space, tabs, carriage
+  returns and form feeds as spaces, `$'...'` decoded, and a brace list
+  such as `{rm,-rf,dir}` as its words. A program named by an expansion
+  (`$x`), or an IFS set to a value and then expanded, always asks. Where
+  deny or ask rules are set, a command whose words were split or glued this
+  way asks, and no allow rule matches a command that needed more than its
+  continuations joined. The prompt still shows the command as written, and
+  its reason says when continuations were joined.
 - `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
   spelled long (`rm --recursive --force dir`), was not treated as a command
   with no undo, so bypass mode ran it without asking. Those flags now count
