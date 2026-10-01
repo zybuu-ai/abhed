@@ -30,11 +30,11 @@ type tasker interface {
 
 // taskNote is what the record says about a task beyond the SDK's TaskInfo.
 type taskNote struct {
-	branch            string
-	tokensIn, tokOut  int
-	delivery          string
-	contentChars      int
-	noticed, finished bool
+	branch           string
+	tokensIn, tokOut int
+	delivery         string
+	contentChars     int
+	noticed          bool
 }
 
 // liveTasks counts the session's background tasks still running.

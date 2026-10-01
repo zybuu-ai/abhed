@@ -97,9 +97,8 @@ func (cl *studioClient) write(m rpcMessage) {
 	_, _ = cl.in.Write(append(b, '\n'))
 }
 
-// waitFor returns the first message from index from on that matches, and
-// the index after it.
-func (cl *studioClient) waitFor(from int, what string, match func(rpcMessage) bool) (rpcMessage, int) {
+// waitFor returns the first message from index from on that matches.
+func (cl *studioClient) waitFor(from int, what string, match func(rpcMessage) bool) rpcMessage {
 	cl.t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	timer := time.AfterFunc(20*time.Second, func() {
@@ -113,7 +112,7 @@ func (cl *studioClient) waitFor(from int, what string, match func(rpcMessage) bo
 	for {
 		for i := from; i < len(cl.seen); i++ {
 			if match(cl.seen[i]) {
-				return cl.seen[i], i + 1
+				return cl.seen[i]
 			}
 		}
 		from = len(cl.seen)
@@ -145,7 +144,7 @@ func (cl *studioClient) call(method string, params any) rpcMessage {
 	raw, _ := json.Marshal(params)
 	from := cl.mark()
 	cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(id), Method: method, Params: raw})
-	m, _ := cl.waitFor(from, "reply to "+method, func(m rpcMessage) bool { return m.Method == "" && string(m.ID) == id })
+	m := cl.waitFor(from, "reply to "+method, func(m rpcMessage) bool { return m.Method == "" && string(m.ID) == id })
 	return m
 }
 
@@ -344,14 +343,4 @@ func (r *studioRig) recordStore() *local.Store {
 		r.t.Fatal(err)
 	}
 	return rec
-}
-
-// allow answers every permission request with the offered option of kind.
-func allow(kind string) func(string, json.RawMessage) any {
-	return func(method string, params json.RawMessage) any {
-		if method == "session/request_permission" {
-			return chosen(params, kind)
-		}
-		return map[string]any{}
-	}
 }

@@ -176,7 +176,7 @@ func TestStudioCancelOneTask(t *testing.T) {
 	if !res.Cancelled || len(a.cancelled) != 1 || a.cancelled[0] != "t2" {
 		t.Fatalf("cancel: %v %v", res, a.cancelled)
 	}
-	m, _ := cl.waitFor(from, "_abhed/tasks/changed", func(m rpcMessage) bool { return m.Method == "_abhed/tasks/changed" })
+	m := cl.waitFor(from, "_abhed/tasks/changed", func(m rpcMessage) bool { return m.Method == "_abhed/tasks/changed" })
 	if !strings.Contains(string(m.Params), `"cancelled"`) {
 		t.Fatalf("tasks/changed: %s", m.Params)
 	}
@@ -191,7 +191,7 @@ func TestStudioSubagentCards(t *testing.T) {
 	raw := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 	from := cl.mark()
 	cl.conn.forward(s, abhed.Event{Type: agent.EvSubagentSpawned, Payload: raw(map[string]any{
-		"session": "child1", "description": "look‮evil", "agent_type": "explore", "depth": 1, "model": "m-1"})})
+		"session": "child1", "description": "look\u202eevil", "agent_type": "explore", "depth": 1, "model": "m-1"})})
 	cl.conn.forward(s, abhed.Event{Type: agent.EvSubagentReturn, Payload: raw(map[string]any{
 		"session": "child1", "reason": "completed", "turns": 3, "tokens_in": 10, "tokens_out": 5, "summary_chars": 42})})
 	cl.waitFor(from, "the return", func(m rpcMessage) bool { return strings.Contains(string(m.Params), `"summaryChars":42`) })
@@ -199,7 +199,7 @@ func TestStudioSubagentCards(t *testing.T) {
 	if len(ups) != 2 || ups[0]["toolCallId"] != "sub-child1" || ups[0]["kind"] != "think" || ups[1]["status"] != "completed" {
 		t.Fatalf("cards: %v", ups)
 	}
-	if title := ups[0]["title"].(string); strings.ContainsRune(title, '‮') || !strings.Contains(title, "explore") {
+	if title := ups[0]["title"].(string); strings.ContainsRune(title, '\u202e') || !strings.Contains(title, "explore") {
 		t.Fatalf("title %q", title)
 	}
 	if sub := meta(ups[0])["subagent"].(map[string]any); sub["agentType"] != "explore" || sub["depth"] != float64(1) {

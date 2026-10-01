@@ -133,10 +133,10 @@ func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string) 
 	switch {
 	case cmd.builtin != nil:
 		s.record(agent.EvCommandInvoked, invoked)
-		out, err := cmd.builtin.run(c, ctx, s, args)
-		if err != nil {
-			say(cmd.name + ": " + err.Error() + "\n")
-			return nil, true
+		// A built-in's refusal is its answer to the person, not the turn's failure.
+		out, runErr := cmd.builtin.run(c, ctx, s, args)
+		if runErr != nil {
+			out = cmd.name + ": " + runErr.Error() + "\n"
 		}
 		say(out)
 		return nil, true

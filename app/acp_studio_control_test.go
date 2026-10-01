@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"github.com/zybuu-ai/abhed/internal/secrets"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 )
 
 // §5.1 modes: what the engine allows now, changed through the engine's

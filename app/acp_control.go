@@ -334,12 +334,13 @@ func (s *acpSession) askDiff(tool string, args json.RawMessage) *askChange {
 	switch tool {
 	case "write":
 		next = a.Content
-	default:
-		if !existed && a.OldString == "" {
+	case "edit":
+		switch {
+		case !existed && a.OldString == "":
 			next = a.NewString
-		} else if a.ReplaceAll {
+		case a.ReplaceAll:
 			next = strings.ReplaceAll(old, a.OldString, a.NewString)
-		} else {
+		default:
 			next = strings.Replace(old, a.OldString, a.NewString, 1)
 		}
 	}

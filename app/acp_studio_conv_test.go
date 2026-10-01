@@ -95,7 +95,7 @@ func TestStudioCommands(t *testing.T) {
 	r.write(".abhed/commands/wsonly.md", "from the workspace")
 	from := r.cl.mark()
 	id := r.open()
-	u, _ := r.cl.waitFor(from, "available_commands_update", func(m rpcMessage) bool {
+	u := r.cl.waitFor(from, "available_commands_update", func(m rpcMessage) bool {
 		return m.Method == "session/update" && strings.Contains(string(m.Params), "available_commands_update")
 	})
 	cmds := updates([]rpcMessage{u})[0]["availableCommands"].([]any)
