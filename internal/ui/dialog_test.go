@@ -654,3 +654,21 @@ func TestDialogHiddenByTheEditorTakesNoKeys(t *testing.T) {
 	}
 	close(release)
 }
+
+// A background command's approval says it goes on after the call, in the
+// dialog, its title and the line mode alike.
+func TestApprovalSaysBackground(t *testing.T) {
+	a := &DialogApprover{Base: NewApprover(io.Discard), Render: NewRenderer(io.Discard, false)}
+	bg := json.RawMessage(`{"command":"npm run dev","run_in_background":true}`)
+	spec := a.spec(context.Background(), "bash", bg, policy.Result{Decision: policy.Ask}, a.header("bash", bg))
+	if !strings.Contains(spec.Ask, "in the background") || !strings.Contains(spec.Title, "in the background") {
+		t.Fatalf("ask %q, title %q", spec.Ask, spec.Title)
+	}
+	if p := a.Base.preview("bash", bg); !strings.Contains(p, "runs in the background") {
+		t.Fatalf("line mode preview %q", p)
+	}
+	fg := json.RawMessage(`{"command":"npm test"}`)
+	if spec := a.spec(context.Background(), "bash", fg, policy.Result{Decision: policy.Ask}, a.header("bash", fg)); strings.Contains(spec.Ask+spec.Title, "background") {
+		t.Fatalf("a foreground command says background: %q %q", spec.Ask, spec.Title)
+	}
+}

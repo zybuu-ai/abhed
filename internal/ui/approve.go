@@ -252,7 +252,11 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		return strings.TrimRight(b.String(), "\n")
 
 	case "bash":
-		return fmt.Sprintf("  %s", s.Dim("$ "+VisibleLine(str("command"))))
+		line := fmt.Sprintf("  %s", s.Dim("$ "+VisibleLine(str("command"))))
+		if bg, _ := m["run_in_background"].(bool); bg {
+			line += "\n  " + s.Yellow("runs in the background: it goes on after this call, until it ends, is stopped or reaches its time limit")
+		}
+		return line
 
 	case "ssh", "web_fetch", "task", "k8s_apply":
 		head, body := callPreview(tool, m)
