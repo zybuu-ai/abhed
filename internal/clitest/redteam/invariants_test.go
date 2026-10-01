@@ -90,8 +90,9 @@ func TestInvariantNoAutoApprove(t *testing.T) {
 		h.WaitText("Declined")
 		h.Exit(0)
 	}
-	h := start(t, clitest.Opts{Piped: true, Script: "tool write {\"path\":\"notes.txt\",\"content\":\"x\"}\n\ntext \"done\""})
+	h := start(t, clitest.Opts{Piped: true, KeepStdin: true, Script: "tool write {\"path\":\"{{WS}}/notes.txt\",\"content\":\"x\"}\n\ntext \"done\""})
 	h.Type("write notes\n")
+	h.WaitOutput("answer 1-")
 	h.Exit(0) // input ends while the write waits
 	if got := denied(t, h.Record()); len(got) == 0 {
 		t.Fatal("input ending during an ask did not refuse the call")
@@ -124,16 +125,23 @@ func TestInvariantDestructiveAlwaysConfirms(t *testing.T) {
 // The managed configuration wins: /mode auto, bypass, /permissions allow and
 // /add-dir are refused under it.
 func TestInvariantManagedPolicyWins(t *testing.T) {
-	h := start(t, clitest.Opts{Managed: `{"permissions":{"mode":"default","allow":[]},"additional_dirs":["/usr"]}`})
+	h := start(t, clitest.Opts{Script: `text "ok"`, Managed: `{"permissions":{"mode":"default","allow":[]},"additional_dirs":["/usr"]}`})
 	for _, c := range []struct{ line, want string }{
 		{"/mode auto", "refused"},
 		{"/permissions allow bash(make)", "managed configuration"},
 		{"/add-dir /tmp", "refused"},
 	} {
+		// Each answer is new output: the same words may already be on screen.
+		before := strings.Count(clitest.Strip(h.Output()), c.want)
 		h.Type(c.line)
 		h.Key(clitest.Enter)
-		h.WaitText(c.want)
+		h.WaitScreen(func(clitest.Screen) bool { return strings.Count(clitest.Strip(h.Output()), c.want) > before }, clitest.DefaultTimeout)
+		h.Settle()
 	}
+	// A task opens the conversation's record, which holds what came before.
+	h.Type("hello")
+	h.Key(clitest.Enter)
+	h.WaitText("● ok")
 	for _, e := range h.Record().Events {
 		if e.Type == agent.EvModeChanged || e.Type == agent.EvPermissionChanged || e.Type == agent.EvWorkspaceDirAdded {
 			t.Fatalf("a refused change was recorded: %s", e.Type)
@@ -200,6 +208,11 @@ func TestInvariantModeCycleNeverReachesAutoOrBypass(t *testing.T) {
 	time.Sleep(guard)
 	h.Key(clitest.Esc)
 	h.WaitText("mode stays")
+	// A task opens the conversation's record, which holds what came before.
+	h.Settle()
+	h.Type("hello")
+	h.Key(clitest.Enter)
+	h.WaitText("● ok")
 	for _, e := range h.Record().Events {
 		if e.Type == agent.EvModeChanged && strings.Contains(string(e.Payload), `"to":"auto"`) {
 			t.Fatal("auto was reached without a yes")
@@ -214,7 +227,7 @@ func TestInvariantRewindIsAFork(t *testing.T) {
 	h := start(t, clitest.Opts{Script: "text \"one\"\n\ntext \"two\""})
 	h.Type("first")
 	h.Key(clitest.Enter)
-	h.WaitText("one")
+	h.WaitText("● one")
 	h.WaitScreen(func(s clitest.Screen) bool { return s.Contains("? for shortcuts") }, clitest.DefaultTimeout)
 	h.Settle()
 	h.Type("/rewind")
@@ -234,11 +247,13 @@ func TestInvariantRewindIsAFork(t *testing.T) {
 // and verifies.
 func TestInvariantRecordIsAppendOnly(t *testing.T) {
 	h := start(t, clitest.Opts{Script: "text \"one\"\n\ntext \"two\""})
-	for _, line := range []string{"first", "/clear", "second"} {
-		h.Type(line)
+	// Each line waits for the one before: lines sent together read as a paste.
+	for _, step := range []struct{ line, want string }{{"first", "● one"}, {"/clear", "context cleared"}, {"second", "● two"}} {
+		h.Type(step.line)
 		h.Key(clitest.Enter)
+		h.WaitText(step.want)
+		h.Settle()
 	}
-	h.WaitText("two")
 	r := h.Record()
 	if !r.Verified {
 		t.Fatal("the record does not verify")

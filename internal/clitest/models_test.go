@@ -91,7 +91,7 @@ func TestModelStatusUsageOnPty(t *testing.T) {
 	h.WaitText("unchanged; /model <name> switches")
 	h.Settle()
 	h.Type("hi\r")
-	h.WaitText("one")
+	h.WaitText("● one")
 	h.Settle()
 	h.Type("/model b\r")
 	h.WaitText("switched to model-b")

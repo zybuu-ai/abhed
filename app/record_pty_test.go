@@ -47,7 +47,7 @@ func TestPtyRewindToFirstMessage(t *testing.T) {
 	h := startAtPrompt(t, clitest.Opts{Script: "text \"one\"\n\ntext \"two\"\n", Args: []string{"-C", ws}})
 	h.Type("first")
 	h.Key(clitest.Enter)
-	h.WaitText("one")
+	h.WaitText("● one")
 	h.WaitScreen(func(s clitest.Screen) bool { return s.Contains("? for shortcuts") }, clitest.DefaultTimeout)
 	h.Settle()
 	h.Type("/rewind 1")
