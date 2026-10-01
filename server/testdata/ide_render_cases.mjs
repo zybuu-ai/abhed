@@ -74,4 +74,17 @@ render(ev(70, 'model.call', 'system', {turn:1, model:'m', error:'model produced 
 const merr = text();
 check('a model error shows hidden characters: ' + JSON.stringify(merr),
   !merr.includes(R) && merr.includes('model error: model produced invalid JSON arguments for bash: {"description": "bd2⟨U+202E⟩gpj.exe⟨U+200B⟩"}'));
+// The running label names the tool, and an MCP server chooses its tools' names.
+__added.length = 0; __waits.length = 0;
+render(ev(80, 'action.requested', 'agent', {call_id:'a8', tool:'mcp_fs_read' + R + 'gpj.exe' + J, args:{}}));
+render(ev(81, 'action.approved', 'system', {call_id:'a8', step:'rule'}));
+const wl = __waits[__waits.length - 1] || '';
+check('the running label shows hidden characters in the tool name: ' + JSON.stringify(wl),
+  wl === 'Running mcp_fs_read⟨U+202E⟩gpj.exe⟨U+200D⟩');
+// A message from the record that this page did not send is drawn as said, with hidden characters written out.
+__added.length = 0;
+render(ev(82, 'user.message', 'user', {text:'fix' + R + 'txt.exe' + String.fromCharCode(0x1b) + '[2J\n    indented'}));
+const um = text();
+check('a person\'s message shows hidden characters and keeps its layout: ' + JSON.stringify(um),
+  !um.includes(R) && !um.includes(String.fromCharCode(0x1b)) && um.includes('fix⟨U+202E⟩txt.exe⟨U+001B⟩[2J\n    indented'));
 if(!ok) process.exit(1);

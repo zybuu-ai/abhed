@@ -102,4 +102,13 @@ for(const [label, evs] of [
   if(!replyOk) console.log('        ' + JSON.stringify(t));
   ok = replyOk && ok;
 }
+// The person's message is drawn as said, with hidden characters written out: in a shared or
+// automated session it is not always their own text. Newlines and indentation are kept.
+tx.childNodes.length = 0; turnEl = null; streamEl = null; streamBody = null;
+render({seq:180, type:'user.message', payload:{text:'fix‮txt.exe​\u001b[2J\n    indented\tline'}});
+const mine = tx.querySelectorAll('.user'), mineText = mine.length ? mine[0].textContent : '';
+const mineOk = mine.length === 1 && !raw(mineText) && mineText.includes('fix⟨U+202E⟩txt.exe⟨U+200B⟩⟨U+001B⟩[2J\n    indented\tline');
+console.log((mineOk ? 'PASS' : 'FAIL') + '  the person\'s message shows hidden characters and keeps its layout');
+if(!mineOk) console.log('        ' + JSON.stringify(mineText));
+ok = mineOk && ok;
 process.exit(ok?0:1);

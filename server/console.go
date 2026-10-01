@@ -1190,7 +1190,7 @@ function render(ev){
     case 'user.message': {
       offerNext('');
       const b = node('said user');
-      b.append(node('who','you'), document.createTextNode(p.text || ''));
+      b.append(node('who','you'), document.createTextNode(reveal(p.text || '', true)));
       tx.appendChild(b);
       newTurn();
       stats.turns++;

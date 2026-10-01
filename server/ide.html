@@ -747,7 +747,7 @@ async function showTab(t){
       else if(t.orig.getValue() !== orig.content) t.orig.setValue(orig.content);
       crumbs(t.path, (t.deleted ? 'deleted' : !orig.existed ? 'added' : 'modified') + ' · review'); mount(t);
     }
-  }catch(e){ if(active === t.id){ crumbs(t.path, ''); if(!t.model) note(e.message); } }
+  }catch(e){ if(active === t.id){ crumbs(t.path, ''); if(!t.model) note(visible(e.message)); } }
 }
 function mount(t){
   if(t.kind === 'file'){
@@ -1029,7 +1029,7 @@ async function runSearch(){
   sum.textContent = r.matches ? r.matches + (r.matches === 1 ? ' result in ' : ' results in ') + r.files.length + (r.files.length === 1 ? ' file' : ' files') +
     (r.truncated ? ' · stopped at ' + why + '; narrow the search' : '') : 'No results.';
   for(const f of r.files){
-    const head = el('button', 'row sfile'); head.type = 'button'; head.title = f.path;
+    const head = el('button', 'row sfile'); head.type = 'button'; head.title = reveal(f.path);
     head.appendChild(el('span', 'tw codicon codicon-chevron-down')); head.appendChild(el('span', 'name', reveal(f.path.split('/').pop())));
     head.appendChild(el('span', 'd', reveal(parentOf(f.path)))); head.appendChild(el('span', 'c', f.matches.length + (f.truncated ? '+' : '')));
     const list = el('div'); box.appendChild(head); box.appendChild(list);
@@ -1097,7 +1097,7 @@ function drawCaps(){
   };
   sect('Extensions', c.extensions, e => {
     const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(e.name))); top.appendChild(el('span', 'pill on', 'active'));
-    card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (e.events.join(', ') || 'all events'))); return card;
+    card.appendChild(top); card.appendChild(el('p', '', 'Hooks: ' + (visible(e.events.join(', ')) || 'all events'))); return card;
   }, 'An extension is a program the harness calls on events — before a tool runs, before compaction — and which may veto. None configured. Add one in the server configuration under', 'extensions');
   sect('MCP servers', c.mcp, m => {
     const card = el('div', 'card'), top = el('div', 't'); top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status))); card.appendChild(top); return card;
@@ -1580,7 +1580,7 @@ function render(ev){
   logEvent(ev, p);
   switch(ev.type){
   case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
-  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
+  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', reveal(p.text || '', true)));
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
     // This page's own message means its run has started, whichever of the
@@ -1615,7 +1615,7 @@ function render(ev){
     break; }
   case 'action.approved': { if(mineCalls.has(p.call_id)) break; const c = calls.get(p.call_id);
     if(c){ c.node.appendChild(el('div', 'why', visible('allowed · step ' + (p.step || '?') + (p.by === 'reviewer' ? ' · by ' + (p.approver || 'you') : '') + (p.granted_scope ? ' · always allowing ' + p.granted_scope : '') + (p.reason ? ' — ' + p.reason : '')))); c.res.textContent = 'running…'; }
-    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? c.tool : 'tool')); break; }
+    settleAsk(p.call_id, 'approved'); if(live) waiting('Running ' + (c ? reveal(c.tool) : 'tool')); break; }
   case 'action.denied': { if(mineCalls.has(p.call_id)){ hawkSoon(); break; } const c = calls.get(p.call_id);
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + ' — ' + (p.reason || '')))); }
     settleAsk(p.call_id, 'denied'); hawkSoon(); break; }
@@ -1979,7 +1979,7 @@ function sendInput(t, d){
 }
 
 // Line by line: the page edits the line, and each one is a checked command.
-const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : t.cwd + ' ') + '$\x1b[0m ';
+const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : reveal(t.cwd) + ' ') + '$\x1b[0m ';
 // Shows the prompt, and whatever has been typed ahead of it.
 const promptLine = t => { t.term.write(linePrompt(t) + t.line); };
 // An unfinished sequence ends at a line break, so it never swallows the next line.
@@ -2222,7 +2222,7 @@ $('q').addEventListener('input', () => {
   indexFiles(); const needle = at[1].toLowerCase();
   const hits = [...known].filter(p => p.toLowerCase().includes(needle)).sort((a, b) => a.length - b.length).slice(0, 8);
   clear(box); box.dataset.mode = 'at'; box.hidden = !hits.length;
-  hits.forEach(p => { const b = el('button', 'row'); b.type = 'button'; b.appendChild(el('span', 'name mono', '@' + p));
+  hits.forEach(p => { const b = el('button', 'row'); b.type = 'button'; b.appendChild(el('span', 'name mono', '@' + reveal(p)));
     b.addEventListener('mousedown', ev => { ev.preventDefault(); const head = q.value.slice(0, q.selectionStart).replace(/@[\w./-]*$/, '@' + p + ' ');
       q.value = head + q.value.slice(q.selectionStart); q.selectionStart = q.selectionEnd = head.length; box.hidden = true; delete box.dataset.mode; q.focus(); });
     box.appendChild(b); });
@@ -2323,7 +2323,7 @@ function palItems(){
   out.push({k:'command', l:'New folder', h:'', run:() => newEntry(true)});
   out.push({k:'command', l:'Toggle the minimap', h:'', run:toggleMinimap});
   out.push({k:'command', l:'Review inline or side by side', h:'', run:toggleDiffLayout});
-  [...known].sort().forEach(p => out.push({k:'file', l:p, h:'', run:() => openFile(p)}));
+  [...known].sort().forEach(p => out.push({k:'file', l:reveal(p), h:'', run:() => openFile(p)}));
   sessionList.forEach(s => out.push({k:'session', l:sessionLabel(s), h:s.state, run:() => openSession(s.id, s.state)}));
   return out;
 }

@@ -94,7 +94,8 @@ const calls = new Map(), mineCalls = new Set(), bgTasks = new Map(), ids = {}, $
 const setLive = on => { live = on; }, recheckSoon = () => {};
 const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
 const tx = () => __root;
-const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}, askApproval = () => {};
+globalThis.__waits = []; const claim = () => null, asks = new Map();
+const logEvent = () => { __logged++; }, waiting = l => { if(l) __waits.push(l); }, settleAsk = () => {}, askApproval = () => {};
 const hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => { __changes++; };
 const fillCall = () => {}, drawPlan = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
 const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); };
@@ -563,7 +564,7 @@ func TestIDEFileNamesAndRepliesAreRevealed(t *testing.T) {
 
 // Where no page harness reaches, the source must still draw untrusted text through
 // visible() or reveal(): the console's drawer, and the workbench's tool cards,
-// search results, session titles and breadcrumb note.
+// search results, session titles, breadcrumb note, palette and @ list.
 func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
 	for _, c := range []struct{ page, src, want string }{
 		{"console", consoleHTML, "  body = reveal(body, true);\n  if(numbered){"},
@@ -579,6 +580,11 @@ func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
 		{"ide", ideHTML, "$('crumb-meta').textContent = reveal(meta || '');"},
 		{"ide", ideHTML, "$('attl').textContent = sessionLabel(s); }"},
 		{"ide", ideHTML, "if(note) w('\\x1b[33m' + visible(note) + '\\x1b[0m');"},
+		{"ide", ideHTML, "out.push({k:'file', l:reveal(p), h:'', run:() => openFile(p)})"},
+		{"ide", ideHTML, "head.type = 'button'; head.title = reveal(f.path);"},
+		{"ide", ideHTML, "b.appendChild(el('span', 'name mono', '@' + reveal(p)));"},
+		{"ide", ideHTML, "'Hooks: ' + (visible(e.events.join(', ')) || 'all events')"},
+		{"ide", ideHTML, "if(!t.model) note(visible(e.message));"},
 	} {
 		if !strings.Contains(c.src, c.want) {
 			t.Errorf("%s no longer draws this through the helper: %s", c.page, c.want)

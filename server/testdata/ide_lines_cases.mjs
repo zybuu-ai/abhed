@@ -346,4 +346,12 @@ check('and while lines wait in the queue', lineKeys(t, key('ArrowUp').e) === fal
   }
 }
 
+// The prompt names the terminal's directory, which a person may have cd'd into by a name
+// the agent chose: ESC, bidi and zero-width characters in it are written out, never obeyed.
+({out, t} = term()); t.cwd = 'src/a' + String.fromCharCode(0x1b) + '[2J' + String.fromCharCode(0x202e) + 'b' + String.fromCharCode(0x200b);
+promptLine(t);
+const shownCwd = out.join('');
+check('the prompt shows control characters in its directory: ' + JSON.stringify(shownCwd),
+  shownCwd.includes('src/a⟨U+001B⟩[2J⟨U+202E⟩b⟨U+200B⟩ $') && !shownCwd.includes(String.fromCharCode(0x1b) + '[2J') && !shownCwd.includes(String.fromCharCode(0x202e)));
+
 process.exit(ok ? 0 : 1);
