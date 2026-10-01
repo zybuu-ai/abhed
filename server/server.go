@@ -228,10 +228,12 @@ type Options struct {
 	// SkillDirs, which holds each loaded skill's own directory so its assets
 	// can be read. A reload has to scan the roots.
 	SkillRoots []string
-	// OwnerActive says whether a session's owner may still act, before an
-	// automatic wake run starts on their behalf; nil uses the local
-	// accounts when there are any, and assumes active otherwise. An edition
-	// supplies its own to cover disabled or departed users.
+	// OwnerActive says whether a session's owner may still act: before an
+	// automatic wake run starts on their behalf, and again inside it before
+	// each model call and approval. Nil uses the local accounts when there
+	// are any, and assumes active otherwise. An edition supplies its own to
+	// cover revoked, disabled or departed users; it must answer false when
+	// it cannot tell.
 	OwnerActive func(ctx context.Context, tenant, user string) bool
 	// Agents are the subagent types sessions offer: the built-in roles and
 	// the loaded definitions. Nil offers the built-in roles only, until an
@@ -1343,6 +1345,15 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		BeforeIdle: func() { s.checkOwner(live) },
 		Wake:       func(ids []string) bool { return s.wake(live, ids) },
 	})
+	// Asked again inside a woken run, before each model call and approval:
+	// access withdrawn while it runs ends it.
+	loop.OwnerActive = func() bool {
+		active := s.ownerActive(live)
+		if !active {
+			live.ownerGone.Store(true)
+		}
+		return active
+	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	loop.Budget = budget
@@ -2793,6 +2804,60 @@ func (s *Server) checkOwner(live *liveSession) {
 	if gone {
 		live.Loop.Background.CancelAll(agent.TermOwnerInactive)
 	}
+}
+
+// StopOwnerBackground stops what this process runs for an owner whose access
+// was withdrawn: each of their sessions' live run, background shells and
+// tasks, and terminals, recorded as owner_revoked; and no wake starts for
+// those sessions until the owner is found active again. An empty tenant
+// matches every tenant; sessions already released from the owner (see
+// ReleaseSessions) are matched too. It returns how many it stopped. ctx
+// bounds the wait for the runs to record their end.
+func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) int {
+	if user == "" || user == auth.Anonymous || auth.OwnsNothing(user) {
+		return 0
+	}
+	released := auth.UnclaimedOwner(user)
+	s.mu.RLock()
+	var hit []*liveSession
+	for _, live := range s.running {
+		if (tenant == "" || live.Tenant == tenant) && (live.User == user || live.User == released) {
+			hit = append(hit, live)
+		}
+	}
+	s.mu.RUnlock()
+	n := 0
+	var ran []chan struct{}
+	for _, live := range hit {
+		live.ownerGone.Store(true)
+		stopped := 0
+		live.mu.Lock()
+		stop, run := live.cancelCause, live.ran
+		live.mu.Unlock()
+		if stop != nil && run != nil {
+			stop(agent.StopCause{Reason: agent.TermOwnerRevoked})
+			ran = append(ran, run)
+			stopped++
+		}
+		if live.Loop != nil {
+			stopped += live.Loop.Background.CancelAll(agent.TermOwnerRevoked)
+		}
+		stopped += len(live.closeTerminals())
+		if stopped > 0 {
+			s.log.Warn("stopped an owner's work", "session", live.ID, "owner", user,
+				"stopped", stopped, "reason", "owner access revoked")
+		}
+		n += stopped
+	}
+	for _, ch := range ran {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return n
+		case <-time.After(turnEndWait):
+		}
+	}
+	return n
 }
 
 // ownerActive asks Options.OwnerActive, or the local accounts when there

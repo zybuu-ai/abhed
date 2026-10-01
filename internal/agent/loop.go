@@ -237,6 +237,10 @@ type Loop struct {
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
 	Monitor *monitor.Guard
+	// OwnerActive, when set, is asked before a woken run calls the model
+	// and before a call made in one is approved; false ends the run as
+	// owner_inactive. Nil means the owner is always active.
+	OwnerActive func() bool
 	// reasoning and recentCalls are the monitor's short memory: the agent's
 	// last few stated thoughts, and the last few calls with their outcomes.
 	// Calls in one turn run concurrently, so both sit behind monitorMu.
@@ -672,6 +676,11 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		// never costs the user a turn from the budget.
 		if err := l.deliverQueued(); err != nil {
 			return TermError, err
+		}
+		// A woken run acts for an owner who may have lost access since it
+		// started: asked again before every model call.
+		if ownerGone(ctx) {
+			return l.finish(TermOwnerInactive), nil
 		}
 		l.turns++
 		if l.Monitor != nil {
@@ -1261,6 +1270,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		return false, tools.Result{Content: doomed.Error(), IsError: true}, ""
 	}
 
+	if decision.Decision != policy.Deny && ownerGone(ctx) {
+		return l.deniedOwnerGone(call.ID)
+	}
 	answer := &Answer{}
 	switch decision.Decision {
 	case policy.Deny:
@@ -1336,6 +1348,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}
 	}
 
+	// An answer may come after the owner lost access: asked once more.
+	if decision.Decision == policy.Ask && ownerGone(ctx) {
+		return l.deniedOwnerGone(call.ID)
+	}
 	// by says who let it through: the policy on its own, a person asked, or
 	// what the approver reported in their place.
 	approvedBy := withRule(map[string]string{
@@ -1354,6 +1370,29 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	}
 	l.record(EvActionApproved, actorFor(approvedBy["by"]), approvedBy)
 	return true, tools.Result{}, ""
+}
+
+// ownerGateKey carries a woken run's OwnerActive to its calls and to the
+// foreground subagents it starts.
+type ownerGateKey struct{}
+
+// ownerGone reports whether ctx belongs to a woken run whose owner is no
+// longer active.
+func ownerGone(ctx context.Context) bool {
+	active, ok := ctx.Value(ownerGateKey{}).(func() bool)
+	return ok && !active()
+}
+
+// ownerGoneReason is what a call refused for an inactive owner records.
+const ownerGoneReason = "the session's owner no longer has access"
+
+// deniedOwnerGone refuses a woken run's call because its owner is no longer
+// active, and ends the run.
+func (l *Loop) deniedOwnerGone(callID string) (bool, tools.Result, TerminalReason) {
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": callID, "reason": ownerGoneReason, "step": "owner", "by": BySystem,
+	})
+	return false, tools.Result{Content: "Denied: " + ownerGoneReason + ".", IsError: true}, TermOwnerInactive
 }
 
 // withRule adds the rule that decided, when one did, so an approval or

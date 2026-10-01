@@ -86,14 +86,20 @@ func TestWakeSkippedOwnerInactive(t *testing.T) {
 	}
 }
 
-// The owner lookup, which may take seconds, is never made while the
-// conversation is locked: anything needing the run lock goes on meanwhile.
+// The owner lookup before an idle delivery, which may take seconds, is never
+// made while the conversation is locked: anything needing the run lock goes
+// on meanwhile. (The woken run asks again from inside itself, where the run
+// holds the lock anyway; only the first lookup is the idle one.)
 func TestOwnerLookupOutsideTheRunLock(t *testing.T) {
 	var live atomic.Pointer[liveSession]
+	var first atomic.Bool
 	unlocked := make(chan bool, 4)
 	b := newBGServerWith(t, nil, func(c *config.Config, o *Options) {
 		c.Subagents.Wake = "auto"
 		o.OwnerActive = func(context.Context, string, string) bool {
+			if !first.CompareAndSwap(false, true) {
+				return true
+			}
 			l := live.Load()
 			done := make(chan struct{})
 			go func() { l.Loop.SetHistory(l.Loop.Messages(), 0); close(done) }()
