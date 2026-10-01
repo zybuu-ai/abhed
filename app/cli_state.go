@@ -117,9 +117,11 @@ type cliState struct {
 
 // follow draws the conversation's events as they are recorded, for as long as
 // it is open: a background result arrives at the prompt as well as in a task.
-func (c *cliState) follow(store server.EventStore, id string, r *ui.Renderer) {
+// recorded is the last seq written so far; those events never reach the
+// subscription, so they count as drawn and no turn waits on them.
+func (c *cliState) follow(store server.EventStore, id string, r *ui.Renderer, recorded func() int64) {
 	events := store.Subscribe(id)
-	c.rendered.Store(0)
+	c.rendered.Store(recorded())
 	done := make(chan struct{})
 	go func() {
 		defer ui.RestoreOnPanic() // a panic drawing an event must not leave the terminal raw

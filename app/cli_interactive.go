@@ -177,7 +177,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.endBackground()
 		sessionState.loop, sessionState.sessionID = loop, id
 		panel.attach(loop, id)
-		sessionState.follow(store, id, r)
+		sessionState.follow(store, id, r, rec.LastAppended)
 		sessionState.attachHooks(loop)
 		sessionState.flushPending()
 		return loop
