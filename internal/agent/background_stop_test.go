@@ -462,3 +462,30 @@ func TestWakeWorksAgainAfterStopAndAPrompt(t *testing.T) {
 	waitFor(t, "a wake", func() bool { return len(payloads[SessionWoken](r.events(t), EvSessionWoken)) == 1 })
 
 }
+
+// A person's stop of one task is a stop: its end wakes nothing, and neither
+// does another result, until their next message.
+func TestPersonCancelOfOneTaskWakesNothing(t *testing.T) {
+	r := newBGRig(t, WakeAuto, "one", "two")
+	r.l.Background.policy.MaxWakesPerHour = 4
+	hostFor(r, true)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the children's calls", func() bool { return r.m.childrenInCall() == 2 })
+	var one string
+	for _, ti := range r.l.Background.Tasks() {
+		if ti.Description == "one" {
+			one = ti.ID
+		}
+	}
+	if one == "" || !r.l.Background.Cancel(one, TermUserInterrupt) {
+		t.Fatalf("no running task one: %+v", r.l.Background.Tasks())
+	}
+	r.m.release("two")
+	waitFor(t, "both results", func() bool { return len(payloads[Notice](r.events(t), EvSubagentNotice)) == 2 })
+	time.Sleep(300 * time.Millisecond)
+	if n := len(payloads[SessionWoken](r.events(t), EvSessionWoken)); n != 0 {
+		t.Fatalf("%d wakes after a person's stop", n)
+	}
+}

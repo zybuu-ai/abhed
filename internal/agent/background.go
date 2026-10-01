@@ -612,6 +612,11 @@ func (b *Background) Cancel(id string, reason TerminalReason) bool {
 	b.mu.Lock()
 	t, ok := b.tasks[id]
 	running := ok && !t.ended
+	// A person's stop of one task is a stop: no result wakes the session
+	// until their next message, this one's included.
+	if running && reason == TermUserInterrupt {
+		b.stopped = true
+	}
 	b.mu.Unlock()
 	if !running {
 		return false

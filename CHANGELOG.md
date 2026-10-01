@@ -586,7 +586,8 @@ Two changes need action before upgrading:
   agent: `subagents.wake` defaults to `auto` (it was `notify`), so the agent
   continues with the result on its own instead of waiting for your next
   message. The usual limits hold: `subagents.max_wakes_per_hour`,
-  `subagents.wake_max_turns`, a stop holds wakes until your next message,
+  `subagents.wake_max_turns`, a stop holds wakes until your next message
+  (stopping one task with `/tasks kill` or a task's stop included),
   asks still come to you, and only the session's own tasks wake it. Set
   `"wake": "notify"` for the old behaviour; the managed configuration can
   hold it there. The console and workbench draw the woken turn live, marked
