@@ -445,3 +445,21 @@ const api = async () => ({outcome:'completed\u202e', models:['m\u200b'], totals:
 		t.Fatalf("the workbench's panels failed:\n%s", out)
 	}
 }
+
+// The /ide mode selector offers only the server's mode and plan, and a refused
+// send puts the selector and the status bar back on the mode a session gets.
+func TestIDEOffersOnlyAllowedModes(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+Object.defineProperty(El.prototype, 'options', { get(){ return this.childNodes; } });
+const sel = new El('select'); const $ = () => sel;
+for(const m of ['default', 'plan', 'accept-edits', 'auto']){ const o = new El('option'); o.value = m; sel.appendChild(o); }
+`
+	if out, err := runConsoleCases(t, "ide-modes", harness, "ide_modes_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's mode selector failed:\n%s", out)
+	}
+	for _, want := range []string{"limitModes(caps.permissions.mode); $('s-mode').textContent = 'mode ' + caps.permissions.mode; } throw e; }", "limitModes(caps.permissions.mode);\n  await loadProviders();"} {
+		if !strings.Contains(ideHTML, want) {
+			t.Errorf("ide.html no longer has %q", want)
+		}
+	}
+}

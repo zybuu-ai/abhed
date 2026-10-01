@@ -1168,7 +1168,7 @@ function resetSession(){
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
-  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session';
+  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session'; if(caps && $('mode').selectedOptions[0] && $('mode').selectedOptions[0].disabled) limitModes(caps.permissions.mode);
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
@@ -2202,7 +2202,9 @@ async function send(){
       drawQueued(b);
     }else{
       const provider = chosenProvider();
-      const r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid, provider})});
+      let r; try{ r = await api('/v1/sessions', {method:'POST', body: JSON.stringify({prompt: b.prompt, mode: $('mode').value, client_id: b.cid, provider})}); }
+      // A refused mode is not the mode: show the one a session would get.
+      catch(e){ if(e.status === 403 && caps){ limitModes(caps.permissions.mode); $('s-mode').textContent = 'mode ' + caps.permissions.mode; } throw e; }
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value, provider, model: modelOf(provider)}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
@@ -2219,6 +2221,13 @@ $('agent').addEventListener('keydown', e => {
   stopArmed = setTimeout(() => { stopArmed = 0; setLive(live); }, 2500);
 });
 $('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
+// A session may start in the server's mode or narrow to plan: offer only those.
+function limitModes(m){
+  const sel = $('mode');
+  if(!Array.from(sel.options).some(o => o.value === m)){ const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); }
+  for(const o of Array.from(sel.options)){ o.disabled = o.value !== m && o.value !== 'plan'; o.title = o.disabled ? 'This server runs in ' + m + ' mode; a session may start in it or in plan' : ''; }
+  sel.value = m;
+}
 
 /* ---------------------------------------------------------------- palette + keys */
 let palSel = 0, palHits = [];
@@ -2342,7 +2351,7 @@ $('switchuser').addEventListener('click', postSignOut);
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
   if(sb.tier === 'none') sbox.className = 'off';
-  $('s-model').textContent = caps.model.name; $('mode').value = caps.permissions.mode;
+  $('s-model').textContent = caps.model.name; limitModes(caps.permissions.mode);
   await loadProviders(); $('s-mode').textContent = 'mode ' + caps.permissions.mode;
   try{
     const me = await api('/v1/whoami');

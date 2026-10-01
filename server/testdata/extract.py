@@ -53,6 +53,7 @@ sets = {
           'function runHeld(){','async function loadTree(path, into, depth){','function refreshDir(path){','function nameInput(anchor, before, depth, initial, done, onEnd){',
           'async function newEntry(folder){'],
     'ide-subject': ['function tail(p){','function subjectOf(tool, args){'],
+    'ide-modes': ['function limitModes(m){'],
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function tail(p){','function subjectOf(tool, args){',
           'function logEvent(ev, p){','async function loadHawkeye(){'],

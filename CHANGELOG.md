@@ -666,6 +666,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- /ide offered every permission mode, though a session may start only in
+  the server's mode or in plan, and after the server refused one the status
+  bar still named it. The selector now offers only those two, as /console
+  does, and a refusal puts it and the status bar back on the server's mode.
 - `abhed serve` on Postgres could leave an event, such as a parallel
   subagent's `subagent.ask`, off an open `/events` stream. Parallel writers
   took their seq before writing, so a later seq could commit first; the
