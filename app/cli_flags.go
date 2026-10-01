@@ -138,6 +138,9 @@ func Main(args []string, opts ...Option) int {
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)
 	case "doctor":
+		if len(rest) > 1 && (rest[1] == "--json" || rest[1] == "-json") {
+			return a.doctorJSON(os.Stdout, workspace)
+		}
 		return a.doctor(workspace)
 	case "providers":
 		return providersCmd()
