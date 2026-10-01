@@ -154,3 +154,82 @@ done
 		t.Fatalf("hook.fired recorded %d times:\n%s", fired, out)
 	}
 }
+
+// modeChangesIn is each recorded mode.changed as from>to/via.
+func modeChangesIn(evs []agent.Event) []string {
+	var out []string
+	for _, e := range evs {
+		if e.Type == agent.EvModeChanged {
+			var m agent.ModeChanged
+			_ = json.Unmarshal(e.Payload, &m)
+			out = append(out, m.From+">"+m.To+"/"+m.Via)
+		}
+	}
+	return out
+}
+
+// A run that continues a record in another mode, or with another system
+// prompt, says so in the record: its start, then the mode change. A copy
+// resumed from an exported file does the same.
+func TestContinuedRunRecordsItsModeAndPrompt(t *testing.T) {
+	g := newSessRig(t)
+	c := g.start("-mode", "accept-edits")
+	g.ask(c, "Remember the codeword ZEBRA-41.")
+	c.command("/export s.jsonl", "wrote ")
+	exit(c)
+	id := g.sessions()[0].ID
+
+	out, err := g.cmd("-c", "-mode", "bypass", "-append-system-prompt", "be brief", "-p", "What is it?").CombinedOutput()
+	if err != nil || strings.Contains(string(out), startRefused) {
+		t.Fatalf("-c -p: %v\n%s", err, out)
+	}
+	c = g.start("-c")
+	g.ask(c, "And now?")
+	exit(c)
+	evs := verified(t, g.record(), id)
+	s := starts(evs)
+	if len(s) != 3 || s[1]["mode"] != "bypass" || s[1]["system_prompt_appended_sha256"] == nil || s[2]["mode"] != "default" {
+		t.Fatalf("starts: %v", s)
+	}
+	if got := strings.Join(modeChangesIn(evs), " "); got != "accept-edits>bypass/flag bypass>default/flag" {
+		t.Fatalf("mode changes: %s", got)
+	}
+	// Each change follows the start of the run that made it.
+	for i, e := range evs {
+		if e.Type == agent.EvModeChanged && evs[i-1].Type != agent.EvSessionStarted {
+			t.Fatalf("a mode change at %d does not follow its run's start", e.Seq)
+		}
+	}
+
+	known := map[string]bool{id: true}
+	out, err = g.cmd("-r", filepath.Join(g.ws, "s.jsonl"), "-p", "From the file").CombinedOutput()
+	if err != nil || strings.Contains(string(out), startRefused) {
+		t.Fatalf("-r file -p: %v\n%s", err, out)
+	}
+	for _, e := range g.sessions() {
+		if !known[e.ID] {
+			bs := starts(verified(t, g.record(), e.ID))
+			if own := bs[len(bs)-1]; own["resumed"] != true || own["headless"] != true {
+				t.Fatalf("the copy's starts: %v", bs)
+			}
+			return
+		}
+	}
+	t.Fatalf("-r file made no session:\n%s", out)
+}
+
+// A rule added between turns does not make the next turn record its start again.
+func TestPermissionRuleBetweenTurnsKeepsOneStart(t *testing.T) {
+	g := newSessRig(t)
+	c := g.start()
+	g.ask(c, "first")
+	c.command("/permissions deny bash(curl *)", "rule added")
+	g.ask(c, "second")
+	exit(c)
+	if strings.Contains(c.out.String(), startRefused) {
+		t.Fatalf("the start was recorded again:\n%s", c.out.String())
+	}
+	if s := starts(verified(t, g.record(), g.sessions()[0].ID)); len(s) != 1 {
+		t.Fatalf("starts: %v", s)
+	}
+}
