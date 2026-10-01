@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -11,7 +13,7 @@ import (
 )
 
 func init() {
-	registerSlash(slashCmd{Name: "/tasks", Args: "[cancel <id|all>]", Help: "list background tasks, or cancel them", Group: "background", Order: 70, Run: legacy("/tasks", slashTasks)})
+	registerSlash(slashCmd{Name: "/tasks", Aliases: []string{"/bashes"}, Args: "[view|kill <n> | cancel <id|all>]", Help: "list subagents and background tasks, view or stop one", Group: "background", Order: 70, Run: legacy("/tasks", slashTasks)})
 	registerSlash(slashCmd{Name: "/wake", Args: "[off|notify|auto]", Help: "show or set what a background result does while idle", Group: "background", Order: 80, Run: legacy("/wake", slashWake)})
 }
 
@@ -55,8 +57,9 @@ func (c *cliState) endBackground() {
 	}
 }
 
-// tasksCommand is /tasks: the conversation's background tasks, or cancelling
-// one or all of them, as a stop by the person.
+// tasksCommand is /tasks: the conversation's subagents and background jobs,
+// numbered; "view <n>" shows one's record, "kill <n>" stops a background
+// one, and "cancel <id|all>" stops by id or all, as a stop by the person.
 func tasksCommand(args []string, st *cliState, s ui.Style) {
 	if st.loop == nil {
 		fmt.Println(s.Dim("  no background tasks"))
@@ -75,14 +78,67 @@ func tasksCommand(args []string, st *cliState, s ui.Style) {
 		fmt.Printf("  %s\n", s.Dim("cancelled "+args[1]))
 		return
 	}
-	list := b.Tasks()
+	list := st.panel.jobs()
+	if len(args) >= 2 && (args[0] == "view" || args[0] == "kill") {
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 || n > len(list) {
+			fmt.Printf("  %s no task %s; /tasks lists them\n", s.Red("✕"), args[1])
+			return
+		}
+		j := list[n-1]
+		if args[0] == "view" {
+			if st.surfaceReadsLines || !st.panel.editor.Raw() {
+				fmt.Println(st.panel.recordText(j))
+				return
+			}
+			st.panel.view(j.ID)
+			return
+		}
+		switch {
+		case !j.running():
+			fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("%d has already ended (%s)", n, j.Status)))
+		case !j.Background:
+			fmt.Printf("  %s\n", s.Dim("a foreground subagent ends with its turn: Esc stops the turn"))
+		case b.Cancel(j.ID, agent.TermUserInterrupt):
+			fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("cancelled %d", n)))
+		default:
+			fmt.Printf("  %s no running task %d\n", s.Red("✕"), n)
+		}
+		return
+	}
 	if len(list) == 0 {
 		fmt.Println(s.Dim("  no background tasks"))
 		return
 	}
-	for _, t := range list {
-		fmt.Printf("  %s  %-10s %s\n", t.ID, t.Status, t.Description)
+	for i, j := range list {
+		fmt.Println(taskLine(s, i+1, j, st.panel))
 	}
+	fmt.Println(s.Dim("  /tasks view <n> shows one · /tasks kill <n> stops a background one"))
+}
+
+// taskLine is one numbered row of /tasks.
+func taskLine(s ui.Style, n int, j jobRow, p *workPanel) string {
+	mark := map[string]string{"running": "●", "completed": "✓", "failed": "✕"}[j.Status]
+	if mark == "" {
+		mark = "○"
+	}
+	where := "background"
+	if !j.Background {
+		where = "foreground"
+	}
+	status := j.Status
+	if j.ExitCode != nil {
+		status += fmt.Sprintf(" (exit code %d)", *j.ExitCode)
+	}
+	took := p.now().Sub(j.Started)
+	if !j.running() {
+		took = p.endedAt(j).Sub(j.Started)
+	}
+	meta := []string{where, status, elapsedText(took)}
+	if j.TokensIn > 0 {
+		meta = append(meta, fmt.Sprintf("%d tokens in", j.TokensIn))
+	}
+	return fmt.Sprintf("  %2d  %s %-16s %s  %s", n, mark, j.Kind, sanitizeLine(j.Title), s.Dim(strings.Join(meta, " · ")))
 }
 
 // slashTasks is /tasks.

@@ -223,7 +223,7 @@ surface can host:
 
 | Surface | Most it runs | Notes |
 |---|---|---|
-| CLI, interactive | `auto` | results are drawn at the prompt; a wake waits while you are typing; `/tasks`, `/tasks cancel <id\|all>`, `/wake` |
+| CLI, interactive | `auto` | `auto` unless a file sets `subagents.wake`; results are drawn at the prompt; a wake waits while you are typing; the work list under the input, `/tasks` (`view`, `kill`, `cancel <id\|all>`), `/wake` |
 | CLI, `-p`; `abhed eval`; unattended server runs and schedules | `off` | the run, its exit code and `OnEnd` wait for the tasks |
 | `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; `POST /v1/sessions/{id}/wake` switches it |
 | `abhed acp` | `notify` | a task has a card of its own, completed by its result |

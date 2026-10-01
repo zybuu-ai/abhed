@@ -50,6 +50,8 @@ type cliState struct {
 	// dynamic are the run-time slash command sources, looked up after the
 	// built-ins; see slashSource.
 	dynamic []slashSource
+	// panel lists the conversation's subagents and background jobs.
+	panel *workPanel
 	// surface is the session's ui.Surface, once the terminal UI provides one.
 	surface ui.Surface
 	// surfaceReadsLines is set while surface is the prompt's line surface,

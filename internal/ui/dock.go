@@ -107,6 +107,16 @@ type dock struct {
 	detected func(theme string, sync int)
 	hotkeys  map[string]func()
 	extEdit  func(string) (string, error)
+
+	// work lists the conversation's subagents and jobs under the input;
+	// workSel is the selected one's ID, "" for the conversation itself.
+	work     func() []WorkRow
+	workSel  string
+	workOpen func(id string)
+	workSend func(id, text string) bool
+	ticks    int
+	// workShown is whether the last tick found the panel on screen.
+	workShown bool
 }
 
 type readResult struct {
@@ -261,11 +271,17 @@ func (d *dock) key(k key, at time.Time) func() {
 		return nil
 	case kUp:
 		if !k.alt && !k.ctrl {
+			if d.workNav() && d.moveWork(-1) {
+				return nil
+			}
 			d.up()
 		}
 		return nil
 	case kDown:
 		if !k.alt && !k.ctrl {
+			if d.workNav() && d.moveWork(+1) {
+				return nil
+			}
 			d.down()
 		}
 		return nil
@@ -459,6 +475,9 @@ func (d *dock) escape(at time.Time) func() {
 	case d.help:
 		d.help = false
 		return nil
+	case d.workSel != "" && d.buf.empty():
+		d.workSel = "" // back to the conversation
+		return nil
 	case d.busy:
 		select {
 		case d.stops <- struct{}{}:
@@ -520,7 +539,19 @@ func (d *dock) enter() func() {
 	if strings.TrimSpace(out) == "" {
 		d.buf.reset()
 		d.afterEdit()
+		if r, ok := d.selectedRow(); ok && d.workOpen != nil {
+			open := d.workOpen
+			return func() { go open(r.ID) } // the view waits on keys this goroutine reads
+		}
 		return nil
+	}
+	if r, ok := d.selectedRow(); ok && d.workSend != nil && !mainOnly(out) {
+		d.hist.AddStored(out, shown)
+		d.hpos = len(d.hist.Entries())
+		d.buf.reset()
+		d.help = false
+		d.closeMenu()
+		return d.sendTo(r, shown, out)
 	}
 	// On disk a large paste stays its placeholder: the whole of it is for
 	// this session's Up, not for a file that outlives it.
@@ -536,6 +567,35 @@ func (d *dock) enter() func() {
 	}
 	d.push(readResult{out, nil})
 	return nil
+}
+
+// mainOnly reports whether a line is for the session whatever is selected:
+// a command or a shell line.
+func mainOnly(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "/") || strings.HasPrefix(t, "!")
+}
+
+// sendTo hands a message to the selected row's agent, after the lock is
+// released; one it cannot take goes to the conversation as typed.
+func (d *dock) sendTo(r WorkRow, shown, out string) func() {
+	send := d.workSend
+	return func() {
+		took := r.Target && send(r.ID, out)
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		switch {
+		case took:
+			d.commitItem(&promptBlock{text: shown, prompt: d.st.Dim("@"+oneLine(orStr(r.Kind, "task"))) + " " + d.promptText()})
+		case d.busy:
+			d.queued = append(d.queued, shown)
+			d.push(readResult{out, nil})
+		default:
+			d.echo(shown)
+			d.push(readResult{out, nil})
+		}
+		d.draw()
+	}
 }
 
 // remember adds s to the history and stops browsing it.
@@ -1177,6 +1237,11 @@ func (d *dock) layout(w int) (rows []string, curRow, curCol int) {
 			curRow, curCol = len(rows), pw
 		}
 	}
+	if len(line) == 0 && !d.searching {
+		if ph := d.placeholder(); ph != "" {
+			row.WriteString(d.st.Dim(truncateWidth(ph, max(w-pw, 1))))
+		}
+	}
 	rows = append(rows, row.String())
 	return rows, curRow, curCol
 }
@@ -1217,6 +1282,9 @@ func (d *dock) belowRows(w int) []string {
 		out = shortcutHelp(s, w)
 	default:
 		out = d.footerRows(w)
+		if rows := d.workRows(); len(rows) > 0 && d.dlg == nil {
+			out = append(append(out, ""), workPanel(s, rows, d.workSel, w)...)
+		}
 	}
 	return out
 }

@@ -235,6 +235,13 @@ func (d *dock) tickFrame() {
 		d.hint, d.hintAt = "", time.Time{}
 		redraw = true
 	}
+	// The work panel's clocks and rows move twice a second.
+	d.ticks++
+	if d.work != nil && d.ticks%5 == 0 && len(d.live) == 0 && d.pager == nil {
+		shown := len(d.workRows()) > 0
+		redraw = redraw || shown || d.workShown
+		d.workShown = shown
+	}
 	if !resizeSignalled {
 		if w, h := d.size(); w != d.width || h != d.height {
 			d.repaint()

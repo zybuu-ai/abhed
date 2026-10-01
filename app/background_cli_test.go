@@ -161,7 +161,7 @@ func TestCLIEOFWaitsForBackground(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run: %v\n%s", err, out.String())
 	}
-	if time.Since(start) < 600*time.Millisecond || !strings.Contains(out.String(), "background: child finished (completed") {
+	if time.Since(start) < 600*time.Millisecond || !strings.Contains(out.String(), `result of "child" added to the conversation (completed`) {
 		t.Fatalf("the session ended before its background task:\n%s", out.String())
 	}
 }

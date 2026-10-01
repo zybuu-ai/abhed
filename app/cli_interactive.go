@@ -110,6 +110,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.surfaceReadsLines = true
 	}
 	ft := startFooter(editor, r, sessionState, pol, workspace)
+	// The work panel under the input lists subagents and background jobs;
+	// in the line mode only their completion notices and /tasks remain.
+	panel := newWorkPanel(r, store, editor)
+	sessionState.panel = panel
+	editor.SetWork(panel.rows, panel.view, panel.send)
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go panel.watch(stopWatch)
 	sessionState.fresh()
 	// Wake runs the background manager asks for, run by the loop below.
 	wakeCh := make(chan []string, 1)
@@ -131,7 +139,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.
-		agent.NewBackground(loop, toolset.BackgroundPolicy(sessionState.appCfg, agent.WakeAuto))
+		loop.Work = agent.NewWork()
+		agent.NewBackground(loop, toolset.BackgroundPolicy(cliWake(sessionState.appCfg), agent.WakeAuto))
 		loop.Background.SetHooks(agent.BackgroundHooks{
 			// A wake waits while something is typed: that message will carry the result.
 			CanWake: func() (bool, string) {
@@ -151,6 +160,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		})
 		sessionState.endBackground()
 		sessionState.loop, sessionState.sessionID = loop, id
+		panel.attach(loop, id)
 		sessionState.follow(store, id, r)
 		sessionState.attachHooks(loop)
 		sessionState.flushPending()
@@ -192,6 +202,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// stops painting a prompt over the output.
 		editor.Quiet(true)
 		ft.turn(true)
+		panel.turn(true)
 		ft.refresh(sessionState, pol)
 		r.StartThinking()
 		go func() {
@@ -295,6 +306,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		sessionState.waitRendered(loop.Recorder.LastAppended())
 		editor.Quiet(false)
 		ft.turn(false)
+		panel.turn(false)
 		ft.applyPending(sessionState, pol)
 		// The loop's usage covers the whole conversation; this task is the difference.
 		spent := usageSince(before, loop.Usage())
@@ -467,6 +479,16 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 		}
 	}
+}
+
+// cliWake is the configuration the terminal's background work runs under:
+// unless a file chose a wake mode, a result that arrives while the session
+// is idle starts a short run on its own, within the wake limits.
+func cliWake(cfg config.Config) config.Config {
+	if !cfg.Sets("subagents.wake") {
+		cfg.Subagents.Wake = string(agent.WakeAuto)
+	}
+	return cfg
 }
 
 // interactiveStart is what the command line gives an interactive session:
