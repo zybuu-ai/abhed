@@ -1675,7 +1675,15 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 	var a struct {
 		Path string `json:"path"`
 	}
-	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
+	if json.Unmarshal(call.Args, &a) != nil {
+		return ""
+	}
+	return l.pathHoldsSecret(a.Path)
+}
+
+// pathHoldsSecret is pathSecretRefused's check of one path, "" when it passes.
+func (l *Loop) pathHoldsSecret(path string) string {
+	if path == "" {
 		return ""
 	}
 	red := l.Recorder.redactor()
@@ -1684,7 +1692,7 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 	}
 	const unreadable = "refused by the check that keeps stored secrets out of file names: the secrets store could not be read, so the path cannot be checked"
 	if f, ok := red.(interface{ FindInPath(string) (string, bool) }); ok {
-		if label, found := f.FindInPath(a.Path); found {
+		if label, found := f.FindInPath(path); found {
 			if label == "" {
 				return unreadable
 			}
@@ -1692,7 +1700,7 @@ func (l *Loop) pathSecretRefused(call model.ToolCall) string {
 		}
 		return ""
 	}
-	quoted, _ := json.Marshal(a.Path)
+	quoted, _ := json.Marshal(path)
 	if out := red.Redact(quoted); out == nil {
 		return unreadable
 	} else if string(out) != string(quoted) {
