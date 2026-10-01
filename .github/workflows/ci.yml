@@ -117,9 +117,9 @@ jobs:
 
       # The end-to-end CLI tests are evidence only if they ran. A test may
       # skip only as pending on an item listed here, each still being built:
-      # "editor", fixes to the line editor (keys typed before raw mode, and a
-      # data race when typing while output arrives). Delete an item once it
-      # lands, and its tests must then pass. "netns" is this runner, which
+      # "editor", a fix to the line editor (a data race when typing while
+      # output arrives). Delete an item once it lands, and its tests must
+      # then pass. "netns" is this runner, which
       # cannot unshare a network namespace for the statusline; the sandbox
       # job below runs those tests and lets none skip.
       - name: End-to-end CLI tests actually ran

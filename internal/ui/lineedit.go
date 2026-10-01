@@ -96,6 +96,7 @@ func NewLineReader(prompt string) *LineReader {
 	if err != nil {
 		return &LineReader{fallbck: bufio.NewReader(os.Stdin)}
 	}
+	typed := typedBeforeRaw(os.Stdin)
 	// The theme: the one saved with /theme, else what the environment says,
 	// else what this terminal said about its background — remembered from
 	// before, or asked now. The question is sent either way when the theme
@@ -115,7 +116,6 @@ func NewLineReader(prompt string) *LineReader {
 	if cached.Sync != nil {
 		syncMode = *cached.Sync
 	}
-	var typed []byte
 	if auto && cached.Theme != "" {
 		theme = cached.Theme
 	}
@@ -125,7 +125,7 @@ func NewLineReader(prompt string) *LineReader {
 			wait = 0 // what is known is used now; the answer refreshes it
 		}
 		t, sy, rest := probeTerminal(os.Stdin, os.Stdout, wait)
-		typed = rest
+		typed = append(typed, rest...)
 		if auto && t != "" {
 			theme = t
 			rememberTerminal(t, -1)
@@ -674,6 +674,30 @@ var startedOnTerminal = func() bool {
 }()
 
 func newBufReader(in io.Reader) *bufio.Reader { return bufio.NewReaderSize(in, 64*1024) }
+
+// typedBeforeRaw takes the keys already waiting when raw mode starts. The
+// cooked terminal queued them and turned each Enter into a line feed, which
+// the editor reads as Ctrl-J, so they are given back as Enters.
+func typedBeforeRaw(f *os.File) []byte {
+	ready := readyFunc(f)
+	if ready == nil {
+		return nil
+	}
+	var b []byte
+	tmp := make([]byte, 4096)
+	for len(b) < 64*1024 && ready(0) {
+		n, err := f.Read(tmp)
+		b = append(b, tmp[:n]...)
+		if err != nil || n == 0 {
+			break
+		}
+	}
+	return cookedEnters(b)
+}
+
+// cookedEnters turns the line feeds a cooked terminal made of Enter back
+// into carriage returns.
+func cookedEnters(b []byte) []byte { return bytes.ReplaceAll(b, []byte{'\n'}, []byte{'\r'}) }
 
 // dumbTerminal reports a terminal that says it cannot move the cursor:
 // TERM=dumb, or no TERM at all outside Windows, whose consoles do not set

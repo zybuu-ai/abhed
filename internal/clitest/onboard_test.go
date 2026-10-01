@@ -31,13 +31,10 @@ func TestBudgetStartupWithSlowPodman(t *testing.T) {
 	AssertWithin(t, "startup, warm", warm, Budgets.StartupWarm)
 }
 
-// A task typed before the prompt is drawn is not lost. The text survives;
-// the Enter arrives through the cooked terminal as a line feed, which the
-// line editor reads as Ctrl-J, so the task waits for another Enter, until
-// the line editor is fixed.
+// A task typed before the prompt is drawn is not lost, and its Enter, which
+// the cooked terminal turned into a line feed, still submits it.
 func TestKeysTypedDuringStartup(t *testing.T) {
 	t.Parallel()
-	Pending(t, "editor", "an Enter typed before raw mode arrives as Ctrl-J")
 	h := StartRun(t, Opts{Script: `text "got it"`, Podman: "sleep 1; exit 1"})
 	h.Type("early task\r")
 	h.WaitOutput("got it")

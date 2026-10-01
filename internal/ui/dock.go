@@ -612,11 +612,16 @@ func (d *dock) remember(s string, persist bool) {
 // pasting reports whether more input is already waiting: an Enter followed
 // at once by more keys is a newline inside a paste, not a submit. A person
 // cannot press another key within milliseconds of Enter.
+//
+// What follows must be text, though: an escape sequence straight after the
+// Enter is a key or a terminal's late answer to a startup question, and
+// counting that made the first Enter a newline.
 func (d *dock) pasting() bool {
-	if d.kr.br.Buffered() > 0 {
-		return true
+	if d.kr.br.Buffered() == 0 && (d.kr.ready == nil || !d.kr.ready(5*time.Millisecond)) {
+		return false
 	}
-	return d.kr.ready != nil && d.kr.ready(5*time.Millisecond)
+	next, err := d.kr.br.Peek(1)
+	return err == nil && next[0] != 0x1b
 }
 
 // promptText is the prompt as drawn: the standard one in the current
