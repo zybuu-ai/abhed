@@ -198,6 +198,9 @@ func summarizeArgsRel(tool string, raw json.RawMessage, rel func(string) string)
 		}
 		return fmt.Sprintf("%q", str("pattern"))
 	case "bash":
+		if bg, _ := m["run_in_background"].(bool); bg {
+			return truncate(str("command"), 120) + " (in the background)"
+		}
 		return truncate(str("command"), 120)
 	case "task":
 		return str("description")

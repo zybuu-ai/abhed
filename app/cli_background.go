@@ -141,7 +141,11 @@ func taskLine(s ui.Style, n int, j jobRow, p *workPanel) string {
 	if j.TokensIn > 0 {
 		meta = append(meta, fmt.Sprintf("%d tokens in", j.TokensIn))
 	}
-	return fmt.Sprintf("  %2d  %s %-16s %s  %s", n, mark, j.Kind, sanitizeLine(j.Title), s.Dim(strings.Join(meta, " · ")))
+	title := sanitizeLine(j.Title)
+	if cmd := sanitizeLine(j.Command); cmd != "" && cmd != title {
+		title += " " + s.Dim("$ "+truncateRunes(cmd, 80))
+	}
+	return fmt.Sprintf("  %2d  %s %-16s %s  %s", n, mark, sanitizeLine(j.Kind), title, s.Dim(strings.Join(meta, " · ")))
 }
 
 // slashTasks is /tasks.
@@ -168,4 +172,12 @@ func slashWake(ctx context.Context, fields []string, r *ui.Renderer,
 	}
 	fmt.Printf("  %s\n", s.Dim("wake: "+fields[1]))
 	return false
+}
+
+// truncateRunes keeps s to n characters, marking a cut with "…".
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }

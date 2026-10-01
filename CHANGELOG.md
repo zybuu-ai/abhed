@@ -66,10 +66,12 @@ All notable changes to Abhed are recorded here. The format follows
 - The interactive approval can no longer be answered by a key pressed as it
   appears. No key, arrows and Enter included, counts for the first 300 ms the
   question is on screen; a number counts only with 300 ms of quiet on either
-  side, so typing or a key held down never answers; Enter needs 300 ms since
-  the last arrow; and nothing is selected at first, so Enter alone answers
-  nothing. Approvals are answered by number only, in the dialog and in the
-  line mode alike: no letter approves. Only the answers offered can be
+  side, so typing or a key held down never answers, and a number that fails
+  this chooses nothing and leaves nothing selected; nothing is selected at
+  first; no letter moves the selection (`j` and `k` did); and Enter never
+  approves: on a highlighted No it declines, on a Yes it answers nothing.
+  Approvals are answered by number only, in the dialog and in the line mode
+  alike: no letter approves. Only the answers offered can be
   chosen. A destructive command needs a second, numbered Yes, whose default
   is No. Every other question the CLI asks is numbered too, the workspace
   trust prompt included (1 don't trust, 2 trust, 3 view): no letter or word
@@ -123,8 +125,10 @@ before upgrading.
    `abhed acp` (Abhed Studio and other editors): when a background task
    finishes while the session is idle, the agent continues with the result
    on its own, and spends tokens doing so. Set
-   `"subagents": {"wake": "notify"}` to restore 1.2.2's behaviour; the
-   managed configuration can hold it there. `abhed rpc` and the SDK still
+   `"subagents": {"wake": "notify"}` to restore 1.2.2's behaviour; a
+   managed configuration that does not set it gets the new default, so
+   admins who relied on the old behaviour should pin it there before
+   upgrading. `abhed rpc` and the SDK still
    default to `off`.
 4. **Next-prompt suggestions are on by default.** Each completed turn makes
    one extra model call, recorded as a `model.call` with
@@ -293,11 +297,19 @@ Also:
 - After a turn completes, the terminal, the workbench, the console and Abhed
   Studio suggest a next prompt: the input shows it dimmed, Tab (or → on the
   empty line in the terminal) puts it in the input, and it is never sent on
-  its own. One small model call makes it, from the record's redacted text;
-  the call is recorded as a `model.call` with `purpose: suggestion` and
-  counted in the session's tokens and budget, and the suggestion as the new
-  `suggestion.offered` event. The text is cleaned of control and format
-  characters and capped at 80 characters. None is made for `-p`, `rpc`,
+  its own. One small model call makes it, from the record's redacted text,
+  after the turn has ended: the end, the reply and the prompt never wait for
+  it, and the next prompt, a wake, typing or closing the session cancels it.
+  It is recorded after the run's `session.ended` (marked `suggesting`) as the
+  new `suggestion.offered` event, then the call as a `model.call` with
+  `purpose: suggestion`, counted in the session's tokens and budget. The text is cleaned of control and format
+  characters and capped at 80 characters. The call asks for low reasoning
+  effort and thinking off wherever the provider takes them, and asks once
+  more without them if the model refuses. None is offered that tells
+  anyone to ignore, bypass or override a policy, an approval, a rule, the
+  sandbox or safety, suggests something destructive (delete, `rm -rf`,
+  force-push, drop, wipe, disable), or asks to print, show or send a secret: it is model text, which what the agent
+  read can shape, and it is never sent unless the person sends it. None is made for `-p`, `rpc`,
   unattended runs, or after an error, a stop or while an approval waits.
   `suggest.enabled` turns it off (a managed `false` binds) and
   `suggest.model` names a cheaper provider; the SDK opts in with
@@ -661,11 +673,16 @@ Also:
 
 ### Changed
 
+- In the terminal, Esc and Ctrl-C now say what they left: Esc ends the turn
+  and keeps background shells and tasks ("Interrupted · background shells
+  kept"), Ctrl-C stops them too ("… stopped"). Both still end as
+  `user_interrupt`; `session.ended` gains `detail` to tell them apart.
 - A background task that finishes while the session is idle now wakes the
   agent: `subagents.wake` defaults to `auto` (it was `notify`), so the agent
   continues with the result on its own instead of waiting for your next
   message. The usual limits hold: `subagents.max_wakes_per_hour`,
-  `subagents.wake_max_turns`, a stop holds wakes until your next message,
+  `subagents.wake_max_turns`, a stop holds wakes until your next message
+  (stopping one task with `/tasks kill` or a task's stop included),
   asks still come to you, and only the session's own tasks wake it. Set
   `"wake": "notify"` for the old behaviour; the managed configuration can
   hold it there. The console and workbench draw the woken turn live, marked

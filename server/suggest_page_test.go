@@ -46,7 +46,7 @@ El.prototype.dispatchEvent = function(e){ (this.dispatched = this.dispatched || 
 	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_suggest_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's next prompt failed:\n%s", out)
 	}
-	for _, want := range []string{"case 'suggestion.offered': offerNext(", "$('q').addEventListener('keydown', takeNext);"} {
+	for _, want := range []string{"case 'suggestion.offered': if(!live && !$('q').value) offerNext(", "$('q').addEventListener('keydown', takeNext);"} {
 		if !strings.Contains(ideHTML, want) {
 			t.Errorf("the workbench lost %s", want)
 		}

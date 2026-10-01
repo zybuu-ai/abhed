@@ -172,8 +172,8 @@ type Options struct {
 	HostWake func(taskIDs []string, run func(ctx context.Context) (string, error)) bool
 
 	// Suggest offers a next prompt after each completed Run, as a
-	// suggestion.offered event, when the configuration's suggest.enabled
-	// allows it. Off by default: it is one more model call per Run.
+	// suggestion.offered event after Run returns, when the configuration's
+	// suggest.enabled allows it. Off by default: one more model call per Run.
 	Suggest bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks

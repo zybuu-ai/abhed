@@ -3,30 +3,34 @@ package app
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
-// A completed turn sends the editor a next prompt in the turn's last update,
-// under the engine's _meta key, and initialize lists the feature.
+// A completed turn sends the editor a next prompt after the reply that ends
+// the turn, under the engine's _meta key, and initialize lists the feature.
 func TestStudioSuggestionAtTurnEnd(t *testing.T) {
 	r := newStudioRig(t, "", say("The tests pass."))
 	r.model.mu.Lock()
 	r.model.suggestion = "Commit\u202e the change"
 	r.model.mu.Unlock()
 	id := r.open()
-	stop, ups := r.prompt(id, "run the tests")
+	from := r.cl.mark()
+	stop, _ := r.prompt(id, "run the tests")
 	if stop != "end_turn" {
 		t.Fatalf("stop %q", stop)
 	}
 	var got []string
-	for _, u := range ups {
-		meta, _ := u["_meta"].(map[string]any)
-		ours, _ := meta[acpMetaKey].(map[string]any)
-		if s, ok := ours["suggestion"].(string); ok {
-			got = append(got, s)
-			if u["sessionUpdate"] != "agent_message_chunk" || u["content"].(map[string]any)["text"] != "" {
-				t.Fatalf("the suggestion rides an empty message chunk: %v", u)
+	for deadline := time.Now().Add(10 * time.Second); len(got) == 0 && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		for _, u := range updates(r.cl.since(from)) {
+			meta, _ := u["_meta"].(map[string]any)
+			ours, _ := meta[acpMetaKey].(map[string]any)
+			if s, ok := ours["suggestion"].(string); ok {
+				got = append(got, s)
+				if u["sessionUpdate"] != "agent_message_chunk" || u["content"].(map[string]any)["text"] != "" {
+					t.Fatalf("the suggestion rides an empty message chunk: %v", u)
+				}
 			}
 		}
 	}

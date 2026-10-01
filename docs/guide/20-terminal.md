@@ -44,11 +44,15 @@ in the terminal to avoid that.
 
 **A suggested next prompt.** When a turn completes, the input shows a dimmed
 guess at what you may ask next, such as *Run the tests*. Tab, or → on the
-empty line, puts it in the input to edit or send; it is never sent for you,
+empty line, puts it in the input to edit or send. It is the model's text, and
+none is offered that urges past a safeguard or towards something destructive
+([Configuration](02-configuration.md#suggestions)); it is never sent for you,
 and Enter on an empty line still sends nothing. Typing anything dismisses it,
 and the next turn replaces it. It comes from one small model call after the
-turn, which the record keeps as a `model.call` with `purpose: suggestion` and
-counts in the session's tokens and budget. None is made after an error or a
+turn has ended, so the prompt is back at once and the suggestion appears a
+moment later; the record keeps it as a `model.call` with `purpose: suggestion`
+and counts it in the session's tokens and budget. Typing or the next prompt
+cancels it. None is made after an error or a
 stop, while an approval waits, while you are typing, or when no input box is
 drawn (piped input, `-p`). `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
@@ -68,10 +72,14 @@ way to the reply as soon as the reply starts.
 
 | Keys | |
 |---|---|
-| Esc | stop the turn; the session is kept |
-| Ctrl-C | on a typed line, clear it; otherwise stop the turn, and a second time exit |
+| Esc | stop the turn; the session and its background shells and tasks are kept ("Interrupted · background shells kept") |
+| Ctrl-C | on a typed line, clear it; otherwise stop the turn and its background shells and tasks ("Interrupted · background shells stopped"), and a second time exit |
 | Ctrl-O | the whole transcript, with every tool's output and every reasoning block in full |
 | Shift-Tab | the next permission mode, applied when the turn ends |
+
+Esc and Ctrl-C both end the turn as `user_interrupt`; the record's
+`session.ended` says which in `detail`: `turn interrupted, background shells
+kept` for Esc, `interrupted, background shells stopped` for Ctrl-C.
 
 What you type while it works is shown as you type it. Enter sends it as a
 steering message, applied at the agent's next step; until then it is listed
@@ -156,10 +164,11 @@ and numbered answers.
 - **3. No, and tell Abhed what to do instead** refuses it and stops the turn.
 
 **Approvals are answered by number only.** Nothing is selected when the
-question appears, Enter alone never approves, and no letter does — not `y`,
-`a` or any other. You answer with an explicit 1, 2 or 3, or by moving to a
-choice with ↑ ↓ and then pressing Enter. There is no default answer to fall
-back on. Esc means No. Ctrl-C means No at once.
+question appears, Enter never approves, and no letter does — not `y`, `a`,
+`j`, `k` or any other, and no letter moves the selection. You answer with an
+explicit 1, 2 or 3. ↑ ↓ move the highlight, but Enter on it only declines:
+on No it answers No, on a Yes it answers nothing. There is no default answer
+to fall back on. Esc means No. Ctrl-C means No at once.
 
 In the line mode (piped input, `TERM=dumb`) the same question is printed
 with its numbered answers, and only a line holding one of those numbers
@@ -175,9 +184,10 @@ A key counts as an answer only when it is meant as one:
 - no key counts until the question has been on screen for 300 ms;
 - nothing is selected at first, so Enter alone answers nothing;
 - a number counts only with 300 ms of quiet before and after it, so a number
-  in text you were typing, or a key held down, is not an answer;
-- Enter after an arrow needs 300 ms since the arrow, since the arrow is a
-  key like any other.
+  in text you were typing, or a key held down, is not an answer, and it
+  leaves nothing selected;
+- a paste is never an answer;
+- Enter, even on No, needs 300 ms since the key before it.
 
 A destructive command, such as `rm -rf`, never offers "don't ask again", and a
 Yes is followed by a second numbered question — 1 No, 2 Yes, run it — whose

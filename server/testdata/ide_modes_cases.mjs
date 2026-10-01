@@ -8,4 +8,8 @@ limitModes('default');
 check('a managed default offers default and plan: ' + on(), on() === 'default,plan' && sel.value === 'default');
 limitModes('bypass');
 check('a mode the list lacks is added and chosen: ' + on(), on() === 'plan,bypass' && sel.value === 'bypass');
+sel.value = 'plan'; sel.disabled = true;  // the open session runs in plan
+caps = {permissions: {mode: 'accept-edits'}};
+modeForNewSession();
+check('a new session starts in the configured mode, not the open one\'s: ' + sel.value, sel.value === 'accept-edits' && !sel.disabled && status.textContent === 'mode accept-edits');
 if(!ok) process.exit(1);

@@ -253,6 +253,14 @@ type Loop struct {
 	Budget *Budget
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
+	// sug is the suggestion call running after the last run ended; sugMu
+	// guards it, sugClosed and endSuggesting (set while finish records).
+	sugMu         sync.Mutex
+	sug           *pendingSuggestion
+	sugClosed     bool
+	endSuggesting bool
+	endDetail     string
+	usageMu       sync.Mutex
 
 	// Background is the session's background children; nil runs none.
 	Background *Background
@@ -572,6 +580,7 @@ func (l *Loop) Run(ctx context.Context, userPrompt string) (TerminalReason, erro
 // RunMessage is Run for a prompt that carries a client's id, which the
 // recorded user.message echoes so the client can match it.
 func (l *Loop) RunMessage(ctx context.Context, m Message) (TerminalReason, error) {
+	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
 	// Messages left queued by a run that ended first keep their place ahead
@@ -602,6 +611,7 @@ func (l *Loop) startMessage() {
 // RunQueued continues the conversation with only the queued messages, for a
 // message that arrived after the last run had already decided to end.
 func (l *Loop) RunQueued(ctx context.Context) (TerminalReason, error) {
+	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
 	if !l.hasWork() {
@@ -644,7 +654,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	}
 	for {
 		if ctx.Err() != nil {
-			return l.finish(terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 		}
 		if err := l.recordFailure(); err != nil {
 			return TermError, err
@@ -716,11 +726,11 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 					continue
 				}
 			}
-			// A message that arrived during the suggestion is answered now.
-			if reason == TermCompleted && l.offerSuggestion(ctx) && l.hasWork() {
-				continue
+			// The turn ends first; a suggestion is made after it, off the run.
+			if reason == TermCompleted {
+				return l.finishSuggesting(ctx), nil
 			}
-			return l.finish(reason), nil
+			return l.finishStopped(ctx, reason), nil
 		}
 	}
 }
@@ -1569,6 +1579,16 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	return result, ""
 }
 
+// finishStopped is finish with the detail a person's Interrupt gave, if any.
+func (l *Loop) finishStopped(ctx context.Context, reason TerminalReason) TerminalReason {
+	var in Interrupt
+	if reason == TermUserInterrupt && errors.As(context.Cause(ctx), &in) {
+		l.endDetail = in.Detail
+		defer func() { l.endDetail = "" }()
+	}
+	return l.finish(reason)
+}
+
 func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// A shutdown ends the process holding the queue, so a message accepted
 	// but not yet delivered is recorded as dropped rather than lost unseen.
@@ -1595,6 +1615,8 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
 		Background:    l.Background.Owed(),
+		Suggesting:    l.endSuggesting,
+		Detail:        l.endDetail,
 	}
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
@@ -1663,7 +1685,13 @@ func (l *Loop) contextSize() (used, window int) {
 	return n, window
 }
 
-func (l *Loop) Usage() Usage { return l.usage }
+// Usage is the session's spend so far. usageMu covers a suggestion's spend,
+// added after its run ended, against a reader while the session is idle.
+func (l *Loop) Usage() Usage {
+	l.usageMu.Lock()
+	defer l.usageMu.Unlock()
+	return l.usage
+}
 
 // flushable reports whether a buffered fragment should be emitted now.
 //

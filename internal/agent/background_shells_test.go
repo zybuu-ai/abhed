@@ -454,3 +454,52 @@ func TestSubagentCannotStartABackgroundShell(t *testing.T) {
 		t.Fatalf("the subagent's call was not refused with its reason: %+v", obs)
 	}
 }
+
+// shell_output redacts across reads: a secret split by the read cursor is
+// held back until it is whole, and a part of one left by a gap is not shown.
+func TestShellReadRedactsAcrossReads(t *testing.T) {
+	const secret = "sk-test-0123456789abcdef"
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("API_KEY", secret); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l}
+
+	sh := &shellState{}
+	first, _ := sh.redactRead(b, tools.ShellRead{Text: "key: sk-test-0123"}, false)
+	second, _ := sh.redactRead(b, tools.ShellRead{Text: "456789abcdef ok\n"}, true)
+	got := first + second
+	if strings.Contains(got, "0123") || strings.Contains(got, "abcdef") || !strings.Contains(got, "[secret:API_KEY]") || !strings.HasSuffix(got, " ok\n") {
+		t.Fatalf("across reads: %q + %q", first, second)
+	}
+
+	gap := &shellState{carry: "sk-test-01"}
+	out, skipped := gap.redactRead(b, tools.ShellRead{Text: "23456789abcdef tail, and then more output\n", Dropped: 100}, true)
+	if out != " tail, and then more output\n" || skipped != int64(len("sk-test-01"))+int64(len("23456789abcdef")) {
+		t.Fatalf("after a gap: %q, skipped %d", out, skipped)
+	}
+
+	// A redactor that cannot say what may be part of a value holds back a span.
+	l.Recorder.Redact = spanOnly{vault.Redactor()}
+	coarse := &shellState{}
+	first, _ = coarse.redactRead(b, tools.ShellRead{Text: "key: sk-test-0123"}, false)
+	second, _ = coarse.redactRead(b, tools.ShellRead{Text: "456789abcdef ok\n"}, true)
+	if got := first + second; strings.Contains(got, "0123") || !strings.Contains(got, "[secret:API_KEY] ok\n") {
+		t.Fatalf("span-only redactor across reads: %q + %q", first, second)
+	}
+	l.Recorder.Redact = vault.Redactor()
+
+	// Output that cannot start a secret is not held back while the shell runs.
+	plain := &shellState{}
+	if out, _ := plain.redactRead(b, tools.ShellRead{Text: "server ready\n"}, false); out != "server ready\n" {
+		t.Fatalf("plain output held back: %q", out)
+	}
+}
+
+// spanOnly hides a redactor's Pending and Partial.
+type spanOnly struct{ r Redactor }
+
+func (s spanOnly) Redact(b []byte) []byte { return s.r.Redact(b) }
+func (s spanOnly) Span() int              { return s.r.Span() }

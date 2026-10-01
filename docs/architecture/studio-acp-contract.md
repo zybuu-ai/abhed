@@ -196,17 +196,26 @@ No invented prices.
 
 ### 3.4a Next-prompt suggestion
 
-When a turn completes, the engine may send, before the `session/prompt`
+When a turn completes, the engine may send, after the `session/prompt`
 reply, one `agent_message_chunk` with empty text that carries
 `_meta["zybuu.ai/abhed"] = {suggestion: string}`: a guess at what the person
 may ask next, one line of at most 80 characters with control and format
-characters removed. Studio shows it as the chat input's dimmed placeholder,
+characters removed, never one that urges past a safeguard (ignore, bypass or
+override a policy, an approval, a rule, the sandbox) or towards a
+destructive action (delete, `rm -rf`, force-push, drop, wipe, disable), or
+one that asks to show a secret. It is
+model text: Studio never sends it unless the person does. Studio shows it as the chat input's dimmed placeholder,
 puts it in the input on Tab, and never sends it on its own; typing or the
-next turn clears it. None is sent after an error or a cancel, while an
-approval waits, on a replay (`session/load`), or when `suggest.enabled` is
-false. It is recorded as `suggestion.offered`, after a `model.call` with
-`purpose: "suggestion"`, whose `usage_update` is not sent (it is no measure of
-the context). `features` lists `suggestions`. Studio's own change is separate
+next turn clears it. The suggestion is made after the turn has ended, so
+the reply never waits for it: it arrives as a `session/update` once the
+prompt has returned `end_turn`, usually within a few seconds, and the next
+`session/prompt`, a wake or `session/close` cancels it. Studio offers it only
+while that session has no prompt running and its input is empty. None is
+sent after an error or a cancel, while an approval waits, on a replay
+(`session/load`), or when `suggest.enabled` is false. It is recorded as
+`suggestion.offered` after the run's `session.ended`, followed by a
+`model.call` with `purpose: "suggestion"`, whose `usage_update` is not sent
+(it is no measure of the context). `features` lists `suggestions`. Studio's own change is separate
 from the engine.
 
 ### 3.5 Images
@@ -581,6 +590,10 @@ interface TaskInfo {                 // the SDK's TaskInfo, plus
   command?: string; exit_code?: number; output_bytes?: number; last_line?: string;  // shells; redacted
 }
 ```
+
+- `description`, `summary`, `command` and `last_line` are model- or
+  tool-written: they arrive redacted and with control and hidden characters
+  shown as marked escapes (`⟨\e⟩`), the one-line fields with `⟨\n⟩` too.
 
 - A background shell is listed and cancelled as a task: its `status` is
   `running`, `exited` or `killed`, and `_abhed/tasks/changed` is sent when it

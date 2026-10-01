@@ -19,14 +19,7 @@ type wakeRuns struct {
 // starting it when given; only the session's own results trigger one.
 func (a *Agent) hookWake(host func([]string, func(context.Context) (string, error)) bool) {
 	a.loop.Background.SetHooks(agent.BackgroundHooks{
-		CanWake: func() (bool, string) {
-			a.wakes.mu.Lock()
-			defer a.wakes.mu.Unlock()
-			if a.wakes.closed {
-				return false, "closed"
-			}
-			return true, ""
-		},
+		CanWake: a.canWake,
 		Wake: func(ids []string) bool {
 			run := func(ctx context.Context) (string, error) { return a.wakeRun(ctx, ids) }
 			if host != nil {
@@ -36,6 +29,16 @@ func (a *Agent) hookWake(host func([]string, func(context.Context) (string, erro
 			return true
 		},
 	})
+}
+
+// canWake refuses a wake once Close has begun.
+func (a *Agent) canWake() (bool, string) {
+	a.wakes.mu.Lock()
+	defer a.wakes.mu.Unlock()
+	if a.wakes.closed {
+		return false, "closed"
+	}
+	return true, ""
 }
 
 // wakeRun is one wake run for the results of ids, ended early by a stop or Close.

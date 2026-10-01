@@ -477,9 +477,15 @@ func TestSettingsListsTheToolsSessionsGet(t *testing.T) {
 func TestIDEOffersOnlyAllowedModes(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
 Object.defineProperty(El.prototype, 'options', { get(){ return this.childNodes; } });
-const sel = new El('select'); const $ = () => sel;
+const sel = new El('select'), status = new El('span'); const $ = id => id === 's-mode' ? status : sel;
+let caps = null;
 for(const m of ['default', 'plan', 'accept-edits', 'auto']){ const o = new El('option'); o.value = m; sel.appendChild(o); }
 `
+	_, reset, found := strings.Cut(ideHTML, "function resetSession(){")
+	reset, _, _ = strings.Cut(reset, "\n}\n")
+	if !found || !strings.Contains(reset, "modeForNewSession();") {
+		t.Error("a new session does not go back to the configured mode")
+	}
 	if out, err := runConsoleCases(t, "ide-modes", harness, "ide_modes_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's mode selector failed:\n%s", out)
 	}

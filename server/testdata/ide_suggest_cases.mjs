@@ -29,5 +29,16 @@ check('Tab with something typed is not taken', takeNext(key('Tab')) === false &&
 q.value = '';
 render(ev(3, 'user.message', {text: 'next'}));
 check('a new turn takes the suggestion away', q.placeholder === 'Describe a change' && q.dataset.next === '');
+q.value = 'typing';
+render(ev(4, 'suggestion.offered', {text: 'Late'}));
+q.value = '';
+check('one arriving over typing is not offered', q.placeholder === 'Describe a change');
+live = true;
+render(ev(5, 'suggestion.offered', {text: 'Stale'}));
+check('one arriving during a run is not offered', q.placeholder === 'Describe a change');
+live = false; q.value = '';
+render(ev(6, 'suggestion.offered', {text: 'Then this'}));
+render(ev(7, 'subagent.ask', {tool: 'bash'}));
+check('an ask takes it away', q.placeholder === 'Describe a change');
 
 if(!ok) process.exit(1);

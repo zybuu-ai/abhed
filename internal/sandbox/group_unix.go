@@ -10,12 +10,18 @@ import (
 )
 
 // killGroup kills the process group pgid; replaced in tests.
-var killGroup = func(pgid int) error {
+var killGroup = killGroupNow
+
+// sysKill is kill(2); replaced in tests of killGroupNow.
+var sysKill = syscall.Kill
+
+// killGroupNow signals only the target groupTarget allows.
+func killGroupNow(pgid int) error {
 	target, err := groupTarget(pgid)
 	if err != nil {
 		return err
 	}
-	return syscall.Kill(target, syscall.SIGKILL)
+	return sysKill(target, syscall.SIGKILL)
 }
 
 // groupTarget is the kill(2) target for group pgid. It refuses 0 and 1 and a

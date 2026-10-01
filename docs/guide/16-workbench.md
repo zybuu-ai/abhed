@@ -85,11 +85,13 @@ tool call's arguments and output are drawn when you open it, and long output
 shows its first lines until you ask for the rest.
 
 **A suggested next prompt.** When a turn completes, the message box shows a
-guess at what you may ask next as its placeholder. Tab in the empty box puts
+guess at what you may ask next as its placeholder, a moment after the turn
+ends: the event stream stays open for it. Tab in the empty box puts
 it in the box to edit or send; it is never sent for you. Typing, sending or
 opening another session takes it away. The console's message box does the
 same. The suggestion is the model's text, so it is shown with every control
-and format character written out, as tool output is.
+and format character written out, as tool output is, and none is offered
+that urges past a safeguard or towards something destructive.
 `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
 
@@ -422,9 +424,10 @@ what holds the workspace, the policy and the sandbox. You do not need to ask
 the agent anything to get one: when there is no session, the page opens a
 *workbench session*, which has no prompt and waits. It is owned, listed and
 recorded like any other (its record starts with `session.started`), and the
-first message you send goes to it. **New session** lets you choose the
-permission mode before the next one starts; once a session is open its mode is
-shown and fixed.
+first message you send goes to it. **New session** starts in the configured
+permission mode, not the mode of the session that was open, and lets you
+choose another before it starts; once a session is open its mode is shown and
+fixed.
 
 After a restart, the terminal reopens the session it was on from its record. If
 that is not possible (the session was not closed cleanly, or is being continued

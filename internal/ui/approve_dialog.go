@@ -96,6 +96,9 @@ func (a *DialogApprover) header(tool string, args json.RawMessage) string {
 		} else if sum != cmd {
 			sum += " …" // more lines follow, shown in full below
 		}
+		if inBackground(args) {
+			return toolTitle(tool) + "(" + sum + ") · in the background"
+		}
 	}
 	if sum == "" {
 		return toolTitle(tool)
@@ -115,6 +118,16 @@ func (a *DialogApprover) showScope(scope string) string {
 		inner = a.rel(inner)
 	}
 	return VisibleLine(scope[:open+1] + inner + scope[close:])
+}
+
+// inBackground reports a bash call that asks to run in the background.
+func inBackground(args json.RawMessage) bool {
+	var m map[string]any
+	if json.Unmarshal(args, &m) != nil {
+		return false
+	}
+	bg, _ := m["run_in_background"].(bool)
+	return bg
 }
 
 func str(args json.RawMessage, key string) string {
@@ -152,6 +165,9 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 	case "bash":
 		body = append(body, viewBlock(&commandBlock{command: Visible(str(args, "command"))}))
 		question = "Run this command?"
+		if inBackground(args) {
+			question = "Run this command in the background? It goes on after this call, until it ends, is stopped or reaches its time limit."
+		}
 	case "edit", "write":
 		path := str(args, "path")
 		if d := a.proposed(tool, args); d != nil {

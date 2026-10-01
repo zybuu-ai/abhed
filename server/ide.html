@@ -1174,7 +1174,7 @@ function resetSession(){
   clear($('hawkeye')); clear($('changes'));
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
-  $('mode').disabled = false; $('mode').title = 'Permission mode for the next session'; if(caps && $('mode').selectedOptions[0] && $('mode').selectedOptions[0].disabled) limitModes(caps.permissions.mode);
+  modeForNewSession();
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
@@ -1579,7 +1579,7 @@ function render(ev){
   if(ev.type === 'agent.delta' ? pendThink : ev.type === 'agent.reasoning.delta' ? pendText : true) flushStream();
   logEvent(ev, p);
   switch(ev.type){
-  case 'suggestion.offered': offerNext(p.text || ''); break;
+  case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
   case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
@@ -1656,7 +1656,7 @@ function render(ev){
     streaming = streamBody = null; if(!live){ if(bgLive) setLive(true); recheckSoon(); } if(live) waiting('Thinking'); break; }
   // A subagent's call waiting on you, answered as the agent's own are, by its request id.
   // Its row stays in the chat, so a reopened session shows what was decided.
-  case 'subagent.ask': { if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
+  case 'subagent.ask': { offerNext(''); if(!p.request_id){ add(el('div', 'sys bad', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
     const id = 'subagent-' + p.request_id; subagentRow(id, p, at);
     asks.set(id, {p: Object.assign({}, p, {call_id: id, tool: p.tool + ' (subagent ' + (p.subagent || '') + ')'}), rid: p.request_id, shown:false}); if(live || bgLive) offerAsks(); break; }
   case 'subagent.action': { if(!p.request_id) break; const id = 'subagent-' + p.request_id, c = subagentRow(id, p, at), ok = p.decision === 'allowed';
@@ -2286,6 +2286,12 @@ $('agent').addEventListener('keydown', e => {
   stopArmed = setTimeout(() => { stopArmed = 0; setLive(live); }, 2500);
 });
 $('mode').addEventListener('change', () => { $('s-mode').textContent = 'mode ' + $('mode').value; });
+// A new session starts in the configured mode, not the open session's; the person may pick another.
+function modeForNewSession(){
+  const sel = $('mode'); sel.disabled = false; sel.title = 'Permission mode for the next session';
+  if(caps) limitModes(caps.permissions.mode);
+  $('s-mode').textContent = 'mode ' + sel.value;
+}
 // A session may start in the server's mode or narrow to plan: offer only those.
 function limitModes(m){
   const sel = $('mode');

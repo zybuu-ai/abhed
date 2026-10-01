@@ -200,9 +200,14 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	woken := false
 	runTurn := func(start func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error)) (int, bool) {
 		loop := sessionState.loop
+		// A suggestion still being made is for a prompt no longer coming; it
+		// stops, and what it recorded is drawn before the turn clears it.
+		loop.StopSuggestion()
+		sessionState.waitRendered(loop.Recorder.LastAppended())
 		// Each task gets its own cancellable context so Ctrl-C interrupts the
 		// task without killing the session.
-		taskCtx, cancelTask := context.WithCancel(ctx)
+		taskCtx, cancelCause := context.WithCancelCause(ctx)
+		cancelTask := func() { cancelCause(nil) }
 		before := loop.Usage()
 		sessionState.undo.BeginTurn()
 
@@ -236,8 +241,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			select {
 			case <-editor.Stops():
 				// Esc stops the turn and keeps the session: unlike Ctrl-C it
-				// never counts toward exiting.
-				cancelTask()
+				// never counts toward exiting. Background shells and tasks go on.
+				cancelCause(agent.Interrupt{Detail: agent.InterruptKept})
 			case <-interruptCh:
 				// Ctrl-C stops the turn, and a pending approval with it: its
 				// wait ends on the cancelled context, so the call is refused.
@@ -248,7 +253,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					fmt.Printf("  %s\n", s.Dim("interrupted again — exiting"))
 				}
 				go loop.Background.CancelAll(agent.TermUserInterrupt)
-				if code, stopped := interruptTurn(interrupts, cancelTask, finished, exitGrace); code != 0 {
+				stop := func() { cancelCause(agent.Interrupt{Detail: agent.InterruptStopped}) }
+				if code, stopped := interruptTurn(interrupts, stop, finished, exitGrace); code != 0 {
 					endOnExit(sessionState, stopped)
 					return code, true
 				}

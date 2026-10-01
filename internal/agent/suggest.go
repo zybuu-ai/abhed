@@ -8,6 +8,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -20,6 +22,9 @@ const PurposeSuggestion = "suggestion"
 
 // SuggestMaxChars caps a suggestion, in characters.
 const SuggestMaxChars = 80
+
+// suggestMaxTokens leaves a reasoning model room to think before its one line.
+const suggestMaxTokens = 1024
 
 // SuggestionOffered is what the person may ask next, as one short line.
 type SuggestionOffered struct {
@@ -47,21 +52,39 @@ const suggestSystem = "You predict the next message a person will send to a codi
 	"no quotes, no markdown, written as the person would type it, in the same language the person writes in. " +
 	"If no follow-up is natural, reply with NONE."
 
-// offerSuggestion records a suggestion for the run that just completed, when
-// the loop has a Suggester and nothing else is due, and reports whether it
-// asked the model. It never fails the run.
-func (l *Loop) offerSuggestion(ctx context.Context) bool {
+// pendingSuggestion is a suggestion call running after its run ended.
+type pendingSuggestion struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// suggestJob is what a suggestion call needs, taken while the run still
+// holds the conversation.
+type suggestJob struct {
+	sg      *Suggester
+	adapter model.Adapter
+	req     model.Request
+	timeout time.Duration
+	turn    int
+}
+
+// planSuggestion decides, as a completed run ends, whether a suggestion
+// follows it, and builds its request; nil offers none.
+func (l *Loop) planSuggestion(ctx context.Context) *suggestJob {
 	sg := l.Suggest
 	if sg == nil || l.depth > 0 || l.wakeCap > 0 || ctx.Err() != nil || l.hasWork() ||
 		l.Background.dueSoon() || l.Budget.Exhausted() || len(l.askQueue(context.Background())) > 0 {
-		return false
+		return nil
 	}
 	if sg.Hold != nil && sg.Hold() {
-		return false
+		return nil
 	}
+	l.sugMu.Lock()
+	closed := l.sugClosed
+	l.sugMu.Unlock()
 	input := l.suggestInput()
-	if input == "" {
-		return false
+	if closed || input == "" {
+		return nil
 	}
 	a := sg.Adapter
 	if a == nil {
@@ -71,46 +94,187 @@ func (l *Loop) offerSuggestion(ctx context.Context) bool {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	req := model.Request{
 		System:    suggestSystem,
 		Messages:  []model.Message{{Role: model.RoleUser, Content: input}},
-		MaxTokens: 256,
+		MaxTokens: suggestMaxTokens,
 	}
-	if l.Config.Effort != model.EffortNone {
+	// Thinking off and the least effort, wherever the provider takes them,
+	// whatever the session's own effort: a reasoning model spends the cap otherwise.
+	prof := a.Profile().Sampling
+	if prof.Think {
+		off := false
+		req.Params.Think = &off
+	}
+	if prof.Effort {
 		req.Effort = model.EffortLow
 	}
+	return &suggestJob{sg: sg, adapter: a, req: req, timeout: timeout, turn: l.turns}
+}
+
+// finishSuggesting ends a completed run, then starts its suggestion off the
+// run, so the end, the reply and the prompt never wait for it.
+func (l *Loop) finishSuggesting(ctx context.Context) TerminalReason {
+	j := l.planSuggestion(ctx)
+	l.endSuggesting = j != nil
+	reason := l.finish(TermCompleted)
+	l.endSuggesting = false
+	if j == nil {
+		return reason
+	}
+	sctx, cancel := context.WithCancel(context.Background())
+	p := &pendingSuggestion{cancel: cancel, done: make(chan struct{})}
+	l.sugMu.Lock()
+	if l.sugClosed {
+		l.sugMu.Unlock()
+		cancel()
+		close(p.done)
+		return reason
+	}
+	l.sug = p
+	l.sugMu.Unlock()
+	go l.makeSuggestion(sctx, p, j)
+	return reason
+}
+
+// StopSuggestion cancels a suggestion still being made and waits a moment
+// for it to end. The next run, a wake, a fork and Close call it first.
+func (l *Loop) StopSuggestion() { l.stopSuggestion(false) }
+
+// closeSuggestions stops the suggestion and refuses later ones; one that
+// ends after this records nothing.
+func (l *Loop) closeSuggestions() { l.stopSuggestion(true) }
+
+func (l *Loop) stopSuggestion(closing bool) {
+	l.sugMu.Lock()
+	p := l.sug
+	if closing {
+		l.sugClosed = true
+	}
+	l.sugMu.Unlock()
+	if p == nil {
+		return
+	}
+	p.cancel()
+	// Bounded: it needs the conversation to record, and a caller that holds
+	// it must not wait forever.
+	t := time.NewTimer(2 * time.Second)
+	defer t.Stop()
+	select {
+	case <-p.done:
+	case <-t.C:
+	}
+}
+
+// WaitSuggestion waits, until ctx ends, for a suggestion still being made
+// to be recorded or dropped.
+func (l *Loop) WaitSuggestion(ctx context.Context) {
+	l.sugMu.Lock()
+	p := l.sug
+	l.sugMu.Unlock()
+	if p == nil {
+		return
+	}
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+	}
+}
+
+// makeSuggestion records, once the conversation is free, the suggestion if
+// still wanted, then its model.call; a refused write fails no run.
+func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *suggestJob) {
+	defer close(p.done)
+	defer p.cancel()
+	sg := j.sg
+	// Typing the next prompt, or an ask put to the person, stops the call.
+	go func() {
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if l.suggestionHeld(sg) {
+					p.cancel()
+					return
+				}
+			}
+		}
+	}()
+	cctx, cancel := context.WithTimeout(ctx, j.timeout)
 	start := time.Now()
-	text, usage, err := suggestCall(cctx, a, req)
-	mc := ModelCall{Turn: l.turns, Model: a.Profile().Name, Purpose: PurposeSuggestion,
+	text, usage, err := suggestCall(cctx, j.adapter, j.req)
+	// A model that refuses the reasoning settings is asked once more without them.
+	if err != nil && cctx.Err() == nil && (j.req.Effort != model.EffortNone || j.req.Params.Think != nil) {
+		plain := j.req
+		plain.Effort, plain.Params.Think = model.EffortNone, nil
+		var more model.Usage
+		text, more, err = suggestCall(cctx, j.adapter, plain)
+		usage.InputTokens += more.InputTokens
+		usage.OutputTokens += more.OutputTokens
+		usage.CachedInputTokens += more.CachedInputTokens
+	}
+	cancel()
+	took := time.Since(start)
+
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
+	l.sugMu.Lock()
+	closed := l.sugClosed
+	if l.sug == p {
+		l.sug = nil
+	}
+	l.sugMu.Unlock()
+	if closed {
+		return
+	}
+	mc := ModelCall{Turn: j.turn, Model: j.adapter.Profile().Name, Purpose: PurposeSuggestion,
 		TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens, TokensCached: usage.CachedInputTokens,
-		CacheReported: usage.CacheReported, LatencyMS: time.Since(start).Milliseconds()}
+		CacheReported: usage.CacheReported, LatencyMS: took.Milliseconds()}
 	if err != nil && ctx.Err() == nil {
 		mc.Error = err.Error()
 	}
+	l.usageMu.Lock()
 	l.usage.InputTokens += usage.InputTokens
 	l.usage.OutputTokens += usage.OutputTokens
 	l.usage.CachedTokens += usage.CachedInputTokens
 	l.usage.ColdPrefillTokens += usage.InputTokens - usage.CachedInputTokens
+	l.usageMu.Unlock()
 	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
-	l.record(EvModelCall, ActorSystem, mc)
-	if err != nil || ctx.Err() != nil || l.hasWork() || (sg.Hold != nil && sg.Hold()) {
-		return true
+	stale := err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || l.suggestionHeld(sg)
+	if !stale {
+		if offer := l.suggestionText(sg, text); offer != "" {
+			_, _ = l.Recorder.Record(EvSuggestionOffered, ActorSystem, Trusted, SuggestionOffered{Text: offer, Turn: j.turn})
+		}
+	}
+	_, _ = l.Recorder.Record(EvModelCall, ActorSystem, Trusted, mc)
+}
+
+// suggestionHeld reports the person typing, or an ask waiting on them.
+func (l *Loop) suggestionHeld(sg *Suggester) bool {
+	return (sg.Hold != nil && sg.Hold()) || len(l.askQueue(context.Background())) > 0
+}
+
+// suggestionText is the reply as a suggestion, or "": one the redactor would
+// change is none, checked whole before cleaning cuts a long secret short.
+func (l *Loop) suggestionText(sg *Suggester, text string) string {
+	red := l.Recorder.redactor()
+	if red != nil && redactedText(red.Redact, text) != text {
+		return ""
 	}
 	if sg.Clean != nil {
 		text = sg.Clean(text)
 	}
 	text = CleanSuggestion(text)
-	if text == "" {
-		return true
+	if text == "" || red != nil && redactedText(red.Redact, text) != text {
+		return ""
 	}
-	// The record would hide a secret the model repeated; a hidden one is no suggestion.
-	if red := l.Recorder.redactor(); red != nil && redactedText(red.Redact, text) != text {
-		return true
+	if named, ok := red.(interface{ Names() []string }); ok && revealsNamedSecret(text, named.Names()) {
+		return ""
 	}
-	l.record(EvSuggestionOffered, ActorSystem, SuggestionOffered{Text: text, Turn: l.turns})
-	return true
+	return text
 }
 
 // suggestCall runs one request and returns its text and usage.
@@ -214,7 +378,7 @@ func CleanSuggestion(s string) string {
 		return ""
 	}
 	// A suggestion is something to say, never a command or a shell line.
-	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "!") {
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "!") || riskySuggestion(s) {
 		return ""
 	}
 	if r := []rune(s); len(r) > SuggestMaxChars {
@@ -225,6 +389,75 @@ func CleanSuggestion(s string) string {
 		s = strings.TrimRight(cut, " ,;:")
 	}
 	return s
+}
+
+// Words that make a suggestion risky to offer: model text, perhaps injected,
+// that urges past a safeguard or towards something destructive. Better none.
+var (
+	suggestDestructive = map[string]bool{"delete": true, "deletes": true, "deleting": true, "erase": true,
+		"wipe": true, "wiping": true, "destroy": true, "purge": true, "drop": true, "truncate": true,
+		"rm": true, "rmdir": true, "disable": true, "disabling": true, "shred": true, "mkfs": true}
+	suggestOverride = map[string]bool{"ignore": true, "ignoring": true, "bypass": true, "override": true,
+		"skip": true, "disregard": true, "circumvent": true, "evade": true, "dodge": true}
+	suggestGuarded = map[string]bool{"policy": true, "policies": true, "approval": true, "approvals": true,
+		"rule": true, "rules": true, "sandbox": true, "safety": true, "safe": true, "guard": true,
+		"guards": true, "guardrail": true, "guardrails": true, "permission": true, "permissions": true,
+		"restriction": true, "restrictions": true, "confirmation": true, "check": true, "checks": true,
+		"hook": true, "hooks": true, "deny": true, "instructions": true, "security": true}
+	suggestReveal = map[string]bool{"print": true, "show": true, "reveal": true, "echo": true, "cat": true,
+		"send": true, "display": true, "dump": true, "output": true, "paste": true, "share": true,
+		"expose": true, "leak": true, "copy": true, "email": true, "post": true, "upload": true, "tell": true,
+		"export": true, "log": true}
+	suggestSecret = map[string]bool{"key": true, "keys": true, "apikey": true, "token": true, "tokens": true,
+		"secret": true, "secrets": true, "password": true, "passwords": true, "passwd": true,
+		"credential": true, "credentials": true, "creds": true}
+	suggestPairs = [][2]string{{"force", "push"}, {"push", "force"}, {"push", "f"}, {"reset", "hard"},
+		{"git", "clean"}, {"without", "asking"}, {"auto", "approve"}, {"don", "ask"}, {"no", "verify"}}
+)
+
+// riskySuggestion reports text that tells the person or the agent to get past
+// a safeguard, to do something destructive, or to show a secret, in any case or width.
+func riskySuggestion(s string) bool {
+	words := strings.FieldsFunc(strings.ToLower(norm.NFKC.String(s)), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	override, guarded, reveal, secret := false, false, false, false
+	for i, w := range words {
+		reveal = reveal || suggestReveal[w]
+		secret = secret || suggestSecret[w]
+		if suggestDestructive[w] {
+			return true
+		}
+		override = override || suggestOverride[w]
+		guarded = guarded || suggestGuarded[w]
+		if i > 0 {
+			for _, p := range suggestPairs {
+				if words[i-1] == p[0] && w == p[1] {
+					return true
+				}
+			}
+		}
+	}
+	return override && guarded || reveal && secret
+}
+
+// revealsNamedSecret reports text that asks to show a stored secret by its name.
+func revealsNamedSecret(s string, names []string) bool {
+	low := strings.ToLower(norm.NFKC.String(s))
+	words := strings.FieldsFunc(low, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	reveal := false
+	for _, w := range words {
+		reveal = reveal || suggestReveal[w]
+	}
+	if !reveal {
+		return false
+	}
+	for _, n := range names {
+		if n != "" && strings.Contains(low, strings.ToLower(n)) {
+			return true
+		}
+	}
+	return false
 }
 
 // clipHead keeps the first n characters of s.

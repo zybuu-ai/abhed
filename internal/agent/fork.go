@@ -237,6 +237,7 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	// A task still running would go on writing into the conversation the fork

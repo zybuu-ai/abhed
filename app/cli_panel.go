@@ -24,6 +24,7 @@ type jobRow struct {
 	Agent      bool
 	Background bool
 	Title      string
+	Command    string // a shell's command, redacted
 	Activity   string
 	Status     string // running, completed, failed, cancelled
 	Reason     string
@@ -125,7 +126,7 @@ func (p *workPanel) jobs() []jobRow {
 			continue
 		}
 		j := jobRow{ID: t.ID, Kind: t.Kind, Agent: t.Kind != agent.KindShell, Background: true,
-			Title: t.Description, Activity: t.LastLine, Status: t.Status, Reason: t.Reason,
+			Title: t.Description, Command: t.Command, Activity: t.LastLine, Status: t.Status, Reason: t.Reason,
 			Started: t.Started, ExitCode: t.ExitCode, Summary: t.Summary}
 		if j.Agent {
 			j.Kind = orDefault(t.AgentType, "agent")
@@ -251,7 +252,7 @@ func (p *workPanel) view(id string) {
 	if !found {
 		return
 	}
-	title := fmt.Sprintf("%s · %s · read-only", j.Kind, sanitizeLine(j.Title))
+	title := fmt.Sprintf("%s · %s · read-only", sanitizeLine(j.Kind), sanitizeLine(j.Title))
 	_ = p.editor.Panel(context.Background(), ui.PanelSpec{Title: title,
 		Body: []ui.Block{{Kind: ui.BlockToolOut, Text: p.recordText(j)}}})
 }
@@ -269,21 +270,26 @@ func (p *workPanel) recordText(j jobRow) string {
 			return strings.TrimRight(b.String(), "\n")
 		}
 	}
-	fmt.Fprintf(&b, "%s: %s\nstatus: %s", j.Kind, j.Title, j.Status)
+	fmt.Fprintf(&b, "%s: %s\n", sanitizeLine(j.Kind), sanitizeLine(j.Title))
+	if j.Command != "" {
+		fmt.Fprintf(&b, "command: %s\n", sanitizeLine(j.Command))
+	}
+	fmt.Fprintf(&b, "status: %s", j.Status)
 	if j.ExitCode != nil {
 		fmt.Fprintf(&b, " (exit code %d)", *j.ExitCode)
 	}
 	if j.Activity != "" {
-		fmt.Fprintf(&b, "\nlast output: %s", j.Activity)
+		fmt.Fprintf(&b, "\nlast output: %s", sanitizeLine(j.Activity))
 	}
 	if j.Summary != "" {
-		fmt.Fprintf(&b, "\n\n%s", j.Summary)
+		fmt.Fprintf(&b, "\n\n%s", ui.Visible(j.Summary))
 	}
 	return b.String()
 }
 
-// sanitizeLine keeps a title to one line.
-func sanitizeLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+// sanitizeLine keeps untrusted text (a title, a shell's output) to one line
+// and shows its escape sequences and hidden characters instead of sending them.
+func sanitizeLine(s string) string { return ui.VisibleLine(strings.Join(strings.Fields(s), " ")) }
 
 // watch says, once each, when a background subagent or job ends, until
 // stop is closed. It reads what the panel reads, so it works the same in

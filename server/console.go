@@ -1186,7 +1186,7 @@ function render(ev){
   }
 
   switch(ev.type){
-    case 'suggestion.offered': offerNext(p.text || ''); break;
+    case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
     case 'user.message': {
       offerNext('');
       const b = node('said user');
@@ -1393,6 +1393,7 @@ function render(ev){
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.
     case 'subagent.ask': {
+      offerNext('');  // no suggestion beside an ask
       if(!p.request_id){ tx.appendChild(node('note', 'A subagent\'s ask arrived with no request id, so it cannot be answered here; reopen the session.')); break; }
       hideThinking();
       const id = 'subagent-' + p.request_id;

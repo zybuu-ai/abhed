@@ -262,10 +262,20 @@ sent on its own. The call reads the person's last message, the agent's final
 reply and the names of the tools used, as the record holds them (stored
 secrets redacted), and asks for one line of at most 80 characters in the
 person's language. Its reply is cleaned of control and format characters, and
-dropped if it is empty, a `/` command, a `!` shell line, or would repeat a
-stored secret. The record keeps the call as a `model.call` with
-`purpose: suggestion`, counted in the session's tokens and budget, and the
-suggestion as `suggestion.offered`.
+dropped if it is empty, a `/` command, a `!` shell line, would repeat a
+stored secret (checked on the whole reply, before it is cut), or tells you or
+the agent to ignore, bypass or override a policy, an approval, a rule, the
+sandbox or safety, suggests something destructive (delete, `rm -rf`,
+force-push, drop, wipe, disable, …), or asks to print, show, echo or send a
+secret (a stored secret's name, or a key, token, password or credential):
+better none than a risky one. A
+suggestion is the model's text, which what the agent read can shape; it is
+never sent unless you choose to send it. The call is
+made after the turn has ended, so nothing waits for it; the next prompt, a
+wake, typing or closing the session cancels it. The record keeps the
+suggestion as `suggestion.offered` after the run's `session.ended`, then the
+call as a `model.call` with `purpose: suggestion`, counted in the session's
+tokens and budget.
 
 Suggestions are on by default, so each completed turn costs one extra model
 call. If `suggest.model` names a provider on a different endpoint from the
@@ -281,7 +291,9 @@ suggestions off.
 
 None is made for `-p`, `abhed rpc`, a scheduled or unattended run, or an
 embedded agent unless it sets `Options.Suggest`; nor after an error or a
-stop, during a wake, while an approval waits, or while the person is typing.
+stop, during a wake, while an approval waits, or while the person is typing;
+an ask that arrives while it is being made stops it, and one that arrives
+after it was offered takes it away.
 
 ## Storage
 

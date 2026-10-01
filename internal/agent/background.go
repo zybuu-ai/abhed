@@ -81,6 +81,18 @@ type StopCause struct{ Reason TerminalReason }
 
 func (c StopCause) Error() string { return "stopped: " + string(c.Reason) }
 
+// Interrupt is a person's stop of a run that says what it left running; it
+// ends the run as user_interrupt, with Detail on its session.ended.
+type Interrupt struct{ Detail string }
+
+func (i Interrupt) Error() string { return "interrupted: " + i.Detail }
+
+// Interrupt details the CLI records: Esc keeps background work, Ctrl-C stops it.
+const (
+	InterruptKept    = "turn interrupted, background shells kept"
+	InterruptStopped = "interrupted, background shells stopped"
+)
+
 // ErrBackgroundLifetime is the cause a background child's deadline carries.
 var ErrBackgroundLifetime = errors.New("the background task's lifetime ran out")
 
@@ -615,6 +627,11 @@ func (b *Background) Cancel(id string, reason TerminalReason) bool {
 	b.mu.Lock()
 	t, ok := b.tasks[id]
 	running := ok && !t.ended
+	// A person's stop of one task is a stop: no result wakes the session
+	// until their next message, this one's included.
+	if running && reason == TermUserInterrupt {
+		b.stopped = true
+	}
 	b.mu.Unlock()
 	if !running {
 		return false
@@ -673,6 +690,9 @@ func waitDone(ts []*bgTask) {
 func (b *Background) Close(reason TerminalReason) {
 	if b == nil {
 		return
+	}
+	if b.loop != nil {
+		b.loop.closeSuggestions()
 	}
 	b.mu.Lock()
 	if b.closed {
@@ -941,7 +961,7 @@ func (b *Background) settleIfDue() bool {
 	if !due {
 		return false
 	}
-	end.Background, end.Settled = 0, true
+	end.Background, end.Settled, end.Suggesting = 0, true, false
 	b.loop.record(EvSessionEnded, ActorSystem, end)
 	return true
 }
@@ -974,6 +994,7 @@ type SessionWoken struct {
 // stops at the wake's turn cap as wake_limit. It has no authority a prompted
 // run lacks: the same policy, approver and scopes.
 func (l *Loop) RunWoken(ctx context.Context, w Wake) (TerminalReason, error) {
+	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
 	b := l.Background
