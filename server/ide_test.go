@@ -90,7 +90,8 @@ globalThis.__root = new El('div');
 El.prototype.addEventListener = () => {};
 globalThis.__added = []; globalThis.__logged = 0; globalThis.__changes = 0; globalThis.__agentTerm = [];
 let live = true, bgLive = false, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
-const calls = new Map(), mineCalls = new Set();
+const calls = new Map(), mineCalls = new Set(), bgTasks = new Map(), ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
+const setLive = on => { live = on; }, recheckSoon = () => {};
 const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
 const tx = () => __root;
 const logEvent = () => { __logged++; }, waiting = () => {}, settleAsk = () => {}, askApproval = () => {};
@@ -169,7 +170,7 @@ El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes
 Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
 let current = null, live = false, bgLive = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '', sessionList = [{id:'s1', prompt:'x'}];
-const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map();
+const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map(), bgTasks = new Map();
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
 const tx = () => __root, qbox = new El('div'), add = n => __root.appendChild(n);
 let cid = 0; const bubble = (cls, who, text) => { const m = new El('div'); m.className = 'msg ' + cls; m.textContent = text || ''; return m; };

@@ -362,4 +362,26 @@ fresh('s32', true);
   check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
 }
 
+// A background result wakes the session while the page sits on the open
+// stream: the woken turn is drawn as it streams, marked with the task it
+// continues from, and its ask is offered, with no reload.
+fresh('s40', false);
+{
+  render(ev(1, 'user.message', {text:'start a scan'}));
+  render(ev(2, 'subagent.spawned', {task_id:'t1', description:'scan logs', background:true}));
+  render(ev(3, 'session.ended', {reason:'completed', turns:1, background:1}));
+  check('the task shows as running', $('s-bg').hidden === false && $('s-bg').textContent.includes('scan logs'));
+  check('the page is not live between turns', live === false && bgLive === true);
+  render(ev(4, 'session.woken', {by:'policy', wake_mode:'auto', task_ids:['t1']}));
+  render(ev(5, 'subagent.notice', {task_id:'t1', description:'scan logs', status:'completed', content:'three errors'}));
+  check('the woken turn is marked with its task', __root.textContent.includes('continuing with results from scan logs'));
+  check('the woken turn is live without a reload', live === true);
+  check('the finished task leaves the running list', $('s-bg').hidden === true);
+  render(write(6));
+  check('the woken turn\'s ask is offered', open().length === 1 && open()[0].dataset.call === 'w6');
+  render(ev(7, 'action.denied', {call_id:'w6', step:'reviewer', reason:'no'}));
+  render(ev(9, 'session.ended', {reason:'completed', turns:2, background:0}));
+  check('the woken turn ends like any other', live === false);
+}
+
 if(!ok) process.exit(1);

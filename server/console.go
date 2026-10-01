@@ -493,6 +493,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 @keyframes pulse{0%,100%{height:4px;opacity:.45}50%{height:12px;opacity:1}}
 @media (prefers-reduced-motion:reduce){.thinking .bars i{animation:none;height:8px}}
 .note b{color:var(--ink-2);font-weight:500;font-variant-numeric:tabular-nums}
+.note.woke{color:var(--accent)}
 
 /* ---------------------------------------------------------------- inspector */
 .insp-sec{padding:13px 15px;border-bottom:1px solid var(--line)}
@@ -756,6 +757,7 @@ let es = null;           // EventSource
 let lastSeq = 0;         // highest seq rendered, for reconnect de-duplication
 let live = false;        // is the viewed session still running
 let bgLive = false;      // does it still have background tasks running, with no run
+const bgNames = new Map(); // background task_id -> its description
 // Approval cards awaiting a verdict, by call_id. A replayed session resolves
 // them from its own action.approved / action.denied events; anything still
 // here when the session ends was never answered.
@@ -1369,12 +1371,20 @@ function render(ev){
     }
 
     // In the turn, as its calls are, so they read before the answer that follows them.
-    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + (p.description || ''))); break;
+    case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + (p.description || '')));
+      if(p.background && p.task_id) bgNames.set(p.task_id, p.description || p.task_id); break;
     case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + (p.reason || ''))); break;
     // A background task's result entering the conversation. What it says is
     // the subagent's own summary, shown as that and never as the person's.
-    case 'subagent.notice': tx.appendChild(noticeCard(p)); break;
-    case 'session.woken': tx.appendChild(node('note', 'woke to act on background results' + (p.by === 'caller' ? ' (asked)' : ''))); break;
+    case 'subagent.notice': if(p.task_id && p.description) bgNames.set(p.task_id, p.description); tx.appendChild(noticeCard(p)); break;
+    // A turn the session started itself for finished background work: live like any other.
+    case 'session.woken': {
+      const names = (p.task_ids || []).map(id => bgNames.get(id) || id);
+      tx.appendChild(node('note woke', p.by === 'caller' ? 'continuing with background results, as asked'
+        : 'continuing with results from ' + (names.length ? names.join(', ') : 'background tasks')));
+      live = true; $('stop').hidden = false; newTurn(); showThinking('continuing');
+      break;
+    }
 
     // A subagent's call waiting on you, answered as the agent's own are, by
     // its request id. Its own calls are in its record, not drawn here.

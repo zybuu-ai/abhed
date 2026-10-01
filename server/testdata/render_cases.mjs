@@ -37,13 +37,16 @@ ok = forked && ok;
 // A background result is drawn as the subagent's result, not as a message
 // from the person; the closing end is not a second end of the run.
 tx.childNodes.length = 0;
+render({seq:129, type:'subagent.spawned', payload:{task_id:'t1', description:'scan logs', background:true}});
+live = false;
 render({seq:130, type:'subagent.notice', payload:{task_id:'t1', description:'scan logs', status:'completed', turns:3,
   delivery:'idle', content:'three errors in auth.log'}});
 render({seq:131, type:'session.woken', payload:{by:'policy', task_ids:['t1']}});
+const wokeLive = live;
 render({seq:132, type:'session.ended', payload:{reason:'completed', background:0, settled:true}});
 const bgText = tx.textContent;
 const bgOk = bgText.includes('scan logs finished (completed, 3 turns)') && bgText.includes('three errors in auth.log') &&
-  bgText.includes('the agent sees it with your next message') && bgText.includes('woke to act on background results') &&
+  bgText.includes('the agent sees it with your next message') && bgText.includes('continuing with results from scan logs') && wokeLive === true &&
   bgText.includes('background work finished') && tx.querySelectorAll('.said.user').length === 0;
 console.log((bgOk ? 'PASS' : 'FAIL') + '  a background result, a wake and the closing end are drawn as such');
 ok = bgOk && ok;

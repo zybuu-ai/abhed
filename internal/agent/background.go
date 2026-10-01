@@ -40,11 +40,11 @@ const (
 
 var wakeRank = map[WakeMode]int{WakeOff: 0, WakeNotify: 1, WakeAuto: 2}
 
-// ParseWakeMode reads a configured wake mode; empty is notify.
+// ParseWakeMode reads a configured wake mode; empty is auto.
 func ParseWakeMode(s string) (WakeMode, error) {
 	switch m := WakeMode(s); m {
 	case "":
-		return WakeNotify, nil
+		return WakeAuto, nil
 	case WakeOff, WakeNotify, WakeAuto:
 		return m, nil
 	}

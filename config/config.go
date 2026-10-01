@@ -764,8 +764,8 @@ type LimitsConfig struct {
 // SubagentsConfig is what a background subagent's result does when it
 // arrives while the session is idle.
 type SubagentsConfig struct {
-	// Wake is off, notify or auto. notify, the default, records the result
-	// for the person's next message; auto starts a short run on its own; off
+	// Wake is off, notify or auto. auto, the default, starts a short run that
+	// acts on the result; notify records it for the person's next message; off
 	// makes a run wait for its background subagents. A surface may allow
 	// less: -p, eval and unattended runs are always off.
 	Wake string `json:"wake,omitempty"`
@@ -829,7 +829,7 @@ func Default() Config {
 			MaxSubagents: 20, NestedSubagents: false,
 			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
 		},
-		Subagents: SubagentsConfig{Wake: "notify", MaxWakesPerHour: 4, WakeMaxTurns: 8},
+		Subagents: SubagentsConfig{Wake: "auto", MaxWakesPerHour: 4, WakeMaxTurns: 8},
 		Storage:   StorageConfig{Driver: "memory", Tenant: "default", MaxConns: 10},
 		// Secure by default: a cookie that would travel over plain HTTP has
 		// to be asked for. Browsers accept Secure cookies on localhost, so

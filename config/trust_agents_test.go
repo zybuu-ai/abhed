@@ -304,21 +304,23 @@ func TestAgentFileCaps(t *testing.T) {
 // the wake mode; never raise or loosen them.
 func TestWorkspaceCannotRaiseWake(t *testing.T) {
 	for _, c := range []struct {
-		file string
-		want func(Config) bool
+		user, file string
+		want       func(Config) bool
 	}{
-		{`{"subagents":{"wake":"auto"}}`, func(c Config) bool { return c.Subagents.Wake == "notify" }},
-		{`{"subagents":{"wake":"off"}}`, func(c Config) bool { return c.Subagents.Wake == "off" }},
-		{`{"subagents":{"max_wakes_per_hour":40}}`, func(c Config) bool { return c.Subagents.MaxWakesPerHour == 4 }},
-		{`{"subagents":{"max_wakes_per_hour":0}}`, func(c Config) bool { return c.Subagents.MaxWakesPerHour == 0 }},
-		{`{"subagents":{"wake_max_turns":50}}`, func(c Config) bool { return c.Subagents.WakeMaxTurns == 8 }},
-		{`{"subagents":{"wake_max_turns":2}}`, func(c Config) bool { return c.Subagents.WakeMaxTurns == 2 }},
-		{`{"limits":{"max_background_subagents":9}}`, func(c Config) bool { return c.Limits.MaxBackgroundSubagents == 4 }},
-		{`{"limits":{"max_background_subagents":0}}`, func(c Config) bool { return c.Limits.MaxBackgroundSubagents == 0 }},
-		{`{"limits":{"background_max_minutes":480}}`, func(c Config) bool { return c.Limits.BackgroundMaxMinutes == 60 }},
-		{`{"limits":{"background_max_minutes":10}}`, func(c Config) bool { return c.Limits.BackgroundMaxMinutes == 10 }},
+		{"", `{"subagents":{"wake":"auto"}}`, func(c Config) bool { return c.Subagents.Wake == "auto" }},
+		{`{"subagents":{"wake":"notify"}}`, `{"subagents":{"wake":"auto"}}`, func(c Config) bool { return c.Subagents.Wake == "notify" }},
+		{"", `{"subagents":{"wake":"notify"}}`, func(c Config) bool { return c.Subagents.Wake == "notify" }},
+		{"", `{"subagents":{"wake":"off"}}`, func(c Config) bool { return c.Subagents.Wake == "off" }},
+		{"", `{"subagents":{"max_wakes_per_hour":40}}`, func(c Config) bool { return c.Subagents.MaxWakesPerHour == 4 }},
+		{"", `{"subagents":{"max_wakes_per_hour":0}}`, func(c Config) bool { return c.Subagents.MaxWakesPerHour == 0 }},
+		{"", `{"subagents":{"wake_max_turns":50}}`, func(c Config) bool { return c.Subagents.WakeMaxTurns == 8 }},
+		{"", `{"subagents":{"wake_max_turns":2}}`, func(c Config) bool { return c.Subagents.WakeMaxTurns == 2 }},
+		{"", `{"limits":{"max_background_subagents":9}}`, func(c Config) bool { return c.Limits.MaxBackgroundSubagents == 4 }},
+		{"", `{"limits":{"max_background_subagents":0}}`, func(c Config) bool { return c.Limits.MaxBackgroundSubagents == 0 }},
+		{"", `{"limits":{"background_max_minutes":480}}`, func(c Config) bool { return c.Limits.BackgroundMaxMinutes == 60 }},
+		{"", `{"limits":{"background_max_minutes":10}}`, func(c Config) bool { return c.Limits.BackgroundMaxMinutes == 10 }},
 	} {
-		_, ws := trustHome(t, "", c.file)
+		_, ws := trustHome(t, c.user, c.file)
 		cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
 		if err != nil {
 			t.Fatal(err)
