@@ -189,12 +189,7 @@ Two changes need action before upgrading:
   completed (exit code 0)`). `/tasks` (also `/bashes`) numbers all of it,
   with `/tasks view <n>` and `/tasks kill <n>`. The line mode (`TERM=dumb`,
   piped input) has the notices and `/tasks`, no panel.
-- In the interactive terminal, unless a configuration file sets
-  `subagents.wake`, a background result that arrives while the session is
-  idle now starts a short wake run (`auto`), within
-  `subagents.wake_max_turns` and `subagents.max_wakes_per_hour`; an explicit
-  stop still blocks it until your next message, and a file that sets
-  `notify` or `off` keeps it. The note that a result was delivered now reads
+- The terminal's note that a background result was delivered now reads
   `result of "…" added to the conversation (completed, 1 turn)`.
 - Background shells: `bash` takes `run_in_background`, which starts the
   command and returns at once with a shell id, through the same rules,
