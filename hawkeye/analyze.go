@@ -63,6 +63,9 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		case agent.EvModelCall:
 			var m agent.ModelCall
 			_ = json.Unmarshal(e.Payload, &m)
+			if m.Purpose != "" {
+				break // a call outside the conversation, as a suggestion, is no turn
+			}
 			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
 				r.Models = append(r.Models, m.Model)
 			}

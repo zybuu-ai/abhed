@@ -1,6 +1,7 @@
 package clitest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -153,6 +154,12 @@ func (s *Stub) serve(w http.ResponseWriter, r *http.Request) {
 			data = append(data, map[string]string{"id": m, "object": "model"})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+		return
+	}
+	// The next-prompt call after a turn takes no turn of the script.
+	if bytes.Contains(body, []byte("predict the next message")) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"id":"stub-s","object":"chat.completion.chunk","model":"stub-model","choices":[{"index":0,"delta":{"content":"NONE"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
 		return
 	}
 	s.mu.Lock()

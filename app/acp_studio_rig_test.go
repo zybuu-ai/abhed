@@ -2,6 +2,8 @@ package app
 
 import (
 	"bufio"
+	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -201,19 +203,26 @@ type scriptModel struct {
 	mu     sync.Mutex
 	frames []string
 	n      int
+	// suggestion answers the next-prompt call; "" answers NONE.
+	suggestion string
 }
 
 func newScriptModel(t *testing.T, frames ...string) *scriptModel {
 	t.Helper()
 	m := &scriptModel{frames: frames}
 	m.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, _ := io.ReadAll(r.Body)
 		m.mu.Lock()
 		frame := `{"choices":[{"delta":{"content":"done"}}]}`
-		if m.n < len(m.frames) {
-			frame = m.frames[m.n]
+		if bytes.Contains(body, []byte("predict the next message")) {
+			// The next-prompt call takes no frame of the script.
+			frame = say(cmp.Or(m.suggestion, "NONE"))
+		} else {
+			if m.n < len(m.frames) {
+				frame = m.frames[m.n]
+			}
+			m.n++
 		}
-		m.n++
 		m.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\n", frame)

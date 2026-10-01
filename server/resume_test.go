@@ -348,6 +348,7 @@ type viewRig struct {
 func newViewRig(t *testing.T) *viewRig {
 	t.Helper()
 	cfg := config.Default()
+	cfg.Suggest.Enabled = false // these count the model's calls and tokens
 	cfg.Auth.Mode = "proxy"
 	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},

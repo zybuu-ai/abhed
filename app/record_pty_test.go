@@ -22,7 +22,11 @@ func TestPtyContinueAfterExit(t *testing.T) {
 	h.Type("Remember ZEBRA-41.")
 	h.Key(clitest.Enter)
 	h.WaitText("noted")
+	// The reply shows before the turn's last events are written; read once they are.
 	first := h.Record()
+	for deadline := time.Now().Add(5 * time.Second); !first.Verified && time.Now().Before(deadline); first = h.Record() {
+		time.Sleep(20 * time.Millisecond)
+	}
 	h.Exit(0)
 	if !first.Verified {
 		t.Fatal("the record did not verify")

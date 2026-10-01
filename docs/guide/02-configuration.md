@@ -52,6 +52,7 @@ configuration](#trusting-the-workspace-configuration).
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](18-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](18-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
+| `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 
 ## Context
 
@@ -238,6 +239,36 @@ site: listing one lets any of those sites receive, without asking, whatever
 the model puts in a URL. `max_chars` is the most text
 one call returns; unset means 20,000, and the most is 100,000. A longer page
 is read in parts. See [Tools](05-tools.md#reading-a-web-page).
+
+## Suggestions
+
+```json
+"suggest": {
+  "enabled": true,
+  "model": "small"
+}
+```
+
+After a turn completes in the interactive terminal, the workbench, the console
+or Abhed Studio, one small model call guesses what the person may ask next,
+and the input shows it dimmed until they take it (Tab) or type. It is never
+sent on its own. The call reads the person's last message, the agent's final
+reply and the names of the tools used, as the record holds them (stored
+secrets redacted), and asks for one line of at most 80 characters in the
+person's language. Its reply is cleaned of control and format characters, and
+dropped if it is empty, a `/` command, a `!` shell line, or would repeat a
+stored secret. The record keeps the call as a `model.call` with
+`purpose: suggestion`, counted in the session's tokens and budget, and the
+suggestion as `suggestion.offered`.
+
+| Key | Default | |
+|---|---|---|
+| `enabled` | `true` | `false` turns suggestions off. A workspace file may only turn them off, and a managed `false` binds |
+| `model` | the session's | a configured provider to ask instead, such as a smaller, cheaper model. Not taken from a workspace file until it is trusted. A name the managed file's model pin does not allow turns suggestions off |
+
+None is made for `-p`, `abhed rpc`, a scheduled or unattended run, or an
+embedded agent unless it sets `Options.Suggest`; nor after an error or a
+stop, during a wake, while an approval waits, or while the person is typing.
 
 ## Storage
 

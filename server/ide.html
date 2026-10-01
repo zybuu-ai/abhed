@@ -1238,7 +1238,7 @@ async function switchModel(){
 $('mdlpick').addEventListener('change', switchModel);
 // opts.auto marks the session the page opened by itself; opts.note is shown on its terminal.
 function openSession(id, state, opts){
-  resetSession(); current = id; setLive(state === 'running' || state === 'waiting_approval');
+  resetSession(); offerNext(''); current = id; setLive(state === 'running' || state === 'waiting_approval');
   const s = sessionList.find(x => x.id === id); $('attl').textContent = s ? sessionLabel(s) : id;
   // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
   if(s && s.mode) $('mode').value = s.mode;
@@ -1572,7 +1572,8 @@ function render(ev){
   if(ev.type === 'agent.delta' ? pendThink : ev.type === 'agent.reasoning.delta' ? pendText : true) flushStream();
   logEvent(ev, p);
   switch(ev.type){
-  case 'user.message': { streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
+  case 'suggestion.offered': offerNext(p.text || ''); break;
+  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
     // This page's own message means its run has started, whichever of the
@@ -1622,7 +1623,9 @@ function render(ev){
   case 'todo.updated': drawPlan(p.items || []); break;
   case 'session.started': recProvider = p.provider || null; break;
   case 'model.switched': showSwitch(p); break;
-  case 'model.call': if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
+  // A suggestion's call is counted, but is no turn and says nothing of the context.
+  case 'model.call': if(p.purpose){ stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; drawStatus(); break; }
+    if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
     if(p.error) add(el('div', 'sys bad', 'model error: ' + p.error)); break;
   case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
@@ -2165,6 +2168,21 @@ $('q').addEventListener('keydown', e => {
   if(e.key === 'Escape' && !$('slash').hidden){ $('slash').hidden = true; e.stopPropagation(); return; }
   if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
 });
+// A next prompt offered after a turn is the box's placeholder; Tab takes it into the box, never sends it.
+function offerNext(t){
+  const q = $('q'); if(!q) return;
+  if(q.dataset.hint == null) q.dataset.hint = q.placeholder;
+  q.dataset.next = t ? visible(String(t)).replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+  q.placeholder = q.dataset.next || q.dataset.hint;
+}
+function takeNext(e){
+  const q = $('q'), next = q.dataset.next;
+  if(e.key !== 'Tab' || e.shiftKey || !next || q.value) return false;
+  e.preventDefault(); q.value = next; offerNext(''); q.dispatchEvent(new Event('input'));
+  return true;
+}
+$('q').addEventListener('input', () => { if($('q').value) offerNext(''); });
+$('q').addEventListener('keydown', takeNext);
 $('q').addEventListener('input', () => {
   const q = $('q'), at = q.value.slice(0, q.selectionStart).match(/(?:^|\s)@([\w./-]*)$/);
   const box = $('slash'); if(!at){ if(box.dataset.mode === 'at'){ box.hidden = true; delete box.dataset.mode; } return; }
@@ -2194,7 +2212,7 @@ async function withMentions(text){
 // for the next step, never a reason to cancel the step in progress.
 async function send(){
   const typed = $('q').value.trim(); if(!typed) return;
-  $('q').value = ''; $('q').style.height = 'auto'; $('slash').hidden = true;
+  offerNext(''); $('q').value = ''; $('q').style.height = 'auto'; $('slash').hidden = true;
   const id = current, busy = !!id && live;
   const b = userBubble(typed, busy ? 'queued' : 'pending'); sent.push(b);
   if(busy){ const stick = nearBottom(); if(qbox.parentNode !== tx()) tx().appendChild(qbox); qbox.appendChild(b); follow(stick); }

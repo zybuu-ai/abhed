@@ -165,6 +165,11 @@ type Options struct {
 	// never starts a run on its own.
 	Background string
 
+	// Suggest offers a next prompt after each completed Run, as a
+	// suggestion.offered event, when the configuration's suggest.enabled
+	// allows it. Off by default: it is one more model call per Run.
+	Suggest bool
+
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
@@ -421,6 +426,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
 	loop.Budget = budget
+	if opts.Suggest {
+		loop.Suggest = toolset.Suggester(cfg)
+	}
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,

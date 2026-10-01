@@ -47,6 +47,7 @@ const (
 	EvModelSwitched   = agent.EvModelSwitched
 
 	EvAgentReasoningDelta = agent.EvAgentReasoningDelta
+	EvSuggestionOffered   = agent.EvSuggestionOffered
 
 	ActorUser   = agent.ActorUser
 	ActorAgent  = agent.ActorAgent
@@ -132,3 +133,6 @@ func RequestIDOf(ctx context.Context) string { return agent.RequestIDOf(ctx) }
 type Rule = policy.Rule
 
 func ParseRule(s string) (Rule, error) { return policy.ParseRule(s) }
+
+// SuggestionOffered is a next prompt offered after a completed Run; see Options.Suggest.
+type SuggestionOffered = agent.SuggestionOffered

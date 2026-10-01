@@ -140,6 +140,9 @@ func contextUse(events []agent.Event) (int, int) {
 		if json.Unmarshal(events[i].Payload, &p) != nil {
 			return 0, 0
 		}
+		if p.Purpose != "" {
+			continue // a suggestion's call is not the conversation's context
+		}
 		if p.ContextWindow > 0 {
 			return p.TokensIn, min(100, p.TokensIn*100/p.ContextWindow)
 		}

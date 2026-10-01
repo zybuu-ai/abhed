@@ -76,6 +76,8 @@ type dock struct {
 	help   bool
 	hint   string
 	hintAt time.Time
+	// next is the offered next prompt, drawn dimmed in an empty idle input.
+	next   string
 	status func() StatusModel
 	// statusSet is the model last given to SetStatus.
 	statusSet StatusModel
@@ -243,6 +245,9 @@ func (d *dock) key(k key, at time.Time) func() {
 	}
 	if !d.hintAt.IsZero() && at.Sub(d.hintAt) > 2*time.Second {
 		d.hint, d.hintAt = "", time.Time{}
+	}
+	if d.nextKey(k) {
+		return nil
 	}
 	if d.vim != nil && d.vimKey(k) {
 		d.afterEdit()
@@ -724,6 +729,9 @@ func (d *dock) searchKey(k key) bool {
 // every edit, on the current line, so deleting the last character of a
 // command finds nothing to show.
 func (d *dock) afterEdit() {
+	if !d.buf.empty() {
+		d.next = "" // typing dismisses the offered prompt
+	}
 	var want string
 	if d.menuSel >= 0 && d.menuSel < len(d.menu) {
 		want = d.menu[d.menuSel].label
@@ -1177,8 +1185,40 @@ func (d *dock) layout(w int) (rows []string, curRow, curCol int) {
 			curRow, curCol = len(rows), pw
 		}
 	}
+	if d.showNext() {
+		row.WriteString(d.st.Dim(truncateWidth(d.next, max(w-pw-1, 1))))
+	}
 	rows = append(rows, row.String())
 	return rows, curRow, curCol
+}
+
+// showNext reports whether the offered next prompt is drawn: only in an
+// empty input at an idle prompt, where nothing else is being typed.
+func (d *dock) showNext() bool {
+	return d.next != "" && d.buf.empty() && !d.busy && !d.searching && d.dlg == nil &&
+		(d.vim == nil || d.vim.insert)
+}
+
+// nextKey takes Tab, or Right at the end of the empty line, as accepting the
+// offered prompt into the input. It is never sent: Enter is still the person's.
+func (d *dock) nextKey(k key) bool {
+	if !d.showNext() || len(d.menu) > 0 || k.alt || k.ctrl {
+		return false
+	}
+	if k.code != kRight && (k.code != kNone || k.r != keyTab) {
+		return false
+	}
+	d.buf.pushUndo(opOther)
+	d.buf.set(d.next)
+	d.next = ""
+	d.afterEdit()
+	return true
+}
+
+// offerNext sets the offered next prompt, cleaned for the terminal.
+func (d *dock) offerNext(text string) {
+	d.next = strings.TrimSpace(strings.ReplaceAll(sanitize(text, false), "\n", " "))
+	d.draw()
 }
 
 // belowRows is what sits under the input: the menu while one is open, the

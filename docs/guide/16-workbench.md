@@ -84,6 +84,15 @@ scroll up and it stays where you are, with **Jump to latest** to come back. A
 tool call's arguments and output are drawn when you open it, and long output
 shows its first lines until you ask for the rest.
 
+**A suggested next prompt.** When a turn completes, the message box shows a
+guess at what you may ask next as its placeholder. Tab in the empty box puts
+it in the box to edit or send; it is never sent for you. Typing, sending or
+opening another session takes it away. The console's message box does the
+same. The suggestion is the model's text, so it is shown with every control
+and format character written out, as tool output is.
+`suggest.enabled: false` turns it off
+([Configuration](02-configuration.md#suggestions)).
+
 **Sending while the agent works.** Send stays enabled during a run. A message
 sent then is not a reason to cancel the step in progress: it is queued, shown
 below the conversation as *Queued — will be read at the next step*, and the

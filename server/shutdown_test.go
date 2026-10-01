@@ -132,6 +132,7 @@ func TestShutdownRecordsTheEndOfAStreamingTurn(t *testing.T) {
 func listening(t *testing.T, ad model.Adapter, ws string) (*Server, func()) {
 	t.Helper()
 	cfg := config.Default()
+	cfg.Suggest.Enabled = false // these count the model's calls and tokens
 	cfg.Permissions.Mode = "default"
 	s := New(Options{Workspace: ws, Config: cfg, Adapter: ad, Addr: "127.0.0.1:0",
 		Registry: tools.NewRegistry(tools.Read{}, tools.Write{}), Logger: discardLogger()})

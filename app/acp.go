@@ -632,6 +632,8 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		Approve: func(ctx context.Context, tool string, args json.RawMessage, d abhed.Decision) (bool, error) {
 			return c.askEditor(ctx, s, tool, args, d)
 		},
+		// The editor shows a next prompt in its input after a turn.
+		Suggest: true,
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	settings := embedded.Settings{Protect: protectedPaths(o.cwd)}

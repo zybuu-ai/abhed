@@ -312,6 +312,9 @@ func (l *LineReader) Quiet(q bool) {
 	l.d.mu.Lock()
 	defer l.d.mu.Unlock()
 	l.d.busy = q
+	if q {
+		l.d.next = "" // a new turn takes the offered prompt away
+	}
 	if !q {
 		l.d.queued = nil
 		l.d.act = activity{}

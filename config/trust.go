@@ -590,6 +590,8 @@ var workspaceRules = map[string]fieldRule{
 	"record":              {nil, "only the managed configuration sets it"},
 	"hooks":               {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
+	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
+	"suggest.model":       {nil, "a provider receives the conversation"},
 
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},
 	"model":            {nil, "a provider and its base_url receive the code"},

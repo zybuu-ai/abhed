@@ -282,6 +282,9 @@ type ModelCall struct {
 	// still writing when the limit ended it, so what it said is not an answer.
 	CutOff bool   `json:"cut_off,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Purpose names a call outside the conversation, as "suggestion"; empty
+	// is a turn of the conversation itself.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // ModelSwitched is a session moving to another configured provider. Provider
@@ -329,9 +332,10 @@ func LastModel(events []Event) string {
 		switch events[i].Type {
 		case EvModelCall, EvModelSwitched, EvSessionStarted:
 			var p struct {
-				Model string `json:"model"`
+				Model   string `json:"model"`
+				Purpose string `json:"purpose"`
 			}
-			if json.Unmarshal(events[i].Payload, &p) == nil && p.Model != "" {
+			if json.Unmarshal(events[i].Payload, &p) == nil && p.Model != "" && p.Purpose == "" {
 				return p.Model
 			}
 		}

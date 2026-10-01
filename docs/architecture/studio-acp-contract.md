@@ -88,7 +88,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `memory`, `suggestions`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -193,6 +193,21 @@ trusted, since a command is instructions.
 `cost: {amount, currency}` only when a price table is configured, and
 `meta = {tokensIn, tokensOut, tokensCached, sessionTotalIn, sessionTotalOut}`.
 No invented prices.
+
+### 3.4a Next-prompt suggestion
+
+When a turn completes, the engine may send, before the `session/prompt`
+reply, one `agent_message_chunk` with empty text that carries
+`_meta["zybuu.ai/abhed"] = {suggestion: string}`: a guess at what the person
+may ask next, one line of at most 80 characters with control and format
+characters removed. Studio shows it as the chat input's dimmed placeholder,
+puts it in the input on Tab, and never sends it on its own; typing or the
+next turn clears it. None is sent after an error or a cancel, while an
+approval waits, on a replay (`session/load`), or when `suggest.enabled` is
+false. It is recorded as `suggestion.offered`, after a `model.call` with
+`purpose: "suggestion"`, whose `usage_update` is not sent (it is no measure of
+the context). `features` lists `suggestions`. Studio's own change is separate
+from the engine.
 
 ### 3.5 Images
 
@@ -821,7 +836,8 @@ them.
 | `compaction.started`, `compaction.completed` | system | before, after |
 | `context.offloaded` | system | results, before, after |
 | `plan.updated`, `todo.updated` | agent | items |
-| `model.call`, `model.switched` | system | tokens, latency, model |
+| `model.call`, `model.switched` | system | tokens, latency, model; `purpose` (`suggestion`) on a call outside the conversation |
+| `suggestion.offered` | system | text, turn |
 | `change.accepted` | user | path, hunk |
 | `conversation.forked` | user | from, through_seq |
 | `terminal.input` | user | line or withheld |
@@ -855,6 +871,7 @@ table.
 |---|---|---|---|
 | Handshake, features | `initialize` + `meta`, `abhed version --json` | spec + meta | done |
 | Chat, thinking, plan, usage | `session/prompt`, `session/update` | spec | done: reasoning deltas, stop reasons from the terminal reason, usage `meta`; no `cost` (no price table) |
+| Next-prompt suggestion | `agent_message_chunk` + `_meta.suggestion` | spec + meta | done (§3.4a) |
 | Models | `session/set_config_option` (`model`) | spec | done; `config_option_update` on `model.fallback` |
 | Thinking level | config option `thought_level` | spec | not yet: never offered, as no provider reports reasoning control |
 | Slash commands | `available_commands_update` | spec | done (see note 3) |

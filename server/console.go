@@ -1099,6 +1099,7 @@ function ago(iso){
 // original approval request: assuming every opened session is live rebuilt
 // those as clickable prompts for decisions already made.
 function openSession(id, state){
+  offerNext('');
   // On a phone the rail covers the transcript, so opening a chat has to
   // dismiss it — otherwise the user taps a chat and still sees the list.
   setRail(false);
@@ -1183,7 +1184,9 @@ function render(ev){
   }
 
   switch(ev.type){
+    case 'suggestion.offered': offerNext(p.text || ''); break;
     case 'user.message': {
+      offerNext('');
       const b = node('said user');
       b.append(node('who','you'), document.createTextNode(p.text || ''));
       tx.appendChild(b);
@@ -1791,6 +1794,7 @@ $('go').onclick = send;
 // before, instead of starting a fresh conversation each time.
 async function send(){
   let prompt = $('q').value.trim();
+  if(prompt) offerNext('');
   // A message that is only attachments is a reasonable thing to send: the
   // question is implied by the file.
   if(!prompt && !pending.length) return;
@@ -2263,6 +2267,21 @@ function drawEmpty(){
 $('q').addEventListener('keydown', e => {
   if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
 });
+// A next prompt offered after a turn is the box's placeholder; Tab takes it into the box, never sends it.
+function offerNext(t){
+  const q = $('q'); if(!q) return;
+  if(q.dataset.hint == null) q.dataset.hint = q.placeholder;
+  q.dataset.next = t ? visible(String(t)).replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+  q.placeholder = q.dataset.next || q.dataset.hint;
+}
+function takeNext(e){
+  const q = $('q'), next = q.dataset.next;
+  if(e.key !== 'Tab' || e.shiftKey || !next || q.value) return false;
+  e.preventDefault(); q.value = next; offerNext(''); autogrow();
+  return true;
+}
+$('q').addEventListener('input', () => { if($('q').value) offerNext(''); });
+$('q').addEventListener('keydown', takeNext);
 
 $('stop').onclick = async () => {
   if(!current) return;

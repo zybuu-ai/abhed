@@ -66,6 +66,7 @@ func switchServer(t *testing.T, adjust ...func(*config.Config)) (*Server, *durab
 	t.Helper()
 	a, b := newModelServer(t, "from a"), newModelServer(t, "from b")
 	cfg := config.Default()
+	cfg.Suggest.Enabled = false // these count the model's calls
 	for _, f := range adjust {
 		f(&cfg)
 	}
