@@ -137,6 +137,15 @@ func (c *cliState) follow(store server.EventStore, id string, r *ui.Renderer, re
 	}
 }
 
+// waitDrawn waits a moment for what the conversation has recorded so far to
+// be drawn: the footer reads the model and tokens from what was drawn, so a
+// command's own events, such as a model switch, are in it before it refreshes.
+func (c *cliState) waitDrawn() {
+	if c.unfollow != nil && c.loop != nil {
+		c.waitRendered(c.loop.Recorder.LastAppended())
+	}
+}
+
 // waitRendered waits a moment for the events up to seq to be drawn, so a
 // task's usage prints after its output.
 func (c *cliState) waitRendered(seq int64) {

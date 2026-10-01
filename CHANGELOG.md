@@ -299,6 +299,9 @@ Also:
   makes it a new line. A task typed before the prompt appeared, Enter
   included, is now sent too: the Enter used to arrive through the cooked
   terminal as Ctrl-J, which only started a new line.
+- After a command such as `/model`, the interactive CLI's footer could keep
+  showing the old model until the next key: it was redrawn before the
+  command's own events were drawn. It now waits a moment for them first.
 - With piped input, an approval's answer sent as soon as `answer 1-N:`
   showed could be taken as steering for the run, since the approver had not
   yet started waiting. It now waits from the moment that line shows; a line

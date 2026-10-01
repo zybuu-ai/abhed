@@ -362,6 +362,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			if quit := dispatchLine(ctx, cmd, r, pol, sess, sessionState); quit {
 				return 0, true
 			}
+			sessionState.waitDrawn()
 			ft.refresh(sessionState, pol)
 		}
 		if ctx.Err() != nil {
@@ -470,6 +471,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			if quit := dispatchLine(ctx, line, r, pol, sess, sessionState); quit {
 				return 0
 			}
+			sessionState.waitDrawn()
 			ft.refresh(sessionState, pol)
 			continue
 		}
