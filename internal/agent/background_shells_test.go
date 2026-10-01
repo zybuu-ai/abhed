@@ -423,3 +423,34 @@ func TestShellNeedsAHost(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// A subagent cannot start a background shell: its call is refused with a
+// reason, and nothing starts on the parent's session.
+func TestSubagentCannotStartABackgroundShell(t *testing.T) {
+	store := NewMemStore()
+	a := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "serve", "description": "serve"})}},
+		{calls: []model.ToolCall{call("bash", map[string]any{"command": "sleep 30", "description": "bg", "run_in_background": true})}},
+		{text: "could not"},
+		{text: "done"},
+	}}
+	l, _, _ := taskTree(t, a, AutoApprove{Yes: true}, store, store, false)
+	NewBackground(l, BackgroundPolicy{MaxShells: DefaultMaxShells, MaxLive: 4, Settle: 20 * time.Millisecond, Wake: WakeNotify})
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	parent, _ := store.Events("parent")
+	if hasEvent(parent, EvShellStarted) || len(l.Background.Tasks()) != 0 {
+		t.Fatalf("a subagent started a shell on the parent: %s", types(parent))
+	}
+	var child string
+	for _, s := range payloads[spawnPayload](parent, EvSubagentSpawned) {
+		child = s.Session
+	}
+	evs, _ := store.Events(child)
+	obs := payloads[Observation](evs, EvObservation)
+	if len(obs) != 1 || !obs[0].IsError || !strings.Contains(obs[0].Content, "a subagent cannot start a background command") {
+		t.Fatalf("the subagent's call was not refused with its reason: %+v", obs)
+	}
+}
