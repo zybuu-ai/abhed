@@ -397,7 +397,7 @@ func TestLocalSignOutEndsAnOpenStreamAtOnce(t *testing.T) {
 		Auth: &auth.Middleware{Providers: []auth.Provider{local},
 			PublicPaths: append(PublicPaths(), local.PublicPaths()...)}})
 	user, tenant := s.callerOf(context.Background(), &auth.Identity{Subject: "bob", Tenant: "default", Provider: auth.ProviderLocal})
-	s.running["s1"] = &liveSession{ID: "s1", User: user, Tenant: tenant, State: "running"}
+	s.running["s1"] = &liveSession{ID: "s1", User: user, Tenant: tenant, State: "running", Created: time.Now()}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 

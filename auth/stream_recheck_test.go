@@ -75,6 +75,11 @@ func TestRecheckFollowsLocalSignOut(t *testing.T) {
 	rec := httptest.NewRecorder()
 	local.SignInHandler(rec, httptest.NewRequest("POST", "/v1/signin",
 		strings.NewReader(`{"username":"bob","password":"correct-horse-1"}`)))
+	// A sign-in is reported too, so what an older account left held is let go.
+	if len(told) != 1 || told[0] != "bob" {
+		t.Fatalf("a sign-in was not reported: %q", told)
+	}
+	told = nil
 	var cookie *http.Cookie
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == local.CookieName {
