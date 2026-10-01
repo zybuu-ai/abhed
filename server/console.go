@@ -1186,7 +1186,7 @@ function render(ev){
   }
 
   switch(ev.type){
-    case 'suggestion.offered': offerNext(p.text || ''); break;
+    case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
     case 'user.message': {
       offerNext('');
       const b = node('said user');

@@ -107,6 +107,7 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
 	if said {
 		return l.ForkTo(events, through)
 	}
+	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: 0}); err != nil {

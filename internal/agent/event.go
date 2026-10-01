@@ -373,6 +373,9 @@ type SessionEnded struct {
 	Background int `json:"background,omitempty"`
 	// Settled marks the closing end recorded after background work finished.
 	Settled bool `json:"settled,omitempty"`
+	// Suggesting marks a run's end that a next-prompt suggestion follows: its
+	// model.call (purpose suggestion) comes after, last.
+	Suggesting bool `json:"suggesting,omitempty"`
 	// Recovered marks an end written by reconciliation after a crash.
 	Recovered bool `json:"recovered,omitempty"`
 }

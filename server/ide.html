@@ -1574,7 +1574,7 @@ function render(ev){
   if(ev.type === 'agent.delta' ? pendThink : ev.type === 'agent.reasoning.delta' ? pendText : true) flushStream();
   logEvent(ev, p);
   switch(ev.type){
-  case 'suggestion.offered': offerNext(p.text || ''); break;
+  case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
   case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', p.text));
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);

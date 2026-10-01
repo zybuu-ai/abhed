@@ -2125,16 +2125,32 @@ func ownsSession(recTenant, recUser, tenant, user string) bool {
 	return recUser == user
 }
 
-// closesStream is the end after which a session makes no more events: one
+// streamEnd finds the end after which a session makes no more events: one
 // that owes nothing (no background child running, no result undelivered, no
 // wake starting). A run's end that owes some keeps the stream open for the
-// results and the closing end.
-func closesStream(e agent.Event) bool {
+// results and the closing end. An end a suggestion follows keeps it open
+// until the suggestion's model.call, which is recorded last.
+type streamEnd struct{ suggestion bool }
+
+// closes reports whether the stream ends after e; running reports a run live now.
+func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
+	if st.suggestion && e.Type == agent.EvModelCall {
+		var c agent.ModelCall
+		if json.Unmarshal(e.Payload, &c) == nil && c.Purpose == agent.PurposeSuggestion {
+			st.suggestion = false
+			// A prompt sent meanwhile has started the next run: it streams on.
+			return !running()
+		}
+	}
 	if e.Type != agent.EvSessionEnded {
 		return false
 	}
 	var end agent.SessionEnded
-	return json.Unmarshal(e.Payload, &end) != nil || end.Background == 0
+	if json.Unmarshal(e.Payload, &end) != nil {
+		return true
+	}
+	st.suggestion = end.Background == 0 && end.Suggesting
+	return end.Background == 0 && !end.Suggesting
 }
 
 // streamEvents serves the session's event stream over SSE, resumable via
@@ -2188,10 +2204,20 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Replay what was missed before subscribing, so no event is dropped in the
 	// gap between reconnect and subscription.
+	// The backlog never closes the stream, but a suggestion it shows owed is awaited.
+	var end streamEnd
+	runLive := func() bool {
+		live.mu.Lock()
+		defer live.mu.Unlock()
+		return live.State == "running"
+	}
 	if backlog, err := s.store.Since(id, lastSeq); err == nil {
 		for _, ev := range backlog {
 			writeSSE(w, ev)
 			lastSeq = ev.Seq
+			if running {
+				end.closes(ev, runLive)
+			}
 		}
 		flusher.Flush()
 	}
@@ -2233,7 +2259,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			lastSeq = e.Seq
 			writeSSE(w, e)
-			ended = ended || closesStream(e)
+			ended = ended || end.closes(e, runLive)
 		}
 		flusher.Flush()
 		return ended
@@ -2561,6 +2587,10 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		for live.settle(ctx, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
+		// The suggestion records after the end: the node keeps the session until it has.
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), suggestWait)
+		live.Loop.WaitSuggestion(waitCtx)
+		waitCancel()
 		s.releaseAndLetGo(live)
 		switch {
 		case errors.Is(err, agent.ErrNothingToWake):
@@ -4047,6 +4077,10 @@ func (s *Server) runningCount() int {
 // turnEndWait bounds how long a shutdown waits for cancelled turns to record
 // their end, so a slow store cannot hold the process open.
 const turnEndWait = 5 * time.Second
+
+// suggestWait bounds how long a run's node waits for its suggestion to be
+// recorded before letting the session go.
+const suggestWait = 10 * time.Second
 
 // cancelRunning ends every running turn as a shutdown and waits, up to
 // turnEndWait, for each to record session.ended.

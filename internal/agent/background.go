@@ -671,6 +671,9 @@ func (b *Background) Close(reason TerminalReason) {
 	if b == nil {
 		return
 	}
+	if b.loop != nil {
+		b.loop.closeSuggestions()
+	}
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -971,6 +974,7 @@ type SessionWoken struct {
 // stops at the wake's turn cap as wake_limit. It has no authority a prompted
 // run lacks: the same policy, approver and scopes.
 func (l *Loop) RunWoken(ctx context.Context, w Wake) (TerminalReason, error) {
+	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
 	b := l.Background

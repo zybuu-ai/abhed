@@ -208,10 +208,12 @@ Two changes need action before upgrading:
 - After a turn completes, the terminal, the workbench, the console and Abhed
   Studio suggest a next prompt: the input shows it dimmed, Tab (or → on the
   empty line in the terminal) puts it in the input, and it is never sent on
-  its own. One small model call makes it, from the record's redacted text;
-  the call is recorded as a `model.call` with `purpose: suggestion` and
-  counted in the session's tokens and budget, and the suggestion as the new
-  `suggestion.offered` event. The text is cleaned of control and format
+  its own. One small model call makes it, from the record's redacted text,
+  after the turn has ended: the end, the reply and the prompt never wait for
+  it, and the next prompt, a wake, typing or closing the session cancels it.
+  It is recorded after the run's `session.ended` (marked `suggesting`) as the
+  new `suggestion.offered` event, then the call as a `model.call` with
+  `purpose: suggestion`, counted in the session's tokens and budget. The text is cleaned of control and format
   characters and capped at 80 characters. None is made for `-p`, `rpc`,
   unattended runs, or after an error, a stop or while an approval waits.
   `suggest.enabled` turns it off (a managed `false` binds) and

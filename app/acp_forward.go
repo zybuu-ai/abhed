@@ -237,7 +237,7 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "plan", "entries": entries})
 	case agent.EvSuggestionOffered:
-		// A next prompt for the editor's input, before the reply that ends the turn.
+		// A next prompt for the editor's input; it arrives after the reply that ends the turn.
 		var p agent.SuggestionOffered
 		if replay || json.Unmarshal(ev.Payload, &p) != nil || p.Text == "" {
 			break

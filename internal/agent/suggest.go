@@ -47,21 +47,39 @@ const suggestSystem = "You predict the next message a person will send to a codi
 	"no quotes, no markdown, written as the person would type it, in the same language the person writes in. " +
 	"If no follow-up is natural, reply with NONE."
 
-// offerSuggestion records a suggestion for the run that just completed, when
-// the loop has a Suggester and nothing else is due, and reports whether it
-// asked the model. It never fails the run.
-func (l *Loop) offerSuggestion(ctx context.Context) bool {
+// pendingSuggestion is a suggestion call running after its run ended.
+type pendingSuggestion struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// suggestJob is what a suggestion call needs, taken while the run still
+// holds the conversation.
+type suggestJob struct {
+	sg      *Suggester
+	adapter model.Adapter
+	req     model.Request
+	timeout time.Duration
+	turn    int
+}
+
+// planSuggestion decides, as a completed run ends, whether a suggestion
+// follows it, and builds its request; nil offers none.
+func (l *Loop) planSuggestion(ctx context.Context) *suggestJob {
 	sg := l.Suggest
 	if sg == nil || l.depth > 0 || l.wakeCap > 0 || ctx.Err() != nil || l.hasWork() ||
 		l.Background.dueSoon() || l.Budget.Exhausted() || len(l.askQueue(context.Background())) > 0 {
-		return false
+		return nil
 	}
 	if sg.Hold != nil && sg.Hold() {
-		return false
+		return nil
 	}
+	l.sugMu.Lock()
+	closed := l.sugClosed
+	l.sugMu.Unlock()
 	input := l.suggestInput()
-	if input == "" {
-		return false
+	if closed || input == "" {
+		return nil
 	}
 	a := sg.Adapter
 	if a == nil {
@@ -71,8 +89,6 @@ func (l *Loop) offerSuggestion(ctx context.Context) bool {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	req := model.Request{
 		System:    suggestSystem,
 		Messages:  []model.Message{{Role: model.RoleUser, Content: input}},
@@ -81,36 +97,158 @@ func (l *Loop) offerSuggestion(ctx context.Context) bool {
 	if l.Config.Effort != model.EffortNone {
 		req.Effort = model.EffortLow
 	}
+	return &suggestJob{sg: sg, adapter: a, req: req, timeout: timeout, turn: l.turns}
+}
+
+// finishSuggesting ends a completed run, then starts its suggestion off the
+// run, so the end, the reply and the prompt never wait for it.
+func (l *Loop) finishSuggesting(ctx context.Context) TerminalReason {
+	j := l.planSuggestion(ctx)
+	l.endSuggesting = j != nil
+	reason := l.finish(TermCompleted)
+	l.endSuggesting = false
+	if j == nil {
+		return reason
+	}
+	sctx, cancel := context.WithCancel(context.Background())
+	p := &pendingSuggestion{cancel: cancel, done: make(chan struct{})}
+	l.sugMu.Lock()
+	if l.sugClosed {
+		l.sugMu.Unlock()
+		cancel()
+		close(p.done)
+		return reason
+	}
+	l.sug = p
+	l.sugMu.Unlock()
+	go l.makeSuggestion(sctx, p, j)
+	return reason
+}
+
+// StopSuggestion cancels a suggestion still being made and waits a moment
+// for it to end. The next run, a wake, a fork and Close call it first.
+func (l *Loop) StopSuggestion() { l.stopSuggestion(false) }
+
+// closeSuggestions stops the suggestion and refuses later ones; one that
+// ends after this records nothing.
+func (l *Loop) closeSuggestions() { l.stopSuggestion(true) }
+
+func (l *Loop) stopSuggestion(closing bool) {
+	l.sugMu.Lock()
+	p := l.sug
+	if closing {
+		l.sugClosed = true
+	}
+	l.sugMu.Unlock()
+	if p == nil {
+		return
+	}
+	p.cancel()
+	// Bounded: it needs the conversation to record, and a caller that holds
+	// it must not wait forever.
+	t := time.NewTimer(2 * time.Second)
+	defer t.Stop()
+	select {
+	case <-p.done:
+	case <-t.C:
+	}
+}
+
+// WaitSuggestion waits, until ctx ends, for a suggestion still being made
+// to be recorded or dropped.
+func (l *Loop) WaitSuggestion(ctx context.Context) {
+	l.sugMu.Lock()
+	p := l.sug
+	l.sugMu.Unlock()
+	if p == nil {
+		return
+	}
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+	}
+}
+
+// makeSuggestion makes the call and records it once the conversation is
+// free: the suggestion, if still wanted, then its model.call, last.
+// It never fails a run: a refused write is not kept as the loop's error.
+func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *suggestJob) {
+	defer close(p.done)
+	defer p.cancel()
+	sg := j.sg
+	if sg.Hold != nil {
+		// The person typing is writing the next prompt: the call stops.
+		go func() {
+			tick := time.NewTicker(50 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					if sg.Hold() {
+						p.cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+	cctx, cancel := context.WithTimeout(ctx, j.timeout)
 	start := time.Now()
-	text, usage, err := suggestCall(cctx, a, req)
-	mc := ModelCall{Turn: l.turns, Model: a.Profile().Name, Purpose: PurposeSuggestion,
+	text, usage, err := suggestCall(cctx, j.adapter, j.req)
+	cancel()
+	took := time.Since(start)
+
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
+	l.sugMu.Lock()
+	closed := l.sugClosed
+	if l.sug == p {
+		l.sug = nil
+	}
+	l.sugMu.Unlock()
+	if closed {
+		return
+	}
+	mc := ModelCall{Turn: j.turn, Model: j.adapter.Profile().Name, Purpose: PurposeSuggestion,
 		TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens, TokensCached: usage.CachedInputTokens,
-		CacheReported: usage.CacheReported, LatencyMS: time.Since(start).Milliseconds()}
+		CacheReported: usage.CacheReported, LatencyMS: took.Milliseconds()}
 	if err != nil && ctx.Err() == nil {
 		mc.Error = err.Error()
 	}
+	l.usageMu.Lock()
 	l.usage.InputTokens += usage.InputTokens
 	l.usage.OutputTokens += usage.OutputTokens
 	l.usage.CachedTokens += usage.CachedInputTokens
 	l.usage.ColdPrefillTokens += usage.InputTokens - usage.CachedInputTokens
+	l.usageMu.Unlock()
 	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
-	l.record(EvModelCall, ActorSystem, mc)
-	if err != nil || ctx.Err() != nil || l.hasWork() || (sg.Hold != nil && sg.Hold()) {
-		return true
+	stale := err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || (sg.Hold != nil && sg.Hold())
+	if !stale {
+		if offer := l.suggestionText(sg, text); offer != "" {
+			_, _ = l.Recorder.Record(EvSuggestionOffered, ActorSystem, Trusted, SuggestionOffered{Text: offer, Turn: j.turn})
+		}
+	}
+	_, _ = l.Recorder.Record(EvModelCall, ActorSystem, Trusted, mc)
+}
+
+// suggestionText is the model's reply as a suggestion, or "". A reply the
+// redactor would change is none: checked whole, before cleaning cuts it, so a
+// secret longer than the cap cannot pass as its first characters.
+func (l *Loop) suggestionText(sg *Suggester, text string) string {
+	red := l.Recorder.redactor()
+	if red != nil && redactedText(red.Redact, text) != text {
+		return ""
 	}
 	if sg.Clean != nil {
 		text = sg.Clean(text)
 	}
 	text = CleanSuggestion(text)
-	if text == "" {
-		return true
+	if text == "" || red != nil && redactedText(red.Redact, text) != text {
+		return ""
 	}
-	// The record would hide a secret the model repeated; a hidden one is no suggestion.
-	if red := l.Recorder.redactor(); red != nil && redactedText(red.Redact, text) != text {
-		return true
-	}
-	l.record(EvSuggestionOffered, ActorSystem, SuggestionOffered{Text: text, Turn: l.turns})
-	return true
+	return text
 }
 
 // suggestCall runs one request and returns its text and usage.

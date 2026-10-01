@@ -263,9 +263,12 @@ reply and the names of the tools used, as the record holds them (stored
 secrets redacted), and asks for one line of at most 80 characters in the
 person's language. Its reply is cleaned of control and format characters, and
 dropped if it is empty, a `/` command, a `!` shell line, or would repeat a
-stored secret. The record keeps the call as a `model.call` with
-`purpose: suggestion`, counted in the session's tokens and budget, and the
-suggestion as `suggestion.offered`.
+stored secret (checked on the whole reply, before it is cut). The call is
+made after the turn has ended, so nothing waits for it; the next prompt, a
+wake, typing or closing the session cancels it. The record keeps the
+suggestion as `suggestion.offered` after the run's `session.ended`, then the
+call as a `model.call` with `purpose: suggestion`, counted in the session's
+tokens and budget.
 
 | Key | Default | |
 |---|---|---|

@@ -185,6 +185,10 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	woken := false
 	runTurn := func(start func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error)) (int, bool) {
 		loop := sessionState.loop
+		// A suggestion still being made is for a prompt no longer coming; it
+		// stops, and what it recorded is drawn before the turn clears it.
+		loop.StopSuggestion()
+		sessionState.waitRendered(loop.Recorder.LastAppended())
 		// Each task gets its own cancellable context so Ctrl-C interrupts the
 		// task without killing the session.
 		taskCtx, cancelTask := context.WithCancel(ctx)

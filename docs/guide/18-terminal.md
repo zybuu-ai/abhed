@@ -47,8 +47,10 @@ guess at what you may ask next, such as *Run the tests*. Tab, or → on the
 empty line, puts it in the input to edit or send; it is never sent for you,
 and Enter on an empty line still sends nothing. Typing anything dismisses it,
 and the next turn replaces it. It comes from one small model call after the
-turn, which the record keeps as a `model.call` with `purpose: suggestion` and
-counts in the session's tokens and budget. None is made after an error or a
+turn has ended, so the prompt is back at once and the suggestion appears a
+moment later; the record keeps it as a `model.call` with `purpose: suggestion`
+and counts it in the session's tokens and budget. Typing or the next prompt
+cancels it. None is made after an error or a
 stop, while an approval waits, while you are typing, or when no input box is
 drawn (piped input, `-p`). `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).

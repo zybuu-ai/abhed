@@ -1283,8 +1283,12 @@ func (d *dock) nextKey(k key) bool {
 	return true
 }
 
-// offerNext sets the offered next prompt, cleaned for the terminal.
+// offerNext sets the offered next prompt, cleaned for the terminal. It
+// arrives after the turn ended: one already being typed over is dropped.
 func (d *dock) offerNext(text string) {
+	if !d.buf.empty() {
+		return
+	}
 	d.next = strings.TrimSpace(strings.ReplaceAll(sanitize(text, false), "\n", " "))
 	d.draw()
 }

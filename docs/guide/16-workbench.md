@@ -85,7 +85,8 @@ tool call's arguments and output are drawn when you open it, and long output
 shows its first lines until you ask for the rest.
 
 **A suggested next prompt.** When a turn completes, the message box shows a
-guess at what you may ask next as its placeholder. Tab in the empty box puts
+guess at what you may ask next as its placeholder, a moment after the turn
+ends: the event stream stays open for it. Tab in the empty box puts
 it in the box to edit or send; it is never sent for you. Typing, sending or
 opening another session takes it away. The console's message box does the
 same. The suggestion is the model's text, so it is shown with every control
