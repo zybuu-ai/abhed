@@ -215,24 +215,55 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 	return err
 }
 
-// lockForSchema takes the tables the schema alters in the order an append
-// takes them: an append holds events and then checks its session, while the
-// schema alters sessions before events. Locked the other way round, a server
-// starting beside a live one deadlocked with its appends.
+// lockForSchema takes every table the schema alters before it runs, one
+// server at a time. Other statements lock these tables in either order (an
+// append takes events and then sessions, ClaimOrphan and Stats the reverse),
+// so no order is safe to wait in: each lock is taken NOWAIT, and the whole
+// transaction is tried again when one is busy. A migrate never waits while it
+// holds a table, so it cannot deadlock with anything, nor stall appends queued
+// behind it.
 const lockForSchema = `
 SELECT pg_advisory_xact_lock(hashtext('abhed.schema'));
+SET LOCAL lock_timeout = '100ms';
 DO $$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions'] LOOP
+  FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version'] LOOP
     IF to_regclass(t) IS NOT NULL THEN
-      EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE', t);
+      EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE NOWAIT', t);
     END IF;
   END LOOP;
 END $$;`
 
-// applySchema applies schema.sql in one transaction, one server at a time.
+// schemaAttempts bounds how often applySchema tries again while the tables are busy.
+const schemaAttempts = 100
+
+// applySchema applies schema.sql in one transaction once it holds every table
+// it alters, trying again while one is busy.
 func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
+	var err error
+	for attempt := range schemaAttempts {
+		if err = applySchemaOnce(ctx, pool); err == nil || !lockBusy(err) {
+			return err
+		}
+		wait := time.Duration(min(attempt+1, 20)) * 10 * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("apply schema: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+	}
+	return fmt.Errorf("apply schema: the tables stayed busy after %d attempts: %w", schemaAttempts, err)
+}
+
+// lockBusy is a lock not granted at once (55P03) or a deadlock (40P01): the
+// transaction was rolled back and can be tried again.
+func lockBusy(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "40P01")
+}
+
+func applySchemaOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("apply schema: %w", err)
