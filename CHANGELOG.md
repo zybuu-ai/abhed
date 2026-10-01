@@ -23,6 +23,12 @@ All notable changes to Abhed are recorded here. The format follows
 - `/ide` drew a model error with the model's own invalid tool arguments
   quoted as given, so an RLO in them reversed the row. It is now written out
   like any other record text.
+- An MCP server's tool names were taken as given, so a name holding an RLO
+  or other hidden characters reached the prompt, the approval card and its
+  "always allow" scope (1.2.2 and earlier). A remote tool is now registered
+  only when its name is letters, digits, `_`, `.` and `-`, up to 64, the rule
+  `tool_search` already lists names by; any other is left out with a
+  warning naming the server and the escaped name.
 - A managed file that set `permissions` but not `permissions.allow` still let
   `-allow`, the SDK's `Options.Allow`, rpc's `start`, and the allow lists in
   `~/.abhed/config.json` and a trusted workspace's `.abhed/config.json` add
