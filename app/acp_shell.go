@@ -34,8 +34,6 @@ const (
 	shellTail = 64 << 10
 	// shellLinesPerInput bounds the lines one input may enter.
 	shellLinesPerInput = 1000
-	// echoSince bounds the output kept to tell the shell's prompt is back.
-	echoSince = 4 << 10
 )
 
 // acpShell is the shell behind an interactive terminal.
@@ -55,10 +53,8 @@ type acpShell struct {
 	mu        sync.Mutex
 	tail      []byte
 	pumped    chan struct{}
-	// atPrompt is set once the shell is back at its prompt after the last
-	// line it was given; since is its output from that line on.
-	atPrompt bool
-	since    []byte
+	// prompt follows whether the shell is back at its prompt.
+	prompt *termline.Prompt
 }
 
 // startShell opens the shell, refusing where a line-by-line terminal is the
@@ -106,7 +102,7 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 		local:   iso.Tier == "process" || iso.Tier == "none",
 		capture: termline.NewCapture(id, func(in agent.TerminalInput) { _ = loop.ManualTerminalInput(in) }),
 		leader:  sandbox.Lead(cmd),
-		since:   []byte("\n"),
+		prompt:  termline.NewPrompt(),
 	}
 	if sh.local {
 		sh.capture.Hidden = func() bool { return termline.Hidden(tty) }
@@ -259,34 +255,17 @@ func (sh *acpShell) ask(e *termline.Entered) {
 		return
 	}
 	e.Known, e.Secret, e.Program = true, canonical, sh.isProgram(fg)
-	sh.mu.Lock()
-	e.Ahead = !sh.atPrompt
-	sh.mu.Unlock()
+	e.Ahead = !sh.prompt.At()
 }
 
-// follow notes when the shell is back at its prompt: out of canonical mode
-// with the shell in front, and text on a line begun after the line's newline.
+// follow notes when the shell is back at its prompt.
 func (sh *acpShell) follow(chunk []byte) {
 	fg, canonical, ok := termline.TTYNow(sh.tty)
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
-	sh.since = termline.KeepTail(append(sh.since, chunk...), echoSince)
-	if !ok || canonical || sh.isProgram(fg) {
-		return
-	}
-	text := termline.PlainText(sh.since)
-	if i := strings.LastIndexByte(text, '\n'); i >= 0 && strings.TrimSpace(text[i+1:]) != "" {
-		sh.atPrompt = true
-	}
+	sh.prompt.Output(chunk, ok && !sh.isProgram(fg), canonical)
 }
 
-// gave notes that the shell was handed a line; until its prompt is back, a
-// further line is typed ahead.
-func (sh *acpShell) gave() {
-	sh.mu.Lock()
-	sh.atPrompt, sh.since = false, nil
-	sh.mu.Unlock()
-}
+// gave notes that the shell was handed a line.
+func (sh *acpShell) gave() { sh.prompt.Gave() }
 
 func (sh *acpShell) isProgram(fg int) bool {
 	shell := int(sh.shellPgrp.Load())

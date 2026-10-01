@@ -24,7 +24,7 @@ func TestShellLineTypedAheadOfThePrompt(t *testing.T) {
 	if _, err := tty.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	sh := &acpShell{tty: tty, local: true, since: []byte("\n")}
+	sh := &acpShell{tty: tty, local: true, prompt: termline.NewPrompt()}
 	fg, canonical, ok := termline.TTYNow(tty)
 	if !ok || canonical {
 		t.Skipf("the terminal cannot be asked here (ok=%v canonical=%v)", ok, canonical)

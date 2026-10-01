@@ -315,6 +315,28 @@ func TestShellWithholdsWhatWasNotEchoed(t *testing.T) {
 	}
 }
 
+// A password typed ahead of read -s, before the shell has run the line that
+// turns echo off, is withheld; so is one typed once echo is off.
+func TestShellWithholdsAPasswordTypedAheadOfThePrompt(t *testing.T) {
+	wb := shellBench(t, nil)
+	start := wb.startShell()
+	out, _ := wb.drive(start.ID,
+		step{keys: `stty -echo; echo RE""ADY; read pw; stty echo; echo "got ${#pw}"` + "\r", until: "READY"},
+		step{keys: "hunter22\r", until: "got 8"},
+		step{keys: `read -s pw; echo "also ${#pw}"` + "\r", nowait: true},
+		step{keys: "hunter33\r", until: "also 8"},
+		step{keys: "exit\r"})
+	if !strings.Contains(out, "got 8") || !strings.Contains(out, "also 8") {
+		t.Fatalf("the reads did not take the input:\n%s", out)
+	}
+	time.Sleep(2 * termline.EchoWait)
+	for _, e := range wb.events() {
+		if strings.Contains(string(e.Payload), "hunter22") || strings.Contains(string(e.Payload), "hunter33") {
+			t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+		}
+	}
+}
+
 // Keys a program reads without an Enter (read -s -n) are the front of the
 // next line the capture sees. That line was recorded in clear, secret and
 // all, because only its tail was looked for in the echo; now the whole line
