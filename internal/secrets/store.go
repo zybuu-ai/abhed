@@ -357,6 +357,12 @@ func (f *Fresh) Redact(b []byte) []byte { return f.Current().Redact(b) }
 // Span is Current().Span.
 func (f *Fresh) Span() int { return f.Current().Span() }
 
+// Pending is Current().Pending.
+func (f *Fresh) Pending(s string) int { return f.Current().Pending(s) }
+
+// Partial is Current().Partial.
+func (f *Fresh) Partial(s string) int { return f.Current().Partial(s) }
+
 // FindSent is Current().FindSent.
 func (f *Fresh) FindSent(text string) (string, bool) { return f.Current().FindSent(text) }
 
@@ -471,6 +477,36 @@ func (r *Redactor) Span() int {
 		return 0
 	}
 	return len(r.pairs[0].needle)
+}
+
+// Pending is how many bytes at the end of s could be the start of a stored
+// value, for a caller that holds them back until more text arrives.
+func (r *Redactor) Pending(s string) int {
+	n := 0
+	for _, p := range r.pairs {
+		for k := min(len(p.needle)-1, len(s)); k > n; k-- {
+			if strings.HasSuffix(s, p.needle[:k]) {
+				n = k
+				break
+			}
+		}
+	}
+	return n
+}
+
+// Partial is how many bytes at the start of s could be the end of a stored
+// value whose start was cut off.
+func (r *Redactor) Partial(s string) int {
+	n := 0
+	for _, p := range r.pairs {
+		for k := min(len(p.needle)-1, len(s)); k > n; k-- {
+			if strings.HasPrefix(s, p.needle[len(p.needle)-k:]) {
+				n = k
+				break
+			}
+		}
+	}
+	return n
 }
 
 // FindFold is Find with case ignored.

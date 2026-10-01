@@ -264,6 +264,12 @@ func (b *Background) sessionID() string {
 	return b.loop.sessionID()
 }
 
+// partials finds text that may be part of a stored value; secrets.Redactor has it.
+type partials interface {
+	Pending(s string) int
+	Partial(s string) int
+}
+
 // redactRead holds back output that may start a secret until the next read;
 // at a gap, text a cut secret could leave a part in is skipped. Holds readMu.
 func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (string, int64) {
@@ -275,22 +281,48 @@ func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (
 		return r.Text, r.Skipped
 	}
 	text, skipped := r.Text, r.Skipped
-	fb := fragmentBuffer{redact: red.Redact, span: red.Span(), carry: sh.carry}
+	pt, precise := red.(partials)
 	if r.Dropped > 0 || r.Skipped > 0 {
-		skipped += int64(len(fb.carry))
-		fb.carry = ""
-		n := min(len(text), fb.span-1)
+		skipped += int64(len(sh.carry))
+		sh.carry = ""
+		n := red.Span() - 1
+		if precise {
+			n = pt.Partial(text)
+		}
+		n = min(n, len(text))
 		for n < len(text) && !utf8.RuneStart(text[n]) {
 			n++
 		}
 		text, skipped = text[n:], skipped+int64(n)
 	}
-	out := fb.push(text)
-	if final {
-		out += fb.flush()
+	if !precise {
+		fb := fragmentBuffer{redact: red.Redact, span: red.Span(), carry: sh.carry}
+		out := fb.push(text)
+		if final {
+			out += fb.flush()
+		}
+		sh.carry = fb.carry
+		return out, skipped
 	}
-	sh.carry = fb.carry
-	return out, skipped
+	raw := sh.carry + text
+	sh.carry = ""
+	if final {
+		return redactedText(red.Redact, raw), skipped
+	}
+	// Cut before a possible secret's start, and never inside a whole one.
+	whole := redactedText(red.Redact, raw)
+	cut := len(raw) - pt.Pending(raw)
+	for ; cut > 0; cut-- {
+		if cut < len(raw) && !utf8.RuneStart(raw[cut]) {
+			continue
+		}
+		if head := redactedText(red.Redact, raw[:cut]); cut == len(raw) || head+redactedText(red.Redact, raw[cut:]) == whole {
+			sh.carry = raw[cut:]
+			return head, skipped
+		}
+	}
+	sh.carry = raw
+	return "", skipped
 }
 
 // redacted is text as the session's record would keep it.
