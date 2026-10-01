@@ -12,13 +12,6 @@ All notable changes to Abhed are recorded here. The format follows
   `-allow`, the SDK's `Options.Allow` and rpc's `start` add allow rules,
   while `/permissions allow` refused them. Every path now refuses an allow
   rule when the managed file sets any `permissions` setting.
-- A wake run could act for a user whose access had been revoked: the owner
-  was looked up only before the wake started, and an edition whose accounts
-  the server could not see found every owner active. A woken run now asks
-  again before each model call and before each call is approved, and ends as
-  `owner_inactive` once the owner has lost access. `StopOwnerBackground`
-  lets an edition stop a revoked owner's live run, background shells, tasks
-  and terminals at once, recorded as `owner_revoked`; no wake follows.
 - Over ACP, the agent can no longer change an editor's own files in the
   workspace: the file tools refuse `.vscode/**`, `.devcontainer/**` and
   `*.code-workspace`, and any `.git` with its `config` and `hooks/**` at any
@@ -97,7 +90,7 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
-The first sixteen items change how an existing setup behaves; read them
+The first eighteen items change how an existing setup behaves; read them
 before upgrading.
 
 1. **Answers are numbers only, for piped and scripted input too.** 1.2.2's
@@ -195,6 +188,17 @@ before upgrading.
     `.jsonl` export of it, fails verification**, as it already did for a
     record with a gap. A failing export exited 0 before; a local-record
     session could not be read at all.
+17. **A managed `permissions` setting locks added allow rules.** When the
+    managed file sets any `permissions` key (mode, deny, ask or allow),
+    `-allow`, `-allowedTools`, `/permissions allow`, the SDK's
+    `Options.Allow` (`sdk.New` returns a `*config.ManagedError`) and rpc's
+    `start` with allow rules are refused. In 1.2.2 they were refused only
+    when the file set `permissions.allow`. Put the rules in the managed
+    file's `permissions.allow` instead.
+18. **On macOS, commands in an ACP editor's workspace (Abhed Studio) cannot
+    create any `.git`, `.vscode` or `.devcontainer`**, so `git init` and
+    `git clone` inside the workspace fail. Run them in a terminal outside
+    the editor, or clone outside the workspace and open that folder.
 
 Also:
 
@@ -220,6 +224,14 @@ Also:
 
 ### Fixed
 
+- Found before release: a wake run could act for a user whose access had
+  been revoked. A woken run now asks for its owner again before each model
+  call and before each call is approved, and ends as `owner_inactive` once
+  the owner has lost access; no next-prompt suggestion is made for them
+  either. `StopOwnerBackground` lets an edition stop a revoked owner's live
+  run, background shells, tasks and terminals at once, recorded as
+  `owner_revoked`. A session whose owner is restored makes no wake or
+  suggestion until it is reopened or the server restarts.
 - On a server with Postgres, a workbench hold on a session the server had
   started was released two minutes after the first manual write, not the
   last, so a repeated `session.ended` landed in the middle of terminal or

@@ -361,8 +361,8 @@ type liveSession struct {
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
 	unclaimed atomic.Bool
-	// ownerGone is set when the last check before an idle delivery found the
-	// owner no longer active.
+	// ownerGone is set by a revoke or a failed owner check; it holds wakes and
+	// suggestions until a later check before an idle delivery clears it.
 	ownerGone atomic.Bool
 	// fenced is set once another process has taken the session over: nothing
 	// more is written for it here.
