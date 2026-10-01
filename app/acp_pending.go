@@ -4,39 +4,11 @@ package app
 // does nothing, and the section that replaces it removes it from here.
 
 import (
-	"encoding/json"
 	"errors"
 
-	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/linediff"
-	"github.com/zybuu-ai/abhed/internal/policy"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
-
-func (c *acpConn) modeState(*acpSession) map[string]any          { return nil }
-func modeConfigOption(map[string]any) map[string]any             { return nil }
-func availableModes(config.Config) []policy.Mode                 { return nil }
-func protectedPaths(string) []string                             { return nil }
-func (s *acpSession) dirtyGuard(string) error                    { return nil }
-func (c *acpConn) checkTrust(*acpSession) bool                   { return false }
-func (s *acpSession) askDiff(string, json.RawMessage) *askChange { return nil }
-func (c *acpConn) changeMode(*acpSession, string) *rpcError {
-	return refusal(errNoMethod, "modes are not served yet")
-}
-
-type askChange struct {
-	content, locations, meta []any
-	hunksOnly                bool
-}
-
-func (c *acpConn) configOptions(s *acpSession) []any {
-	if m, ok := s.agent.(modelSwitcher); ok {
-		if models := m.Models(); len(models) > 0 {
-			return modelConfigOptions(models)
-		}
-	}
-	return nil
-}
 
 type taskNote struct{}
 
