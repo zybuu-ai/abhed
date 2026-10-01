@@ -423,3 +423,30 @@ func TestShellNeedsAHost(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// shell_output redacts across reads: a secret split by the read cursor is
+// held back until it is whole, and a part of one left by a gap is not shown.
+func TestShellReadRedactsAcrossReads(t *testing.T) {
+	const secret = "sk-test-0123456789abcdef"
+	vault := secrets.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	if err := vault.Set("API_KEY", secret); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := suggestLoop(t, &suggestStub{})
+	l.Recorder.Redact = vault.Redactor()
+	b := &Background{loop: l}
+
+	sh := &shellState{}
+	first, _ := sh.redactRead(b, tools.ShellRead{Text: "key: sk-test-0123"}, false)
+	second, _ := sh.redactRead(b, tools.ShellRead{Text: "456789abcdef ok\n"}, true)
+	got := first + second
+	if strings.Contains(got, "0123") || strings.Contains(got, "abcdef") || !strings.Contains(got, "[secret:API_KEY]") || !strings.HasSuffix(got, " ok\n") {
+		t.Fatalf("across reads: %q + %q", first, second)
+	}
+
+	gap := &shellState{carry: "sk-test-01"}
+	out, skipped := gap.redactRead(b, tools.ShellRead{Text: "23456789abcdef tail, and then more output\n", Dropped: 100}, true)
+	if strings.Contains(out, "abcdef") || strings.Contains(out, "sk-test") || !strings.HasSuffix(out, "more output\n") || skipped != int64(len("sk-test-01"))+int64(len(secret)-1) {
+		t.Fatalf("after a gap: %q, skipped %d", out, skipped)
+	}
+}

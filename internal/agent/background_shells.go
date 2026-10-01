@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -72,6 +74,10 @@ type shellState struct {
 	quiet bool
 	state string
 	exit  int
+	// readMu orders reads; carry is read output held back from the model
+	// because a stored secret may continue in what comes next.
+	readMu sync.Mutex
+	carry  string
 }
 
 // shellHost is the ShellHost a tool call gets: the session's Background,
@@ -258,6 +264,38 @@ func (b *Background) sessionID() string {
 	return b.loop.sessionID()
 }
 
+// redactRead redacts a read across read boundaries: output that may be the
+// start of a secret is held back until the next read, or the end. At a gap
+// (dropped or skipped output) the held text and the first span-1 bytes after
+// it are not shown, since a secret cut by the gap could leave a part in
+// either; they are counted as skipped. The caller holds readMu.
+func (sh *shellState) redactRead(b *Background, r tools.ShellRead, final bool) (string, int64) {
+	var red Redactor
+	if b.loop != nil {
+		red = b.loop.Recorder.redactor()
+	}
+	if red == nil || red.Span() == 0 {
+		return r.Text, r.Skipped
+	}
+	text, skipped := r.Text, r.Skipped
+	fb := fragmentBuffer{redact: red.Redact, span: red.Span(), carry: sh.carry}
+	if r.Dropped > 0 || r.Skipped > 0 {
+		skipped += int64(len(fb.carry))
+		fb.carry = ""
+		n := min(len(text), fb.span-1)
+		for n < len(text) && !utf8.RuneStart(text[n]) {
+			n++
+		}
+		text, skipped = text[n:], skipped+int64(n)
+	}
+	out := fb.push(text)
+	if final {
+		out += fb.flush()
+	}
+	sh.carry = fb.carry
+	return out, skipped
+}
+
 // redacted is text as the session's record would keep it.
 func (b *Background) redacted(text string) string {
 	if b.loop != nil {
@@ -378,7 +416,10 @@ func shellReadResult(b *Background, t *bgTask) tools.Result {
 		case <-time.After(TurnEndWait):
 		}
 	}
+	t.shell.readMu.Lock()
 	r := p.ReadNew(maxShellRead)
+	r.Text, r.Skipped = t.shell.redactRead(b, r, ended)
+	t.shell.readMu.Unlock()
 	var sb strings.Builder
 	var exit *int
 	b.mu.Lock()
