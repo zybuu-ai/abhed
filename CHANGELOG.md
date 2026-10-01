@@ -566,8 +566,9 @@ Two changes need action before upgrading:
   rename, fork and compact; the event stream; verify, export and HawkEYE;
   modes (`session/set_mode`); the policy view and a dry-run explain; trust
   inspection; background tasks (list, cancel, review of held asks); the
-  sandboxed Abhed terminal in lines mode; manual edits; per-hunk review and
-  undo; steering and the queue; and the doctor (also `abhed doctor --json`).
+  sandboxed Abhed terminal, line by line or as an interactive shell judged
+  and recorded line by line; manual edits; per-hunk review and undo;
+  steering and the queue; and the doctor (also `abhed doctor --json`).
   Every action a person takes through them is recorded `by: user`. What is
   not served yet is listed in the contract's §11.
 - `available_commands_update` lists the built-in commands, your custom

@@ -871,7 +871,7 @@ table.
 | Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart, index, infra polling | `_abhed/mcp/restart`, `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `mcp.restart`, `index`, `infra` not in `features`) |
-| Abhed terminal | `_abhed/terminal/*` | ext | `lines` mode done; `interactive` refused (see note 4) |
+| Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |
 | Host terminal | none (Studio only), removable by managed `studio.disable_host_terminal` | — | Studio; the managed key is read into `capabilities.studio` |
 | Manual edits, dirty buffers | `_abhed/manual/edited`, `_abhed/buffers/dirty` | ext | done |
 | Per-hunk review, undo | `_abhed/review/*` | ext | done |
@@ -898,10 +898,14 @@ Where the engine differs from the sections above:
    picker; `/fork` and `/clear` answer that they are Studio's actions.
 4. **Terminal (§7.1).** `lines` mode runs each line as the person's `bash`
    call through policy, in the session's sandbox, on a tool session of its
-   own; a destructive line asks `_abhed/terminal/confirm`. `interactive` is
-   refused until the server's pty and line capture move into a shared
-   package; until then a hidden prompt such as `abhed secret set` needs a
-   host terminal.
+   own; a destructive line asks `_abhed/terminal/confirm`. `interactive`
+   runs one shell under the sandbox with the workbench's line capture, now
+   shared in `internal/termline`: each line is put to the deny rules at its
+   Enter and recorded `terminal.input`, withheld when the terminal did not
+   show it. As in the workbench, it is refused where only a line-by-line
+   terminal applies every rule (`sandbox.terminal: "lines"`, or a managed
+   policy whose deny rules or hooks screen `bash`), and a destructive line
+   there is not confirmed, since the shell, not the engine, runs it.
 5. **Undo (§7.5).** `turn` is the turn number the record's
    `checkpoint.saved` events carry. An accepted hunk moves the baseline, so
    undo returns to it.

@@ -19,9 +19,6 @@ import (
 // and the same record as the agent's own calls. An interactive shell (pty.go)
 // is judged when it opens and is then bounded by the sandbox alone.
 
-// maxManualCommand bounds a command line typed into the workbench.
-const maxManualCommand = 8 << 10
-
 // manualSession finds the live session and the person's own tool session on it.
 func (s *Server) manualSession(w http.ResponseWriter, r *http.Request) (*liveSession, *tools.Session, bool) {
 	id := r.PathValue("id")

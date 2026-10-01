@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/termline"
 )
 
 // waitOutput waits until a terminal's output from index from on holds want.
@@ -57,7 +60,6 @@ func TestStudioTerminalLines(t *testing.T) {
 	if term.TerminalID == "" || term.Tier == "" || term.Tier == "none" || !term.Recorded {
 		t.Fatalf("create: %+v", term)
 	}
-	r.cl.refused(errRefused, "_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive"})
 	from := r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo studio-$((40+2))\r"}, nil)
 	waitOutput(r.cl, from, term.TerminalID, "studio-42\r\n")
@@ -239,5 +241,78 @@ func TestRuleAgentCannotReachTheEditor(t *testing.T) {
 	joined := strings.Join(said, "\n")
 	if !strings.Contains(joined, "editor's own configuration") || !strings.Contains(joined, "unsaved changes") {
 		t.Fatalf("observations: %s", joined)
+	}
+}
+
+// §7.1 interactive: the shell runs whole under the sandbox; each line is put
+// to the deny rules at its Enter and recorded as the person's, and a line the
+// terminal did not show, as at a password prompt, is recorded withheld.
+func TestStudioInteractiveTerminal(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`)
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+		Tier       string `json:"tier"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
+	if term.TerminalID == "" || term.Tier == "none" {
+		t.Fatalf("create: %+v", term)
+	}
+	prompted := func(s string) bool {
+		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
+		return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#")
+	}
+	waitShell := func(from int, pred func(string) bool) {
+		t.Helper()
+		var got strings.Builder
+		r.cl.waitFor(from, "shell output", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return pred(got.String())
+		})
+	}
+	waitShell(from, prompted)
+	typeLine := func(keys string, until func(string) bool) {
+		t.Helper()
+		at := r.cl.mark()
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": keys}, nil)
+		waitShell(at, until)
+	}
+	typeLine("echo hi-$((40+2))\r", func(s string) bool { return strings.Contains(s, "hi-42") && prompted(s) })
+	typeLine("curl example.com\r", func(s string) bool { return strings.Contains(s, "Denied") })
+	typeLine(`read -s pw; echo "got ${#pw}"`+"\r", func(s string) bool { return strings.Contains(s, "read -s") })
+	typeLine("hunter22\r", func(s string) bool { return strings.Contains(s, "got 8") })
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
+	r.cl.waitFor(at, "the shell's exit", func(m rpcMessage) bool { return m.Method == "_abhed/terminal/exit" })
+	time.Sleep(2 * termline.EchoWait)
+
+	inputs, actors := r.recorded(id, agent.EvTerminalInput)
+	var lines []string
+	withheld := false
+	for i, in := range inputs {
+		if actors[i] != agent.ActorUser {
+			t.Fatalf("terminal.input by %s", actors[i])
+		}
+		if l, ok := in["line"].(string); ok {
+			lines = append(lines, l)
+		}
+		withheld = withheld || in["withheld"] != nil
+	}
+	if !slices.Contains(lines, "echo hi-$((40+2))") || !withheld {
+		t.Fatalf("terminal.input: %v", inputs)
+	}
+	for _, ev := range r.events(id) {
+		if strings.Contains(string(ev.Payload), "hunter22") {
+			t.Fatalf("the unechoed line reached the record: %s %s", ev.Type, ev.Payload)
+		}
+	}
+	denied, _ := r.recorded(id, agent.EvActionDenied)
+	if len(denied) != 1 || denied[0]["by"] != "policy" {
+		t.Fatalf("action.denied: %v", denied)
+	}
+	obs, _ := r.recorded(id, agent.EvObservation)
+	if !strings.Contains(obs[len(obs)-1]["content"].(string), "interactive Abhed terminal") {
+		t.Fatalf("the shell's end: %v", obs[len(obs)-1])
 	}
 }

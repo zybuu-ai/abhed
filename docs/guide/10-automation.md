@@ -294,7 +294,8 @@ bypass is offered only when your own configuration starts in it.
 Abhed Studio uses the rest through `_abhed/*` extension methods: the event
 stream, verify and export, HawkEYE, the policy view and a dry-run explain,
 workspace trust inspection, background tasks and held asks, the sandboxed
-Abhed terminal (lines mode), manual edits, per-hunk review and undo,
+Abhed terminal (line by line, or an interactive shell judged and recorded
+line by line as the workbench's is), manual edits, per-hunk review and undo,
 steering and the doctor. `initialize` names the ones this engine serves in
 `agentCapabilities._meta["zybuu.ai/abhed"].features`, and `abhed version
 --json` prints the same block without starting anything. The engine

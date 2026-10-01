@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package server
+package termline
 
 import (
 	"os"
@@ -8,13 +8,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ttyNow reads what the terminal itself says, from the master side: which
+// TTYNow reads what the terminal itself says, from the master side: which
 // process group has the foreground, and whether the line discipline is in
 // canonical mode. At its prompt bash reads keys itself, in non-canonical mode;
 // in canonical mode something else is reading a line, a password perhaps.
 // It goes through SyscallConn, since Fd would switch the master to blocking
 // reads and a Close could then no longer interrupt the pump.
-func ttyNow(master *os.File) (fg int, canonical bool, ok bool) {
+func TTYNow(master *os.File) (fg int, canonical bool, ok bool) {
 	rc, err := master.SyscallConn()
 	if err != nil {
 		return 0, false, false

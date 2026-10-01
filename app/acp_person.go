@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/creack/pty"
+
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
 	"github.com/zybuu-ai/abhed/internal/linediff"
@@ -54,9 +56,10 @@ const maxTerminalLine = 8 << 10
 // maxTerminals bounds the Abhed terminals one connection keeps open.
 const maxTerminals = 8
 
-// acpTerminal is one sandboxed terminal in lines mode: each line the person
+// acpTerminal is one sandboxed terminal. In lines mode each line the person
 // enters is a bash call put to policy and run in the session's sandbox, on a
-// tool session of its own so a cd there never moves the agent.
+// tool session of its own so a cd there never moves the agent; in interactive
+// mode a shell runs whole under the sandbox (acp_shell.go).
 type acpTerminal struct {
 	id      string
 	session *acpSession
@@ -68,11 +71,15 @@ type acpTerminal struct {
 	cancel  context.CancelFunc
 	// running cancels the command running now; nil when none is.
 	running context.CancelFunc
+	// shell is set for an interactive terminal.
+	shell *acpShell
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
 	var p struct {
 		Mode string `json:"mode"`
+		Cols uint16 `json:"cols"`
+		Rows uint16 `json:"rows"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	s, e := c.sessionFor(msg.Params)
@@ -85,12 +92,7 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	switch p.Mode {
-	case "lines":
-	case "interactive":
-		c.reply(msg.ID, nil, refusal(errRefused, "an interactive Abhed terminal is not available over ACP in this engine yet; open one in lines mode"))
-		return
-	default:
+	if p.Mode != "lines" && p.Mode != "interactive" {
 		c.reply(msg.ID, nil, refusal(errParams, `mode is "lines" or "interactive"`))
 		return
 	}
@@ -107,16 +109,30 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 	if c.terms == nil {
 		c.terms = map[string]*acpTerminal{}
 	}
-	if len(c.terms) >= maxTerminals {
-		c.termMu.Unlock()
+	full := len(c.terms) >= maxTerminals
+	c.termMu.Unlock()
+	if full {
 		c.reply(msg.ID, nil, refusal(errRefused, "%d Abhed terminals are open; close one first", maxTerminals))
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
 	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan string, 16), ctx: ctx, cancel: cancel}
+	if p.Mode == "interactive" {
+		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
+			cancel()
+			c.reply(msg.ID, nil, e)
+			return
+		}
+	}
+	c.termMu.Lock()
 	c.terms[t.id] = t
 	c.termMu.Unlock()
-	go c.runTerminal(t)
+	if t.shell != nil {
+		go c.pumpShell(t)
+		go c.waitShell(t)
+	} else {
+		go c.runTerminal(t)
+	}
 	c.reply(msg.ID, map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true}, nil)
 }
 
@@ -150,6 +166,14 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 	t, e := c.terminal(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
+		return
+	}
+	if t.shell != nil {
+		if e := c.shellInput(t, []byte(p.Data)); e != nil {
+			c.reply(msg.ID, nil, e)
+			return
+		}
+		c.reply(msg.ID, map[string]any{}, nil)
 		return
 	}
 	var lines []string
@@ -263,10 +287,19 @@ func crlf(s string) []byte {
 }
 
 func (c *acpConn) terminalResize(msg rpcMessage) {
-	// Lines mode draws no screen of its own; the size is the view's.
-	if _, e := c.terminal(msg.Params); e != nil {
+	var p struct {
+		Cols uint16 `json:"cols"`
+		Rows uint16 `json:"rows"`
+	}
+	_ = json.Unmarshal(msg.Params, &p)
+	t, e := c.terminal(msg.Params)
+	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
+	}
+	// Lines mode draws no screen of its own; a shell's terminal takes the size.
+	if t.shell != nil && p.Cols > 0 && p.Rows > 0 {
+		_ = pty.Setsize(t.shell.tty, &pty.Winsize{Cols: p.Cols, Rows: p.Rows})
 	}
 	c.reply(msg.ID, map[string]any{}, nil)
 }
