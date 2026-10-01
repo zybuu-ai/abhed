@@ -87,31 +87,28 @@ func TestDoctorVerdictOnUnknownKeys(t *testing.T) {
 	}
 }
 
-// Keys set but not yet in effect keep the doctor from calling the
-// configuration ready, and the verdict says so rather than calling them
-// unread; an unknown key alone still fails it.
+// Every setting is in effect now, so none keeps the doctor from calling
+// the configuration ready; the verdict still says so, rather than calling
+// them unread, should a setting be reserved again. An unknown key fails it.
 func TestDoctorVerdictOnKeysNotYetInEffect(t *testing.T) {
 	var b strings.Builder
 	cfg := config.Default()
-	cfg.SetKeys = []string{"hooks.disabled"}
-	f := configFindings(&b, cfg)
-	if f != (configCheck{notInEffect: true}) {
-		t.Fatalf("findings %+v", f)
+	cfg.SetKeys = []string{"hooks.disabled", "statusline.command", "record.dir", "cli.mode_cycle"}
+	if f := configFindings(&b, cfg); f != (configCheck{}) {
+		t.Fatalf("findings %+v for settings in effect", f)
 	}
 	b.Reset()
-	if code := doctorVerdict(&b, f); code != 1 || !strings.Contains(b.String(), "does not act on yet") || strings.Contains(b.String(), "nothing reads") {
+	if code := doctorVerdict(&b, configCheck{notInEffect: true}); code != 1 || !strings.Contains(b.String(), "does not act on yet") || strings.Contains(b.String(), "nothing reads") {
 		t.Fatalf("verdict %d: %q", code, b.String())
 	}
-	cfg = config.Default()
 	cfg.Unknown = []config.UnknownKey{{File: "/w/.abhed/config.json", Path: "zzz"}}
+	b.Reset()
 	if f := configFindings(&b, cfg); f != (configCheck{unknown: true}) {
 		t.Fatalf("an unknown key with nothing reserved: %+v", f)
 	}
-	cfg.SetKeys = []string{"record.dir"}
 	b.Reset()
-	f = configFindings(&b, cfg)
-	if code := doctorVerdict(&b, f); code != 1 || !strings.Contains(b.String(), "nothing reads") || !strings.Contains(b.String(), "does not act on yet") {
-		t.Fatalf("both: %d %q", code, b.String())
+	if code := doctorVerdict(&b, configCheck{unknown: true}); code != 1 || !strings.Contains(b.String(), "nothing reads") {
+		t.Fatalf("unknown: %d %q", code, b.String())
 	}
 }
 
@@ -228,26 +225,17 @@ func TestDoctorFailsWhenTheSandboxCannotBeBuilt(t *testing.T) {
 	}
 }
 
-// doctor names each setting that is accepted but not acted on yet, and does
-// not call the configuration ready while one is set.
+// Nothing is reserved: with every setting set, the doctor reports none
+// as not yet in effect.
 func TestDoctorNamesSettingsNotYetInEffect(t *testing.T) {
 	var b strings.Builder
 	if printNotInEffect(&b, config.Default()) || b.Len() != 0 {
 		t.Fatalf("the defaults were reported: %q", b.String())
 	}
 	cfg := config.Default()
-	cfg.SetKeys = []string{"statusline.command", "record.dir", "record.retention_days", "memory.auto", "model.default", "hooks.disabled"}
-	if !printNotInEffect(&b, cfg) {
-		t.Fatal("nothing was reported")
-	}
-	for _, want := range []string{"statusline is set but not yet in effect in this version"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("missing %q in:\n%s", want, b.String())
-		}
-	}
-	for _, k := range []string{"model.default", "hooks.disabled", "record.dir", "record.retention_days", "memory.auto"} {
-		if strings.Contains(b.String(), k) {
-			t.Errorf("a setting in effect, %s, was reported:\n%s", k, b.String())
-		}
+	cfg.SetKeys = []string{"statusline.command", "record.dir", "record.retention_days", "memory.auto", "memory.import_depth",
+		"model.default", "hooks.disabled", "cli.mode_cycle", "commands.dirs", "rules.dirs"}
+	if printNotInEffect(&b, cfg) || b.Len() != 0 {
+		t.Fatalf("a setting in effect was reported:\n%s", b.String())
 	}
 }

@@ -142,7 +142,7 @@ func TestDumbTerminalPrintedTextIsFiltered(t *testing.T) {
 	}
 	d := startDumb(t, ws)
 	d.send("/model\r")
-	d.wait("configured providers")
+	d.wait("current: stub-1")
 	time.Sleep(300 * time.Millisecond)
 	got := d.text()
 	if strings.Contains(got, "\x1b") || strings.Contains(got, "\a") {

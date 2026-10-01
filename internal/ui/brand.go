@@ -133,8 +133,11 @@ func Rule(s Style, label string, width int) string {
 
 // bannerWidth is the terminal's width, or 100 when it cannot be read.
 func bannerWidth() int {
-	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-		return w
+	// Stdin too: once the line editor captures stdout it is a pipe.
+	for _, f := range []*os.File{os.Stdout, os.Stdin} {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+			return w
+		}
 	}
 	return 100
 }

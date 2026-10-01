@@ -12,7 +12,7 @@ const statuslineConfig = `{"sandbox":{"min_tier":"none"},"statusline":{"command"
 	`"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"{{MODEL_URL}}","model":"stub-model","context_window":32768}}}}`
 
 // The user's statusline command reads the status as JSON and its output is
-// shown after each task, with no escape but colour reaching the terminal.
+// shown in the footer, with no escape but colour reaching the terminal.
 func TestStatuslineFromUserConfig(t *testing.T) {
 	t.Parallel()
 	h := StartRun(t, Opts{UserConfig: statuslineConfig, Cols: 120, Script: "text \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\"\n\ntext \"done\""})
@@ -21,7 +21,8 @@ func TestStatuslineFromUserConfig(t *testing.T) {
 	for i := 1; i <= 5 && !strings.Contains(Strip(h.Output()), `"provider":"stub"`); i++ {
 		h.Settle()
 		h.Type("hi\r")
-		h.WaitScreen(func(Screen) bool { return strings.Count(Strip(h.Output()), " turns · ") >= i }, DefaultTimeout)
+		h.WaitText("done")
+		waitIdle(h)
 		h.Settle()
 	}
 	h.WaitOutput(`"provider":"stub"`)
@@ -31,6 +32,7 @@ func TestStatuslineFromUserConfig(t *testing.T) {
 	h.Settle()
 	h.Type("/status\r")
 	h.WaitText("statusline")
+	closePanel(h)
 	h.Exit(0)
 }
 
@@ -41,12 +43,12 @@ func TestStatuslineFromUntrustedWorkspaceIgnored(t *testing.T) {
 		writeFile(t, filepath.Join(ws, ".abhed", "config.json"), `{"statusline":{"command":"echo from-the-repo"}}`)
 	}})
 	h.WaitText("Trust this file?")
-	h.Type("d\n")
+	h.Type("1\n")
 	h.WaitText("Type a task")
 	h.Settle()
 	h.Type("hi\r")
 	h.WaitText("done")
-	h.WaitText("turns")
+	waitIdle(h)
 	for _, line := range strings.Split(Strip(h.Output()), "\n") {
 		if strings.TrimSpace(line) != "from-the-repo" {
 			continue

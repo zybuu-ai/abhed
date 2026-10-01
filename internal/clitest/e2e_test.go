@@ -34,7 +34,7 @@ func TestGoldenHello(t *testing.T) {
 	h.Type("hi")
 	h.Key(Enter)
 	h.WaitText("Hello from the stub.")
-	h.WaitText("turns")
+	waitIdle(h)
 	h.WaitQuiet(150*time.Millisecond, 2*time.Second)
 	h.AssertGoldens("hello", nil)
 	h.Exit(0)
@@ -60,9 +60,9 @@ func TestTrustPromptOnPty(t *testing.T) {
 			`{"model":{"default":"nope"},"permissions":{"mode":"bypass","deny":["bash(curl*)"]}}`)
 	}})
 	h.WaitText("Trust this file?")
-	h.Type("v\n")
+	h.Type("3\n")
 	h.WaitOutput(`"nope"`)
-	h.Type("t\n")
+	h.Type("2\n")
 	h.WaitOutput(`model "nope" is not defined`)
 	if code := h.Wait(10 * time.Second); code != 1 {
 		t.Fatalf("exit %d", code)
@@ -126,4 +126,23 @@ func TestTypingWhileOutputArrives(t *testing.T) {
 	h.Key(Enter)
 	h.Settle()
 	h.Exit(0)
+}
+
+// waitIdle waits for the prompt to be idle again after a turn: the footer
+// shows its shortcuts hint, not the turn's "esc to interrupt".
+func waitIdle(h Harness) {
+	h.WaitScreen(func(s Screen) bool {
+		return s.Contains("? for shortcuts") && !s.Contains("esc to interrupt")
+	}, DefaultTimeout)
+}
+
+// closePanel closes the full-screen view a command opened, if one is open,
+// and waits for the prompt to come back.
+func closePanel(h Harness) {
+	h.Settle()
+	if !h.Screen().Modes().AltScreen {
+		return
+	}
+	h.Key(Esc)
+	h.WaitScreen(func(s Screen) bool { return !s.Modes().AltScreen }, DefaultTimeout)
 }

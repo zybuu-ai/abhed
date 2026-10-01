@@ -99,10 +99,12 @@ The command reads the session's status as one JSON object on stdin:
 {"model":"qwen3-coder:30b","provider":"local","mode":"default","mode_locked":false,
  "context_tokens":5120,"context_percent":8,"tokens_in":20480,"tokens_out":900,
  "background_tasks":0,"waiting_ask":false,"sandbox_tier":"process","network":false,
- "record":"memory","git_branch":"main"}
+ "record":"memory","git_branch":"main","cwd":"~/src/app"}
 ```
 
-Its first line is shown after each task and in `/status`. It runs under the
+On a terminal its first line replaces the footer's second row, run again at
+most once a second as the session changes; in a piped session it is printed
+after each task; `/status` shows it too. It runs under the
 process sandbox with the network off, whatever the session's tier or
 `sandbox.allow_network`, for at most 300 ms. Where the process sandbox is
 not available it does not run at all: the status line is empty and one

@@ -58,9 +58,8 @@ func TestInvariantDenyWinsInEveryMode(t *testing.T) {
 			}
 			h.Type("/permissions allow bash(curl *)")
 			h.Key(clitest.Enter)
-			h.WaitText("Allow bash(curl *) for this session?")
-			h.Type("yes")
-			h.Key(clitest.Enter)
+			answer(h, "Allow bash(curl *) for this session?", "1")
+			h.WaitText("session allow rule added")
 			h.Type("fetch it")
 			h.Key(clitest.Enter)
 			h.WaitText("done")
@@ -77,15 +76,18 @@ func TestInvariantDenyWinsInEveryMode(t *testing.T) {
 // hook's "allow" approves nothing.
 func TestInvariantNoAutoApprove(t *testing.T) {
 	for _, keys := range [][]clitest.Key{{clitest.Down, clitest.Enter}, {"1"}, {clitest.Enter}} {
-		h := start(t, clitest.Opts{Script: "tool write {\"path\":\"notes.txt\",\"content\":\"x\"}\n\ntext \"done\""})
+		h := start(t, clitest.Opts{Script: "tool write {\"path\":\"{{WS}}/notes.txt\",\"content\":\"x\"}\n\ntext \"done\""})
 		h.Type("write notes")
 		h.Key(clitest.Enter)
-		h.WaitText("notes.txt")
+		h.WaitText("Create notes.txt?")
 		h.Key(keys...)
 		time.Sleep(300 * time.Millisecond)
 		if got := approvedBy(t, h.Record()); len(got) != 0 {
 			t.Fatalf("keys %q pressed as the question appeared approved %v", keys, got)
 		}
+		time.Sleep(guard)
+		h.Key(clitest.Esc) // No, and the turn stops
+		h.WaitText("Declined")
 		h.Exit(0)
 	}
 	h := start(t, clitest.Opts{Piped: true, Script: "tool write {\"path\":\"notes.txt\",\"content\":\"x\"}\n\ntext \"done\""})
@@ -110,8 +112,8 @@ func TestInvariantDestructiveAlwaysConfirms(t *testing.T) {
 		if s.Contains("Always") || s.Contains("always allow") {
 			t.Fatalf("%s: a destructive command offered to always allow", mode)
 		}
-		h.Type("n")
-		h.WaitText("done")
+		answer(h, "Run this command?", "2") // No
+		h.WaitText("Declined")
 		if got := approvedBy(t, h.Record()); len(got) != 0 {
 			t.Fatalf("%s: a destructive command was approved: %v", mode, got)
 		}
@@ -122,7 +124,7 @@ func TestInvariantDestructiveAlwaysConfirms(t *testing.T) {
 // The managed configuration wins: /mode auto, bypass, /permissions allow and
 // /add-dir are refused under it.
 func TestInvariantManagedPolicyWins(t *testing.T) {
-	h := start(t, clitest.Opts{Managed: `{"permissions":{"mode":"default","allow":[]},"additional_dirs":["/srv"]}`})
+	h := start(t, clitest.Opts{Managed: `{"permissions":{"mode":"default","allow":[]},"additional_dirs":["/usr"]}`})
 	for _, c := range []struct{ line, want string }{
 		{"/mode auto", "refused"},
 		{"/permissions allow bash(make)", "managed configuration"},
@@ -171,11 +173,14 @@ func TestInvariantPermissionsCannotWidenPastManaged(t *testing.T) {
 	h.WaitText("session deny rule added")
 	h.Type("/clear")
 	h.Key(clitest.Enter)
+	h.WaitText("context cleared")
+	h.Settle()
 	h.Type("/permissions")
 	h.Key(clitest.Enter)
 	if s := h.WaitText("Permission rules"); s.Contains("bash(make)") {
 		t.Fatal("a session rule outlived /clear")
 	}
+	h.Key(clitest.Esc) // close the panel
 	h.Exit(0)
 }
 
@@ -192,6 +197,7 @@ func TestInvariantModeCycleNeverReachesAutoOrBypass(t *testing.T) {
 	h.Type("/mode auto")
 	h.Key(clitest.Enter)
 	h.WaitText("Switch to auto mode?")
+	time.Sleep(guard)
 	h.Key(clitest.Esc)
 	h.WaitText("mode stays")
 	for _, e := range h.Record().Events {
@@ -209,14 +215,19 @@ func TestInvariantRewindIsAFork(t *testing.T) {
 	h.Type("first")
 	h.Key(clitest.Enter)
 	h.WaitText("one")
-	h.Key(clitest.Esc, clitest.Esc)
-	h.WaitText("first")
+	h.WaitScreen(func(s clitest.Screen) bool { return s.Contains("? for shortcuts") }, clitest.DefaultTimeout)
+	h.Settle()
+	h.Type("/rewind")
 	h.Key(clitest.Enter)
+	answer(h, "Rewind to before which prompt?", "1")
+	answer(h, `Rewind to before "first"?`, "1") // the conversation only
+	h.WaitText("forked at step 0")
+	// Read once the session has ended, when its head names the last line.
+	h.Exit(0)
 	r := h.Record()
 	if !r.Verified || !slices.Contains(r.Types(), agent.EvForked) {
 		t.Fatalf("verified %v, types %v", r.Verified, r.Types())
 	}
-	h.Exit(0)
 }
 
 // The record is append-only: what the session did stays in it, in order,
@@ -250,9 +261,14 @@ func TestInvariantSecretsAreRedacted(t *testing.T) {
 	}
 	h := start(t, clitest.Opts{
 		Env:    []string{secrets.EnvFile + "=" + vault},
+		Args:   []string{"-allow", "bash(echo *)"},
 		Script: "text \"the token is " + canary + "\"\n\ntool bash {\"command\":\"echo " + canary + "\"}\n\ntext \"done\"",
 	})
 	h.Type("show me")
+	h.Key(clitest.Enter)
+	h.WaitText("the token is")
+	h.Settle()
+	h.Type("and run it")
 	h.Key(clitest.Enter)
 	s := h.WaitText("done")
 	if s.Contains(canary) || slices.ContainsFunc(h.Scrollback(), func(l string) bool { return strings.Contains(l, canary) }) {
@@ -272,6 +288,7 @@ func TestInvariantUntrustedHooksDoNotRun(t *testing.T) {
 	h := start(t, clitest.Opts{Script: `text "ok"`})
 	h.Type("/hooks")
 	h.Key(clitest.Enter)
-	h.WaitText("never approve")
+	h.WaitText("they never")
+	h.Key(clitest.Esc) // close the panel
 	h.Exit(0)
 }

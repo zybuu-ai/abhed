@@ -223,7 +223,8 @@ func start(t testing.TB, o Opts) *run {
 			t.Fatal(err)
 		}
 	}
-	h.stub = NewStub(t, o.Script)
+	// The script may name the run's paths; the stub's own URL is not known yet.
+	h.stub = NewStub(t, Script(strings.NewReplacer("{{HOME}}", h.home, "{{WS}}", h.ws).Replace(string(o.Script))))
 	h.writeFiles()
 	if o.Setup != nil {
 		o.Setup(h.home, h.ws)
@@ -822,8 +823,22 @@ func (h *run) closeAndWait(timeout time.Duration) int {
 	}
 	if h.tty != nil {
 		// Ctrl-U clears a half-typed line; Ctrl-D is then end of input to a
-		// cooked terminal and exit to the line editor.
+		// cooked terminal and exit at an idle prompt, so it is sent again
+		// until a turn still running has ended.
 		h.send([]byte{0x15, 4})
+		go func() {
+			for {
+				select {
+				case <-h.done:
+					return
+				case <-time.After(500 * time.Millisecond):
+					if h.Screen().Modes().AltScreen {
+						h.send([]byte("q")) // a full-screen view closes first
+					}
+					h.send([]byte{0x15, 4})
+				}
+			}
+		}()
 	} else if h.stdin != nil {
 		_ = h.stdin.Close()
 	}

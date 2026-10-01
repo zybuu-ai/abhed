@@ -28,7 +28,8 @@
 // in the workflow, so a test that stops running fails the build.
 //
 // In the strings of Args, Env, UserConfig and Managed, {{MODEL_URL}} is the
-// stub's base URL, {{HOME}} the run's HOME and {{WS}} its workspace.
+// stub's base URL, {{HOME}} the run's HOME and {{WS}} its workspace; Script
+// takes {{HOME}} and {{WS}}.
 package clitest
 
 import (

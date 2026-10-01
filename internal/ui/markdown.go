@@ -92,7 +92,7 @@ func (st *mdState) flush(s Style, width int) []string {
 		for _, r := range rows[2:] {
 			cells = append(cells, splitRow(r))
 		}
-		return renderTable(s, cells, width)
+		return renderTable(s, cells, width, true)
 	}
 	var out []string
 	for _, r := range rows {
@@ -488,13 +488,21 @@ func splitRow(line string) []string {
 // renderTable aligns the columns, which is the whole reason a table was used.
 // A table wider than the screen is shown a record at a time instead, since
 // a table cut at the edge loses exactly the columns that made it one.
-func renderTable(s Style, rows [][]string, width int) []string {
+// Cells are inline markdown when inline is set, as in a reply; a panel's
+// data is shown as written.
+func renderTable(s Style, rows [][]string, width int, inline bool) []string {
 	cols := 0
 	for _, r := range rows {
 		cols = max(cols, len(r))
 	}
 	widths := make([]int, cols)
-	cellText := func(c string) string { return renderRuns(s, parseInline(c, false)) }
+	cellSegs := func(c string) []seg {
+		if inline {
+			return parseInline(c, false)
+		}
+		return []seg{{text: c}}
+	}
+	cellText := func(c string) string { return renderRuns(s, cellSegs(c)) }
 	for _, r := range rows {
 		for i, c := range r {
 			widths[i] = max(widths[i], displayWidth(cellText(c)))
@@ -513,7 +521,7 @@ func renderTable(s Style, rows [][]string, width int) []string {
 				if i < len(head) {
 					name = head[i]
 				}
-				out = append(out, wrapSegs(s, append([]seg{{text: name + ": ", bold: true}}, parseInline(c, false)...), width, "  ", "    ")...)
+				out = append(out, wrapSegs(s, append([]seg{{text: name + ": ", bold: true}}, cellSegs(c)...), width, "  ", "    ")...)
 			}
 			out = append(out, "")
 		}

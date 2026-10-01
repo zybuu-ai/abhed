@@ -243,7 +243,7 @@ func (sb *surfaceBlock) lines(width int, s Style, expanded bool) []string {
 					rows[i] = append(rows[i], sanitize(c, false))
 				}
 			}
-			out = append(out, renderTable(s, rows, width)...)
+			out = append(out, renderTable(s, rows, width, false)...)
 		}
 	case BlockDiff:
 		for _, l := range strings.Split(strings.TrimRight(text, "\n"), "\n") {

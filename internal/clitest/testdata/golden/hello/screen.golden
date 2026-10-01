@@ -5,14 +5,16 @@
      ▗█▛  ▜█▖      model    stub-model
     ▗█▛▀▀▀▀▜█▖     work     ‹ws›
    ▗█▛      ▜█▖    sandbox  ‹tier› · no network
-  ▗██▖      ▗██▖   storage  memory (sessions do not survive restart)
+  ▗██▖      ▗██▖   storage  local record, chained (~/.abhed/records; abhed rec…
 
-Type a task, or /help. Ctrl-C interrupts, Ctrl-D exits.
+Type a task, or /help. Esc interrupts, Ctrl-C twice exits.
 
 ▲ hi
 
-Hello from the stub.
+● Hello from the stub.
 
-‹n› turns · ‹n› in / ‹n› out tokens · 75% cached (4.0x prefill)
-
+───────────────────────────────────────────────────────────────────────────────
 ▲
+───────────────────────────────────────────────────────────────────────────────
+  ● default mode · shift+tab                                    ? for shortcuts
+  stub-model · 13% context · 1.2k tokens · …/ws

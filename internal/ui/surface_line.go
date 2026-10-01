@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 )
 
 // LineAnswers is where a LineSurface reads answers: one typed line at a time.
@@ -264,21 +263,13 @@ func (l *LineSurface) read(ctx context.Context) (string, bool) {
 }
 
 // plainText drops what could drive the terminal or disguise the text:
-// control characters (escape sequences' introducer included) and format
-// characters, which take in bidi overrides and zero-width characters. Line
-// and paragraph separators become newlines; newlines and tabs stay.
+// escape sequences, control characters and format characters, which take in
+// bidi overrides and zero-width characters. Line and paragraph separators
+// become newlines; newlines stay, and a tab becomes spaces.
 func plainText(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n' || r == '\t':
-			return r
-		case r == '\u2028' || r == '\u2029':
-			return '\n'
-		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
-			return -1
-		}
-		return r
-	}, s)
+	// Escape sequences go whole, as the terminal's filter drops them: dropping
+	// only their ESC left "]0;title" and "[2J" in the text.
+	return sanitize(strings.NewReplacer("\u2028", "\n", "\u2029", "\n").Replace(s), false)
 }
 
 // singleLine is plainText for a field shown on one line (a title, a label, a

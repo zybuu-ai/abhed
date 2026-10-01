@@ -79,8 +79,18 @@ func ReadRecordFile(path string) (Record, error) {
 	}
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	if head, err := os.ReadFile(filepath.Join(filepath.Dir(path), "head", id)); err == nil { // #nosec G304 -- a head file beside the record the test reads
-		f := strings.Fields(string(head))
-		if len(f) < 2 || f[0] != strconv.FormatInt(lastSeq, 10) || f[1] != prevHash {
+		// The head is JSON ({"lines","seq","hash"}); an older one was "seq hash".
+		var h struct {
+			Seq  int64  `json:"seq"`
+			Hash string `json:"hash"`
+		}
+		if json.Unmarshal(head, &h) != nil {
+			if f := strings.Fields(string(head)); len(f) >= 2 {
+				h.Seq, _ = strconv.ParseInt(f[0], 10, 64)
+				h.Hash = f[1]
+			}
+		}
+		if h.Seq != lastSeq || h.Hash != prevHash {
 			ok = false
 		}
 	}

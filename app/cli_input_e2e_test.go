@@ -34,7 +34,7 @@ func TestE2EMentionSymlinkRefused(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(ws, "docs")); err != nil {
 		t.Skip(err)
 	}
-	h := clitest.Start(t, clitest.Opts{Script: `text "ok"`, Args: []string{"-C", ws}})
+	h := startAtPrompt(t, clitest.Opts{Script: `text "ok"`, Args: []string{"-C", ws}})
 	h.Type("read @docs/id_rsa")
 	h.Key(clitest.Enter)
 	h.WaitText("not sent")
@@ -53,7 +53,7 @@ func TestE2EMentionSymlinkRefused(t *testing.T) {
 func TestE2EUntrustedWorkspaceCommand(t *testing.T) {
 	ws := e2eWorkspace(t)
 	write(t, filepath.Join(ws, ".abhed", "commands", "deploy.md"), "DEPLOY-PROMPT")
-	h := clitest.Start(t, clitest.Opts{Script: `text "ok"`, Args: []string{"-C", ws}})
+	h := startAtPrompt(t, clitest.Opts{Script: `text "ok"`, Args: []string{"-C", ws}})
 	h.Type("/deploy")
 	h.Key(clitest.Enter)
 	h.WaitText("not trusted")
@@ -67,7 +67,7 @@ func TestE2EUntrustedWorkspaceCommand(t *testing.T) {
 // person's denied call.
 func TestE2EBangDenied(t *testing.T) {
 	ws := e2eWorkspace(t)
-	h := clitest.Start(t, clitest.Opts{Script: `text "ok"`, Args: []string{"-C", ws},
+	h := startAtPrompt(t, clitest.Opts{Script: `text "ok"`, Args: []string{"-C", ws},
 		Managed: `{"permissions":{"deny":["bash(cat *vault*)"]}}`})
 	h.Type("!cat my.vault")
 	h.Key(clitest.Enter)
@@ -76,4 +76,14 @@ func TestE2EBangDenied(t *testing.T) {
 		t.Fatal("the refusal is not in the record")
 	}
 	h.Exit(0)
+}
+
+// startAtPrompt starts the CLI on the pty and waits for its prompt: keys
+// typed before the editor takes the terminal arrive cooked.
+func startAtPrompt(t *testing.T, o clitest.Opts) clitest.Harness {
+	t.Helper()
+	h := clitest.Start(t, o)
+	h.WaitText("Type a task")
+	h.Settle()
+	return h
 }

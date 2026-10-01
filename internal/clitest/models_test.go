@@ -86,6 +86,8 @@ func TestModelStatusUsageOnPty(t *testing.T) {
 	h.Settle()
 	h.Type("/model\r")
 	h.WaitText("model-b · 64k context · local")
+	time.Sleep(400 * time.Millisecond) // a dialog takes no key in its first 300 ms
+	h.Key(Esc)                         // the list is a pick; Esc leaves the model as it is
 	h.WaitText("unchanged; /model <name> switches")
 	h.Settle()
 	h.Type("hi\r")
@@ -93,9 +95,11 @@ func TestModelStatusUsageOnPty(t *testing.T) {
 	h.Settle()
 	h.Type("/model b\r")
 	h.WaitText("switched to model-b")
+	closePanel(h)
 	h.Settle()
 	h.Type("/usage\r")
 	h.WaitText("prefill saving")
+	closePanel(h)
 	h.Settle()
 	h.Type("/status\r")
 	h.WaitText("turn limit")
@@ -103,12 +107,14 @@ func TestModelStatusUsageOnPty(t *testing.T) {
 	if !s.Contains("model-b (b)") || !s.Contains("memory only") {
 		t.Fatalf("status:\n%s", s.Text())
 	}
+	closePanel(h)
 	h.Settle()
 	h.Type("/effort\r")
 	h.WaitText("effort default")
+	closePanel(h)
 	h.Settle()
 	h.Type("again\r")
-	h.WaitText("two")
+	h.WaitText("● two")
 	h.Exit(0)
 	if !strings.Contains(string(h.Requests()[1].Body), `"model-b"`) {
 		t.Fatal("the switch did not reach the model")
@@ -128,15 +134,22 @@ func TestConfigCommand(t *testing.T) {
 	if s := h.Screen(); !strings.Contains(s.Text(), "managed") {
 		t.Fatalf("no source shown:\n%s", s.Text())
 	}
+	closePanel(h)
 	h.Settle()
 	h.Type("/config set permissions.mode plan\r")
 	h.WaitText("permissions.mode set in")
+	closePanel(h)
 	h.Settle()
 	h.Type("/config set sandbox.allow_network true\r")
+	h.WaitText("in your own configuration?")
+	time.Sleep(400 * time.Millisecond) // a number counts only with quiet around it
+	h.Type("2")
 	h.WaitText("sandbox.allow_network not changed")
+	closePanel(h)
 	h.Settle()
 	h.Type("/config set limits.max_turns 5\r")
 	h.WaitText("set by the managed configuration")
+	closePanel(h)
 	h.Exit(0)
 	data, _ := os.ReadFile(filepath.Join(h.Home(), ".abhed", "config.json"))
 	var cfg map[string]any

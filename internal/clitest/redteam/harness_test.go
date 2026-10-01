@@ -3,6 +3,7 @@ package redteam
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/clitest"
 )
@@ -13,7 +14,27 @@ const requireEnv = "ABHED_REQUIRE_CLITEST"
 // start runs the binary for one invariant test.
 func start(t *testing.T, o clitest.Opts) clitest.Harness {
 	t.Helper()
-	return clitest.Start(t, o)
+	h := clitest.Start(t, o)
+	if !o.Piped {
+		// Keys typed before the editor takes the terminal arrive cooked, an
+		// Enter as a new line, so typing waits for the prompt.
+		h.WaitText("Type a task")
+		h.Settle()
+	}
+	return h
+}
+
+// guard is a dialog's quiet: a key pressed sooner after it appears, or
+// after the key before it, is not an answer.
+const guard = 400 * time.Millisecond
+
+// answer chooses n in the dialog showing want, as a person would: after
+// the guard, a number standing alone.
+func answer(h clitest.Harness, want, n string) {
+	h.WaitText(want)
+	time.Sleep(guard)
+	h.Type(n)
+	time.Sleep(guard)
 }
 
 // The suite only counts as evidence once the harness runs it. With the

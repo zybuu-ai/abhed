@@ -16,7 +16,6 @@ func TestBudgetKeysIdle(t *testing.T) {
 	per := KeyBytes(h, keys, 30*time.Millisecond)
 	t.Logf("bytes per key at an idle prompt: mean %.1f p95 %d", Mean(per), P95(per))
 	h.Exit(0)
-	Pending(t, "A1", "the line editor redraws the whole line on each key")
 	AssertBytesPerKey(t, "idle prompt", per, Budgets.BytesPerKeyIdle)
 }
 
@@ -38,7 +37,6 @@ func TestBudgetDeltaLatency(t *testing.T) {
 	}
 	t.Logf("delta latency: %v", lat)
 	h.Exit(0)
-	Pending(t, "A2", "the line-buffered renderer holds a delta until its line ends")
 	AssertWithin(t, "first token", lat[0], Budgets.FirstToken)
 	AssertWithin(t, "steady delta", P95(lat[1:]), Budgets.DeltaSteady)
 }
