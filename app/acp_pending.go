@@ -8,27 +8,10 @@ import (
 	"errors"
 
 	"github.com/zybuu-ai/abhed/config"
-	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/linediff"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	abhed "github.com/zybuu-ai/abhed/sdk"
-	"github.com/zybuu-ai/abhed/store/local"
 )
-
-type eventSub struct {
-	session string
-	stop    chan struct{}
-}
-
-func (c *acpConn) unsubscribeSession(string)   {}
-func (c *acpConn) restartForTrust(*acpSession) {}
-func (c *acpConn) recorded(string) (*local.Store, local.Entry, *rpcError) {
-	return nil, local.Entry{}, refusal(errNoMethod, "the record's methods are not served yet")
-}
-func hawkeyeOf(*local.Store, local.Entry) hawkeye.Report { return hawkeye.Report{} }
-func writeHawkeyeExport(*local.Store, local.Entry, string) error {
-	return errors.New("export is not served yet")
-}
 
 func (c *acpConn) modeState(*acpSession) map[string]any          { return nil }
 func modeConfigOption(map[string]any) map[string]any             { return nil }
