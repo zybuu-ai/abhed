@@ -2,6 +2,8 @@ package app
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,5 +115,42 @@ func TestRebuildDoesNotRecordTheStartAgain(t *testing.T) {
 	}
 	if !hasType(evs, agent.EvWorkspaceDirAdded) || !hasType(evs, agent.EvModeChanged) {
 		t.Fatalf("the changes between turns are missing: %s", c.out.String())
+	}
+}
+
+// A -p run records each hook that blocks as hook.fired, as the terminal does.
+func TestHeadlessRecordsHookFired(t *testing.T) {
+	g := newSessRig(t)
+	guard := writeScript(t, `#!/bin/bash
+while IFS= read -r line; do
+  case "$line" in
+    *'"event":"tool_call"'*) echo '{"block":true,"reason":"no writes here"}' ;;
+    *) echo '{}' ;;
+  esac
+done
+`)
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + g.url +
+		`","model":"m","context_window":8192}}},"extensions":[{"name":"guard","command":"bash","args":[` + jsonQuote(guard) + `],"events":["tool_call"]}]}`
+	if err := os.WriteFile(filepath.Join(g.ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := g.cmd("-mode", "accept-edits", "-p", "write a.txt=hi").CombinedOutput()
+	if _, err := os.Stat(filepath.Join(g.ws, "a.txt")); err == nil {
+		t.Fatalf("the hook's block did not hold:\n%s", out)
+	}
+	evs := verified(t, g.record(), g.sessions()[0].ID)
+	fired := 0
+	for _, e := range evs {
+		if e.Type == agent.EvHookFired {
+			var f agent.HookFired
+			_ = json.Unmarshal(e.Payload, &f)
+			if f.Extension != "guard" || f.Event != "tool_call" || f.Verdict != "block" {
+				t.Fatalf("hook.fired: %+v", f)
+			}
+			fired++
+		}
+	}
+	if fired != 1 {
+		t.Fatalf("hook.fired recorded %d times:\n%s", fired, out)
 	}
 }

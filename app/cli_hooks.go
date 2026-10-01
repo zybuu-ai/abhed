@@ -59,12 +59,18 @@ func (c *cliState) attachHooks(loop *agent.Loop) {
 		return
 	}
 	loop.Hooks = cliHooks{host: c.hooks, st: c}
-	c.hooks.SetOnFired(func(f extension.Fired) {
-		rec := c.hookRecorder.Load()
-		if rec == nil {
+	recordFired(c.hooks, c.hookRecorder.Load)
+}
+
+// recordFired records each hook that fires as hook.fired, in the record
+// rec returns at the time; a -p run and the terminal share it.
+func recordFired(host *extension.Host, rec func() *agent.Recorder) {
+	host.SetOnFired(func(f extension.Fired) {
+		r := rec()
+		if r == nil {
 			return
 		}
-		if _, err := rec.Record(agent.EvHookFired, agent.ActorSystem, agent.Trusted, agent.HookFired{
+		if _, err := r.Record(agent.EvHookFired, agent.ActorSystem, agent.Trusted, agent.HookFired{
 			Extension: f.Extension, Event: string(f.Event), Verdict: f.Verdict,
 		}); err != nil {
 			warnf("could not record %s: %v", agent.EvHookFired, err)

@@ -381,6 +381,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
+	if extHost != nil && extHost.Len() > 0 {
+		recordFired(extHost, func() *agent.Recorder { return rec })
+	}
 
 	var (
 		reason     agent.TerminalReason
