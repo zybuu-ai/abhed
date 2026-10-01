@@ -98,9 +98,29 @@ var checkOwnersMigrated = func(ctx context.Context, pool *pgxpool.Pool) (bool, e
 	return ownersMigrated(ctx, pool)
 }
 
+// OwnerMigration says how the version 4 move runs.
+type OwnerMigration struct {
+	Policy OwnerPolicy
+	// Accounts are local accounts kept outside the users table, such as an
+	// auth.users_file; a username already in the table is taken from there.
+	Accounts []*auth.User
+	// AllowNoAccounts lets a local-only move run with no account at all,
+	// which would leave every old row where no one can reach it.
+	AllowNoAccounts bool
+	// Found, when set, is told how many accounts the move will use.
+	Found func(table, extra, distinct int)
+}
+
+// ErrNoOwnerAccounts refuses a local-only move that found no account while
+// rows under old owners exist: every one of them would be stranded.
+var ErrNoOwnerAccounts = errors.New("the session owner migration found no local accounts, " +
+	"so every existing session would be left under an owner no one signs in as. " +
+	"Point auth.users_file at the accounts, or pass --owners=unclaim or --force-no-accounts")
+
 // migrateOwners runs the version 4 move once, as a role that owns sessions,
-// against the accounts in the users table.
-func migrateOwners(ctx context.Context, pool *pgxpool.Pool, policy OwnerPolicy) ([]OwnerRemap, error) {
+// against the accounts in the users table and any given.
+func migrateOwners(ctx context.Context, pool *pgxpool.Pool, m OwnerMigration) ([]OwnerRemap, error) {
+	policy := m.Policy
 	if policy != OwnersLocalOnly {
 		policy = OwnersUnclaim
 	}
@@ -116,9 +136,24 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool, policy OwnerPolicy) 
 	if done, err := ownersMigrated(ctx, tx); err != nil || done {
 		return nil, err
 	}
-	accounts, err := ownerAccounts(ctx, tx)
+	table, err := ownerAccounts(ctx, tx)
 	if err != nil {
 		return nil, err
+	}
+	accounts := mergeAccounts(table, m.Accounts)
+	slog.Info("session owner migration accounts", "users_table", len(table),
+		"elsewhere", len(m.Accounts), "distinct", len(accounts))
+	if m.Found != nil {
+		m.Found(len(table), len(m.Accounts), len(accounts))
+	}
+	if len(accounts) == 0 && policy == OwnersLocalOnly {
+		stranded, err := legacyOwnedRows(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		if err := noAccounts(stranded, m.AllowNoAccounts); err != nil {
+			return nil, err
+		}
 	}
 	slog.Info("migrating session owners (schema version 4)", "owners", string(policy))
 	remaps, err := remapOwners(ctx, tx, accounts, policy)
@@ -139,6 +174,54 @@ func migrateOwners(ctx context.Context, pool *pgxpool.Pool, policy OwnerPolicy) 
 	logRemaps(remaps)
 	logFolds(folds)
 	return remaps, nil
+}
+
+// mergeAccounts is the table's accounts plus those given whose username the
+// table lacks, compared without regard to case.
+func mergeAccounts(table, extra []*auth.User) []*auth.User {
+	seen := map[string]bool{}
+	var out []*auth.User
+	for _, list := range [][]*auth.User{table, extra} {
+		for _, u := range list {
+			if u == nil || u.Username == "" || seen[strings.ToLower(u.Username)] {
+				continue
+			}
+			k := strings.ToLower(u.Username)
+			seen[k] = true
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// noAccounts is the verdict on a local-only move that found no account.
+func noAccounts(stranded int64, allow bool) error {
+	if stranded == 0 {
+		return nil
+	}
+	slog.Warn("session owner migration found no local accounts", "sessions_under_old_owners", stranded)
+	if allow {
+		return nil
+	}
+	return ErrNoOwnerAccounts
+}
+
+// legacyOwnedRows counts sessions in every tenant whose owner is neither
+// namespaced nor reserved: the rows a local-only move exists for.
+func legacyOwnedRows(ctx context.Context, tx pgx.Tx) (int64, error) {
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions NO FORCE ROW LEVEL SECURITY`); err != nil {
+		return 0, fmt.Errorf("owner migration: %w", err)
+	}
+	var n int64
+	err := tx.QueryRow(ctx, `SELECT count(*) FROM sessions
+		WHERE strpos(user_id, ':') = 0 AND user_id NOT IN ('', $1, $2)`, auth.Anonymous, SubagentUser).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("owner migration: count sessions: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE sessions FORCE ROW LEVEL SECURITY`); err != nil {
+		return 0, fmt.Errorf("owner migration: %w", err)
+	}
+	return n, nil
 }
 
 // ownerAccounts reads every local account's username and email, or none when

@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-01
+
 ### Security
 
 - The /console approval card drew a call's arguments in a box that
@@ -18,11 +20,12 @@ All notable changes to Abhed are recorded here. The format follows
   (Hangul fillers, braille blank, U+034F, a U+FE0F not after a symbol) are
   now written out as `⟨U+XXXX⟩` like other hidden characters, and /ide shows
   an argument the warning is about when its prompt does not draw it.
+  Affects earlier releases.
 - Bidi and zero-width characters in a tool call were drawn raw in the /ide
   Events and HawkEYE panels, the HawkEYE HTML report and `abhed hawkeye`,
   so a right-to-left override made `;fs- mr` read as `rm -sf`. These views
   now write them out as `⟨U+XXXX⟩`, as the approval prompts do. The JSON
-  report keeps the record's text as it is.
+  report keeps the record's text as it is. Affects earlier releases.
 - The interactive terminal, `abhed -p`, `abhed serve` and `abhed eval`
   redacted with the secrets stored when a session started, while bash reads
   the store at each call. A secret stored or changed during a session, and
@@ -30,7 +33,7 @@ All notable changes to Abhed are recorded here. The format follows
   the record and every later model request. These surfaces now follow the
   store as the SDK, `abhed acp` and `abhed rpc` already did: a value is
   redacted from the moment it is stored, and stays redacted once changed or
-  removed.
+  removed. Affects earlier releases.
 - A backslash-newline line continuation, or an expansion that splits words,
   hid a command from the deny, destructive and ask-rule checks, so bypass
   mode ran `rm \<newline>-rf dir`, `rm -\<newline>rf dir`,
@@ -44,13 +47,14 @@ All notable changes to Abhed are recorded here. The format follows
   deny or ask rules are set, a command whose words were split or glued this
   way asks, and no allow rule matches a command that needed more than its
   continuations joined. The prompt still shows the command as written, and
-  its reason says when continuations were joined.
+  its reason says when continuations were joined. Affects earlier releases.
 - `rm` with its recursive or force flags after an operand (`rm dir -rf`), or
   spelled long (`rm --recursive --force dir`), was not treated as a command
   with no undo, so bypass mode ran it without asking. Those flags now count
   wherever they appear before `--`, long ones by any prefix GNU rm accepts
   (`--rec`, `--forc`). An rm argument holding `$` or a backtick, whose value
-  is not known until it runs (`rm $F build`), is asked about too.
+  is not known until it runs (`rm $F build`), is asked about too. Affects
+  earlier releases.
 - A local account could take over another account's sessions by giving
   itself that person's email, or their username, as its own email. The
   server owned a session by the caller's email whenever one was set, and a
@@ -82,8 +86,8 @@ All notable changes to Abhed are recorded here. The format follows
   - A local account's email must be a plain address that no other account
     holds or is named, compared without regard to case, at `user add`,
     invite and open sign-up, and an administrator's account creation.
-  Existing session rows move to their account's new owner once, by `abhed
-  migrate`; see Upgrading.
+  Existing session rows are moved or unclaimed once by `abhed migrate`; see
+  Upgrading.
 - A trusted proxy that named its user `anonymous` (`X-Abhed-User:
   anonymous`) was the owner a request has when authentication is off, which
   owns every session in the tenant: it listed, replayed and answered the
@@ -92,13 +96,16 @@ All notable changes to Abhed are recorded here. The format follows
   `agent`, the owner of the CLI's subagent rows, in any case) is now an
   ordinary user, `proxy:anonymous` or `subject:agent`. Only a request that
   names no one is `anonymous`. A local account of that name was already
-  `local:anonymous`.
+  `local:anonymous`. Affects earlier releases.
 - A request that names no one who can own a session (a proxy's email that is
   not an address, a provider that sent no subject) is refused with 401 on
   every `/v1/` route, rather than creating sessions it could never open.
-- A local account made under the name of one that was removed inherited the
-  removed account's agent sessions, since both owned them as
-  `local:<username>`. Removing an account (`abhed user remove`, or an
+- A local account made under the name or email of one that was removed
+  inherited the removed account's agent sessions. Released versions owned a
+  session by the account's email, otherwise by its username, so a new
+  account given either inherited them. Affects earlier releases. With
+  owners now `local:<username>`, the same would hold for a reused username.
+  Removing an account (`abhed user remove`, or an
   edition's administrator) now moves the sessions it owned in its tenant to
   `unclaimed:local:<username>` in the same transaction as the delete, and the
   server's running ones with them. No identity owns an unclaimed session; an
@@ -116,10 +123,11 @@ All notable changes to Abhed are recorded here. The format follows
   end or change a session on the same server, before any write once the last
   check is 10 seconds old, and on a timer. A refused stream ends with an
   `event: refused`. An edition's own sign-in layer can end streams at once
-  with `Server.RecheckStreams`.
-- The in-memory and Postgres event stores could panic the writer when a
-  stream reader left at the moment an event was published.
-- An extension hook's `ask` no longer comes before deny rules and plan mode, where it could turn a refusal into a question a person might accept; a hook's `allow` is no opinion. A hook can now only tighten a decision.
+  with `Server.RecheckStreams`. Affects earlier releases.
+- An extension hook's `ask` no longer comes before deny rules and plan
+  mode, where it could turn a refusal into a question a person might
+  accept; a hook's `allow` is no opinion. A hook can now only tighten a
+  decision. Affects earlier releases.
 - Approval prompts now show hidden and control characters instead of letting
   them rewrite what is displayed. A tool call's own text could carry a
   carriage return, escape sequence, backspace or zero-width or bidi character
@@ -129,6 +137,7 @@ All notable changes to Abhed are recorded here. The format follows
   characters as escapes (`\r`, `\x1b`, `⟨U+200D⟩`) and say the call contains
   them. That warning covers every argument, including ones no preview draws,
   and the CLI prompt now previews `k8s_apply`, `task`, `ssh` and `web_fetch`.
+  Affects earlier releases.
 - In every release up to and including 1.2.1, a repository could ship a
   `.abhed/config.json` that Abhed applied whole in every mode: the CLI,
   `-p`, `acp`, `rpc`, `serve` and `resolve`. Such a file
@@ -265,7 +274,8 @@ All notable changes to Abhed are recorded here. The format follows
   or more, so a short value such as `postgres` does not refuse ordinary
   files; a stored value of 8 to 11 characters can still become a file name
   in a mode that approves writes without asking. While the secrets store
-  cannot be loaded, every `write` and `edit` is refused.
+  cannot be loaded, every `write` and `edit` is refused. Affects earlier
+  releases.
 - An SDK session, and so an `abhed rpc` or `abhed acp` session, redacted
   with the values stored when it started, while `bash` reads the store at
   each call. A secret stored during a long session and allowed by a rule
@@ -405,16 +415,24 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading
 
-- Stop every server on the old release, then run `abhed migrate` as the
-  owner, then start this release. `serve` and `user` running as the runtime
-  role refuse to start until the session owner migration (schema version 4)
-  and the account key indexes (schema version 5) have run, and a
-  `storage.single_role` server runs both at start. Version 5 makes usernames
-  and emails unique without regard to case; if two existing accounts already
-  share one, `abhed migrate` names them and stops, and runs once all but one
-  have another email or are removed. An old node
-  left running during a rolling upgrade writes sessions under the old owners
-  after the migration, and those sessions are then reachable by no one.
+- Two migrations stop a server from starting until they have run: the
+  session owner migration (schema version 4) and the account key indexes
+  (schema version 5). Stop every server on the old release, then run
+  `abhed migrate` as the owner, then start this release. `serve` and `user`
+  running as the runtime role refuse to start until both have run, and a
+  `storage.single_role` server runs both at start. An old node left running
+  during a rolling upgrade writes sessions under the old owners after the
+  migration, and those sessions are then reachable by no one.
+- Version 5 makes usernames and emails unique without regard to case, on
+  Postgres. If two existing accounts already share one, `abhed migrate`
+  names them and stops, and runs once all but one have another email or are
+  removed. Check for duplicates before the maintenance window, as the owning
+  role:
+  ```sql
+  SELECT lower(username), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;
+  SELECT lower(btrim(email)), count(*) FROM users
+    WHERE btrim(email) <> '' GROUP BY 1 HAVING count(*) > 1;
+  ```
 - The migration looks at each owner key on existing session rows and the
   local accounts **in that row's tenant** whose username or email is that key,
   without regard to case. What it does with a match depends on whether local
@@ -424,6 +442,13 @@ All notable changes to Abhed are recorded here. The format follows
     account (`local:<username>`), so a person keeps the sessions made under
     their email or their name. A key several accounts hold (an account whose
     email was another's name or email) becomes `unclaimed:<old key>`.
+  - The accounts it matches against are those in the Postgres `users` table
+    and, when `auth.users_file` is set (or the default `users.json` exists),
+    those in that file, one per username, each in its own tenant. `abhed
+    migrate` prints how many it found and where. Under `local-only` with no
+    account found while sessions under old owners exist, it refuses, since
+    every one of them would be stranded; pass `--owners=unclaim` or
+    `--force-no-accounts` to go on anyway.
   - `--owners=unclaim`, the default for every other `auth.mode` (`proxy`,
     `oidc`, local with a provider, or none): every matching key becomes
     `unclaimed:<old key>`. A proxy user or single sign-on identity could have
@@ -507,13 +532,29 @@ All notable changes to Abhed are recorded here. The format follows
 - `auth.Identity` has `Provider` and `EmailVerified`. An embedding
   application's own `auth.Provider` that does not set them is owned by the
   identity's subject, never its email.
-- Existing local accounts keep whatever email they have, even an invalid or
-  duplicate one; it no longer grants anything.
+- Existing local accounts keep whatever email they have, even an invalid
+  one; it no longer grants anything. In a users file a duplicate email is
+  kept too. On Postgres a username or email that two accounts share, without
+  regard to case, stops `abhed migrate` until it is resolved (see the first
+  item).
 - `tasks` with `"isolation": "worktree"` now counts as a mutating call: it
   asks in default mode, is refused in plan mode, and is refused where nobody
   can be asked (`-p`, `rpc`, unattended server runs) unless an allow rule
   names `tasks`. A script that relied on `-p` making worktrees needs
   `-allow tasks` or the rule in its configuration.
+- `rm` with an argument holding `$` or a backtick (`rm $F build`) is now
+  treated as a command with no undo, so it asks, in bypass mode too, and is
+  refused where nobody can be asked.
+- A command whose program is named by an expansion (`$x args`), or that sets
+  IFS and then expands it, always asks. Where deny or ask rules are set, a
+  command whose words were split or glued by line continuations, `$IFS`,
+  `$'...'` or brace lists asks, and an allow rule no longer matches a
+  command that needed more than its continuations joined. Unattended scripts
+  that run such commands need rewriting in plain form.
+- A request that names no one who can own a session (a proxy's
+  `X-Abhed-Email` that is not an address with no `X-Abhed-User`, or a
+  provider that sends no subject) is refused with 401 on every `/v1/` route.
+  Check a proxy's headers before upgrading.
 - `abhed rpc` and `abhed acp` sessions now have the CLI's tool set: they
   start the MCP servers and extensions a trusted workspace configuration
   names, load its skills, and can run subagents. A CI job on `abhed rpc`
@@ -524,14 +565,6 @@ All notable changes to Abhed are recorded here. The format follows
   `ListSessions` leaves out rows with a parent
   and returns `ParentID`; deleting a session marks its subagents' rows
   deleted too.
-- With no `allowed_hosts`, each `web_fetch` call asks in the default,
-  accept-edits, auto and plan modes unless an allow rule such as
-  `web_fetch(https://docs.python.org/*)` matches, since a URL can carry data
-  to any site; "always allow" is offered for any URL on the site. Bypass
-  (unless a managed policy disables it) runs it, a run with no one to ask
-  refuses it, and `abhed eval`, which approves every ask, fetches. With `allowed_hosts` set, calls to those
-  hosts do not ask on the scheme's default port; a URL naming another port
-  asks.
 - `url` is now a policy subject for MCP and extension tools. A tool whose
   only subject-like argument is `url` is matched on that URL, so deny and
   ask rules written as `mcp__x(https://…/*)` that never fired now do, and an
@@ -675,6 +708,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The in-memory and Postgres event stores could panic the writer when a
+  stream reader left at the moment an event was published.
 - /ide offered every permission mode, though a session may start only in
   the server's mode or in plan, and after the server refused one the status
   bar still named it. The selector now offers only those two, as /console
@@ -734,8 +769,8 @@ All notable changes to Abhed are recorded here. The format follows
   agent was put to the approver with its record withheld; the workbench drew
   no card and the run waited until interrupted. Such an ask is now refused by
   the system, saying why, as a subagent's already was.
-- An administrator got 404 replaying a scheduled run, which no identity
-  owns. An administrator may now read one in their tenant by id (`replay`,
+- An administrator got 404 replaying a scheduled run (scheduled runs come
+  from the Team edition's schedules), which no identity owns. An administrator may now read one in their tenant by id (`replay`,
   `events`, `hawkeye`), never continue it, and each read is recorded as
   `session.read` in the admin audit.
 - The admin Settings tab listed the shared tools and left out `recall`,
@@ -875,6 +910,14 @@ All notable changes to Abhed are recorded here. The format follows
   covers both schemes. A redirect to anything but the same URL (or its
   https upgrade) is handed back as a new call. Policy rules match the URL:
   `url` is now a subject key.
+- `web_fetch` asks by default. With no `allowed_hosts`, each call asks in
+  the default, accept-edits, auto and plan modes unless an allow rule such
+  as `web_fetch(https://docs.python.org/*)` matches, since a URL can carry
+  data to any site; "always allow" is offered for any URL on the site.
+  Bypass (unless a managed policy disables it) runs it, a run with no one to
+  ask refuses it, and `abhed eval`, which approves every ask, fetches. With
+  `allowed_hosts` set, calls to those hosts do not ask on the scheme's
+  default port; a URL naming another port asks.
 - Subagents in the console, `abhed rpc`, `abhed acp` and the SDK use the
   cluster logins and connected hosts of the session that started them,
   never another session's. The SDK's `Close`, a new `start` on `abhed rpc`
