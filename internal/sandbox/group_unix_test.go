@@ -138,3 +138,27 @@ func TestGroupTargetRefusesWideTargets(t *testing.T) {
 		t.Fatalf("groupTarget(4242) = %d, %v", target, err)
 	}
 }
+
+// killGroup's own path goes through groupTarget: no wide id reaches kill(2),
+// and a child's group is signalled as -pgid with SIGKILL.
+func TestKillGroupSignalsOnlyTheTarget(t *testing.T) {
+	type sent struct {
+		pid int
+		sig syscall.Signal
+	}
+	var calls []sent
+	orig := sysKill
+	sysKill = func(pid int, sig syscall.Signal) error { calls = append(calls, sent{pid, sig}); return nil }
+	defer func() { sysKill = orig }()
+	for _, pgid := range []int{0, 1, -1, -42, syscall.Getpgrp()} {
+		if err := killGroupNow(pgid); err == nil {
+			t.Fatalf("killGroupNow(%d) was not refused", pgid)
+		}
+	}
+	if len(calls) != 0 {
+		t.Fatalf("refused ids reached kill(2): %v", calls)
+	}
+	if err := killGroupNow(4242); err != nil || len(calls) != 1 || calls[0] != (sent{-4242, syscall.SIGKILL}) {
+		t.Fatalf("killGroupNow(4242): %v, calls %v", err, calls)
+	}
+}
