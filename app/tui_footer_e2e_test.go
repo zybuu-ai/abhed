@@ -134,8 +134,8 @@ func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	// /review runs git where commands run, and the container image has none,
-	// so the session gets a PATH with no container engine on it.
-	t.Setenv("PATH", pathWithout(t, "docker", "podman", "nerdctl"))
+	// so the session gets a PATH, inside the sandbox's view, with no engine.
+	t.Setenv("PATH", pathWithout(t, ws, "docker", "podman", "nerdctl"))
 	r := startTUI(t, stub, ws, 120, 30)
 	r.waitFor("the footer", false, func(s string) bool { return strings.Contains(s, "● default mode") })
 	r.send("!git --version\r")
@@ -154,14 +154,21 @@ func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
 	})
 }
 
-// pathWithout is a PATH of links to every program on PATH but the named ones.
-func pathWithout(t *testing.T, names ...string) string {
+// pathWithout is a PATH of links, in the git workspace ws, to every program
+// on PATH but the named ones.
+func pathWithout(t *testing.T, ws string, names ...string) string {
 	t.Helper()
 	skip := map[string]bool{}
 	for _, n := range names {
 		skip[n] = true
 	}
-	dir := t.TempDir()
+	dir := filepath.Join(ws, ".bin")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".git", "info", "exclude"), []byte(".bin/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
 		entries, _ := os.ReadDir(d)
 		for _, e := range entries {
