@@ -133,10 +133,23 @@ func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello world\nREVIEW-MARK\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// /review reads the diff with git where the session runs commands. The
+	// container tier's default image has no git, so no engine is reachable
+	// here and commands run on this host's git.
+	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
+	t.Setenv("CONTAINER_HOST", "unix:///nonexistent/podman.sock")
+	t.Setenv("CONTAINERD_ADDRESS", "/nonexistent/containerd.sock")
 	r := startTUI(t, stub, ws, 120, 30)
 	r.waitFor("the footer", false, func(s string) bool { return strings.Contains(s, "● default mode") })
+	r.send("!git --version\r")
+	r.waitFor("whether the session has git", true, func(s string) bool {
+		return strings.Contains(s, "git version") || strings.Contains(s, "Exit 127")
+	})
+	if !strings.Contains(r.term.All(), "git version") {
+		t.Fatalf("git does not run where the session runs commands, so /review cannot:\n%s", r.term.All())
+	}
 	r.send("/review\r")
-	r.waitFor("the mode put back", false, func(s string) bool { return strings.Contains(s, "mode: plan → default") })
+	r.waitFor("the mode put back", true, func(s string) bool { return strings.Contains(s, "mode: plan → default") })
 	r.drawn(200 * time.Millisecond)
 	r.waitFor("default mode in the footer", false, func(string) bool {
 		f := footerRows(r)
