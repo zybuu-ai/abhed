@@ -133,9 +133,8 @@ func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello world\nREVIEW-MARK\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// /review reads the diff with git where the session runs commands. The
-	// container tier's default image has no git, so no engine is reachable
-	// here and commands run on this host's git.
+	// /review runs git where commands run; the container image has none, so
+	// no engine is reachable here and the host's git is used.
 	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
 	t.Setenv("CONTAINER_HOST", "unix:///nonexistent/podman.sock")
 	t.Setenv("CONTAINERD_ADDRESS", "/nonexistent/containerd.sock")

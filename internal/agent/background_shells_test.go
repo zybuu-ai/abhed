@@ -631,7 +631,7 @@ func TestForegroundCommandMovesToTheBackground(t *testing.T) {
 		t.Fatal("the call did not return when moved")
 	}
 	id := shellIDIn.FindString(res.Content)
-	if res.IsError || id == "" || !strings.Contains(res.Content, "moved this command to the background") || !strings.Contains(res.Content, "before") {
+	if res.IsError || id == "" || !strings.Contains(res.Content, "moved this command to the background") {
 		t.Fatalf("result: %+v", res)
 	}
 	started := payloads[ShellStarted](r.events(t), EvShellStarted)
@@ -639,8 +639,11 @@ func TestForegroundCommandMovesToTheBackground(t *testing.T) {
 		t.Fatalf("shell.started: %+v", started)
 	}
 	waitFor(t, "the moved shell to end", func() bool { return hasEvent(r.events(t), EvShellEnded) })
-	if out := r.run(t, "shell_output", map[string]any{"shell_id": id}).Content; !strings.Contains(out, "after") || strings.Contains(out, "before") || !strings.Contains(out, "exited 0") {
-		t.Fatalf("shell_output: %s", out)
+	// The move can land before or after "before" is read; either way each
+	// line is shown once, in the call's result or in shell_output.
+	out := r.run(t, "shell_output", map[string]any{"shell_id": id}).Content
+	if !strings.Contains(out, "after") || !strings.Contains(out, "exited 0") || strings.Count(res.Content+out, "before") != 1 {
+		t.Fatalf("result: %s\nshell_output: %s", res.Content, out)
 	}
 }
 
