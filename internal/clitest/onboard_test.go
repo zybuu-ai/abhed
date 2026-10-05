@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,64 @@ func TestBudgetStartupWithSlowPodman(t *testing.T) {
 	t.Logf("startup with a slow podman: first %v, best of the rest %v", first, warm)
 	AssertWithin(t, "startup, cold", first, Budgets.StartupCold)
 	AssertWithin(t, "startup, warm", warm, Budgets.StartupWarm)
+}
+
+// brokenBwrap puts a bubblewrap that cannot make namespaces, as Ubuntu's
+// AppArmor default leaves it for an unprivileged user, and a docker whose
+// script is docker, first on PATH.
+func brokenBwrap(o Opts, docker string) Opts {
+	o.Setup = func(home, ws string) {
+		bin := filepath.Join(home, "bin")
+		stubs := map[string]string{
+			"bwrap":  "echo 'bwrap: setting up uid map: Permission denied' >&2; exit 1",
+			"docker": docker,
+		}
+		for name, body := range stubs {
+			if err := os.MkdirAll(bin, 0o700); err != nil {
+				panic(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+				panic(err)
+			}
+		}
+	}
+	o.Env = append(o.Env, "PATH={{HOME}}/bin:{{HOME}}/../bin:/usr/bin:/bin:/usr/sbin:/sbin")
+	return o
+}
+
+// Where bwrap is installed but cannot run, a session that requires no tier
+// still reaches the prompt without waiting for a container engine.
+func TestBudgetStartupWithBrokenBwrap(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process tier is bubblewrap only on Linux")
+	}
+	var warm time.Duration
+	for i := 0; i < 3; i++ {
+		h := StartRun(t, brokenBwrap(Opts{Podman: "sleep 3; exit 1"}, "sleep 3; exit 1"))
+		if d := h.WaitOutput(PromptGlyph); warm == 0 || d < warm {
+			warm = d
+		}
+		h.Exit(0)
+	}
+	t.Logf("startup with a broken bwrap and a slow engine: best of 3 %v", warm)
+	AssertWithin(t, "startup, broken bwrap", warm, Budgets.StartupWarm)
+}
+
+// Requiring the process tier where bwrap cannot run still refuses to start,
+// naming bwrap's reason, before any command could run.
+func TestBrokenBwrapRefusesARequiredTier(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process tier is bubblewrap only on Linux")
+	}
+	t.Parallel()
+	cfg := strings.Replace(DefaultUserConfig, `"min_tier":"none"`, `"min_tier":"process"`, 1)
+	h := StartRun(t, brokenBwrap(Opts{UserConfig: cfg, Piped: true, Args: []string{"-p", "hi"}}, "exit 1"))
+	code := h.Wait(15 * time.Second)
+	if code == 0 || !strings.Contains(h.Stderr(), "Permission denied") {
+		t.Fatalf("exit %d:\n%s", code, h.Stderr())
+	}
+	h2 := StartRun(t, brokenBwrap(Opts{UserConfig: cfg}, "exit 1"))
+	h2.WaitOutput("no sandbox backend meets")
 }
 
 // A task typed before the prompt is drawn is not lost, and its Enter, which

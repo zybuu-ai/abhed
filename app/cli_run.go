@@ -166,17 +166,23 @@ func run(a *App, workspace string, f *cliFlags) int {
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
 
-	sb, err := startSandbox(cfg, workspace)
+	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {
 		fail(err)
 	}
-	// With a floor the answer is at least the process tier, never none.
+	// With a floor the session does not wait: a process floor is never
+	// none, and a none floor is shown as such until the answer is in.
 	if sb.floor == "" && sb.Tier() == sandbox.TierNone {
 		fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", sb.Describe())
 	}
 	tier := string(sb.floor)
-	if tier == "" {
+	switch sb.floor {
+	case "":
 		tier = string(sb.Tier())
+	case sandbox.TierNone:
+		// Not known yet, so the network is not described either way; each
+		// result names the tier it ran under.
+		tier = ""
 	}
 
 	// Custom providers are registered before any provider is resolved, so a
