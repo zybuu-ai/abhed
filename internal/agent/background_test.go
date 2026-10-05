@@ -324,6 +324,7 @@ func TestSteerWakesWaitingRun(t *testing.T) {
 		done <- reason
 	}()
 	waitFor(t, "the run to wait on its child", func() bool { return r.m.parentAnswers.Load() == 1 })
+	waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
 	before := r.m.calls.Load()
 	r.l.Steer("also this")
 	waitFor(t, "the steer to be answered", func() bool { return r.m.calls.Load() > before })
