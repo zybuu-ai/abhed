@@ -547,6 +547,8 @@ func TestRunEndCountsOwedResults(t *testing.T) {
 			if c.arm != nil {
 				c.arm(r)
 			}
+			// The child's call must be counted first, or it passes for the turn's.
+			waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
 			calls := r.m.calls.Load()
 			done := make(chan TerminalReason, 1)
 			go func() {
