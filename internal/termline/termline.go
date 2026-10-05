@@ -40,8 +40,16 @@ const (
 	withheldEcho = "the terminal did not show this line as typed, so its text is not recorded"
 	// maxHeld bounds the withheld lines kept to scrub from recorded output.
 	maxHeld = 256
+	// maxGrams bounds the pieces of withheld text Scrub searches for.
+	maxGrams = 1 << 16
+	// unsearchable stands for the whole recorded output when there is more
+	// withheld text than Scrub searches for.
+	unsearchable = "[output withheld: more text was withheld from the record than can be searched for and taken out]"
 	// scrubbed stands in recorded output for a line that held a withheld line's text.
 	scrubbed = "[withheld]"
+	// tooManyHeld stands for the whole recorded output once more lines were
+	// withheld than are kept to scrub.
+	tooManyHeld = "[output withheld: more lines were withheld from the record than are kept to take out of it, so none of the output is recorded]"
 	// unscrubbable stands for the whole recorded output when a withheld line
 	// was edited as typed, so what the terminal showed of it is not its text.
 	unscrubbable = "[output withheld: a line withheld from the record was edited as it was typed, so what the terminal showed of it cannot be found and taken out]"
@@ -113,6 +121,8 @@ type Capture struct {
 	// still have echoed one, as when it was typed ahead of read -s turning
 	// echo off, so Scrub takes them out of any output that is recorded.
 	held []heldLine
+	// heldLost is set once a withheld line was let go to bound held.
+	heldLost bool
 	// Hidden, when set, says whether a line is being read unshown now; a
 	// pasted line judged while it is, is withheld.
 	Hidden func() bool
@@ -211,6 +221,36 @@ func (c *Capture) Abandon() {
 	c.line, c.edit, c.started, c.cut = c.line[:0], false, false, false
 }
 
+// Took is what a program other than the shell took of keys sent to it.
+type Took int
+
+const (
+	TookNothing Took = iota
+	TookKeys         // raw keys, read out of canonical mode
+	TookLine         // a line it read in canonical mode, ended by ^D or a signal key
+)
+
+// ProgramTook judges keys sent while a program has the terminal; a line it
+// reads in canonical mode is followed to its Enter, so a password typed ahead is held.
+func ProgramTook(canonical bool, data []byte) Took {
+	switch {
+	case !canonical:
+		return TookKeys
+	case bytes.ContainsAny(data, "\x03\x04\x1a\x1c"):
+		return TookLine
+	}
+	return TookNothing
+}
+
+// Yield forgets the line being typed as one a program took with ^D or a
+// signal key, holding its text for Scrub: the terminal echoed it.
+func (c *Capture) Yield() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hold(&Entered{Line: string(c.line), Secret: true, cut: c.cut})
+	c.line, c.edit, c.started, c.cut = c.line[:0], false, false, false
+}
+
 // edited marks the line as changed by a key the capture cannot follow.
 func (c *Capture) edited() {
 	c.edit = true
@@ -262,7 +302,13 @@ func (c *Capture) Entered(e *Entered) {
 		return
 	}
 	if e.Line == "" && !e.Edited {
-		return // an empty line
+		// Empty, but Ctrl-U may have thrown away text the terminal showed.
+		if e.cut {
+			c.mu.Lock()
+			c.hold(e)
+			c.mu.Unlock()
+		}
+		return
 	}
 	c.mu.Lock()
 	if len(c.pending) >= maxPending {
@@ -278,6 +324,32 @@ func (c *Capture) Entered(e *Entered) {
 		return
 	}
 	time.AfterFunc(EchoWait, func() { c.judge(e) })
+}
+
+// Send queues the line a key sequence ends before writing it, since its echo can come back first;
+// a failed write withdraws a pasted line not yet judged, while a typed line's record stands.
+func (c *Capture) Send(e *Entered, write func() error) error {
+	if e == nil {
+		return write()
+	}
+	c.Entered(e)
+	if err := write(); err != nil {
+		c.withdraw(e)
+		return err
+	}
+	return nil
+}
+
+// withdraw takes a line out of those waiting to be judged, unrecorded.
+func (c *Capture) withdraw(e *Entered) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, p := range c.pending {
+		if p == e {
+			c.pending = append(c.pending[:i], c.pending[i+1:]...)
+			return
+		}
+	}
 }
 
 // Flush judges every line still waiting, when the shell has ended.
@@ -352,8 +424,11 @@ func (c *Capture) hold(e *Entered) {
 		c.held[i].uncertain = c.held[i].uncertain || h.uncertain
 		return
 	}
+	// An evicted line may still be in the recorded tail, so past the bound
+	// Scrub withholds the whole output rather than forget one.
 	if len(c.held) >= maxHeld {
 		c.held = c.held[1:]
+		c.heldLost = true
 	}
 	c.held = append(c.held, h)
 }
@@ -368,8 +443,11 @@ func (c *Capture) hold(e *Entered) {
 // still waiting to be judged are judged first by Flush, which the caller runs.
 func (c *Capture) Scrub(text string) string {
 	c.mu.Lock()
-	held := slices.Clone(c.held)
+	held, lost := slices.Clone(c.held), c.heldLost
 	c.mu.Unlock()
+	if lost {
+		return tooManyHeld
+	}
 	grams := map[string]bool{}
 	short := map[string]bool{}
 	for _, h := range held {
@@ -382,6 +460,11 @@ func (c *Capture) Scrub(text string) string {
 		}
 		for i := 0; i+probeMin <= len(h.text); i++ {
 			grams[h.text[i:i+probeMin]] = true
+		}
+		// Bounded: at the extreme the pieces of every held line took
+		// hundreds of megabytes. Past the bound, nothing is searched for.
+		if len(grams) > maxGrams {
+			return unsearchable
 		}
 	}
 	if len(grams) == 0 && len(short) == 0 {

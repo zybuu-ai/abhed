@@ -108,6 +108,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		// same way a real session is. The build-tool defaults stay for corpora
 		// that compile and test code.
 		must(pol.AddAllow(cfg.Permissions.Allow...))
+		must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
 		must(pol.AddAllow(evalAllow...))
 
 		store := agent.NewMemStore()

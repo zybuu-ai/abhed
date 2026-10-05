@@ -149,6 +149,27 @@ func (v *workspaceView) allowed(abs string, dir bool) bool {
 	return true
 }
 
+// typed is p as the person named it, links not followed. A write rule written
+// against a link to a folder names this spelling, which resolve follows away.
+func (v *workspaceView) typed(p string) string {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(v.sess.Root, filepath.FromSlash(p))
+}
+
+// writeDenial puts each spelling to the write rules, as the agent's write
+// would be, and returns the first deny.
+func writeDenial(pol *policy.Engine, spellings ...string) *policy.Result {
+	for _, p := range spellings {
+		args, _ := json.Marshal(map[string]string{"path": p})
+		if d := pol.Evaluate("write", true, args); d.Decision == policy.Deny {
+			return &d
+		}
+	}
+	return nil
+}
+
 // realPath follows symlinks in the part of p that exists; see tools.RealPath.
 func realPath(p string) string { return tools.RealPath(p) }
 

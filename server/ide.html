@@ -310,6 +310,25 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 #crow .hint{flex:1 1 0;min-width:0;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #send{flex:none;height:28px;padding:0 14px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600}
 #send:disabled{opacity:.5;cursor:default}
+.editmsg{display:block;margin:6px 0 0 auto;padding:1px 8px;border:1px solid var(--line-strong);border-radius:5px;background:var(--surface);color:var(--ink-2);font:11.5px var(--sans)}
+.editmsg:hover{border-color:var(--accent);color:var(--ink)}
+#files{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}#files:empty{display:none}
+.chipf{display:flex;align-items:center;gap:6px;max-width:100%;padding:2px 4px 2px 8px;border:1px solid var(--line-strong);border-radius:12px;font:11.5px var(--mono);color:var(--ink-2);background:var(--sunken)}
+.chipf b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.chipf.bad{border-color:var(--bad);color:var(--bad)}.chipf span{font-family:var(--sans)}
+.chipf .x{width:16px;height:16px;border-radius:8px;display:grid;place-items:center;color:var(--muted)}
+.chipf .x:hover{background:var(--line);color:var(--ink)}
+#rnotes{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}#rnotes:empty{display:none}
+#rcbox{position:fixed;z-index:20;width:min(420px,calc(100vw - 32px));padding:8px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.25);font:12px var(--sans);color:var(--muted)}
+#rcbox textarea{display:block;width:100%;min-height:54px;margin:6px 0;padding:6px;font:12.5px var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--line-strong);border-radius:5px;resize:vertical}
+#rcbox .btns{display:flex;gap:6px;justify-content:flex-end}#rcbox .btns button{padding:3px 10px;border:1px solid var(--line-strong);border-radius:5px}
+.rc-add::before,.rc-has::before{content:'+';display:grid;place-items:center;width:16px;height:16px;margin-top:2px;border-radius:4px;font:600 13px var(--sans);color:#fff;background:var(--accent);cursor:pointer}
+.rc-has::before{content:'✎';font-size:11px}
+#attach{flex:none;width:28px;height:28px;display:grid;place-items:center;border:1px solid var(--line-strong);border-radius:6px;color:var(--muted)}
+#attach:hover{color:var(--accent);border-color:var(--accent)}
+#agent.dropping #composer,#tree.drop,.tree .row.drop{outline:2px dashed var(--accent);outline-offset:-2px}
+#ahead .ttl input{width:100%;font:600 13px var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:1px 4px}
+#ahead .ico{border:0;padding:3px;display:grid;place-items:center;color:var(--muted)}#ahead .ico:hover{color:var(--ink)}
 #slash{position:absolute;left:10px;right:10px;bottom:100%;margin-bottom:4px;background:var(--raised);border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 #slash button{display:flex;gap:10px;width:100%;padding:6px 10px;text-align:left}
 #slash button[aria-selected="true"]{background:var(--accent-soft)}
@@ -365,6 +384,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
     <button type="button" data-view="explorer" title="Explorer" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h7l2 2h9v11H3z"/></svg></button>
     <button type="button" data-view="search" title="Search" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg></button>
     <button type="button" data-view="changes" title="Changes" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="9" r="2.2"/><path d="M6 7.2v9.6M18 11.2c0 4-12 1.5-12 5.6"/></svg><span class="badge" id="b-changes" hidden></span></button>
+    <button type="button" data-view="files" title="Files to download" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v11M7 10.5l5 5 5-5M4 19h16"/></svg></button>
     <button type="button" data-view="tools" title="Tools and permissions" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3 18l3 3 6.2-6.2a4 4 0 0 0 5.3-5.3l-2.6 2.6-2.4-.6-.6-2.4z"/></svg></button>
     <button type="button" data-view="extensions" title="Extensions, MCP servers and skills" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h7v7H4zM13 13h7v7h-7zM4 13h7v7H4zM16.5 3.5l4 4-4 4-4-4z"/></svg></button>
     <button type="button" data-view="hawkeye" title="HawkEYE" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg><span class="badge warn" id="b-hawk" hidden></span></button>
@@ -404,6 +424,10 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
       <div class="vhead">Changes<span class="sp"></span><button type="button" id="changes-reload">reload</button></div>
       <div class="vbody" id="changes"></div>
     </section>
+    <section class="view" id="v-files" hidden>
+      <div class="vhead">Files<span class="sp"></span><button type="button" id="files-reload">reload</button></div>
+      <div class="vbody" id="dl"></div>
+    </section>
     <section class="view" id="v-tools" hidden>
       <div class="vhead">Tools and permissions</div>
       <div class="vbody" id="tools"></div>
@@ -442,12 +466,20 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
   <div class="split" id="split-agent" role="separator" aria-orientation="vertical"></div>
 
   <section id="agent" aria-label="Agent">
-    <div id="ahead"><span class="ttl" id="attl">New session</span><button type="button" id="stop" hidden>Stop</button></div>
+    <div id="ahead"><span class="ttl" id="attl">New session</span>
+      <button type="button" class="ico" id="s-rename" title="Rename this session" aria-label="Rename this session" hidden><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 2.5l2.5 2.5L6 12.5 3 13l.5-3z"/></svg></button>
+      <button type="button" class="ico" id="s-resume" title="Continue in a terminal: copy the command" aria-label="Copy the command that continues this session in a terminal" hidden><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></svg></button>
+      <button type="button" class="ico" id="s-export" title="Export this session: the transcript, or the record" aria-label="Export this session" hidden><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M5 7l3 3 3-3M2.5 11v2.5h11V11"/></svg></button>
+      <button type="button" id="stop" hidden>Stop</button></div>
     <div id="txwrap"><div id="tx" aria-live="polite"></div><button type="button" id="jump" hidden>Jump to latest ↓</button></div>
     <form id="composer">
       <div id="slash" hidden></div>
       <textarea id="q" placeholder="Describe a change, or type / for commands" aria-label="Message the agent"></textarea>
+      <div id="files" aria-label="Attached files"></div>
+      <div id="rnotes" aria-label="Review comments sent with your next message"></div>
       <div id="crow">
+        <input type="file" id="file" multiple hidden><input type="file" id="upfile" multiple hidden>
+        <button type="button" id="attach" title="Attach files or images; you can also drop or paste them" aria-label="Attach files"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.5 5.5 6 10a1.8 1.8 0 0 0 2.5 2.5l4.5-4.5a3.4 3.4 0 0 0-4.8-4.8L3.4 8.5a5 5 0 0 0 7 7l3.6-3.6"/></svg></button>
         <select id="mode" aria-label="Permission mode">
           <option value="default">default</option><option value="plan">plan</option>
           <option value="accept-edits">accept-edits</option><option value="auto">auto</option>
@@ -461,16 +493,19 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 
   <footer id="status">
     <span id="s-conn" class="off">● offline</span>
-    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span><span id="s-bg" hidden></span>
+    <span id="s-sandbox"></span><span id="s-mode"></span><span id="s-model"></span><button type="button" id="s-bg" hidden title="Background tasks"></button>
     <span class="sp"></span>
     <span id="s-ctx" hidden>context<span id="meter"><i></i></span><span id="s-ctxn"></span></span>
     <span id="s-tok"></span>
     <button type="button" id="s-find" hidden></button>
+    <button type="button" id="s-notify" hidden></button>
   </footer>
 </div>
 
 <div id="pal" hidden><div class="box" role="dialog" aria-label="Command palette"><input id="palq" placeholder="Type a command, a file or a session" autocomplete="off" spellcheck="false"><div id="pall"></div></div></div>
 <div id="ctx" role="menu" hidden></div>
+<div id="rcbox" role="dialog" aria-label="Comment on a line" hidden><div id="rc-at"></div><textarea id="rc-text" aria-label="Your comment"></textarea>
+  <div class="btns"><button type="button" id="rc-cancel">Cancel</button><button type="button" id="rc-add">Add to next message</button></div></div>
 
 <script>
 'use strict';
@@ -491,6 +526,8 @@ async function api(path, opts){
   if(!r.ok){ let m = r.statusText, b = {}; try{ b = await r.json() || {}; m = b.error || m; }catch{}
     // A refused identity (dropped from require_group) has had its sign-in ended; say why.
     if(r.status === 403 && b.refused){ signInEnded(b.reason); m = b.reason || m; }
+    // Every panel shows this message; the server's bare "unauthorized" says nothing about what to do.
+    if(r.status === 401) m = 'your sign-in ended; sign in again';
     const e = new Error(m); e.status = r.status; e.node = r.headers.get('Abhed-Session-Node'); throw e; }
   return r.status === 204 ? null : r.json();
 }
@@ -501,6 +538,8 @@ function signInEnded(why){
   if(signInGone) return; signInGone = true;
   if(es){ es.close(); es = null; }
   setLive(false); setConn(false);
+  // Signed out, the page cannot follow background work, so it stops claiming any.
+  bgLive = false; bgTasks.clear(); drawBg(); drawStop();
   const n = el('div', 'sys bad', why ? 'Your sign-in ended: ' + why + '. ' : 'Your sign-in ended. '), a = el('a', '', 'Sign in again');
   a.href = why ? '/?refused=' + encodeURIComponent(why) + '&return=/ide' : '/?return=/ide'; n.appendChild(a); add(n);
 }
@@ -529,6 +568,7 @@ function setView(name){
   $('app').classList.remove('noside'); $('app').dataset.pane = 'side';
   store.set('view', name);
   if(name === 'changes') loadChanges();
+  if(name === 'files') loadDownloads();
   if(name === 'hawkeye') loadHawkeye();
   if(name === 'explorer' && (!$('tree').firstChild || treeStale)) refreshTree();
   if(name === 'search') setTimeout(() => { $('sq').focus(); $('sq').select(); });
@@ -607,9 +647,52 @@ function diffEditor(){
   if(!diff){
     diff = M.editor.createDiffEditor(diffHost, {...editorOptions, renderSideBySide:!diffInline, useInlineViewWhenSpaceIsLimited:false,
       originalEditable:false, ignoreTrimWhitespace:false, renderMarginRevertIcon:false, renderIndicators:true, minimap:{enabled:false}});
-    diff.onDidUpdateDiff(drawHunks); wire(diff.getModifiedEditor());
+    diff.onDidUpdateDiff(drawHunks); wire(diff.getModifiedEditor()); wireComments(diff.getModifiedEditor());
   }
   return diff;
+}
+// A click in the diff's gutter, or Comment on this line, writes a note on that line of
+// the changed file; the notes go with the next message, as a review's comments do.
+function wireComments(ed){
+  ed.updateOptions({glyphMargin:true});
+  const hover = ed.createDecorationsCollection(), T = M.editor.MouseTargetType;
+  const gutter = e => (e.target.type === T.GUTTER_GLYPH_MARGIN || e.target.type === T.GUTTER_LINE_DECORATIONS) && e.target.position;
+  ed.onMouseMove(e => { const at = gutter(e);
+    hover.set(at ? [{range: new M.Range(at.lineNumber, 1, at.lineNumber, 1), options:{glyphMarginClassName:'rc-add', glyphMarginHoverMessage:{value:'Comment on this line'}}}] : []); });
+  ed.onMouseLeave(() => hover.clear());
+  ed.onMouseDown(e => { const at = gutter(e); if(at) commentAt(ed, at.lineNumber); });
+  ed.addAction({id:'abhed.comment', label:'Comment on this line', contextMenuGroupId:'navigation', contextMenuOrder:1,
+    run: () => { const p = ed.getPosition(); if(p) commentAt(ed, p.lineNumber); }});
+  noteDecos = ed.createDecorationsCollection();
+}
+let noteDecos = null;
+function commentAt(ed, line){
+  const t = activeTab(); if(!t || t.kind !== 'diff' || !ed.getModel()) return;
+  const box = $('rcbox'), r = ed.getDomNode().getBoundingClientRect();
+  const y = r.top + ed.getTopForLineNumber(line + 1) - ed.getScrollTop();
+  $('rc-at').textContent = reveal(t.path) + ':' + line; $('rc-text').value = '';
+  box.hidden = false;
+  box.style.left = Math.max(8, Math.min(r.left + 40, window.innerWidth - box.offsetWidth - 8)) + 'px';
+  box.style.top = Math.max(8, Math.min(y, window.innerHeight - box.offsetHeight - 8)) + 'px';
+  box.dataset.path = t.path; box.dataset.line = line; box.dataset.code = ed.getModel().getLineContent(line);
+  $('rc-text').focus();
+}
+function closeComment(){ $('rcbox').hidden = true; }
+function takeComment(){
+  const box = $('rcbox'); if(box.hidden) return;
+  if(addNote(box.dataset.path, Number(box.dataset.line), box.dataset.code, $('rc-text').value)) closeComment();
+}
+$('rc-add').addEventListener('click', takeComment);
+$('rc-cancel').addEventListener('click', closeComment);
+$('rc-text').addEventListener('keydown', e => {
+  if(e.key === 'Escape'){ e.preventDefault(); closeComment(); }
+  else if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); takeComment(); }
+});
+// Notes on the open diff are marked in its gutter.
+function markNotes(){
+  if(!noteDecos) return; const t = activeTab(); if(!t || t.kind !== 'diff'){ noteDecos.clear(); return; }
+  noteDecos.set(reviewNotes.filter(n => n.path === t.path).map(n => ({range: new M.Range(n.line, 1, n.line, 1),
+    options:{glyphMarginClassName:'rc-has', glyphMarginHoverMessage:{value:'Your comment, sent with your next message'}}})));
 }
 const activeTab = () => tabs.find(x => x.id === active);
 function activeEditor(){ const t = activeTab(); if(!t || !t.model) return null; return t.kind === 'diff' ? (diff && diff.getModifiedEditor()) : code; }
@@ -762,7 +845,7 @@ function mount(t){
   drawReview(t); pane('diff');
   const d = diffEditor(), m = d.getModel();
   if(!m || m.modified !== t.model || m.original !== t.orig) d.setModel({original:t.orig, modified:t.model});
-  d.getModifiedEditor().updateOptions({readOnly:!!t.deleted}); drawPos(d.getModifiedEditor());
+  d.getModifiedEditor().updateOptions({readOnly:!!t.deleted}); drawPos(d.getModifiedEditor()); markNotes();
 }
 
 // Review: the file as it is now, against what it held before the session
@@ -881,7 +964,7 @@ async function loadTree(path, into, depth){
       if(ev.key === 'F2'){ ev.preventDefault(); renameEntry(e, row); }
       else if(ev.key === 'Delete' || (isMac && ev.metaKey && ev.key === 'Backspace')){ ev.preventDefault(); deleteEntry(e); }
     });
-    into.appendChild(row);
+    into.appendChild(row); dropTarget(row, e.dir ? e.path : parentOf(e.path));
     if(e.dir){
       const kids = el('div'); kids.hidden = true; into.appendChild(kids);
       const show = open => { kids.hidden = !open; row.firstChild.className = 'tw codicon codicon-chevron-' + (open ? 'down' : 'right');
@@ -916,9 +999,10 @@ $('tree-newfolder').addEventListener('click', () => newEntry(true));
 $('tree').addEventListener('contextmenu', ev => { if(ev.target === $('tree')){ ev.preventDefault(); treeSel = null; treeMenu(ev.clientX, ev.clientY, null); } });
 
 // nameInput puts an editable name into the tree and calls done with what was typed.
-function nameInput(anchor, before, depth, initial, done, onEnd){
+function nameInput(anchor, before, depth, initial, done, onEnd, hint){
   const row = el('div', 'row'); row.style.paddingLeft = (8 + depth * 14) + 'px';
   const input = el('input', 'ren'); input.value = initial; input.spellcheck = false; input.setAttribute('aria-label', 'Name');
+  if(hint) input.placeholder = hint;
   row.appendChild(el('span', 'tw codicon')); row.appendChild(input);
   if(before) anchor.insertBefore(row, before); else anchor.appendChild(row);
   let over = false;
@@ -947,12 +1031,15 @@ async function newEntry(folder){
 function renameEntry(e, row){
   row.hidden = true;
   const d = dirs.get(parentOf(e.path)) || {depth:0};
-  nameInput(row.parentNode, row, d.depth, e.name, async name => {
+  // A name with hidden characters is not put in the box raw, where they would not show:
+  // the box starts empty, and its hint shows the name with them written out.
+  const hidden = unsafeName.test(e.name);
+  nameInput(row.parentNode, row, d.depth, hidden ? '' : e.name, async name => {
     const to = joinPath(parentOf(e.path), name);
     try{ await api('/v1/sessions/' + current + '/rename', {method:'POST', body: JSON.stringify({from:e.path, to})}); retarget(e.path, to); changesSoon(300); }
     catch(err){ treeError(err); }
     await refreshDir(parentOf(e.path));
-  }, () => { row.hidden = false; });
+  }, () => { row.hidden = false; }, hidden ? 'new name for ' + reveal(e.name) : '');
 }
 // retarget moves open tabs to a renamed path, keeping their edits.
 function retarget(from, to){
@@ -986,8 +1073,10 @@ function treeMenu(x, y, e){
     b.addEventListener('click', () => { closeMenu(); fn(); }); m.appendChild(b); };
   if(e && !e.dir) item('Open', '', () => openFile(e.path));
   if(e && !e.dir) item('Open changes', '', () => openDiff(e.path));
+  if(e && !e.dir) item('Download', '', () => download(e.path, treeError));
   if(e && !e.dir) m.appendChild(el('hr'));
   item('New file…', '', () => newEntry(false)); item('New folder…', '', () => newEntry(true));
+  item('Upload files here…', '', () => { $('upfile').dataset.dir = e ? (e.dir ? e.path : parentOf(e.path)) : ''; $('upfile').click(); });
   if(e){
     m.appendChild(el('hr'));
     item('Copy path', '', () => copyPath(e.path));
@@ -1005,6 +1094,133 @@ $('ctx').addEventListener('keydown', ev => {
   if(ev.key === 'Escape'){ ev.preventDefault(); closeMenu(); }
   else if(ev.key === 'ArrowDown' || ev.key === 'ArrowUp'){ ev.preventDefault(); items[(i + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
 });
+
+/* ---------------------------------------------------------------- uploads + downloads */
+// The upload route's own limit, checked first so an oversize file is refused before a slow upload.
+const MAX_UPLOAD = 32 * 1024 * 1024;
+const fmtSize = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+// Files attached to the next message, sent with it and never when picked; ready holds
+// ones already uploaded whose message has not gone yet.
+let pending = [], ready = [];
+function addFiles(list){
+  for(const f of Array.from(list || [])) pending.push({file:f, name:f.name || 'pasted', note: f.size > MAX_UPLOAD ? 'too large (32 MB limit)' : ''});
+  drawFiles();
+}
+function drawFiles(){
+  const box = $('files'); clear(box);
+  // Files already uploaded, put back with a message being edited.
+  ready.forEach((u, i) => {
+    const chip = el('span', 'chipf'); chip.appendChild(el('b', '', reveal(u.name || u.path || ''))); chip.title = reveal(u.path || '');
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Remove ' + reveal(u.name || ''));
+    x.addEventListener('click', () => { ready.splice(i, 1); drawFiles(); }); chip.appendChild(x); box.appendChild(chip);
+  });
+  pending.forEach((p, i) => {
+    const chip = el('span', 'chipf' + (p.note ? ' bad' : '')); chip.appendChild(el('b', '', reveal(p.name))); chip.title = reveal(p.name);
+    if(p.note) chip.appendChild(el('span', '', p.note));
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Remove ' + reveal(p.name));
+    x.addEventListener('click', () => { pending.splice(i, 1); drawFiles(); }); chip.appendChild(x); box.appendChild(chip);
+  });
+}
+// reviewNotes are comments on lines of the changes, held until the next message carries them.
+let reviewNotes = [];
+function addNote(path, line, code, text){
+  text = String(text || '').trim(); if(!path || !line || !text) return false;
+  reviewNotes.push({path, line, code: String(code || ''), text}); drawNotes(); return true;
+}
+function drawNotes(){
+  const box = $('rnotes'); clear(box);
+  reviewNotes.forEach((n, i) => {
+    const chip = el('span', 'chipf'); chip.appendChild(el('b', '', reveal(n.path) + ':' + n.line)); chip.appendChild(el('span', '', visible(n.text)));
+    chip.title = 'Sent with your next message';
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Remove the comment on ' + reveal(n.path) + ':' + n.line);
+    x.addEventListener('click', () => { reviewNotes.splice(i, 1); drawNotes(); }); chip.appendChild(x); box.appendChild(chip);
+  });
+  if(typeof markNotes === 'function') markNotes();
+}
+// withNotes puts the notes after what was typed, each with its file, line and that line's text.
+function withNotes(text, notes){
+  if(!notes.length) return text;
+  const out = notes.map(n => '- `' + n.path + '` line ' + n.line + (n.code.trim() ? ' (`' + n.code.trim().slice(0, 200).replace(/`/g, "'") + '`)' : '') + ': ' + n.text.replace(/\n/g, '\n  '));
+  return (text ? text + '\n\n' : '') + 'Review comments on the changes:\n' + out.join('\n');
+}
+// postFile sends one file to the upload route: into a workspace folder when dir is given,
+// staged for a session not yet started when id is empty.
+async function postFile(id, file, name, dir){
+  const fd = new FormData(); if(dir != null) fd.append('dir', dir); fd.append('file', file, name);
+  let r; try{ r = await fetch(id ? '/v1/sessions/' + id + '/upload' : '/v1/uploads', {method:'POST', body:fd, credentials:'same-origin'}); }
+  catch(e){ connLost(false); throw e; }
+  if(r.status === 401) signInEnded();
+  let b = {}; try{ b = await r.json() || {}; }catch{}
+  if(!r.ok){ const e = new Error(b.error || r.statusText || String(r.status)); e.status = r.status; throw e; }
+  return b;
+}
+async function flushUploads(id){
+  for(const p of pending) if(p.note) throw new Error(reveal(p.name) + ' was not sent: ' + p.note);
+  while(pending.length){
+    const p = pending[0];
+    try{ ready.push(await postFile(id, p.file, p.name)); }
+    catch(e){ throw new Error('upload failed for ' + reveal(p.name) + ': ' + visible(e.message)); }
+    pending.shift(); drawFiles();
+  }
+  const out = ready; ready = []; if(out.length) drawFiles(); return out;
+}
+// withFiles names the uploaded paths in the prompt: the agent opens them with its read
+// tool, under the same rules as any workspace file, and an image is read as an image.
+function withFiles(prompt, uploaded){
+  if(!uploaded.length) return prompt;
+  const lines = uploaded.map(u => '- ' + u.path + (u.kind ? ' (' + u.kind + ')' : '') + (u.note ? ' — note: ' + u.note : ''));
+  return (prompt ? prompt + '\n\n' : 'Read the attached file(s).\n\n') + (uploaded.length === 1 ? 'Attached file:' : 'Attached files:') + '\n' + lines.join('\n');
+}
+const hasFiles = ev => !!ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes('Files');
+// A drop target in the tree takes files into its folder: a folder's own row, or a file's folder.
+function dropTarget(node, dir){
+  node.addEventListener('dragover', ev => { if(!hasFiles(ev)) return; ev.preventDefault(); ev.stopPropagation(); ev.dataTransfer.dropEffect = 'copy'; node.classList.add('drop'); });
+  node.addEventListener('dragleave', () => node.classList.remove('drop'));
+  node.addEventListener('drop', ev => { if(!hasFiles(ev)) return; ev.preventDefault(); ev.stopPropagation(); node.classList.remove('drop'); uploadToFolder(dir, ev.dataTransfer.files); });
+}
+// uploadToFolder puts files into a workspace folder under their own names, each a write of
+// the person's that the server judges and records; a name already there is refused.
+async function uploadToFolder(dir, files){
+  const id = current; if(!id || !files || !files.length) return;
+  let put = 0;
+  for(const f of Array.from(files)){
+    if(f.size > MAX_UPLOAD){ treeError(new Error(f.name + ' is larger than the 32 MB limit')); continue; }
+    try{ await postFile(id, f, f.name, dir); put++; }
+    catch(e){ treeError(new Error(f.name + ': ' + visible(e.message))); }
+  }
+  if(current !== id || !put) return;
+  if(dir && !expanded.has(dir)){ expanded.add(dir); await refreshDir(parentOf(dir)); } else await refreshDir(dir);
+  hawkSoon();
+}
+// download fetches a file through the download route, which serves it only to the
+// session's owner and only where a read rule would let the agent read it.
+async function download(path, report){
+  const id = current; if(!id) return;
+  const url = '/v1/sessions/' + id + '/download?path=' + encodeURIComponent(path);
+  let r; try{ r = await fetch(url, {method:'HEAD', credentials:'same-origin'}); }catch(e){ connLost(false); report(new Error('not downloaded: the server did not answer')); return; }
+  if(r.status === 401){ signInEnded(); return; }
+  if(!r.ok){ report(new Error(r.status === 404 ? 'not downloaded: ' + path + ' is not there, or a rule keeps it' : 'not downloaded (' + r.status + ')')); return; }
+  const a = el('a'); a.href = url; a.download = ''; a.rel = 'noopener'; a.hidden = true; document.body.appendChild(a); a.click(); a.remove();
+}
+async function loadDownloads(){
+  const box = $('dl'), id = current;
+  if(!id){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
+  let list; try{ list = await api('/v1/sessions/' + id + '/files'); }
+  catch(e){ if(current === id){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); } return; }
+  if(current !== id) return;
+  clear(box);
+  const msg = el('div', 'empty'); msg.hidden = true; box.appendChild(msg);
+  const report = e => { msg.textContent = visible(e.message); msg.hidden = false; };
+  if(!list.length){ box.appendChild(el('div', 'empty', 'No documents, images, spreadsheets or archives at the top of the workspace yet. Any other file downloads from the Explorer: right-click it.')); return; }
+  for(const f of list){
+    const row = el('button', 'row'); row.type = 'button'; row.title = 'Download ' + reveal(f.name);
+    row.appendChild(el('span', 'name mono', reveal(f.name))); row.appendChild(el('span', 'meta', fmtSize(f.bytes || 0)));
+    row.addEventListener('click', () => download(f.name, report)); box.appendChild(row);
+  }
+}
+$('files-reload').addEventListener('click', loadDownloads);
+$('upfile').addEventListener('change', e => { uploadToFolder(e.target.dataset.dir || '', e.target.files).finally(() => { e.target.value = ''; }); });
+dropTarget($('tree'), '');
 
 /* ---------------------------------------------------------------- search */
 const sopt = {case:false, word:false, regex:false};
@@ -1149,20 +1365,128 @@ async function loadSessions(){
     row.appendChild(el('span', 'dot ' + s.state + (s.reason ? ' ' + s.reason : ''))); row.appendChild(el('span', 'name', sessionLabel(s)));
     if(s.background) row.appendChild(el('span', 'badge', 'bg ' + s.background));
     if(s.pending_ask) row.appendChild(el('span', 'badge warn', 'approval waiting'));
-    row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state)); box.appendChild(row);
+    row.title = s.id; row.addEventListener('click', () => openSession(s.id, s.state));
+    row.addEventListener('contextmenu', ev => { ev.preventDefault(); sessionMenu(ev.clientX, ev.clientY, s, row); });
+    row.addEventListener('keydown', ev => { if(ev.key === 'F2'){ ev.preventDefault(); editTitle(row.querySelector('.name'), s); } else if(ev.key === 'Delete'){ ev.preventDefault(); deleteSession(s); } });
+    box.appendChild(row);
   }
 }
-function setLive(on){
-  live = on; $('stop').hidden = !on;
-  $('hint').textContent = on ? 'Enter queues it · Esc twice stops the run' : 'Enter sends · Shift+Enter for a new line';
-  if(!on) waiting(false); else offerAsks();
+// A title is the person's name for a session; the server records each rename as session.renamed.
+function editTitle(span, s){
+  if(!span || span.querySelector('input')) return;
+  const inp = el('input'); inp.value = s.title || ''; inp.maxLength = 120; inp.spellcheck = false;
+  inp.placeholder = s.prompt ? visible(s.prompt).slice(0, 80) : 'Session title'; inp.setAttribute('aria-label', 'Session title');
+  clear(span); span.appendChild(inp); inp.focus(); inp.select();
+  let over = false;
+  const end = keep => { if(over) return; over = true; const v = inp.value.trim(); inp.remove(); span.textContent = sessionLabel(s);
+    if(keep && v !== (s.title || '')) setTitle(s, v, span); };
+  inp.addEventListener('keydown', ev => { ev.stopPropagation(); if(ev.key === 'Enter'){ ev.preventDefault(); end(true); } else if(ev.key === 'Escape'){ ev.preventDefault(); end(false); } });
+  inp.addEventListener('click', ev => ev.stopPropagation());
+  inp.addEventListener('blur', () => end(true));
 }
+async function setTitle(s, title, span){
+  try{ const r = await api('/v1/sessions/' + s.id + '/title', {method:'POST', body: JSON.stringify({title})}); s.title = r.title; }
+  catch(e){ sessionsNote('Not renamed: ' + visible(e.message), true); }
+  if(span) span.textContent = sessionLabel(s);
+  if(s.id === current) $('attl').textContent = sessionLabel(s);
+  loadSessions();
+}
+// Delete says what it means on this server's store, as the console does.
+async function deleteSession(s){
+  if(!confirm('Delete "' + sessionLabel(s) + '"? It leaves your list and cannot be opened again. On a server with a database its events stay in the database for audit; nothing reads them through Abhed.')) return;
+  try{ await api('/v1/sessions/' + s.id, {method:'DELETE'}); }
+  catch(e){ sessionsNote(e.status === 501 ? 'This server keeps an append-only record; sessions cannot be deleted here.' : 'Not deleted: ' + visible(e.message), true); return; }
+  try{ sessionStorage.removeItem(shellsKey(s.id)); }catch{}
+  if(s.id === current) resetSession();
+  loadSessions();
+}
+let sessionsTimer = 0;
+// A note about a session action, in the Sessions view, and in the chat when that view is not showing.
+function sessionsNote(text, bad){
+  let n = $('sessions-msg'); if(!n){ n = el('div', 'empty'); n.id = 'sessions-msg'; n.setAttribute('role', 'status'); $('sessions').before(n); }
+  n.textContent = text; n.hidden = false; clearTimeout(sessionsTimer); sessionsTimer = setTimeout(() => { n.hidden = true; }, 8000);
+  if($('v-sessions').hidden && current) add(el('div', 'sys' + (bad ? ' bad' : ''), text));
+}
+$('s-rename').addEventListener('click', () => { const s = sessionList.find(x => x.id === current); if(s) editTitle($('attl'), s); });
+$('attl').addEventListener('dblclick', () => { const s = sessionList.find(x => x.id === current); if(s) editTitle($('attl'), s); });
+$('s-resume').addEventListener('click', () => copyResume(current, $('s-resume')));
+// The command that goes on with this session in a terminal, against the same record.
+const resumeCommand = id => /^[A-Za-z0-9_-]+$/.test(id || '') ? 'abhed -r ' + id : '';
+async function copyResume(id, btn){
+  const cmd = resumeCommand(id); if(!cmd) return;
+  let ok = false; try{ await navigator.clipboard.writeText(cmd); ok = true; }catch{}
+  if(!ok){ prompt('Copy this command, then run it where the CLI uses this server\'s database:', cmd); return; }
+  if(btn){ const was = btn.title; btn.title = 'Copied: ' + cmd; setTimeout(() => { btn.title = was; }, 2500); }
+  sessionsNote('Copied: ' + cmd + ' · run it where the CLI uses this server\'s database');
+}
+// exportSession saves the session's transcript page or its record, as attachments.
+function exportSession(id, format){
+  if(!resumeCommand(id)) return;
+  const a = el('a'); a.href = '/v1/sessions/' + id + '/export?format=' + (format === 'jsonl' ? 'jsonl' : 'html'); a.download = ''; a.rel = 'noopener'; a.hidden = true;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function exportMenu(x, y, id){
+  const m = $('ctx'); clear(m);
+  [['Transcript (HTML page)', 'html'], ['Record (events, one JSON per line)', 'jsonl']].forEach(([label, f]) => {
+    const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.appendChild(el('span', '', label));
+    b.addEventListener('click', () => { closeMenu(); exportSession(id, f); }); m.appendChild(b); });
+  m.hidden = false;
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px'; m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.firstChild.focus();
+}
+$('s-export').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); exportMenu(r.left, r.bottom + 4, current); });
+function sessionMenu(x, y, s, row){
+  const m = $('ctx'); clear(m);
+  const item = (label, keys, fn) => { const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem');
+    b.appendChild(el('span', '', label)); if(keys) b.appendChild(el('kbd', '', keys));
+    b.addEventListener('click', () => { closeMenu(); fn(); }); m.appendChild(b); };
+  item('Open', '', () => openSession(s.id, s.state));
+  item('Rename…', 'F2', () => editTitle(row.querySelector('.name'), s));
+  if(resumeCommand(s.id)) item('Copy the command to continue in a terminal', '', () => copyResume(s.id));
+  item('Export the transcript (HTML)', '', () => exportSession(s.id, 'html'));
+  item('Export the record (JSON lines)', '', () => exportSession(s.id, 'jsonl'));
+  m.appendChild(el('hr'));
+  item('Delete…', 'Del', () => deleteSession(s));
+  m.hidden = false;
+  m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px'; m.style.top = Math.min(y, window.innerHeight - m.offsetHeight - 8) + 'px';
+  m.firstChild.focus();
+}
+// Stop also ends background work, so it stays while any runs with no turn going.
+function drawStop(){
+  const b = $('stop'); b.hidden = !(live || bgLive);
+  b.title = live ? 'Stop the run and its background work' : 'Stop the background work still running';
+}
+function setLive(on){
+  live = on; drawStop();
+  $('hint').textContent = on ? 'Enter queues it · Esc twice stops the run' : editing ? EDIT_HINT : 'Enter sends · Shift+Enter for a new line';
+  if(!on) waiting(false); else offerAsks();
+  offerEdit();
+}
+// The last message can be edited and sent again between runs: the conversation forks
+// to before it, and the record keeps the abandoned steps.
+let lastUser = null, editing = null;
+const EDIT_HINT = 'Editing your last message · sending goes on from before it · Esc cancels';
+function offerEdit(){
+  for(const x of tx().querySelectorAll('.editmsg')) x.remove();
+  const b = lastUser; if(live || !b || !b.seq || !current) return;
+  const btn = el('button', 'editmsg', 'Edit and resend'); btn.type = 'button';
+  btn.title = 'Put this message back in the box to change and send again; the conversation goes on from before it, and the record keeps both';
+  btn.addEventListener('click', () => editLast(b)); b.appendChild(btn);
+}
+function editLast(b){
+  editing = {seq: b.seq, id: current};
+  $('q').value = b.said != null ? b.said : b.text || ''; ready = (b.files || []).slice(); drawFiles();
+  $('hint').textContent = EDIT_HINT; $('q').focus();
+}
+function stopEditing(){ if(!editing) return; editing = null; ready = []; drawFiles(); $('hint').textContent = live ? 'Enter queues it · Esc twice stops the run' : 'Enter sends · Shift+Enter for a new line'; }
 // A request can arrive before the page knows the run is live; it is asked once the page does.
 function offerAsks(){
   for(const a of asks.values()) if(!a.shown){ a.shown = true; waiting(false); askApproval(a.p, a.rid); }
 }
 function resetSession(){
   if(es){ es.close(); es = null; }
+  offerNext(''); // a suggestion belongs to the session it was made for
+  startTries.clear(); startNoted.clear();
   cancelAnimationFrame(flushRaf); flushRaf = 0; pendText = ''; pendThink = '';
   current = null; live = false; lastSeq = endedSeq = 0; recProvider = null; clearTimeout(recheckTimer); streaming = null; streamBody = null; todoNode = null; thinkBlock = null; calls.clear(); mineCalls.clear();
   queued.clear(); sent.length = 0; asks.clear(); bgTasks.clear(); drawBg(); waiting(false); trimmed = false; $('jump').hidden = true; clear(qbox);
@@ -1171,14 +1495,16 @@ function resetSession(){
   $('n-term').textContent = $('n-evt').textContent = $('n-prob').textContent = '';
   tabs.splice(0).forEach(dropTab); active = null; drawTabs(); welcome(); known.clear(); indexedFor = null; searchSeq++; clear($('sres')); $('s-sum').textContent = '';
   $('b-changes').hidden = $('b-hawk').hidden = $('s-find').hidden = true;
-  clear($('hawkeye')); clear($('changes'));
+  clear($('hawkeye')); clear($('changes')); clear($('dl'));
+  pending = []; ready = []; lastUser = null; editing = null; drawFiles(); reviewNotes = []; drawNotes(); closeComment(); $('s-rename').hidden = $('s-resume').hidden = $('s-export').hidden = true;
   $('attl').textContent = 'New session'; setLive(false); drawStatus();
   closeAllTerms(); noTerminal();
   modeForNewSession();
   const p = providers.find(x => x.name === $('mdlpick').value);
   $('s-model').textContent = p ? p.model || p.name : caps ? caps.model.name : '';
 }
-const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';
+// A session is named by its title, or by its prompt's first line: an attachment list or pasted code is not a name.
+const sessionLabel = s => s.title ? reveal(s.title) : s.prompt && s.prompt.trim() ? reveal(s.prompt.trim().split('\n')[0]) : 'Workbench session';
 
 /* ---------------------------------------------------------------- model picker */
 // Shown only when more than one provider is configured. It names the model the
@@ -1198,7 +1524,7 @@ function showSwitch(p){
   const text = switchedText(p, recProvider), last = $('tx').lastElementChild;
   recProvider = p.provider || null;
   if(!(last && last.textContent === text)) add(el('div', 'sys', text));
-  $('s-model').textContent = p.model;
+  if(p.model) $('s-model').textContent = p.model;
   if(providers.some(x => x.name === p.provider)){ $('mdlpick').value = p.provider; $('mdlpick').dataset.prev = p.provider; }
 }
 async function loadProviders(){
@@ -1248,6 +1574,8 @@ function openSession(id, state, opts){
   $('mode').disabled = true; $('mode').title = 'Fixed when the session started. Start a new session to choose another mode.';
   $('s-mode').textContent = 'mode ' + $('mode').value;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
+  if(!$('v-files').hidden) loadDownloads();
+  $('s-rename').hidden = $('s-export').hidden = false; $('s-resume').hidden = !resumeCommand(id);
   restoreTabs(); connect(id); loadChanges(); loadSessions(); if(live) loadQueue(id);
   if(window.innerWidth <= 900) $('app').dataset.pane = 'agent';
   newTerminal(opts);
@@ -1269,15 +1597,43 @@ $('new').addEventListener('click', () => { resetSession(); loadSessions(); $('q'
 function connect(id){
   if(es) es.close();
   es = new EventSource('/v1/sessions/' + id + '/events' + (lastSeq ? '?after=' + lastSeq : ''));
-  es.onopen = () => setConn(true);
+  let opened = false;
+  es.onopen = () => { opened = true; startTries.delete(id + ' events'); setConn(true); };
   es.onmessage = e => { let ev; try{ ev = JSON.parse(e.data); }catch{ return; } if(ev.seq <= lastSeq) return; lastSeq = ev.seq; render(ev); };
   es.onerror = () => { if(!es) return; es.close(); es = null;
-    if((live || bgLive) && current === id){ connLost(true); setTimeout(() => { if(current === id && !es) connect(id); }, 1000); }
-    else{ connLost(false); if(current === id) loadHawkeye(); } };
+    // A stream refused before it opened may be a session still starting on another server.
+    if(!opened && current === id){ notHere(id).then(gone => { if(!(gone && stillStarting(id, 'events', () => { if(current === id && !es) connect(id); }))) streamLost(id); }); return; }
+    streamLost(id); };
 }
+function streamLost(id){
+  // A stream cannot tell a 401 from a dropped connection: a request can, and ends the retries once signed out.
+  if((live || bgLive) && current === id){ connLost(true); setTimeout(async () => {
+    if(current !== id || es || signInGone) return;
+    try{ await api('/v1/sessions/' + id + '/state'); }catch{}
+    if(current === id && !es && !signInGone) connect(id); }, 1000); }
+  else{ connLost(false); if(current === id) loadHawkeye(); }
+}
+// A listed session can still be starting on another server, whose routes answer 404 for a
+// moment: each is asked again after 0.5, 1 and 1.5 s, then the page says so and stops.
+const STARTING_WAITS = [500, 1000, 1500], startTries = new Map(), startNoted = new Set();
+function stillStarting(id, what, again){
+  if(current !== id) return false;
+  const k = id + ' ' + what, n = startTries.get(k) || 0;
+  if(n >= STARTING_WAITS.length){
+    startTries.delete(k);
+    if(!startNoted.has(id)){ startNoted.add(id); add(el('div', 'sys bad', 'This session is still starting on another server, or is not on this one: it did not answer here. Open it again in a moment to retry.')); }
+    return false;
+  }
+  startTries.set(k, n + 1); setTimeout(() => { if(current === id) again(); }, STARTING_WAITS[n]);
+  return true;
+}
+// notHere asks whether this server answers for the session at all: a 404 says it does not, yet.
+async function notHere(id){ try{ await api('/v1/sessions/' + id + '/queue'); return false; }catch(e){ return e.status === 404; } }
 // Messages still queued on the server, for a page opened while a run is going.
 async function loadQueue(id){
-  let items; try{ items = await api('/v1/sessions/' + id + '/queue'); }catch{ return; }
+  let items; try{ items = await api('/v1/sessions/' + id + '/queue'); }
+  catch(e){ if(e.status === 404) stillStarting(id, 'queue', () => loadQueue(id)); return; }
+  startTries.delete(id + ' queue');
   if(current !== id) return;
   if(qbox.parentNode !== tx()) tx().appendChild(qbox);
   for(const q of items || []) if(!queued.has(q.id)){ const b = userBubble(q.text, 'queued'); b.qid = q.id; queued.set(q.id, b); qbox.appendChild(b); drawQueued(b); }
@@ -1367,7 +1723,7 @@ function visible(s, lines){
 // reveal is visible without the spacing rule, for prose and code whose layout is its own:
 // replies, reasoning, and file names in the explorer, tabs and dialogs.
 function reveal(s, lines){
-  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?! )\p{Zs}|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1382,7 +1738,8 @@ function hasHidden(v, depth = 0){
   if(typeof v !== 'string') return false;
   if(visible(v, true) !== v) return true;
   const t = v.trim();
-  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  // As deep as ui.ArgsHidden reads, so nothing the record escapes goes without a warning.
+  if(depth < 4 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
   return false;
 }
 function subjectOf(tool, args){
@@ -1580,7 +1937,8 @@ function render(ev){
   logEvent(ev, p);
   switch(ev.type){
   case 'suggestion.offered': if(!live && !$('q').value) offerNext(p.text || ''); break;  // it follows the end; never over typing or a new turn
-  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p); add(b || bubble('user', 'you', reveal(p.text || '', true)));
+  case 'user.message': { offerNext(''); streaming = streamBody = null; const b = claim(p), node = b || bubble('user', 'you', reveal(p.text || '', true)); add(node);
+    node.seq = ev.seq; if(!b) node.said = p.text || ''; lastUser = node;
     // A request never shown belongs to a turn that is over by the next message.
     for(const [k, a] of asks) if(!a.shown) asks.delete(k);
     // This page's own message means its run has started, whichever of the
@@ -1602,8 +1960,9 @@ function render(ev){
     // hand is in Events, their terminal and the changes view.
     if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
     endThinking(at); streaming = null; streamBody = null;
-    const d = el('details', 'call'), s = el('summary'); const subj = subjectOf(p.tool, p.args);
-    s.appendChild(el('span', 'tool', visible(p.tool))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
+    // A payload redaction could not run on is withheld whole: say so rather than draw "undefined".
+    const d = el('details', 'call'), s = el('summary'); const subj = p.withheld ? p.withheld : subjectOf(p.tool, p.args);
+    s.appendChild(el('span', 'tool', visible(p.tool || 'call'))); s.appendChild(el('span', 'subj', visible(subj))); const res = el('span', 'res', '…'); s.appendChild(res);
     d.appendChild(s);
     const c = {node:d, res, tool:p.tool, subject:subj, args:p.args, out:null, drawn:0};
     // Arguments and output are drawn when the call is opened, so a session of
@@ -1634,14 +1993,18 @@ function render(ev){
   case 'model.call': if(p.purpose){ stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; drawStatus(); break; }
     if(p.model) $('s-model').textContent = p.model; stat.turns++; stat.tin += p.tokens_in || 0; stat.tout += p.tokens_out || 0; stat.ctx = p.tokens_in || stat.ctx; if(p.context_window) stat.window = p.context_window; drawStatus();
     if(p.error) add(el('div', 'sys bad', 'model error: ' + visible(p.error))); break;
-  case 'context.offloaded': add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
+  case 'context.offloaded': if(p.withheld){ add(el('div', 'sys', 'old results offloaded to the record · ' + visible(p.withheld))); break; }
+    add(el('div', 'sys', 'offloaded ' + p.results + ' old results to the record · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens · nothing lost')); break;
   case 'compaction.started': if(live) waiting('Compacting context'); break;
-  case 'conversation.forked': add(el('div', 'sys', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned')); break;
+  case 'conversation.forked': add(el('div', 'sys', p.withheld ? 'forked · ' + visible(p.withheld) : 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
+    if(lastUser && lastUser.seq > p.through_seq){ lastUser = null; offerEdit(); } break;
   case 'compaction.completed': if(p.before_tokens) add(el('div', 'sys', 'compacted · ' + fmt(p.before_tokens) + ' → ' + fmt(p.after_tokens) + ' tokens')); if(live) waiting('Thinking'); break;
   // Task names, results and reasons are the model's or a command's text: shown, never obeyed (bidi, zero-width).
   case 'subagent.spawned': add(el('div', 'sys', 'subagent started: ' + visible(p.description || '')));
     if(p.background && p.task_id){ bgTasks.set(p.task_id, {name: p.description || p.task_id, state:'running'}); drawBg(); } break;
-  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + visible(p.reason || ''))); break;
+  case 'subagent.returned': add(el('div', 'sys', 'subagent finished: ' + visible(p.reason || '')));
+    // Its notice can wait for the next run, as after a restart, so the return ends the task here.
+    if(p.task_id && bgTasks.has(p.task_id)){ bgTasks.get(p.task_id).state = p.reason || 'done'; drawBg(); } break;
   // A background shell is listed in the status bar while it runs, as a task is.
   case 'shell.started': if(p.shell_id){ bgTasks.set(p.shell_id, {name: p.description || p.command || p.shell_id, state:'running'}); drawBg(); } break;
   case 'shell.ended': if(p.shell_id){ bgTasks.set(p.shell_id, {name: (bgTasks.get(p.shell_id) || {}).name || p.shell_id, state: p.state || 'ended'}); drawBg(); } break;
@@ -1673,13 +2036,15 @@ function render(ev){
   // The run's own asks end with it; a background subagent's ask outlives the
   // run while background work is owed, settled by its outcome or the closing end.
   case 'session.ended': { if(p.settled){ bgLive = false; for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns')) settleAsk(a.dataset.call, 'not answered · background work ended');
-      add(el('div', 'sys', 'background work finished')); break; }
-    bgLive = (p.background || 0) > 0;
+      endBg(); add(el('div', 'sys', 'background work finished')); break; }
+    bgLive = (p.background || 0) > 0; if(!bgLive) endBg();
     const kept = id => bgLive && String(id).startsWith('subagent-');
+    // Only a run this page watched end just now: a replayed end is history.
+    if(live && Date.now() - at < 120000) notify('done');
     endedSeq = ev.seq || 0; endThinking(at); streaming = streamBody = null; for(const id of [...asks.keys()]) if(!kept(id)) asks.delete(id); setLive(false);
     for(const a of tx().querySelectorAll('.ask')) if(a.querySelector('.btns') && !kept(a.dataset.call)) settleAsk(a.dataset.call, 'not answered · run ended'); const bad = !['completed','user_interrupt','shutdown'].includes(p.reason);
     add(el('div', 'sys' + (bad ? ' bad' : ''), 'ended · ' + visible(p.reason || '') + ' · ' + (p.turns || 0) + ' turns'));
-    loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); break; }
+    loadSessions(); loadChanges(); loadHawkeye(); recheckSoon(); if(!$('v-files').hidden) loadDownloads(); break; }
   }
 }
 // A run can end just as a queued message arrives, and the server then starts
@@ -1700,6 +2065,38 @@ async function recheck(id){
   setLive(running);
   if(running || read){ if(!es) connect(id); if(running) return; }
   for(const b of queued.values()) if(still.has(b.qid)){ b.qnote = 'Still queued — read with your next message'; drawQueued(b); }
+}
+// showTasks lists the session's background shells and tasks from the server, as /tasks
+// does in the CLI, with a Cancel for each one still running.
+async function showTasks(anchor){
+  const id = current; if(!id){ add(el('div', 'sys', 'Open a session to see its background tasks.')); return; }
+  let r; try{ r = await api('/v1/sessions/' + id + '/tasks'); }
+  catch(e){ add(el('div', 'sys bad', 'Background tasks not listed: ' + visible(e.message))); return; }
+  if(current !== id) return;
+  const m = $('ctx'), tasks = (r && r.tasks) || []; clear(m);
+  const row = (label, right) => { const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem');
+    b.appendChild(el('span', '', label)); b.appendChild(el('kbd', '', right)); m.appendChild(b); return b; };
+  if(!tasks.length) row('No background tasks in this session', '').disabled = true;
+  for(const t of tasks){
+    const running = t.status === 'running', code = t.exit_code != null ? ' ' + t.exit_code : '';
+    const b = row((t.kind === 'shell' ? 'shell · ' : 'task · ') + visible(t.description || t.command || t.task_id || ''),
+      running ? 'Cancel' : visible((t.status || '') + code + (t.reason ? ' · ' + t.reason : '')));
+    b.title = visible([t.command, t.last_line].filter(Boolean).join('\n'), true);
+    if(!running){ b.disabled = true; continue; }
+    b.addEventListener('click', async () => { closeMenu();
+      try{ await api('/v1/sessions/' + id + '/tasks/' + encodeURIComponent(t.task_id) + '/cancel', {method:'POST'}); }
+      catch(e){ add(el('div', 'sys bad', 'Not cancelled: ' + visible(e.message))); } });
+  }
+  m.hidden = false;
+  const at = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : {left: 8, top: window.innerHeight - 24};
+  m.style.left = Math.max(8, Math.min(at.left, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, at.top - m.offsetHeight - 4) + 'px';
+  const first = [...m.childNodes].find(b => !b.disabled); if(first) first.focus();
+}
+// endBg settles what the record says is no longer running: nothing is owed once the session says so.
+function endBg(){
+  for(const t of bgTasks.values()) if(t.state === 'running') t.state = 'ended';
+  drawBg(); drawStop();
 }
 // drawBg shows the open session's background tasks still running in the status bar.
 function drawBg(){
@@ -1771,8 +2168,12 @@ function askApproval(p, rid){
   if(p.subagent) a.appendChild(el('p', 'scope-note', 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'));
   // A pipeline's step is the harness's call, not the model's: say which pipeline asks.
   if(p.via) a.appendChild(el('p', 'scope-note', 'Asked by ' + visible(p.via) + '.'));
+  if(p.tool === 'bash' && p.args && p.args.run_in_background === true)
+    a.appendChild(el('p', 'scope-note', 'Starts in the background: it keeps running after this turn, until it ends or is stopped (Stop, or /tasks).'));
+  // Say why the one-click scope is missing, so its absence does not read as a fault.
+  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command and any program off the short list are asked every time. A rule you add can allow it.'));
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
-  a.appendChild(btns); add(a); focusSoon();
+  a.appendChild(btns); add(a); focusSoon(); notify('ask');
   // A pending question is never left half off screen, wherever the reader had scrolled to.
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
 }
@@ -1922,8 +2323,10 @@ async function startTerm(t, opts){
   catch(e){
     if(!terms.includes(t)) return;
     if(e.status === 409 && opts.auto && t.session === current){ createWorkbench('The last session could not be reopened on this server, so this is a new one.'); return; }
+    if(e.status === 404 && t.session === current && stillStarting(current, 'pty', () => { if(terms.includes(t)){ t.term.write('\r\n'); startTerm(t, opts); } })) return;
     t.term.write('\r\n\x1b[31m' + visible(e.message) + '\x1b[0m\r\n\x1b[2mpress Enter to try again\x1b[0m\r\n'); t.dead = true; return;
   }
+  startTries.delete(t.session + ' pty');
   if(!terms.includes(t) || t.session !== current){ if(r.interactive) fetch(ptyURL(t, '/' + r.id), {method:'DELETE', credentials:'same-origin'}).catch(() => {}); return; }
   t.term.reset(); banner(t, r, opts.note);
   if(r.denied){ t.term.write('\x1b[31m' + visible(r.denied) + '\x1b[0m\r\n'); hawkSoon(); }
@@ -1981,7 +2384,7 @@ function sendInput(t, d){
 // Line by line: the page edits the line, and each one is a checked command.
 const linePrompt = t => '\r\n\x1b[2m(line by line)\x1b[0m \x1b[36m' + (t.cwd === '.' ? '' : reveal(t.cwd) + ' ') + '$\x1b[0m ';
 // Shows the prompt, and whatever has been typed ahead of it.
-const promptLine = t => { t.term.write(linePrompt(t) + t.line); };
+const promptLine = t => { t.term.write(linePrompt(t) + echoed(t.line)); };
 // An unfinished sequence ends at a line break, so it never swallows the next line.
 const keySeq = /\x1b(\[[0-?]*[ -\/]*[@-~]|O[^\r\n]|[\]P_^][^\x07\x1b\r\n]*(\x07|\x1b\\)?|[^\[\]OP_^\x1b\r\n])?/gu;
 // A paste of several lines: the first is on screen already, the rest are
@@ -2005,7 +2408,7 @@ function linesData(t, d){
     if(ch === '\x03'){ t.term.write('^C'); t.queue = []; t.line = ''; quiet = false; promptLine(t); continue; }
     if(ch === '\x0c'){ t.term.clear(); continue; }
     if(ch < ' ') continue;
-    t.line += ch; if(!quiet) t.term.write(ch);
+    t.line += ch; if(!quiet) t.term.write(echoed(ch));
   }
   if(dropped) t.term.write('\r\n\x1b[31m' + dropped + ' more lines were not run: at most 200 wait at once.\x1b[0m\r\n');
   if(!t.run && !t.busy && t.queue.length) nextLine(t);
@@ -2013,7 +2416,7 @@ function linesData(t, d){
 function nextLine(t){
   if(!t.queue.length){ promptLine(t); return; }
   const {cmd, shown} = t.queue.shift();
-  if(!shown) t.term.write(linePrompt(t) + cmd + '\r\n');
+  if(!shown) t.term.write(linePrompt(t) + echoed(cmd) + '\r\n');
   runLine(t, cmd);
 }
 // While a command runs, every key is its own: the line was judged when it was entered.
@@ -2030,7 +2433,7 @@ function lineKeys(t, e){
   if(t.confirm) return e.key !== 'ArrowUp' && e.key !== 'ArrowDown';
   if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
     const n = e.key === 'ArrowUp' ? t.at - 1 : t.at + 1; if(n < 0 || n > t.hist.length) return false;
-    t.at = n; t.term.write('\b \b'.repeat(t.line.length)); t.line = t.hist[n] || ''; t.term.write(t.line); return false;
+    t.at = n; t.term.write('\b \b'.repeat(t.line.length)); t.line = t.hist[n] || ''; t.term.write(echoed(t.line)); return false;
   }
   return true;
 }
@@ -2051,13 +2454,13 @@ async function completeLine(t){
   const put = (s, end) => {
     // A name that starts with - would be read as an option.
     const next = before + (cut === 0 && s.startsWith('-') ? './' : '') + shellQuote(word.slice(0, cut) + s) + end;
-    if(next.startsWith(line)) t.term.write(next.slice(line.length));
+    if(next.startsWith(line)) t.term.write(echoed(next.slice(line.length)));
     // Measured once what was written before has been drawn.
     // Keys typed before the redraw are held and replayed after it, so none is drawn and then wiped.
     else{
       t.held = '';
       t.term.write('', () => {
-        const up = wrappedRows(t); t.term.write((up ? '\x1b[' + up + 'A' : '') + '\r\x1b[J' + linePrompt(t).slice(2) + next);
+        const up = wrappedRows(t); t.term.write((up ? '\x1b[' + up + 'A' : '') + '\r\x1b[J' + linePrompt(t).slice(2) + echoed(next));
         const d = t.held; t.held = null; if(d) linesData(t, d);
       });
     }
@@ -2073,6 +2476,10 @@ async function completeLine(t){
 }
 // Any space but the plain one, too: a no-break or ideographic space reads as a plain one.
 const unsafeName = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|(?! )\p{Zs}/u;
+// echoed is the typed line as the terminal shows it: a character that draws nothing or
+// reorders text takes one reverse-video ? cell, so it shows and Backspace still lines up.
+const hiddenChar = new RegExp(unsafeName.source, 'gu');
+const echoed = s => s.replace(hiddenChar, '\x1b[7m?\x1b[27m');
 // The rows above the cursor that its line wrapped onto, as the terminal drew
 // them, so a redraw never guesses at how wide a character is.
 function wrappedRows(t){
@@ -2170,10 +2577,37 @@ function drawStatus(){
   $('s-tok').textContent = stat.turns ? stat.turns + ' turns · ' + fmt(stat.tin) + ' in · ' + fmt(stat.tout) + ' out' : '';
 }
 
+/* ---------------------------------------------------------------- notifications */
+// Desktop notifications, only once the person turns them on and only while this tab is
+// in the background. The text is fixed: nothing the model, a tool or a title wrote leaves the page.
+const NOTE_TEXT = {ask:'An approval is waiting in Abhed.', done:'A run has finished in Abhed.'};
+const notifyOn = () => typeof Notification !== 'undefined' && Notification.permission === 'granted' && store.get('notify', '') === '1';
+function notify(kind){
+  if(!notifyOn() || !document.hidden || !NOTE_TEXT[kind]) return;
+  try{ const n = new Notification('Abhed', {body:NOTE_TEXT[kind], tag:'abhed-' + kind}); n.onclick = () => { window.focus(); n.close(); }; }catch{}
+}
+function drawNotify(){
+  const b = $('s-notify'); b.hidden = typeof Notification === 'undefined'; if(b.hidden) return;
+  const on = notifyOn(); b.textContent = on ? 'notifications on' : 'notifications off'; b.setAttribute('aria-pressed', String(on));
+  b.title = on ? 'Turn off desktop notifications' : Notification.permission === 'denied' ? 'This browser blocks notifications from this site; allow them in its site settings'
+    : 'Notify me when an approval is waiting or a run finishes while this tab is in the background';
+}
+async function toggleNotify(){
+  if(typeof Notification === 'undefined') return;
+  if(notifyOn()){ store.set('notify', ''); drawNotify(); return; }
+  if(Notification.permission === 'default'){ try{ await Notification.requestPermission(); }catch{} }
+  if(Notification.permission === 'granted') store.set('notify', '1');
+  drawNotify();
+}
+$('s-notify').addEventListener('click', toggleNotify);
+$('s-bg').addEventListener('click', () => showTasks($('s-bg')));
+
 /* ---------------------------------------------------------------- composer + slash */
 const SLASH = [
   ['/files', 'Browse the workspace', () => setView('explorer')],
   ['/changes', 'Review what the agent changed', () => setView('changes')],
+  ['/downloads', 'Files to download', () => setView('files')],
+  ['/rename', 'Rename this session', () => $('s-rename').click()],
   ['/tools', 'Tools and permission rules', () => setView('tools')],
   ['/extensions', 'Extensions, MCP servers, skills', () => setView('extensions')],
   ['/hawkeye', 'What this session did, and findings', () => setView('hawkeye')],
@@ -2181,6 +2615,7 @@ const SLASH = [
   ['/events', 'The raw event record', () => setPanel('events')],
   ['/report', 'Open the full HawkEYE report', () => $('hawk-open').click()],
   ['/stop', 'Interrupt the running turn', () => $('stop').click()],
+  ['/tasks', 'List background shells and tasks, and cancel one', () => showTasks($('s-bg').hidden ? $('q') : $('s-bg'))],
   ['/new', 'Start a new session', () => $('new').click()],
 ];
 let slashSel = 0;
@@ -2199,6 +2634,7 @@ $('q').addEventListener('keydown', e => {
   if(hits.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')){ e.preventDefault(); slashSel = (slashSel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length; drawSlash(); return; }
   if(hits.length && (e.key === 'Enter' || e.key === 'Tab')){ e.preventDefault(); runSlash(hits[slashSel]); return; }
   if(e.key === 'Escape' && !$('slash').hidden){ $('slash').hidden = true; e.stopPropagation(); return; }
+  if(e.key === 'Escape' && editing){ stopEditing(); return; }
   if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
 });
 // A next prompt offered after a turn is the box's placeholder; Tab takes it into the box, never sends it.
@@ -2216,7 +2652,8 @@ function takeNext(e){
 }
 $('q').addEventListener('input', () => { if($('q').value) offerNext(''); });
 $('q').addEventListener('keydown', takeNext);
-$('q').addEventListener('input', () => {
+// drawAt offers the workspace's files for an @ being typed, each name drawn with hidden characters written out.
+function drawAt(){
   const q = $('q'), at = q.value.slice(0, q.selectionStart).match(/(?:^|\s)@([\w./-]*)$/);
   const box = $('slash'); if(!at){ if(box.dataset.mode === 'at'){ box.hidden = true; delete box.dataset.mode; } return; }
   indexFiles(); const needle = at[1].toLowerCase();
@@ -2226,8 +2663,22 @@ $('q').addEventListener('input', () => {
     b.addEventListener('mousedown', ev => { ev.preventDefault(); const head = q.value.slice(0, q.selectionStart).replace(/@[\w./-]*$/, '@' + p + ' ');
       q.value = head + q.value.slice(q.selectionStart); q.selectionStart = q.selectionEnd = head.length; box.hidden = true; delete box.dataset.mode; q.focus(); });
     box.appendChild(b); });
-});
+}
+$('q').addEventListener('input', drawAt);
 $('composer').addEventListener('submit', e => { e.preventDefault(); send(); });
+// Files reach the composer by the button, by dropping them on the agent panel, or by pasting.
+$('attach').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; $('q').focus(); });
+$('agent').addEventListener('dragover', e => { if(!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; $('agent').classList.add('dropping'); });
+$('agent').addEventListener('dragleave', e => { if(!$('agent').contains(e.relatedTarget)) $('agent').classList.remove('dropping'); });
+$('agent').addEventListener('drop', e => { if(!hasFiles(e)) return; e.preventDefault(); $('agent').classList.remove('dropping'); addFiles(e.dataTransfer.files); $('q').focus(); });
+$('q').addEventListener('paste', e => {
+  const cd = e.clipboardData, files = cd && cd.files; if(!files || !files.length) return;
+  addFiles(files); if(!cd.getData('text/plain')) e.preventDefault();
+});
+// A file dropped anywhere else would make the browser leave the page to show it.
+document.addEventListener('dragover', e => { if(hasFiles(e)) e.preventDefault(); });
+document.addEventListener('drop', e => { if(hasFiles(e)) e.preventDefault(); });
 // An @path mention attaches that file's content to the prompt, so the agent
 // reads what the person is pointing at instead of hunting for it.
 async function withMentions(text){
@@ -2244,16 +2695,23 @@ async function withMentions(text){
 // The message shows the moment it is sent. While a run is going it is queued
 // for the next step, never a reason to cancel the step in progress.
 async function send(){
-  const typed = $('q').value.trim(); if(!typed) return;
+  const typed = $('q').value.trim(); if(!typed && !pending.length && !ready.length && !reviewNotes.length) return;
+  const notes = reviewNotes; reviewNotes = []; drawNotes();
   offerNext(''); $('q').value = ''; $('q').style.height = 'auto'; $('slash').hidden = true;
-  const id = current, busy = !!id && live;
-  const b = userBubble(typed, busy ? 'queued' : 'pending'); sent.push(b);
+  const id = current, busy = !!id && live, fork = editing && editing.id === id && !busy ? editing : null;
+  editing = null;
+  // The bubble names what is attached; the text put back on a failure is only what was typed.
+  const names = [...ready.map(u => 'attached: ' + u.name), ...pending.map(p => 'attached: ' + p.name), ...notes.map(n => 'comment on ' + n.path + ':' + n.line + ': ' + n.text)];
+  const b = userBubble([typed, ...names].filter(Boolean).join('\n'), busy ? 'queued' : 'pending'); b.text = typed; sent.push(b);
   if(busy){ const stick = nearBottom(); if(qbox.parentNode !== tx()) tx().appendChild(qbox); qbox.appendChild(b); follow(stick); }
   else{ add(b); waiting('Thinking'); }
   drawQueued(b);
+  let forked = false;
   try{
-    b.prompt = await withMentions(typed);
+    const files = await flushUploads(id); b.files = files;
+    b.prompt = withFiles(withNotes(await withMentions(typed), notes), files);
     if(id){
+      if(fork){ await api('/v1/sessions/' + id + '/fork', {method:'POST', body: JSON.stringify({before_seq: fork.seq})}); forked = true; }
       // A workbench session is named by its first message.
       const s = sessionList.find(x => x.id === id);
       if(s && !s.prompt){ s.prompt = typed; $('attl').textContent = sessionLabel(s); }
@@ -2276,7 +2734,16 @@ async function send(){
       sessionList.unshift({id:r.session_id, prompt: typed, state:'running', mode:$('mode').value, provider, model: modelOf(provider)}); openSession(r.session_id, 'running');
       sent.push(b); add(b); waiting('Thinking');
     }
-  }catch(e){ if(current === id){ failed(b, visible(e.message)); if(!busy) waiting(false); } }
+  }catch(e){
+    if(current !== id) return;
+    // Forked and not sent: the text goes back in the box and the note says the
+    // conversation now ends before the edited message. Not forked: the next send forks.
+    if(fork && !forked) editing = fork;
+    // Comments not delivered go back above the box, ahead of any written since.
+    if(notes.length && !b.delivered){ reviewNotes = [...notes, ...reviewNotes]; drawNotes(); }
+    failed(b, visible(e.message), forked ? 'Not sent, though the conversation was taken back to before the message you edited; send it again' : undefined);
+    if(!busy) waiting(false);
+  }
 }
 $('stop').addEventListener('click', async () => { if(current) try{ await api('/v1/sessions/' + current + '/interrupt', {method:'POST'}); }catch{} });
 // Esc stops the run only when pressed twice: once to ask, once to confirm.
@@ -2320,6 +2787,15 @@ function palItems(){
   out.push({k:'command', l:'Editor commands…', h:'F1', run:() => editorAction('editor.action.quickCommand')});
   out.push({k:'command', l:'Find in files', h:isMac ? '⇧⌘F' : 'Ctrl+Shift+F', run:findInFiles});
   out.push({k:'command', l:'New file', h:'', run:() => newEntry(false)});
+  out.push({k:'command', l:'Attach files to the message', h:'', run:() => $('attach').click()});
+  if(current){
+    out.push({k:'command', l:'Rename this session', h:'', run:() => $('s-rename').click()});
+    out.push({k:'command', l:'Continue this session in a terminal (copy the command)', h:'', run:() => copyResume(current, $('s-resume'))});
+    out.push({k:'command', l:'Delete this session…', h:'', run:() => { const s = sessionList.find(x => x.id === current); if(s) deleteSession(s); }});
+    out.push({k:'command', l:'Export the transcript (HTML)', h:'', run:() => exportSession(current, 'html')});
+    out.push({k:'command', l:'Export the record (JSON lines)', h:'', run:() => exportSession(current, 'jsonl')});
+  }
+  if(typeof Notification !== 'undefined') out.push({k:'command', l:notifyOn() ? 'Turn notifications off' : 'Notify me when an approval waits or a run finishes', h:'', run:toggleNotify});
   out.push({k:'command', l:'New folder', h:'', run:() => newEntry(true)});
   out.push({k:'command', l:'Toggle the minimap', h:'', run:toggleMinimap});
   out.push({k:'command', l:'Review inline or side by side', h:'', run:toggleDiffLayout});
@@ -2421,7 +2897,7 @@ $('switchuser').addEventListener('click', postSignOut);
   welcome();
   try{ caps = await api('/v1/capabilities'); setConn(true); }
   catch(e){ add(el('div', 'sys bad', 'Could not reach the server: ' + visible(e.message))); return; }
-  stat.window = caps.model.context_window; drawCaps();
+  stat.window = caps.model.context_window; drawCaps(); drawNotify();
   const sb = caps.sandbox, sbox = $('s-sandbox');
   sbox.textContent = sb.tier === 'none' ? 'NO SANDBOX' : 'sandbox ' + sb.tier + (sb.backend ? ' (' + sb.backend + ')' : '') + (sb.network ? ' · network on' : ' · no network');
   if(sb.tier === 'none') sbox.className = 'off';

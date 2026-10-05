@@ -6,16 +6,88 @@ server appears in the model's tool list like any built-in one.
 ```json
 "mcp": {
   "servers": [
-    { "name": "github", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } },
-    { "name": "corpus", "url": "https://retrieval.internal/mcp",
+    { "name": "github", "enabled": true,
+      "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": ["GITHUB_TOKEN"] },
+    { "name": "corpus", "enabled": true, "url": "https://retrieval.internal/mcp",
       "headers_env": { "Authorization": "CORPUS_TOKEN" } }
   ]
 }
 ```
 
 Both transports are supported: **stdio** for a local process, **HTTP** for a
-remote service.
+remote service. A server runs only with `"enabled": true`. `headers_env`
+names an environment variable to read a header from, so the secret stays out
+of the file.
+
+## Where a server runs
+
+A stdio server is a process Abhed starts on your machine, as you, **outside the
+sandbox**. It can read and write what your user can and reach the network,
+whatever the sandbox tier and `allow_network` say. A URL server runs wherever
+it is hosted. `digest` is accepted in the configuration but not checked yet.
+Add a server as you would install any program: only one you trust.
+
+A stdio server does not inherit Abhed's environment, which holds model
+provider keys and Abhed's own settings. It gets `PATH`, `HOME`, `USER`,
+`LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` and `TZ` from it (on
+Windows, also what a program needs to start, such as `SYSTEMROOT` and
+`TEMP`), then the entries in its `env`, which win: `"KEY=VALUE"` sets a
+value, and a bare `"KEY"` passes your own value of `KEY`, as `GITHUB_TOKEN`
+above. Anything else a server needs, a proxy setting included, is listed
+there.
+
+## From the command line
+
+`abhed mcp` changes the servers in your own `~/.abhed/config.json`:
+
+```sh
+abhed mcp add docs /usr/local/bin/docs-mcp --stdio
+abhed mcp add -env TOKEN=abc -env HTTPS_PROXY -allow-tools search,read docs node server.js
+abhed mcp add -header-env Authorization=CORPUS_TOKEN corpus https://retrieval.internal/mcp
+abhed mcp list
+abhed mcp remove docs
+```
+
+`add` shows the server, every value escaped and `-env` values hidden, and
+asks; only a yes typed at a terminal adds it, enabled, since it lets the
+agent start a process or reach an endpoint. Without a terminal it is
+refused: edit the file instead. `add` and `remove` are also refused inside
+an agent's command, where `ABHED_SANDBOX` is set or an `abhed` process is
+above the command. Neither check is the boundary: a terminal can be faked,
+and a detached daemon has no `abhed` above it. What keeps the agent from
+adding a server is the sandbox, which denies it `~/.abhed`; with the
+sandbox off (`none`) nothing does. `remove` narrows, so it does not ask. Each
+change is appended to `~/.abhed/config-changes.jsonl` with the time, the
+server's name, its transport and the SHA-256 of its entry, never its values.
+`list` shows the servers in effect in this workspace and whether each came
+from the managed file, your own or the workspace's.
+
+For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
+them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
+
+When the managed configuration sets the `mcp` section, `add` and `remove`
+are refused: its list replaces yours, and only it changes it. A workspace's
+servers still need workspace trust, as before.
+
+## Prompts as commands
+
+A connected server that offers prompts adds each one as a slash command,
+`/mcp__<server>__<prompt>`, listed in `/help` with its arguments. The words
+after the name fill the prompt's arguments in order, the last taking the
+rest of the line; a required one left out refuses the command before the
+server is asked.
+
+A prompt is someone else's text, so it never reaches the model unasked. Only
+when you type its command is it fetched (`prompts/get`) and shown to you
+with hidden and control characters escaped, and only when you then answer
+yes is it recorded as `command.invoked` with source `mcp` and the SHA-256 of
+the text, and sent as your next message, exactly as shown, capped at 30,000
+characters. No, or no answer, sends nothing. A prompt whose name or
+argument names are not letters, digits, `_`, `.` and `-` is left out with a
+warning. Built-in commands, and your own and the workspace's custom
+commands, keep their names: an MCP prompt that would take one is left out,
+and the session says so.
 
 ## Namespacing and policy
 
@@ -43,10 +115,14 @@ tools already offered reach the new connection.
 ## Many tools
 
 A server tool is registered only when its name is letters, digits, `_`, `.`
-and `-`, up to 64 characters; any other is left out with a warning.
+and `-`, up to 64 characters; any other is left out with a warning on
+stderr, and `/mcp` lists it under its server, its hidden characters shown as
+escapes.
 
 With more than 40 MCP tools across the servers, the model is not given each
-one. It gets a `tool_search` tool instead, whose description lists each
+one. A server of three tools or fewer is still offered in full, smallest
+first, up to twelve such tools in all; for the rest the model gets a
+`tool_search` tool instead, whose description lists each
 server and its tool names (names only; a name with anything but letters,
 digits, `_`, `.` and `-`, or past about 2.5 KB of names, is counted rather
 than shown). The system prompt tells the model to check those tools first:

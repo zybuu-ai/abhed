@@ -309,3 +309,30 @@ func TestChangePasswordStampWindowAndRollback(t *testing.T) {
 		})
 	}
 }
+
+// A change submitted twice at once keeps the session that made it: each
+// request stamped the session with its own hash, and whichever was stored
+// last ended it.
+func TestDoubleSubmittedChangeKeepsTheSession(t *testing.T) {
+	for range 5 {
+		l := newTestAuth(t)
+		mustCreate(t, l, "ada", "correct-horse-battery")
+		c := signIn(t, l, "ada", "correct-horse-battery")
+		var wg sync.WaitGroup
+		codes := make([]int, 2)
+		for i := range codes {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				codes[i] = changeVia(l, c, "correct-horse-battery", "a-new-long-password").Code
+			}()
+		}
+		wg.Wait()
+		if (codes[0] == http.StatusOK) == (codes[1] == http.StatusOK) {
+			t.Fatalf("codes %v: want one change to succeed", codes)
+		}
+		if _, ok := l.FromCookie(withCookie(c)); !ok {
+			t.Fatal("the session that changed the password was ended")
+		}
+	}
+}

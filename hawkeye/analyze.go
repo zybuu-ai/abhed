@@ -71,7 +71,11 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			var m agent.ModelCall
 			_ = json.Unmarshal(e.Payload, &m)
 			if m.Purpose != "" {
-				break // a call outside the conversation, as a suggestion, is no turn
+				// A call outside the conversation, as a suggestion, is no turn,
+				// but its tokens are spent: the session's own totals count them.
+				r.offTurn = append(r.offTurn, Turn{TokensIn: m.TokensIn, TokensOut: m.TokensOut,
+					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS})
+				break
 			}
 			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
 				r.Models = append(r.Models, m.Model)
@@ -193,6 +197,11 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 		}
 	}
 
+	// A session only people worked in, at the workbench's terminal or editor,
+	// has no run to be running: say that rather than "running".
+	if r.Outcome == "running" && len(r.Turns) == 0 && !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Type == agent.EvUserMessage }) {
+		r.Outcome = "no agent run"
+	}
 	for _, id := range order {
 		r.Calls = append(r.Calls, *calls[id])
 	}
@@ -239,10 +248,16 @@ func (r *Report) totals(ended agent.SessionEnded) {
 			t.Window = turn.Window
 		}
 	}
+	for _, c := range r.offTurn {
+		t.TokensIn += c.TokensIn
+		t.TokensOut += c.TokensOut
+		t.TokensCached += c.TokensCached
+		t.ModelMS += c.LatencyMS
+	}
 	t.Turns = len(r.Turns)
 	// A record written before per-turn accounting existed still carries the
 	// session's own totals, which is better than reporting zero.
-	if len(r.Turns) == 0 {
+	if len(r.Turns) == 0 && len(r.offTurn) == 0 {
 		t.Turns, t.TokensIn, t.TokensOut = ended.Turns, ended.TokensIn, ended.TokensOut
 		t.TokensCached, t.PeakContext, t.Window = ended.TokensCached, ended.ContextTokens, ended.ContextWindow
 	}
@@ -265,7 +280,7 @@ func integrity(evs []agent.Event, ordered bool, opt Options) Integrity {
 			continue
 		}
 		at := evs[i-1].Seq + 1
-		switch fits := deltaShaped(evs[i-1], evs[i], open); {
+		switch fits := deltaShaped(evs[i-1], evs[i], open) && streamed(evs, i); {
 		case fits && omitsDeltas:
 			in.Omitted = append(in.Omitted, at)
 		case fits && opt.Unsure:
@@ -299,6 +314,24 @@ var beforeModel = map[agent.EventType]bool{
 // after the event that prompted it, and only once every call asked for is settled.
 func deltaShaped(prev, next agent.Event, open map[string]bool) bool {
 	return next.Type == agent.EvModelCall && beforeModel[prev.Type] && len(open) == 0
+}
+
+// streamed reports whether the model.call at evs[i] can have streamed deltas:
+// its turn recorded a reply or reasoning, or the call failed part way.
+func streamed(evs []agent.Event, i int) bool {
+	var mc agent.ModelCall
+	if json.Unmarshal(evs[i].Payload, &mc) == nil && mc.Error != "" {
+		return true
+	}
+	for _, e := range evs[i+1:] {
+		switch e.Type {
+		case agent.EvAgentMessage, agent.EvAgentReasoning:
+			return true
+		case agent.EvModelCall:
+			return false
+		}
+	}
+	return false
 }
 
 // settle tracks the calls asked for and not yet denied or answered with a result.

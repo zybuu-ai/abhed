@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -81,8 +82,26 @@ func precheckPath(s *Session, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
 	}
-	_, err := s.Resolve(a.Path)
-	return err
+	path, err := s.Resolve(a.Path)
+	if err != nil {
+		return err
+	}
+	return gitWrite(path)
+}
+
+// gitWrite refuses a write into a .git folder, or to a .git file, in any case
+// and through a link: a hook or a config line written there runs a program
+// at the next git command, in Abhed's own git or the person's.
+func gitWrite(path string) error {
+	for _, p := range []string{filepath.Clean(path), RealPath(path)} {
+		for _, part := range strings.Split(p, string(filepath.Separator)) {
+			if strings.EqualFold(part, ".git") {
+				return fmt.Errorf("%s is inside git's own folder, where hooks and config run programs; "+
+					"the agent cannot write there in any mode. Use git commands for what you need", path)
+			}
+		}
+	}
+	return nil
 }
 
 // Result is what the model sees. Content is rendered into the transcript, so

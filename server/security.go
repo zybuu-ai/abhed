@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base32"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
@@ -129,7 +130,7 @@ func securityHeaders(next http.Handler, hsts bool) http.Handler {
 // SDK, CI) legitimately omit it, and they are not the threat this addresses —
 // a CSRF attack requires a browser, and browsers send Origin on exactly the
 // requests that matter.
-func sameOrigin(allowed []string) func(http.Handler) http.Handler {
+func sameOrigin(allowed []string, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
@@ -149,6 +150,12 @@ func sameOrigin(allowed []string) func(http.Handler) http.Handler {
 				return
 			}
 			WriteError(w, http.StatusForbidden, "cross-origin request rejected")
+			// This runs outside the request logger, so a refused forgery would otherwise leave no line.
+			if log != nil {
+				log.Warn("request refused", "method", r.Method, "path", r.URL.Path,
+					"status", http.StatusForbidden, "reason", "cross-origin", "origin", origin,
+					"remote", r.RemoteAddr)
+			}
 		})
 	}
 }

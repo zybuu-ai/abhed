@@ -46,7 +46,19 @@ const (
 	EvManualEdit EventType = "manual.edit"
 	// EvTaskCancelled is a person stopping one background task; see TaskCancelled.
 	EvTaskCancelled EventType = "task.cancelled"
+	// EvMCPStatus is an MCP server's connection changed by a person; see MCPStatus.
+	EvMCPStatus EventType = "mcp.status"
 )
+
+// MCPStatus is the payload of mcp.status: what a person did to one MCP
+// server's connection, and how it ended.
+type MCPStatus struct {
+	Server string `json:"server"`
+	Op     string `json:"op"`     // restart
+	Status string `json:"status"` // connected or error
+	Error  string `json:"error,omitempty"`
+	By     string `json:"by"`
+}
 
 // ScopeGranted is the payload of approval.scope_granted.
 type ScopeGranted struct {

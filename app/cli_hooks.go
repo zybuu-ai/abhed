@@ -98,6 +98,7 @@ func slashHooks(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	for _, x := range cfg.Extensions {
 		layer := cfg.ExtensionLayer(x.Name)
+		toolsOnly := cfg.Hooks.Disabled || cfg.Hooks.ManagedOnly && layer != config.LayerManaged
 		if layer == config.LayerManaged {
 			layer = "managed (locked)"
 		}
@@ -114,11 +115,13 @@ func slashHooks(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 			if !ext.Running() {
 				status = "stopped: " + ext.LastError()
 			}
-			if cfg.Hooks.Disabled {
+			if toolsOnly {
 				status += " (tools only)"
 			}
 		} else if cfg.Hooks.Disabled {
 			status = "off: hooks are disabled"
+		} else if toolsOnly {
+			status = "off: only the managed configuration's extensions take hooks"
 		}
 		rows = append(rows, []string{x.Name, layer, events, strings.Join(x.Match, ", "), status})
 	}
@@ -132,6 +135,9 @@ func slashHooks(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	}
 	if !cfg.Workspace.Trusted && slices.ContainsFunc(cfg.Workspace.Ignored, func(k config.IgnoredKey) bool { return strings.HasPrefix(k.Key, "extensions") }) {
 		note += " The untrusted workspace file's extensions were not started."
+	}
+	if cfg.Hooks.ManagedOnly && !cfg.Hooks.Disabled {
+		note = "The managed configuration limits hooks to its own extensions: the rest keep only the tools they provide. " + note
 	}
 	body = append(body, ui.Block{Kind: ui.BlockNotice, Text: note})
 	return false, e.ui.Panel(ctx, ui.PanelSpec{Title: "Hooks", Body: body})

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -157,5 +158,45 @@ func TestWeightRanksManualDecisions(t *testing.T) {
 		if got := weight(c.d); got != c.want {
 			t.Errorf("%s at %s: %d, want %d", c.d.Decision, c.d.Step, got, c.want)
 		}
+	}
+}
+
+// A line that opens a construct the shell finishes with later lines, or
+// closes one, is left to the shell at the interactive terminal; a denied
+// command on a line of its own is still refused.
+func TestManualScreenLeavesAnOpenConstructToTheShell(t *testing.T) {
+	l, _ := manualLoop(t)
+	for i, line := range []string{
+		"for f in *; do", "if true; then", "while true; do", "cat <<EOF", "f() {", "case x in",
+		"git commit -m \"first line", "echo hi |", "ls &&", "(cd x", "done", "fi", "esac", "}",
+	} {
+		if refused, err := l.ManualScreen(fmt.Sprintf("o%d", i), line); err != nil || refused != nil {
+			t.Errorf("ManualScreen(%q) refused it: %v %v", line, refused, err)
+		}
+	}
+	for i, line := range []string{"curl http://x", "x=c_u_r_l; ${x//_/} http://x"} {
+		if refused, err := l.ManualScreen(fmt.Sprintf("d%d", i), line); err != nil || refused == nil {
+			t.Errorf("ManualScreen(%q) passed it: %v", line, err)
+		}
+	}
+}
+
+// callMutator mutates only when its arguments say so.
+type callMutator struct{ tools.Bash }
+
+func (callMutator) Name() string                         { return "mover" }
+func (callMutator) Mutates() bool                        { return false }
+func (callMutator) MutatesCall(raw json.RawMessage) bool { return string(raw) == `{"command":"move"}` }
+
+// A person's call is judged by what this call does, as the agent's is: one
+// that mutates by its arguments is refused in plan mode.
+func TestManualAuthorizeJudgesTheCall(t *testing.T) {
+	store := NewMemStore()
+	l := &Loop{Tools: tools.NewRegistry(callMutator{}), Policy: policy.New(policy.ModePlan), Recorder: NewRecorder(store, "s-manual", "")}
+	if _, refused, err := l.ManualAuthorize("mover", "m1", json.RawMessage(`{"command":"move"}`)); err != nil || refused == nil {
+		t.Fatalf("a mutating call ran in plan mode: refused %v err %v", refused, err)
+	}
+	if _, refused, err := l.ManualAuthorize("mover", "m2", json.RawMessage(`{"command":"look"}`)); err != nil || refused != nil {
+		t.Fatalf("a reading call was refused: %v %v", refused, err)
 	}
 }

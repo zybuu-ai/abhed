@@ -206,6 +206,9 @@ func (Write) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("Invalid arguments for write: %v", err)
 	}
 	path, err := s.Resolve(a.Path)
+	if err == nil {
+		err = gitWrite(path)
+	}
 	if err != nil {
 		return errf("%v", err)
 	}

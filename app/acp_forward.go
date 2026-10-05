@@ -131,6 +131,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		var p struct {
 			CallID string `json:"call_id"`
 			Reason string `json:"reason"`
+			Step   string `json:"step"`
+			Rule   string `json:"rule"`
+			By     string `json:"by"`
 		}
 		_ = json.Unmarshal(ev.Payload, &p)
 		if p.CallID == "" {
@@ -138,8 +141,16 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			p.CallID = s.lastIdless.id
 			s.mu.Unlock()
 		}
+		// The why of a denial, as an ask carries it: the step, the rule and who settled it.
+		denied := map[string]any{}
+		for k, v := range map[string]string{"step": p.Step, "by": p.By, "rule": p.Rule} {
+			if v != "" {
+				denied[k] = redacted(v)
+			}
+		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": p.CallID, "status": "failed",
-			"content": []any{map[string]any{"type": "content", "content": text("Denied: " + p.Reason)}}})
+			"content": []any{map[string]any{"type": "content", "content": text("Denied: " + redacted(p.Reason))}},
+			"_meta":   map[string]any{acpMetaKey: map[string]any{"denied": denied}}})
 	case agent.EvObservation:
 		var p agent.Observation
 		_ = json.Unmarshal(ev.Payload, &p)

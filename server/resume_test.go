@@ -45,17 +45,18 @@ type durableMem struct {
 	onReclaim  func()
 }
 
-// ReclaimOwn takes back an open row held under holder's own id.
+// ReclaimOwn takes back an open row held under holder's node id.
 func (d *durableMem) ReclaimOwn(_ context.Context, id, holder string) (bool, error) {
 	if d.onReclaim != nil {
 		d.onReclaim()
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.rows[id]; !ok || d.ended[id] || d.holders[id] != holder {
+	// Any incarnation of the same node, as the Postgres store matches.
+	if _, ok := d.rows[id]; !ok || d.ended[id] || store.HolderNode(d.holders[id]) != store.HolderNode(holder) {
 		return false, nil
 	}
-	d.seen[id] = time.Now()
+	d.holders[id], d.seen[id] = holder, time.Now()
 	return true, nil
 }
 
@@ -104,7 +105,7 @@ func (d *durableMem) NodeFor(_ context.Context, id string, stale time.Duration) 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if at, ok := d.seen[id]; ok && time.Since(at) < stale {
-		return d.holders[id], nil
+		return store.HolderNode(d.holders[id]), nil
 	}
 	return "", nil
 }
@@ -182,6 +183,17 @@ func (d *durableMem) Append(ev agent.Event) error {
 		_ = json.Unmarshal(ev.Payload, &end)
 		d.mu.Lock()
 		d.ended[ev.SessionID] = end.Background == 0
+		d.mu.Unlock()
+	}
+	if ev.Type == agent.EvSessionRenamed {
+		// As Postgres: the row carries the latest title.
+		var rn agent.SessionRenamed
+		_ = json.Unmarshal(ev.Payload, &rn)
+		d.mu.Lock()
+		if row, ok := d.rows[ev.SessionID]; ok {
+			row.Title = rn.Title
+			d.rows[ev.SessionID] = row
+		}
 		d.mu.Unlock()
 	}
 	return d.MemStore.Append(ev)

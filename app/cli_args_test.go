@@ -3,6 +3,7 @@ package app
 import (
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -50,5 +51,37 @@ func TestVersionCommandPrintsTheVersion(t *testing.T) {
 	out, _ := io.ReadAll(r)
 	if code != 0 || !strings.HasPrefix(string(out), "abhed ") {
 		t.Errorf("exit %d, stdout %q", code, out)
+	}
+}
+
+// -h after a command that reads no flags of its own prints its usage and does
+// nothing else: `index -h` used to build the index and `init -h` to write a
+// config.
+func TestSubcommandHelpDoesNotRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, name := range []string{"init", "index", "trust", "user", "acp", "rpc", "doctor", "providers"} {
+		ws := t.TempDir()
+		out, code := stdoutOf(t, func() int { return Main([]string{"-C", ws, name, "-h"}) })
+		if code != 0 || !strings.HasPrefix(out, "usage: abhed "+name) {
+			t.Errorf("%s -h: exit %d, stdout:\n%s", name, code, out)
+		}
+		if _, err := os.Stat(ws + "/.abhed"); err == nil {
+			t.Errorf("%s -h wrote .abhed", name)
+		}
+	}
+}
+
+// An edition's subcommand gets its own flags; the global flag set used to
+// refuse them as "flag provided but not defined".
+func TestEditionCommandTakesItsOwnFlags(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	var got []string
+	run := WithCommand("identities", func(_ string, args []string) int { got = args; return 3 })
+	if code := Main([]string{"-C", ws, "identities", "forget", "-email", "x"}, run); code != 3 {
+		t.Fatalf("exit %d, args %q", code, got)
+	}
+	if want := []string{"forget", "-email", "x"}; !slices.Equal(got, want) {
+		t.Errorf("args %q, want %q", got, want)
 	}
 }

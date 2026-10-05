@@ -2,8 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -66,7 +71,7 @@ say so and say which you trust.
 ## Tool use
 - Use read/glob/grep for inspection; they are cheaper and safer than shell equivalents.
 - Batch independent tool calls in one turn. Sequential calls are only for dependent work.
-- Paths must be absolute.
+- Paths must be absolute.{{tools}}
 
 ## Communication
 - Match the answer to the question. A request to change code gets a short report of
@@ -223,7 +228,7 @@ func BuildSystemPrompt(opts BuildOptions) string {
 	var b strings.Builder
 
 	current, web := sources(opts.Tools)
-	b.WriteString(strings.NewReplacer("{{current}}", current, "{{web}}", web).Replace(CorePrompt))
+	b.WriteString(strings.NewReplacer("{{current}}", current, "{{web}}", web, "{{tools}}", toolHints(opts.Tools)).Replace(CorePrompt))
 
 	role := opts.Role
 	if p, found := Profiles[opts.Profile]; found && role == "" {
@@ -244,6 +249,11 @@ func BuildSystemPrompt(opts BuildOptions) string {
 		fmt.Fprintf(&b, "Git: %s, %s\n", branch, state)
 	} else {
 		b.WriteString("Git: not a repository\n")
+	}
+	// Models ran pytest in a Go module; the project's own test command is
+	// named, from the file that says it.
+	if cmd, from := testCommand(opts.Workspace); cmd != "" {
+		fmt.Fprintf(&b, "Tests: %s (from %s)\n", cmd, from)
 	}
 	fmt.Fprintf(&b, "Date: %s\n", time.Now().Format("2006-01-02"))
 	if opts.Model != "" {
@@ -266,6 +276,75 @@ func BuildSystemPrompt(opts BuildOptions) string {
 	}
 
 	return b.String()
+}
+
+// toolHints are the lines on the tools models passed over, for those the
+// session has: a choice asked in prose ended the turn, and broad work was
+// done alone that a subagent would have kept out of the context.
+func toolHints(names []string) string {
+	var b strings.Builder
+	if slices.Contains(names, "ask_user") {
+		b.WriteString("\n- To have the user choose between options before you go on, call ask_user rather than " +
+			"asking in prose and ending your turn.")
+	}
+	if slices.Contains(names, "task") {
+		b.WriteString("\n- For a broad search across many files, or independent parts of a larger task, " +
+			"hand the work to a subagent with task (tasks for several at once); it returns a summary and " +
+			"keeps the detail out of your context.")
+	}
+	return b.String()
+}
+
+// testCommand is the project's test command at dir and the file it comes
+// from, or "" when none is plain: the language's own runner, or the
+// Makefile's test target.
+func testCommand(dir string) (cmd, from string) {
+	if dir == "" {
+		return "", ""
+	}
+	has := func(name string) bool {
+		info, err := os.Stat(filepath.Join(dir, name))
+		return err == nil && info.Mode().IsRegular()
+	}
+	switch {
+	case has("go.mod"):
+		return "go test ./...", "go.mod"
+	case has("Cargo.toml"):
+		return "cargo test", "Cargo.toml"
+	case has("package.json"):
+		data, err := os.ReadFile(filepath.Join(dir, "package.json")) // #nosec G304 -- the workspace's own manifest
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if err != nil || json.Unmarshal(data, &pkg) != nil || pkg.Scripts["test"] == "" ||
+			strings.Contains(pkg.Scripts["test"], "no test specified") {
+			return "", ""
+		}
+		runner := "npm"
+		switch {
+		case has("pnpm-lock.yaml"):
+			runner = "pnpm"
+		case has("yarn.lock"):
+			runner = "yarn"
+		}
+		return runner + " test", "package.json"
+	case has("pytest.ini"), has("pyproject.toml") && fileHas(filepath.Join(dir, "pyproject.toml"), "pytest"):
+		return "pytest", map[bool]string{true: "pytest.ini", false: "pyproject.toml"}[has("pytest.ini")]
+	case has("Makefile") && fileHas(filepath.Join(dir, "Makefile"), "\ntest:"):
+		return "make test", "Makefile"
+	}
+	return "", ""
+}
+
+// fileHas reports whether the file at path holds s, reading at most 64 KB.
+func fileHas(path, s string) bool {
+	f, err := os.Open(path) // #nosec G304 -- a workspace manifest
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	data, _ := io.ReadAll(io.LimitReader(f, 64<<10))
+	return strings.Contains("\n"+string(data), s)
 }
 
 func gitState(dir string) (branch string, dirty int, isRepo bool) {

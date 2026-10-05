@@ -17,10 +17,29 @@ type Prompter struct {
 	waiting chan string
 	stop    chan struct{}
 	once    sync.Once
+	// turn is held by the one question being asked. Questions from two loop
+	// trees (a background task's beside the foreground's) would otherwise
+	// share waiting, and a line meant for one could answer the other.
+	turn chan struct{}
 }
 
 // NewPrompter returns a Prompter ready to route approval input.
-func NewPrompter() *Prompter { return &Prompter{stop: make(chan struct{})} }
+func NewPrompter() *Prompter {
+	return &Prompter{stop: make(chan struct{}), turn: make(chan struct{}, 1)}
+}
+
+// Hold waits until no other question holds the prompter, then holds it until
+// release is called. ok is false when ctx ends or input ends first.
+func (p *Prompter) Hold(ctx context.Context) (release func(), ok bool) {
+	select {
+	case p.turn <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-p.turn }) }, true
+	case <-ctx.Done():
+	case <-p.stop:
+	}
+	return func() {}, false
+}
 
 // Await blocks until a line is delivered, the context is cancelled, or input
 // ends. ok is false in the latter two cases.
@@ -93,6 +112,17 @@ func (p *Prompter) Waiting() bool {
 func Decision(line string) bool {
 	switch strings.TrimSpace(line) {
 	case "1", "2", "3":
+		return true
+	}
+	return false
+}
+
+// AnswerLike reports a line that reads as an attempt to answer a question
+// (y, yes, a, no...) rather than a message: while an approval waits, it is
+// neither the answer nor something to send on.
+func AnswerLike(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes", "n", "no", "a", "always", "allow", "deny", "ok", "okay", "approve", "reject":
 		return true
 	}
 	return false

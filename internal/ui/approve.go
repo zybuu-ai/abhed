@@ -165,6 +165,8 @@ func (a *Approver) askNumbered(ctx context.Context, read func() (string, bool), 
 			a.Arm()
 		}
 		fmt.Fprintf(a.Out, "  %s ", s.Dim(fmt.Sprintf("answer 1-%d:", len(spec.Choices))))
+		// Also checked after read: this one is a second layer, kept so a read
+		// that ignores the context never waits on a call already stopped.
 		if err := ctx.Err(); err != nil {
 			fmt.Fprintln(a.Out)
 			return "", err

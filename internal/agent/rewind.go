@@ -110,6 +110,9 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, error) {
 	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
+	if err := l.refuseForkWhileTasksRun(); err != nil {
+		return 0, err
+	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: 0}); err != nil {
 		return 0, err
 	}
@@ -221,7 +224,8 @@ func BranchCopy(events []Event, through int64, sessionID string, first int64) []
 			continue
 		}
 		switch {
-		case ev.Type == EvAgentDelta || ev.Type == EvAgentReasoningDelta || ev.Type == EvForked:
+		// A name is the source's: kept, `-r NAME` matched both sessions.
+		case ev.Type == EvAgentDelta || ev.Type == EvAgentReasoningDelta || ev.Type == EvForked || ev.Type == EvSessionNamed:
 			continue
 		case keep[ev.Seq], ev.Type == EvCheckpoint, ev.Type == EvFileRestored:
 			picked = append(picked, ev)

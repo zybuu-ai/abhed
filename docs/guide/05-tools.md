@@ -35,7 +35,23 @@ build and keep working. The call goes through exactly the same steps as a
 foreground one: deny, ask and allow rules, the destructive-command check,
 extension screening, approval, the sandbox and `secrets`. Plan mode refuses
 it. `timeout_ms`, when given, bounds the command's life; otherwise
-`limits.background_max_minutes` does.
+`limits.background_max_minutes` does. Its approval is the same one too, so
+**Always allow** is offered for the same commands as in the foreground (none
+for a chain such as `sleep 40; echo done`); in `/ide` the card also says the
+command keeps running after the turn. In the terminal, Ctrl-B moves a
+foreground command that is running to the background the same way: its
+output so far is the call's result, and `shell.started` says
+`from_foreground`. A subagent `task` started in the foreground moves the
+same way, recorded as `subagent.backgrounded`.
+
+A timeout ends the command with everything it started. Each command's
+processes inherit an unguessable `ABHED_COMMAND_ID`, and a timeout ends every
+process of yours that carries it, so a daemon that forked twice and left its
+session is ended too. On the none tier and the macOS process tier, a process
+that clears or replaces its environment is not found, nor on macOS one still
+running a program Apple ships in the system (`/bin/sh`, `/bin/sleep`), which
+hides its environment; bubblewrap ends everything in its namespace. See
+[Security posture](../trust/security-posture.md).
 
 - `shell_output` returns what the command wrote since the last read, with its
   state (`running`, or `exited` / `killed` and the exit code). One read returns
@@ -57,6 +73,15 @@ it. `timeout_ms`, when given, bounds the command's life; otherwise
   all, when the session closes, on a stop of all background work, and when
   Abhed exits. Output the agent reads is recorded as an `observation`, redacted
   like any other; `shell.started` and `shell.ended` record the rest.
+- Once the shell's own command has ended, what it started and left running
+  (`server &`, then the shell exits) is no longer reached: not by
+  `shell_kill`, the session closing, a stop or Abhed exiting, nor by revoking
+  the session in Enterprise. It keeps running in the sandbox until it ends.
+  Keep a long-running process in the foreground of its background shell
+  (`server`, not `server &`) so that stopping the shell stops it. If Abhed
+  itself is killed, its shells are left running the same way. Bubblewrap on
+  Linux is the exception to both: its process namespace ends with the shell,
+  and the shell with Abhed.
 - A subagent cannot start one, and neither can a surface that runs no
   background work (`abhed eval`).
 

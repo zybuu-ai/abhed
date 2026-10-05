@@ -296,6 +296,61 @@ func TestModelSwitchUpdatesTheRow(t *testing.T) {
 	}
 }
 
+// The row carries the title a rename recorded, for the list and for one session.
+func TestRenameUpdatesTheRow(t *testing.T) {
+	p := openStore(t, "acme")
+	id := fmt.Sprintf("s-rename-%d", time.Now().UnixNano())
+	newSession(t, p, id, "acme")
+	if err := p.Append(ev(id, 1, agent.EvSessionRenamed, agent.Trusted, agent.SessionRenamed{Title: "Retry fix", By: "tester"})); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := p.GetSession(context.Background(), id)
+	if err != nil || rec.Title != "Retry fix" {
+		t.Fatalf("the row's title after a rename: %q, %v", rec.Title, err)
+	}
+	list, err := p.ListSessionsOwnedBy(context.Background(), "tester", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range list {
+		found = found || (s.ID == id && s.Title == "Retry fix")
+	}
+	if !found {
+		t.Fatal("the list does not carry the session's title")
+	}
+}
+
+// A session opened with no prompt, as the workbench opens one, is named in
+// its row by its first message; a later message does not rename it.
+func TestFirstMessageLabelsAPromptlessSession(t *testing.T) {
+	p := openStore(t, "acme")
+	id := fmt.Sprintf("s-firstmsg-%d", time.Now().UnixNano())
+	newSession(t, p, id, "acme")
+	for seq, text := range []string{"  ", "Fix the retry loop", "and the tests"} {
+		if err := p.Append(ev(id, int64(seq+1), agent.EvUserMessage, agent.Trusted, agent.Message{Text: text})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec, err := p.GetSession(context.Background(), id)
+	if err != nil || rec.Prompt != "Fix the retry loop" {
+		t.Fatalf("the row's prompt after the first message: %q, %v", rec.Prompt, err)
+	}
+
+	// A session started with a prompt keeps it.
+	id2 := fmt.Sprintf("s-firstmsg2-%d", time.Now().UnixNano())
+	if err := p.CreateSession(context.Background(), SessionRecord{ID: id2, Tenant: "acme", User: "tester",
+		Workspace: "/w", Model: "test-model", Mode: "default", StartedAt: time.Now().UTC(), Prompt: "Opening ask"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Append(ev(id2, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "something else"})); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := p.GetSession(context.Background(), id2); err != nil || rec.Prompt != "Opening ask" {
+		t.Fatalf("a prompted session's row after a message: %q, %v", rec.Prompt, err)
+	}
+}
+
 func TestListSessionsScopedToTenant(t *testing.T) {
 	acme := openStore(t, "acme")
 	id := fmt.Sprintf("s-list-%d", time.Now().UnixNano())

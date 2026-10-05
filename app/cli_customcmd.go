@@ -66,7 +66,8 @@ func ensureCustomCommands(st *cliState, r *ui.Renderer) {
 }
 
 // loadCustomCommands reads the managed, user and workspace commands and
-// registers them as run-time sources: built-ins still win every name.
+// registers them, then the MCP servers' prompts, as run-time sources:
+// built-ins still win every name.
 func loadCustomCommands(st *cliState) {
 	ws := st.workspace
 	if ws == "" && st.sess != nil {
@@ -90,6 +91,8 @@ func loadCustomCommands(st *cliState) {
 			st.dynamic = append(st.dynamic, customSource{kind: kind, cmds: bySource[kind]})
 		}
 	}
+	// MCP prompts come last: a custom command or built-in keeps its name.
+	st.dynamic = append(st.dynamic, mcpPromptSource{st: st})
 	ui.SetCommands(builtinSlash.uiCommands(st.dynamic))
 }
 

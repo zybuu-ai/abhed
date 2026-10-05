@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -127,6 +128,17 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A file dropped onto an Explorer folder goes to that folder, as the
+	// person's own write: judged and recorded as a save is (uploadInto).
+	if dirs := r.MultipartForm.Value["dir"]; len(dirs) > 0 {
+		if staged {
+			WriteError(w, http.StatusBadRequest, "a file is put into a folder only in a session")
+			return
+		}
+		s.uploadInto(w, r, dirs[0], header.Filename, data)
+		return
+	}
+
 	name := safeUploadName(header.Filename)
 	// Uploads live in their own top-level directory, NOT under .abhed/.
 	//
@@ -158,7 +170,13 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := uploadResponse{Path: dest, Name: name, Bytes: int64(len(data))}
+	describeUpload(&resp, data, name)
+	WriteJSON(w, http.StatusOK, resp)
+}
 
+// describeUpload says what the agent will make of the file: its kind, a
+// preview of extracted text, and whether it is an image or unreadable.
+func describeUpload(resp *uploadResponse, data []byte, name string) {
 	// Report now whether the agent will be able to read this, rather than
 	// letting the model discover it mid-turn and improvise. A PDF of scanned
 	// pages is the common case, and "I could not read it" is far more useful
@@ -189,14 +207,24 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	} else if isProbablyBinary(data) {
 		resp.Note = "this looks like a binary file; the agent will not be able to read it as text"
 	}
-
-	WriteJSON(w, http.StatusOK, resp)
 }
 
 // safeUploadName reduces a client-supplied filename to something that cannot
 // escape the upload directory. The name arrives from a browser and is not
 // trustworthy: "../../.ssh/authorized_keys" is a legal multipart filename.
 func safeUploadName(raw string) string {
+	name := cleanUploadName(raw)
+	// A short suffix keeps two uploads of "report.pdf" from overwriting each
+	// other, which would silently change what the agent reads.
+	var b [4]byte
+	rand.Read(b[:])
+	ext := filepath.Ext(name)
+	return strings.TrimSuffix(name, ext) + "-" + hex.EncodeToString(b[:]) + ext
+}
+
+// cleanUploadName is safeUploadName without the suffix, for a file put into a
+// folder by name, where taking a name already there is refused instead.
+func cleanUploadName(raw string) string {
 	name := filepath.Base(strings.ReplaceAll(raw, "\\", "/"))
 	name = strings.TrimSpace(name)
 	// Base() maps these to themselves, so they need naming explicitly.
@@ -219,16 +247,19 @@ func safeUploadName(raw string) string {
 		name = "upload"
 	}
 	if len(name) > 120 {
-		// Preserve the extension, which is what a person recognises.
+		// Preserve the extension, which is what a person recognises, unless
+		// it is too long to be one; cut on a character's first byte.
 		ext := filepath.Ext(name)
-		name = name[:120-len(ext)] + ext
+		if len(ext) > 20 {
+			ext = ""
+		}
+		cut := 120 - len(ext)
+		for cut > 0 && !utf8.RuneStart(name[cut]) {
+			cut--
+		}
+		name = name[:cut] + ext
 	}
-	// A short suffix keeps two uploads of "report.pdf" from overwriting each
-	// other, which would silently change what the agent reads.
-	var b [4]byte
-	rand.Read(b[:])
-	ext := filepath.Ext(name)
-	return strings.TrimSuffix(name, ext) + "-" + hex.EncodeToString(b[:]) + ext
+	return name
 }
 
 func firstLines(s string, n int) string {

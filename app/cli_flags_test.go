@@ -12,10 +12,15 @@ import (
 
 func parse(t *testing.T, args ...string) *cliFlags {
 	t.Helper()
+	return parseWith(t, nil, args...)
+}
+
+func parseWith(t *testing.T, edition map[string]Command, args ...string) *cliFlags {
+	t.Helper()
 	var f cliFlags
 	fs := newFlagSet(&f)
 	fs.SetOutput(new(strings.Builder))
-	if err := parseArgs(fs, &f, args); err != nil {
+	if err := parseArgs(fs, &f, args, edition); err != nil {
 		t.Fatalf("%v: %v", args, err)
 	}
 	return &f
@@ -48,6 +53,25 @@ func TestParseArgs(t *testing.T) {
 		if f.print.on != c.print || f.task() != c.task || !slices.Equal(f.sub, c.sub) || f.dashed != c.dashed || f.format != c.format {
 			t.Errorf("%q: print %v task %q sub %q dashed %v format %s", c.args, f.print.on, f.task(), f.sub, f.dashed, f.format)
 		}
+	}
+}
+
+// An edition's subcommand parses its own flags, after the global ones, and
+// cannot take a built-in's name.
+func TestParseArgsStopsAtAnEditionCommand(t *testing.T) {
+	a := newApp(
+		WithCommand("identities", func(string, []string) int { return 0 }),
+		WithCommand("doctor", func(string, []string) int { return 7 }),
+	)
+	f := parseWith(t, a.commands, "-C", "/x", "identities", "forget", "-email", "x", "-older-than", "30")
+	if want := []string{"identities", "forget", "-email", "x", "-older-than", "30"}; !slices.Equal(f.words, want) || f.workdir != "/x" || len(f.sub) != 0 {
+		t.Errorf("edition command: words %q sub %q workdir %q", f.words, f.sub, f.workdir)
+	}
+	if f := parseWith(t, a.commands, "doctor", "-x"); !slices.Equal(f.sub, []string{"doctor", "-x"}) || len(f.words) != 0 {
+		t.Errorf("a built-in's name: words %q sub %q", f.words, f.sub)
+	}
+	if f := parseWith(t, a.commands, "-p", "identities"); f.task() != "identities" {
+		t.Errorf("after -p: task %q", f.task())
 	}
 }
 

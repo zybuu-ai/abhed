@@ -312,7 +312,7 @@ func TestResumeUsesCurrentNarrowTools(t *testing.T) {
 			resumed = s
 		}
 	}
-	if resumed["definition_changed"] != true || len(resumed["tools"].([]any)) != 1 { // read only
+	if resumed["definition_changed"] != true || len(resumed["tools"].([]any)) != 2 { // read, and recall
 		t.Fatalf("resumed with %v", resumed)
 	}
 	r.f.Definitions = WithDefinitions()

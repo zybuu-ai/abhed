@@ -316,3 +316,31 @@ func TestLoadFollowsSymlinkedSkills(t *testing.T) {
 		t.Errorf("body not read through the symlink: %q", s.Body)
 	}
 }
+
+// NarrowSkills offers only the named skills, reports the ones it lacks, and
+// leaves the session's own tool as it was.
+func TestNarrowSkills(t *testing.T) {
+	r := NewRegistry()
+	r.add(&Skill{Name: "pdf", Description: "read PDFs"})
+	r.add(&Skill{Name: "deploy", Description: "ship it"})
+	full := Tool{R: r}
+	cut, missing := full.NarrowSkills([]string{"pdf", "absent"})
+	if len(missing) != 1 || missing[0] != "absent" {
+		t.Fatalf("missing %v", missing)
+	}
+	got := cut.(Tool).R.Names()
+	if len(got) != 1 || got[0] != "pdf" || full.R.Len() != 2 {
+		t.Fatalf("cut %v, full %d", got, full.R.Len())
+	}
+	if res := cut.Run(context.Background(), nil, []byte(`{"name":"deploy"}`)); !res.IsError {
+		t.Fatalf("a cut tool loaded a skill outside its list: %s", res.Content)
+	}
+}
+
+// The skill tool asks to be the first call when a request matches a skill:
+// models matched one and worked unaided.
+func TestSkillToolAsksToBeCalledFirst(t *testing.T) {
+	if d := (Tool{}).Description(); !strings.Contains(d, "call this first, before reading files or searching") {
+		t.Fatalf("description: %s", d)
+	}
+}

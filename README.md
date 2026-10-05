@@ -177,10 +177,10 @@ network-exfiltration checks; set `ABHED_TEST_DSN` for the Postgres integration t
 Access    CLI · Web console · REST/SSE API
 Control   Orchestrator → Context → Policy → Tool router    ← the harness
 Inference OpenAI-compatible gateway (any model)
-Execution tiered sandbox, no egress by default
-Data      event store · hybrid index · MCP registry
+Execution tiered sandbox for shell commands, no egress by default
+Data      event store · hybrid index · MCP gateway
           ═══ air-gap boundary ═══
-Egress    broker (optional, default OFF)
+Egress    none by default; opt-in tools and MCP servers reach out from the host
 ```
 
 | Doc | Contents |

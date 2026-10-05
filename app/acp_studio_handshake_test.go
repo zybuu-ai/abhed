@@ -38,13 +38,13 @@ func TestStudioHandshake(t *testing.T) {
 		t.Fatalf("record: %+v", m.Record)
 	}
 	for _, f := range []string{"sessions", "fork", "events", "record.verify", "hawkeye", "export", "tasks", "tasks.review",
-		"capabilities", "policy.explain", "trust.inspect", "modes", "review", "checkpoints", "terminal", "queue", "manual", "doctor"} {
+		"capabilities", "policy.explain", "trust.inspect", "modes", "review", "checkpoints", "terminal", "queue", "manual", "doctor", "mcp.restart"} {
 		if !slices.Contains(m.Features, f) {
 			t.Errorf("feature %s not advertised: %v", f, m.Features)
 		}
 	}
 	// Not served, so not listed: Studio hides them and never probes.
-	for _, f := range []string{"resolve", "index", "infra", "mcp.restart", "memory", "team"} {
+	for _, f := range []string{"resolve", "index", "infra", "memory", "team"} {
 		if slices.Contains(m.Features, f) {
 			t.Errorf("feature %s advertised but not served", f)
 		}

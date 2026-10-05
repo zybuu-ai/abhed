@@ -159,6 +159,12 @@ type InviteRedeemer interface {
 	Redeemed(ctx context.Context, code, username string) error
 }
 
+// InviteEmailChecker is an InviteRedeemer whose codes may be made out to one
+// address. Signup asks it before the code is spent, so a refusal keeps the code.
+type InviteEmailChecker interface {
+	CheckInviteEmail(ctx context.Context, code, email string) error
+}
+
 // TenantResolver decides which tenant a request acts in, given the identity
 // the auth layer established (nil when there is none). The server is
 // single-store: it never switches tenant mid-request, and the resolver's
@@ -173,6 +179,7 @@ type Options struct {
 	Addr      string
 	Workspace string
 	// NodeID identifies this process among several behind a load balancer.
+	// It holds no '#', which separates it from a lease's incarnation token.
 	// Empty means a single-node deployment: nothing is claimed and routing
 	// stays off, which is the right default.
 	NodeID string
@@ -277,6 +284,9 @@ type Server struct {
 	log       *slog.Logger
 	mu        sync.RWMutex
 	running   map[string]*liveSession
+	// starting holds sessions whose row is written but which are not yet in
+	// running; the list leaves them out, since their routes would answer 404.
+	starting map[string]bool
 	// draining is set once shutdown starts: running turns finish, new ones
 	// are refused so a balancer sends them to a node that can take them.
 	draining atomic.Bool
@@ -317,6 +327,8 @@ type liveSession struct {
 	Created time.Time
 	Prompt  string
 	State   string // running | waiting_approval | background | idle | done
+	// title is the name a person last gave the session; guarded by mu.
+	title string
 	// Reason is how the last run ended, which the session list shows for done.
 	Reason agent.TerminalReason
 	Turns  int // exchanges in this conversation
@@ -362,7 +374,7 @@ type liveSession struct {
 	// released by release after a quiet spell with the end it was opened with.
 	unclaimed atomic.Bool
 	// ownerGone is set by a revoke or a failed owner check; it holds wakes and
-	// suggestions until a later check before an idle delivery clears it.
+	// suggestions until the owner's own turn or a later owner check clears it.
 	ownerGone atomic.Bool
 	// fenced is set once another process has taken the session over: nothing
 	// more is written for it here.
@@ -420,6 +432,11 @@ func New(opts Options) *Server {
 		opts.Redact = secrets.Default().Live()
 	}
 	st := opts.Store
+	// '#' separates the node id from an incarnation's token in a holder.
+	if strings.Contains(opts.NodeID, "#") {
+		opts.Logger.Warn("the node id holds '#', which separates a lease's incarnation; it is used with '_' in its place", "node_id", opts.NodeID)
+		opts.NodeID = strings.ReplaceAll(opts.NodeID, "#", "_")
+	}
 	holder := holderID(opts.NodeID)
 	// On Postgres every append is fenced on this process's lease, in the
 	// insert itself: a process that lost a session writes nothing into it,
@@ -449,11 +466,12 @@ func New(opts Options) *Server {
 		tapped = tapStore{EventStore: st, tap: opts.EventTap}
 	}
 	s := &Server{
-		opts:    opts,
-		store:   tapped,
-		log:     opts.Logger,
-		running: make(map[string]*liveSession),
-		holder:  holder,
+		opts:     opts,
+		store:    tapped,
+		log:      opts.Logger,
+		running:  make(map[string]*liveSession),
+		starting: map[string]bool{},
+		holder:   holder,
 		// Ten sign-in attempts a minute is far beyond what a person typing a
 		// password needs, and far below what makes guessing viable.
 		signinLimiter:  newLimiter(10, time.Minute),
@@ -534,6 +552,9 @@ func (s *Server) Handler() http.Handler {
 	// session was the wrong answer.
 	mux.HandleFunc("POST /v1/uploads", s.uploadFile)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.deleteSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/title", s.renameSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/fork", s.forkSession)
+	mux.HandleFunc("GET /v1/sessions/{id}/export", s.exportSession)
 
 	// Administrative routes, gated per-route on group membership rather than
 	// by wrapping the whole mux — see rbac.go for why that distinction
@@ -651,7 +672,7 @@ func (s *Server) Handler() http.Handler {
 	// Origin is checked before anything reads a cookie, and headers are set
 	// outermost so they are present on rejections too — an error response is
 	// still a response a browser will act on.
-	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins)(limited)
+	guarded := sameOrigin(s.opts.Config.Server.AllowedOrigins, s.log)(limited)
 	headed := securityHeaders(s.bodyLimit(guarded), s.opts.Config.Server.HSTS)
 	return canonicalHost(s.opts.Config.Server.CanonicalHost, headed)
 }
@@ -1081,6 +1102,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		return "", errDraining
 	}
 	sessionID := newSessionID()
+	defer s.startingDone(s.startingNow(sessionID))
 	if err := s.persistSession(ctx, sessionID, spec, mode, adapter, true); err != nil {
 		return "", err
 	}
@@ -1203,6 +1225,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		adapter = a
 	}
 	sessionID := newSessionID()
+	defer s.startingDone(s.startingNow(sessionID))
 	rec := agent.NewRecorder(s.store, sessionID, "")
 	rec.Redact = s.sessionRedactor()
 	// Built before the row is written, so a failure leaves no empty session listed.
@@ -1236,6 +1259,22 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	return sessionID, nil
 }
 
+// startingNow marks a session as being started, before its row is written,
+// and returns its id for startingDone.
+func (s *Server) startingNow(id string) string {
+	s.mu.Lock()
+	s.starting[id] = true
+	s.mu.Unlock()
+	return id
+}
+
+// startingDone ends the mark once the session is in running, or refused.
+func (s *Server) startingDone(id string) {
+	s.mu.Lock()
+	delete(s.starting, id)
+	s.mu.Unlock()
+}
+
 // forgetUnstarted removes a session refused after its row was written, so no
 // session is left listed that never ran and never ends.
 func (s *Server) forgetUnstarted(sessionID string) {
@@ -1255,6 +1294,7 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
+	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
 	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
@@ -1290,6 +1330,8 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	pol := s.newPolicy(policy.Mode(mode))
 	pol.Roots = sess.PolicyRoots
 	undo := agent.NewUndoLog(sess.RestoreFile, sess.RemoveFile)
+	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
+	undo.KeepFirst = true
 	sess.Checkpoint = undo.Record
 
 	live := &liveSession{
@@ -1580,6 +1622,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	loop.Budget.Carry(agent.CarriedSpend(events))
 	live.Turns = rec.Turns
+	live.title = agent.TitleOf(events)
 	// Idle until the caller's prompt starts it: postMessage treats a running
 	// session as one to steer, and there is nothing running yet to steer.
 	live.State = "done"
@@ -1886,7 +1929,9 @@ type sessionSummary struct {
 	User   string `json:"user"`
 	Tenant string `json:"tenant"`
 	Prompt string `json:"prompt"`
-	State  string `json:"state"`
+	// Title is the name its owner gave it, recorded as session.renamed.
+	Title string `json:"title,omitempty"`
+	State string `json:"state"`
 	// Reason is how a done session's last run ended, when the record says.
 	Reason  string    `json:"reason,omitempty"`
 	Created time.Time `json:"created"`
@@ -1939,7 +1984,15 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 				if !ownsSession(rec.Tenant, rec.User, tenant, user) || rec.ParentID != "" {
 					continue
 				}
-				state, reason, prompt := "done", rec.TerminalReason, rec.Prompt
+				// Listed only once its routes answer: a row this process is still starting is left out.
+				s.mu.RLock()
+				_, held := s.running[rec.ID]
+				unready := s.starting[rec.ID] && !held
+				s.mu.RUnlock()
+				if unready {
+					continue
+				}
+				state, reason, prompt, title := "done", rec.TerminalReason, rec.Prompt, rec.Title
 				modelName, provider := rec.Model, ""
 				if rec.EndedAt == nil {
 					state, reason = "running", ""
@@ -1954,13 +2007,16 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 						prompt = live.Prompt
 					}
 					modelName, provider = live.model, live.provider
+					if live.title != "" {
+						title = live.title
+					}
 					bg, ask = live.activity()
 					live.mu.Unlock()
 				}
 				s.mu.RUnlock()
 				out = append(out, sessionSummary{
 					ID: rec.ID, User: rec.User, Tenant: rec.Tenant,
-					Prompt: prompt, State: state, Reason: reason, Created: rec.StartedAt, Mode: rec.Mode,
+					Prompt: prompt, Title: title, State: state, Reason: reason, Created: rec.StartedAt, Mode: rec.Mode,
 					Model: modelName, Provider: provider, Background: bg, PendingAsk: ask,
 				})
 			}
@@ -1987,7 +2043,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		bg, ask := l.activity()
 		out = append(out, sessionSummary{
 			ID: l.ID, User: l.User, Tenant: l.Tenant,
-			Prompt: l.Prompt, State: l.State, Reason: listedReason(l.State, l.Reason),
+			Prompt: l.Prompt, Title: l.title, State: l.State, Reason: listedReason(l.State, l.Reason),
 			Created: l.Created, Mode: string(l.Loop.Policy.Mode),
 			Model: l.model, Provider: l.provider, Background: bg, PendingAsk: ask,
 		})
@@ -2156,7 +2212,9 @@ func ownsSession(recTenant, recUser, tenant, user string) bool {
 
 // streamEnd finds the end after which a session makes no more events: one that
 // owes no background work, and whose suggestion, if any, has its model.call.
-type streamEnd struct{ suggestion bool }
+// A suggestion an end announces is awaited across the settled end that may
+// follow it, which can come before the suggestion's events.
+type streamEnd struct{ suggestion, owed bool }
 
 // closes reports whether the stream ends after e; running reports a run live now.
 func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
@@ -2165,7 +2223,7 @@ func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
 		if json.Unmarshal(e.Payload, &c) == nil && c.Purpose == agent.PurposeSuggestion {
 			st.suggestion = false
 			// A prompt sent meanwhile has started the next run: it streams on.
-			return !running()
+			return !st.owed && !running()
 		}
 	}
 	if e.Type != agent.EvSessionEnded {
@@ -2175,8 +2233,14 @@ func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
 	if json.Unmarshal(e.Payload, &end) != nil {
 		return true
 	}
-	st.suggestion = end.Background == 0 && end.Suggesting
-	return end.Background == 0 && !end.Suggesting
+	st.owed = end.Background > 0
+	// A run's own end says whether a suggestion follows it; the settled end only adds one.
+	if end.Settled {
+		st.suggestion = st.suggestion || end.Suggesting
+	} else {
+		st.suggestion = end.Suggesting
+	}
+	return !st.owed && !st.suggestion
 }
 
 // streamEvents serves the session's event stream over SSE, resumable via
@@ -2533,6 +2597,11 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
 		return
 	}
+	// The owner's own admitted turn shows them active again, so wakes and
+	// suggestions a revoke held come back for a restored owner.
+	if UserOf(r.Context()) == live.User {
+		live.ownerGone.Store(false)
+	}
 	// Busy means a run is live, not an ask pending: an ask can wait with no
 	// run, and a message queued then would reach no loop that runs it.
 	busy := live.ran != nil
@@ -2887,7 +2956,7 @@ func (s *Server) StopOwnerBackground(ctx context.Context, tenant, user string) i
 		if live.Loop != nil {
 			stopped += live.Loop.Background.CancelAll(agent.TermOwnerRevoked)
 		}
-		stopped += len(live.closeTerminals())
+		stopped += len(live.closeTerminals(string(agent.TermOwnerRevoked)))
 		if stopped > 0 {
 			s.log.Warn("stopped an owner's work", "session", live.ID, "owner", user,
 				"stopped", stopped, "reason", "owner access revoked")
@@ -3007,7 +3076,7 @@ func (s *Server) fence(live *liveSession) {
 	if cancelCause != nil {
 		cancelCause(agent.StopCause{Reason: agent.TermLeaseLost})
 	}
-	live.closeTerminals()
+	live.closeTerminals(closedWithSession)
 	live.Loop.Background.Close(agent.TermLeaseLost)
 }
 
@@ -3428,6 +3497,12 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		if c, ok := s.opts.Invites.(InviteEmailChecker); ok {
+			if err := c.CheckInviteEmail(r.Context(), req.Invite, strings.TrimSpace(req.Email)); err != nil {
+				WriteJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 		if err := s.opts.Invites.Redeem(r.Context(), req.Invite, req.Username); err != nil {
 			WriteJSON(w, http.StatusForbidden, map[string]string{
 				"error": err.Error()})
@@ -3689,10 +3764,12 @@ func (s *Server) liveness() (SessionRouter, bool) {
 }
 
 // holderID is the process's liveness identity: the node id when configured,
-// otherwise one of its own.
+// with a token of this incarnation after a '#', otherwise one of its own. A
+// restarted node, or two processes given one node id, hold leases apart, so
+// a fenced append tells them apart; routing reads the node id before the '#'.
 func holderID(nodeID string) string {
 	if nodeID != "" {
-		return nodeID
+		return nodeID + "#" + newSessionID()
 	}
 	return "instance-" + newSessionID()
 }
@@ -4135,7 +4212,7 @@ func (s *Server) closeIdle() {
 	// closes, and it belongs before the session's end, not after it.
 	var closing []<-chan struct{}
 	for _, live := range idle {
-		closing = append(closing, live.closeTerminals()...)
+		closing = append(closing, live.closeTerminals(closedWithSession)...)
 	}
 	deadline := time.NewTimer(turnEndWait)
 	defer deadline.Stop()

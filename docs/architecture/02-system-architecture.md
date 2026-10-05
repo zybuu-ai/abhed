@@ -44,15 +44,18 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
                     ══════════ AIR-GAP BOUNDARY ══════════
                                   ╎
 ┌─────────────────────────────────▼────────────────────────────────────────┐
-│  EGRESS BROKER (optional, default OFF) — the ONLY component that talks   │
-│  outward. Separate host, separate netns, allowlist, full content audit.  │
+│  EGRESS BROKER — target design (not yet built). Optional, default OFF;   │
+│  the only component that would talk outward. Separate host, separate     │
+│  netns, allowlist, full content audit.                                   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Why this split:** the control plane is where the 7.80× harness variance lives (P1), so
 it must be independently versionable and testable. The inference plane is swappable by
-construction (P12). The execution plane is the blast radius. The egress broker is the only
-thing that crosses the air gap, so it is the only thing that needs air-gap-grade review.
+construction (P12). The execution plane is the blast radius. The egress broker, a
+target design not yet built, would be the only thing that crosses the air gap, so it would
+be the only thing that needs air-gap-grade review. Today egress is off by default and
+opt-in tools and MCP servers reach out from the host (03-security.md).
 
 ## 2. The agent loop
 

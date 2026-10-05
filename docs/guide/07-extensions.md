@@ -90,6 +90,10 @@ new one; a hook that keeps a count or a log should expect that.
 - `hooks.disabled`, which only the managed configuration sets, turns hooks
   off: each extension keeps only the tools it provides, is sent no hook
   event, and one that provides no tools is not started.
+- `hooks.managed_only`, which only the managed configuration sets, does the
+  same for every extension the managed file did not configure, including
+  those an SDK program passes: only the organisation's extensions take hook
+  events. `/hooks` marks the others "tools only".
 
 ## Worked examples
 

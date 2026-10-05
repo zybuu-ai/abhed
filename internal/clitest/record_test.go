@@ -17,6 +17,11 @@ func TestReadRecordLinks(t *testing.T) {
 `
 	path := filepath.Join(dir, "s-1.jsonl")
 	writeRec(t, path, good)
+	// With no head, a cut end cannot be ruled out, as the record's verify says.
+	if r, err := ReadRecordFile(path); err != nil || r.Verified {
+		t.Fatalf("verified with no head file: %v %+v", err, r)
+	}
+	writeRec(t, filepath.Join(dir, "head", "s-1"), `{"lines":2,"seq":2,"hash":"h2"}`)
 	r, err := ReadRecordFile(path)
 	if err != nil || !r.Verified || len(r.Events) != 2 {
 		t.Fatalf("%v %+v", err, r)

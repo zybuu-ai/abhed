@@ -44,6 +44,10 @@ the architecture assumes injection *sometimes succeeds* and constrains blast rad
  L6  Recovery        event-sourced replay; deterministic incident reconstruction
 ```
 
+Two layers are design, not code. L4 has no broker: egress is off by default, and the
+opt-in tools and MCP servers reach the network from the host (§5, §6, issue #44). L5 is not
+built: nothing watches the action stream for anomalies, and the monitor is not turned on.
+
 The key design decision is **L2**: policy never asks "does this look like a legitimate
 request?" It asks "is this action permitted for this session, regardless of why the model
 wants it?" That distinction is what makes injection survivable — a successfully injected
@@ -53,7 +57,7 @@ agent still cannot exceed its granted authority.
 
 | Tier | Mechanism | Boundary | Overhead | Use |
 |---|---|---|---|---|
-| I0 | Process + seccomp/Landlock | Weak | ~0 | Never for untrusted code |
+| I0 | Process: Seatbelt on macOS, bubblewrap namespaces on Linux (no seccomp filter, no Landlock) | Weak | ~0 | Never for untrusted code |
 | I1 | Container (OCI) | Namespace | Low | Trusted internal only |
 | I2 | **gVisor (runsc)** | Userspace kernel | ~10-20% | **What `vm` builds today** |
 | I3 | Firecracker / Kata microVM | Hardware virt | ~50-150 ms boot | Target, not shipped |
@@ -66,7 +70,8 @@ OCI container through the host's engine; `vm` is that same container pinned to t
 hardware-virtualised microVM. `internal/sandbox` contains exactly two backends, `process.go`
 and `container.go`; there is no Firecracker or Kata implementation, and the tier refuses to
 start if `runsc` is not registered with the container engine rather than silently running
-without it.
+without it. The `process` tier filters no system calls: bubblewrap runs without `--seccomp`
+and no Landlock ruleset is applied, so a command there can make any call your user could.
 
 **Why the naming, and what it costs you.** `vm` names the strongest tier the harness can
 select, so configuration does not have to change when a hardware-virtualised backend lands;
@@ -79,9 +84,19 @@ distinct tier and why `min_tier` is the setting that matters.
 hardware-enforced boundary at a boot cost small relative to agent turn latency. Until it
 exists, this document says gVisor.
 
-Each sandboxed session gets: scoped filesystem (workspace only, no host mounts), no network by
-default, CPU/memory/PID/disk quotas, wall-clock lifetime cap, and destruction on session end.
-**VMs are never reused across tenants** — reuse is how T6 happens.
+What each tier bounds today:
+
+- **`container` and `vm`.** Each command runs in a fresh container, removed when it ends.
+  The image is read-only; the workspace is the only writable host path, beside a 256 MB
+  `/tmp`. Every capability is dropped, there is no network unless allowed, two CPUs, a
+  512 MB cap per file, and `max_memory_mb` and `max_procs` as the container's limits.
+- **`process`.** Writes go to the workspace, plus temp folders and, on macOS, toolchain
+  caches ([Configuration](../guide/02-configuration.md#sandbox) lists them). Processes are
+  bounded by `max_procs` and each command by its timeout; memory, CPU and disk are not.
+- **No tier** puts a quota on the workspace's disk use.
+
+The aim is one VM per session, never reused across tenants, since reuse is how T6 happens.
+That waits on I3.
 
 ## 4. Prompt-injection controls
 
@@ -99,23 +114,38 @@ Layered, because no single control is sufficient:
    and privilege changes require explicit approval regardless of mode — no mode auto-approves
    them.
 5. **Egress default-deny.** Even a fully injected agent has nowhere to send data.
-6. **Anomaly detection.** Alert on action-sequence patterns inconsistent with the stated task
-   (mass file reads, unexpected network attempts, credential-path access).
+6. **Anomaly detection (not built).** The aim is to alert on action-sequence patterns
+   inconsistent with the stated task (mass file reads, unexpected network attempts,
+   credential-path access). Nothing does this yet.
 
 **What Abhed explicitly does not claim:** that it detects prompt injection reliably.
 Detection is a mitigation layer, not the boundary. The boundary is L3 and L4.
 
 ## 5. MCP supply chain (T4)
 
-MCP research was also unverified, so treat every third-party server as hostile until reviewed:
+MCP research was also unverified, so treat every third-party server as hostile until reviewed.
 
-- **Registry with review gate.** No server runs that isn't in the signed internal registry.
-- **Pin by digest**, never by tag or `latest`.
-- **Least privilege per server** — its own credentials, its own network policy, its own
-  isolation tier. A wiki-reader server has no reason to reach a database.
+What Abhed does today:
+
+- **Nothing runs unless enabled.** A configured server starts only with `enabled: true`; a
+  workspace's servers also need workspace trust, and `abhed mcp add` asks at a terminal.
+- **Policy on every call.** Every MCP tool goes through the policy engine and is asked
+  about as `bash` is. `allow_tools` narrows what a server offers. Results are tagged
+  untrusted.
 - **Tool-definition review.** Tool descriptions enter the model's context and are therefore
-  an injection surface in themselves ("tool poisoning"). Review descriptions like code.
-- **Runtime containment.** MCP servers run in I2 minimum, with declared egress only.
+  an injection surface in themselves ("tool poisoning"). They are sanitized before they
+  reach the model; still review them like code.
+
+What it does not do yet:
+
+- **No containment.** A stdio server is a process Abhed starts on the host, as your user,
+  outside the sandbox: it can read and write what you can and reach the network, whatever
+  the sandbox tier says. With no `env` it inherits Abhed's whole environment. Running
+  servers inside the sandbox is open work.
+- **No signed registry and no pinning.** Any command or URL in the configuration can be a
+  server, and `digest` is carried in the configuration but checked nowhere.
+- **No per-server network policy.** A server's only credentials are the `env` and headers
+  you give it, but nothing limits where it connects.
 
 ## 6. Tool surface discipline
 

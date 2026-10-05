@@ -4,6 +4,7 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,4 +114,32 @@ func TestTUIStatusLineIsSanitized(t *testing.T) {
 	if !strings.Contains(wire, "32mok") {
 		t.Fatalf("the status line's colour was lost")
 	}
+}
+
+// /review runs its turn in plan mode and puts the earlier mode back when the
+// turn ends; the footer shows the mode put back, as the record and /status do.
+func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	stub, ws := tuiWorkspace(t, "")
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"commit", "-q", "-m", "one"}} {
+		cmd := exec.Command("git", append([]string{"-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = ws
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello world\nREVIEW-MARK\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := startTUI(t, stub, ws, 120, 30)
+	r.waitFor("the footer", false, func(s string) bool { return strings.Contains(s, "● default mode") })
+	r.send("/review\r")
+	r.waitFor("the mode put back", false, func(s string) bool { return strings.Contains(s, "mode: plan → default") })
+	r.drawn(200 * time.Millisecond)
+	r.waitFor("default mode in the footer", false, func(string) bool {
+		f := footerRows(r)
+		return strings.Contains(f, "● default mode") && !strings.Contains(f, "plan mode")
+	})
 }

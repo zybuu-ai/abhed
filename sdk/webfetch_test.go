@@ -116,15 +116,16 @@ func TestEmbeddedWebFetchRefusesAStoredSecretInTheURL(t *testing.T) {
 	if _, err := a.Run(context.Background(), "read it"); err != nil {
 		t.Fatal(err)
 	}
+	// Refused before it runs, at the precheck, as an allowed call that cannot succeed.
 	for _, ev := range a.Events() {
-		if ev.Type == agent.EvObservation {
+		if ev.Type == agent.EvObservation || ev.Type == agent.EvActionDenied {
 			if !strings.Contains(string(ev.Payload), "the URL contains the stored secret") {
 				t.Fatalf("web_fetch did not refuse a URL holding a stored secret: %s", ev.Payload)
 			}
 			return
 		}
 	}
-	t.Fatalf("web_fetch did not run: %v", a.Events())
+	t.Fatalf("web_fetch was not refused: %v", a.Events())
 }
 
 // The embedded prompt names web_fetch only when the agent has it, with or

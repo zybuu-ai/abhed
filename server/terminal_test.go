@@ -988,3 +988,35 @@ func TestShellEndIsNotAnError(t *testing.T) {
 		}
 	}
 }
+
+// A browser terminal sends each key as it is typed. The keys of a password
+// typed ahead during sleep, one write each, used to be dropped from the line
+// after every write while sleep had the terminal, so nothing was held for the
+// scrub and its echo stayed in the record, plain or edited with Ctrl-U.
+func TestShellWithholdsAPasswordTypedAheadKeyByKey(t *testing.T) {
+	for name, typed := range map[string]string{
+		"plain":  "Rp1AheadSecretXy",
+		"ctrl-u": "junkjunk\x15Rp2EditedSecretQw",
+	} {
+		t.Run(name, func(t *testing.T) {
+			secret := typed[strings.LastIndexByte(typed, 0x15)+1:]
+			wb := shellBench(t, nil)
+			start := wb.startShell()
+			steps := []step{{keys: `echo BU""SY; sleep 2; read -s pw; echo late` + "\r", until: "BUSY"}}
+			for _, k := range typed {
+				steps = append(steps, step{keys: string(k), nowait: true})
+			}
+			steps = append(steps, step{keys: "\r", until: "late"}, step{keys: "exit\r"})
+			out, _ := wb.drive(start.ID, steps...)
+			if !strings.Contains(out, "late") || !strings.Contains(out, secret) {
+				t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried:\n%s", out)
+			}
+			time.Sleep(2 * termline.EchoWait)
+			for _, e := range wb.events() {
+				if strings.Contains(string(e.Payload), secret) {
+					t.Fatalf("a password reached the record: %s %s", e.Type, e.Payload)
+				}
+			}
+		})
+	}
+}

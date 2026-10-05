@@ -316,6 +316,15 @@ check('a pipeline step\'s ask names the pipeline', open().length === 1 && open()
 render(ev(2, 'subagent.ask', {session:'child', subagent:'runner', request_id:'cev21', call_id:'step_2', tool:'bash', args:{command:'ls'}, via:'skill p pipeline'}));
 check('and so does one a subagent\'s pipeline puts', open().some(a => a.textContent.includes('Asked by skill p pipeline') && a.textContent.includes('subagent runner')));
 
+// A background start says it keeps running, and a call with no one-click scope says why.
+fresh('s47', true);
+render(ev(1, 'action.requested', {call_id:'bg1', tool:'bash', args:{command:'sleep 40; echo one', run_in_background:true}, requires_approval:true}));
+render(ev(2, 'action.requested', {call_id:'fg1', tool:'bash', args:{command:'ls -la'}, requires_approval:true, scope:'bash(ls *)'}));
+const bgCard = open().find(a => a.dataset.call === 'bg1'), fgCard = open().find(a => a.dataset.call === 'fg1');
+check('a background start says it keeps running', !!bgCard && bgCard.textContent.includes('Starts in the background: it keeps running after this turn'));
+check('and why it offers no Always allow', !!bgCard && bgCard.textContent.includes('No Always allow for this call'));
+check('a foreground call with a scope says neither', !!fgCard && !fgCard.textContent.includes('in the background') && !fgCard.textContent.includes('No Always allow') && fgCard.textContent.includes('Always allow bash(ls *)'));
+
 // A call's own text cannot hide what allowing runs: control and format
 // characters are written out, and the prompt warns that they were there.
 fresh('s30', true);
@@ -362,6 +371,18 @@ fresh('s32', true);
   check('a hidden character only in the description is shown with its field', d.includes('description: list⟨U+202E⟩ files'));
 }
 
+// A non-ASCII space reads as a space: it is written out and warned, and
+// ordinary spaces are left as they are.
+fresh('s33', true);
+{
+  render(ev(1, 'action.requested', {call_id:'n1', tool:'bash', args:{command:'rm\u00a0-rf /tmp/x'}, requires_approval:true}));
+  const t = open()[0] ? open()[0].textContent : '';
+  check('a no-break space is shown and warned: ' + t, t.includes('rm\u27e8U+00A0\u27e9-rf /tmp/x') && !t.includes('\u00a0') && t.includes('hidden or control characters'));
+  render(ev(2, 'action.requested', {call_id:'n2', tool:'bash', args:{command:'echo a b c'}, requires_approval:true}));
+  const p = open()[1] ? open()[1].textContent : '';
+  check('ordinary spaces are untouched and not warned', p.includes('echo a b c') && !p.includes('U+0020') && !p.includes('hidden or control characters'));
+}
+
 // A background result wakes the session while the page sits on the open
 // stream: the woken turn is drawn as it streams, marked with the task it
 // continues from, and its ask is offered, with no reload.
@@ -395,6 +416,68 @@ fresh('s41', false);
   check('the sender\'s bubble reveals hidden characters', shown.includes('fix⟨U+202E⟩txt.exe⟨U+001B⟩[2J\n    indented\tline') && !shown.includes('\u202e') && !shown.includes('\u001b'));
   check('the sender\'s bubble is the one claimed', __root.childNodes.length === 1 && __root.childNodes[0] === mine);
   check('the bubble keeps the raw text for a retry', mine.text === typed);
+}
+
+// Stop stays while background work runs with no turn going, since it stops that work too.
+fresh('s42', true); bgLive = false; bgTasks.clear();
+{
+  setLive(true);
+  check('Stop shows while a run is live', $('stop').hidden === false);
+  render(ev(1, 'shell.started', {shell_id:'sh1', description:'watch the build'}));
+  render(ev(2, 'session.ended', {reason:'completed', turns:1, background:1}));
+  check('Stop stays while background work runs with no turn', live === false && $('stop').hidden === false && /background/.test($('stop').title));
+  render(ev(3, 'shell.ended', {shell_id:'sh1', state:'exited'}));
+  render(ev(4, 'session.ended', {reason:'completed', turns:1, settled:true}));
+  check('and goes once the background work has settled', $('stop').hidden === true);
+}
+
+// A task whose notice is not yet recorded, as after a restart, is not shown running
+// once the record says it returned or the session settled.
+fresh('s43', false); bgLive = false; bgTasks.clear();
+{
+  render(ev(1, 'subagent.spawned', {task_id:'t1', description:'scan logs', background:true}));
+  render(ev(2, 'subagent.spawned', {task_id:'t2', description:'index docs', background:true}));
+  render(ev(3, 'session.ended', {reason:'completed', turns:1, background:2}));
+  check('both tasks show running', $('s-bg').textContent.includes('2 background'));
+  render(ev(4, 'subagent.returned', {task_id:'t1', reason:'shutdown'}));
+  check('a returned task leaves the running list', $('s-bg').textContent.includes('1 background') && !$('s-bg').textContent.includes('scan logs'));
+  render(ev(5, 'session.ended', {reason:'shutdown', turns:1, settled:true}));
+  check('a settled end leaves nothing shown running', $('s-bg').hidden === true && !bgLive);
+}
+fresh('s44', false); bgLive = false; bgTasks.clear();
+{
+  render(ev(1, 'subagent.spawned', {task_id:'t1', description:'scan logs', background:true}));
+  render(ev(2, 'session.ended', {reason:'shutdown', turns:1, background:0}));
+  check('an end that owes no background work shows none running', $('s-bg').hidden === true);
+}
+
+// Comments written on lines of the changes go with the next message, after what was typed,
+// each with its file, line and that line's text; one that fails to send comes back.
+fresh('s45', false);
+{
+  check('an empty comment is not kept', addNote('src/a.go', 3, 'x := 1', '   ') === false && reviewNotes.length === 0);
+  addNote('src/a.go', 12, '\treturn `x`', 'why not\nreturn early?');
+  addNote('lib\u202e/b.go', 4, '', 'rename this');
+  const chips = $('rnotes').childNodes;
+  check('each comment is shown above the box', chips.length === 2 && chips[0].textContent.startsWith('src/a.go:12'));
+  check('a file name is drawn with its hidden characters revealed', chips[1].textContent.includes('lib⟨U+202E⟩/b.go:4') && !chips[1].textContent.includes('\u202e'));
+  let post = __defer('POST /v1/sessions/s45/messages');
+  $('q').value = 'please review';
+  const going = send(); await tick();
+  check('sending takes the comments', reviewNotes.length === 0 && $('rnotes').childNodes.length === 0);
+  post.resolve({session_id:'s45'}); await going;
+  const body = __posted.find(x => x.route === 'POST /v1/sessions/s45/messages').body.prompt;
+  check('the message carries them after what was typed', body === "please review\n\nReview comments on the changes:\n- `src/a.go` line 12 (`return 'x'`): why not\n  return early?\n- `lib\u202e/b.go` line 4: rename this");
+  check('the bubble names them', sent[0].textContent.includes('comment on src/a.go:12: why not'));
+
+  // Comments alone can be sent; a failed send puts them back.
+  fresh('s46', false); addNote('a.txt', 1, 'hi', 'typo');
+  post = __defer('POST /v1/sessions/s46/messages');
+  const lone = send(); await tick();
+  post.reject(Object.assign(new Error('the server is busy'), {status:503})); await lone;
+  check('comments with nothing typed are sent', __routes.includes('POST /v1/sessions/s46/messages'));
+  check('a send that failed puts the comments back', reviewNotes.length === 1 && reviewNotes[0].text === 'typo');
+  reviewNotes = []; drawNotes();
 }
 
 if(!ok) process.exit(1);

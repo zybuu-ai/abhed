@@ -190,3 +190,31 @@ func TestConsoleLinksToTheWorkbenchWithoutSignIn(t *testing.T) {
 		}
 	}
 }
+
+// whoami is informational and public: a cookie whose sign-in has ended or
+// expired gets 200 with authenticated false, which the pages read to show
+// the signed-out state, rather than a 401 every other route gives.
+func TestWhoamiAnswersAnEndedSignInAsSignedOut(t *testing.T) {
+	h, cookie := localServer(t)
+	out := httptest.NewRequest("POST", "/logout", nil)
+	out.AddCookie(cookie)
+	h.ServeHTTP(httptest.NewRecorder(), out)
+	for _, path := range []string{"/v1/whoami", "/v1/sessions"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		switch path {
+		case "/v1/whoami":
+			var me map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &me)
+			if rec.Code != http.StatusOK || me["authenticated"] != false {
+				t.Fatalf("whoami with an ended sign-in: %d %v", rec.Code, me)
+			}
+		default:
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s with an ended sign-in: %d", path, rec.Code)
+			}
+		}
+	}
+}

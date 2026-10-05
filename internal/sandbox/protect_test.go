@@ -189,3 +189,70 @@ func TestSeatbeltGitPatternQuotesTheWorkspace(t *testing.T) {
 		t.Fatal("the pattern is there without ProtectGit")
 	}
 }
+
+// With ProtectGit, every git folder's config and hooks are kept from a
+// command on both Seatbelt (by pattern) and bubblewrap (by the folders found
+// when the command starts); the rest of the repository is writable.
+func TestProcessSandboxProtectGitHoldsOnEveryBackend(t *testing.T) {
+	requireNetNS(t)
+	ws := workspace(t)
+	for _, d := range []string{".git/hooks", "sub/.git/hooks"} {
+		if err := os.MkdirAll(filepath.Join(ws, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".git/config", "sub/.git/config"} {
+		if err := os.WriteFile(filepath.Join(ws, f), []byte("[core]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := NewProcess(p)
+	available(t, s)
+	_, _ = runIn(t, s, ws, "echo x > .git/hooks/pre-commit; echo '[core] hooksPath=/tmp' >> .git/config; echo x > sub/.git/hooks/post-checkout; echo x >> sub/.git/config")
+	for _, f := range []string{".git/hooks/pre-commit", "sub/.git/hooks/post-checkout"} {
+		if _, err := os.Lstat(filepath.Join(ws, filepath.FromSlash(f))); err == nil {
+			t.Errorf("the command wrote %s", f)
+		}
+	}
+	for _, f := range []string{".git/config", "sub/.git/config"} {
+		if data, _ := os.ReadFile(filepath.Join(ws, filepath.FromSlash(f))); string(data) != "[core]\n" {
+			t.Errorf("the command changed %s: %q", f, data)
+		}
+	}
+	if out, err := runIn(t, s, ws, "echo ok > sub/main.go"); err != nil {
+		t.Fatalf("the repository is not writable: %v %s", err, out)
+	}
+}
+
+// The walk finds each git folder's config and hooks, and a .git file, and
+// passes over Abhed's state and node_modules.
+func TestGitProtectedFindsGitFolders(t *testing.T) {
+	ws := workspace(t)
+	for _, d := range []string{".git/hooks", "a/b/.git/hooks", "node_modules/x/.git/hooks", ".abhed/y/.git/hooks", "wt"} {
+		if err := os.MkdirAll(filepath.Join(ws, filepath.FromSlash(d)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".git/config", "wt/.git"} {
+		if err := os.WriteFile(filepath.Join(ws, filepath.FromSlash(f)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]bool{}
+	for _, p := range GitProtected(ws) {
+		rel, _ := filepath.Rel(ws, p)
+		got[filepath.ToSlash(rel)] = true
+	}
+	for _, want := range []string{".git/config", ".git/hooks", "a/b/.git/hooks", "wt/.git"} {
+		if !got[want] {
+			t.Errorf("missing %s in %v", want, got)
+		}
+	}
+	for bad := range got {
+		if strings.HasPrefix(bad, "node_modules") || strings.HasPrefix(bad, ".abhed") {
+			t.Errorf("walked into %s", bad)
+		}
+	}
+}

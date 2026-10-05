@@ -187,18 +187,11 @@ func (d DialogSpec) Normalized() (DialogSpec, error) {
 		return d, fmt.Errorf("dialog default %q is not one of its choices", d.Default)
 	case def.Destructive || def.Widening:
 		return d, fmt.Errorf("dialog default %q widens or cannot be undone, so it cannot be the default", d.Default)
+	// Whatever the kind: a choice dialog that asks for consent must not take it from Enter either.
+	case d.Default == ChoiceYes || d.Default == "always":
+		return d, fmt.Errorf("dialog default %q says yes, which only a chosen answer may", d.Default)
 	}
 	return d, nil
-}
-
-// choice is the choice with id.
-func (d DialogSpec) choice(id string) (Choice, bool) {
-	for _, c := range d.Choices {
-		if c.ID == id {
-			return c, true
-		}
-	}
-	return Choice{}, false
 }
 
 // match finds the choice an answer names: its number in the list, and

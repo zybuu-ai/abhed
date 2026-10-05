@@ -342,6 +342,12 @@ func slashFork(ctx context.Context, fields []string, r *ui.Renderer,
 		fmt.Println(s.Dim("  no active session to fork into"))
 		return false
 	}
+	// Refused before the claim: releasing a claimed row records an end, so a
+	// bad step used to add a second session.ended.
+	if err := agent.CheckForkPoint(events, seq); err != nil {
+		fmt.Printf("  %s %v\n", s.Red("✕"), err)
+		return false
+	}
 	release, claimErr := claimForWrite(ctx, st)
 	if claimErr != nil {
 		fmt.Printf("  %s not continued: %v\n", s.Red("✕"), claimErr)
@@ -400,6 +406,10 @@ func forkPoints(r *ui.Renderer, events []agent.Event) {
 			var a agent.ActionRequested
 			if json.Unmarshal(ev.Payload, &a) == nil {
 				label = a.Tool + " " + firstLine(string(a.Args), 50)
+				// A pipeline's step: forking there forks before its skill call.
+				if a.Via != "" {
+					label += " (" + a.Via + ")"
+				}
 			}
 		default:
 			continue

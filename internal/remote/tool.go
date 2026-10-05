@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -336,6 +338,30 @@ type ConnectTool struct {
 	R *Registry
 	// Secret returns a stored secret's value; nil means no store.
 	Secret func(name string) (string, error)
+	// Allowed, when set, are the only addresses it may reach (ssh.connect_hosts).
+	Allowed []string
+}
+
+// addrAllowed reports whether addr matches one of patterns: the address as
+// given, or its host without the port, without case. No patterns allows any.
+func addrAllowed(patterns []string, addr string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		for _, s := range []string{addr, host} {
+			if ok, err := path.Match(p, s); err == nil && ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (ConnectTool) Name() string { return "ssh_connect" }
@@ -397,6 +423,10 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	}
 	if strings.TrimSpace(a.Addr) == "" {
 		return errf("addr is required.")
+	}
+	if !addrAllowed(t.Allowed, a.Addr) {
+		return errf("%q is not among the addresses ssh.connect_hosts lets ssh_connect reach (%s); "+
+			"ask the user to add it there.", a.Addr, strings.Join(t.Allowed, ", "))
 	}
 	if a.User == "" {
 		a.User = "root"

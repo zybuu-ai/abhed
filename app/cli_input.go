@@ -92,6 +92,17 @@ func (st *cliState) turnFree() error {
 	return nil
 }
 
+// commandSetup refuses a change to the model or the tools while a custom
+// command's turn waits: its own model and tools are in place until that turn
+// ends, so a queued /model was undone by its restore and a queued ! ran on
+// its narrowed tools.
+func (st *cliState) commandSetup(what string) error {
+	if st.input.turn != nil && st.input.turn.after != nil {
+		return fmt.Errorf("a custom command's turn is waiting to run with its own settings; %s after it", what)
+	}
+	return nil
+}
+
 // takeTurn is the turn a command asked for, if any, and forgets it.
 func (st *cliState) takeTurn() *commandTurn {
 	t := st.input.turn
@@ -141,11 +152,7 @@ func ensureConversation(ctx context.Context, st *cliState) error {
 		st.recordStart(st.loop.Recorder, st.startOwed)
 		st.startedID, st.startOwed = st.sessionID, 0
 		if st.pol != nil {
-			via := agent.ViaFlag
-			if string(st.pol.Mode) != orDefault(st.appCfg.Permissions.Mode, "default") {
-				via = viaCarried
-			}
-			recordResumedMode(st.loop.Recorder, events, string(st.pol.Mode), via)
+			recordResumedMode(st.loop.Recorder, events, string(st.pol.Mode), resumedVia(string(st.pol.Mode), st.appCfg))
 		}
 	}
 	if err := recordMove(st); err != nil {

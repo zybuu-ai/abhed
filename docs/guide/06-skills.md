@@ -75,3 +75,11 @@ that fails stops the pipeline.
 A pipeline is refused when it would call the `skill` tool or start beneath
 another pipeline's step, including from a subagent a step started; that
 skill then falls back to its instructions.
+
+[example-pipeline.json](example-pipeline.json) classifies a question, splits
+it into search queries, runs a search script and `web_search`, and repeats
+once if a gate finds a gap. Its `{{item}}` and `{{input}}` values are
+JSON-escaped but not shell-quoted. A `bash` step that takes one is judged as
+the full command it becomes, and an allow rule never approves a command
+holding `;`, `|`, `&`, `$(` or a newline, so a value that breaks out of its
+place is never let through by an allow rule.

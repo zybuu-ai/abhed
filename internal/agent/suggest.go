@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -143,7 +144,7 @@ func (l *Loop) finishSuggesting(ctx context.Context) TerminalReason {
 func (l *Loop) StopSuggestion() { l.stopSuggestion(false) }
 
 // closeSuggestions stops the suggestion and refuses later ones; one that
-// ends after this records nothing.
+// ends after this records its model.call and offers nothing.
 func (l *Loop) closeSuggestions() { l.stopSuggestion(true) }
 
 func (l *Loop) stopSuggestion(closing bool) {
@@ -207,8 +208,10 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	cctx, cancel := context.WithTimeout(ctx, j.timeout)
 	start := time.Now()
 	text, usage, err := suggestCall(cctx, j.adapter, j.req)
-	// A model that refuses the reasoning settings is asked once more without them.
-	if err != nil && cctx.Err() == nil && (j.req.Effort != model.EffortNone || j.req.Params.Think != nil) {
+	// A model that refuses the reasoning settings, or spends the whole
+	// allowance thinking and writes nothing, is asked once more without them.
+	cutOff := err == nil && strings.TrimSpace(text) == "" && usage.OutputTokens >= j.req.MaxTokens
+	if (err != nil || cutOff) && cctx.Err() == nil && (j.req.Effort != model.EffortNone || j.req.Params.Think != nil) {
 		plain := j.req
 		plain.Effort, plain.Params.Think = model.EffortNone, nil
 		var more model.Usage
@@ -228,9 +231,6 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 		l.sug = nil
 	}
 	l.sugMu.Unlock()
-	if closed {
-		return
-	}
 	mc := ModelCall{Turn: j.turn, Model: j.adapter.Profile().Name, Purpose: PurposeSuggestion,
 		TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens, TokensCached: usage.CachedInputTokens,
 		CacheReported: usage.CacheReported, LatencyMS: took.Milliseconds()}
@@ -244,7 +244,8 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	l.usage.ColdPrefillTokens += usage.InputTokens - usage.CachedInputTokens
 	l.usageMu.Unlock()
 	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
-	stale := err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || l.suggestionHeld(sg)
+	// Closed: the call still went out, so its model.call is recorded; the suggestion is not.
+	stale := closed || err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || l.suggestionHeld(sg)
 	if !stale {
 		if offer := l.suggestionText(sg, text); offer != "" {
 			_, _ = l.Recorder.Record(EvSuggestionOffered, ActorSystem, Trusted, SuggestionOffered{Text: offer, Turn: j.turn})
@@ -393,12 +394,30 @@ func CleanSuggestion(s string) string {
 }
 
 // Words that make a suggestion risky to offer: model text, perhaps injected,
-// that urges past a safeguard or towards something destructive. Better none.
+// that consents, urges past a safeguard, changes or ships something hard to
+// undo, or shows a secret. The lists fail closed: a benign suggestion that
+// uses one is not offered, which costs the person nothing.
 var (
 	suggestDestructive = map[string]bool{"delete": true, "deletes": true, "deleting": true, "erase": true,
 		"wipe": true, "wiping": true, "destroy": true, "purge": true, "drop": true, "truncate": true,
-		"rm": true, "rmdir": true, "disable": true, "disabling": true, "shred": true, "mkfs": true}
-	suggestOverride = map[string]bool{"ignore": true, "ignoring": true, "bypass": true, "override": true,
+		"rm": true, "rmdir": true, "disable": true, "disabling": true, "shred": true, "mkfs": true,
+		"remove": true, "removes": true, "removing": true, "reset": true, "revert": true, "force": true,
+		"forced": true, "kill": true, "overwrite": true, "uninstall": true, "discard": true, "prune": true,
+		"push": true, "pushes": true, "pushing": true, "deploy": true, "publish": true, "release": true,
+		"merge": true, "rebase": true, "amend": true, "squash": true, "sudo": true, "chmod": true,
+		"chown": true, "curl": true, "wget": true, "install": true, "bypass": true, "yolo": true,
+		"dangerously": true, "unrestricted": true}
+	// suggestConsent is an answer to a question: offered after an ask, it
+	// would read as the person agreeing to whatever was asked.
+	suggestConsent = map[string]bool{"yes": true, "yep": true, "yeah": true, "yup": true, "ok": true,
+		"okay": true, "approve": true, "approved": true, "approves": true, "approving": true,
+		"allow": true, "allowed": true, "allowing": true, "accept": true, "accepted": true,
+		"confirm": true, "confirmed": true, "proceed": true, "agree": true, "grant": true,
+		"authorize": true, "authorise": true, "trust": true, "sí": true, "oui": true}
+	// suggestConsentAlone consents only as the whole reply: elsewhere these
+	// are ordinary words ("y" is "and" in Spanish, "si" is "if").
+	suggestConsentAlone = map[string]bool{"y": true, "si": true, "ja": true, "da": true, "ha": true, "haan": true}
+	suggestOverride     = map[string]bool{"ignore": true, "ignoring": true, "bypass": true, "override": true,
 		"skip": true, "disregard": true, "circumvent": true, "evade": true, "dodge": true}
 	suggestGuarded = map[string]bool{"policy": true, "policies": true, "approval": true, "approvals": true,
 		"rule": true, "rules": true, "sandbox": true, "safety": true, "safe": true, "guard": true,
@@ -408,25 +427,40 @@ var (
 	suggestReveal = map[string]bool{"print": true, "show": true, "reveal": true, "echo": true, "cat": true,
 		"send": true, "display": true, "dump": true, "output": true, "paste": true, "share": true,
 		"expose": true, "leak": true, "copy": true, "email": true, "post": true, "upload": true, "tell": true,
-		"export": true, "log": true}
+		"export": true, "log": true, "what": true, "give": true, "read": true, "get": true, "list": true,
+		"view": true, "open": true, "fetch": true, "retrieve": true, "include": true}
 	suggestSecret = map[string]bool{"key": true, "keys": true, "apikey": true, "token": true, "tokens": true,
 		"secret": true, "secrets": true, "password": true, "passwords": true, "passwd": true,
-		"credential": true, "credentials": true, "creds": true}
+		"credential": true, "credentials": true, "creds": true, "env": true}
 	suggestPairs = [][2]string{{"force", "push"}, {"push", "force"}, {"push", "f"}, {"reset", "hard"},
-		{"git", "clean"}, {"without", "asking"}, {"auto", "approve"}, {"don", "ask"}, {"no", "verify"}}
+		{"git", "clean"}, {"without", "asking"}, {"auto", "approve"}, {"don", "ask"}, {"no", "verify"},
+		{"go", "ahead"}, {"do", "it"}, {"auto", "mode"}, {"bypass", "mode"}}
+	// suggestShell is text a shell reads specially; a suggestion is something
+	// to say, so one carrying these is a command line, not a message.
+	suggestShell = "$`|;&<>"
+	// suggestSecretName is an environment variable named for a secret.
+	suggestSecretName = regexp.MustCompile(`[A-Z0-9]_?(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)\b`)
 )
 
-// riskySuggestion reports text that tells the person or the agent to get past
-// a safeguard, to do something destructive, or to show a secret, in any case or width.
+// riskySuggestion reports text that consents, tells the person or the agent
+// to get past a safeguard, to do something destructive or outward, or to show
+// a secret, in any case or width.
 func riskySuggestion(s string) bool {
-	words := strings.FieldsFunc(strings.ToLower(norm.NFKC.String(s)), func(r rune) bool {
+	s = norm.NFKC.String(s)
+	if strings.ContainsAny(s, suggestShell) || suggestSecretName.MatchString(s) {
+		return true
+	}
+	words := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
+	if len(words) == 1 && suggestConsentAlone[words[0]] {
+		return true
+	}
 	override, guarded, reveal, secret := false, false, false, false
 	for i, w := range words {
 		reveal = reveal || suggestReveal[w]
 		secret = secret || suggestSecret[w]
-		if suggestDestructive[w] {
+		if suggestDestructive[w] || suggestConsent[w] {
 			return true
 		}
 		override = override || suggestOverride[w]

@@ -272,6 +272,18 @@ authentication signs and reveals nothing.
 variable in Abhed's environment, provider keys included, and send it to a
 host the model chose.
 
+`ssh.connect_hosts` bounds which machines `ssh_connect` may reach: a list of
+addresses, each a host, an IP or `host:port`, with `*` as a wildcard
+(`["10.0.0.*", "*.lab.example"]`), matched without case against the address
+as given and against its host without the port. An address outside the list
+is refused before any connection is tried, whatever the approval says. Unset,
+`ssh_connect` may reach any address the person approves. Only a trusted
+configuration file sets it.
+
+```json
+"ssh": { "enabled": true, "connect_hosts": ["10.0.0.*", "*.lab.example"] }
+```
+
 `ssh.enabled` is all that is required — the `hosts` list is optional. Requiring
 a pre-declared host to reach the tool that declares hosts was a real bug: a user
 with a VM and a key had no way in, and the agent fell back to `ssh` through

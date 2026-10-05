@@ -292,6 +292,46 @@ func TestFailedSignupKeepsTheInvite(t *testing.T) {
 	}
 }
 
+// boundInvites makes code-1 out to dave@example.test.
+type boundInvites struct{ oneUseInvites }
+
+func (b *boundInvites) CheckInviteEmail(_ context.Context, code, email string) error {
+	if code == "code-1" && !strings.EqualFold(email, "dave@example.test") {
+		return errors.New("this invite was made out to another email address")
+	}
+	return nil
+}
+
+// An invite made out to one address is refused for another, and the refusal
+// leaves the code for the person it was made out to.
+func TestSignupHonoursTheInvitesEmail(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.Mode = "local"
+	local := auth.NewLocalAuth(auth.NewMemoryUserStore(), time.Hour, false)
+	inv := &boundInvites{oneUseInvites{codes: map[string]string{"code-1": ""}}}
+	h := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}), Invites: inv,
+		Auth: &auth.Middleware{Providers: []auth.Provider{local},
+			PublicPaths: append(PublicPaths(), local.PublicPaths()...)}}).Handler()
+	signup := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/signup", strings.NewReader(body)))
+		return rec
+	}
+	for _, email := range []string{"mallory@example.test", ""} {
+		rec := signup(`{"username":"dave","email":"` + email + `","password":"long-enough-pw","invite":"code-1"}`)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "another email") {
+			t.Fatalf("signup as %q = %d %s, want 403", email, rec.Code, rec.Body)
+		}
+	}
+	if u, _ := local.Store.Get(context.Background(), "dave"); u != nil {
+		t.Fatal("a refused signup created the account")
+	}
+	if rec := signup(`{"username":"dave","email":"Dave@example.test","password":"long-enough-pw","invite":"code-1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("signup with the invite's address = %d %s, want 200", rec.Code, rec.Body)
+	}
+}
+
 // The console, like the workbench, says when its sign-in has ended.
 func TestConsoleNoticesAnEndedSignIn(t *testing.T) {
 	start := strings.Index(consoleHTML, "function signInEnded(){")

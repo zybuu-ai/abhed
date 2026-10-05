@@ -62,6 +62,10 @@ type UndoLog struct {
 	// session's, so undo is held to the workspace as the file tools are.
 	writeFile  func(path string, data []byte) error
 	removeFile func(path string) error
+	// KeepFirst keeps only a path's earliest checkpoint, for a holder that
+	// serves only Original, Accept and Changed: a long-lived server's session
+	// then holds one copy per changed file, not one per edit.
+	KeepFirst bool
 }
 
 // NewUndoLog records checkpoints that undo restores with write and removes
@@ -90,6 +94,14 @@ func (u *UndoLog) Record(path string, before []byte, existed bool) {
 		return
 	}
 	u.mu.Lock()
+	if u.KeepFirst {
+		for _, held := range u.stack {
+			if held.Path == path {
+				u.mu.Unlock()
+				return
+			}
+		}
+	}
 	cp := Checkpoint{
 		Path: path, Before: before, Existed: existed,
 		Turn: u.turn, At: time.Now().UTC(),

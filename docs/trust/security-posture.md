@@ -14,7 +14,7 @@ whose strength is explicit and self-reporting (`internal/sandbox/sandbox.go`):
 | Tier | Mechanism | Notes |
 |---|---|---|
 | `none` | Runs directly on the host | Suitable only for a trusted single-user local run |
-| `process` | Process-level confinement (macOS `sandbox-exec`, Linux namespaces/seccomp) | The minimum to set on any shared server: `sandbox.min_tier: "process"` |
+| `process` | Process-level confinement: macOS `sandbox-exec`; on Linux, bubblewrap with its own PID, IPC, UTS and (with no network) network namespaces and a read-only view of the system. No seccomp filter or Landlock ruleset is applied | The minimum to set on any shared server: `sandbox.min_tier: "process"` |
 | `container` | OCI container: namespace isolation, shared kernel | |
 | `vm` | microVM or gVisor userspace kernel | Strongest tier implemented |
 
@@ -25,6 +25,20 @@ downgrades (see the comment above `Select` and `README.md`'s "The sandbox
 never silently downgrades"). Pin `sandbox.min_tier` explicitly in the config
 of any shared deployment so that an empty or `none` value cannot ship
 unnoticed; `abhed doctor` reports the tier actually in force.
+
+**The agent does not administer Abhed.** Inside an agent's command, the
+subcommands that change Abhed's own state are refused: `record prune`,
+`trust grant`, `init`, `user add|passwd|remove|import`, `secret set|rm`,
+`mcp add|remove` and `migrate`, as are `-trust-workspace`,
+`-dangerously-skip-permissions` and `-mode bypass` on a nested session,
+and bypass mode, an allow rule or a git extension that `-settings`, `-agents`,
+`-mcp-config` or `-allowedTools` would add to its configuration.
+A command counts as the agent's when `ABHED_SANDBOX` is set, or when an
+`abhed` process is above it in the process tree, so unsetting the variable
+is not enough. A daemon that detaches from the tree escapes the check, so it
+is not the boundary: the sandbox's deny on `~/.abhed` and the state paths
+is, and with the sandbox off (`none`) nothing is. Reading (`record list`,
+`trust show`, `mcp list`) is unchanged.
 
 Note: `docs/architecture/03-security.md` describes a more elaborate tier
 design (gVisor by default, a microVM per session) as the target architecture.
@@ -130,7 +144,10 @@ the settings known to name a program git would run for these commands:
 fsmonitor, hooks, clean and smudge filters, merge drivers, textconv and
 external diffs, signing, credential helpers and every transport but https.
 They do not enter submodules, refuse to commit a change holding a repository
-of its own, and drop git's environment variables (`internal/hostgit`). This is
+of its own, and drop git's environment variables (`internal/hostgit`). The git
+they run is the one on `PATH`, links followed, and is refused when it lies in
+the repository or in a folder sandboxed commands may write (temp folders,
+toolchain caches), where the agent could have planted one. This is
 a list, so it is best effort: a setting a later git adds is not covered until
 it is listed. Running these commands inside the sandbox is the complete
 answer, and is tracked as follow-up work. A resolved issue's branch is pushed
@@ -152,9 +169,14 @@ a writable folder, which the operator writes; and on the `none` tier, or in a
 container that mounts the home directory, the run can write the global
 configuration and `~/.abhed/push`, and the push is not refused.
 
-The container and VM tiers mount the workspace as configured and do not hide
-`.abhed/` or a configured state file: a command there can read and write
-them unless they are mounted read-only or left out of the mount.
+The container and VM tiers mount an empty, throwaway folder over the
+workspace's `.abhed/`, as bubblewrap does, and hide a configured state path
+that the workspace or a read-only directory would show: a folder behind an
+empty one, a file behind `/dev/null`. Where the workspace's disk ignores
+case (a macOS workspace in Docker Desktop or a Podman machine), every case
+spelling of `.abhed` is covered, since the engine's own kernel tells them
+apart. The empty `.abhed` folder is made in the workspace, as the person,
+when it is missing.
 
 On macOS a command can stat the workspace `.abhed` directory and what is in
 it, so `ls -R`, pytest's collection and `git add -A` (with a warning that it
@@ -237,11 +259,17 @@ inside it. So, for the terminal:
 
 What the shell can reach is the tier's, as for the agent's commands, but a
 person now has it interactively. On the macOS process tier, Seatbelt denies
-writes outside the workspace and reads of `.abhed` and five credential paths
-(`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`, `~/.docker/config.json`); other
-files in the home directory, such as `~/.config/gh`, `~/.netrc`,
-`~/.git-credentials` and `~/.npmrc`, are readable, and the shell can signal
-other processes running as the same user. The environment is an allowlist
+writes outside the workspace and reads of `.abhed` and of the credential
+paths in home listed in `HomeSecrets` (`internal/sandbox/process.go`): keys
+and cloud credentials (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`,
+`~/.config/gcloud`, `~/.azure`, …), git host and registry tokens
+(`~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`,
+…), database and model tokens, shell history, the keychains and browser
+profiles. Each is named both as given and with its links resolved, so a
+home reached through a link is covered. The list is a deny list: another
+file in home that holds a secret is readable, where Linux's bubblewrap
+leaves home out altogether. The shell can signal other processes running as
+the same user. The environment is an allowlist
 (`internal/sandbox/process.go`, `env`): no provider keys, no vault secrets, no
 `ABHED_` settings. On the `none` tier the shell has the server's environment
 without its `ABHED_` settings, which leaves anything else the operator
@@ -271,9 +299,16 @@ container and vm tiers; the none and process tiers do not bound memory, and
 `max_procs` on the none tier or under root. The none tier bounds neither. A command past its
 timeout is stopped with everything descended from it, including a child that
 left its group with `setsid` while its parent still ran
-(`TestBashTimeoutEndsADetachedChild`); a process whose parent had already
-exited, such as a daemon that forked twice, is not reached on the none tier or
-the macOS process tier, and bubblewrap ends everything in its namespace.
+(`TestBashTimeoutEndsADetachedChild`). A process whose parent had already
+exited, such as a daemon that forked twice, is found by a variable each
+command's processes inherit (`ABHED_COMMAND_ID`, unguessable, one per
+command) and ended too (`TestBashTimeoutEndsADaemon`). That finds it on Linux
+and on macOS, with three gaps on the none tier and the macOS process tier: a
+process that clears or replaces its environment is not found; on macOS, a
+program Apple ships in the system (`/bin/sh`, `/usr/bin/perl`, `/bin/sleep`)
+does not show its environment to other processes, so a daemon still running
+one of them is not found; and only the user's own processes are looked at.
+Bubblewrap ends everything in its namespace.
 
 **Extensions may only veto, never permit.** `internal/extension/extension.go`
 states the rule directly: "An extension may VETO, never PERMIT." Hooks run

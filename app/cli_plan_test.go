@@ -122,7 +122,7 @@ func TestCLIPlanExit(t *testing.T) {
 	c.waitFor(func(out string) bool {
 		return strings.Contains(out, "Proceed with this plan?") && strings.Contains(out, "answer 1-3")
 	}, "the plan card")
-	c.command("2", "mode: default")
+	c.command("2", "mode: plan → default")
 	// Default mode: the edit the plan leads to is put to the person.
 	c.waitFor(func(out string) bool {
 		i := strings.LastIndex(out, "needs approval")

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -32,8 +33,59 @@ type ShellRequest struct {
 	Timeout time.Duration
 	// Tier is the sandbox the command runs under, as Result.Tier names it.
 	Tier string
+	// RanUnder, when set, is read once Build has made the command, for a
+	// sandbox chosen as its first command is built; it replaces Tier.
+	RanUnder func() string
 	// Build makes the command on ctx, whose end kills its process group.
 	Build func(ctx context.Context) (*exec.Cmd, error)
+	// Proc, in place of Build, is a command already running in the
+	// foreground that the person moved to the background; the host ends it
+	// with Proc.Stop. Started is when it started.
+	Proc    *ShellProc
+	Started time.Time
+}
+
+// Detach lets a person move a foreground command to the background while it
+// runs: Move is closed to ask, and Running reports whether a command is
+// running that can be moved.
+type Detach struct {
+	Move    chan struct{}
+	once    sync.Once
+	running atomic.Bool
+}
+
+// SetRunning says whether something that can be moved is running now; a
+// tool that can be moved sets it while it runs.
+func (d *Detach) SetRunning(on bool) {
+	if d != nil {
+		d.running.Store(on)
+	}
+}
+
+// NewDetach is a Detach for one call.
+func NewDetach() *Detach { return &Detach{Move: make(chan struct{})} }
+
+// Ask moves the call's command to the background if one is running, and
+// reports whether it did.
+func (d *Detach) Ask() bool {
+	if d == nil || !d.running.Load() {
+		return false
+	}
+	d.once.Do(func() { close(d.Move) })
+	return true
+}
+
+type detachKey struct{}
+
+// WithDetach lets the call's foreground command be moved to the background.
+func WithDetach(ctx context.Context, d *Detach) context.Context {
+	return context.WithValue(ctx, detachKey{}, d)
+}
+
+// DetachOf is the call's Detach, or nil.
+func DetachOf(ctx context.Context) *Detach {
+	d, _ := ctx.Value(detachKey{}).(*Detach)
+	return d
 }
 
 type shellHostKey struct{}
@@ -93,31 +145,37 @@ func StartShellProc(cmd *exec.Cmd, stop func(), capBytes int) (*ShellProc, error
 		return nil, err
 	}
 	liveProcs.Store(p, struct{}{})
-	go func() {
-		werr := cmd.Wait()
-		// A process left behind may hold the pipe; read a little longer, as in the foreground.
-		select {
-		case <-copied:
-		case <-time.After(bashOutputWait):
-			_ = r.Close()
-			<-copied
-		}
-		_ = r.Close()
-		p.mu.Lock()
-		p.ended = time.Now()
-		var ee *exec.ExitError
-		switch {
-		case werr == nil:
-		case errors.As(werr, &ee):
-			p.exit = ExitStatus(ee)
-		default:
-			p.exit, p.err = -1, werr
-		}
-		p.mu.Unlock()
-		liveProcs.Delete(p)
-		close(p.done)
-	}()
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	go p.watch(waited, copied, r)
 	return p, nil
+}
+
+// watch waits for the command's end and the last of its output, then marks
+// the shell ended with its exit status.
+func (p *ShellProc) watch(waited <-chan error, copied <-chan struct{}, r *os.File) {
+	werr := <-waited
+	// A process left behind may hold the pipe; read a little longer, as in the foreground.
+	select {
+	case <-copied:
+	case <-time.After(bashOutputWait):
+		_ = r.Close()
+		<-copied
+	}
+	_ = r.Close()
+	p.mu.Lock()
+	p.ended = time.Now()
+	var ee *exec.ExitError
+	switch {
+	case werr == nil:
+	case errors.As(werr, &ee):
+		p.exit = ExitStatus(ee)
+	default:
+		p.exit, p.err = -1, werr
+	}
+	p.mu.Unlock()
+	liveProcs.Delete(p)
+	close(p.done)
 }
 
 // Done is closed once the command has ended and its output is read.

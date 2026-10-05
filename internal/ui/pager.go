@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
+	"unicode"
 )
 
 // pager is the transcript view Ctrl-O opens: the whole session with every
@@ -14,6 +16,21 @@ type pager struct {
 	title string
 	// done is closed when the view is closed, for a Panel waiting on it.
 	done chan struct{}
+	// shownAt is when a command's Panel was drawn: a key typed within the
+	// guard after it was typed ahead, for the prompt, not for the view.
+	shownAt time.Time
+}
+
+// typedAhead takes a printable key that arrived within the guard after a
+// command opened the view: it goes to the input line, not to the view,
+// where "q" in "quick" closed it and other letters were dropped.
+func (d *dock) typedAhead(k key, at time.Time) bool {
+	p := d.pager
+	if p.shownAt.IsZero() || at.Sub(p.shownAt) >= approvalGuard || k.code != kNone || !unicode.IsPrint(k.r) && !joins(k.r) {
+		return false
+	}
+	d.buf.insert([]rune{k.r})
+	return true
 }
 
 func (d *dock) openPager() {

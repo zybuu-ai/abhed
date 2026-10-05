@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,8 +140,10 @@ func (l *LineSurface) Dialog(ctx context.Context, spec DialogSpec) (string, erro
 		l.printf("  %d. %s\n", i+1, singleLine(c.Label))
 	}
 	for range lineAttempts {
-		if def, ok := d.choice(d.Default); ok {
-			l.printf("  answer 1-%d, or enter for %s: ", len(d.Choices), singleLine(def.Label))
+		// The default is named by its number: its label is the caller's text,
+		// which may read like another choice ("No 3. Yes, always").
+		if i := slices.IndexFunc(d.Choices, func(c Choice) bool { return c.ID == d.Default }); d.Default != "" && i >= 0 {
+			l.printf("  answer 1-%d, or enter for %d: ", len(d.Choices), i+1)
 		} else {
 			l.printf("  answer 1-%d: ", len(d.Choices))
 		}

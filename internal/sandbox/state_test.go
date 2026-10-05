@@ -329,3 +329,21 @@ func TestReadableFileSameCatchesAChangeTimeAlone(t *testing.T) {
 		t.Fatal("a file differing only in its change time passed")
 	}
 }
+
+// Under bubblewrap a .git without hooks or config gets empty ones bound read-only.
+func TestBwrapBindsMissingGitHooksReadOnly(t *testing.T) {
+	ws := workspace(t)
+	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(ws)
+	p.ProtectGit = true
+	s := &Process{policy: p, backend: "bwrap"}
+	args := strings.Join(s.wrap(t.Context(), ws, nil, "/bin/true").Args, " ")
+	for _, f := range []string{"hooks", "config"} {
+		q := filepath.Join(ws, ".git", f)
+		if !strings.Contains(args, "--ro-bind-try "+q+" "+q) {
+			t.Errorf("missing %s not bound read-only:\n%s", f, args)
+		}
+	}
+}

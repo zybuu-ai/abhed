@@ -13,7 +13,7 @@ numbered prompts answered with a line.
 |---|---|
 | Enter | send |
 | Shift+Enter, Alt+Enter, Ctrl-J, `\` then Enter | new line |
-| ← → , Ctrl-B, Ctrl-F | move a character (an accented letter, an emoji or a flag is one) |
+| ← → , Ctrl-B, Ctrl-F | move a character (an accented letter, an emoji or a flag is one); Ctrl-B on an empty line during a turn is below |
 | Alt-B, Alt-F, Ctrl-← , Ctrl-→ | move a word |
 | Home, End, Ctrl-A, Ctrl-E | start and end of the line |
 | ↑ ↓ , Ctrl-P, Ctrl-N | move between lines of a message, then through history |
@@ -39,13 +39,16 @@ it. Pasted text is kept to what can be typed, so control characters in it
 are dropped. A terminal that does not mark pastes sends them as fast
 typing; that is recognised by its speed and treated the same way, except
 that such a paste ending in a newline is sent at once, since nothing after
-the last Enter tells it from one pressed by hand. Turn on bracketed paste
-in the terminal to avoid that.
+the last Enter tells it from one pressed by hand. So is the part of it
+before a newline followed by an escape sequence (an arrow key, say): that
+line is sent, and what follows is read as keys you typed. Turn on bracketed
+paste in the terminal to avoid both.
 
 **A suggested next prompt.** When a turn completes, the input shows a dimmed
 guess at what you may ask next, such as *Run the tests*. Tab, or → on the
 empty line, puts it in the input to edit or send. It is the model's text, and
-none is offered that urges past a safeguard or towards something destructive
+none is offered that urges past a safeguard, towards something destructive
+or outward, or that consents, such as *yes* or *approve all*
 ([Configuration](02-configuration.md#suggestions)); it is never sent for you,
 and Enter on an empty line still sends nothing. Typing anything dismisses it,
 and the next turn replaces it. It comes from one small model call after the
@@ -75,7 +78,9 @@ way to the reply as soon as the reply starts.
 | Esc | stop the turn; the session and its background shells and tasks are kept ("Interrupted · background shells kept") |
 | Ctrl-C | on a typed line, clear it; otherwise stop the turn and its background shells and tasks ("Interrupted · background shells stopped"), and a second time exit |
 | Ctrl-O | the whole transcript, with every tool's output and every reasoning block in full |
+| Ctrl-T | list the agent's open todo items above the input, or go back to the one-line summary |
 | Shift-Tab | the next permission mode, applied when the turn ends |
+| Ctrl-B, on an empty line | move the `bash` command or subagent running now to the background: the call returns at once, as one started with `run_in_background` (or `task`'s `background`) does, the agent goes on, and the command or subagent keeps running, listed in `/tasks`, its result delivered when it ends. A command or subagent still waiting on approval is not moved |
 
 Esc and Ctrl-C both end the turn as `user_interrupt`; the record's
 `session.ended` says which in `detail`: `turn interrupted, background shells
@@ -97,6 +102,55 @@ or a write the diff, with line numbers and three lines of context. The diff is
 shown whatever the mode, including accept-edits and auto, and stays in the
 transcript. The model's reasoning is one line, `✻ Thought · 120 words`; Ctrl-O
 or `/think` shows it.
+
+### What the harness does
+
+What the harness does on its own is drawn too, as dim lines in the
+transcript, so a change of mode or a compaction is never invisible:
+
+```text
+● Todos
+  ⎿  ☒ read the file
+     ◼ change the greeting
+     ☐ run the tests
+
+● Task(look around)
+  ├ general started · look around · model-name
+  └ general returned · completed · 1 turn · 1.3k tokens · look around
+
+● Bash(go test ./...)
+  ✓ auto: bash(go test*)
+  ⎿  ok  example.com/pkg  0.2s
+
+  ◆ compacting the conversation · 96k tokens
+  ◆ compacted · 96k → 14k tokens (auto)
+  ◆ mode: default → plan · slash
+  ◆ session allow rule added: bash(go test*) (until /clear)
+  ◆ hook guard · pre_tool · block
+```
+
+- **Todos.** Each time the agent writes its task list, the whole list is drawn
+  under the call: `☒` done, `◼` in progress, `☐` to do. While any item is
+  open, one line above the input says how far it has got
+  (`◼ Todos 1/3 done · change the greeting`); Ctrl-T lists every item there,
+  and `/todos` draws the list into the transcript.
+- **Subagents.** A subagent starting and returning is a tree under the `task`
+  call: its type, its description, its model and, for a worktree, its branch;
+  then how it ended, its turns and tokens.
+- **Auto-approval.** A call that a configured allow rule approved, with no
+  question, says which rule did it: `✓ auto: <rule>`. A read the default
+  allows, a call a mode allows and a call you answered draw no such line.
+- **Compaction, modes, rules and hooks.** Compaction starting and ending (or
+  failing), a mode change (not one carried into a new conversation after
+  `/clear`), a session rule added or removed with `/permissions`, and a hook's
+  verdict each draw one line.
+
+These lines come from the record's events (`todo.updated`,
+`subagent.spawned`, `subagent.returned`, `compaction.started`,
+`compaction.completed`, `mode.changed`, `permission.changed`, `hook.fired` and
+`action.approved`), so a resumed session draws them again, and the line mode
+prints them too. Every name, description, rule and message in them is shown as
+text: a control or format character is shown, never obeyed.
 
 ## Subagents and background work
 
@@ -127,7 +181,8 @@ stays for two minutes after it ends; `/tasks` lists everything.
 
 With a running subagent selected the input says `Message @<type>…`: what you
 send goes to that subagent as your message, taken at its next step and
-recorded in its own record. A row that cannot take messages (one that has
+recorded in its own record, and in the session's as `subagent.message`
+(`by: user`). A row that cannot take messages (one that has
 ended, or a job) says so, and what you send goes to `main`. Commands and `!`
 lines always go to `main`. A subagent's approvals are asked in the usual
 numbered dialog; nothing is approved for it.
@@ -191,7 +246,8 @@ A key counts as an answer only when it is meant as one:
 
 A destructive command, such as `rm -rf`, never offers "don't ask again", and a
 Yes is followed by a second numbered question — 1 No, 2 Yes, run it — whose
-Enter answers No. The question, the
+Enter answers No. A destructive `!` line you type yourself asks once
+instead ([Input](19-input-and-memory.md)). The question, the
 diff and your answer stay in the transcript, as they are in the record.
 
 ## The footer
@@ -224,6 +280,39 @@ trusted that file (see [workspace trust](../architecture/workspace-trust.md)).
 ```json
 { "statusline": { "command": "jq -r '\"\\(.model) · \\(.git_branch)\"'" } }
 ```
+
+## The title, notifications and the clipboard
+
+**The title.** The window or tab title says `abhed · ready`, `abhed · working`
+or `abhed · approval needed`. The title the terminal had before is saved on
+its title stack and put back on exit, where the terminal keeps one; where it
+does not, your shell's prompt usually sets it again.
+
+**Notifications.** When the terminal says it is not focused (Abhed asks for
+focus reports, DEC mode 1004), an approval starting to wait and a turn ending
+are signalled: by the bell, or by an OSC 9 desktop notification that says
+`abhed: approval waiting` or `abhed: turn finished`. The words are always
+those: never the command, a path or anything the model wrote. A terminal that
+does not report focus is taken to be watched, and is never signalled. There is
+no way to answer an approval from the notification.
+
+**Copying a reply.** `/copy` puts the agent's last reply, as markdown, on the
+clipboard through the terminal (OSC 52). It only ever happens when you type
+`/copy`. Some terminals ask first, or need the clipboard allowed (tmux:
+`set -g set-clipboard on`); one that does not allow it ignores the request,
+and Abhed cannot tell. A reply over 64 KB is refused rather than cut. The
+copy leaves out control and hidden characters (escape sequences, bidi
+controls, zero-width spaces); when the reply held any, `/copy` warns, since
+the copy is then not the text the model sent.
+
+| Setting in `~/.abhed/config.json` | Default | |
+|---|---|---|
+| `cli.title` | `true` | `false` leaves the title alone |
+| `cli.notify` | `auto` | `bel`, `osc9` or `off`. `auto` sends OSC 9 to iTerm2, WezTerm and Ghostty, and the bell elsewhere and under tmux or screen |
+| `cli.copy` | `true` | `false` turns `/copy` off |
+
+These are yours to set: a workspace's `.abhed/config.json` does not set `cli`,
+and a managed value binds.
 
 ## Themes
 

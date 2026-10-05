@@ -66,6 +66,9 @@ type Options struct {
 	Bash tools.Bash
 	// Parts selects what the configuration may add beyond the built-in tools.
 	Parts Part
+	// Agents are subagent definitions given for this run (-agents), parsed
+	// and checked as files are; the managed ones still hold their names.
+	Agents []*agent.Definition
 	// Extensions are started beside the configuration's own, as the SDK's
 	// Options.Extensions are. The configuration's are subject to workspace
 	// trust when it is loaded: an untrusted file adds none.
@@ -126,7 +129,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	}
 	if o.Parts&(Vetoes|ExtensionTools) != 0 {
 		s.Extensions = extension.NewHost(o.Warn)
-		specs := append(cfg.ExtensionSpecs(), o.Extensions...)
+		specs := append(cfg.ExtensionSpecs(), cfg.NarrowHooks(o.Extensions)...)
 		for _, err := range s.Extensions.Load(ctx, specs) {
 			warn("%v", err)
 		}
@@ -172,7 +175,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		}
 	}
 	if o.Parts&Agents != 0 {
-		s.Agents = LoadAgents(cfg, cfg.Workspace, warn)
+		s.Agents = LoadAgents(cfg, cfg.Workspace, o.Agents, warn)
 	}
 	var fetch *webfetch.Tool
 	if o.Parts&WebFetch != 0 {

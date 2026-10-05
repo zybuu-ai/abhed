@@ -24,7 +24,7 @@ func (c *acpConn) wakeTurn(s *acpSession, ids []string, run func(context.Context
 	}
 	ctx, cancel := context.WithCancel(c.root())
 	s.mu.Lock()
-	if s.closed || s.readOnly != "" || s.cancel != nil || s.woken != nil {
+	if s.closed || s.readOnly != "" || s.cancel != nil || s.woken != nil || s.mcpRestart {
 		s.mu.Unlock()
 		cancel()
 		return false

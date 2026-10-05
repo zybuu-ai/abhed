@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -280,5 +282,44 @@ func TestCreateUserAcrossInstancesOneWins(t *testing.T) {
 		if err != nil && !errors.Is(err, ErrUserExists) {
 			t.Fatalf("loser's error = %v, want ErrUserExists", err)
 		}
+	}
+}
+
+// Two processes on one accounts file, as two `abhed user add` runs: each
+// store reads, changes and writes the file under a lock, so neither loses the
+// other's account and only one creates a name.
+func TestFileStoreAcrossProcessesKeepsEveryAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.json")
+	var stores [2]*FileUserStore
+	for i := range stores {
+		s, err := NewFileUserStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[i] = s
+	}
+	var wg sync.WaitGroup
+	dupErrs := make([]error, 2)
+	for i, s := range stores {
+		for n := range 20 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = s.Put(context.Background(), &User{Username: fmt.Sprintf("u%d-%d", i, n)})
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dupErrs[i] = s.Create(context.Background(), &User{Username: "dup"})
+		}()
+	}
+	wg.Wait()
+	all, err := stores[0].List(context.Background())
+	if err != nil || len(all) != 41 {
+		t.Fatalf("%d accounts kept of 41: %v", len(all), err)
+	}
+	if (dupErrs[0] == nil) == (dupErrs[1] == nil) {
+		t.Fatalf("both or neither created the same name: %v", dupErrs)
 	}
 }

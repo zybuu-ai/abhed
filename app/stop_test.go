@@ -123,10 +123,9 @@ func exitOf(t *testing.T, helper *exec.Cmd) int {
 // rpc stopped by SIGTERM ends the command it was running and exits as the
 // signal would have ended it.
 func TestRPCExitsOnSIGTERMAndEndsItsCommand(t *testing.T) {
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "child.pid")
-	url, _ := stubModel(t, `{"command":"sh -c 'echo $$ > `+pidFile+`; exec sleep 60'; true","description":"long"}`)
+	url, _ := stubModel(t, beatingCommand)
 	ws, helper, stdin, out := stopWorkspace(t, url, "rpc")
+	beat := filepath.Join(ws, "beat")
 	requireHostTier(t, ws)
 	stderr := &strings.Builder{}
 	helper.Stderr = stderr // stdout alone is the protocol
@@ -136,22 +135,11 @@ func TestRPCExitsOnSIGTERMAndEndsItsCommand(t *testing.T) {
 	fmt.Fprintf(stdin, `{"method":"start","workspace":%q,"allow":["bash(*)"]}`+"\n", ws)
 	fmt.Fprint(stdin, `{"id":"1","method":"prompt","prompt":"go"}`+"\n")
 
-	var pid int
-	for deadline := time.Now().Add(20 * time.Second); pid == 0; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			_ = helper.Process.Kill()
-			_ = helper.Wait()
-			t.Fatalf("the command never started:\n%s", out)
-		}
-		if b, err := os.ReadFile(pidFile); err == nil {
-			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-		}
+	if !waitBeating(beat) {
+		_ = helper.Process.Kill()
+		_ = helper.Wait()
+		t.Fatalf("the command never started:\n%s", out)
 	}
-	t.Cleanup(func() {
-		if b, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output(); err == nil && strings.Contains(string(b), "sleep 60") {
-			_ = syscall.Kill(pid, syscall.SIGKILL) // only the sleep this test's helper started
-		}
-	})
 	_ = helper.Process.Signal(syscall.SIGTERM)
 	if code := exitOf(t, helper); code != 128+int(syscall.SIGTERM) {
 		t.Fatalf("rpc exited %d, want %d:\n%s", code, 128+int(syscall.SIGTERM), out)
@@ -170,10 +158,8 @@ func TestRPCExitsOnSIGTERMAndEndsItsCommand(t *testing.T) {
 	if ended < 0 || reply != len(lines)-1 || ended > reply {
 		t.Fatalf("session.ended at %d and the reply at %d of %d lines:\n%s\nstderr:\n%s", ended, reply, len(lines), out, stderr)
 	}
-	for deadline := time.Now().Add(3 * time.Second); syscall.Kill(pid, 0) == nil; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the command %d outlived rpc", pid)
-		}
+	if !stopsBeating(beat) {
+		t.Fatal("the command outlived rpc")
 	}
 }
 
@@ -217,10 +203,9 @@ func TestEvalStoppedWritesNoReport(t *testing.T) {
 // acp stopped by SIGTERM sends every update of the stopped prompt, then its
 // stopReason last, and exits as the signal would have ended it.
 func TestACPExitsOnSIGTERMAfterTheStopReason(t *testing.T) {
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "child.pid")
-	url, _ := stubModel(t, `{"command":"sh -c 'echo $$ > `+pidFile+`; exec sleep 60'; true","description":"long"}`)
+	url, _ := stubModel(t, beatingCommand)
 	ws, helper, stdin, _ := stopWorkspace(t, url, "acp")
+	beat := filepath.Join(ws, "beat")
 	requireHostTier(t, ws)
 	helper.Stdout = nil
 	stdout, err := helper.StdoutPipe()
@@ -271,21 +256,10 @@ func TestACPExitsOnSIGTERMAfterTheStopReason(t *testing.T) {
 	_ = json.Unmarshal([]byte(next(func(l string) bool { return strings.Contains(l, `"id":2`) })), &created)
 	send(3, "session/prompt", map[string]any{"sessionId": created.Result.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "go"}}})
 
-	var pid int
-	for deadline := time.Now().Add(20 * time.Second); pid == 0; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			_ = helper.Process.Kill()
-			t.Fatal("the command never started")
-		}
-		if b, err := os.ReadFile(pidFile); err == nil {
-			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-		}
+	if !waitBeating(beat) {
+		_ = helper.Process.Kill()
+		t.Fatal("the command never started")
 	}
-	t.Cleanup(func() {
-		if b, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output(); err == nil && strings.Contains(string(b), "sleep 60") {
-			_ = syscall.Kill(pid, syscall.SIGKILL) // only the sleep this test's helper started
-		}
-	})
 	_ = helper.Process.Signal(syscall.SIGTERM)
 	var rest []string
 	for l := range lines {
@@ -297,16 +271,44 @@ func TestACPExitsOnSIGTERMAfterTheStopReason(t *testing.T) {
 	if len(rest) == 0 || !strings.Contains(rest[len(rest)-1], `"stopReason":"cancelled"`) {
 		t.Fatalf("the stopReason is not the last message:\n%s", strings.Join(rest, "\n"))
 	}
-	if syscall.Kill(pid, 0) == nil {
-		time.Sleep(2 * time.Second)
-		if syscall.Kill(pid, 0) == nil {
-			t.Fatalf("the command %d outlived acp", pid)
-		}
+	if !stopsBeating(beat) {
+		t.Fatal("the command outlived acp")
 	}
 }
 
-// requireHostTier skips where rpc and acp would run the command somewhere its
-// pid is not the host's: a container, or a sandbox this machine cannot start.
+// beatingCommand is the model's bash call: a command that writes a rising
+// count to beat in the workspace every 0.1 s, for 60 s at most. Whether it
+// still runs is read from the file, which every tier shows: a pid it read
+// under bwrap was its namespace's, not the host's.
+const beatingCommand = `{"command":"for i in $(seq 1 600); do echo $i > beat; sleep 0.1; done; true","description":"long"}`
+
+// waitBeating waits for the command to start writing beat.
+func waitBeating(beat string) bool {
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(beat); err == nil && len(b) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// stopsBeating reports whether beat stops changing within a few seconds.
+func stopsBeating(beat string) bool {
+	last, _ := os.ReadFile(beat)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		time.Sleep(time.Second)
+		now, _ := os.ReadFile(beat)
+		if string(now) == string(last) {
+			return true
+		}
+		last = now
+	}
+	return false
+}
+
+// requireHostTier skips where rpc and acp would run the command somewhere
+// stopping it works otherwise: a container or a VM, or a sandbox this machine
+// cannot start.
 func requireHostTier(t *testing.T, ws string) {
 	t.Helper()
 	sb, err := sandboxconfig.Build(config.Config{}, ws)

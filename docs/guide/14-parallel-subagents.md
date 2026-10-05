@@ -229,7 +229,7 @@ surface can host:
 |---|---|---|
 | CLI, interactive | `auto` | `auto` unless a file sets `subagents.wake`; results are drawn at the prompt; a wake waits while you are typing; the work list under the input, `/tasks` (`view`, `kill`, `cancel <id\|all>`), `/wake` |
 | CLI, `-p`; `abhed eval`; unattended server runs and schedules | `off` | the run, its exit code and `OnEnd` wait for the tasks |
-| `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; the woken turn streams live, marked "continuing with results from <task>"; the workbench's status bar lists the tasks still running; `POST /v1/sessions/{id}/wake` switches it |
+| `abhed serve`, console and workbench | `auto` | the session shows `background` and the count; the woken turn streams live, marked "continuing with results from <task>"; the workbench's status bar lists the tasks still running, and `/tasks` or a click on it lists every task with a Cancel for each one running; `POST /v1/sessions/{id}/wake` switches it |
 | `abhed acp` | `auto` | a task has a card of its own, completed by its result; a woken turn streams as session updates between `_abhed/wake/started` and `_abhed/wake/ended`, and a prompt sent meanwhile waits for it |
 | `abhed rpc`, SDK | `auto`, default `off` | `off` joins the tasks; in `auto` a woken run's events stream and rpc answers it with a `woken` line; an explicit `wake` or `Wake` runs the agent on a result |
 
@@ -244,10 +244,24 @@ the session's other tasks are cancelled as `owner_inactive`, since nobody may
 answer their asks. A woken run asks again before each model call and before
 each of its calls is approved, so access withdrawn while it runs ends it as
 `owner_inactive`, its pending call refused (`action.denied`, step `owner`).
-When an administrator revokes, disables or removes a user, the edition that
-manages accounts stops that user's work on the server at once
-(`StopOwnerBackground`): the live run, background shells and tasks, and
-terminals end as `owner_revoked`, and no wake runs for them afterwards.
+An edition that manages accounts can stop a revoked, disabled or removed
+user's work on the server at once (`StopOwnerBackground`): the live run,
+background shells and tasks, and terminals end as `owner_revoked` (a
+terminal's observation reads `exit 137 · on a terminal, owner_revoked`), and
+no wake runs for them afterwards. A call then waiting on an answer is refused
+as interrupted (`action.denied`, step `ask`, "interrupted before an
+answer"), not at step `owner`. The Community Edition does not call it:
+`abhed user remove` signs the account out, but a run already going for it
+goes on until it ends, or until a woken run or a background result finds
+the owner gone, as above.
+Signing a person out is not that. After Sign out everywhere, or after their
+administrator rights are removed, which also signs them out, the account is
+still active: a background shell or task they started keeps running, and its
+result still starts a woken run in their session, under the same policy and
+with no one signed in to watch it. To stop that work, stop the session's
+tasks first (Stop, `/tasks`), or remove the account (`abhed user remove`),
+after which a result wakes nothing and the session's other tasks are
+cancelled as `owner_inactive`.
 
 **Stop means stop.** An explicit stop cancels every background task: Stop or
 `/interrupt` in the console, Ctrl-C during a task (or twice at the prompt),
@@ -300,7 +314,8 @@ before a restart, and a task a crashed process lost (ended `lost`), are
 delivered on the session's next run.
 
 Each server process holds the sessions it runs under a liveness identity (its
-`node_id`, or an id of its own when none is set) and refreshes it every 30
+`node_id` with a token of this process after a `#`, or an id of its own when
+no `node_id` is set) and refreshes it every 30
 seconds while a run, a background task or a workbench hold is live. Another
 process takes a session over only once that heartbeat is two minutes stale,
 so a live task on one server is never mistaken for a crashed one by another
@@ -320,7 +335,12 @@ written) is not something a record can undo. Another durable store an
 embedder supplies is not fenced this way, and the server warns of it at
 start. A node restarted with the same
 `node_id` takes back the sessions it held when it starts, before it serves
-anything, so two running nodes must never share a `node_id`.
+anything, under its new token, so the process it replaced, if it still runs,
+writes nothing more into them. Two running nodes must still never share a
+`node_id`: the one that starts later takes the other's sessions. A session
+whose row names no holder, as an older release left it, is taken as crashed
+only once its last event was stored two minutes ago by the database's clock;
+a writer's own clock does not count.
 
 A server also sweeps at startup, and again every two minutes, by staleness
 alone: every open session whose holder's heartbeat is stale is reconciled then (its lost tasks

@@ -292,7 +292,12 @@ func (c recordCtx) inRecord(path string) bool {
 // printReport prints one verify result and reports whether it failed.
 func printReport(w io.Writer, name string, r local.Report) bool {
 	if r.OK {
-		fmt.Fprintf(w, "ok      %s: %d lines, head seq %d %s\n", name, r.Events, r.Head.Seq, short(r.Head.Hash))
+		// The index is numbered by line and has no seq; "head seq 0" read as empty.
+		head := fmt.Sprintf("head seq %d", r.Head.Seq)
+		if r.Head.Seq == 0 && r.Head.Lines > 0 {
+			head = fmt.Sprintf("head line %d", r.Head.Lines)
+		}
+		fmt.Fprintf(w, "ok      %s: %d lines, %s %s\n", name, r.Events, head, short(r.Head.Hash))
 	} else {
 		where := fmt.Sprintf("at seq %d", r.FirstBad)
 		if r.Line > 0 {

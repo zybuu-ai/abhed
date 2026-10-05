@@ -229,3 +229,36 @@ func TestToolResultCarriesCallID(t *testing.T) {
 		t.Fatalf("tool_call_id lost: %+v", wr.Messages[0])
 	}
 }
+
+// "parallel_tool_calls": true goes with the tools to a server known to take
+// it, never without tools, and not where the provider's extra turns it off
+// or the type is not known to take it.
+func TestParallelToolCallsSentWhereTaken(t *testing.T) {
+	tools := Request{Messages: []Message{{Role: RoleUser, Content: "x"}}, Tools: []ToolDef{{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+	none := Request{Messages: []Message{{Role: RoleUser, Content: "x"}}}
+	sent := func(typ string, extra map[string]string, req Request) bool {
+		a, err := New(Spec{Type: typ, BaseURL: "http://127.0.0.1:1/v1", Model: "m", ContextWindow: 8192, Extra: extra})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(a.(*OpenAICompatible).buildRequest(req))
+		return strings.Contains(string(b), `"parallel_tool_calls":true`)
+	}
+	for _, c := range []struct {
+		typ   string
+		extra map[string]string
+		req   Request
+		want  bool
+	}{
+		{"openai-compatible", nil, tools, true},
+		{"vllm", nil, tools, true},
+		{"openai-compatible", nil, none, false},
+		{"openai-compatible", map[string]string{"parallel_tool_calls": "false"}, tools, false},
+		{"tgi", nil, tools, false},
+		{"tgi", map[string]string{"parallel_tool_calls": "true"}, tools, true},
+	} {
+		if got := sent(c.typ, c.extra, c.req); got != c.want {
+			t.Errorf("%s %v tools=%d: sent %v, want %v", c.typ, c.extra, len(c.req.Tools), got, c.want)
+		}
+	}
+}

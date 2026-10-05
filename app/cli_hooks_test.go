@@ -83,6 +83,23 @@ func TestHooksPanel(t *testing.T) {
 	}
 }
 
+// Under hooks.managed_only, /hooks says a non-managed extension takes no hooks.
+func TestHooksPanelManagedOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.ManagedOnly = true
+	cfg.Extensions = []config.ExtensionConfig{{Name: "gate", Command: "bash", Events: []string{"user_prompt_submit"}}}
+	env, surface, _ := recordedEnv(t, cfg, "default")
+	if _, err := slashHooks(context.Background(), env, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := surface.text()
+	for _, want := range []string{"off: only the managed configuration's extensions take hooks", "limits hooks to its own extensions"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 // Through the CLI: a user_prompt_submit hook refuses a message, the person is
 // told, the model never sees it, and the record says the hook fired.
 func TestCLIPromptHookVeto(t *testing.T) {

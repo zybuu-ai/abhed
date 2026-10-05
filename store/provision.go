@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -100,6 +101,9 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			return fmt.Errorf("apply extension schema: %w", err)
 		}
 		for table, privs := range ext.Grants {
+			if coreTable(table) {
+				return fmt.Errorf("provision: an extension may not grant on the core table %q", table)
+			}
 			grants = append(grants, struct{ table, privileges string }{table, privs})
 		}
 	}
@@ -133,18 +137,28 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	return nil
 }
 
-// validPrivileges keeps a privilege list to the keywords it should contain,
-// since it is spliced into SQL and cannot be a bound parameter.
-func validPrivileges(list string) bool {
-	for _, p := range strings.Split(list, ",") {
-		switch strings.TrimSpace(strings.ToUpper(p)) {
-		case "SELECT", "INSERT", "UPDATE", "DELETE":
-		default:
-			return false
+// coreTable reports whether table is granted by runtimeGrants, which an
+// extension's grant would otherwise replace.
+func coreTable(table string) bool {
+	for _, g := range runtimeGrants {
+		if strings.EqualFold(g.table, table) {
+			return true
 		}
 	}
-	return list != ""
+	return false
 }
+
+// validPrivileges keeps a privilege list to the keywords it should contain,
+// since it is spliced into SQL and cannot be a bound parameter. SELECT, INSERT
+// and UPDATE may name columns, so a role can be held to the columns it writes.
+func validPrivileges(list string) bool {
+	return privilegeList.MatchString(list)
+}
+
+var privilegeList = func() *regexp.Regexp {
+	item := `(?:(?i:DELETE)|(?i:SELECT|INSERT|UPDATE)(?:\s*\(\s*[a-z_][a-z0-9_]*(?:\s*,\s*[a-z_][a-z0-9_]*)*\s*\))?)`
+	return regexp.MustCompile(`^\s*` + item + `(?:\s*,\s*` + item + `)*\s*$`)
+}()
 
 // recordExposure reports how the connected role could alter the event record,
 // or "" when it cannot. It is asked of the database rather than assumed from
@@ -153,7 +167,7 @@ func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	var owns, canUpdate, canDelete, canTruncate bool
 	err := pool.QueryRow(ctx, `
 		SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
-		       has_table_privilege(current_user, c.oid, 'UPDATE'),
+		       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
 		       has_table_privilege(current_user, c.oid, 'DELETE'),
 		       has_table_privilege(current_user, c.oid, 'TRUNCATE')
 		FROM pg_class c WHERE c.oid = to_regclass('public.events')`).
@@ -181,7 +195,7 @@ var errNoSchema = errors.New("the schema has not been applied")
 // requiredColumns are columns this build writes that an older schema lacks.
 // The runtime role cannot add them, so a missing one is found at start rather
 // than as a failed write the first time someone answers an approval.
-var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"users", "revocations"}}
+var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"users", "revocations"}, {"sessions", "title"}, {"events", "inserted_at"}}
 
 // missingColumns names the required columns the connected database lacks.
 func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

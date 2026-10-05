@@ -30,11 +30,51 @@ more often a mistyped command than a task.
 | `-append-system-prompt TEXT` | instructions added to the system prompt |
 | `-system-prompt TEXT` | the system prompt replaced; refused under a managed configuration |
 | `-trust-workspace` | trust the workspace's `.abhed/config.json` for this run |
+| `-settings FILE` | a settings file, or inline JSON, for this run; see below |
+| `-mcp-config FILE`, `-strict-mcp-config` | MCP servers for this run, and whether they are the only ones; see below |
+| `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 
 The familiar spellings `-permission-mode`, `-allowedTools`,
 `-disallowedTools` and `-dangerously-skip-permissions` are accepted too; the
 table of what each maps to is in [Automation](10-automation.md#familiar-flag-spellings).
+
+### Settings, servers and roles for one run
+
+Each of these takes a file, or JSON written inline (a value starting with
+`{`), and the start of the session's record names the source and the
+SHA-256 of what was read. They behave the same with and without `-p`. A
+file inside the workspace is something the agent could have changed since
+you last read it, so, like the workspace's own configuration, it is read
+only with `-trust-workspace` (or the workspace trust variable); otherwise
+the run stops with exit code 2. A file outside the workspace is trusted as
+your own, even where an agent could have written it, such as the sandbox's
+temporary folder, so name only files you wrote or have read.
+
+- **`-settings`** is merged over your own `~/.abhed/config.json`, as if it
+  were part of it: a workspace's trusted file and the managed file are still
+  laid over it, a managed-only setting in it is ignored with a warning, and
+  when the managed file sets any `permissions` setting its allow rules are
+  left out, as yours are. `/permissions` shows its rules as `settings`.
+- **`-mcp-config`** (repeatable) adds MCP servers, in the
+  `{"mcpServers": {"name": {"command": …}}}` shape or Abhed's
+  `{"mcp": {"servers": […]}}`. Naming the file is your consent, so each of its
+  servers is enabled unless it says `"enabled": false`; a server with the
+  name of a configured one replaces it for the run. With
+  `-strict-mcp-config` only these servers start. When the managed
+  configuration sets the `mcp` section, `-mcp-config` is refused and
+  `-strict-mcp-config` leaves the organisation's servers as they are.
+- **`-agents`** gives subagent definitions as
+  `{"name": {"description": …, "prompt": …, "tools": […], …}}`, with the keys
+  of a definition file and `prompt` for its instructions. Each is checked
+  exactly as a file is ([Agent definitions](17-agent-definitions.md)), and
+  one that is refused ends the run with exit code 2. They take a name over
+  the workspace's and your own definitions, never over the organisation's.
+- **`-agent NAME`** runs the session as that agent type: its instructions
+  join the system prompt, and the session and the subagents it starts keep
+  only its tools, MCP servers and skills. Its `permission_mode`, `effort`
+  and `max_turns` apply where they narrow, and its `model` when `-model` is
+  not given. A `worktree` role runs only as a subagent.
 
 Start-up does not wait for the container runtime or the model endpoint: both
 are checked behind the prompt. An endpoint that is down is named with what
@@ -74,6 +114,8 @@ provider is refused under a managed `model.default`, as `/model` is.
 |---|---|
 | `/status` | model, mode, workspace and branch, sandbox, record, session, context use, the turn limit and what it counts, token budget, background tasks, trust, managed settings |
 | `/usage` (or `/cost`) | tokens, cache hit rate, prefill saving, compactions, and a breakdown by subagent and by tool source |
+| `/todos` | the agent's task list as it stands; Ctrl-T lists the open items above the input — [The terminal](20-terminal.md#what-the-harness-does) |
+| `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
 | `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |
 
@@ -154,6 +196,28 @@ A `tool_search` tool, whose description lists the servers and their tool
 names, finds them by name or by what they do and loads the ones it returns, so a server of two hundred tools does not fill the context. A
 loaded tool is policed like any other: it asks unless a rule allows it, and
 its output is untrusted.
+
+## Reviews
+
+| Command | |
+|---|---|
+| `/review [BASE]` | review the current change for bugs, missing tests and maintainability |
+| `/security-review [BASE]` | review the current change for security issues, with a severity for each |
+
+Both read the change with `git status --short` and `git diff BASE` (default
+`HEAD`, so staged and unstaged changes), run as your own shell command: the
+policy decides, a deny rule holds, and the call and its output are in the
+record. External diff and textconv drivers are off. `BASE` must be a plain
+revision such as `main` or `HEAD~3`.
+
+The review then runs as your next turn in plan mode, so the agent can read
+files but change nothing; the mode you had comes back when the turn ends
+(from bypass, the session stays in plan). The prompts are built into the
+binary, and `command.invoked` records the command with the prompt's SHA-256.
+The diff goes to the model marked as data, not instructions, capped at
+30,000 characters. Plan mode refuses every shell command, so in plan mode
+`/review` asks you to switch to default first. A custom command named
+`review` or `security-review` is left out, with a notice.
 
 ## Help
 

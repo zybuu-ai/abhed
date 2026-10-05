@@ -145,10 +145,9 @@ func TestIDENamesACallBySubject(t *testing.T) {
 	}
 }
 
-// New file in a just-opened folder keeps its name input when the folder's
-// listing arrives after it; the removal used to race the input's blur.
-func TestIDENewFileSurvivesTheFolderLoading(t *testing.T) {
-	harness := `import { El } from './dom.mjs';
+// ideTreeHarness is the page state the explorer's tree and name input run
+// against: a slow listing for a folder, and a blur on removing the focused input.
+const ideTreeHarness = `import { El } from './dom.mjs';
 globalThis.__root = new El('div');
 globalThis.__errors = []; globalThis.__puts = [];
 process.on('unhandledRejection', e => __errors.push(String(e)));
@@ -176,20 +175,25 @@ const api = async (url, opts) => {
   return {entries: listings[path] || []};
 };
 `
+
+// New file in a just-opened folder keeps its name input when the folder's
+// listing arrives after it; the removal used to race the input's blur.
+func TestIDENewFileSurvivesTheFolderLoading(t *testing.T) {
+	harness := ideTreeHarness
 	if out, err := runConsoleCases(t, "ide-tree", harness, "ide_tree_cases.mjs"); err != nil {
 		t.Fatalf("the explorer lost its name input:\n%s", out)
 	}
 }
 
-// A run that asks for approval is asked on the page whichever of the stream
-// and the POST answers first, and after the page opens on a waiting session.
-func TestIDEAsksForApprovalOnTheFirstTurn(t *testing.T) {
-	harness := `import { El } from './dom.mjs';
+// ideChatHarness is the page state the workbench's send path, live state and
+// approval prompt run against.
+const ideChatHarness = `import { El } from './dom.mjs';
 globalThis.__root = new El('div');
 El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
 globalThis.__focused = []; El.prototype.focus = function(){ __focused.push(this); };
 El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
 Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); c.parentNode = null; };
 let current = null, live = false, bgLive = false, es = null, lastSeq = 0, endedSeq = 0, recheckTimer = 0, focusTimer = 0;
 let streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '', sessionList = [{id:'s1', prompt:'x'}];
 const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map(), bgTasks = new Map();
@@ -200,7 +204,7 @@ const newCid = () => 'c' + (++cid);
 globalThis.__connected = []; let signInGone = false, leaving = false;
 const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = id => { __connected.push(id); };
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
-const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {};
+const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {}, loadDownloads = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
 const requestAnimationFrame = f => f(), idleTurns = new Map();
 // api answers the session list from __sessions, after the next of __delays;
@@ -217,6 +221,11 @@ const api = async (url, opts) => {
   return [];
 };
 `
+
+// A run that asks for approval is asked on the page whichever of the stream
+// and the POST answers first, and after the page opens on a waiting session.
+func TestIDEAsksForApprovalOnTheFirstTurn(t *testing.T) {
+	harness := ideChatHarness
 	if out, err := runConsoleCases(t, "ide-chat", harness, "ide_chat_cases.mjs"); err != nil {
 		t.Fatalf("the workbench's approval prompt failed:\n%s", out)
 	}
@@ -231,6 +240,7 @@ func TestIDEShowsWhenTheServerHasGone(t *testing.T) {
 	harness := `import { El } from './dom.mjs';
 let current = 's1', live = true, bgLive = false, es = null, lastSeq = 0, leaving = false, activeTerm = null;
 let connState = null, connTimer = 0, connWait = 0, signedIn = false, signInGone = false;
+const bgTasks = new Map(); globalThis.__bgDrawn = 0; const drawBg = () => { __bgDrawn++; }, drawStop = () => {};
 const ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
 const el = (tag, cls, text) => { const n = new El(tag); if(cls) n.className = cls; if(text != null) n.textContent = text; return n; };
 globalThis.__added = []; globalThis.__liveOff = 0;
@@ -311,7 +321,8 @@ func TestCapabilitiesReportsToolsAndWithholdsExtensionSecrets(t *testing.T) {
 	for _, tool := range c.Tools {
 		mutates[tool.Name] = tool.Mutates
 	}
-	if mutates["read"] || !mutates["write"] || !mutates["bash"] {
+	// task and tasks mutate when a role works in its own worktree.
+	if mutates["read"] || !mutates["write"] || !mutates["bash"] || !mutates["task"] || !mutates["tasks"] {
 		t.Errorf("mutation flags are wrong: %v", mutates)
 	}
 	if _, ok := mutates["recall"]; !ok {
@@ -569,14 +580,13 @@ func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
 	for _, c := range []struct{ page, src, want string }{
 		{"console", consoleHTML, "  body = reveal(body, true);\n  if(numbered){"},
 		{"console", consoleHTML, "$('dname').textContent = visible(name);"},
-		{"console", consoleHTML, "q.textContent = s.prompt ? reveal(s.prompt) : '(no prompt recorded)';"},
 		{"ide", ideHTML, "top.appendChild(el('b', '', visible(o.name)));"},
 		{"ide", ideHTML, "card.appendChild(el('p', '', visible(o.description, true)));"},
 		{"ide", ideHTML, "top.appendChild(el('b', '', visible(m.name))); top.appendChild(el('span', 'pill on', visible(m.status)));"},
 		{"ide", ideHTML, "top.appendChild(el('b', '', visible(s.name)));"},
 		{"ide", ideHTML, "top.appendChild(el('b', '', visible(e.name)));"},
 		{"ide", ideHTML, "el('mark', '', reveal(m.text.slice(m.from, m.to)))"},
-		{"ide", ideHTML, "const sessionLabel = s => s.prompt ? reveal(s.prompt) : 'Workbench session';"},
+		{"ide", ideHTML, "const sessionLabel = s => s.title ? reveal(s.title) : s.prompt && s.prompt.trim() ? reveal(s.prompt.trim().split('\\n')[0]) : 'Workbench session';"},
 		{"ide", ideHTML, "$('crumb-meta').textContent = reveal(meta || '');"},
 		{"ide", ideHTML, "$('attl').textContent = sessionLabel(s); }"},
 		{"ide", ideHTML, "if(note) w('\\x1b[33m' + visible(note) + '\\x1b[0m');"},
@@ -601,6 +611,93 @@ func TestPagesDrawUntrustedTextThroughTheHelper(t *testing.T) {
 			if len(message.FindAllString(line, -1)) != len(drawn.FindAllString(line, -1)) {
 				t.Errorf("%s draws an error message raw: %s", page, strings.TrimSpace(line))
 			}
+		}
+	}
+}
+
+// The workbench lists the session's background shells and tasks, as /tasks
+// does in the CLI, and cancels one that is still running.
+func TestIDEListsAndCancelsBackgroundTasks(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+globalThis.__focused = null; El.prototype.focus = function(){ __focused = this; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); };
+const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
+const window = {innerWidth: 1200, innerHeight: 800};
+let current = 's1';
+globalThis.__added = []; const add = n => __added.push(n), closeMenu = () => { $('ctx').hidden = true; };
+globalThis.__tasks = []; globalThis.__routes = []; globalThis.__fail = '';
+const api = async (url, opts) => {
+  __routes.push(((opts && opts.method) || 'GET') + ' ' + url);
+  if(__fail) throw new Error(__fail);
+  return url.endsWith('/tasks') ? {tasks: __tasks, wake: 'auto'} : null;
+};
+`
+	if out, err := runConsoleCases(t, "ide-tasks", harness, "ide_tasks_cases.mjs"); err != nil {
+		t.Fatalf("the workbench's task list failed:\n%s", out)
+	}
+	if !strings.Contains(ideHTML, "['/tasks', ") || !strings.Contains(ideHTML, "$('s-bg').addEventListener('click', () => showTasks(") {
+		t.Error("the task list is not reachable from /tasks and the status bar")
+	}
+}
+
+// A new session starts with no suggestion: the last one was made for the
+// session being left.
+func TestIDENewSessionDropsTheLastSuggestion(t *testing.T) {
+	harness := `import { El } from './dom.mjs';
+const ids = {}, $ = id => ids[id] || (ids[id] = Object.assign(new El('div'), {id}));
+let es = null, flushRaf = 0, pendText = '', pendThink = '', current = 's1', live = false, lastSeq = 0, endedSeq = 0, recProvider = null, recheckTimer = 0;
+let streaming = null, streamBody = null, todoNode = null, thinkBlock = null, trimmed = false, termN = 0, evtN = 0, active = null, indexedFor = null, searchSeq = 0;
+let pending = [], ready = [], lastUser = null, editing = null, reviewNotes = [], caps = null;
+const startTries = new Map(), startNoted = new Set();
+const calls = new Map(), mineCalls = new Set(), queued = new Map(), sent = [], asks = new Map(), bgTasks = new Map(), known = new Set(), tabs = [], providers = [];
+const stat = {}, qbox = new El('div');
+const cancelAnimationFrame = () => {}, clear = () => {}, drawBg = () => {}, waiting = () => {}, dropTab = () => {}, drawTabs = () => {}, welcome = () => {};
+const drawFiles = () => {}, drawNotes = () => {}, closeComment = () => {}, setLive = () => {}, drawStatus = () => {}, closeAllTerms = () => {}, noTerminal = () => {}, modeForNewSession = () => {};
+`
+	if out, err := runConsoleCases(t, "ide-reset", harness, "ide_reset_cases.mjs"); err != nil {
+		t.Fatalf("a new session's box failed:\n%s", out)
+	}
+}
+
+// Renaming a file whose name holds hidden characters does not put the raw
+// name in the box, where they would not show; the hint shows them written out.
+func TestIDERenameDoesNotSeedAHiddenName(t *testing.T) {
+	harness := strings.Replace(ideTreeHarness, "renameEntry = () => {}, ", "", 1) + `
+globalThis.__renames = [];
+const retarget = () => {};
+const api2 = api;
+api = async (url, opts) => { if(opts && opts.method === 'POST' && url.endsWith('/rename')){ __renames.push(JSON.parse(opts.body)); return {}; } return api2(url, opts); };
+`
+	harness = strings.Replace(harness, "const api = async", "let api = async", 1)
+	if out, err := runConsoleCases(t, "ide-rename", harness, "ide_rename_cases.mjs"); err != nil {
+		t.Fatalf("the rename box failed:\n%s", out)
+	}
+}
+
+// ideAtHarness is the page state the @ list and the palette run against.
+const ideAtHarness = `import { El } from './dom.mjs';
+El.prototype.addEventListener = function(type, f){ (this.on = this.on || {})[type] = f; };
+Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
+El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); c.parentNode = null; };
+El.prototype.focus = () => {}; El.prototype.scrollIntoView = () => {};
+const ids = {}, $ = id => ids[id] || (ids[id] = new El('div'));
+const known = new Set(), isMac = false, current = 's1', SLASH = [];
+const sessionList = [{id:'s1', prompt:'fix\u202eit', state:'done'}];
+globalThis.__opened = [];
+const indexFiles = () => {}, openFile = p => __opened.push(p), openSession = () => {}, closePal = () => {};
+const toggleTerminal = () => {}, saveAll = () => {}, closeActive = () => {}, findInFiles = () => {}, toggleMinimap = () => {}, toggleDiffLayout = () => {}, toggleNotify = () => {}, notifyOn = () => false;
+let palSel = 0, palHits = [];
+`
+
+// The @ list and the palette draw workspace file names, which are untrusted:
+// hidden characters are written out, and choosing one uses the real path.
+func TestIDEAtListAndPaletteRevealHiddenNames(t *testing.T) {
+	for _, set := range []string{"ide-at", "ide-pal"} {
+		if out, err := runConsoleCases(t, set, ideAtHarness, "ide_at_cases.mjs"); err != nil {
+			t.Errorf("%s:\n%s", set, out)
 		}
 	}
 }

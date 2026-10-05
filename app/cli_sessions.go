@@ -306,12 +306,16 @@ func cliTenant(cfg config.Config) string {
 	return "default"
 }
 
-// cliUser is who the CLI records a session as.
+// cliUser is who the CLI records a session as. A $USER shaped like an owner
+// the store gives a meaning (unclaimed:, nobody:, github:…, agent, anonymous)
+// is not taken as a person's name, or it could record or resume as that owner.
 func cliUser() string {
-	if user := os.Getenv("USER"); user != "" {
-		return user
+	user := os.Getenv("USER")
+	switch u := strings.ToLower(strings.TrimSpace(user)); {
+	case u == "", strings.Contains(u, ":"), u == auth.Subagent, u == auth.Anonymous:
+		return "local"
 	}
-	return "local"
+	return user
 }
 
 // resumeConversation makes recorded session id the conversation the next task

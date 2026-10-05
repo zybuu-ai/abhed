@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // OpenAICompatible speaks the OpenAI chat-completions API.
@@ -33,6 +32,12 @@ type OpenAICompatible struct {
 	// it in-band (e.g. <think>...</think>) rather than in a separate field.
 	// Reasoning must never reach tool-argument parsing.
 	ReasoningTags [2]string
+
+	// ParallelToolCalls sends "parallel_tool_calls": true with the tools, so
+	// a server that otherwise asks for one call a turn may ask for several.
+	// Set per provider type where the server is known to take the field;
+	// extra.parallel_tool_calls ("true" or "false") overrides it.
+	ParallelToolCalls bool
 
 	// User is sent as the request's "user" field when set. Some gateways
 	// (a LiteLLM proxy with enforce_user_param) require it; a plain endpoint
@@ -59,7 +64,7 @@ func NewOpenAICompatible(baseURL, apiKey, model string, p Profile) *OpenAICompat
 		BaseURL:       strings.TrimSuffix(baseURL, "/"),
 		APIKey:        apiKey,
 		Model:         model,
-		HTTP:          &http.Client{Timeout: 10 * time.Minute},
+		HTTP:          timeoutClient(DefaultTimeouts()),
 		Retry:         DefaultRetry(),
 		ReasoningTags: [2]string{"<think>", "</think>"},
 		profile:       p,
@@ -103,19 +108,21 @@ type wireTool struct {
 }
 
 type wireRequest struct {
-	Model            string        `json:"model"`
-	Messages         []wireMessage `json:"messages"`
-	Tools            []wireTool    `json:"tools,omitempty"`
-	MaxTokens        int           `json:"max_tokens,omitempty"`
-	Temperature      *float64      `json:"temperature,omitempty"`
-	TopP             *float64      `json:"top_p,omitempty"`
-	FrequencyPenalty *float64      `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64      `json:"presence_penalty,omitempty"`
-	Seed             *int64        `json:"seed,omitempty"`
-	Stop             []string      `json:"stop,omitempty"`
-	Stream           bool          `json:"stream"`
-	StreamOptions    *streamOpts   `json:"stream_options,omitempty"`
-	ReasoningEffort  string        `json:"reasoning_effort,omitempty"`
+	Model    string        `json:"model"`
+	Messages []wireMessage `json:"messages"`
+	Tools    []wireTool    `json:"tools,omitempty"`
+	// ParallelToolCalls is sent only with tools: OpenAI refuses it without them.
+	ParallelToolCalls *bool       `json:"parallel_tool_calls,omitempty"`
+	MaxTokens         int         `json:"max_tokens,omitempty"`
+	Temperature       *float64    `json:"temperature,omitempty"`
+	TopP              *float64    `json:"top_p,omitempty"`
+	FrequencyPenalty  *float64    `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float64    `json:"presence_penalty,omitempty"`
+	Seed              *int64      `json:"seed,omitempty"`
+	Stop              []string    `json:"stop,omitempty"`
+	Stream            bool        `json:"stream"`
+	StreamOptions     *streamOpts `json:"stream_options,omitempty"`
+	ReasoningEffort   string      `json:"reasoning_effort,omitempty"`
 
 	// User identifies the end user to the endpoint. OpenAI treats it as an
 	// optional abuse-tracking hint, but a LiteLLM proxy configured with
@@ -258,11 +265,17 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 	if think == nil {
 		think = c.Think // provider-level default, when the request names none
 	}
+	var parallel *bool
+	if c.ParallelToolCalls && len(tools) > 0 {
+		parallel = new(bool)
+		*parallel = true
+	}
 	return wireRequest{
 		Model:             c.Model,
 		User:              c.User,
 		Messages:          msgs,
 		Tools:             tools,
+		ParallelToolCalls: parallel,
 		MaxTokens:         sp.MaxTokens,
 		Temperature:       sp.Temperature,
 		TopP:              sp.TopP,

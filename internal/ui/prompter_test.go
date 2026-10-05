@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -64,5 +65,46 @@ func TestApproverArmsBeforeTheAnswerLine(t *testing.T) {
 	}
 	if shown != 0 {
 		t.Fatalf("armed after %d answer lines were shown, want before the first", shown)
+	}
+}
+
+// Two questions asked at once take turns: the second does not share the
+// first one's waiting line, so an answer reaches the question it was for.
+func TestPrompterHoldsOneQuestionAtATime(t *testing.T) {
+	p := NewPrompter()
+	ctx := context.Background()
+	release, ok := p.Hold(ctx)
+	if !ok {
+		t.Fatal("no hold")
+	}
+	second := make(chan bool, 1)
+	go func() {
+		r, ok := p.Hold(ctx)
+		second <- ok
+		r()
+	}()
+	select {
+	case <-second:
+		t.Fatal("a second question held the input beside the first")
+	case <-time.After(50 * time.Millisecond):
+	}
+	p.Arm()
+	if !p.Deliver("1") {
+		t.Fatal("the first question took no answer")
+	}
+	if line, ok := p.Await(ctx); !ok || line != "1" {
+		t.Fatalf("first got %q %v", line, ok)
+	}
+	release()
+	if !<-second {
+		t.Fatal("the second question never held the input")
+	}
+	// A question still waiting when input ends gives up.
+	release, _ = p.Hold(ctx)
+	defer release()
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, ok := p.Hold(cctx); ok {
+		t.Fatal("held past a cancelled context")
 	}
 }

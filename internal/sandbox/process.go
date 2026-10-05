@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +31,17 @@ type Process struct {
 	// failure that looked exactly like an agent failure. Probed once.
 	freshOnce sync.Once
 	freshOK   bool
+
+	// Whether bwrap can make the namespaces a command runs in: a binary
+	// that is installed but cannot (no user namespaces, a seccomp profile
+	// refusing unshare) failed every command instead of the start-up check.
+	nsOnce sync.Once
+	nsErr  string
+}
+
+// bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
+var bwrapRun = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "bwrap", args...).CombinedOutput()
 }
 
 func NewProcess(p Policy) *Process {
@@ -59,7 +72,32 @@ func (s *Process) Available() (bool, string) {
 			return false, runtime.GOOS + " has no supported process sandbox"
 		}
 	}
+	if s.backend == "bwrap" {
+		if why := s.bwrapNamespaces(); why != "" {
+			return false, why
+		}
+	}
 	return true, ""
+}
+
+// bwrapNamespaces is why bwrap cannot make a command's namespaces here, or
+// "", probing once. The network namespace is left out: a runner that grants
+// the others but not it (as GitHub's hosted one) still runs commands with the
+// network on, and one that denies it fails that command with its reason.
+func (s *Process) bwrapNamespaces() string {
+	s.nsOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		args := []string{"--unshare-pid", "--unshare-ipc", "--unshare-uts", "--ro-bind", "/", "/", "/bin/true"}
+		if out, err := bwrapRun(ctx, args...); err != nil {
+			first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+			if first == "" {
+				first = err.Error()
+			}
+			s.nsErr = "bubblewrap (bwrap) is installed but cannot create a sandbox's namespaces here: " + first
+		}
+	})
+	return s.nsErr
 }
 
 func (s *Process) Describe() string {
@@ -67,11 +105,13 @@ func (s *Process) Describe() string {
 	if s.policy.AllowNetwork {
 		net = "network allowed"
 	}
+	// Said only when one is set: with no count of the user's processes there
+	// is no limit, though max_procs asked for one.
 	procs := "processes not bounded"
-	if s.policy.MaxProcs > 0 && os.Getuid() != 0 {
+	if s.procLimit() > 0 {
 		procs = fmt.Sprintf("at most %d more processes per command", s.policy.MaxProcs)
 	}
-	return fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory not bounded",
+	return fmt.Sprintf("process isolation via %s · workspace-scoped writes · %s · %s · memory, CPU and disk not bounded",
 		s.backend, net, procs)
 }
 
@@ -167,11 +207,15 @@ func (s *Process) seatbeltProfile() string {
 		// it and reading what it holds do not.
 		fmt.Fprintf(&b, "(allow file-read-metadata (subpath %q))\n", state)
 	}
+	// Seatbelt matches the path the kernel resolved, so a home reached
+	// through a link is named both ways.
 	if home, err := os.UserHomeDir(); err == nil {
-		fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(home, stateDir))
-		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", filepath.Join(home, stateDir))
-		// Skills are the one part of it a command may need: a skill can ship a script.
-		fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(home, stateDir, "skills"))
+		for _, st := range PathForms(filepath.Join(home, stateDir)) {
+			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", st)
+			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", st)
+			// Skills are the one part of it a command may need: a skill can ship a script.
+			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", filepath.Join(st, "skills"))
+		}
 	}
 
 	protected := formsOf(s.policy.WriteProtected)
@@ -217,14 +261,42 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
 	}
 	// Credentials are readable by many tools legitimately, but an agent has no
-	// reason to read SSH or cloud keys.
+	// reason to read keys and tokens. Bubblewrap leaves home out altogether.
 	b.WriteString("\n;; Credential paths are unreadable.\n")
 	if home, err := os.UserHomeDir(); err == nil {
-		for _, c := range []string{".ssh", ".aws", ".kube", ".gnupg", ".docker/config.json"} {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", filepath.Join(home, c))
+		for _, c := range HomeSecrets {
+			for _, p := range PathForms(filepath.Join(home, c)) {
+				fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", p)
+			}
 		}
 	}
 	return b.String()
+}
+
+// HomeSecrets are the files and folders under home that hold credentials,
+// tokens or what was typed at a shell; a macOS command may read none of them.
+var HomeSecrets = []string{
+	// Keys and cloud credentials.
+	".ssh", ".aws", ".kube", ".gnupg", ".docker/config.json", ".azure", ".oci", ".boto", ".s3cfg",
+	".config/gcloud", ".config/doctl", ".config/rclone", ".mc", ".vault-token",
+	".terraform.d/credentials.tfrc.json", ".terraformrc", ".config/sops", ".config/age",
+	".password-store", ".config/op", "Library/Keychains",
+	// Git hosts and package registries.
+	".netrc", ".git-credentials", ".config/git/credentials", ".config/gh", ".config/hub",
+	".config/glab-cli", ".npmrc", ".yarnrc", ".yarnrc.yml", ".config/configstore", ".pypirc",
+	".gem/credentials", ".cargo/credentials", ".cargo/credentials.toml", ".m2/settings.xml",
+	".gradle/gradle.properties", ".ivy2/.credentials", ".composer/auth.json",
+	".config/composer/auth.json", ".nuget/NuGet/NuGet.Config",
+	// Databases, model and agent tokens.
+	".pgpass", ".my.cnf", ".huggingface/token", ".cache/huggingface/token",
+	".config/github-copilot", ".claude", ".codex", ".config/anthropic", ".config/openai",
+	// Shell and REPL history, where a pasted secret stays.
+	".bash_history", ".zsh_history", ".zsh_sessions", ".python_history", ".psql_history",
+	".mysql_history", ".node_repl_history", ".lesshst",
+	// Browser profiles, cookies and mail.
+	"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
+	"Library/Application Support/BraveSoftware", "Library/Application Support/Microsoft Edge",
+	"Library/Safari", "Library/Cookies", "Library/Mail", "Library/Messages",
 }
 
 // readableFiles are the policy's readable files that are still the files
@@ -325,6 +397,13 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 		// mount point cannot be renamed or removed, and stays writable. A
 		// .git file, which names the git folder, is bound read-only.
 		protected := s.protectedInside()
+		// Bubblewrap can bind only what exists, so each git folder found now
+		// has its config and hooks bound read-only; Seatbelt names them by pattern.
+		if s.policy.ProtectGit {
+			for _, ws := range s.workspaces() {
+				protected = append(protected, GitProtected(ws)...)
+			}
+		}
 		for _, p := range holders(s.workspaces(), protected) {
 			if info, err := os.Lstat(p); err == nil && info.IsDir() {
 				args = append(args, "--bind", p, p)
@@ -379,6 +458,9 @@ func (s *Process) bounded(ctx context.Context, name string, args []string) *exec
 	return exec.CommandContext(ctx, "/bin/bash", wrapped...) // #nosec G204 -- fixed script; the argv is passed as "$@"
 }
 
+// countUserProcesses counts the user's processes; a test replaces it.
+var countUserProcesses = userProcesses
+
 // procLimit is what the user runs now plus MaxProcs, as the kernel counts all the
 // user's processes, so concurrent commands and the desktop share that headroom;
 // zero (no bound asked, root, or no count) leaves the limit alone.
@@ -386,7 +468,7 @@ func (s *Process) procLimit() uint64 {
 	if s.policy.MaxProcs <= 0 || os.Getuid() == 0 {
 		return 0
 	}
-	running, ok := userProcesses()
+	running, ok := countUserProcesses()
 	if !ok {
 		return 0
 	}
@@ -526,3 +608,64 @@ func (n *None) Shell(ctx context.Context, cwd string) *exec.Cmd {
 
 // Backend says there is none.
 func (n *None) Backend() string { return "host" }
+
+// Bounds on the walk for git folders: a deeper or wider tree is not walked
+// further, and what lies past the bound is not protected.
+const (
+	gitWalkDepth   = 6
+	gitWalkEntries = 20000
+)
+
+// makeEmpty makes an empty folder or file at p, never replacing one.
+func makeEmpty(p string, dir bool) {
+	if dir {
+		_ = os.Mkdir(p, 0o755) // #nosec G301 -- git's own mode for hooks
+		return
+	}
+	if f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil { // #nosec G302 G304 -- git's own mode for config, in a git folder the walk found
+		_ = f.Close()
+	}
+}
+
+// GitProtected are the paths in ws that a git command runs programs from:
+// each git folder's config and hooks, made empty where missing, and each .git
+// file (a worktree's or a submodule's link to its git folder), at most
+// gitWalkDepth folders down.
+func GitProtected(ws string) []string {
+	var out []string
+	seen := 0
+	_ = filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // a folder that cannot be read is passed over, and the walk goes on
+		}
+		if seen++; seen > gitWalkEntries {
+			return filepath.SkipAll
+		}
+		rel, _ := filepath.Rel(ws, p)
+		depth := strings.Count(rel, string(filepath.Separator))
+		if strings.EqualFold(d.Name(), ".git") {
+			if d.IsDir() {
+				for _, f := range []string{"config", "hooks"} {
+					q := filepath.Join(p, f)
+					// A missing one is made empty as the person, so it can be bound read-only.
+					if _, err := os.Lstat(q); errors.Is(err, fs.ErrNotExist) {
+						makeEmpty(q, f == "hooks")
+					}
+					if _, err := os.Lstat(q); err == nil {
+						out = append(out, q)
+					}
+				}
+				return filepath.SkipDir
+			}
+			if d.Type().IsRegular() {
+				out = append(out, p)
+			}
+			return nil
+		}
+		if d.IsDir() && (depth >= gitWalkDepth || d.Name() == "node_modules" || strings.EqualFold(d.Name(), stateDir)) {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
+}

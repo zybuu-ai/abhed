@@ -73,3 +73,17 @@ func TestRemoteToolNamesAreValidated(t *testing.T) {
 		t.Errorf("the warning carries the raw RLO:\n%s", out)
 	}
 }
+
+// A server whose name fails validation is refused before anything keeps its
+// name: /mcp and the panels list it nowhere, and the error escapes it.
+func TestInvalidServerNameIsNotListed(t *testing.T) {
+	g := NewGateway()
+	defer g.Close()
+	errs := g.Connect(context.Background(), []ServerConfig{{Name: "h\u202eid", Command: "/bin/true", Enabled: true}})
+	if len(errs) != 1 || strings.Contains(errs[0].Error(), "\u202e") || !strings.Contains(errs[0].Error(), `\u202e`) {
+		t.Fatalf("errors: %v", errs)
+	}
+	if st := g.Servers(); len(st) != 0 {
+		t.Fatalf("listed: %+v", st)
+	}
+}

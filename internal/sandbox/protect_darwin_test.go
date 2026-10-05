@@ -6,6 +6,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +43,43 @@ func TestProcessSandboxProtectsNestedRepositories(t *testing.T) {
 	}
 	if out, err := runIn(t, s, ws, "touch sub/.git/HEAD sub/main.go"); err != nil {
 		t.Fatalf("the rest of a nested repository is not writable: %v %s", err, out)
+	}
+}
+
+// A command can read no credential under home, nor ~/.abhed, when home is
+// reached through a link: seatbelt matches the path the kernel resolved.
+func TestProcessSandboxDeniesHomeSecretsThroughALink(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", link)
+	files := []string{".netrc", ".git-credentials", ".npmrc", ".config/gh/hosts.yml", ".abhed/secrets.json", ".zsh_history"}
+	for _, f := range files {
+		p := filepath.Join(real, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("CANARY-"+f), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(real, ".gitconfig"), []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := workspace(t)
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	for _, f := range files {
+		for _, home := range []string{link, real} {
+			out, _ := runIn(t, s, ws, "cat "+filepath.Join(home, filepath.FromSlash(f)))
+			if strings.Contains(out, "CANARY") {
+				t.Errorf("read %s through %s: %s", f, home, out)
+			}
+		}
+	}
+	if out, err := runIn(t, s, ws, "cat "+filepath.Join(link, ".gitconfig")); err != nil || !strings.Contains(out, "plain") {
+		t.Errorf("an ordinary file in home was refused: %v %s", err, out)
 	}
 }

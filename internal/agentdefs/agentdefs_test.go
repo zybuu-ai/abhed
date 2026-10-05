@@ -54,8 +54,8 @@ func TestCommonFormatLoads(t *testing.T) {
 		r.PermissionMode != "plan" || r.Instruction != "Review carefully." || r.Source != agent.SourceOperator || r.SHA256 == "" {
 		t.Fatalf("code-reviewer: %+v", r)
 	}
-	if !strings.Contains(errText(errs), `"color" is ignored`) {
-		t.Fatalf("the cosmetic key was not reported: %s", errText(errs))
+	if r.Color != "blue" || strings.Contains(errText(errs), "color") {
+		t.Fatalf("color was not taken: %q %s", r.Color, errText(errs))
 	}
 	l := defs[1]
 	if l.Name != "lister" || l.Description != "Lists files when asked" || !reflect.DeepEqual(l.Tools, []string{"glob", "mcp__docs__*"}) {
@@ -90,7 +90,7 @@ func TestWideningKeyRefusesDefinition(t *testing.T) {
 		"permissionMode: bypassPermissions\n",
 		"permission_mode: acceptEdits\n",
 		"hooks:\n  PreToolUse: x\n",
-		"mcpServers:\n  - gh\n",
+		"mcpServers:\n  gh:\n    command: npx\n",
 		"allowed-tools: bash\n",
 		"allowedTools: [bash]\n",
 		"permissions:\n  allow: [bash]\n",
@@ -315,5 +315,33 @@ func TestRootOwnership(t *testing.T) {
 	}
 	if os.Getuid() != 0 && rootOwnedNotShared(info) {
 		t.Fatal("a file owned by the test user passed as root's")
+	}
+}
+
+// effort, skills, mcp_servers, background and color load, each checked; a
+// value outside its set refuses the definition.
+func TestNarrowingKeys(t *testing.T) {
+	d, warns, err := Parse("x.md", []byte(def("x", "effort: low\nskills: [pdf, review-notes]\nmcp_servers:\n  - docs\n  - gh_issues\nbackground: true\ncolour: green\n")),
+		agent.SourceOperator, nil)
+	if err != nil || len(warns) != 0 {
+		t.Fatalf("%v %v", err, warns)
+	}
+	if d.Effort != "low" || !reflect.DeepEqual(d.Skills, []string{"pdf", "review-notes"}) || !reflect.DeepEqual(d.MCPServers, []string{"docs", "gh_issues"}) ||
+		d.Background == nil || !*d.Background || d.Color != "green" {
+		t.Fatalf("%+v", d)
+	}
+	// An empty list narrows to none, which is not the same as unset.
+	d, _, err = Parse("x.md", []byte(def("x", "skills: []\nmcp_servers: []\n")), agent.SourceOperator, nil)
+	if err != nil || d.Skills == nil || len(d.Skills) != 0 || d.MCPServers == nil || len(d.MCPServers) != 0 {
+		t.Fatalf("empty lists: %+v %v", d, err)
+	}
+	for _, extra := range []string{
+		"effort: max\n", "effort: [low]\n", "background: yes\n", "background: 1\n", "color: \"#ff0000\"\n",
+		"skills: [\"a b\"]\n", "mcp_servers: [\"https://evil.example/mcp\"]\n", "mcp_servers: [\"a.b\"]\n",
+		"mcp_servers:\n  docs:\n    url: https://evil.example\n",
+	} {
+		if _, _, err := Parse("x.md", []byte(def("x", extra)), agent.SourceOperator, nil); err == nil {
+			t.Fatalf("%q loaded", extra)
+		}
 	}
 }

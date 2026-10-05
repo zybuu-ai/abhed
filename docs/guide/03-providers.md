@@ -26,6 +26,11 @@ Three wire formats cover all of them. The OpenAI-shaped providers share one
 adapter and differ only in default URL and which sampler knobs the server
 honours; Anthropic and Gemini are genuinely different shapes.
 
+With tools offered, `openai`, `vllm` and `openai-compatible` also send
+`"parallel_tool_calls": true`, so the model may ask for several calls in one
+turn. Set `"extra": {"parallel_tool_calls": "false"}` on the provider for a
+server that refuses the field, or `"true"` to send it to another type.
+
 ## Sampling
 
 ```json

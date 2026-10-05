@@ -223,6 +223,8 @@ type LocalAuth struct {
 	onChange []func(username string)
 
 	createMu sync.Mutex
+	// passwordMu holds one password change at a time; see changePassword.
+	passwordMu sync.Mutex
 }
 
 // OnChange registers fn to be told when a user's sessions here were ended or
@@ -371,6 +373,10 @@ func (l *LocalAuth) ChangePassword(ctx context.Context, username, current, next 
 // changePassword is ChangePassword that re-stamps the session keep with the
 // new hash before it is stored, so the change does not end that session.
 func (l *LocalAuth) changePassword(ctx context.Context, username, current, next, keep string) error {
+	// One at a time: a form submitted twice stored two hashes, and the later
+	// ended the session that made the change; the second now finds it made.
+	l.passwordMu.Lock()
+	defer l.passwordMu.Unlock()
 	u, err := l.Authenticate(ctx, username, current)
 	if err != nil {
 		return err

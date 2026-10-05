@@ -387,10 +387,12 @@ func TestStudioInteractiveTerminalWithholdsTypedAheadPasswords(t *testing.T) {
 	for _, tc := range []struct {
 		name, wait, keys, done string
 		secret                 []string
-		whole                  bool
+		whole, program, byKey  bool
 	}{
-		{"edited", "end=$((SECONDS+2)); while ((SECONDS < end)); do :; done", "swordfiX\x7fsh99\n", "late 11", []string{"swordfi", "sh99"}, true},
-		{"while a program runs", "sleep 2", "hunter55\n", "late 8", []string{"hunter55"}, false},
+		{"edited", "end=$((SECONDS+2)); while ((SECONDS < end)); do :; done", "swordfiX\x7fsh99\n", "late 11", []string{"swordfi", "sh99"}, true, false, false},
+		{"while a program runs", "sleep 2", "hunter55\n", "late 8", []string{"hunter55"}, false, true, false},
+		// An editor sends each key in its own input.
+		{"key by key", "sleep 2", "Rp1AheadSecretXy\r", "late 16", []string{"Rp1AheadSecretXy"}, false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newStudioRig(t, "")
@@ -426,7 +428,23 @@ func TestStudioInteractiveTerminalWithholdsTypedAheadPasswords(t *testing.T) {
 			}
 			typeLine(`echo BU""SY; `+tc.wait+`; read -s pw; echo "late ${#pw}"`+"\r",
 				func(s string) bool { return strings.Contains(s, "BUSY") })
-			if out := typeLine(tc.keys, func(s string) bool { return strings.Contains(s, tc.done) && prompted(s) }); !strings.Contains(out, tc.secret[0]) {
+			if tc.program {
+				// BUSY shows before bash starts sleep; type once sleep has the terminal, so
+				// the line is judged as typed into another program, not as the shell's.
+				waitForProgram(t, r, term.TerminalID)
+			}
+			done := func(s string) bool { return strings.Contains(s, tc.done) && prompted(s) }
+			var out string
+			if tc.byKey {
+				at := r.cl.mark()
+				for _, k := range tc.keys {
+					r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": string(k)}, nil)
+				}
+				out = waitShell(at, done)
+			} else {
+				out = typeLine(tc.keys, done)
+			}
+			if !strings.Contains(out, tc.secret[0]) {
 				t.Fatalf("the terminal did not echo the line typed ahead, so nothing was tried: %q", out)
 			}
 			at := r.cl.mark()
@@ -447,6 +465,24 @@ func TestStudioInteractiveTerminalWithholdsTypedAheadPasswords(t *testing.T) {
 			}
 		})
 	}
+}
+
+// waitForProgram waits until a program other than the shell has the Studio
+// terminal, as the engine judges it from the terminal's foreground group.
+func waitForProgram(t *testing.T, r *studioRig, terminalID string) {
+	t.Helper()
+	r.cl.conn.termMu.Lock()
+	sh := r.cl.conn.terms[terminalID].shell
+	r.cl.conn.termMu.Unlock()
+	if !sh.local {
+		return
+	}
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if fg, _, ok := ttyNow(sh.tty); ok && sh.isProgram(fg) {
+			return
+		}
+	}
+	t.Fatal("no program took the terminal from the shell")
 }
 
 // §7.1 interactive: the shell runs whole under the sandbox; each line is put

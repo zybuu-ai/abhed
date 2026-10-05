@@ -20,9 +20,9 @@ import (
 
 // loadSession loads the configuration for a CLI session. On a terminal it
 // asks once about an untrusted workspace file; anywhere else it only warns.
-func loadSession(workspace string, trust config.TrustChoice, interactive bool) (config.Config, error) {
+func loadSession(workspace string, trust config.TrustChoice, interactive bool, settings []byte, settingsName string) (config.Config, error) {
 	ask := interactive && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: ask})
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: ask, Settings: settings, SettingsName: settingsName})
 	if err != nil || !ask {
 		return cfg, err
 	}

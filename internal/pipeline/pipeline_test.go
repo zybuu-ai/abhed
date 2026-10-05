@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -300,5 +301,20 @@ func TestToolTimesHandsTheTimeoutToTheTool(t *testing.T) {
 		if !own && (got != 0 || !deadline) {
 			t.Fatalf("default: timeout %v, deadline %v", got, deadline)
 		}
+	}
+}
+
+// The guide's example is copied by readers, so it must load as written.
+func TestGuideExamplePipelineValidates(t *testing.T) {
+	data, err := os.ReadFile("../../docs/guide/example-pipeline.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p Pipeline
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -327,5 +328,29 @@ func TestAutoMemoryEscapesFenceTags(t *testing.T) {
 		if strings.HasPrefix(strings.TrimLeft(line, " "), "</auto-memory-0") || strings.HasPrefix(strings.TrimLeft(line, " "), "<auto-memory-1") {
 			t.Fatalf("a fence-like line was left as is: %q", line)
 		}
+	}
+}
+
+// On a disk that folds case, a file spelled otherwise is not a memory file:
+// the ask rules on writing one name it exactly.
+func TestMemoryFileNeedsItsExactName(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "agents.md"), []byte("injected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, AgentsFileName)); err != nil {
+		t.Skip("the disk keeps case apart, so agents.md was never AGENTS.md")
+	}
+	if files := DiscoverMemoryFiles(ws); slices.ContainsFunc(files, func(f string) bool { return strings.HasPrefix(f, ws) }) {
+		t.Fatalf("agents.md discovered as a memory file: %v", files)
+	}
+	if m := LoadMemory(MemoryOptions{Workspace: ws, Home: t.TempDir()}); len(m.Entries) != 0 {
+		t.Fatalf("agents.md loaded: %+v", m.Entries)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "ABHED.md"), []byte("real"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if m := LoadMemory(MemoryOptions{Workspace: ws, Home: t.TempDir()}); len(m.Entries) != 1 {
+		t.Fatalf("ABHED.md not loaded: %+v", m.Entries)
 	}
 }

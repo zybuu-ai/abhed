@@ -168,3 +168,59 @@ func TestRPCStartAllowRefusedUnderManagedPermissions(t *testing.T) {
 		t.Fatalf("rpc started with an allow rule under managed permissions:\n%s", out)
 	}
 }
+
+// What the tool set skipped is written to the stderr rpc started with, not
+// to os.Stderr as it is when the warning comes: it came from the tool set's
+// goroutines, which read the global as something else replaced it.
+func TestRPCWarnsOnTheStderrItStartedWith(t *testing.T) {
+	managedConfig(t, "")
+	ws := t.TempDir()
+	cfg := `{"model": {"default": "fake", "providers": {"fake": {"type": "openai-compatible",
+		"base_url": "http://127.0.0.1:1", "model": "m"}}},
+		"rag": {"corpora": [{"name": "kb", "url": "http://127.0.0.1:1", "enabled": true, "headers_env": {"X-Key": "ABHED_TEST_UNSET_KEY"}}]}}`
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
+	started, later := filepath.Join(t.TempDir(), "started"), filepath.Join(t.TempDir(), "later")
+	a, err := os.Create(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.Create(later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inR, inW, _ := os.Pipe()
+	outR, outW, _ := os.Pipe()
+	oldIn, oldOut, oldErr := os.Stdin, os.Stdout, os.Stderr
+	os.Stdin, os.Stdout, os.Stderr = inR, outW, a
+	defer func() { os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr }()
+	done := make(chan struct{})
+	go func() { defer close(done); rpcCmd(ws, "") }()
+	// rpc has taken its stderr once it answers a request; the swap comes
+	// after that, before the start that warns.
+	sc := bufio.NewScanner(outR)
+	fmt.Fprintln(inW, `{"id":"0","method":"nothing"}`)
+	if !sc.Scan() {
+		t.Fatal("rpc did not answer")
+	}
+	go func() {
+		for sc.Scan() {
+		}
+	}()
+	os.Stderr = b
+	fmt.Fprintln(inW, `{"id":"1","method":"start"}`)
+	fmt.Fprintln(inW, `{"id":"2","method":"quit"}`)
+	_ = inW.Close()
+	<-done
+	_ = outW.Close()
+	gotA, _ := os.ReadFile(started)
+	gotB, _ := os.ReadFile(later)
+	if !strings.Contains(string(gotA), `rag corpus "kb" needs ABHED_TEST_UNSET_KEY`) || strings.Contains(string(gotB), "rag corpus") {
+		t.Fatalf("started with:\n%s\nlater:\n%s", gotA, gotB)
+	}
+}

@@ -1,12 +1,15 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 // TestConsoleRenderNoDuplicateReply drives the console's render() headlessly.
@@ -329,3 +332,83 @@ const render = () => {}, workbenchSaw = () => {};
 		t.Fatalf("the console's reconnect failed:\n%s", out)
 	}
 }
+
+// The pages warn about hidden characters as deep in string-encoded JSON as the
+// record's escaper reads, so nothing it escapes goes without a warning.
+func TestPagesFindHiddenAsDeepAsGo(t *testing.T) {
+	type hiddenCase struct {
+		Depth int    `json:"depth"`
+		Raw   string `json:"raw"`
+		Want  bool   `json:"want"`
+	}
+	var cases []hiddenCase
+	var v any = map[string]any{"k": "a\x1bb"} // escaped as \u001b, so hidden only once decoded
+	for depth := 0; depth <= 5; depth++ {
+		raw, _ := json.Marshal(v)
+		cases = append(cases, hiddenCase{depth, string(raw), ui.ArgsHidden(raw)})
+		v = map[string]any{"k": string(raw)}
+	}
+	if !cases[4].Want || cases[5].Want {
+		t.Fatalf("Go's depth moved; the pages must follow it: %+v", cases)
+	}
+	data, _ := json.Marshal(cases)
+	harness := "const CASES = " + string(data) + ";\n"
+	for _, set := range []string{"hidden", "ide-hidden"} {
+		if out, err := runConsoleCases(t, set, harness, "hidden_cases.mjs"); err != nil {
+			t.Errorf("%s:\n%s", set, out)
+		}
+	}
+}
+
+// A payload redaction could not run on is recorded as {"withheld": ...}; the
+// pages draw such an event without "undefined" wherever a field is missing.
+func TestPagesDrawAWithheldPayloadWithoutUndefined(t *testing.T) {
+	for _, c := range []struct{ set, harness string }{{"ide-render", ideWithheldHarness}, {"render", consoleWithheldHarness}} {
+		if out, err := runConsoleCases(t, c.set, c.harness, "withheld_cases.mjs"); err != nil {
+			t.Errorf("%s:\n%s", c.set, out)
+		}
+	}
+}
+
+const ideWithheldHarness = `import { El } from './dom.mjs';
+globalThis.__root = new El('div');
+El.prototype.addEventListener = () => {};
+globalThis.__added = []; globalThis.__logged = 0; globalThis.__changes = 0; globalThis.__agentTerm = [];
+let live = true, bgLive = false, streaming = null, streamBody = null, thinkBlock = null, pendThink = '', pendText = '';
+const calls = new Map(), mineCalls = new Set(), bgTasks = new Map(), ids = {}, $ = id => ids[id] || (ids[id] = new El('span'));
+const setLive = on => { live = on; }, recheckSoon = () => {};
+const add = n => __added.push(n), flushStream = () => {}, flushSoon = () => {}, endThinking = () => {};
+const tx = () => __root;
+globalThis.__waits = []; const claim = () => null, asks = new Map();
+const logEvent = () => { __logged++; }, waiting = l => { if(l) __waits.push(l); }, settleAsk = () => {}, askApproval = () => {};
+const hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => { __changes++; };
+const fillCall = () => {}, drawPlan = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
+const logTerminal = (cmd, p, who) => { if(who !== 'you') __agentTerm.push(cmd); };
+const stat = {turns:0, tin:0, tout:0, ctx:0, window:0}, drawStatus = () => {};
+let endedSeq = 0, notify = () => {}, loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, loadDownloads = () => {}, failed = () => {}, queued = new Map(), sent = [];
+let recProvider = null; const nearBottom = () => true, follow = () => {}, thinkLive = () => {}, words = s => 0, fmt = n => String(n), showSwitch = () => {}, mdRender = s => s;
+globalThis.__clear = () => { __added.length = 0; __root.childNodes = []; };
+globalThis.__shown = () => __added.map(n => n.textContent).join(' | ') + ' ' + __root.textContent + ' ' + $('s-model').textContent;
+`
+
+const consoleWithheldHarness = `import { El } from './dom.mjs';
+const tx = new El('div'); tx.id='tx';
+globalThis.__root = tx;
+const els = { tx, stop: new El('button') };
+globalThis.$ = id => els[id] || null;
+let turnEl=null, streamEl=null, streamBody=null, live=true, current='s1', bgLive=false, es=null;
+globalThis.__connected = []; const connect = id => { __connected.push(id); };
+const calls = new Map(), bgNames = new Map();
+let approvals = new Map();
+const stats = {turns:0,tin:0,tout:0,cached:0,tools:{},reason:null,compactions:0};
+globalThis.hideThinking = ()=>{};
+globalThis.showThinking = ()=>{};
+globalThis.refresh = ()=>{};
+globalThis.openDrawer = ()=>{};
+globalThis.paintOpenPill = ()=>{};
+function newTurn(){ turnEl = node('turn'); tx.appendChild(turnEl); return turnEl; }
+function approval(){}
+function resolveApproval(){}
+globalThis.__clear = () => { tx.childNodes.length = 0; turnEl = null; };
+globalThis.__shown = () => tx.textContent;
+`

@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -219,5 +220,109 @@ func TestRevokeWhileTheRunEndsMakesNoSuggestion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// After a revoke and a restore, the owner's own next turn brings back the
+// wakes and suggestions the revoke held; another person's request does not.
+func TestOwnersOwnTurnClearsTheRevokeHold(t *testing.T) {
+	b := newBGServer(t, nil)
+	id := b.start("hi", false)
+	waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
+	b.s.StopOwnerBackground(context.Background(), "acme", "alice")
+	if ok, why := b.s.canWake(b.live(id)); ok || why != "owner_inactive" {
+		t.Fatalf("after the revoke canWake = %v %q", ok, why)
+	}
+	if rec := b.do("bob", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`); rec.Code < 400 {
+		t.Fatalf("bob's message was taken: %d", rec.Code)
+	}
+	if !b.live(id).ownerGone.Load() {
+		t.Fatal("another person's request cleared the hold")
+	}
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/messages", `{"prompt":"again"}`); rec.Code != 202 {
+		t.Fatalf("alice's message: %d %s", rec.Code, rec.Body)
+	}
+	if b.live(id).ownerGone.Load() {
+		t.Fatal("the owner's own turn left wakes and suggestions held")
+	}
+	if ok, why := b.s.canWake(b.live(id)); !ok {
+		t.Fatalf("after the owner's turn canWake = %v %q", ok, why)
+	}
+	waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
+}
+
+// A revoke ends the owner's workbench terminals, and each one's record says
+// why, as the shells and tasks it stops do.
+func TestStopOwnerBackgroundNamesTheReasonOnTerminals(t *testing.T) {
+	for _, interactive := range []bool{false, true} {
+		wb := shellBench(t, func(c *config.Config) { c.Permissions.Allow = []string{"bash(sleep *)"} })
+		// An anonymous owner is never revoked, so the session is opened as alice.
+		h := wb.h
+		wb.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Set("X-Abhed-User", "alice")
+			h.ServeHTTP(w, r)
+		})
+		wb.session = wb.openIdle("acme")
+		var id string
+		if interactive {
+			id = wb.startShell().ID
+		} else {
+			id = wb.startPTY("sleep 30").ID
+		}
+		wb.s.mu.RLock()
+		live := wb.s.running[wb.session]
+		wb.s.mu.RUnlock()
+		if n := wb.s.StopOwnerBackground(context.Background(), live.Tenant, live.User); n != 1 {
+			t.Fatalf("interactive=%v: stopped %d, want the one terminal", interactive, n)
+		}
+		var content string
+		waitUntil(t, "the terminal's end", func() bool {
+			for _, e := range wb.events() {
+				var o agent.Observation
+				if e.Type == agent.EvObservation && json.Unmarshal(e.Payload, &o) == nil && o.CallID == id {
+					content = o.Content
+					return true
+				}
+			}
+			return false
+		})
+		if !strings.Contains(strings.SplitN(content, "\n", 2)[0], string(agent.TermOwnerRevoked)) {
+			t.Fatalf("interactive=%v: a revoked terminal's record does not say why: %q", interactive, content)
+		}
+	}
+}
+
+// A terminal that already ended, kept a minute for a late reader, is not
+// counted as stopped by a revoke; one still running is.
+func TestStopOwnerBackgroundCountsOnlyRunningTerminals(t *testing.T) {
+	wb := shellBench(t, func(c *config.Config) { c.Permissions.Allow = []string{"bash(sleep *)"} })
+	h := wb.h
+	wb.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Abhed-User", "alice")
+		h.ServeHTTP(w, r)
+	})
+	wb.session = wb.openIdle("acme")
+	ended := wb.startPTY("sleep 0").ID
+	waitUntil(t, "the short command's end", func() bool {
+		for _, e := range wb.events() {
+			var o agent.Observation
+			if e.Type == agent.EvObservation && json.Unmarshal(e.Payload, &o) == nil && o.CallID == ended {
+				return true
+			}
+		}
+		return false
+	})
+	wb.startPTY("sleep 30")
+	wb.s.mu.RLock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.RUnlock()
+	live.mu.Lock()
+	lingering := live.ptys[ended] != nil
+	live.mu.Unlock()
+	if !lingering {
+		t.Fatal("the ended command is no longer kept for a late reader")
+	}
+	if n := wb.s.StopOwnerBackground(context.Background(), live.Tenant, live.User); n != 1 {
+		t.Fatalf("stopped %d, want only the running terminal", n)
 	}
 }

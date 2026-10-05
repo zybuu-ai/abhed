@@ -115,7 +115,7 @@ func TestDefinitionRoleToolsAndRecord(t *testing.T) {
 		}
 	}
 	want := map[string]any{"definition": "auditor", "definition_source": "operator", "definition_sha256": "abc",
-		"tools": []any{"grep", "mcp__docs__search", "read"}}
+		"tools": []any{"grep", "mcp__docs__search", "read", "recall"}}
 	for k, v := range want {
 		if !reflect.DeepEqual(spawned[k], v) {
 			t.Fatalf("spawned %s = %v, want %v (%v)", k, spawned[k], v, spawned)

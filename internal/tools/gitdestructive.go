@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"path"
 	"runtime"
 	"strings"
@@ -91,6 +92,7 @@ var gitValues = map[string]struct {
 	"tag":      {"mFu", []string{"message", "file", "local-user", "sort", "format", "contains", "no-contains", "points-at", "merged", "no-merged", "cleanup"}},
 	"branch":   {"u", []string{"set-upstream-to", "sort", "format", "contains", "no-contains", "points-at", "merged", "no-merged"}},
 	"stash":    {"m", []string{"message", "pathspec-from-file"}},
+	"archive":  {"o", []string{"output", "format", "prefix", "remote", "exec"}},
 }
 
 // maxGitWords bounds the git words read in one simple command, each to its
@@ -103,16 +105,21 @@ const maxGitWords = 16
 // be named git, and the first git may be something else, such as a user name.
 // The line is read again with each command substitution as one word, so a
 // program name such as $(which git) is read with the words after it.
-func gitDestructive(command string) (string, bool) {
+func gitDestructive(command string, gitExtensions map[string]bool) (string, bool) {
+	// An opted-in name runs an alias where its extension is not installed, so
+	// a command that can set an alias or the exec path keeps the question.
+	if len(gitExtensions) > 0 && aliasCapable(command) {
+		gitExtensions = nil
+	}
 	for _, line := range []string{command, collapseSubstitutions(command)} {
-		if what, ok := gitDestructiveParts(line); ok {
+		if what, ok := gitDestructiveParts(line, gitExtensions); ok {
 			return what, true
 		}
 	}
 	return "", false
 }
 
-func gitDestructiveParts(command string) (string, bool) {
+func gitDestructiveParts(command string, gitExtensions map[string]bool) (string, bool) {
 	for _, part := range strings.Split(shellBreaks.Replace(command), "\n") {
 		words := strings.Fields(shellQuotes.Replace(part))
 		seen := 0
@@ -127,7 +134,7 @@ func gitDestructiveParts(command string) (string, bool) {
 			if seen++; seen > maxGitWords {
 				return "too many git commands in one line to check", true
 			}
-			if what, ok := gitDiscards(words[i+1:], run); ok {
+			if what, ok := gitDiscards(words[i+1:], run, gitExtensions); ok {
 				return what, true
 			}
 		}
@@ -190,12 +197,28 @@ var gitRunners = map[string]bool{
 
 // position follows a simple command's words to the program it runs: past
 // assignments, runners, shell keywords, options and an option's value.
-type position struct{ on, afterOption bool }
+type position struct{ on, afterOption, target, all bool }
 
 // next reports whether w is at the program's position, then moves past it.
+// A redirection, and the target it is given as the next word, is never the
+// program and does not move past it: >/dev/null $x runs $x.
 func (p *position) next(w string) bool {
+	if p.target {
+		p.target = false
+		return false
+	}
+	if redirect, detached := redirection(w); redirect {
+		p.target = detached
+		return false
+	}
+	if p.all {
+		return true
+	}
 	was := p.on
 	switch {
+	case p.on && argvRunners[CommandName(path.Base(w))]:
+		// Its operands come before the command, unmarked: every word may be it.
+		p.all = true
 	case !p.on:
 	case strings.HasPrefix(w, "-"):
 		p.afterOption = true
@@ -216,7 +239,15 @@ var shellKeywords = map[string]bool{
 }
 
 func isDuration(w string) bool {
-	return w != "" && strings.Trim(w, "0123456789.smhd") == ""
+	return w != "" && strings.Trim(w, "0123456789.smhd") == "" || w == "inf" || w == "infinity"
+}
+
+// argvRunners run a command given after operands of their own that are not
+// marked as options, a priority, a CPU mask or a directory, so each word
+// after them is read as one that may be the program.
+var argvRunners = map[string]bool{
+	"chrt": true, "taskset": true, "chroot": true, "unshare": true, "nsenter": true, "numactl": true,
+	"prlimit": true, "setpriv": true, "runuser": true, "cgexec": true, "systemd-run": true, "flock": true,
 }
 
 // gitArgs is a git subcommand's words: flags before `--`, the other words
@@ -322,7 +353,47 @@ func pathLike(w string) bool {
 // gitDiscards reads the words after git. run is true when that git is the
 // program the shell runs, so a subcommand git does not have is an alias or an
 // extension whose effect cannot be read here.
-func gitDiscards(words []string, run bool) (string, bool) {
+// GitExtensionError says why name cannot be opted in as a git extension:
+// it must be a plain name, and not one of git's own commands, whose forms
+// that discard work are checked.
+func GitExtensionError(name string) error {
+	if name == "" || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789-_.") != "" || name[0] == '-' || name[0] == '.' {
+		return fmt.Errorf("git extension %q: use the subcommand's plain name, such as lfs", name)
+	}
+	if gitCommands[name] {
+		return fmt.Errorf("git extension %q: that is one of git's own commands, which are checked as they are", name)
+	}
+	return nil
+}
+
+// aliasCapable reports text that can define a git alias or where git finds
+// its commands for this run: GIT_CONFIG_* or GIT_EXEC_PATH in the
+// environment, --exec-path, or an alias or include setting.
+func aliasCapable(command string) bool {
+	lower := strings.ToLower(command)
+	for _, s := range []string{"git_config", "git_exec_path", "--exec-path", "alias.", "include."} {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitDiscarding are the subcommands with a form that discards work, whose
+// arguments decide it; gitOutput take diff or log options, so --output.
+var (
+	gitDiscarding = map[string]bool{
+		"restore": true, "checkout": true, "switch": true, "stash": true, "branch": true, "tag": true,
+		"worktree": true, "clean": true, "reset": true, "push": true, "read-tree": true,
+		"checkout-index": true, "update-ref": true,
+	}
+	gitOutput = map[string]bool{
+		"diff": true, "log": true, "show": true, "format-patch": true, "range-diff": true,
+		"whatchanged": true, "shortlog": true,
+	}
+)
+
+func gitDiscards(words []string, run bool, gitExtensions map[string]bool) (string, bool) {
 	i := 0
 	for i < len(words) && strings.HasPrefix(words[i], "-") {
 		if value, ok := gitGlobalValue(words, i); ok && configAliases(words[i], value) {
@@ -338,6 +409,10 @@ func gitDiscards(words []string, run bool) (string, bool) {
 	}
 	sub := words[i]
 	if run && !gitCommands[sub] {
+		// An extension the person named in permissions.git_extensions is theirs to run.
+		if gitExtensions[sub] {
+			return "", false
+		}
 		return "git " + sub + ", an alias or extension that cannot be checked", true
 	}
 	g := parseGitArgs(sub, words[i+1:])
@@ -346,6 +421,11 @@ func gitDiscards(words []string, run bool) (string, bool) {
 		return "write over a file (git --output)", true
 	}
 	switch sub {
+	case "archive":
+		// git archive -o writes the archive over the file it names.
+		if g.risky("output", "o") {
+			return "write over a file (git archive -o)", true
+		}
 	case "restore":
 		// Only --staged alone leaves the working tree as it is.
 		if !g.safe("staged", "S") || g.risky("worktree", "W") {

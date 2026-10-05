@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -348,6 +349,11 @@ func TestIsDestructive(t *testing.T) {
 		"x='rm -rf scratch'; $x":                 true,
 		"IFS=,; x=rm,-rf,scratch; $x":            true,
 		"IFS=,; x=reset,--hard; git $x":          true,
+		"IFS=_; git_reset_--hard":                true,
+		"IFS='_' && git_push_--force":            true,
+		"read IFS <<< _; x=a; echo $x":           true,
+		"eval 'IFS=_'; echo $x":                  true,
+		"IFS=_; echo hi":                         false,
 		"go test \\\n  ./...":                    false,
 		"ls \\\n  -la src":                       false,
 		"while IFS= read -r l; do echo $l; done": false,
@@ -418,5 +424,46 @@ func TestSummarizeCommandIsBounded(t *testing.T) {
 	multi := summarizeCommand("first line\nsecond line")
 	if strings.Contains(multi, "second") {
 		t.Errorf("label spans lines: %q", multi)
+	}
+}
+
+// Output is cut while it is read, not after: what the server holds stays near
+// two halves however much a command prints, and the result keeps the start,
+// the end and the count of what was left out.
+func TestBashOutputHeldWhileReadIsBounded(t *testing.T) {
+	h := headTail{half: maxOutputChars / 2}
+	chunk := []byte(strings.Repeat("x", 4096))
+	_, _ = h.Write([]byte("START"))
+	for range 4096 { // 16 MiB
+		_, _ = h.Write(chunk)
+	}
+	_, _ = h.Write([]byte("END"))
+	if held := cap(h.head) + cap(h.tail); held > 4*maxOutputChars {
+		t.Fatalf("holds %d bytes for 16 MiB of output", held)
+	}
+	out := h.String()
+	want := fmt.Sprintf("[... %d characters truncated ...]", h.total-maxOutputChars)
+	if !strings.HasPrefix(out, "START") || !strings.HasSuffix(out, "END") || !strings.Contains(out, want) {
+		t.Fatalf("head, tail or count lost: %q ... %q", out[:20], out[len(out)-20:])
+	}
+
+	s, _ := setup(t)
+	res := run(t, Bash{}, s, bashArgs{Command: "printf a; head -c 3000000 /dev/zero | tr '\\0' b; printf z", Description: "big"})
+	if !res.Truncated || !strings.Contains(res.Content, "\nab") || !strings.HasSuffix(res.Content, "bz") ||
+		!strings.Contains(res.Content, fmt.Sprintf("[... %d characters truncated ...]", 3000002-maxOutputChars)) {
+		t.Fatalf("command output: %d bytes, truncated %v", len(res.Content), res.Truncated)
+	}
+}
+
+// A succeeding command is hinted at as cut off from the network only when a
+// network client ran for real: one asked for its version reaches nothing.
+func TestNetworkHintSkipsAVersionQuery(t *testing.T) {
+	log := "starting\ncurl: (6) Could not resolve host: mirror.example\n"
+	version := "curl 8.7.1 (x86_64-apple-darwin23.0)\nRelease-Date: 2024-03-27\nProtocols: http https\nFeatures: IPv6\n"
+	if networkFailed("cat build.log; curl --version", log+version, 0) {
+		t.Error("cat log; curl --version was hinted at")
+	}
+	if !networkFailed("curl https://mirror.example/x | jq .", "curl: (6) Could not resolve host: mirror.example\n", 0) {
+		t.Error("a failed curl piped on was not hinted at")
 	}
 }

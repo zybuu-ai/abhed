@@ -96,8 +96,10 @@ type cliState struct {
 	// set and registry are the session's tools, for the panels.
 	set      *toolset.Set
 	registry *tools.Registry
-	// statuslineWarned is set once a failing statusline command was named.
+	// statuslineWarned is set once a failing statusline command was named;
+	// statuslineSlow once a first run that ran out of time went unsaid.
 	statuslineWarned bool
+	statuslineSlow   bool
 	// statuslineSB is the statusline's own sandbox, chosen at its first run.
 	// statuslineRoots are the granted folders it was judged against; a
 	// change to them judges it again. statuslineMu guards all of these.
@@ -149,10 +151,26 @@ func (c *cliState) waitDrawn() {
 // waitRendered waits a moment for the events up to seq to be drawn, so a
 // task's usage prints after its output.
 func (c *cliState) waitRendered(seq int64) {
-	for deadline := time.Now().Add(time.Second); c.rendered.Load() < seq && time.Now().Before(deadline); {
+	deadline := time.Now().Add(renderWait)
+	last, moved := c.rendered.Load(), time.Now()
+	for last < seq && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
+		// Drawing that has stopped moving will not catch up: a backlog of
+		// queued commands each waited the whole second.
+		if now := c.rendered.Load(); now != last {
+			last, moved = now, time.Now()
+		} else if time.Since(moved) > renderStall {
+			return
+		}
 	}
 }
+
+// renderWait bounds a wait for drawing; renderStall ends it early once
+// drawing has made no progress for that long.
+const (
+	renderWait  = time.Second
+	renderStall = 100 * time.Millisecond
+)
 
 // fresh forgets the last conversation's cost, transcript, undo log, allowed
 // scopes, logins and connected hosts, for a new or resumed one; the workspace

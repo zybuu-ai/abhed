@@ -25,6 +25,8 @@ type modelServer struct {
 	calls  atomic.Int32
 	mu     sync.Mutex
 	system []string
+	// users is each request's user messages, in order.
+	users [][]string
 	// hold, when set, is waited on before answering.
 	hold chan struct{}
 }
@@ -45,6 +47,13 @@ func newModelServer(t *testing.T, reply string) *modelServer {
 		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
 			m.system = append(m.system, req.Messages[0].Content)
 		}
+		var users []string
+		for _, msg := range req.Messages {
+			if msg.Role == "user" {
+				users = append(users, msg.Content)
+			}
+		}
+		m.users = append(m.users, users)
 		hold := m.hold
 		m.mu.Unlock()
 		m.calls.Add(1)

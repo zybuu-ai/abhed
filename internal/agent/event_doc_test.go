@@ -15,7 +15,7 @@ func TestCLIEventTypesAreDocumented(t *testing.T) {
 	}
 	for _, e := range []EventType{EvModeChanged, EvPermissionChanged, EvWorkspaceDirAdded, EvInputMention,
 		EvCommandInvoked, EvMemoryLoaded, EvMemoryWritten, EvSessionNamed, EvSessionBranched, EvFileRestored,
-		EvPlanProposed, EvPlanDecided, EvModelFallback, EvHookFired, EvRecordRepaired} {
+		EvPlanProposed, EvPlanDecided, EvModelFallback, EvHookFired, EvRecordRepaired, EvSubagentMessage, EvSubagentBackgrounded} {
 		if !strings.Contains(string(doc), "| `"+string(e)+"` |") {
 			t.Errorf("%s has no row in docs/architecture/10-data-model.md", e)
 		}

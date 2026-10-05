@@ -12,6 +12,12 @@ positive, accepted with reason, or to fix. Nothing here was fixed as part of
 this pass; fixes are listed, most severe first, in
 [Recommended fixes](#recommended-fixes) at the end.
 
+**Since this scan,** the CLI's code moved out of `cmd/abhed/main.go`, which
+now only starts the `app` package. Rows citing `cmd/abhed/main.go` give
+where the code was on 2026-09-14, not where it is now. Of them, the eval
+report write (`:1221`) is fixed: `app/cmd_eval.go` now checks the write and
+reports a failure. Re-run the tools for current lines.
+
 This document is a point-in-time scan result, not a certification. Re-run it
 before any release that changes dependencies, the Dockerfile, or the code
 under `internal/`.
@@ -388,6 +394,13 @@ path is a directory so the policy check can be put correctly. The read itself
 goes through `os.Root`, which refuses a path that escapes even if a link is
 swapped in after the check. `TestWorkbenchRefusesPathsOutsideTheWorkspace`
 covers `../`, an absolute path outside, and a symlinked file and directory.
+
+#### Workbench uploads into a folder, and session export — three findings (G703, G705)
+
+| file | Rule | Triage |
+|---|---|---|
+| `server/upload_folder.go` (`uploadInto`), the folder and the new name | G703 — path traversal via taint analysis (2) | **False positive.** The folder named in the request and the new file's path both go through the workbench's `resolve`, triaged above: `tools.Session.Resolve`, symlinks followed, `filepath.IsLocal` against the resolved root, `.git`, `node_modules` and `.abhed` refused, and the read rules applied. The name is reduced by `cleanUploadName` (no separators, control characters or leading dots). The write rules are put to both spellings of the path, and the file is created with `O_EXCL` under the workspace held open as a root, so a link swapped in afterwards cannot lead it out. `TestUploadIntoAFolderIsHeldToTheRules` covers `../`, a link into a write-denied folder, a read-denied folder, Abhed's state and another tenant |
+| `server/export.go` (`exportSession`) | G705 — XSS via response write | **False positive.** The page is `agent.ExportHTML`, the command line's `/export` page, which escapes every string from the record with `html.EscapeString`; the session id in it has passed `validSessionID`. It is sent as an attachment with `nosniff` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, so it is never drawn on this origin. `TestExportIsTheOwnersAttachment` puts `<script>` in the prompt and fails if it arrives unescaped |
 
 #### Syntax check on edits — two findings (G204, G304)
 

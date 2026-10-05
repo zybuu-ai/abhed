@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -9,10 +10,13 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -25,8 +29,9 @@ import (
 // all of it and change only the mode, within the ceiling the engine enforces.
 
 func init() {
-	liveFeatures = append(liveFeatures, "modes", "policy.explain", "trust.inspect", "capabilities")
+	liveFeatures = append(liveFeatures, "modes", "policy.explain", "trust.inspect", "capabilities", "mcp.restart")
 	handle(map[string]func(*acpConn, rpcMessage){
+		"_abhed/mcp/restart":    (*acpConn).mcpRestart,
 		"session/set_mode":      (*acpConn).setMode,
 		"_abhed/policy/explain": (*acpConn).explain,
 		"_abhed/capabilities":   (*acpConn).capabilities,
@@ -202,7 +207,9 @@ func redacted(s string) string {
 }
 
 // policyView is the session's mode, sandbox and every rule with its layer
-// and whether it applies, for Studio's policy view (§5.4).
+// and whether it applies, for Studio's policy view (§5.4). A configured
+// rule's layer is the one loading credited it with (config.RuleLayer), as
+// /permissions shows it; the session's own rules are "session".
 func policyView(s *acpSession) map[string]any {
 	cfg, pol := s.parts.Config, s.parts.Loop.Policy
 	sandbox := map[string]any{"tier": orDefault(cfg.Sandbox.MinTier, "process"), "network": cfg.Sandbox.AllowNetwork}
@@ -214,27 +221,33 @@ func policyView(s *acpSession) map[string]any {
 			}
 		}
 	}
-	managed, _ := config.LoadManaged()
-	ws := workspaceRules(cfg.Workspace.File)
-	defaults := config.Default().Permissions
-	layer := func(list, rule string) string {
-		switch {
-		case managed.Managed && slices.Contains(rulesOf(managed.Permissions, list), rule):
-			return "managed"
-		case slices.Contains(ws[list], rule):
-			return "workspace"
-		case slices.Contains(rulesOf(defaults, list), rule):
-			return "builtin"
-		}
-		return "user"
-	}
 	rules := []any{}
+	rule := func(decision, text, layer string) map[string]any {
+		return map[string]any{"decision": decision, "rule": redacted(text), "layer": layer, "applied": true}
+	}
 	for _, l := range []struct {
 		name  string
 		rules []policy.Rule
 	}{{"deny", pol.Deny}, {"ask", pol.Ask}, {"allow", pol.Allow}} {
 		for _, r := range l.rules {
-			rules = append(rules, map[string]any{"decision": l.name, "rule": redacted(r.String()), "layer": layer(l.name, r.String()), "applied": true})
+			rules = append(rules, rule(l.name, r.String(), cfg.RuleLayer(l.name, r.String())))
+		}
+	}
+	if pol.Session != nil {
+		deny, ask, allow := pol.Session.SessionRules()
+		for _, l := range []struct {
+			name  string
+			rules []string
+		}{{"deny", deny}, {"ask", ask}, {"allow", allow}} {
+			for _, r := range l.rules {
+				rules = append(rules, rule(l.name, r, "session"))
+			}
+		}
+		pinned, why := pol.Session.PinnedRules()
+		for i, r := range pinned {
+			v := rule("deny", r, "session")
+			v["note"] = ui.VisibleLine(why[i])
+			rules = append(rules, v)
 		}
 	}
 	// What a workspace file not trusted asked for, shown as not applied.
@@ -249,19 +262,15 @@ func policyView(s *acpSession) map[string]any {
 			values = many
 		}
 		for _, v := range values {
-			rules = append(rules, map[string]any{"decision": list, "rule": redacted(v), "layer": "workspace",
+			rules = append(rules, map[string]any{"decision": list, "rule": redacted(v), "layer": config.LayerWorkspace,
 				"applied": false, "ignoredBecause": "workspace-untrusted"})
 		}
 	}
 	// Allow rules a file added that the managed configuration's lock left out.
 	for _, k := range cfg.SetAside {
 		if list, ok := strings.CutPrefix(k.Key, "permissions."); ok && k.Value != "" {
-			layer := "user"
-			if k.File == cfg.Workspace.File {
-				layer = "workspace"
-			}
 			rules = append(rules, map[string]any{"decision": list, "rule": redacted(k.Value),
-				"layer": layer, "applied": false, "ignoredBecause": "managed-override"})
+				"layer": setAsideLayer(k, cfg.Workspace.File), "applied": false, "ignoredBecause": "managed-override"})
 		}
 	}
 	for _, b := range builtinRules {
@@ -270,39 +279,24 @@ func policyView(s *acpSession) map[string]any {
 	return map[string]any{"mode": string(pol.Mode), "sandbox": sandbox, "managed": cfg.Managed, "rules": rules}
 }
 
+// setAsideLayer is the layer of the file a set-aside setting came from. The
+// layer recorded when it was set aside wins: with the home folder as the
+// workspace the user's file and the workspace's are one path.
+func setAsideLayer(k config.SetAsideKey, workspaceFile string) string {
+	if k.Layer != "" {
+		return k.Layer
+	}
+	if workspaceFile != "" && k.File == workspaceFile {
+		if home, err := os.UserHomeDir(); err != nil || k.File != filepath.Join(home, ".abhed", "config.json") {
+			return config.LayerWorkspace
+		}
+	}
+	return config.LayerUser
+}
+
 // builtinRules are the engine's own steps that decide before any rule.
 var builtinRules = [][2]string{
-	{"deny", "state"}, {"deny", "editor-files"}, {"ask", "destructive"}, {"ask", "screen"},
-}
-
-func rulesOf(p config.PermissionsConfig, list string) []string {
-	switch list {
-	case "deny":
-		return p.Deny
-	case "ask":
-		return p.Ask
-	}
-	return p.Allow
-}
-
-// workspaceRules are the rules a workspace file states, by list, read only
-// to say which layer a rule came from.
-func workspaceRules(file string) map[string][]string {
-	out := map[string][]string{}
-	if file == "" {
-		return out
-	}
-	data, err := os.ReadFile(file) // #nosec G304 -- the workspace's own configuration file, as loaded
-	if err != nil {
-		return out
-	}
-	var f struct {
-		Permissions config.PermissionsConfig `json:"permissions"`
-	}
-	if json.Unmarshal(data, &f) == nil {
-		out["deny"], out["ask"], out["allow"] = f.Permissions.Deny, f.Permissions.Ask, f.Permissions.Allow
-	}
-	return out
+	{"deny", "state"}, {"deny", "editor-files"}, {"ask", "destructive"}, {"ask", "screen"}, {"deny", "screen"},
 }
 
 // askDiff is the change an edit or write would make, for the ask that
@@ -615,6 +609,9 @@ func (e guardError) Error() string { return string(e) }
 const (
 	errEditorFile  guardError = "this file is the editor's own configuration; the agent may not change it"
 	errDirtyBuffer guardError = "the person has unsaved changes to this file"
+	// errEditorFileUndo is errEditorFile for the person's reject or undo, which
+	// Abhed does not write to an editor file either.
+	errEditorFileUndo guardError = "this file is the editor's own configuration; Abhed does not write it for a reject or an undo either, so change it in the editor"
 )
 
 // roots are the session's workspace and added directories.
@@ -761,11 +758,10 @@ func skillsView(set *toolset.Set) []any {
 }
 
 func mcpView(cfg config.Config, set *toolset.Set) []any {
-	connected := map[string]int{}
+	live := map[string]mcp.ServerStatus{}
 	if set.Gateway != nil {
-		for _, line := range set.Gateway.Status() {
-			name, _, _ := strings.Cut(line, " (")
-			connected[name]++
+		for _, st := range set.Gateway.Servers() {
+			live[st.Name] = st
 		}
 	}
 	toolsOf := func(server string) []string {
@@ -782,21 +778,130 @@ func mcpView(cfg config.Config, set *toolset.Set) []any {
 	}
 	out := []any{}
 	for _, m := range cfg.MCP.Servers {
-		if !m.Enabled {
+		if !m.Enabled || !mcp.ValidServerName(m.Name) {
 			continue
 		}
 		transport, status := "stdio", "error"
 		if m.URL != "" {
 			transport = "http"
 		}
-		if connected[m.Name] > 0 {
+		v := map[string]any{"name": m.Name, "transport": transport, "tools": toolsOf(m.Name), "source": "user", "pinned": m.Digest != ""}
+		st, known := live[m.Name]
+		switch {
+		case known && st.Connected:
 			status = "connected"
+		case known && st.Err != nil:
+			v["error"] = mcpError(st.Err)
 		}
-		out = append(out, map[string]any{"name": m.Name, "transport": transport, "status": status, "tools": toolsOf(m.Name),
-			"source": "user", "pinned": m.Digest != ""})
+		v["status"] = status
+		if refused := refusedNames(st.Refused); len(refused) > 0 {
+			v["refusedTools"] = refused
+		}
+		out = append(out, v)
 	}
 	return out
 }
+
+// mcpError is a server's connection error as a person may read it: redacted
+// and shown on one line.
+func mcpError(err error) string {
+	return ui.VisibleLine(redacted(err.Error()))
+}
+
+// refusedNames are the tool names a server offered that were not
+// registered, shown as text with every hidden character marked; at most 20,
+// each cut to 100 characters.
+func refusedNames(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if len(out) == 20 {
+			break
+		}
+		if r := []rune(n); len(r) > 100 {
+			n = string(r[:100]) + "…"
+		}
+		out = append(out, ui.VisibleLine(n))
+	}
+	return out
+}
+
+// mcpRestart is _abhed/mcp/restart {sessionId, name} (§6.4): the person
+// reconnects one configured MCP server. It is recorded mcp.status by: user,
+// and refused while a prompt runs, since the session's tools share the
+// connection.
+func (c *acpConn) mcpRestart(msg rpcMessage) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(msg.Params, &p)
+	s, e := c.sessionFor(msg.Params)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	parts, e := innerOf(s)
+	if e == nil {
+		e = claimRestart(s)
+	}
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	// Released before each reply, so a client's next call never finds the
+	// session still held by this restart.
+	release := restartRelease(s)
+	defer release() // a panicking restart still lets the session go
+	known := false
+	for _, m := range parts.Config.MCP.Servers {
+		known = known || (m.Enabled && m.Name == p.Name)
+	}
+	if p.Name == "" || !known || parts.Set == nil || parts.Set.Gateway == nil {
+		release()
+		c.reply(msg.ID, nil, refusal(errParams, "no MCP server of that name is configured and enabled for this session"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.root(), mcpRestartTimeout)
+	defer cancel()
+	ev := agent.MCPStatus{Server: p.Name, Op: "restart", Status: "connected", By: agent.ByUser}
+	if err := parts.Set.Gateway.Restart(ctx, p.Name); err != nil {
+		ev.Status, ev.Error = "error", mcpError(err)
+	}
+	s.record(agent.EvMCPStatus, ev)
+	release()
+	out := map[string]any{"status": ev.Status}
+	if ev.Error != "" {
+		out["error"] = ev.Error
+	}
+	c.reply(msg.ID, out, nil)
+}
+
+// restartRelease lets the session go from a restart's claim. It acts once,
+// so a deferred call cannot clear a later restart's claim.
+func restartRelease(s *acpSession) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.mcpRestart = false
+			s.mu.Unlock()
+		})
+	}
+}
+
+// claimRestart marks the session busy for an MCP restart, or says why not:
+// a prompt, a woken turn or another restart holds it.
+func claimRestart(s *acpSession) *rpcError {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil || s.woken != nil || s.mcpRestart {
+		return refusal(errBusy, "the session is busy (a prompt, a woken turn or another restart); try again when it ends")
+	}
+	s.mcpRestart = true
+	return nil
+}
+
+// mcpRestartTimeout bounds how long a restart waits for the server to answer.
+const mcpRestartTimeout = 30 * time.Second
 
 func memoryView(cfg config.Config, pol *policy.Engine, ws string) []any {
 	out := []any{}
@@ -850,7 +955,7 @@ func (c *acpConn) trustInspect(msg rpcMessage) {
 		}
 	}
 	out["commands"] = cmds
-	skills, mcp := []any{}, []any{}
+	skills, servers := []any{}, []any{}
 	if st.File != "" {
 		if data, err := os.ReadFile(st.File); err == nil { // #nosec G304 -- the workspace file InspectWorkspace found
 			var f struct {
@@ -877,6 +982,9 @@ func (c *acpConn) trustInspect(msg rpcMessage) {
 					}
 				}
 				for _, m := range f.MCP.Servers {
+					if !mcp.ValidServerName(m.Name) {
+						continue
+					}
 					v := map[string]any{"name": m.Name}
 					if m.Command != "" {
 						v["command"] = m.Command
@@ -884,12 +992,12 @@ func (c *acpConn) trustInspect(msg rpcMessage) {
 					if m.URL != "" {
 						v["url"] = m.URL
 					}
-					mcp = append(mcp, v)
+					servers = append(servers, v)
 				}
 			}
 		}
 	}
-	out["skills"], out["mcp"] = skills, mcp
+	out["skills"], out["mcp"] = skills, servers
 	c.reply(msg.ID, out, nil)
 }
 

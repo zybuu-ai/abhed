@@ -322,5 +322,12 @@ func TestSessionControlIsNotCalledReadOnly(t *testing.T) {
 		if res := e.Evaluate("read", false, json.RawMessage(`{"path":"a"}`)); !strings.Contains(res.Reason, "read-only tool") {
 			t.Fatalf("read in %s: %+v", mode, res)
 		}
+		// Starting a subagent, or reading a background shell, is not a read of the workspace.
+		for tool, want := range map[string]string{"task": "subagent tool", "shell_output": "session tool", "task_status": "session tool"} {
+			res := e.Evaluate(tool, false, json.RawMessage(`{}`))
+			if res.Decision == Allow && (strings.Contains(res.Reason, "read-only") || !strings.Contains(res.Reason, want)) {
+				t.Fatalf("%s in %s: %+v", tool, mode, res)
+			}
+		}
 	}
 }

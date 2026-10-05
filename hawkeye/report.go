@@ -15,7 +15,8 @@ type Report struct {
 	Started   time.Time `json:"started"`
 	Ended     time.Time `json:"ended"`
 	Prompt    string    `json:"prompt"`
-	// Outcome is the terminal reason, or "running" when the record has no end.
+	// Outcome is the terminal reason, or "running" when the record has no end,
+	// or "no agent run" when it has neither an end nor an agent run.
 	Outcome string `json:"outcome"`
 	// Models are the models the calls went to in order, one entry per run of
 	// calls, so a switch and a switch back both show.
@@ -31,6 +32,10 @@ type Report struct {
 	Files       []FileTouch  `json:"files,omitempty"`
 	Findings    []Finding    `json:"findings"`
 	Integrity   Integrity    `json:"integrity"`
+
+	// offTurn are the model calls outside the conversation (a suggestion):
+	// no turn, but their tokens and time count in the totals.
+	offTurn []Turn
 
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.

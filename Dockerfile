@@ -39,9 +39,12 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends python3
 # the runtime stage be as small as it is. Symbols and DWARF are stripped: they
 # are debugging weight, and on an internet-facing binary they are also free
 # information for anyone who obtains it.
+# VERSION is stamped as the release build stamps it; the image has no .git,
+# so without it `abhed version` said "dev".
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
       -trimpath \
-      -ldflags='-s -w' \
+      -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/abhed ./cmd/abhed
 
 # -------------------------------------------------------------- runtime stage

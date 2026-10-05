@@ -83,6 +83,12 @@ func TestWorkPanelSanitizes(t *testing.T) {
 			t.Fatalf("an escape or newline was drawn: %q", r)
 		}
 	}
+	// Hidden characters are shown as escapes, as /tasks writes them, not dropped.
+	rows[1].Title = "ab\u202ecd\u200def"
+	panel := strings.Join(workPanel(Style{}, rows, "", 120), "\n")
+	if !strings.Contains(panel, VisibleLine(rows[1].Title)) || strings.Contains(panel, "\u202e") {
+		t.Fatalf("the title's hidden characters were not shown: %q", panel)
+	}
 }
 
 type workRig struct {

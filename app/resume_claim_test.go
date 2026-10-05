@@ -425,6 +425,10 @@ func TestDoubleCtrlCEndsAsInterrupted(t *testing.T) {
 			_, _ = loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermUserInterrupt})
 		}
 		endOnExit(st, stopped)
+		if !stopped {
+			// The turn stops after the grace ran out, before the process exits.
+			_, _ = loop.Recorder.Record(agent.EvSessionEnded, agent.ActorSystem, agent.Trusted, agent.SessionEnded{Reason: agent.TermCompleted})
+		}
 		events, _ := rs.Events("s-new")
 		ends := 0
 		for _, ev := range events {
@@ -633,6 +637,38 @@ func TestCLIRefusesUnclaimedOwnerViaUser(t *testing.T) {
 		t.Setenv("USER", owner)
 		if err := ownedHere(context.Background(), st, "s-x"); err == nil || !strings.Contains(err.Error(), "another user") {
 			t.Errorf("$USER=%q resumed a row owned by %q: %v", owner, owner, err)
+		}
+		// Nor is a session started under that $USER stored as no one's.
+		if got := cliUser(); got != "local" {
+			t.Errorf("$USER=%q records sessions as %q", owner, got)
+		}
+	}
+}
+
+// A /fork to a step the conversation does not have is refused before the
+// session is claimed, so its release adds no second session.ended.
+func TestForkToAMissingStepClaimsNothing(t *testing.T) {
+	st, rs, r, sess := resumeRig(t, "me", "default")
+	ctx := context.Background()
+	handleCommand(ctx, "/resume s-old", r, policy.New(policy.ModeDefault), sess, st)
+	before, _ := rs.Events("s-old")
+	handleCommand(ctx, "/fork 99999", r, policy.New(policy.ModeDefault), sess, st)
+	after, _ := rs.Events("s-old")
+	if rs.claims != 0 || len(after) != len(before) || st.claim != "s-old" {
+		t.Fatalf("/fork 99999: %d claims, %d events written", rs.claims, len(after)-len(before))
+	}
+}
+
+// A $USER shaped like an owner the store gives a meaning is recorded as
+// "local", so the CLI neither writes nor resumes rows as that owner.
+func TestCLIUserIsNeverAReservedOwner(t *testing.T) {
+	for user, want := range map[string]string{
+		"unclaimed:bob": "local", "Nobody:x": "local", "github:alice": "local", "local:eve": "local",
+		"agent": "local", "Anonymous": "local", "": "local", "yuvraj": "yuvraj",
+	} {
+		t.Setenv("USER", user)
+		if got := cliUser(); got != want {
+			t.Errorf("$USER=%q recorded as %q, want %q", user, got, want)
 		}
 	}
 }

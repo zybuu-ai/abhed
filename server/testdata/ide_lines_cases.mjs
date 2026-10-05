@@ -354,4 +354,18 @@ const shownCwd = out.join('');
 check('the prompt shows control characters in its directory: ' + JSON.stringify(shownCwd),
   shownCwd.includes('src/a⟨U+001B⟩[2J⟨U+202E⟩b⟨U+200B⟩ $') && !shownCwd.includes(String.fromCharCode(0x1b) + '[2J') && !shownCwd.includes(String.fromCharCode(0x202e)));
 
+// A typed character that draws nothing or reorders text shows as one marked cell; the line keeps it.
+{
+  const RLO = '\u202e', ZW = '\u200b';
+  let {out, t} = term();
+  linesData(t, 'cd d' + RLO + 'rl' + ZW + 'o');
+  const echo = out.join('');
+  check('a hidden character typed is echoed as a marked cell', echo === 'cd d\x1b[7m?\x1b[27mrl\x1b[7m?\x1b[27mo' && !echo.includes(RLO) && !echo.includes(ZW));
+  check('and the line keeps what was typed', t.line === 'cd d' + RLO + 'rl' + ZW + 'o');
+  out.length = 0; linesData(t, '\x7f\x7f');
+  check('Backspace still takes one cell per character', out.join('') === '\b \b\b \b' && t.line === 'cd d' + RLO + 'rl');
+  out.length = 0; t.hist = ['echo ' + RLO + 'x']; t.at = 1; lineKeys(t, {type:'keydown', key:'ArrowUp', preventDefault(){}});
+  check('a line recalled from history is marked too', out.join('').endsWith('echo \x1b[7m?\x1b[27mx') && t.line === 'echo ' + RLO + 'x');
+}
+
 process.exit(ok ? 0 : 1);

@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -136,6 +137,10 @@ func send(ctx context.Context, client *http.Client, p RetryPolicy,
 			return nil, err
 		}
 		resp, err := client.Do(req)
+		if te := (*TimeoutError)(nil); errors.As(err, &te) {
+			// A bound already waited out: more tries would multiply it unseen.
+			return nil, te
+		}
 		if err != nil {
 			// A connection that failed to establish is worth one more try for
 			// the same reason a 503 is: the network moment has passed.

@@ -363,8 +363,10 @@ editor can ask and then run `abhed trust grant`. The editor may send
 still read) to take only what tightens; any other field there is refused, and
 it cannot grant trust over the wire; pass the reported `sha256` to `abhed trust grant
 -sha256` so only the content the person saw is trusted. Starting
-`abhed -trust-workspace acp` trusts the file of every workspace the editor
-opens for the life of the process, not only the one it was started in. See [Workspace
+`abhed -trust-workspace acp` trusts the file of the workspace it was started
+in (`-C`, or the current folder) only; any other folder the editor opens keeps
+its recorded decision. `abhed -trust-workspace rpc` does the same for a
+`start` that names another workspace. See [Workspace
 trust](../architecture/workspace-trust.md).
 
 Background tasks run in the configured wake mode, `auto` by default: a

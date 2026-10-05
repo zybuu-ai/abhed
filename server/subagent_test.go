@@ -369,3 +369,36 @@ func TestResumeRefusesASubagentRecordByItsEvents(t *testing.T) {
 		})
 	}
 }
+
+// listsChildren is a store whose list holds subagents' rows too, as a store
+// that does not leave them out would; the server's own filter must.
+type listsChildren struct{ *durableMem }
+
+func (l listsChildren) ListSessions(_ context.Context, _ int) ([]store.SessionRecord, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]store.SessionRecord, 0, len(l.rows))
+	for _, r := range l.rows {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// The session list leaves subagents out itself, whatever the store hands it.
+func TestSessionListLeavesSubagentsOut(t *testing.T) {
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	s, _ := delegatingServer(t, [2]string{}, listsChildren{st}, func(c *config.Config) { c.Auth.Mode = "proxy" })
+	for _, r := range []store.SessionRecord{
+		{ID: "s-top", Tenant: "default", User: "alice", Model: "m", StartedAt: time.Now()},
+		{ID: "s-kid", Tenant: "default", User: "alice", Model: "subagent", ParentID: "s-top", StartedAt: time.Now()},
+	} {
+		if err := st.CreateSession(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var listed []sessionSummary
+	_ = json.Unmarshal(callAs(t, s, "alice", "default", "GET", "/v1/sessions", "").Body.Bytes(), &listed)
+	if len(listed) != 1 || listed[0].ID != "s-top" {
+		t.Fatalf("listed %+v, want the top-level session only", listed)
+	}
+}

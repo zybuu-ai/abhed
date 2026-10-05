@@ -111,4 +111,42 @@ try{ await api('/v1/sessions'); }catch{}
 check('a rule\'s 403 does not sign out', !signInGone && __added.length === 0);
 __status = 200; __body = null;
 
+// A live stream refused for a signed-out person is not retried every second:
+// the retry asks first, learns the sign-in ended, and stops.
+signInGone = false; signedIn = true; es = null; __up = true; __added.length = 0; live = false; bgLive = true;
+bgTasks.set('t1', {name:'sleep 60', state:'running'}); __bgDrawn = 0;
+connect('s1'); last().onopen(); const opened = __streams.length;
+__status = 401; last().onerror(); await tick(200);
+check('a stream dropped by a sign-out is not reopened', __streams.length === opened && signInGone && shown() === '● signed out');
+check('and the page stops listing background work it can no longer follow', !bgLive && bgTasks.size === 0 && __bgDrawn > 0);
+// Every panel shows a 401's message: it says what to do, not "unauthorized".
+__body = {error:'unauthorized'}; let e401 = null; try{ await api('/v1/sessions/s1/tree?path='); }catch(e){ e401 = e; }
+check('a 401 reads as a sign-in that ended', !!e401 && e401.message === 'your sign-in ended; sign in again');
+// A stream that drops while still signed in is reopened as before.
+signInGone = false; __status = 200; __body = null; __me = {authenticated:true}; bgLive = true; connect('s1'); last().onopen();
+const before = __streams.length; last().onerror(); await tick(200);
+check('a stream dropped while signed in is reopened', __streams.length === before + 1);
+bgLive = false;
+
+// A listed session still starting on another server answers 404 for a moment: the
+// stream is asked again three times, after 0.5, 1 and 1.5 s, then the page says so and stops.
+signInGone = false; signedIn = true; es = null; __up = true; __me = {authenticated:true}; live = false; bgLive = false;
+current = 's9'; __added.length = 0; __waits.length = 0; __status = 404; __body = {error:'session not found'};
+const before404 = __streams.length;
+connect('s9');
+for(let i = 0; i < 6; i++){ const st = last(); if(st.readyState !== 2) st.onerror(); await tick(80); }
+const starting = n => n.textContent.includes('still starting on another server');
+check('a stream refused with 404 is asked again three times, then no more', __streams.length - before404 === 4);
+check('with a short backoff', [500, 1000, 1500].every(ms => __waits.includes(ms)));
+check('then the page says the session is still starting, once', __added.filter(starting).length === 1);
+// One 404, then the session answers: it opens with nothing said.
+__added.length = 0; startTries.clear(); startNoted.clear(); __status = 404;
+connect('s9'); last().onerror(); __status = 200; __body = null; await tick(80);
+last().onopen();
+check('a session that answers on a retry opens with no notice', shown() === '● connected' && !__added.some(starting) && startTries.size === 0);
+// A stream that opened and then dropped is not taken for a starting session.
+__status = 404; __added.length = 0; const openedN = __streams.length; last().onerror(); await tick(80);
+check('a stream that had opened is not retried as a starting session', __streams.length === openedN && !__added.some(starting));
+current = 's1'; __status = 200; __body = null;
+
 if(!ok) process.exit(1);

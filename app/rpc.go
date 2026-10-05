@@ -162,7 +162,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			// made is the agent New returns; a wake starts only after a run of it.
 			var made *abhed.Agent
 			opts := abhed.Options{
-				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: trust, AllowDefaultModel: true,
+				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: config.GrantFor(trust, workspace, ws), AllowDefaultModel: true,
 				Allow: req.Allow, Deny: req.Deny,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
@@ -170,8 +170,10 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				ConfiguredTools: true,
 				// The configuration's turn limit binds, as it does from the terminal.
 				ConfiguredLimits: true,
-				// Stdout is the protocol; what the tool set skipped goes to stderr.
-				Warn: warnf,
+				// Stdout is the protocol; what the tool set skipped goes to stderr,
+				// the one taken at the start: warnf read os.Stderr from the
+				// tool set's goroutines.
+				Warn: func(format string, args ...any) { fmt.Fprintf(errOut, "abhed: "+format+"\n", args...) },
 				// off (the default), notify, or auto: a result between
 				// prompts starts a wake run, answered with a woken line.
 				Background: req.Wake,

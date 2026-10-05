@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Background subagents belong to a session, not to the run that started
@@ -1193,6 +1194,88 @@ func (f *SubagentFactory) SpawnBackground(ctx context.Context, req SubagentReque
 		cancel(nil)
 	}()
 	return id, nil
+}
+
+// runMovable runs a foreground child that Ctrl-B may move to the background: until then the call
+// owns it and its summary is the result; once moved, it reports as a notice and the call returns.
+func (c *child) runMovable(ctx context.Context, d *tools.Detach) (string, error) {
+	mgr := c.parent.loop.Background
+	cctx, cancel := context.WithCancelCause(mgr.ctx)
+	cctx = context.WithValue(cctx, parentKey{}, c.parent)
+	moved := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel(context.Cause(ctx))
+		case <-moved:
+		}
+	}()
+	type outcome struct {
+		summary string
+		reason  TerminalReason
+		err     error
+	}
+	out := make(chan outcome, 1)
+	go func() {
+		s, r, err := c.execute(cctx)
+		out <- outcome{s, r, err}
+	}()
+	d.SetRunning(true)
+	select {
+	case o := <-out:
+		d.SetRunning(false)
+		cancel(nil)
+		if c.release != nil {
+			c.release()
+		}
+		return o.summary, o.err
+	case <-d.Move:
+	}
+	d.SetRunning(false)
+	close(moved)
+
+	// A background task from here on: counted, stoppable and owed as one.
+	id := c.sessionID
+	c.extraMu.Lock()
+	if c.extra == nil {
+		c.extra = map[string]any{}
+	}
+	c.extra["background"], c.extra["task_id"] = true, id
+	c.extraMu.Unlock()
+	timer := time.AfterFunc(mgr.policy.lifetime(), func() { cancel(ErrBackgroundLifetime) })
+	t := &bgTask{ID: id, Description: c.req.Description, AgentType: c.req.AgentType, Provider: c.provider,
+		Model: c.adapter.Profile().Name, Started: mgr.policy.now(), joined: mgr.Mode() == WakeOff,
+		cancel: cancel, done: make(chan struct{})}
+	mgr.mu.Lock()
+	if _, again := mgr.tasks[id]; !again {
+		mgr.order = append(mgr.order, id)
+	}
+	mgr.tasks[id] = t
+	mgr.mu.Unlock()
+	c.parent.record(EvSubagentBackgrounded, ActorUser, map[string]any{"session": id, "task_id": id,
+		"background": true, "description": c.req.Description, "by": ByUser})
+	go func() {
+		defer close(t.done)
+		defer timer.Stop()
+		if c.release != nil {
+			defer c.release()
+		}
+		o := <-out
+		summary := o.summary
+		if o.err != nil {
+			summary = o.err.Error()
+		}
+		usage := c.sub.Usage()
+		n := Notice{TaskID: id, Session: id, Description: c.req.Description, Status: noticeStatus(o.reason),
+			Reason: string(o.reason), Turns: usage.Turns, TokensIn: usage.InputTokens, TokensOut: usage.OutputTokens,
+			Provider: c.provider, Model: c.adapter.Profile().Name, CallID: "bgn_" + newID(),
+			Content: parentRedacted(c.parent, summary)}
+		mgr.settleTask(&n, func() {
+			t.ended, t.reason, t.summary, t.turns = true, o.reason, n.Content, usage.Turns
+		})
+		cancel(nil)
+	}()
+	return startedText(id, c.req.Description) + " The user moved this subagent to the background while it ran (Ctrl-B); it goes on.", nil
 }
 
 // settleTask is the one hook every background end (subagent or shell) goes through:

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -102,6 +103,11 @@ type cliFlags struct {
 	showVer         bool
 	listenAddr      string
 	trustWS         bool
+	settings        string
+	mcpConfig       multiFlag
+	strictMCP       bool
+	agentsJSON      string
+	agentName       string
 
 	// words are the positional arguments that are not a subcommand; dashed
 	// is set when they came after "--".
@@ -143,14 +149,19 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.BoolVar(&f.skipPerms, "dangerously-skip-permissions", false, "bypass mode after a confirmation on a terminal; refused under a managed configuration; deny rules still apply")
 	fs.BoolVar(&f.showVer, "version", false, "print version and exit")
 	fs.StringVar(&f.listenAddr, "addr", ":8080", "listen address for abhed serve")
+	fs.StringVar(&f.settings, "settings", "", "a settings file, or inline JSON, merged over your own ~/.abhed/config.json for this run; the managed configuration still binds")
+	fs.Var(&f.mcpConfig, "mcp-config", "MCP servers from this file or inline JSON (mcpServers or mcp.servers), enabled for this run; repeatable")
+	fs.BoolVar(&f.strictMCP, "strict-mcp-config", false, "use only the -mcp-config servers, none from the configuration")
+	fs.StringVar(&f.agentsJSON, "agents", "", "subagent definitions for this run, as JSON {name: {description, prompt, tools, ...}} or a file; checked as files are")
+	fs.StringVar(&f.agentName, "agent", "", "run the session as this agent type: its instructions, and its tools, mode, model and effort where they narrow")
 	fs.BoolVar(&f.trustWS, "trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	return fs
 }
 
 // parseArgs parses the command line. Flags may come before and after a
-// task; a known subcommand first stops the parse, as it always has, and
-// "--" makes every later argument part of the task.
-func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string) error {
+// task; a built-in or edition subcommand first stops the parse, so it parses
+// its own flags, and "--" makes every later argument part of the task.
+func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string, edition map[string]Command) error {
 	rest := args
 	for {
 		if err := fs.Parse(rest); err != nil {
@@ -168,6 +179,10 @@ func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string) error {
 		first := fs.Arg(0)
 		if len(f.words) == 0 && !f.print.on && builtinCommands[first] {
 			f.sub = fs.Args()
+			return nil
+		}
+		if _, ok := edition[first]; ok && len(f.words) == 0 && !f.print.on {
+			f.words = fs.Args()
 			return nil
 		}
 		f.words = append(f.words, first)
@@ -204,7 +219,7 @@ func Main(args []string, opts ...Option) int {
 	fs.StringVar(&sf.Name, "name", "", "same as -n")
 	fs.BoolVar(&sf.Fork, "fork-session", false, "with -c or -r, go on in a new session branched from it")
 	fs.Usage = func() { a.usage(fs) }
-	if err := parseArgs(fs, &f, args); err != nil {
+	if err := parseArgs(fs, &f, args, a.commands); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -260,7 +275,13 @@ func Main(args []string, opts ...Option) int {
 	if f.trustWS {
 		a.trust = config.TrustGranted
 	}
+	if refuseInAgent(f.escalation()) {
+		return 1
+	}
 	if len(rest) > 0 {
+		if refuseInAgent(selfAdmin(rest)) {
+			return 1
+		}
 		return a.subcommand(workspace, rest, f.listenAddr)
 	}
 	if len(f.words) > 0 && !f.print.on && !f.dashed {
@@ -283,6 +304,11 @@ func Main(args []string, opts ...Option) int {
 
 // subcommand runs a built-in subcommand; rest[0] is its name.
 func (a *App) subcommand(workspace string, rest []string, listenAddr string) int {
+	// `abhed index -h` used to build the index and `abhed init -h` to write
+	// a config: a command that reads no flags of its own answers help here.
+	if len(rest) > 1 && isHelpArg(rest[1]) && !ownsHelp[rest[0]] {
+		return subcommandUsage(os.Stdout, rest[0])
+	}
 	switch rest[0] {
 	case "version":
 		return 0 // printed above, before the workspace is needed
@@ -323,6 +349,8 @@ func (a *App) subcommand(workspace string, rest []string, listenAddr string) int
 		return userCmd(workspace, rest[1:], a.trust)
 	case "secret":
 		return secretCmd(rest[1:])
+	case "mcp":
+		return mcpCmd(workspace, rest[1:], a.trust, stdMCPIO())
 	case "index":
 		return buildIndexCmd(workspace, a.trust)
 	case "eval":
@@ -400,6 +428,36 @@ func leadingTrustFlag(args []string, trust *bool) []string {
 		return append(args[:1:1], args[2:]...)
 	}
 	return args
+}
+
+// ownsHelp are the subcommands that print their own usage for -h.
+var ownsHelp = map[string]bool{
+	"secret": true, "mcp": true, "record": true, "hawkeye": true, "migrate": true,
+	"resolve": true, "eval": true, "serve": true,
+}
+
+func isHelpArg(s string) bool {
+	switch s {
+	case "-h", "-help", "--help":
+		return true
+	}
+	return false
+}
+
+// subcommandUsage prints a one-command usage line from the subcommand table.
+func subcommandUsage(w io.Writer, name string) int {
+	for _, c := range subcommands {
+		if c.name != name {
+			continue
+		}
+		synopsis := "abhed " + name
+		if c.trust {
+			synopsis += " [-trust-workspace]"
+		}
+		_, _ = fmt.Fprintf(w, "usage: %s\n  %s\n", synopsis, c.about)
+		return 0
+	}
+	return 2
 }
 
 // outputFormats are the values -output-format takes.

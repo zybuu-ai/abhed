@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -123,6 +125,32 @@ func TestCrossOriginWritesAreRejected(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin POST accepted with %d — CSRF is possible", rec.Code)
+	}
+}
+
+// The refusal runs outside the request logger, so it must log its own line:
+// an operator investigating a forgery attempt has nothing else to go on.
+func TestCrossOriginRefusalIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	s := New(Options{
+		Workspace: t.TempDir(),
+		Config:    config.Default(),
+		Adapter:   stubAdapter{},
+		Registry:  tools.NewRegistry(tools.Read{}),
+		Logger:    slog.New(slog.NewTextHandler(&buf, nil)),
+	})
+	req := httptest.NewRequest("POST", "/v1/sessions", strings.NewReader(`{"prompt":"hi"}`))
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d", rec.Code)
+	}
+	line := buf.String()
+	for _, want := range []string{"request refused", "status=403", "reason=cross-origin", "path=/v1/sessions", "origin=https://evil.example"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("refusal log lacks %q:\n%s", want, line)
+		}
 	}
 }
 

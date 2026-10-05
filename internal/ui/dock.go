@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 // dock is the interactive terminal surface: the input box the person types
@@ -119,6 +121,14 @@ type dock struct {
 	ticks    int
 	// workShown is whether the last tick found the panel on screen.
 	workShown bool
+
+	// todos is the agent's task list as last recorded; while any of it is
+	// open a summary sits above the input, and todosOpen (Ctrl-T) lists it.
+	todos     []agent.Todo
+	todosOpen bool
+
+	// attn is what the terminal is told about the session's state; see term.go.
+	attn attention
 }
 
 type readResult struct {
@@ -243,7 +253,9 @@ func (d *dock) key(k key, at time.Time) func() {
 	d.burstKeys++
 
 	if d.pager != nil {
-		d.pagerKey(k)
+		if !d.typedAhead(k, at) {
+			d.pagerKey(k)
+		}
 		return nil
 	}
 	if d.dlg != nil {
@@ -366,6 +378,11 @@ func (d *dock) key(k key, at time.Time) func() {
 	case keyCtrlE:
 		d.buf.pos = d.buf.lineEnd(d.buf.pos)
 	case keyCtrlB:
+		// On an empty line during a turn, Ctrl-B moves a running command to
+		// the background; otherwise it is the cursor key it always was.
+		if d.busy && d.buf.empty() && d.hotkeys["ctrl+b"] != nil {
+			return d.hotkey("ctrl+b")
+		}
 		d.buf.left()
 	case keyCtrlF:
 		d.buf.right()
@@ -403,7 +420,10 @@ func (d *dock) key(k key, at time.Time) func() {
 			return d.editExternally()
 		}
 	case keyCtrlT:
-		return d.hotkey("ctrl+t")
+		if d.hotkeys["ctrl+t"] != nil {
+			return d.hotkey("ctrl+t")
+		}
+		d.toggleTodos()
 	default:
 		if k.r == '?' && d.buf.empty() && !d.busy {
 			d.help = !d.help
@@ -1142,6 +1162,9 @@ func (d *dock) frame() (rows []string, cr, cc int) {
 	if d.act.on && !d.streaming && d.dlg == nil {
 		top = append(top, d.activityRow(w))
 	}
+	if d.dlg == nil {
+		top = append(top, d.todoRows(w)...)
+	}
 
 	var mid []string
 	cursorRow, cursorCol := -1, 0
@@ -1349,6 +1372,8 @@ var shortcuts = [][2]string{
 	{"esc interrupt", "ctrl+g edit in $EDITOR"},
 	{"ctrl+c clear, then exit", "ctrl+l clear screen · ctrl+_ undo"},
 	{"tab expand a paste", "ctrl+u/k/w cut · ctrl+y paste back"},
+	{"ctrl+t todo list", "/copy copies the last reply"},
+	{"ctrl+b move a running command to the background", ""},
 }
 
 func shortcutHelp(s Style, w int) []string {
@@ -1380,6 +1405,8 @@ func (d *dock) reply(text string) {
 			_ = SetTheme(theme)
 			d.repaint()
 		}
+	case text == "[I" || text == "[O":
+		d.focused(text == "[I")
 	case strings.HasPrefix(text, "[?2026;") && strings.HasSuffix(text, "$y"):
 		// DECRQM: 1 set, 2 reset — either way the terminal knows the mode.
 		v := strings.TrimSuffix(strings.TrimPrefix(text, "[?2026;"), "$y")

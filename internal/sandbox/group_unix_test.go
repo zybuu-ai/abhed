@@ -48,7 +48,11 @@ func TestCancelKillsOnlyAGroupTheCommandLeads(t *testing.T) {
 		start := time.Now()
 		cancel()
 		_ = cmd.Wait()
-		if took := time.Since(start); took > time.Second {
+		// The kill is shown by the signal that ended sleep 30, not by a tight clock.
+		if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() {
+			t.Errorf("leads=%v: the command was not ended by a signal: %v", leads, cmd.ProcessState)
+		}
+		if took := time.Since(start); took > 20*time.Second {
 			t.Errorf("leads=%v: the cancel took %v", leads, took)
 		}
 		mu.Lock()

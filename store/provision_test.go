@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
@@ -196,14 +197,18 @@ func TestProvisionRefusesOneRoleForBothJobs(t *testing.T) {
 	}
 }
 
-// Privilege lists are spliced into SQL, so only the four keywords get through.
+// Privilege lists are spliced into SQL, so only the four keywords, and plain
+// column names after SELECT, INSERT or UPDATE, get through.
 func TestValidPrivileges(t *testing.T) {
-	for _, ok := range []string{"SELECT", "SELECT, INSERT", "select,insert,update,delete"} {
+	for _, ok := range []string{"SELECT", "SELECT, INSERT", "select,insert,update,delete",
+		"SELECT, INSERT, UPDATE (seen_at)", "UPDATE(seen_at, email)", "SELECT (a), UPDATE ( b_2 )"} {
 		if !validPrivileges(ok) {
 			t.Errorf("%q rejected", ok)
 		}
 	}
-	for _, bad := range []string{"", "ALL", "TRUNCATE", "SELECT; DROP TABLE events", "SELECT ON events TO public --"} {
+	for _, bad := range []string{"", "ALL", "TRUNCATE", "SELECT; DROP TABLE events", "SELECT ON events TO public --",
+		"DELETE (seen_at)", "UPDATE ()", "UPDATE (seen_at", "UPDATE (\"seen_at\")", "UPDATE (Seen)",
+		"UPDATE (seen_at); DROP TABLE events", "UPDATE (seen_at) ON events TO public --", "SELECT,", ", SELECT"} {
 		if validPrivileges(bad) {
 			t.Errorf("%q accepted", bad)
 		}
@@ -239,6 +244,44 @@ func TestProvisionAppliesExtensions(t *testing.T) {
 	}
 	if _, err := conn.Exec(ctx, "DELETE FROM ext_probe"); err == nil {
 		t.Fatal("the runtime role could delete from a table it was granted only select and insert on")
+	}
+}
+
+// A column grant holds the runtime role to the columns it names, and it
+// replaces a table-wide grant an earlier migrate gave.
+func TestProvisionNarrowsToAColumnGrant(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := func(privs string) Extension {
+		return Extension{SQL: "CREATE TABLE IF NOT EXISTS ext_cols (id text PRIMARY KEY, note text, seen int)",
+			Grants: map[string]string{"ext_cols": privs}}
+	}
+	conn, err := pgx.Connect(ctx, runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	for _, privs := range []string{"SELECT, INSERT, UPDATE", "SELECT, INSERT, UPDATE (seen)"} {
+		if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User, Extensions: []Extension{ext(privs)}}); err != nil {
+			t.Fatalf("%s: %v", privs, err)
+		}
+	}
+	id := testID(t, "col-")
+	if _, err := conn.Exec(ctx, "INSERT INTO ext_cols (id, note, seen) VALUES ($1, 'x', 1)", id); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "UPDATE ext_cols SET seen = seen + 1 WHERE id = $1", id); err != nil {
+		t.Fatalf("the runtime role cannot update the granted column: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "UPDATE ext_cols SET note = 'y' WHERE id = $1", id); err == nil {
+		t.Fatal("the runtime role updated a column outside its grant")
 	}
 }
 
@@ -291,5 +334,108 @@ func TestOpenRefusesUsersWithoutRevocations(t *testing.T) {
 	u, err := p.Get(ctx, name)
 	if err != nil || u.Revocations != 0 {
 		t.Fatalf("existing account after migrate = %+v, %v; want revocations 0", u, err)
+	}
+}
+
+// A runtime role on a sessions table without title is refused at start, not
+// left to fail every session query, and the owner's migrate adds it back.
+func TestOpenRefusesSessionsWithoutTitle(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provision := func() {
+		t.Helper()
+		if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provision()
+	t.Cleanup(provision)
+	conn, err := pgx.Connect(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, `ALTER TABLE sessions DROP COLUMN title`); err != nil {
+		t.Fatal(err)
+	}
+
+	if p, err := Open(ctx, DefaultConfig(runtimeDSN)); err == nil {
+		p.Close()
+		t.Fatal("the runtime role opened a sessions table without title")
+	} else if !strings.Contains(err.Error(), "sessions.title") || !strings.Contains(err.Error(), "abhed migrate") {
+		t.Fatalf("refusal = %v; want it to name sessions.title and abhed migrate", err)
+	}
+	provision()
+	p, err := Open(ctx, DefaultConfig(runtimeDSN))
+	if err != nil {
+		t.Fatalf("open after migrate: %v", err)
+	}
+	p.Close()
+}
+
+// An extension cannot replace a core table's grant, and an UPDATE held on
+// one column of events still counts as a way to alter the record.
+func TestExtensionCannotWidenACoreGrant(t *testing.T) {
+	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	if owner == "" || runtimeDSN == "" {
+		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
+	}
+	ctx := context.Background()
+	rc, err := pgx.ParseConfig(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := Extension{SQL: "SELECT 1", Grants: map[string]string{"events": "SELECT, INSERT, UPDATE (payload)"}}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User, Extensions: []Extension{ext}}); err == nil {
+		t.Error("an extension's grant on events was accepted")
+	}
+	if err := Provision(ctx, ProvisionConfig{OwnerDSN: owner, RuntimeRole: rc.User}); err != nil {
+		t.Fatal(err)
+	}
+	ownerPool, err := pgxpool.New(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ownerPool.Close()
+	role := pgx.Identifier{rc.User}.Sanitize()
+	if _, err := ownerPool.Exec(ctx, "GRANT UPDATE (payload) ON events TO "+role); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = ownerPool.Exec(ctx, "REVOKE UPDATE (payload) ON events FROM "+role) }()
+	pool, err := pgxpool.New(ctx, runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if how, err := recordExposure(ctx, pool); err != nil || !strings.Contains(how, "UPDATE") {
+		t.Errorf("a column UPDATE on events was not seen: %q (err %v)", how, err)
+	}
+}
+
+// The runtime role may insert every column of events, but the database's
+// clock, not the writer, sets inserted_at, so a row cannot be made to look stale.
+func TestInsertedAtIsTheDatabasesClock(t *testing.T) {
+	p := runtimeStore(t, "t-ins")
+	ctx := context.Background()
+	id := testID(t, "sess-ins-")
+	newSession(t, p, id, "t-ins")
+	if _, err := p.pool.Exec(ctx, `
+		INSERT INTO events (id, session_id, tenant_id, seq, type, payload, actor, trust, created_at, inserted_at)
+		VALUES ($1, $2, 't-ins', 1, 'user.message', '{}', 'u', 'trusted', now(), '2000-01-01')`, id+"-e1", id); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var old bool
+	if err := p.pool.QueryRow(ctx, `SELECT inserted_at < now() - interval '1 hour' FROM events WHERE session_id = $1`, id).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	if old {
+		t.Error("the writer set inserted_at")
 	}
 }

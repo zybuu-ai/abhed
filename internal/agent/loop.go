@@ -282,6 +282,14 @@ type Loop struct {
 	usage    Usage
 	turns    int
 
+	// Movable lets the person move a running foreground command or subagent
+	// to the background (the terminal's Ctrl-B); see MoveToBackground.
+	Movable bool
+	// detaches are the running calls whose foreground command Ctrl-B may move
+	// to the background; see MoveToBackground.
+	detachMu sync.Mutex
+	detaches map[*tools.Detach]bool
+
 	// repeatedFailures counts consecutive identical tool calls that returned an
 	// error. A model that ignores an error message and retries verbatim will
 	// otherwise burn the entire turn budget on one mistake.
@@ -914,6 +922,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		l.record(EvModelCall, ActorSystem, ModelCall{
 			Turn: l.turns, Model: l.Adapter.Profile().Name, LatencyMS: time.Since(callStart).Milliseconds(), Error: err.Error(),
+			Retryable: timedOut(err),
 		})
 		return TermError, true, fmt.Errorf("model call failed: %w", err)
 	}
@@ -1023,7 +1032,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
 	if streamErr != nil && ctx.Err() == nil {
-		mc.Error = streamErr.Error()
+		mc.Error, mc.Retryable = streamErr.Error(), timedOut(streamErr)
 	}
 	l.record(EvModelCall, ActorSystem, mc)
 
@@ -1035,6 +1044,12 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	if ctx.Err() != nil {
 		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+	}
+
+	// A timed-out call is not a malformed reply: asking again unseen would
+	// repeat the wait, so the turn ends on the error the record holds.
+	if mc.Retryable {
+		return TermError, true, fmt.Errorf("model call failed: %w", streamErr)
 	}
 
 	// A malformed tool call is recoverable: tell the model what was wrong and
@@ -1232,13 +1247,17 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = policy.Result{Decision: policy.Deny, Reason: refused, Step: "deny"}
 	}
 
-	// Only an Ask is short-circuited: a deny is still recorded as a deny.
+	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
+	// deny. An allowed write the tool would refuse (into .abhed in
+	// accept-edits) was recorded approved, then refused.
 	var doomed error
-	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision == policy.Ask {
+	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision != policy.Deny {
 		doomed = pc.Precheck(l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {
+			doomed = errors.New(why)
+		} else if why := l.noBackground(call); why != "" {
 			doomed = errors.New(why)
 		}
 	}
@@ -1525,7 +1544,9 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 
 	start := time.Now()
-	result := tool.Run(l.withShellHost(l.asParent(ctx), call.ID), l.Session, call.Args)
+	runCtx, forget := l.withDetach(l.withShellHost(l.asParent(ctx), call.ID))
+	result := tool.Run(runCtx, l.Session, call.Args)
+	forget()
 	if _, isTask := tool.(Task); isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}
@@ -2213,4 +2234,11 @@ func (l *Loop) readFirst(ctx context.Context, tool tools.Tool, call model.ToolCa
 		return fmt.Sprintf("%s changed on disk since you read it. Re-read it before editing", a.Path)
 	}
 	return ""
+}
+
+// timedOut reports a model call ended by its call or stall timeout, which the
+// person may retry as it was.
+func timedOut(err error) bool {
+	var te *model.TimeoutError
+	return errors.As(err, &te)
 }

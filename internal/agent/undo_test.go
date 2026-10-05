@@ -219,3 +219,32 @@ func TestUndoNeedsItsFileFunctions(t *testing.T) {
 		t.Fatalf("the file was written by path: %q", got)
 	}
 }
+
+// KeepFirst holds one checkpoint per path, the earliest, however often the
+// file is edited, and the baseline, an accept and the changed list are as
+// they are without it.
+func TestUndoKeepFirstHoldsOneCopyPerFile(t *testing.T) {
+	u := newTestUndo()
+	u.KeepFirst = true
+	for turn := 0; turn < 3; turn++ {
+		u.BeginTurn()
+		for i := 0; i < 50; i++ {
+			u.Record("/w/a.go", []byte(strings.Repeat("x", i+1)), true)
+			u.Record("/w/b.go", []byte("b"), true)
+		}
+	}
+	if n := len(u.Checkpoints()); n != 2 {
+		t.Fatalf("%d checkpoints held, want one per file", n)
+	}
+	if got, existed, ok := u.Original("/w/a.go"); !ok || !existed || string(got) != "x" {
+		t.Fatalf("baseline %q %v %v, want the earliest", got, existed, ok)
+	}
+	u.Accept("/w/a.go", []byte("kept"))
+	u.Record("/w/a.go", []byte("later"), true)
+	if got, _, _ := u.Original("/w/a.go"); string(got) != "kept" {
+		t.Fatalf("baseline after an accept and an edit: %q", got)
+	}
+	if c := u.Changed(); len(c) != 2 {
+		t.Fatalf("changed %v", c)
+	}
+}

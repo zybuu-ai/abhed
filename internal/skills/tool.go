@@ -32,6 +32,27 @@ type Tool struct {
 
 func (Tool) Name() string { return "skill" }
 
+// NarrowSkills is the tool offering only names, and the names it does not
+// have, for a subagent role limited to some skills.
+func (t Tool) NarrowSkills(names []string) (tools.Tool, []string) {
+	cut := NewRegistry()
+	var missing []string
+	for _, n := range names {
+		var s *Skill
+		ok := false
+		if t.R != nil {
+			s, ok = t.R.Get(n)
+		}
+		if !ok {
+			missing = append(missing, n)
+			continue
+		}
+		cut.add(s)
+	}
+	t.R = cut
+	return t, missing
+}
+
 // Mutates is false. Reading instructions changes nothing; whatever the
 // instructions then tell the agent to do goes through the ordinary permission
 // checks for those tools. Marking this as mutating would prompt the user to
@@ -43,9 +64,10 @@ func (t Tool) Description() string {
 	if t.R != nil && t.R.Len() > 0 {
 		names = " Available: " + strings.Join(t.R.Names(), ", ") + "."
 	}
+	// Models matched a skill and worked unaided; it is to be the first call.
 	return "Load the full instructions for a named skill." + names +
-		" Call this when a request matches a skill listed in the system prompt, " +
-		"then follow the instructions it returns."
+		" When a request matches a skill listed in the system prompt, call this first, " +
+		"before reading files or searching, then follow the instructions it returns."
 }
 
 func (Tool) Schema() json.RawMessage {

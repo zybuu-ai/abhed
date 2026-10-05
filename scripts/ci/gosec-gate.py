@@ -42,7 +42,18 @@ BASELINE = os.path.join(HERE, "gosec-baseline.json")
 
 def load(path):
     with open(path, encoding="utf-8") as f:
-        issues = json.load(f).get("Issues") or []
+        report = json.load(f)
+    # A package gosec could not load was not scanned, so its findings are
+    # missing and the rest of the report would read as clean.
+    broken = report.get("Golang errors") or {}
+    if broken:
+        print(f"FAIL: gosec could not load {len(broken)} package(s), so the scan is partial:")
+        for pkg, errs in sorted(broken.items())[:10]:
+            first = (errs or [{}])[0]
+            print(f"  {pkg}: {first.get('error', first)}")
+        print("Fix the build (go build ./... with the toolchain gosec uses) and scan again.")
+        sys.exit(1)
+    issues = report.get("Issues") or []
     counts = collections.Counter()
     for i in issues:
         rel = os.path.relpath(i["file"], os.getcwd()) if os.path.isabs(i["file"]) else i["file"]

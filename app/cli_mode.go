@@ -60,7 +60,9 @@ func slashMode(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	if err := e.modes.Set(ctx, mode, agent.ViaSlash); err != nil {
 		return false, err
 	}
-	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(e.pol.Mode)})
+	if !e.st.recordsLive() { // else the record's mode.changed line says it
+		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(e.pol.Mode)})
+	}
 	return false, nil
 }
 
@@ -180,6 +182,8 @@ func (m *cliModes) Set(_ context.Context, mode policy.Mode, via string) error {
 	default:
 		return fmt.Errorf("unknown way to change mode %q", via)
 	}
+	// switchMode refuses bypass too; this is the second layer, kept so a
+	// change to either does not open bypass after startup.
 	if mode == policy.ModeBypass {
 		return errors.New("bypass is chosen only at startup, with -mode bypass")
 	}
@@ -219,6 +223,10 @@ func (c *cliState) recordCLI(t agent.EventType, payload any) {
 		warnf("could not record %s: %v", t, err)
 	}
 }
+
+// recordsLive reports whether recordCLI writes now, so the record's own
+// line in the transcript says what a command did.
+func (c *cliState) recordsLive() bool { return c.loop != nil && c.loop.Recorder != nil }
 
 // flushPending records what was held, once a conversation has opened.
 func (c *cliState) flushPending() {
@@ -342,13 +350,36 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		return ""
 	}
 	st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)})
-	surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
+	if !st.recordsLive() {
+		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
+	}
 	return fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 }
 
 // viaCarried marks a mode.changed that restates, in a new conversation's
 // record, a mode chosen in an earlier conversation of the session.
 const viaCarried = "carried"
+
+// viaConfig marks a continued session starting in the configured mode, not
+// the one its record ended in, with no -mode given: "flag" said one was.
+const viaConfig = "config"
+
+// modeFlagGiven is set when -mode, -permission-mode or
+// -dangerously-skip-permissions chose this run's mode.
+var modeFlagGiven bool
+
+// resumedVia is how a continued session's start mode came to differ from
+// its record's: the flag, a mode carried from an earlier conversation, or
+// the configuration.
+func resumedVia(now string, cfg config.Config) string {
+	switch {
+	case now != orDefault(cfg.Permissions.Mode, "default"):
+		return viaCarried
+	case modeFlagGiven:
+		return agent.ViaFlag
+	}
+	return viaConfig
+}
 
 // carryState holds, for the next conversation, the mode and added folders it
 // inherits, in place of the changes that made them, so its record says each once.

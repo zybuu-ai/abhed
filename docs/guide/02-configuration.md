@@ -53,6 +53,7 @@ configuration](#trusting-the-workspace-configuration).
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
+| `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
 ## Context
 
@@ -90,11 +91,14 @@ built, not passed as an argument.
 **`compact_at` — the summary.** At this fraction the history is summarized. The
 check reserves headroom for the turn about to happen, so a large tool result
 cannot take a session from under the threshold to over the hard limit in one
-step. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
+step. The headroom is a quarter of the window, or half of `compact_at`'s
+share of it when that is less, so a low value still waits for history. Below 1.0 with real margin: hitting the limit mid-turn is unrecoverable
 and the token estimate is approximate. Not much below 0.5 either: a
 compaction keeps recent turns up to about half the window, so below roughly
 0.3 what it keeps is already over the threshold and it compacts on almost
-every turn, each a summary call and a lost prefix cache.
+every turn, each a summary call and a lost prefix cache. The summary keeps
+your first message word for word beside it (up to 4,000 characters), so a
+name or code word given there survives however the summary restates it.
 
 `ABHED.md` in the workspace is loaded into every session and re-injected whole
 after compaction. Project conventions belong there. The full order, imports
@@ -103,6 +107,18 @@ and rules are in [Memory](19-input-and-memory.md#memory).
 **Size `context_window` for what the model can actually hold.** A local server
 reports the size it chose at startup; asking for more does not fail loudly, it
 simply stops fitting once a long session fills it.
+
+**Each request to the model is bounded twice.** `call_timeout_seconds` (600 by
+default) is the most one request may take, from sending it to the last byte of
+the reply. `stall_timeout_seconds` (300 by default) is the longest it may go
+with no byte arriving, the first one included; a reply that keeps streaming
+resets it. Either one, set on a provider, stops the call and ends the turn with
+a model error, recorded on its `model.call` with `"retryable": true`: nothing
+was wrong with the request, so sending the message again retries it. A timed-out
+call is not retried on its own, so a hung endpoint costs one wait, not four.
+Raise `stall_timeout_seconds` for a local model whose prefill of a long prompt
+takes longer than five minutes. 0 keeps the default; a negative value is
+refused.
 
 ## Limits
 
@@ -176,8 +192,19 @@ sessions started after it. See [Agent definitions](17-agent-definitions.md).
 "sandbox": { "allow_network": false }
 ```
 
-Shell commands run under process isolation with writes scoped to the workspace.
-This is a boundary, not a jail: it is not sufficient for genuinely hostile code.
+Shell commands run in the sandbox. On the process tier a command may write the
+workspace and a few shared folders, not only the workspace:
+
+- **Linux:** the workspace, and a private `/tmp` that is gone when the command ends.
+- **macOS:** the workspace, `/private/tmp`, `/private/var/tmp`, your `TMPDIR`, and
+  the toolchain caches `~/.cache`, `~/Library/Caches`, `~/.npm`,
+  `~/.cargo/registry` and `~/go/pkg/mod`. These are the real folders, shared
+  with the rest of your machine, so a command can leave a file there that a
+  program outside the sandbox later reads.
+
+On the container and vm tiers a command writes only the workspace and a
+throwaway `/tmp`. The process tier is a boundary, not a jail: it is not
+sufficient for genuinely hostile code.
 
 `"max_procs"` (512 by default) bounds how many more processes a command can
 start: on the process tier, as a limit of what your user runs plus this many
@@ -265,17 +292,23 @@ person's language. Its reply is cleaned of control and format characters, and
 dropped if it is empty, a `/` command, a `!` shell line, would repeat a
 stored secret (checked on the whole reply, before it is cut), or tells you or
 the agent to ignore, bypass or override a policy, an approval, a rule, the
-sandbox or safety, suggests something destructive (delete, `rm -rf`,
-force-push, drop, wipe, disable, …), or asks to print, show, echo or send a
-secret (a stored secret's name, or a key, token, password or credential):
-better none than a risky one. A
+sandbox or safety, suggests something destructive or outward (delete,
+remove, reset, revert, force, push, merge, deploy, publish, install, drop,
+wipe, disable, …), consents (yes, ok, approve, allow, accept, confirm,
+proceed, trust, go ahead, do it, …), holds a character a shell reads
+specially (`` $ ` | ; & < > ``), names a secret-like variable (`STRIPE_KEY`,
+`GH_TOKEN`), or asks to print, show, read or send a secret (a stored
+secret's name, or a key, token, password or credential). The lists fail
+closed: an ordinary suggestion that uses one of these words is not offered
+either, since better none than a risky one. A
 suggestion is the model's text, which what the agent read can shape; it is
 never sent unless you choose to send it. The call is
 made after the turn has ended, so nothing waits for it; the next prompt, a
 wake, typing or closing the session cancels it. The record keeps the
 suggestion as `suggestion.offered` after the run's `session.ended`, then the
 call as a `model.call` with `purpose: suggestion`, counted in the session's
-tokens and budget.
+tokens and budget. A call cancelled by closing the session offers nothing,
+and its `model.call` is still recorded, since the request went out.
 
 Suggestions are on by default, so each completed turn costs one extra model
 call. If `suggest.model` names a provider on a different endpoint from the
@@ -416,6 +449,12 @@ Postgres. An event or terminal stream already open is authorised again while
 it runs, and ends when its sign-in would now be refused: at once for a change
 made on the same server, within 10 seconds otherwise.
 
+Signing out ends sign-ins, not work. After Sign out everywhere, or a removal
+of administrator rights, a background shell or task the person started keeps
+running, and its result still starts a woken run in their session, since the
+account is still active. Stop the session's tasks, or remove the account, to
+end it; see [background tasks](14-parallel-subagents.md#background-tasks).
+
 `auth.require_group` names a group everyone must be in to use the server.
 It is checked once someone has signed in: the sign-in page, sign-in,
 sign-out, `/v1/whoami` and `/v1/health` stay reachable. A signed-in person
@@ -471,7 +510,16 @@ When the managed file sets any `permissions` setting but not
 workspace's `.abhed/config.json` add are left out, and Abhed warns at startup
 naming each rule and its file; the built-in allow rules stay. Put rules the
 organisation accepts in the managed `permissions.allow`. When the managed file
-sets `permissions.allow`, exactly its list applies.
+sets `permissions.allow`, exactly its list applies. The same holds for
+`permissions.git_extensions`, the git extensions that run without the
+destructive step's question ([Permissions](04-permissions.md#the-order)).
+
+Two effects to plan for. A call that a dropped rule approved now asks, and in
+`-p`, `rpc` and other runs with no one to approve, it is refused. And once
+any file rule is dropped, every built-in allow rule comes back, even one the
+file had left out of a shorter list. To keep a built-in rule from applying
+under a managed file, add an ask or deny rule for it; a shorter allow list
+does not do it.
 
 What a caller sets over the files, the CLI's flags and the SDK's `Options`,
 may tighten what the managed file set and never loosen it:
@@ -516,7 +564,11 @@ An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
 exception: a managed `model.default` pins them to that model.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
-which is not always what the file appears to say.
+which is not always what the file appears to say. With Postgres storage it
+opens the event store and sign-in; if either cannot be opened, as before
+`abhed migrate` has made the schema, it says "Not ready" and exits 1. With
+memory storage it names both stores: memory for `abhed serve`, whose sessions
+do not survive a restart, and the local record the command line keeps.
 
 ## Keys nothing reads
 

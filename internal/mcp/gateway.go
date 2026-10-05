@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -57,6 +58,12 @@ type Gateway struct {
 	configs map[string]ServerConfig
 	// failed are the enabled servers that did not connect, with why.
 	failed map[string]error
+	// life is the context Connect was given: a server process lives as long
+	// as it, whatever context a later Restart was called with.
+	life context.Context
+	// restarting serialises Restart, so two restarts of one server cannot
+	// both start a process and leave one running unowned.
+	restarting sync.Mutex
 }
 
 func NewGateway() *Gateway {
@@ -67,12 +74,20 @@ func NewGateway() *Gateway {
 // start is reported but does not prevent the others from working: one broken
 // integration should not take down the agent.
 func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
+	g.mu.Lock()
+	g.life = ctx
+	g.mu.Unlock()
 	var errs []error
 	for _, cfg := range configs {
 		if !cfg.Enabled {
 			continue
 		}
-		if err := g.connectOne(ctx, cfg); err != nil {
+		if !validServerName.MatchString(cfg.Name) {
+			// Not kept even as failed: the name would reach /mcp and the panels unescaped.
+			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
+			continue
+		}
+		if err := g.connectOne(ctx, ctx, cfg); err != nil {
 			g.mu.Lock()
 			g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
 			g.mu.Unlock()
@@ -82,7 +97,9 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 	return errs
 }
 
-func (g *Gateway) connectOne(ctx context.Context, cfg ServerConfig) error {
+// connectOne starts a server whose process (or connection) lives as long as
+// life, and initializes it within ctx.
+func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error {
 	if !validServerName.MatchString(cfg.Name) {
 		return fmt.Errorf("invalid server name %q (letters, digits, _ and - only)", cfg.Name)
 	}
@@ -110,9 +127,9 @@ func (g *Gateway) connectOne(ctx context.Context, cfg ServerConfig) error {
 				return fmt.Errorf("header %s: environment variable %s is not set", k, envVar)
 			}
 		}
-		transport, err = NewHTTPTransport(ctx, HTTPConfig{URL: cfg.URL, Headers: headers})
+		transport, err = NewHTTPTransport(life, HTTPConfig{URL: cfg.URL, Headers: headers})
 	} else {
-		transport, err = NewStdioTransport(ctx, cfg.Command, cfg.Args, cfg.Env)
+		transport, err = NewStdioTransport(life, cfg.Command, cfg.Args, ServerEnv(cfg.Env))
 	}
 	if err != nil {
 		return err
@@ -124,10 +141,14 @@ func (g *Gateway) connectOne(ctx context.Context, cfg ServerConfig) error {
 	}
 
 	g.mu.Lock()
+	old := g.clients[cfg.Name]
 	g.clients[cfg.Name] = client
 	g.configs[cfg.Name] = cfg
 	delete(g.failed, cfg.Name)
 	g.mu.Unlock()
+	if old != nil && old != client {
+		_ = old.Close()
+	}
 	return nil
 }
 
@@ -135,10 +156,13 @@ func (g *Gateway) connectOne(ctx context.Context, cfg ServerConfig) error {
 // again. Its tools keep their names and reach the new connection; tools the
 // server added since are offered from the next session.
 func (g *Gateway) Restart(ctx context.Context, name string) error {
+	g.restarting.Lock()
+	defer g.restarting.Unlock()
 	g.mu.Lock()
 	cfg, ok := g.configs[name]
 	old := g.clients[name]
 	delete(g.clients, name)
+	life := g.life
 	g.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("no MCP server %q is configured and enabled", name)
@@ -146,7 +170,10 @@ func (g *Gateway) Restart(ctx context.Context, name string) error {
 	if old != nil {
 		_ = old.Close()
 	}
-	if err := g.connectOne(ctx, cfg); err != nil {
+	if life == nil {
+		life = context.WithoutCancel(ctx)
+	}
+	if err := g.connectOne(life, ctx, cfg); err != nil {
 		g.mu.Lock()
 		g.failed[name] = err
 		g.mu.Unlock()
@@ -162,6 +189,9 @@ type ServerStatus struct {
 	Connected bool
 	Err       error
 	Tools     []string // the tools it offers that are allowed, by remote name
+	// Refused are the tools it offers that were left out for their names, as
+	// it sent them: untrusted text, for showing escaped.
+	Refused []string
 }
 
 // Servers reports every enabled server, connected or not, by name.
@@ -176,6 +206,7 @@ func (g *Gateway) Servers() []ServerStatus {
 		}
 		if c, ok := g.clients[name]; ok {
 			st.Connected = true
+			st.Refused = slices.Clone(c.Refused())
 			for _, d := range c.Tools() {
 				if allowed(cfg, d.Name) {
 					st.Tools = append(st.Tools, d.Name)
@@ -195,7 +226,45 @@ func (g *Gateway) client(name string) *Client {
 	return g.clients[name]
 }
 
+// ServerPrompt is one prompt a connected server offers.
+type ServerPrompt struct {
+	Server string
+	Prompt PromptDef
+}
+
+// Prompts are the connected servers' prompts, by server then name.
+func (g *Gateway) Prompts() []ServerPrompt {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var out []ServerPrompt
+	for name, c := range g.clients {
+		for _, p := range c.Prompts() {
+			out = append(out, ServerPrompt{Server: name, Prompt: p})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Prompt.Name < out[j].Prompt.Name
+	})
+	return out
+}
+
+// GetPrompt fetches a prompt from a connected server; its text is untrusted.
+func (g *Gateway) GetPrompt(ctx context.Context, server, name string, args map[string]string) (string, error) {
+	c := g.client(server)
+	if c == nil {
+		return "", fmt.Errorf("MCP server %s is not connected; /mcp restart %s reconnects it", server, server)
+	}
+	return c.GetPrompt(ctx, name, args)
+}
+
 var validServerName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// ValidServerName reports whether name may name a server: one that fails is
+// never connected, so a view listing configured servers leaves it out too.
+func ValidServerName(name string) bool { return validServerName.MatchString(name) }
 
 // Tools returns the gateway's tools as agent-facing tools, namespaced by
 // server so a malicious server cannot shadow a native tool.

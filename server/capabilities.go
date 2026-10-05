@@ -221,7 +221,7 @@ func (s *Server) perSessionTools() []capTool {
 	// the same way, and every session has them.
 	for _, t := range []tools.Tool{agent.Task{Agents: s.state.agentDefs()}, agent.Tasks{}} {
 		out = append(out, capTool{Name: t.Name(), Description: firstSentence(t.Description()),
-			Mutates: t.Mutates(), Source: "builtin"})
+			Mutates: mayMutate(t), Source: "builtin"})
 	}
 	return out
 }
@@ -240,7 +240,7 @@ func (s *Server) getCapabilities(w http.ResponseWriter, _ *http.Request) {
 	}
 	if reg != nil {
 		for _, t := range reg.All() {
-			ct := capTool{Name: t.Name(), Description: firstSentence(t.Description()), Mutates: t.Mutates(), Source: "builtin"}
+			ct := capTool{Name: t.Name(), Description: firstSentence(t.Description()), Mutates: mayMutate(t), Source: "builtin"}
 			if rest, ok := strings.CutPrefix(t.Name(), "mcp__"); ok {
 				ct.Source = "mcp"
 				ct.Server, _, _ = strings.Cut(rest, "__")
@@ -312,4 +312,11 @@ func bashTool(reg *tools.Registry) (tools.Tool, bool) {
 		return nil, false
 	}
 	return reg.Get("bash")
+}
+
+// mayMutate is whether some call of t can change state: a tool that mutates
+// by its arguments, such as task with a worktree role, is reported as one.
+func mayMutate(t tools.Tool) bool {
+	_, byCall := t.(tools.CallMutator)
+	return t.Mutates() || byCall
 }

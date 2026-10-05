@@ -545,3 +545,54 @@ func TestOmittedDeltasExcuseOnlyTheirOwnGaps(t *testing.T) {
 		t.Fatalf("a lost message was excused as deltas: %+v", got.Findings)
 	}
 }
+
+// A gap before a model.call whose turn streamed no reply or reasoning holds
+// no deltas, so a steer or a retried call lost there is not excused.
+func TestOmittedDeltasNeedAStreamedReply(t *testing.T) {
+	omits := Options{Omitted: []string{"agent.delta", "agent.reasoning.delta"}}
+	r := (&rec{}).user("x")
+	r.add(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "steer"})
+	r.model(100, 0, 8192)
+	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "a", Tool: "read", Args: json.RawMessage(`{"path":"a"}`)})
+	r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "a", Tool: "read", Content: "a"})
+	r.model(120, 0, 8192).add(agent.EvAgentMessage, agent.ActorAgent, agent.Trusted, agent.Message{Text: "done"}).end(agent.TermCompleted)
+	var cut []agent.Event
+	for _, e := range r.evs {
+		if !strings.Contains(string(e.Payload), "steer") {
+			cut = append(cut, e)
+		}
+	}
+	if got := AnalyzeWith("s-test", cut, omits); has(got, "record-gap") == nil || len(got.Integrity.Omitted) != 0 {
+		t.Fatalf("a lost steer before a call with no reply was excused: %+v %+v", got.Integrity, got.Findings)
+	}
+}
+
+// A session only people worked in, with no agent run, is not reported as
+// running; one with an agent run and no end still is.
+func TestAWorkbenchOnlySessionHasNoAgentRun(t *testing.T) {
+	r := &rec{}
+	r.add(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, map[string]string{"origin": "chat"})
+	r.person("u1", `{"command":"ls"}`, "a.txt", false, 5, false)
+	if got := Analyze("s", r.evs).Outcome; got != "no agent run" {
+		t.Fatalf("a terminal-only session's outcome is %q", got)
+	}
+	r.user("now you").model(100, 0, 8192)
+	if got := Analyze("s", r.evs).Outcome; got != "running" {
+		t.Fatalf("a session with an agent run and no end is %q", got)
+	}
+	r.end(agent.TermCompleted)
+	if got := Analyze("s", r.evs).Outcome; got != string(agent.TermCompleted) {
+		t.Fatalf("an ended session is %q", got)
+	}
+}
+
+// A suggestion's model call is no turn, but its tokens count in the totals,
+// as they do in the session's own.
+func TestSuggestionTokensCountInTheTotals(t *testing.T) {
+	r := (&rec{}).user("go").model(1000, 0, 32768).end(agent.TermCompleted)
+	r.add(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{Purpose: "suggestion", TokensIn: 300, TokensOut: 20, LatencyMS: 100})
+	got := Analyze("s-test", r.evs)
+	if got.Totals.Turns != 1 || got.Totals.TokensIn != 1300 || got.Totals.TokensOut != 70 || got.Totals.ModelMS != 1000 {
+		t.Fatalf("totals %+v", got.Totals)
+	}
+}

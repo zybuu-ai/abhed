@@ -56,10 +56,13 @@ stream-json**, an info finding, and is no reason to exit 3. Deltas stream while
 the model answers and are recorded just before its `model.call`, after the
 event that prompted it (the message, a tool's result, a denial, a background
 result, a wake, a compaction or a model switch) and once every call asked for
-has a result or a denial. Any other gap is still `record-gap`, critical, such
-as a missing `observation` or `agent.message`. A `user.message` or a retried
-`model.call` removed from right before a `model.call` cannot be told from
-omitted deltas, since stream-json carries no per-event hash.
+has a result or a denial; and only a call that streamed something has deltas,
+so the gap is excused only where that `model.call`'s turn recorded an
+`agent.message` or `agent.reasoning`, or the call failed part way. Any other
+gap is still `record-gap`, critical, such as a missing `observation` or
+`agent.message`. A `user.message` or a retried `model.call` removed from right
+before a `model.call` that streamed a reply cannot be told from omitted
+deltas, since stream-json carries no per-event hash.
 
 HawkEYE fails closed when it cannot tell. A capture that ends with a result
 line naming nothing omitted and holds no deltas may be stream-json from an
@@ -81,7 +84,7 @@ capture does not say it left any out.
 
 | Section | What it tells you |
 |---|---|
-| Summary | outcome, the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
+| Summary | outcome (how the session ended; `running` with no end recorded; `no agent run` for a session only people worked in, at the workbench's terminal or editor), the model each call went to (a switch shows as `a → b`), wall clock split between model and tools, tokens in and out, cache hit rate, peak context against the window |
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of is marked `!` |
@@ -89,11 +92,20 @@ capture does not say it left any out.
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
 
+The tokens in the summary and per turn are the conversation's own model
+calls. A next-prompt suggestion's call (`model.call` with `purpose:
+"suggestion"`) is left out, though the session's own totals and its budget
+count it, so HawkEYE's total can be lower than the session's.
+
 A turn stopped while the model was still replying counts the tokens its
 provider had reported by then: Anthropic reports the prompt when the reply
 starts, and some OpenAI-compatible servers report usage on every chunk. Most
 OpenAI-compatible servers report it only at the end of a reply, so a turn
 stopped part way there is recorded with no tokens; nothing is estimated.
+
+The summary's tokens and model time include the calls made outside the
+conversation, such as next-prompt suggestions, as the session's own totals
+do. They are not turns, so the Turns table leaves them out.
 
 The policy step is one of `hook`, `deny`, `destructive`, `screen`, `ask`, `mode`,
 `allow` or `default` — the stage of the [evaluation order](04-permissions.md#the-order) that

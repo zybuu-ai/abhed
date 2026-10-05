@@ -54,7 +54,8 @@ Each is a property Abhed asserts. Breaking any one is a critical finding.
    network by design, each off unless configured except the first: the model
    endpoint, and the opt-in host-process tools in
    [03-security §6](../architecture/03-security.md) — `ssh`, the `k8s_*`
-   tools, remote RAG, `web_search`, `web_fetch` — and remote MCP servers.
+   tools, remote RAG, `web_search`, `web_fetch` — and MCP servers, local or
+   remote, which run outside the sandbox ([03-security §5](../architecture/03-security.md)).
    What `web_fetch` asserts instead is a target in its own right:
    - no internal, loopback, link-local or metadata address is reached, on any
      redirect hop, however the host resolves or is spelled;

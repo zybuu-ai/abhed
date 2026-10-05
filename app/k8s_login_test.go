@@ -76,3 +76,22 @@ func TestDoctorFlagsAnInsecureKubeconfigCluster(t *testing.T) {
 		t.Fatalf("the doctor flags a verified kubeconfig cluster:\n%s", out)
 	}
 }
+
+// The kubeconfig's own insecure-skip-tls-verify is warned at start too, not
+// only by the doctor.
+func TestInsecureKubeconfigWarnsAtStart(t *testing.T) {
+	kube := filepath.Join(t.TempDir(), "config")
+	body := "apiVersion: v1\nclusters:\n- cluster:\n    server: https://kube.example:6443\n    insecure-skip-tls-verify: true\n" +
+		"  name: c\ncontexts:\n- context:\n    cluster: c\n    user: u\n  name: ctx\ncurrent-context: ctx\nusers:\n- name: u\n  user:\n    token: t\n"
+	if err := os.WriteFile(kube, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.K8s.Enabled, cfg.K8s.Kubeconfig = true, kube
+	var warn bytes.Buffer
+	toolset.InfraTools(cfg, secrets.Open(filepath.Join(t.TempDir(), "s.json")),
+		func(f string, a ...any) { fmt.Fprintf(&warn, f+"\n", a...) })
+	if !strings.Contains(warn.String(), `the kubeconfig skips TLS verification for context "ctx"`) {
+		t.Fatalf("no warning: %q", warn.String())
+	}
+}

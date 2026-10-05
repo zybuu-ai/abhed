@@ -33,6 +33,9 @@ const statuslineMax = 4 << 10
 // tier, as opposed to one refused for where its script is.
 var errNoProcessSandbox = errors.New("not run: it runs only under the process sandbox, which is not available here")
 
+// errStatuslineSlow is a run that ran out of time.
+var errStatuslineSlow = errors.New("the statusline command took longer than")
+
 // processSandbox builds the statusline's backend; a test replaces it.
 var processSandbox = func(p sandbox.Policy) sandbox.Sandbox { return sandbox.NewProcess(p) }
 
@@ -162,7 +165,7 @@ func runStatusline(ctx context.Context, sb sandbox.Sandbox, cwd, command string,
 	cmd.WaitDelay = 100 * time.Millisecond
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return "", fmt.Errorf("the statusline command took longer than %d ms", statuslineTimeout.Milliseconds())
+			return "", fmt.Errorf("%w %d ms", errStatuslineSlow, statuslineTimeout.Milliseconds())
 		}
 		return "", err
 	}
@@ -300,6 +303,12 @@ func (c *cliState) statuslineReady() (sandbox.Sandbox, string, string) {
 func (c *cliState) statuslineFailed(err error) string {
 	c.statuslineMu.Lock()
 	defer c.statuslineMu.Unlock()
+	// The first run starts the sandbox and the script's interpreter cold, and
+	// one running out of time was named as failing; the next is judged.
+	if errors.Is(err, errStatuslineSlow) && !c.statuslineSlow {
+		c.statuslineSlow = true
+		return ""
+	}
 	if c.statuslineWarned {
 		return ""
 	}

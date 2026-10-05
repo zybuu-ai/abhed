@@ -151,6 +151,8 @@ func toolTitle(tool string) string {
 		return "Grep"
 	case "task":
 		return "Task"
+	case "todo":
+		return "Todos"
 	case "web_fetch":
 		return "Fetch"
 	case "web_search":

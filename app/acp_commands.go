@@ -109,7 +109,9 @@ func commandsUpdate(s *acpSession) map[string]any {
 
 // slashCommand runs a prompt that names a command. handled is false for any
 // other prompt, which goes to the agent as it is.
-func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string) (err error, handled bool) {
+// withAttached records what the person attached and adds it to a prompt that
+// goes to the model; a built-in that runs no prompt does not call it.
+func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string, withAttached func(string) string) (err error, handled bool) {
 	if !strings.HasPrefix(text, "/") {
 		return nil, false
 	}
@@ -150,7 +152,7 @@ func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string) 
 			return nil, true
 		}
 		s.record(agent.EvCommandInvoked, invoked)
-		_, err := s.agent.Run(ctx, customcmd.Expand(cmd.custom.Body, args))
+		_, err := s.agent.Run(ctx, withAttached(customcmd.Expand(cmd.custom.Body, args)))
 		return err, true
 	default:
 		s.record(agent.EvCommandInvoked, invoked)
@@ -158,7 +160,7 @@ func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string) 
 		if args != "" {
 			prompt += " " + args
 		}
-		_, err := s.agent.Run(ctx, prompt)
+		_, err := s.agent.Run(ctx, withAttached(prompt))
 		return err, true
 	}
 }
@@ -174,12 +176,26 @@ func runCompact(_ *acpConn, ctx context.Context, s *acpSession, _ string) (strin
 	if e != nil {
 		return "", errors.New(e.Message)
 	}
-	s.record(agent.EvCompactStarted, map[string]any{"trigger": "manual", "by": agent.ByUser})
-	info, err := parts.Loop.Compact(ctx)
+	info, err := compactRecorded(ctx, s, parts.Loop)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Compacted: %d tokens to %d.\n", info.BeforeTokens, info.AfterTokens), nil
+}
+
+// compactRecorded is a manual compaction with its start recorded, and its
+// failure too: a start with no end read as a compaction still running.
+func compactRecorded(ctx context.Context, s *acpSession, l *agent.Loop) (agent.Compaction, error) {
+	s.record(agent.EvCompactStarted, map[string]any{"trigger": "manual", "by": agent.ByUser})
+	info, err := l.Compact(ctx)
+	if err != nil && s.inner {
+		// As the loop records a failed automatic compaction: by the system.
+		if _, rerr := l.Recorder.Record(agent.EvCompactDone, agent.ActorSystem, agent.Trusted,
+			map[string]any{"trigger": "manual", "error": err.Error()}); rerr != nil {
+			warnf("the record did not take %s: %v", agent.EvCompactDone, rerr)
+		}
+	}
+	return info, err
 }
 
 func runUndo(c *acpConn, _ context.Context, s *acpSession, _ string) (string, error) {

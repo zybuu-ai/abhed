@@ -30,6 +30,10 @@ func runBang(ctx context.Context, st *cliState, r *ui.Renderer, cmd string) {
 		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "! runs a shell command: !git status"})
 		return
 	}
+	if err := st.commandSetup("run ! commands"); err != nil {
+		sf.Append(ui.Block{Kind: ui.BlockError, Text: err.Error()})
+		return
+	}
 	res, ran := personBash(ctx, st, sf, cmd, "run by the person with !", "")
 	if !ran {
 		return

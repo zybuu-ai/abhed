@@ -23,10 +23,25 @@ ok()   { printf '  \033[32mok\033[0m   %s\n' "$*"; }
 warn() { printf '  \033[33mwarn\033[0m %s\n' "$*"; }
 die()  { printf '  \033[31mfail\033[0m %s\n' "$*"; exit 1; }
 
+# Each process this script starts has its PID written here, and --stop ends
+# only those PIDs: a kill by name also ended processes it never started.
+pidfile() { echo "$LOGDIR/$1.pid"; }
+stop_started() { # name, the command word the PID must still be running
+  local f pid
+  f="$(pidfile "$1")"
+  pid="$(cat "$f" 2>/dev/null)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -q "$2"; then
+    kill "$pid" && ok "$1 stopped (pid $pid)"
+  else
+    warn "$1 was not started by this script, or has ended"
+  fi
+  rm -f "$f"
+}
+
 if [[ "${1:-}" == "--stop" ]]; then
   say "Stopping Abhed stack"
-  pkill -f "abhed serve" && ok "abhed serve stopped" || warn "abhed serve was not running"
-  pkill -f "ollama serve" && ok "ollama stopped"      || warn "ollama was not running"
+  stop_started abhed "abhed serve"
+  stop_started ollama "ollama serve"
   echo "  (Postgres left running: brew services stop postgresql@16)"
   exit 0
 fi
@@ -54,8 +69,10 @@ if curl -sf --max-time 3 http://127.0.0.1:11434/api/version >/dev/null; then
 else
   # Flash attention + a q8 KV cache are what let a 26B model hold a long
   # context in 36 GB. Do not drop them.
-  (OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
-     nohup ollama serve > "$LOGDIR/ollama.log" 2>&1 &)
+  OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
+     nohup ollama serve > "$LOGDIR/ollama.log" 2>&1 &
+  echo $! > "$(pidfile ollama)"
+  disown
   for _ in $(seq 1 20); do
     curl -sf --max-time 2 http://127.0.0.1:11434/api/version >/dev/null && break
     sleep 1
@@ -88,7 +105,9 @@ if lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1; then
     die "port $PORT is taken by something that is not abhed - lsof -nP -iTCP:$PORT -sTCP:LISTEN"
   fi
 else
-  ( cd "$WORKSPACE" && nohup abhed serve -addr "$ADDR" > "$LOGDIR/abhed-serve.log" 2>&1 & )
+  ( cd "$WORKSPACE" && exec nohup abhed serve -addr "$ADDR" > "$LOGDIR/abhed-serve.log" 2>&1 ) &
+  echo $! > "$(pidfile abhed)"
+  disown
   for _ in $(seq 1 20); do
     curl -sf --max-time 2 "http://127.0.0.1:$PORT/v1/health" >/dev/null && break
     sleep 1

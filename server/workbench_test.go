@@ -443,3 +443,33 @@ func TestWorkbenchChangesShowsWhatTheAgentEdited(t *testing.T) {
 		t.Errorf("cross-tenant changes: %d %+v", code, other)
 	}
 }
+
+// A long-lived server holds one baseline copy per changed file, not one per
+// save, and the changes view still diffs against the first.
+func TestServerHoldsOneBaselinePerFile(t *testing.T) {
+	wb := manualBench(t, nil)
+	wb.write("a.txt", "one\n")
+	_, f := wb.file("a.txt")
+	for i := 0; i < 20; i++ {
+		rec := wb.send("acme", "PUT", "file", saveRequest{Path: "a.txt", Content: fmt.Sprintf("v%d\n", i), Base: f.Hash})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("save %d: %d %s", i, rec.Code, rec.Body)
+		}
+		var out saveResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		f.Hash = out.Hash
+	}
+	wb.s.mu.RLock()
+	live := wb.s.running[wb.session]
+	wb.s.mu.RUnlock()
+	if n := len(live.undo.Checkpoints()); n != 1 {
+		t.Fatalf("%d copies held for one file", n)
+	}
+	changed := live.undo.Changed()
+	if len(changed) != 1 {
+		t.Fatalf("changed %v", changed)
+	}
+	if before, _, _ := live.undo.Original(changed[0]); string(before) != "one\n" {
+		t.Fatalf("the baseline is %q, want the file before the first save", before)
+	}
+}

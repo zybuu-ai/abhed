@@ -143,6 +143,9 @@ func (k *keyReader) read() (key, error) {
 // "ESC P"; a person's Alt key waits this long before it is a key.
 const replyWait = 150 * time.Millisecond
 
+// replyTotal bounds the whole of a reply's arrival, however short its gaps.
+const replyTotal = 2 * replyWait
+
 // replyFollows reports whether what arrives within replyWait after "ESC ]"
 // or "ESC P" begins as a terminal's answer does: "digits;" for an OSC, as
 // the colour answer "11;rgb:…" does, and "1$r", "0$r", "1+r", "0+r" or ">|"
@@ -219,12 +222,16 @@ const replyMax = 4096
 func (k *keyReader) controlString(kind rune, alt bool) (key, error) {
 	limit := min(replyMax, k.br.Size()-1)
 	n := 0
+	// A reply is a burst: typing that kept coming in short gaps was held,
+	// unshown, until it stopped. Past replyTotal it is typing.
+	deadline := k.now().Add(replyTotal)
 	for {
 		if n >= limit {
 			return key{r: kind, alt: alt}, nil
 		}
 		if k.br.Buffered() <= n {
-			if k.ready != nil && !k.ready(replyWait) {
+			wait := min(replyWait, deadline.Sub(k.now()))
+			if k.ready != nil && (wait <= 0 || !k.ready(wait)) {
 				return key{r: kind, alt: alt}, nil
 			}
 			if _, err := k.br.Peek(n + 1); err != nil && k.br.Buffered() <= n {
@@ -275,6 +282,10 @@ func (k *keyReader) csi() (key, error) {
 	}
 	if p := params.String(); strings.HasPrefix(p, "?") && (final == 'c' || final == 'y') || strings.HasSuffix(p, "$") && final == 'y' {
 		return key{code: kReply, paste: "[" + p + string(final)}, nil
+	}
+	// Focus reports (DEC 1004): the terminal gained or lost focus.
+	if params.Len() == 0 && (final == 'I' || final == 'O') {
+		return key{code: kReply, paste: "[" + string(final)}, nil
 	}
 	ps := strings.Split(params.String(), ";")
 	num := func(i int) int {

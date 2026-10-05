@@ -3,6 +3,8 @@
 package sandbox
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -41,8 +43,16 @@ func EndWithCommand(cmd *exec.Cmd) *exec.Cmd {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setsid = true
+	// Every process the command starts inherits this, a daemon that left its
+	// session and its parent included, so a cancel can still find it.
+	marker := commandMarker()
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, marker)
 	backend := cmd.Cancel
 	cmd.Cancel = func() error {
+		defer endMarked(marker)
 		// A reaped leader's group id could be reused, so none is signalled once
 		// Wait has reaped it; a cancel racing that reap is the window left.
 		if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
@@ -100,5 +110,47 @@ func endTree(root int) {
 	}
 	for _, m := range members {
 		m.kill()
+	}
+}
+
+// markerName is the variable that marks every process of one command.
+const markerName = "ABHED_COMMAND_ID"
+
+// commandMarker is a fresh markerName=value, unguessable, for one command.
+func commandMarker() string {
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return markerName + "=" + hex.EncodeToString(b[:])
+}
+
+// endMarked stops, pass after pass, every process of this user that carries
+// marker, then kills them: what a command left running after its parent and
+// its session were gone. One that cleared its environment is not found.
+func endMarked(marker string) {
+	stopped := map[int]bool{}
+	for range maxSweepPasses {
+		fresh := 0
+		for _, pid := range marked(marker) {
+			if !stopped[pid] && syscall.Kill(pid, stopSignal) == nil {
+				stopped[pid] = true
+				fresh++
+			}
+		}
+		if fresh == 0 {
+			break
+		}
+	}
+	// Read again once stopped: a pid freed and taken by another process in
+	// between no longer carries the marker, and is continued, not killed.
+	still := map[int]bool{}
+	for _, pid := range marked(marker) {
+		still[pid] = true
+	}
+	for pid := range stopped {
+		if still[pid] {
+			_ = syscall.Kill(pid, killSignal)
+		} else {
+			_ = syscall.Kill(pid, syscall.SIGCONT)
+		}
 	}
 }

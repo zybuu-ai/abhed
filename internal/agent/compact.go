@@ -117,7 +117,10 @@ func (c *Compactor) headroom(window int) int {
 	if c.Headroom > 0 {
 		return c.Headroom
 	}
-	return window / 4
+	// Never more than half the threshold's share: a quarter of the window
+	// alone passed a low compact_at (0.05), compacting every turn however
+	// little history there was.
+	return min(window/4, int(float64(window)*c.Threshold/2))
 }
 
 const summaryPrompt = `Summarize the conversation so far so that another engineer could pick up exactly where it left off.
@@ -235,11 +238,13 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 	}
 
 	compacted := make([]model.Message, 0, len(recent)+1)
-	compacted = append(compacted, model.Message{
-		Role: model.RoleUser,
-		Content: "[Earlier conversation was compacted to stay within the context " +
-			"window. Summary of what happened:]\n\n" + summary,
-	})
+	content := summaryHead + summary
+	// The person's first message is kept word for word, whatever the summary
+	// says: a summariser restated it, or gave its own plan, and lost a code word.
+	if first := firstRequest(older); first != "" {
+		content += firstRequestMark + first
+	}
+	compacted = append(compacted, model.Message{Role: model.RoleUser, Content: content})
 	compacted = append(compacted, recent...)
 
 	after, _ := c.Adapter.CountTokens(model.Request{System: system, Messages: compacted})
@@ -249,6 +254,32 @@ func (c *Compactor) CompactWith(ctx context.Context, trigger string, system stri
 		Summary:      summary,
 		Trigger:      trigger,
 	}, nil
+}
+
+const (
+	summaryHead      = "[Earlier conversation was compacted to stay within the context window. Summary of what happened:]\n\n"
+	firstRequestMark = "\n\n[The person's first message, word for word:]\n"
+	// firstRequestMax bounds the first message kept whole.
+	firstRequestMax = 4000
+)
+
+// firstRequest is the person's first message in older: carried over from an
+// earlier summary that kept it, or the first one there, cut to firstRequestMax.
+func firstRequest(older []model.Message) string {
+	for _, m := range older {
+		if m.Role != model.RoleUser {
+			continue
+		}
+		if strings.HasPrefix(m.Content, summaryHead) {
+			_, kept, _ := strings.Cut(m.Content, firstRequestMark)
+			return kept // "" for a summary from before it was kept
+		}
+		if r := []rune(m.Content); len(r) > firstRequestMax {
+			return string(r[:firstRequestMax]) + "…"
+		}
+		return m.Content
+	}
+	return ""
 }
 
 func (c *Compactor) summarize(ctx context.Context, older []model.Message, focus string) (string, error) {
