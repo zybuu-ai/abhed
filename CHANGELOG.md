@@ -283,6 +283,9 @@ All notable changes to Abhed are recorded here. The format follows
   `ABHED_COMMAND_ID`, and a timeout ends every process of the user that has
   it. A process that clears its environment, or on macOS one running a
   program Apple ships in the system, is still not found.
+- The container image's pypdf, which reads PDFs given to the agent, is
+  6.19.0, fixing three denial-of-service issues with crafted PDFs
+  (CVE-2026-102998, CVE-2026-102999, CVE-2026-103000).
 
 ### Added
 

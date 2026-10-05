@@ -98,7 +98,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
       openpyxl==3.1.5 \
       python-pptx==1.0.2 \
       reportlab==4.2.5 \
-      pypdf==6.18.1 \
+      pypdf==6.19.0 \
       matplotlib==3.9.2 \
       graphviz==0.20.3 \
  `# pip was only ever needed to install these; leaving it in the image is` \
