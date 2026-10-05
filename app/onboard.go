@@ -42,12 +42,8 @@ type lazySandbox struct {
 	floor sandbox.Tier
 }
 
-// startSandbox begins choosing the sandbox. It returns at once when the
-// answer cannot fail, and otherwise waits for it, so a configuration no
-// backend meets still refuses to start. With no tier required the answer
-// cannot fail either, but only a terminal session, whose footer shows the
-// answer when it lands, starts at the floor "none"; a headless run waits, so
-// its warning about running without a sandbox is still printed.
+// startSandbox begins choosing the sandbox, waiting only when the answer can
+// fail, or for a headless run with no tier required so its warning prints.
 func startSandbox(cfg config.Config, workspace string, terminal bool) (*lazySandbox, error) {
 	p, err := sandboxconfig.Policy(cfg, workspace)
 	if err != nil {

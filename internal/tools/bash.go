@@ -322,11 +322,16 @@ func rmArgForces(a string) bool {
 
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	res := b.run(ctx, s, raw)
-	res.Tier = b.tier()
-	if b.Sandbox != nil && b.RanUnder != nil {
-		res.Tier = b.RanUnder()
-	}
+	res.Tier = b.ranTier()
 	return res
+}
+
+// ranTier is the tier a command ran under, known once the sandbox is chosen.
+func (b Bash) ranTier() string {
+	if b.Sandbox != nil && b.RanUnder != nil {
+		return b.RanUnder()
+	}
+	return b.tier()
 }
 
 // tier is the sandbox tier commands run under, "none" without one, and ""
@@ -486,7 +491,7 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
 		content += "\n\n" + networkHint
-	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
+	} else if hint := sandboxHint(content); hint != "" && b.ranTier() != "none" {
 		content += "\n\n" + hint
 	}
 	return Result{

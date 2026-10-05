@@ -172,6 +172,12 @@ func TestBashOnTheHostGivesNoSandboxHint(t *testing.T) {
 		!strings.Contains(res.Content, "the sandbox denied") {
 		t.Fatalf("sandboxed result: %+v", res)
 	}
+	// Started before the sandbox was chosen, which then turned out to be none.
+	late := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, RanUnder: func() string { return "none" }}
+	if res := run(t, late, s, bashArgs{Command: `echo "x: Operation not permitted"`, Description: "print"}); res.Tier != "none" ||
+		strings.Contains(res.Content, "the sandbox denied") {
+		t.Fatalf("result once chosen as none: %+v", res)
+	}
 }
 
 // A command stopped by the run's own deadline says so, rather than advising a
