@@ -133,11 +133,9 @@ func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello world\nREVIEW-MARK\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// /review runs git where commands run; the container image has none, so
-	// no engine is reachable here and the host's git is used.
-	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
-	t.Setenv("CONTAINER_HOST", "unix:///nonexistent/podman.sock")
-	t.Setenv("CONTAINERD_ADDRESS", "/nonexistent/containerd.sock")
+	// /review runs git where commands run, and the container image has none,
+	// so the session gets a PATH with no container engine on it.
+	t.Setenv("PATH", pathWithout(t, "docker", "podman", "nerdctl"))
 	r := startTUI(t, stub, ws, 120, 30)
 	r.waitFor("the footer", false, func(s string) bool { return strings.Contains(s, "● default mode") })
 	r.send("!git --version\r")
@@ -154,4 +152,25 @@ func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
 		f := footerRows(r)
 		return strings.Contains(f, "● default mode") && !strings.Contains(f, "plan mode")
 	})
+}
+
+// pathWithout is a PATH of links to every program on PATH but the named ones.
+func pathWithout(t *testing.T, names ...string) string {
+	t.Helper()
+	skip := map[string]bool{}
+	for _, n := range names {
+		skip[n] = true
+	}
+	dir := t.TempDir()
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, _ := os.ReadDir(d)
+		for _, e := range entries {
+			if skip[e.Name()] {
+				continue
+			}
+			// The first program of a name on PATH wins, as a lookup would.
+			_ = os.Symlink(filepath.Join(d, e.Name()), filepath.Join(dir, e.Name()))
+		}
+	}
+	return dir
 }
