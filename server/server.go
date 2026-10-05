@@ -3779,7 +3779,8 @@ func holderID(nodeID string) string {
 // stops being found, so the turns most likely to need an approval — the long
 // ones — are exactly the ones whose approvals get misrouted.
 //
-// The returned function stops the heartbeat; it is safe to call more than once.
+// The returned function stops the heartbeat and waits for a beat in flight;
+// it is safe to call more than once.
 func (s *Server) heartbeatNode(ctx context.Context, sessionID string, lost func()) func() {
 	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat, lost)
 }
@@ -3792,8 +3793,17 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 	if _, ok := s.liveness(); !ok {
 		return func() {}
 	}
-	ctx, stop := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		// lost runs after done closes, so it may call stop itself.
+		var lostIt bool
+		defer func() {
+			close(done)
+			if lostIt && lost != nil {
+				lost()
+			}
+		}()
 		t := time.NewTicker(every)
 		defer t.Stop()
 		lastOK := time.Now()
@@ -3817,14 +3827,13 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 				case err != nil && time.Since(lastOK) < nodeStale-every:
 					continue // logged; the next beat tries again while the claim still reads as live
 				}
-				if ctx.Err() == nil && lost != nil {
-					lost()
-				}
+				lostIt = ctx.Err() == nil
 				return
 			}
 		}
 	}()
-	return stop
+	// Waiting for the beat means none can claim again after a release.
+	return func() { cancel(); <-done }
 }
 
 // renewNode refreshes this process's claim: fenced where the store can
