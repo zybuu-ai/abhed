@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-10-05
+
 ### Security
 
 - Renaming a file in the `/ide` Explorer put its raw name in the box, where
