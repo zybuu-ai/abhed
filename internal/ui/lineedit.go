@@ -59,7 +59,12 @@ func RestoreOnPanic() {
 
 func (l *LineReader) emergencyRestore() {
 	if l.tty != nil {
-		_, _ = l.tty.WriteString("\x1b[0m" + modesOff + "\r\n")
+		// The title SetAttention pushed is popped, so the shell's comes back.
+		pop := ""
+		if l.d != nil && l.d.attn.pushed.Swap(false) {
+			pop = "\x1b[23;0t"
+		}
+		_, _ = l.tty.WriteString("\x1b[0m" + modesOff + pop + "\r\n")
 	}
 	if l.state != nil {
 		_ = term.Restore(l.fd, l.state)
@@ -67,12 +72,13 @@ func (l *LineReader) emergencyRestore() {
 }
 
 // Terminal modes the dock turns on while it runs, and off when it closes:
-// bracketed paste, so a paste arrives as one; and the keyboard protocol's
-// "disambiguate" level, so Shift+Enter and a lone Esc can be told apart.
-// A terminal that knows neither ignores both.
+// bracketed paste, so a paste arrives as one; the keyboard protocol's
+// "disambiguate" level, so Shift+Enter and a lone Esc can be told apart; and
+// focus reports, so a notification goes only to a terminal not being watched.
+// A terminal that knows none of them ignores them.
 const (
-	modesOn  = "\x1b[?2004h\x1b[>1u"
-	modesOff = "\x1b[<u\x1b[?2004l\x1b[?25h"
+	modesOn  = "\x1b[?2004h\x1b[>1u\x1b[?1004h"
+	modesOff = "\x1b[?1004l\x1b[<u\x1b[?2004l\x1b[?25h"
 )
 
 // errInterrupted is Ctrl-C on an empty line: the session decides whether it
@@ -486,6 +492,7 @@ func (l *LineReader) Close() {
 			l.d.commit(&rawBlock{text: tail})
 		}
 		l.d.scr.clear()
+		l.d.restoreTitle()
 		l.d.stopped = true
 		l.d.scr.raw(modesOff)
 		l.d.mu.Unlock()

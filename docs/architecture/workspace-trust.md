@@ -117,6 +117,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `permissions.deny`, `permissions.ask` | **applied**, added to the rules already there, so the defaults stay |
 | `permissions.mode` | **applied** only for `plan` or `default`, and only when that is narrower than the current mode |
 | `permissions.allow` | ignored: an allow rule widens what runs without asking |
+| `permissions.git_extensions` | ignored: a git extension opted in runs without the destructive step's question |
 | `sandbox.min_tier` | **applied** only for a stronger tier (none < process < container < vm) |
 | `sandbox.allow_network` | **applied** only when false |
 | `sandbox.max_memory_mb`, `max_procs`, `terminal_idle_minutes` | **applied** only when lower than the value in effect; zero means the default (4096, 512 and 30) |
@@ -144,7 +145,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts` | ignored: each names an endpoint, hosts, credentials or machines |
+| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts` | ignored: each names an endpoint, hosts, credentials or machines |
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
@@ -152,8 +153,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `commands.dirs`, `rules.dirs` | ignored: a custom command or a rule is instructions to the agent |
 | `statusline` | ignored: a statusline command is a process |
 | `memory.auto` | **applied** only when false, trusted or not: a workspace never turns auto memory on |
-| `memory.import_depth` | **applied** only when lower; zero means the default of 5, and no file may set more than 10 |
-| `cli.mode_cycle`, `record.dir`, `record.retention_days`, `hooks.disabled` | ignored, trusted or not, as in the user's own file: only the managed configuration makes these |
+| `memory.import_depth` | **applied** only when lower, trusted or not; zero means the default of 5, and no file may set more than 10 |
+| `cli.mode_cycle`, `record.dir`, `record.retention_days`, `hooks.disabled`, `hooks.managed_only` | ignored, trusted or not, as in the user's own file: only the managed configuration makes these |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse

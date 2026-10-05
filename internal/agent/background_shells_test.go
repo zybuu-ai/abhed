@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -27,6 +29,8 @@ type stepAdapter struct {
 	mu    sync.Mutex
 	steps []func(req model.Request) scriptedTurn
 	seen  int
+	// reqs are the requests sent, for a test that checks what the model saw.
+	reqs []model.Request
 }
 
 func (*stepAdapter) Name() string                           { return "step" }
@@ -35,6 +39,7 @@ func (*stepAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
 
 func (s *stepAdapter) Complete(_ context.Context, req model.Request) (<-chan model.Chunk, error) {
 	s.mu.Lock()
+	s.reqs = append(s.reqs, req)
 	turn := scriptedTurn{text: "done"}
 	if s.seen < len(s.steps) {
 		turn = s.steps[s.seen](req)
@@ -96,6 +101,7 @@ func newShellRig(t *testing.T, wake WakeMode, mode policy.Mode, pol BackgroundPo
 	}
 	pol.MaxLive, pol.Settle = 4, 20*time.Millisecond
 	NewBackground(l, pol)
+	l.Movable = true
 	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
 	return &shellRig{l: l, store: store}
 }
@@ -341,6 +347,25 @@ func TestShellSecretsRedacted(t *testing.T) {
 			t.Fatal("the notice holds the value")
 		}
 	}
+	// What the model was sent, the shell's output and its end notice included,
+	// carries the name, never the value: the record redacting is not enough.
+	if _, err := r.l.Run(context.Background(), "next"); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	named := false
+	for _, req := range a.reqs {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Content, "tok-9f8e7d") {
+				t.Fatalf("a request to the model carried the value: %q", m.Content)
+			}
+			named = named || strings.Contains(m.Content, "[secret:API_TOKEN]")
+		}
+	}
+	if !named {
+		t.Fatal("no request carried the shell's redacted output")
+	}
 }
 
 // Closing the session, and a stop of all background work, kill its shells.
@@ -434,11 +459,16 @@ func TestSubagentCannotStartABackgroundShell(t *testing.T) {
 		{text: "could not"},
 		{text: "done"},
 	}}
-	l, _, _ := taskTree(t, a, AutoApprove{Yes: true}, store, store, false)
+	asked := &bashAskCounter{}
+	l, _, _ := taskTree(t, a, asked, store, store, false)
 	NewBackground(l, BackgroundPolicy{MaxShells: DefaultMaxShells, MaxLive: 4, Settle: 20 * time.Millisecond, Wake: WakeNotify})
 	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
 	if _, err := l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
+	}
+	// Refused before anyone is asked: it used to be approved, then refused.
+	if n := asked.bash.Load(); n != 0 {
+		t.Fatalf("the person was asked %d times about a start that could not happen", n)
 	}
 	parent, _ := store.Events("parent")
 	if hasEvent(parent, EvShellStarted) || len(l.Background.Tasks()) != 0 {
@@ -449,10 +479,20 @@ func TestSubagentCannotStartABackgroundShell(t *testing.T) {
 		child = s.Session
 	}
 	evs, _ := store.Events(child)
-	obs := payloads[Observation](evs, EvObservation)
-	if len(obs) != 1 || !obs[0].IsError || !strings.Contains(obs[0].Content, "a subagent cannot start a background command") {
-		t.Fatalf("the subagent's call was not refused with its reason: %+v", obs)
+	denied := payloads[map[string]string](evs, EvActionDenied)
+	if len(denied) != 1 || denied[0]["step"] != "precheck" || !strings.Contains(denied[0]["reason"], "a subagent cannot start a background command") {
+		t.Fatalf("the subagent's call was not refused with its reason: %+v", denied)
 	}
+}
+
+// bashAskCounter approves everything and counts the bash asks.
+type bashAskCounter struct{ bash atomic.Int32 }
+
+func (c *bashAskCounter) Approve(_ context.Context, tool string, _ json.RawMessage, _ policy.Result) (bool, error) {
+	if tool == "bash" {
+		c.bash.Add(1)
+	}
+	return true, nil
 }
 
 // shell_output redacts across reads: a secret split by the read cursor is
@@ -503,3 +543,253 @@ type spanOnly struct{ r Redactor }
 
 func (s spanOnly) Redact(b []byte) []byte { return s.r.Redact(b) }
 func (s spanOnly) Span() int              { return s.r.Span() }
+
+// A command's output reaches the model redacted as the record keeps it, not
+// only in the record.
+func TestCommandSecretRedactedForTheModel(t *testing.T) {
+	a := &stepAdapter{steps: []func(model.Request) scriptedTurn{
+		func(model.Request) scriptedTurn {
+			return scriptedTurn{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(
+				`{"command":"echo token=$API_TOKEN","description":"use it","secrets":["API_TOKEN"]}`)}}}
+		},
+	}}
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, a)
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	named := false
+	for _, req := range a.reqs {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Content, "tok-9f8e7d") {
+				t.Fatalf("a request to the model carried the value: %q", m.Content)
+			}
+			named = named || strings.Contains(m.Content, "[secret:API_TOKEN]")
+		}
+	}
+	if !named {
+		t.Fatal("the command's output did not reach the model redacted")
+	}
+}
+
+// shell.started names the tier the command was built under: a sandbox chosen
+// as its first command is built was read before, and named the one before.
+func TestShellStartedNamesTheTierItWasBuiltUnder(t *testing.T) {
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+	chosen := "none"
+	_, err := shellHost{b: r.l.Background}.StartShell(context.Background(), tools.ShellRequest{
+		Command: "true", Tier: "none", RanUnder: func() string { return chosen },
+		Build: func(ctx context.Context) (*exec.Cmd, error) {
+			chosen = "process" // the sandbox is chosen as the command is built
+			return exec.CommandContext(ctx, "true"), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := payloads[ShellStarted](r.events(t), EvShellStarted)
+	if len(started) != 1 || started[0].Sandbox != "process" {
+		t.Fatalf("shell.started: %+v", started)
+	}
+}
+
+// A read of a shell still running ends with how to stop it; an ended one's
+// does not.
+func TestShellOutputSaysHowToStopARunningShell(t *testing.T) {
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+	id := r.start(t, "sleep 30")
+	if res := r.run(t, "shell_output", map[string]any{"shell_id": id}); !strings.Contains(res.Content, "stop it with shell_kill (shell_id "+id+")") {
+		t.Fatalf("running: %s", res.Content)
+	}
+	r.run(t, "shell_kill", map[string]any{"shell_id": id})
+	if res := r.run(t, "shell_output", map[string]any{"shell_id": id}); strings.Contains(res.Content, "shell_kill") {
+		t.Fatalf("ended: %s", res.Content)
+	}
+}
+
+// Ctrl-B moves a running foreground command to the background: the call
+// returns with what it wrote so far and the shell's id, the command goes on
+// as a background shell, recorded as moved, and its later output is read
+// with shell_output.
+func TestForegroundCommandMovesToTheBackground(t *testing.T) {
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+	if n := r.l.MoveToBackground(); n != 0 {
+		t.Fatalf("moved %d with nothing running", n)
+	}
+	ctx, forget := r.l.withDetach(r.l.withShellHost(r.l.asParent(context.Background()), "c9"))
+	defer forget()
+	tool, _ := r.l.Tools.Get("bash")
+	raw, _ := json.Marshal(map[string]any{"command": "echo before; sleep 1; echo after", "description": "slow"})
+	done := make(chan tools.Result, 1)
+	go func() { done <- tool.Run(ctx, r.l.Session, raw) }()
+	waitFor(t, "the command to run", func() bool { return r.l.MoveToBackground() == 1 })
+	var res tools.Result
+	select {
+	case res = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call did not return when moved")
+	}
+	id := shellIDIn.FindString(res.Content)
+	if res.IsError || id == "" || !strings.Contains(res.Content, "moved this command to the background") {
+		t.Fatalf("result: %+v", res)
+	}
+	started := payloads[ShellStarted](r.events(t), EvShellStarted)
+	if len(started) != 1 || !started[0].FromForeground || started[0].CallID != "c9" {
+		t.Fatalf("shell.started: %+v", started)
+	}
+	waitFor(t, "the moved shell to end", func() bool { return hasEvent(r.events(t), EvShellEnded) })
+	// The move can land before or after "before" is read; either way each
+	// line is shown once, in the call's result or in shell_output.
+	out := r.run(t, "shell_output", map[string]any{"shell_id": id}).Content
+	if !strings.Contains(out, "after") || !strings.Contains(out, "exited 0") || strings.Count(res.Content+out, "before") != 1 {
+		t.Fatalf("result: %s\nshell_output: %s", res.Content, out)
+	}
+}
+
+// A command that ends normally is not moved, and a moved one outlives the
+// call that started it but not the session.
+func TestForegroundCommandNotMovedRunsAsBefore(t *testing.T) {
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+	ctx, forget := r.l.withDetach(r.l.withShellHost(r.l.asParent(context.Background()), "c1"))
+	defer forget()
+	tool, _ := r.l.Tools.Get("bash")
+	raw, _ := json.Marshal(map[string]any{"command": "echo hi", "description": "quick"})
+	res := tool.Run(ctx, r.l.Session, raw)
+	if res.IsError || !strings.Contains(res.Content, "hi") || strings.Contains(res.Content, "background") {
+		t.Fatalf("%+v", res)
+	}
+	if hasEvent(r.events(t), EvShellStarted) || r.l.MoveToBackground() != 0 {
+		t.Fatal("a finished command was moved")
+	}
+}
+
+// A moved command is stopped by shell_kill, as any background shell is.
+func TestMovedCommandStopsOnShellKill(t *testing.T) {
+	r := newShellRig(t, WakeNotify, policy.ModeBypass, BackgroundPolicy{}, nil)
+	ctx, forget := r.l.withDetach(r.l.withShellHost(r.l.asParent(context.Background()), "c2"))
+	defer forget()
+	tool, _ := r.l.Tools.Get("bash")
+	raw, _ := json.Marshal(map[string]any{"command": "sleep 30", "description": "long"})
+	done := make(chan tools.Result, 1)
+	go func() { done <- tool.Run(ctx, r.l.Session, raw) }()
+	waitFor(t, "the command to run", func() bool { return r.l.MoveToBackground() == 1 })
+	id := shellIDIn.FindString((<-done).Content)
+	start := time.Now()
+	r.run(t, "shell_kill", map[string]any{"shell_id": id})
+	waitFor(t, "the moved shell to end", func() bool { return hasEvent(r.events(t), EvShellEnded) })
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("shell_kill did not stop the moved command")
+	}
+	ended := payloads[ShellEnded](r.events(t), EvShellEnded)
+	if len(ended) != 1 || ended[0].State != ShellKilled {
+		t.Fatalf("shell.ended: %+v", ended)
+	}
+}
+
+// gatedAdapter answers once gate is closed, or ends with the call.
+type gatedAdapter struct{ gate chan struct{} }
+
+func (g *gatedAdapter) Name() string { return "gated" }
+func (g *gatedAdapter) Profile() model.Profile {
+	return model.Profile{Name: "gated", ContextWindow: 100000}
+}
+func (g *gatedAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
+func (g *gatedAdapter) Complete(ctx context.Context, _ model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 2)
+	go func() {
+		defer close(ch)
+		select {
+		case <-g.gate:
+			ch <- model.Chunk{Type: model.ChunkText, Text: "child done"}
+			ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{}}
+		case <-ctx.Done():
+			ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+		}
+	}()
+	return ch, nil
+}
+
+// Ctrl-B moves a running foreground subagent to the background: the call
+// returns as a background start does, the parent's record says the person
+// moved it, and its result arrives later as a background task's, with its
+// return marked background.
+func TestForegroundSubagentMovesToTheBackground(t *testing.T) {
+	store := NewMemStore()
+	g := &gatedAdapter{gate: make(chan struct{})}
+	l, _, _ := taskTree(t, g, AutoApprove{Yes: true}, store, store, false)
+	NewBackground(l, BackgroundPolicy{MaxShells: DefaultMaxShells, MaxLive: 4, Settle: 20 * time.Millisecond, Wake: WakeNotify})
+	l.Movable = true
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	ctx, forget := l.withDetach(l.withShellHost(l.asParent(context.Background()), "c1"))
+	defer forget()
+	tool, _ := l.Tools.Get("task")
+	raw, _ := json.Marshal(map[string]string{"prompt": "slow work", "description": "slow"})
+	done := make(chan tools.Result, 1)
+	go func() { done <- tool.Run(ctx, l.Session, raw) }()
+	waitFor(t, "the subagent to run", func() bool { return l.MoveToBackground() == 1 })
+	var res tools.Result
+	select {
+	case res = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call did not return when moved")
+	}
+	if res.IsError || !strings.Contains(res.Content, "Started in background: task_id") || !strings.Contains(res.Content, "moved this subagent") {
+		t.Fatalf("result: %+v", res)
+	}
+	if n := len(l.Background.Tasks()); n != 1 {
+		t.Fatalf("%d background tasks", n)
+	}
+	close(g.gate)
+	waitFor(t, "its return", func() bool {
+		evs, _ := store.Events("parent")
+		for _, r := range payloads[map[string]any](evs, EvSubagentReturn) {
+			if r["background"] == true && r["task_id"] != nil {
+				return true
+			}
+		}
+		return false
+	})
+	evs, _ := store.Events("parent")
+	moved := payloads[map[string]any](evs, EvSubagentBackgrounded)
+	if len(moved) != 1 || moved[0]["by"] != ByUser || moved[0]["task_id"] == nil {
+		t.Fatalf("subagent.backgrounded: %+v", moved)
+	}
+	if open := unreturned(evs); len(open) != 0 {
+		t.Fatalf("still owed: %v", open)
+	}
+	waitFor(t, "its notice", func() bool { return l.Background.Pending() > 0 || hasEvent(evs, EvSubagentNotice) })
+}
+
+// A subagent moved to the background with no return yet is owed, so a crash
+// reconciles it as a background child's.
+func TestMovedSubagentIsOwedUntilItReturns(t *testing.T) {
+	spawned, _ := json.Marshal(map[string]any{"session": "s-kid", "description": "slow"})
+	moved, _ := json.Marshal(map[string]any{"session": "s-kid", "task_id": "s-kid", "background": true})
+	evs := []Event{{Seq: 1, Type: EvSubagentSpawned, Payload: spawned}, {Seq: 2, Type: EvSubagentBackgrounded, Payload: moved}}
+	if open := unreturned(evs); len(open) != 1 || open[0] != "s-kid" {
+		t.Fatalf("owed: %v", open)
+	}
+}
+
+// Not moved, a subagent run where it could be moves nothing: its summary is
+// the call's result, as before.
+func TestMovableSubagentNotMovedReturnsItsSummary(t *testing.T) {
+	store := NewMemStore()
+	g := &gatedAdapter{gate: make(chan struct{})}
+	close(g.gate)
+	l, _, _ := taskTree(t, g, AutoApprove{Yes: true}, store, store, false)
+	NewBackground(l, BackgroundPolicy{MaxShells: DefaultMaxShells, MaxLive: 4, Settle: 20 * time.Millisecond, Wake: WakeNotify})
+	l.Movable = true
+	t.Cleanup(func() { l.Background.Close(TermSessionClosed) })
+	ctx, forget := l.withDetach(l.withShellHost(l.asParent(context.Background()), "c1"))
+	defer forget()
+	tool, _ := l.Tools.Get("task")
+	raw, _ := json.Marshal(map[string]string{"prompt": "quick", "description": "quick"})
+	if res := tool.Run(ctx, l.Session, raw); res.IsError || !strings.Contains(res.Content, "child done") {
+		t.Fatalf("%+v", res)
+	}
+	if len(l.Background.Tasks()) != 0 {
+		t.Fatal("a subagent not moved became a background task")
+	}
+}

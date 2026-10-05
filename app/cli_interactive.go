@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -43,6 +44,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	editor := ui.NewLineReader(ui.Prompt(s))
 	defer editor.Close()
 	setupTerminal(editor, r, workspace)
+	editor.SetAttention(ui.Attention{Title: appCfg.CLI.Title, Notify: appCfg.CLI.Notify})
 	// Raw mode turns off the terminal's own newline translation, so every
 	// print in the program would otherwise staircase down the screen.
 	restoreStreams := editor.Capture()
@@ -67,12 +69,22 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	defer prompter.Close()
 	if ap, ok := approver.(*ui.Approver); ok {
 		ap.Prepare = func(ctx context.Context) (func() (string, bool), func()) {
+			// One question at a time owns the input, whichever loop tree asks.
+			release, held := prompter.Hold(ctx)
 			wasThinking := r.PauseThinking()
 			// Piped stdin: the answer arrives as a line on the lines channel,
 			// handed over by the steering loop's prompter.Deliver.
-			read := func() (string, bool) { return prompter.Await(ctx) }
+			read := func() (string, bool) {
+				if !held {
+					return "", false
+				}
+				return prompter.Await(ctx)
+			}
 			cleanup := func() {
-				prompter.Disarm()
+				if held {
+					prompter.Disarm()
+				}
+				release()
 				if wasThinking {
 					r.StartThinking()
 				}
@@ -159,6 +171,8 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// their results are shown as they arrive, at the prompt too.
 		loop.Work = agent.NewWork()
 		agent.NewBackground(loop, toolset.BackgroundPolicy(sessionState.appCfg, agent.WakeAuto))
+		// Ctrl-B moves a running command or subagent to the background.
+		loop.Movable = editor.Raw()
 		loop.Background.SetHooks(agent.BackgroundHooks{
 			// A wake waits while something is typed: that message will carry the result.
 			CanWake: func() (bool, string) {
@@ -200,8 +214,28 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	// woken marks the turn runTurn is running as a wake the session started
 	// itself, whose "nothing to wake for" is not the person's error.
 	woken := false
+	// running is the loop of the turn under way, for Ctrl-B, which the key
+	// reader's goroutine handles.
+	var running atomic.Pointer[agent.Loop]
+	editor.Hotkey("ctrl+b", func() {
+		l := running.Load()
+		if l == nil {
+			return
+		}
+		if n := l.MoveToBackground(); n > 0 {
+			editor.Notify(ui.Toast{Text: "moved to the background; /tasks lists it, /tasks cancel <id> stops it"})
+			return
+		}
+		editor.Notify(ui.Toast{Text: "no command is running in the foreground to move", Warn: true})
+	})
+	// held are lines typed during a run behind a queued command: they wait,
+	// in the order typed, for the next prompt, so a message typed after
+	// /model is sent once /model has run, not as steering ahead of it.
+	var held []string
 	runTurn := func(start func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error)) (int, bool) {
 		loop := sessionState.loop
+		running.Store(loop)
+		defer running.Store(nil)
 		// A suggestion still being made is for a prompt no longer coming; it
 		// stops, and what it recorded is drawn before the turn clears it.
 		loop.StopSuggestion()
@@ -228,6 +262,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		panel.turn(true)
 		ft.refresh(sessionState, pol)
 		r.StartThinking()
+		editor.Attend(ui.AttnWorking)
 		go func() {
 			defer ui.RestoreOnPanic() // a panic in the turn must not leave the terminal raw
 			reason, err := start(taskCtx, loop)
@@ -295,10 +330,17 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 				// answer to it; any other line steers, and says the approval
 				// still waits, so a line meant for the agent is never taken
 				// as an answer by where it falls.
-				if ui.Decision(msg) && prompter.Deliver(msg) {
+				if ui.Decision(msg) && prompter.Deliver(msg) || heldAsAnswer(prompter, msg) {
 					continue
 				}
-				noteStillWaiting(prompter, msg, "it steers the run")
+				switch {
+				case isCommandLine(msg):
+					noteStillWaiting(prompter, msg, "it runs when this finishes")
+				case len(queued) > 0:
+					noteStillWaiting(prompter, msg, "it waits for the queued command")
+				default:
+					noteStillWaiting(prompter, msg, "it steers the run")
+				}
 				if msg == "" {
 					continue
 				}
@@ -306,13 +348,18 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					ft.cycleMode(sessionState, pol) // takes effect when the turn ends
 					continue
 				}
-				if isCommandLine(msg) {
+				if isCommandLine(msg) || len(queued) > 0 {
 					// A command typed mid-run is held, not dropped. Discarding
 					// it loses what the user asked for, and running it now
 					// would act on a session that is still changing under it.
+					// A message after it waits its turn too.
 					queued = append(queued, msg)
+					note := "queued " + msg + " — runs when this finishes"
+					if !isCommandLine(msg) {
+						note = "queued after " + queued[0] + " — sent when this finishes"
+					}
 					wasOn := r.PauseThinking()
-					fmt.Printf("  %s\n", s.Dim("queued "+msg+" — runs when this finishes"))
+					fmt.Printf("  %s\n", s.Dim(note))
 					if wasOn {
 						r.StartThinking()
 					}
@@ -326,6 +373,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		cancelTask()
 		r.StopThinking() // every exit path converges here
+		editor.Attend(ui.AttnReady)
 		// What the run recorded is drawn before its usage is printed.
 		sessionState.waitRendered(loop.Recorder.LastAppended())
 		editor.Quiet(false)
@@ -357,7 +405,12 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 
 		// Anything typed as a command while the agent worked runs now, in the
 		// order it was typed.
-		for _, cmd := range queued {
+		for i, cmd := range queued {
+			if !isCommandLine(cmd) {
+				// A message, and all after it, go to the prompt in order.
+				held = append(held, queued[i:]...)
+				break
+			}
 			fmt.Printf("%s%s\n", ui.Prompt(s), cmd)
 			if quit := dispatchLine(ctx, cmd, r, pol, sess, sessionState); quit {
 				return 0, true
@@ -382,16 +435,21 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		if t := sessionState.takeTurn(); t != nil {
 			if sessionState.loop == nil {
 				t.done() // dropped: what the command changed is put back
+				sessionState.waitDrawn()
+				ft.refresh(sessionState, pol)
 				continue
 			}
 			prompted = false
 			code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
 				return loop.RunMessage(ctx, t.msg)
 			})
+			// What the command puts back, such as /review's mode, shows in the footer.
 			t.done()
 			if quit {
 				return code
 			}
+			sessionState.waitDrawn()
+			ft.refresh(sessionState, pol)
 			continue
 		}
 		// End of piped input waits for the background work, and for the
@@ -400,57 +458,63 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			fmt.Println()
 			return 0
 		}
-		if !editor.Raw() && !eof && !prompted {
-			fmt.Print(ui.Prompt(s))
-			prompted = true
-		}
 		var line string
-		select {
-		case <-readErr:
-			readErr, eof = nil, true
-			prompter.Close()
-			continue
-		case <-ctx.Done():
-			return 0
-		case <-idleTick.C:
-			continue
-		case <-interruptCh:
-			// At the prompt, Ctrl-C only abandons the line being typed, unless
-			// background tasks run: then a second one within two seconds
-			// cancels them.
-			if n := sessionState.liveTasks(); n > 0 {
-				if time.Since(lastCtrlC) < 2*time.Second {
-					sessionState.loop.Background.CancelAll(agent.TermUserInterrupt)
-					fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("cancelled %d background task(s)", n)))
-					lastCtrlC = time.Time{}
-				} else {
-					fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("%d background task(s) running; Ctrl-C again within 2 s to cancel them", n)))
-					lastCtrlC = time.Now()
-				}
-			}
-			continue
-		case ids := <-wakeCh:
-			// A wake run, for background results, through the same driver as a task.
-			if sessionState.loop == nil {
-				continue
-			}
-			prompted = false
-			woken = true
-			if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
-				return loop.RunWoken(ctx, agent.Wake{By: "policy", TaskIDs: ids})
-			}); quit {
-				return code
-			}
-			continue
-		case line = <-firstCh:
+		if len(held) > 0 {
+			line, held = held[0], held[1:]
 			fmt.Printf("%s%s\n", ui.Prompt(s), line)
-		case line = <-lines:
 			prompted = false
+		} else {
+			if !editor.Raw() && !eof && !prompted {
+				fmt.Print(ui.Prompt(s))
+				prompted = true
+			}
+			select {
+			case <-readErr:
+				readErr, eof = nil, true
+				prompter.Close()
+				continue
+			case <-ctx.Done():
+				return 0
+			case <-idleTick.C:
+				continue
+			case <-interruptCh:
+				// At the prompt, Ctrl-C only abandons the line being typed, unless
+				// background tasks run: then a second one within two seconds
+				// cancels them.
+				if n := sessionState.liveTasks(); n > 0 {
+					if time.Since(lastCtrlC) < 2*time.Second {
+						sessionState.loop.Background.CancelAll(agent.TermUserInterrupt)
+						fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("cancelled %d background task(s)", n)))
+						lastCtrlC = time.Time{}
+					} else {
+						fmt.Printf("  %s\n", s.Dim(fmt.Sprintf("%d background task(s) running; Ctrl-C again within 2 s to cancel them", n)))
+						lastCtrlC = time.Now()
+					}
+				}
+				continue
+			case ids := <-wakeCh:
+				// A wake run, for background results, through the same driver as a task.
+				if sessionState.loop == nil {
+					continue
+				}
+				prompted = false
+				woken = true
+				if code, quit := runTurn(func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+					return loop.RunWoken(ctx, agent.Wake{By: "policy", TaskIDs: ids})
+				}); quit {
+					return code
+				}
+				continue
+			case line = <-firstCh:
+				fmt.Printf("%s%s\n", ui.Prompt(s), line)
+			case line = <-lines:
+				prompted = false
+			}
 		}
 		// An approval a background task is waiting on takes a line that is
 		// exactly a decision key, when input arrives as lines. Any other line
 		// is a prompt, with a note that the approval still waits.
-		if ui.Decision(line) && prompter.Deliver(line) {
+		if ui.Decision(line) && prompter.Deliver(line) || heldAsAnswer(prompter, line) {
 			continue
 		}
 		noteStillWaiting(prompter, line, "it was sent as a prompt")
@@ -550,6 +614,11 @@ func interruptTurn(n int, cancel func(), finished <-chan turnOutcome, grace time
 func endOnExit(st *cliState, stopped bool) {
 	if !stopped {
 		endIfOpen(st, agent.TermUserInterrupt)
+		// The turn may still finish before the process exits and record a
+		// second end.
+		if st.loop != nil {
+			st.loop.Recorder.SealEnd()
+		}
 	}
 }
 
@@ -582,6 +651,16 @@ func noteStillWaiting(p *ui.Prompter, line, became string) {
 		return
 	}
 	fmt.Printf("  an approval is still waiting: answer with its number, 1, 2 or 3; %s\n", became)
+}
+
+// heldAsAnswer takes a line like "y" or "yes" typed while an approval waits:
+// it re-asks for the number, and the line is not sent on to the agent.
+func heldAsAnswer(p *ui.Prompter, line string) bool {
+	if !p.Waiting() || !ui.AnswerLike(line) {
+		return false
+	}
+	fmt.Printf("  an approval is waiting: answer with its number, 1, 2 or 3; %q was not sent to the agent\n", strings.TrimSpace(line))
+	return true
 }
 
 // runErrorLine is what a turn's error prints, "" for none. A wake the

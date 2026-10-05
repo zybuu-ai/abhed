@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/extension"
 )
 
 // What a workspace file may do with the CLI's settings, untrusted: the
@@ -51,11 +53,11 @@ func TestUntrustedWorkspaceCLIKeys(t *testing.T) {
 }
 
 // Trust takes the workspace's command, rule and statusline settings, but
-// never a managed-only one, and never turns auto memory on.
+// never a managed-only one, never turns auto memory on, and never imports deeper.
 func TestTrustedWorkspaceCannotMakeManagedOnlySettings(t *testing.T) {
 	_, ws := trustHome(t, "", `{
 	  "commands":{"dirs":["./cmds"]}, "statusline":{"command":"./s.sh"},
-	  "memory":{"auto":true},
+	  "memory":{"auto":true,"import_depth":9},
 	  "cli":{"mode_cycle":["plan"]}, "record":{"dir":"/tmp/x","retention_days":3}, "hooks":{"disabled":true}}`)
 	var warned bytes.Buffer
 	warnOut = &warned
@@ -67,7 +69,7 @@ func TestTrustedWorkspaceCannotMakeManagedOnlySettings(t *testing.T) {
 	if !cfg.Workspace.Trusted || len(cfg.Commands.Dirs) != 1 || cfg.Statusline.Command != "./s.sh" {
 		t.Fatalf("trust did not apply the ordinary settings: %+v %+v", cfg.Commands, cfg.Statusline)
 	}
-	if cfg.Memory.Auto || len(cfg.CLI.ModeCycle) > 0 || cfg.Record.Dir != "" || cfg.Record.RetentionDays != 0 || cfg.Hooks.Disabled {
+	if cfg.Memory.Auto || cfg.MemoryImportDepth() != 5 || len(cfg.CLI.ModeCycle) > 0 || cfg.Record.Dir != "" || cfg.Record.RetentionDays != 0 || cfg.Hooks.Disabled {
 		t.Fatalf("a trusted workspace made a setting it may not: %+v %+v %+v %+v", cfg.Memory, cfg.CLI, cfg.Record, cfg.Hooks)
 	}
 	var keys []string
@@ -78,7 +80,7 @@ func TestTrustedWorkspaceCannotMakeManagedOnlySettings(t *testing.T) {
 		}
 	}
 	slices.Sort(keys)
-	want := []string{"cli.mode_cycle", "hooks.disabled", "memory.auto", "record.dir", "record.retention_days"}
+	want := []string{"cli.mode_cycle", "hooks.disabled", "memory.auto", "memory.import_depth", "record.dir", "record.retention_days"}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("set aside %v, want %v", keys, want)
 	}
@@ -160,7 +162,7 @@ func TestModeCycleAndMemoryDefaults(t *testing.T) {
 	if err != nil || !got.Memory.Auto {
 		t.Fatalf("turning auto memory on: %v", err)
 	}
-	for _, k := range []string{"cli.mode_cycle", "record.dir", "record.retention_days", "hooks.disabled"} {
+	for _, k := range []string{"cli.mode_cycle", "record.dir", "record.retention_days", "hooks.disabled", "hooks.managed_only"} {
 		if !ManagedOnly(k) {
 			t.Errorf("%s is not managed only", k)
 		}
@@ -208,5 +210,138 @@ func TestHooksDisabledKeepsOnlyTools(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"all", "both"}) {
 		t.Fatalf("started %v", names)
+	}
+}
+
+// hooks.managed_only sends hook events only to the managed file's extensions:
+// the user's keep only their tools, or do not start, and the user's file
+// cannot set it.
+func TestHooksManagedOnly(t *testing.T) {
+	user := `{"extensions":[{"name":"mine","command":"/bin/mine","events":["tool_call","list_tools","invoke_tool"]},
+	  {"name":"veto","command":"/bin/veto","events":["tool_call"]}],"hooks":{"managed_only":true}}`
+	_, ws := trustHome(t, user, "")
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hooks.ManagedOnly || len(cfg.ExtensionSpecs()) != 2 {
+		t.Fatalf("the user's file set hooks.managed_only: %+v", cfg.Hooks)
+	}
+
+	withManaged(t, `{"hooks":{"managed_only":true}}`)
+	writeConfig(t, os.Getenv("HOME"), user)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs := cfg.ExtensionSpecs()
+	if len(specs) != 1 || specs[0].Name != "mine" || len(specs[0].Events) != 2 {
+		t.Fatalf("a user extension kept its hooks: %+v", specs)
+	}
+	// A caller's own extensions, as the SDK passes them, are narrowed the same way.
+	sdk := []extension.Config{{Name: "sdk", Events: []extension.Event{extension.EvToolCall}}}
+	if got := cfg.NarrowHooks(sdk); len(got) != 0 {
+		t.Fatalf("a caller's extension kept its hooks: %+v", got)
+	}
+
+	withManaged(t, `{"hooks":{"managed_only":true},"extensions":[{"name":"org","command":"/bin/org","events":["tool_call"]}]}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if specs := cfg.ExtensionSpecs(); len(specs) != 1 || specs[0].Name != "org" || len(specs[0].Events) != 1 {
+		t.Fatalf("the managed extension lost its hooks: %+v", specs)
+	}
+}
+
+// A -settings file merges over the user's own as one of theirs: its
+// settings apply and are hashed, a managed-only key is set aside, the
+// managed file still wins, and under the allow lock its allow rules go.
+func TestSettingsFile(t *testing.T) {
+	_, ws := trustHome(t, `{"memory":{"import_depth":3}}`, "")
+	body := []byte(`{"memory":{"import_depth":2},"hooks":{"managed_only":true},"permissions":{"allow":["bash(make *)"],"deny":["bash(curl *)"]}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true, Settings: body, SettingsName: "ci.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MemoryImportDepth() != 2 || cfg.Hooks.ManagedOnly || cfg.Settings.Name != "ci.json" || len(cfg.Settings.SHA256) != 64 {
+		t.Fatalf("settings: %+v %+v %+v", cfg.Memory, cfg.Hooks, cfg.Settings)
+	}
+	if cfg.RuleLayer("allow", "bash(make *)") != LayerSettings {
+		t.Fatalf("layer %q", cfg.RuleLayer("allow", "bash(make *)"))
+	}
+
+	withManaged(t, `{"permissions":{"deny":["bash(rm *)"]},"memory":{"import_depth":1}}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: body, SettingsName: "ci.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(cfg.Permissions.Allow, "bash(make *)") || cfg.MemoryImportDepth() != 1 {
+		t.Fatalf("the settings file beat the managed file: %v %d", cfg.Permissions.Allow, cfg.MemoryImportDepth())
+	}
+	found := false
+	for _, k := range cfg.SetAside {
+		found = found || k.File == "ci.json" && k.Value == "bash(make *)"
+	}
+	if !found {
+		t.Fatalf("the dropped allow rule was not named: %+v", cfg.SetAside)
+	}
+
+	if _, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"mode":`), SettingsName: "bad.json"}); err == nil {
+		t.Fatal("a malformed settings file loaded")
+	}
+}
+
+// Git extensions opted in load from the person's files, are checked by
+// name, and are set aside when the managed file sets the permissions
+// without naming its own.
+func TestGitExtensionsOptIn(t *testing.T) {
+	_, ws := trustHome(t, `{}`, "")
+	body := []byte(`{"permissions":{"git_extensions":["lfs","flow"]}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true, Settings: body, SettingsName: "ci.json"})
+	if err != nil || !slices.Equal(cfg.Permissions.GitExtensions, []string{"lfs", "flow"}) {
+		t.Fatalf("opt-in: %v %v", cfg.Permissions.GitExtensions, err)
+	}
+	for _, bad := range []string{`["reset"]`, `["-c"]`, `["l fs"]`, `[""]`} {
+		_, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"permissions":{"git_extensions":` + bad + `}}`), SettingsName: "bad.json"})
+		if err == nil || !strings.Contains(err.Error(), "git_extensions") {
+			t.Errorf("git_extensions %s loaded: %v", bad, err)
+		}
+	}
+
+	// An untrusted workspace cannot opt one in: the agent can write it.
+	_, ws = trustHome(t, `{}`, `{"permissions":{"git_extensions":["wipe"]}}`)
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true}); err != nil || len(cfg.Permissions.GitExtensions) != 0 {
+		t.Fatalf("an untrusted workspace opted in: %v %v", cfg.Permissions.GitExtensions, err)
+	}
+
+	withManaged(t, `{"permissions":{"deny":["bash(rm *)"]}}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: body, SettingsName: "ci.json"})
+	if err != nil || len(cfg.Permissions.GitExtensions) != 0 {
+		t.Fatalf("under managed permissions: %v %v", cfg.Permissions.GitExtensions, err)
+	}
+	if !slices.ContainsFunc(cfg.SetAside, func(k SetAsideKey) bool {
+		return k.Key == "permissions.git_extensions" && k.Value == "lfs" && k.File == "ci.json"
+	}) {
+		t.Fatalf("the dropped opt-in was not named: %+v", cfg.SetAside)
+	}
+
+	withManaged(t, `{"permissions":{"deny":["bash(rm *)"],"git_extensions":["lfs"]}}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true})
+	if err != nil || !slices.Equal(cfg.Permissions.GitExtensions, []string{"lfs"}) {
+		t.Fatalf("the managed file's own opt-in: %v %v", cfg.Permissions.GitExtensions, err)
+	}
+}
+
+// A trusted workspace may still make imports shallower.
+func TestTrustedWorkspaceMayImportShallower(t *testing.T) {
+	_, ws := trustHome(t, `{"memory":{"import_depth":8}}`, `{"memory":{"import_depth":2}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+	if err != nil || cfg.MemoryImportDepth() != 2 {
+		t.Fatalf("depth %d: %v", cfg.MemoryImportDepth(), err)
+	}
+	_, ws = trustHome(t, `{"memory":{"import_depth":8}}`, `{"memory":{"import_depth":9}}`)
+	if cfg, _ = LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true}); cfg.MemoryImportDepth() != 8 {
+		t.Fatalf("a trusted workspace raised the user's depth to %d", cfg.MemoryImportDepth())
 	}
 }

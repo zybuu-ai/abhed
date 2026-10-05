@@ -101,7 +101,7 @@ func unreturned(events []Event) []string {
 			continue
 		}
 		switch e.Type {
-		case EvSubagentSpawned:
+		case EvSubagentSpawned, EvSubagentBackgrounded:
 			if !open[p.TaskID] {
 				order = append(order, p.TaskID)
 			}

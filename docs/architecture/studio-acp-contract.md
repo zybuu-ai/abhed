@@ -1,6 +1,6 @@
 # Abhed Studio and the engine: the ACP contract
 
-Status: 2026-10-01, `apiLevel: 1`; the engine side is implemented in 1.2.3 except where §11 says otherwise
+Status: 2026-10-01, `apiLevel: 1`; the engine side is implemented in 1.2.4 except where §11 says otherwise
 
 Abhed Studio is an editor. It runs no agent code of its own: every capability
 it shows is a call to the local `abhed acp` engine over the Agent Client
@@ -11,13 +11,13 @@ rules for each.
 
 The engine is the ground truth. Where this page and `app/acp.go` disagree
 about something the engine already does, the engine is right and this page is
-wrong. Where this page asks for something the engine does not do yet, it is
-marked **Engine: add**. Those notes record the 1.2.2 starting point; §11
-says what the engine serves now.
+wrong. Where this page asks for something the engine did not do at 1.2.2, it is
+marked **Not implemented in 1.2.2**. Those notes record the 1.2.2 starting
+point; §11 says what the engine serves now.
 
-Studio's test double, `scripts/abhed/stub-engine/abhed-stub.mjs` in the Studio
-repository, speaks this contract so Studio's views can be built and tested
-before each engine addition lands. The stub is not a reference: a golden
+Studio's test double, a stub engine in the Studio repository, speaks this
+contract so Studio's views can be built and tested before each engine
+addition lands. The stub is not a reference: a golden
 transcript recorded from the real engine settles any disagreement.
 
 ---
@@ -97,7 +97,7 @@ Spec capabilities are also set truthfully: `loadSession`, and
 `sessionCapabilities.delete` is **never** set (see §4.1).
 
 **Engine today:** `initialize` has no `_meta`, `loadSession: false`.
-**Engine: add** the block above and the `abhed version --json` command that
+**Not implemented in 1.2.2:** the block above and the `abhed version --json` command that
 prints it without starting a session, so Studio can check the engine before it
 spawns it.
 
@@ -155,8 +155,31 @@ relax them.
 |---|---|
 | Wire | Spec. `session/prompt`; updates `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `usage_update`. |
 | Engine today | Forwards `agent.delta` as message chunks and the whole `agent.reasoning` as one thought chunk. `agent.reasoning.delta` is dropped. |
-| Engine: add | Forward `agent.reasoning.delta` as `agent_thought_chunk` and skip the whole-text `agent.reasoning` when deltas were sent for that turn. Stop reasons from the loop's terminal reason instead of matching error text: `completed`→`end_turn`, `max_turns`/`wake_limit`→`max_turn_requests`, `user_interrupt`/`shutdown`→`cancelled`, `max_budget`→`max_tokens` with `meta.reason: "budget"`, anything else→`refusal` with `meta.reason` set to the terminal reason. |
+| Not implemented in 1.2.2 | Forward `agent.reasoning.delta` as `agent_thought_chunk` and skip the whole-text `agent.reasoning` when deltas were sent for that turn. Stop reasons from the loop's terminal reason instead of matching error text: `completed`→`end_turn`, `max_turns`/`wake_limit`→`max_turn_requests`, `user_interrupt`/`shutdown`→`cancelled`, `max_budget`→`max_tokens` with `meta.reason: "budget"`, anything else→`refusal` with `meta.reason` set to the terminal reason. |
 | Security | Message and thought text is untrusted and rendered without HTML. Reasoning is display-only; the engine never feeds it back as history. |
+
+### 3.1a Attached context
+
+`session/prompt` takes `text`, `resource_link` and `resource` blocks
+(`embeddedContext: true`). A `text` block is the person's own words. A
+`resource_link` names a file the agent reads through its policy-checked
+tools. A `resource` is text the person attached in the editor (a selection,
+a symbol, a problem the editor reports). The engine does not read the text
+itself, since the person picked it, but a `file:` URI is put to the `read`
+rules and the `.abhed` check as an `@` mention is: one that may not be read
+refuses the prompt (`-32001`) and is recorded as a denied read by the person.
+The text is treated as data. It is redacted,
+capped as an `@` mention is (256 KiB for all of a prompt's attachments), and
+given to the model fenced under a
+tag with a random suffix after a note that says it is data, not
+instructions, so nothing in it can close the block and read as the person's
+words. Each is recorded `input.mention {path, range?, sha256, bytes,
+truncated?}` by the person, with `path` and `range` from the URI
+(`file:///…#L3-L9`), when it reaches the model: a built-in slash command
+runs no prompt, so what was attached with it is neither used nor recorded,
+and never becomes the command's arguments. Studio sends a selection as a `resource` only when it
+is small and its file does not look like it holds secrets, and otherwise as
+a `resource_link` to the lines.
 
 ### 3.2 Models and thinking level
 
@@ -164,7 +187,7 @@ relax them.
 |---|---|
 | Wire | Spec config options. `session/new` returns `configOptions` with one `select` option of `category: "model"`, id `model`, whose values are configured provider **names**. `session/set_config_option {sessionId, configId: "model", value}` switches and returns every option. The older `models` field and `session/set_model` are answered too; that reply puts the new current model in `meta.currentModelId`. |
 | Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. |
-| Engine: add | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
+| Not implemented in 1.2.2 | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
 | Per-subagent model | `subagent.spawned` and the task list carry `provider` and `model` (already recorded). |
 | Security | The value is a configured name looked up in the engine's configuration. Nothing from Studio is used as an endpoint, key or model id. Descriptions never include the base URL, the key or the key's variable name. |
 
@@ -182,14 +205,14 @@ Each entry carries `meta = { source: "builtin"|"user"|"workspace"|"managed"|"mcp
 Built-in names win over every other source. A command is a prompt the engine
 expands; running one is recorded `command.invoked` with its source and hash.
 
-**Engine: add** the update and the list: `/compact /fork /undo /diff
+**Not implemented in 1.2.2:** the update and the list: `/compact /fork /undo /diff
 /hawkeye /tasks /memory /mode /model /clear /export`, plus custom commands and
 skills. **Security:** workspace commands are listed only when the workspace is
 trusted, since a command is instructions.
 
 ### 3.4 Usage and cost
 
-`usage_update` (spec) `{used, size}` per model call. **Engine: add**
+`usage_update` (spec) `{used, size}` per model call. **Not implemented in 1.2.2:**
 `cost: {amount, currency}` only when a price table is configured, and
 `meta = {tokensIn, tokensOut, tokensCached, sessionTotalIn, sessionTotalOut}`.
 No invented prices.
@@ -284,7 +307,7 @@ interface SessionMeta {
 - **Title.** The first prompt, redacted, cut to 80 characters.
 
 **Engine today:** none of these; sessions are memory-only.
-**Engine: add** the whole row once the local store exists; `session/list`
+**Not implemented in 1.2.2:** the whole row once the local store exists; `session/list`
 reads the index, `session/load` reads the record.
 
 ### 4.2 Fork
@@ -335,7 +358,7 @@ interface RecordEvent {
   "nothing happened" from a filter.
 
 **Engine today:** only nine event types reach Studio, as session updates.
-**Engine: add** the three methods and the notification over the local store.
+**Not implemented in 1.2.2:** the three methods and the notification over the local store.
 **Security:** payloads marked untrusted are shown as data. The stream is
 read-only.
 
@@ -384,7 +407,7 @@ For `html`, `{html: string}`: the same page `abhed hawkeye` renders.
   rendered as text.
 
 **Engine today:** the report exists for the server; not over ACP.
-**Engine: add** the method over the local record.
+**Not implemented in 1.2.2:** the method over the local record.
 
 ### 4.7 Retention
 
@@ -423,7 +446,7 @@ The same list is also a config option of `category: "mode"`.
   as a normal ask.
 
 **Engine today:** `session/set_mode` answers -32601; the mode is fixed at
-construction. **Engine: add** a loop-level mode change through the same
+construction. **Not implemented in 1.2.2:** a loop-level mode change through the same
 configuration path the CLI uses, so managed ceilings hold.
 **Security:** Studio needs a modal (default Cancel) before it sends `auto` or
 `bypass`, and shows a red status bar entry while bypass is on. The engine does
@@ -447,11 +470,11 @@ interface AskMeta {
   requestId?: string;        // the engine's action.requested id; <bind> is it
   scope?: string;            // what "always" grants, only when offered
   subagent?: string;         // a subagent's ask; toolCallId is "subagent-<requestId>"
-  rule?: string;             // Engine: add. The rule that asked, or "builtin:<name>"
-  via?: string;              // Engine: add. "pipeline <name> step <n>"
-  held?: boolean;            // Engine: add. Released from a background task's hold (§6.3)
-  taskId?: string;           // Engine: add. The background task asking
-  diff?: { path; oldText?; newText }[]; // Engine: add. For edit and write (§5.5)
+  rule?: string;             // Not implemented in 1.2.2. The rule that asked, or "builtin:<name>"
+  via?: string;              // Not implemented in 1.2.2. "pipeline <name> step <n>"
+  held?: boolean;            // Not implemented in 1.2.2. Released from a background task's hold (§6.3)
+  taskId?: string;           // Not implemented in 1.2.2. The background task asking
+  diff?: { path; oldText?; newText }[]; // Not implemented in 1.2.2. For edit and write (§5.5)
 }
 ```
 
@@ -459,11 +482,15 @@ interface AskMeta {
   refused.
 - "Always" is never offered for destructive, screen or ask-rule steps.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
-  "user"}` (**Engine: add**) so `session/load` can restore it.
+  "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a
   message chunk that says so (done).
 - An ask made while no prompt turn is open is held (§6.3).
 - Studio's card shows the "why" line from `step`, `rule` and `reason`.
+- A denied call's `tool_call_update` (`status: "failed"`, content `Denied:
+  <reason>`) carries `meta.denied = {step, rule?, by}`, where `by` is
+  `policy`, `reviewer` or `system` as on `action.denied`, so its card shows
+  the same "why".
 
 ### 5.3 Destructive confirm
 
@@ -484,21 +511,27 @@ interface PolicyView {
   mode: string; sandbox: { tier: string; network: boolean; backend?: string };
   managed: boolean;
   rules: { decision: "deny" | "ask" | "allow"; rule: string;
-           layer: "managed" | "user" | "workspace" | "builtin";
-           applied: boolean; ignoredBecause?: "workspace-untrusted" | "managed-override" }[];
+           layer: "managed" | "user" | "settings" | "workspace" | "flag" | "default" | "session" | "builtin";
+           applied: boolean; ignoredBecause?: "workspace-untrusted" | "managed-override";
+           note?: string }[];                     // why a session deny rule was pinned
 }
 ```
 
+- A configured rule's `layer` is the one loading credited it with, as
+  `/permissions` shows it: `default` is a built-in rule, `builtin` an engine
+  step that decides before any rule (`builtin:<step>`), and `session` a rule
+  the session added for itself, or a deny rule it pinned (`note` says why).
+  A rule set aside by a managed lock names the layer its file was read as.
 - `explain` is a dry run: not recorded, not cached, and it never changes the
   per-session "always" scopes. Values shown are redacted.
-- **Engine: add** `Result.Rule` in the policy engine, the rule on `action.*`
+- **Not implemented in 1.2.2:** `Result.Rule` in the policy engine, the rule on `action.*`
   events and on asks, the layered rule list and `explain`.
 - Editing the user's rules is not an ACP method: Studio's main process runs
   `abhed config set --scope user …` and asks natively for widening keys.
 
 ### 5.5 Diffs on asks
 
-**Engine: add.** For `edit` and `write`, the engine computes the diff before it
+**Not implemented in 1.2.2.** For `edit` and `write`, the engine computes the diff before it
 asks and puts it in the ask's `content` as spec `{type: "diff", path, oldText,
 newText}` and in `locations`. For files over 256 KiB only the changed hunks
 are sent, with `meta.hunksOnly: true`.
@@ -508,7 +541,7 @@ are sent, with `meta.hunksOnly: true`.
 | | |
 |---|---|
 | Wire today | `session/new` accepts `_meta.abhed.trust: "untrusted"` only (tighten-only; anything else is -32602) and returns `_meta.abhed.workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. |
-| Engine: add | Move both to the `zybuu.ai/abhed` key. `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
+| Not implemented in 1.2.2 | Move both to the `zybuu.ai/abhed` key. `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
 | Studio | A banner, then a review editor built from `inspect`, then **Trust this exact file**, which asks in a native dialog raised by Studio's main process (path and SHA-256 shown) and then runs `abhed trust grant -sha256 <H> <dir>` with the bundled, hash-checked engine binary. |
 | Security | There is no grant method, now or later. A grant is pinned to the reviewed hash, so a file changed after review is not trusted. Studio's own Restricted Mode sends `trust: "untrusted"`. |
 
@@ -520,7 +553,7 @@ are sent, with `meta.hunksOnly: true`.
 
 The `task` tool's spawn and return reach Studio two ways:
 
-- **As cards.** **Engine: add** a `tool_call` with `toolCallId: "sub-<child
+- **As cards.** **Not implemented in 1.2.2:** a `tool_call` with `toolCallId: "sub-<child
   session>"`, `kind: "think"`, title `subagent <type>: <description>`, and
   `meta = {subagent: {session, agentType, depth, model, provider?, branch?,
   definitionSha256?}}` when `subagent.spawned` is recorded; a
@@ -567,7 +600,7 @@ _abhed/wake/ended   { sessionId, taskIds, stopReason, reason? }  // notification
 - `session/cancel` cancels the running prompt **and every background task**,
   with or without a prompt open ("Stop means stop").
 
-**Engine: add:**
+**Not implemented in 1.2.2:**
 
 ```ts
 _abhed/tasks/list   { sessionId } → { tasks: TaskInfo[] }
@@ -617,7 +650,7 @@ holds the ask until the next prompt opens (up to 30 minutes, then it is
 refused and recorded `by: system`), and then sends the ordinary
 `session/request_permission`.
 
-**Engine: add** `_abhed/tasks/review {sessionId, taskId?}`, a person's
+**Not implemented in 1.2.2:** `_abhed/tasks/review {sessionId, taskId?}`, a person's
 request to see the held asks now, without sending a prompt:
 
 1. The engine opens a *review window* for the session and sends each held ask
@@ -654,7 +687,8 @@ interface Capabilities {
   mcp: { name: string; transport: "stdio" | "http" | "sse";
          status: "connected" | "starting" | "stopped" | "error"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
-         pinned: boolean }[];                               // digest-pinned command or image
+         pinned: boolean;                                   // digest-pinned command or image
+         refusedTools?: string[] }[];                       // offered, not registered for their name
   extensions: { name: string; events: string[];            // Abhed hook extensions
                 status: "running" | "stopped" | "not started"; error?: string; source: string }[];
   web: { search: boolean; fetch: boolean; allowed_hosts: string[]; ask: boolean };
@@ -671,7 +705,14 @@ interface Capabilities {
 - **Refreshing.** Studio refetches when the event stream shows
   `mcp.status`, `extension.status`, `hook.fired`, `memory.loaded`,
   `memory.written` or a trust change, and when the person asks.
-- `_abhed/mcp/restart {sessionId, name}` → `{status}`, recorded `by: user`.
+- `_abhed/mcp/restart {sessionId, name}` → `{status: "connected" | "error",
+  error?}`, recorded `mcp.status {server, op: "restart", status, error?, by:
+  "user"}`. A name that is not a configured, enabled server is -32602; while
+  a prompt, a woken turn or another restart runs in the session it is
+  -32002, and a prompt or wake waits for a restart in the same way. The
+  restarted server lives as long as the session, not the request. `error` here and in `mcp[]` is
+  redacted text; `refusedTools` names are untrusted text with hidden
+  characters marked.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -685,12 +726,12 @@ interface Capabilities {
   permit. Secret values never appear.
 
 **Engine today:** none over ACP; the server has models, sandbox, permissions,
-tools, skills, MCP and extensions. **Engine: add** the method and every field
+tools, skills, MCP and extensions. **Not implemented in 1.2.2:** the method and every field
 above that the server lacks.
 
 ### 6.5 Pipelines
 
-A pipeline step is a normal tool call. **Engine: add** `meta.via:
+A pipeline step is a normal tool call. **Not implemented in 1.2.2:** `meta.via:
 "pipeline <name> step <n>"` on its `tool_call` and on its ask. Each step goes
 through policy; a step needing approval in a headless run is refused.
 
@@ -728,7 +769,7 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
 - Studio's ACP `terminal` client capability stays `false`: the agent never
   runs commands in Studio's terminals.
 
-**Engine: add** all of it, by moving the server's pty and line capture into a
+**Not implemented in 1.2.2:** all of it, by moving the server's pty and line capture into a
 shared package so the server and ACP use the same code.
 
 ### 7.2 The host terminal
@@ -789,7 +830,7 @@ conversation rewind is `_abhed/session/fork` at the turn's seq.
 
 `_abhed/resolve {cwd, issueUrl}` → `{sessionId}` starts a session running the
 resolve flow under policy. Pushing and opening a pull request are asks. The
-forge token comes from the secrets vault by name. **Engine: add.**
+forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 
 ---
 
@@ -801,7 +842,7 @@ forge token comes from the secrets vault by name. **Engine: add.**
 detail}[]}`, the same checks as `abhed doctor --json`: configuration, trust,
 provider reachability (loopback only unless configured), sandbox tier,
 record store and verification, MCP, index, managed policy. Output is
-redacted. **Engine: add** both.
+redacted. **Not implemented in 1.2.2:** both.
 
 ### 8.2 Setup
 
@@ -810,7 +851,7 @@ process runs `abhed setup --json …` (writes `~/.abhed/config.json`
 atomically, validates, runs doctor) and `abhed secret set NAME` in an Abhed
 terminal for a hosted provider's key. Providers name keys by
 `api_key_secret: NAME`, resolved from the vault, because an app launched from
-the Dock has no shell environment. **Engine: add** `setup --json`,
+the Dock has no shell environment. **Not implemented in 1.2.2:** `setup --json`,
 `api_key_secret` and `config get|set --scope user --json`, which classifies
 each key as tightening or widening.
 
@@ -874,7 +915,8 @@ them.
 | *new* `model.fallback` | system | from, to, reason |
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
-| Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `mcp.status`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
+| `mcp.status` | user | server, op (`restart`), status, error |
+| Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
 An unknown type is shown with its raw payload as text. Studio never infers
 meaning from a type it does not know.
@@ -883,11 +925,11 @@ meaning from a type it does not know.
 
 ## 11. The whole surface at a glance
 
-"Engine 1.2.3" is what the engine serves. Where it differs from a section
+"Engine 1.2.4" is what the engine serves. Where it differs from a section
 above, the engine is right (§ intro) and the difference is listed after the
 table.
 
-| Capability | Wire | Kind | Engine 1.2.3 |
+| Capability | Wire | Kind | Engine 1.2.4 |
 |---|---|---|---|
 | Handshake, features | `initialize` + `meta`, `abhed version --json` | spec + meta | done |
 | Chat, thinking, plan, usage | `session/prompt`, `session/update` | spec | done: reasoning deltas, stop reasons from the terminal reason, usage `meta`; no `cost` (no price table) |
@@ -907,7 +949,8 @@ table.
 | Subagents | `tool_call` cards + events | spec + meta | done |
 | Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
-| MCP restart, index, infra polling | `_abhed/mcp/restart`, `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `mcp.restart`, `index`, `infra` not in `features`) |
+| MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
+| Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |
 | Host terminal | none (Studio only), removable by managed `studio.disable_host_terminal` | — | Studio; the managed key is read into `capabilities.studio` |
 | Manual edits, dirty buffers | `_abhed/manual/edited`, `_abhed/buffers/dirty` | ext | done |
@@ -971,8 +1014,9 @@ Where the engine differs from the sections above:
    `.vscode` or `.devcontainer`. On Linux, bubblewrap and containers can hold
    only paths that exist when a command starts, so a command there can still
    create a missing `.vscode`, `.devcontainer` or `.git` or a repository the
-   search did not find; a new `*.code-workspace` can be made by a command on
-   every platform.
+   search did not find; a git folder found then that lacks `hooks` or
+   `config` gets an empty one, bound read-only. A new `*.code-workspace` can
+   be made by a command on every platform.
 9. **Modes (§5.1).** A mode changes only between prompts and while no
    background task runs (-32002 otherwise), since the policy engine is read
    by every call.

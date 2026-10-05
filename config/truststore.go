@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/filelock"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 )
 
@@ -119,28 +120,7 @@ func LockFile(lock string) (func(), error) {
 }
 
 func lockPath(lock, busy string) (func(), error) {
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- a lock file beside the user's own file
-	if err != nil {
-		return nil, err
-	}
-	for deadline := time.Now().Add(lockWait); ; time.Sleep(20 * time.Millisecond) {
-		ok, err := tryLockFile(f)
-		if err != nil {
-			_ = f.Close()
-			return nil, fmt.Errorf("lock %s: %w", lock, err)
-		}
-		if ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = f.Close()
-			return nil, fmt.Errorf(busy, lock, lockWait)
-		}
-	}
-	return func() {
-		_ = unlockFile(f)
-		_ = f.Close()
-	}, nil
+	return filelock.Lock(lock, lockWait, busy)
 }
 
 func rewriteTrust(change func(map[string]TrustRecord)) error {

@@ -109,18 +109,20 @@ func TestInterfaceOnly(t *testing.T) {
 	h.Exit(0)
 }
 
-// Keys typed while the binary writes: the line editor shares its line
-// between the input and output goroutines without a lock, which the race
-// detector reports in the -race build.
+// Keys typed while the binary writes: the dock takes keys and output on
+// separate goroutines, which the -race build checks.
 func TestTypingWhileOutputArrives(t *testing.T) {
-	Pending(t, "editor", "the line editor's state is shared by its input and output goroutines without a lock")
 	t.Parallel()
-	h := StartRun(t, Opts{Script: "delay 50ms\ntext \"line one\\n\"\ndelay 50ms\ntext \"line two\\n\"\ndelay 50ms\ntext \"line three\\n\""})
+	h := StartRun(t, Opts{Script: "delay 100ms\ntext \"line one\\n\"\ndelay 100ms\ntext \"line two\\n\"\ndelay 100ms\ntext \"line three\\n\""})
 	h.WaitText("Type a task")
-	h.Type("go\r")
+	h.Type("go")
+	h.Key(Enter)
+	// Keys within a few milliseconds of the Enter make it a pasted newline:
+	// typing starts once the turn has.
+	h.WaitScreen(func(s Screen) bool { return s.Contains("esc to interrupt") }, DefaultTimeout)
 	for _, c := range "steering while it writes" {
 		h.Type(string(c))
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	h.WaitOutput("line three")
 	h.Key(Enter)

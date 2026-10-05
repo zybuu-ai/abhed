@@ -30,6 +30,19 @@ Some tests need more:
   `-short` to run them.
 - Postgres integration tests need `ABHED_TEST_DSN` pointed at a real database
   (`store`).
+- The fuzz targets are `FuzzFoldOnlyTightensDeny` (`internal/policy`),
+  `FuzzPolicySubjectIsExecutedSubject` (`internal/tools`) and
+  `FuzzCanonical` (`store/local`). CI runs only their seed corpora, as part
+  of `go test`. To fuzz one, run it on its own with the minimizer capped:
+
+  ```sh
+  go test ./internal/policy -run '^$' -fuzz FuzzFoldOnlyTightensDeny \
+    -fuzztime 60s -parallel 2 -fuzzminimizetime 1s
+  ```
+
+  Without `-fuzzminimizetime`, a failing input is minimized for up to a
+  minute before it is reported; `-parallel 2` leaves the rest of the machine
+  usable.
 
 ## How this repository actually works
 

@@ -38,6 +38,12 @@ type footer struct {
 	line    string
 	running bool
 	lastRun time.Time
+	// again is a run asked for while one ran or within the second after one,
+	// with what was judged to run: it runs then, so the line never stays on
+	// a mode Shift-Tab has changed.
+	again   bool
+	sb      sandbox.Sandbox
+	command string
 }
 
 // startFooter fills the footer and connects it to the dock.
@@ -183,22 +189,35 @@ func (f *footer) runStatusLine() {
 	if f.ready == nil {
 		return
 	}
-	f.mu.Lock()
-	if f.running || time.Since(f.lastRun) < time.Second {
-		f.mu.Unlock()
-		return
-	}
-	f.mu.Unlock()
 	sb, command, notice := f.ready()
 	f.mu.Lock()
 	if sb == nil {
+		f.sb, f.again = nil, false
 		if notice != "" {
 			f.line = notice // a notice said once stays in the footer
 		}
 		f.mu.Unlock()
 		return
 	}
-	f.running, f.lastRun = true, time.Now()
+	f.sb, f.command = sb, command
+	if f.running || time.Since(f.lastRun) < time.Second {
+		// Run once more when this one ends or the second is up.
+		if !f.again && !f.running {
+			time.AfterFunc(time.Second-time.Since(f.lastRun), f.runAgain)
+		}
+		f.again = true
+		f.mu.Unlock()
+		return
+	}
+	f.mu.Unlock()
+	f.start()
+}
+
+// start runs the judged statusline command once, in the background.
+func (f *footer) start() {
+	f.mu.Lock()
+	sb, command := f.sb, f.command
+	f.running, f.lastRun, f.again = true, time.Now(), false
 	f.mu.Unlock()
 	m := f.model()
 	go func() {
@@ -212,9 +231,29 @@ func (f *footer) runStatusLine() {
 		if err == nil || line != "" {
 			f.line = line
 		}
+		again := f.again
 		f.mu.Unlock()
 		f.editor.SetStatusFunc(f.model)
+		if again {
+			f.runAgain()
+		}
 	}()
+}
+
+// runAgain runs a run asked for while another ran, once the second is up.
+func (f *footer) runAgain() {
+	f.mu.Lock()
+	if !f.again || f.running || f.sb == nil {
+		f.mu.Unlock()
+		return
+	}
+	if wait := time.Second - time.Since(f.lastRun); wait > 0 {
+		f.mu.Unlock()
+		time.AfterFunc(wait, f.runAgain)
+		return
+	}
+	f.mu.Unlock()
+	f.start()
 }
 
 // gitBranch is the branch checked out in dir's repository, read from its

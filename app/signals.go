@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -35,6 +36,10 @@ func stopSignals() []os.Signal {
 type stoppedBy struct{ sig os.Signal }
 
 func (s stoppedBy) Error() string { return "stopped by " + s.sig.String() }
+
+// Unwrap is the signal as an Interrupt, so the session's end says which
+// signal stopped it, as it says Esc or Ctrl-C.
+func (s stoppedBy) Unwrap() error { return agent.Interrupt{Detail: s.Error()} }
 
 // stopCode is the exit status for a run a signal stopped, 128 plus its
 // number, as a shell reports a process the signal ended.

@@ -120,10 +120,11 @@ func DiscoverMemoryFiles(workspace string) []string {
 	if home, err := os.UserHomeDir(); err == nil {
 		add(filepath.Join(home, ".abhed", MemoryFileName))
 	}
-	if !add(filepath.Join(workspace, MemoryFileName)) {
-		add(filepath.Join(workspace, AgentsFileName))
+	addNamed := func(p string) bool { return existsAsNamed(p) && add(p) }
+	if !addNamed(filepath.Join(workspace, MemoryFileName)) {
+		addNamed(filepath.Join(workspace, AgentsFileName))
 	}
-	add(filepath.Join(workspace, LocalMemoryFileName))
+	addNamed(filepath.Join(workspace, LocalMemoryFileName))
 	add(filepath.Join(ManagedMemoryDir, MemoryFileName))
 	return out
 }
@@ -183,12 +184,12 @@ func LoadMemory(o MemoryOptions) *Memory {
 	}
 	if o.Workspace != "" {
 		project := filepath.Join(o.Workspace, MemoryFileName)
-		if _, err := os.Lstat(project); err == nil {
+		if existsAsNamed(project) {
 			l.file(project, MemoryProject, MemoryFileName, "", 0)
-		} else if agents := filepath.Join(o.Workspace, AgentsFileName); exists(agents) {
+		} else if agents := filepath.Join(o.Workspace, AgentsFileName); existsAsNamed(agents) {
 			l.file(agents, MemoryProject, AgentsFileName+", read because there is no "+MemoryFileName, "", 0)
 		}
-		if local := filepath.Join(o.Workspace, LocalMemoryFileName); exists(local) {
+		if local := filepath.Join(o.Workspace, LocalMemoryFileName); existsAsNamed(local) {
 			l.file(local, MemoryLocal, LocalMemoryFileName, "", 0)
 		}
 	}
@@ -205,6 +206,13 @@ func LoadMemory(o MemoryOptions) *Memory {
 func exists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil
+}
+
+// existsAsNamed is exists where the disk spells the name exactly as asked. The
+// ask rules on writing a memory file name it exactly, so on a disk that folds
+// case, an agents.md the agent created is not read as AGENTS.md.
+func existsAsNamed(p string) bool {
+	return exists(p) && filepath.Base(tools.DiskPath(p)) == filepath.Base(p)
 }
 
 type memoryLoader struct {

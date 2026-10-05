@@ -55,6 +55,15 @@ type Renderer struct {
 	// request and a diff is shown once.
 	tools toolState
 
+	// todos is the task list as last recorded, for the dock and /todos;
+	// agentTypes names each subagent by session, for its return line;
+	// lastReply is the latest reply's text, for /copy.
+	todos      []agent.Todo
+	agentTypes map[string]string
+	lastReply  string
+	// lastReplyCut is set when cleaning took something out of it.
+	lastReplyCut bool
+
 	// usage is what the footer shows about the model and the session. It
 	// has its own lock: the dock reads it while drawing, holding the dock's
 	// lock, and the renderer takes the dock's lock while holding its own.
@@ -191,6 +200,12 @@ func (r *Renderer) Event(ev agent.Event) {
 			r.usage.Model = m.Model
 			r.usageMu.Unlock()
 		}
+	case agent.EvAgentMessage:
+		var m agent.Message
+		if json.Unmarshal(ev.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+			r.lastReply = sanitize(m.Text, false)
+			r.lastReplyCut = r.lastReply != m.Text
+		}
 	case agent.EvSessionEnded:
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) == nil && e.ContextTokens > 0 {
@@ -300,6 +315,13 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 	case agent.EvSessionWoken:
 		d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("woke to act on background results")})
 
+	case agent.EvTodoUpdated:
+		if b := r.todoEvent(ev); b != nil {
+			r.endReply(d, "")
+			d.todos = r.todos
+			d.commit(b)
+		}
+
 	case agent.EvSuggestionOffered:
 		var p agent.SuggestionOffered
 		if json.Unmarshal(ev.Payload, &p) == nil {
@@ -321,6 +343,12 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 		}
 		if why := endedText(e.Reason, e.Detail); why != "" {
 			d.commit(&rawBlock{text: "  " + s.Yellow("⎿ ") + why})
+		}
+
+	default:
+		if rows := r.activityRows(ev); rows != nil {
+			r.endReply(d, "")
+			d.commit(&rowsBlock{rows: rows})
 		}
 	}
 }
@@ -573,6 +601,11 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("◆"), s.Dim("woke to act on background results"))
 		}
 
+	case agent.EvTodoUpdated:
+		if b := r.todoEvent(ev); b != nil && !r.quiet {
+			r.emitRows(b.lines(100, s, false))
+		}
+
 	case agent.EvSessionEnded:
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) != nil || r.quiet {
@@ -587,6 +620,11 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 		}
 		if e.Reason != agent.TermCompleted {
 			fmt.Fprintf(r.w, "\n%s %s\n", s.Yellow("!"), s.Dim("ended: "+string(e.Reason)))
+		}
+
+	default:
+		if rows := r.activityRows(ev); rows != nil && !r.quiet {
+			r.emitRows(rows)
 		}
 	}
 }

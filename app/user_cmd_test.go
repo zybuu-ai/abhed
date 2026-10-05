@@ -141,3 +141,17 @@ func TestUserPasswdHonoursPassword(t *testing.T) {
 		t.Fatalf("user passwd with no password = %d %q, want a generated one", code, out)
 	}
 }
+
+// A generated password is shown only once the account exists: adding a name
+// already taken prints none, since nobody could sign in with it.
+func TestUserAddShowsAGeneratedPasswordOnlyOnSuccess(t *testing.T) {
+	ws := userWorkspace(t)
+	code, out := runUser(t, ws, "add", "erin")
+	if code != 0 || !strings.Contains(out, "generated password: ") {
+		t.Fatalf("user add = %d: %s", code, out)
+	}
+	code, out = runUser(t, ws, "add", "erin")
+	if code == 0 || strings.Contains(out, "generated password") {
+		t.Fatalf("a refused add = %d printed a password: %s", code, out)
+	}
+}

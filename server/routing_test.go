@@ -363,10 +363,8 @@ func TestHeartbeatRefreshesTheClaim(t *testing.T) {
 		}
 	}
 
+	// Stop waits for a beat in flight, so no claim lands after it returns.
 	stop()
-	// One tick may already be in flight when stop lands; what matters is that
-	// the beating ends, not the exact count at the instant of stopping.
-	time.Sleep(80 * time.Millisecond)
 	settled := r.count()
 	time.Sleep(120 * time.Millisecond)
 	if after := r.count(); after != settled {

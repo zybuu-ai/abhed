@@ -98,6 +98,10 @@ func ReadRecordFile(path string) (Record, error) {
 		if at, held := hashAt[h.Seq]; !held || at != h.Hash {
 			ok = false
 		}
+	} else {
+		// As the record's own verify: with no head, lines cut from the end
+		// cannot be ruled out.
+		ok = false
 	}
 	rec.Verified = ok && len(rec.Events) > 0
 	return rec, nil

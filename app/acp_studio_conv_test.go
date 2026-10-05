@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
@@ -189,5 +190,37 @@ func TestRuleUnknownMetaFieldsAreRefused(t *testing.T) {
 	r.cl.ok("session/new", map[string]any{"cwd": r.ws, "mcpServers": []any{map[string]any{"name": "evil", "command": "/bin/sh"}}}, &res)
 	if refused := meta(res)["mcpServersRefused"]; refused == nil || refused.([]any)[0] != "evil" {
 		t.Fatalf("mcpServersRefused: %v", meta(res))
+	}
+}
+
+// -trust-workspace trusts the workspace acp was started in, not every other
+// one the editor later opens: those keep their recorded decision.
+func TestTrustFlagCoversOnlyTheStartedWorkspace(t *testing.T) {
+	r := newStudioRig(t, "")
+	other := t.TempDir()
+	if real, err := filepath.EvalSymlinks(other); err == nil {
+		other = real
+	}
+	for _, ws := range []string{r.ws, other} {
+		if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(`{"limits":{"max_turns":7}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cl := newStudioClient(t, r.ws, false, config.TrustGranted)
+	cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	trusted := func(cwd string) any {
+		var res map[string]any
+		cl.ok("session/new", map[string]any{"cwd": cwd, "mcpServers": []any{}}, &res)
+		wt, _ := meta(res)["workspaceTrust"].(map[string]any)
+		return wt["trusted"]
+	}
+	if got := trusted(r.ws); got != true {
+		t.Fatalf("the started workspace is not trusted: %v", got)
+	}
+	if got := trusted(other); got == true {
+		t.Fatal("another workspace the editor opened was trusted by the flag")
 	}
 }

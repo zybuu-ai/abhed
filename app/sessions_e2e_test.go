@@ -225,7 +225,7 @@ func TestContinueAfterExit(t *testing.T) {
 // the copy's conversation is the original's.
 func TestForkSessionLeavesTheOriginal(t *testing.T) {
 	g := newSessRig(t)
-	c := g.start()
+	c := g.start("-n", "codewords")
 	g.ask(c, "Remember the codeword ZEBRA-41.")
 	exit(c)
 	orig := g.sessions()[0].ID
@@ -249,6 +249,13 @@ func TestForkSessionLeavesTheOriginal(t *testing.T) {
 	}
 	if branch.Parent != orig {
 		t.Fatalf("the branch does not name its source: %+v", branch)
+	}
+	// The name stays the source's, so -r by name still finds one session.
+	if branch.Name != "" {
+		t.Fatalf("the branch took the source's name %q", branch.Name)
+	}
+	if e, err := rec.Index().Resolve("codewords"); err != nil || e.ID != orig {
+		t.Fatalf("-r codewords after a fork: %+v %v", e, err)
 	}
 	evs := verified(t, rec, branch.ID)
 	var b agent.SessionBranched

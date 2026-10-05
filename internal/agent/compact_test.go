@@ -252,3 +252,38 @@ func TestCompactFocusReachesTheSummarizer(t *testing.T) {
 		t.Fatal("the focus was used twice")
 	}
 }
+
+// A low compact_at does not compact an empty conversation: the turn's
+// headroom alone used to pass it, so every turn compacted.
+func TestLowThresholdNeedsHistory(t *testing.T) {
+	a := &summarizerAdapter{window: 1000, summary: "s"}
+	c := NewCompactor(a, 0.05)
+	if should, _, _ := c.ShouldCompact("", longMessages(2, 40), nil); should {
+		t.Fatal("compacts a 20-token conversation at compact_at 0.05")
+	}
+	if should, _, _ := c.ShouldCompact("", longMessages(4, 200), nil); !should {
+		t.Fatal("does not compact a 200-token conversation at compact_at 0.05")
+	}
+}
+
+// The person's first message survives compaction word for word, however the
+// summariser restates it, and through a second compaction as well.
+func TestCompactionKeepsTheFirstMessage(t *testing.T) {
+	a := &summarizerAdapter{window: 1000, summary: "We need to read each file to summarize. Let's open each."}
+	c := NewCompactor(a, 0.5)
+	c.KeepRecentTurns = 1
+	msgs := append([]model.Message{{Role: model.RoleUser, Content: "Remember the codeword ZEBRA-41."}}, longMessages(8, 200)...)
+	once, _, err := c.Compact(context.Background(), "auto", "", msgs, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twice, _, err := c.Compact(context.Background(), "auto", "", append(once, longMessages(6, 200)...), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range [][]model.Message{once, twice} {
+		if !strings.HasSuffix(got[0].Content, firstRequestMark+"Remember the codeword ZEBRA-41.") {
+			t.Fatalf("compaction %d lost the first message:\n%s", i+1, got[0].Content)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1069,5 +1070,33 @@ func TestUnfencedDurableStoreWarns(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(&logged, nil))})
 	if strings.Contains(logged.String(), "does not fence appends") {
 		t.Fatal("a memory store was warned about")
+	}
+}
+
+// A fork before the first message, which keeps nothing, is refused while a
+// background task runs, as any other fork is: nothing is recorded or reset.
+func TestForkBeforeTheFirstMessageRefusedWhileTasksRun(t *testing.T) {
+	b := newBGServer(t, nil, "one")
+	id := b.start("bg:one", false)
+	<-b.ended
+	waitUntil(t, "state background", func() bool { return b.state(id) == "background" })
+	var first int64
+	for _, ev := range b.events(id) {
+		if ev.Type == agent.EvUserMessage {
+			first = ev.Seq
+			break
+		}
+	}
+	rec := b.do("alice", "POST", "/v1/sessions/"+id+"/fork", `{"before_seq":`+strconv.FormatInt(first, 10)+`}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "background tasks are still running") {
+		t.Fatalf("fork before the first message with a task running: %d %s", rec.Code, rec.Body)
+	}
+	if n := countType(b.events(id), agent.EvForked); n != 0 || b.live(id).Loop.Background.Live() != 1 {
+		t.Fatalf("the refused fork was recorded (%d) or cancelled the task", n)
+	}
+	b.ad.release("one")
+	waitUntil(t, "state done", func() bool { return b.state(id) == "done" })
+	if rec := b.do("alice", "POST", "/v1/sessions/"+id+"/fork", `{"before_seq":`+strconv.FormatInt(first, 10)+`}`); rec.Code != http.StatusOK {
+		t.Fatalf("fork once the task ended: %d %s", rec.Code, rec.Body)
 	}
 }

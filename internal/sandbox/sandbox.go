@@ -30,8 +30,8 @@ const (
 	// repositories, and refused for untrusted work.
 	TierNone Tier = "none"
 	// TierProcess adds process-level confinement (macOS sandbox-exec, Linux
-	// seccomp/landlock via bubblewrap). Filesystem and network scoping, but a
-	// shared kernel.
+	// bubblewrap namespaces and mounts; no seccomp filter and no Landlock).
+	// Filesystem and network scoping, but a shared kernel.
 	TierProcess Tier = "process"
 	// TierContainer runs in an OCI container: namespace isolation, shared
 	// kernel. Not sufficient for genuinely hostile code.
@@ -124,26 +124,26 @@ type Policy struct {
 	// not write, such as an editor's own settings there.
 	WriteProtected []string
 	// ProtectGit write-protects the config and hooks of every git folder in
-	// the workspace, and each .git, at any depth. Seatbelt names them by
-	// pattern; the other tiers hold only those listed in WriteProtected.
+	// the workspace, and each .git file. Seatbelt names them by pattern, at any
+	// depth and for folders made later; bubblewrap and the container bind those
+	// found when a command starts, down to gitWalkDepth folders.
 	ProtectGit bool
 	// MaxMemoryMB and MaxProcs bound resource exhaustion (threat T7): memory on the
 	// container and vm tiers only, processes on those and the process tier.
 	MaxMemoryMB int
 	MaxProcs    int
-	// TimeoutSeconds is a hard ceiling enforced by the backend, independent of
-	// the caller's context.
-	TimeoutSeconds int
 }
 
 func DefaultPolicy(workspace string) Policy {
+	// No time limit here: a command's is its caller's (the bash tool's
+	// timeout_ms, a background shell's lifetime), and a shell runs for as
+	// long as its terminal is open.
 	return Policy{
-		MinTier:        TierProcess,
-		Workspace:      workspace,
-		AllowNetwork:   false,
-		MaxMemoryMB:    4096,
-		MaxProcs:       512,
-		TimeoutSeconds: 600,
+		MinTier:      TierProcess,
+		Workspace:    workspace,
+		AllowNetwork: false,
+		MaxMemoryMB:  4096,
+		MaxProcs:     512,
 	}
 }
 

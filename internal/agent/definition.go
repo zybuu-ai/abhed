@@ -29,6 +29,20 @@ type Definition struct {
 	Isolation string
 	// PermissionMode is "plan" or "default", honoured only where it narrows.
 	PermissionMode string
+	// Effort is low, medium or high: the child's reasoning effort, never
+	// above the session's when the session sets one. Empty inherits.
+	Effort string
+	// Skills, when non-nil, are the only skills the child may load; each
+	// must be one the session has. Nil is the session's skills.
+	Skills []string
+	// MCPServers, when non-nil, are the only MCP servers whose tools the
+	// child keeps; each must be one the session has. Nil keeps them all.
+	MCPServers []string
+	// Background, when set, is whether this role runs only in the
+	// background (true) or never there (false).
+	Background *bool
+	// Color is how /agents shows the role; it changes nothing enforced.
+	Color string
 	// Source is builtin, managed, workspace or operator.
 	Source string
 	// Path is the file it was read from; SHA256 is that file's content hash.
@@ -46,6 +60,8 @@ const (
 	SourceManaged   = "managed"
 	SourceWorkspace = "workspace"
 	SourceOperator  = "operator"
+	// SourceSession is a definition given for one run, with -agents.
+	SourceSession = "session"
 )
 
 // ReservedNames are the built-in roles' names. A file cannot redefine them:

@@ -119,15 +119,32 @@ func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
 // dropLockedAllow sets aside the allow rules the user's and the workspace's
 // files added when the managed file locks allow rules without listing its own.
-func dropLockedAllow(c *Config, userFile, workspaceFile string) {
+func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
+	// Git extensions opted in widen what runs unasked, as an allow rule does.
+	if c.AllowLocked() && !c.ManagedSets("permissions.git_extensions") && len(c.Permissions.GitExtensions) > 0 {
+		for _, name := range c.Permissions.GitExtensions {
+			file := userFile
+			switch c.RuleLayer("git_extensions", name) {
+			case LayerSettings:
+				file = settingsFile
+			case LayerWorkspace:
+				file = workspaceFile
+			}
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: "permissions.git_extensions", Value: name,
+				Reason: "the managed configuration sets the permissions, so only its own permissions.git_extensions opts git extensions in"})
+		}
+		c.Permissions.GitExtensions = nil
+	}
 	if !c.AllowLocked() || c.ManagedSets("permissions.allow") {
 		return
 	}
 	var kept []string
 	for _, r := range c.Permissions.Allow {
-		file := userFile
-		switch c.RuleLayer("allow", r) {
+		file, layer := userFile, c.RuleLayer("allow", r)
+		switch layer {
 		case LayerUser:
+		case LayerSettings:
+			file = settingsFile
 		case LayerWorkspace:
 			file = workspaceFile
 		default:
@@ -135,7 +152,7 @@ func dropLockedAllow(c *Config, userFile, workspaceFile string) {
 			continue
 		}
 		delete(c.ruleLayers, "allow\x00"+strings.TrimSpace(r))
-		c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: "permissions.allow", Value: r,
+		c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: "permissions.allow", Value: r,
 			Reason: "the managed configuration sets the permissions, so only its own permissions.allow adds allow rules"})
 	}
 	if len(kept) < len(c.Permissions.Allow) {
@@ -145,13 +162,14 @@ func dropLockedAllow(c *Config, userFile, workspaceFile string) {
 	}
 }
 
-// dedupe keeps the first of each rule, in order.
+// dedupe keeps the first of each rule, in order, comparing them trimmed as
+// the rule layers are keyed: " bash(ls*)" is the same rule as "bash(ls*)".
 func dedupe(rules []string) []string {
 	seen := map[string]bool{}
 	out := rules[:0]
 	for _, r := range rules {
-		if !seen[r] {
-			seen[r] = true
+		if k := strings.TrimSpace(r); !seen[k] {
+			seen[k] = true
 			out = append(out, r)
 		}
 	}
@@ -303,6 +321,7 @@ func orRefuse(v string) string {
 const (
 	LayerDefault   = "default"
 	LayerUser      = "user"
+	LayerSettings  = "settings" // a -settings file named for one run
 	LayerWorkspace = "workspace"
 	LayerManaged   = "managed"
 	LayerFlag      = "flag"
@@ -317,6 +336,7 @@ func (c *Config) noteRuleLayer(layer string) {
 	}
 	for list, rules := range map[string][]string{
 		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
+		"git_extensions": c.Permissions.GitExtensions,
 	} {
 		replaced := layer == LayerManaged && c.ManagedSets("permissions."+list)
 		for _, r := range rules {

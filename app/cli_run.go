@@ -46,12 +46,35 @@ func run(a *App, workspace string, f *cliFlags) int {
 			fmt.Fprintf(os.Stderr, "abhed: setup ended (%v); starting with the defaults\n", err)
 		}
 	}
-	cfg, err := loadSession(workspace, a.trust, !headless)
+	ff := newFlagFiles(workspace, a.trust)
+	var settings []byte
+	var settingsName string
+	if f.settings != "" {
+		if settings, settingsName, err = ff.read("-settings", f.settings); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+			return 2
+		}
+	}
+	cfg, err := loadSession(workspace, a.trust, !headless, settings, settingsName)
 	if err != nil {
 		fail(err)
 	}
 	registerState(cfg, workspace)
-	if cfg, err = modelFlag(cfg, f.modelID); err != nil {
+	sessionDefs, agentsSrc, err := sessionAgents(cfg, ff, f.agentsJSON)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
+	role, err := roleFor(cfg, sessionDefs, f.agentName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
+	modelID := f.modelID
+	if modelID == "" && role != nil {
+		modelID = role.Model // -model, when given, is the person's own choice
+	}
+	if cfg, err = modelFlag(cfg, modelID); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: -model: %v\n", err)
 		return 2
 	}
@@ -59,11 +82,35 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
 	}
+	modeFlagGiven = f.mode != ""
 	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinRules(f.deny, f.disallowedTools), f.addDirs); err != nil {
 		fail(err)
 	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
 		fail(err)
+	}
+	cfg, mcpSrc, err := mcpFlags(cfg, ff, f.mcpConfig, f.strictMCP)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
+	if role != nil {
+		from := policy.Mode(orDefault(cfg.Permissions.Mode, "default"))
+		if to := agent.RoleMode(from, role.PermissionMode); to != from {
+			if cfg, err = cfg.Apply(config.Overrides{Mode: string(to)}); err != nil {
+				fail(err)
+			}
+		}
+	}
+	if inAgentCommand() != "" {
+		// Judged on the merged result, so -settings cannot do what -mode bypass may not.
+		base, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust, Quiet: true})
+		if err != nil {
+			fail(err)
+		}
+		if refuseInAgent(widened(base, cfg)) {
+			return 1
+		}
 	}
 	sysPrompt, err := systemPromptFlags(f, cfg)
 	if err != nil {
@@ -117,18 +164,25 @@ func run(a *App, workspace string, f *cliFlags) int {
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
+	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
 
-	sb, err := startSandbox(cfg, workspace)
+	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {
 		fail(err)
 	}
-	// With a floor the answer is at least the process tier, never none.
+	// With a floor the session does not wait: a process floor is never
+	// none, and a none floor is shown as such until the answer is in.
 	if sb.floor == "" && sb.Tier() == sandbox.TierNone {
 		fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", sb.Describe())
 	}
 	tier := string(sb.floor)
-	if tier == "" {
+	switch sb.floor {
+	case "":
 		tier = string(sb.Tier())
+	case sandbox.TierNone:
+		// Not known yet, so the network is not described either way; each
+		// result names the tier it ran under.
+		tier = ""
 	}
 
 	// Custom providers are registered before any provider is resolved, so a
@@ -144,9 +198,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Bash: tools.Bash{Sandbox: sb.Command,
 			Isolation: tools.Isolation{Tier: tier, Network: cfg.Sandbox.AllowNetwork},
 			RanUnder:  func() string { return string(sb.Tier()) }},
-		Parts: toolset.All,
-		Vault: vault,
-		Warn:  warnf,
+		Parts:  toolset.All,
+		Vault:  vault,
+		Warn:   warnf,
+		Agents: sessionDefs,
 	})
 	defer set.Close()
 	// A skill's own directory is reachable: its instructions reference files beside them.
@@ -168,15 +223,36 @@ func run(a *App, workspace string, f *cliFlags) int {
 		Redact: vault.Session(), Definitions: set.Agents, Background: true,
 		// A subagent may run on another configured model, never an endpoint.
 		Models: toolset.ModelResolver(cfg), ModelNames: toolset.OfferedModels(cfg),
+		// Its memory as the session's is read, but not the session's auto memory.
+		Memory: func(ws string) agent.MemoryOptions {
+			o := memoryOptions(cfg, pol, ws)
+			o.Auto = ""
+			return o
+		},
 	}
 	registry := toolset.Subagents(set.Registry, factory, cfg.Limits.MaxParallelSubagents)
 	// ask_user, for the main conversation at a terminal only (input track).
 	registry = withAsk(registry, !headless)
 	registry = withAutoMemory(registry, cfg, workspace, !headless)
+	if role != nil {
+		// The session and the subagents it starts keep only the role's tools.
+		if registry, err = agent.RoleTools(registry, role); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: -agent %s: %v\n", role.Name, err)
+			return 2
+		}
+		factory.Tools = agent.RoleToolsFor(factory.Tools, role)
+		loopCfg.Effort = agent.RoleEffort(loopCfg.Effort, role.Effort)
+		if role.MaxTurns > 0 && (loopCfg.MaxTurns == 0 || role.MaxTurns < loopCfg.MaxTurns) {
+			loopCfg.MaxTurns = role.MaxTurns
+		}
+		factory.Config.Effort, factory.Config.MaxTurns = loopCfg.Effort, loopCfg.MaxTurns
+	}
 	// The memory in it follows the configuration and the read rules (input track).
 	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.Names()))
+	loopCfg.SystemPrompt += roleSection(role)
 	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)
+	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
 
 	// The CLI uses whatever the config selects. Previously this was hardcoded
 	// to memory, so a Postgres-configured deployment silently lost its CLI

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -237,5 +238,96 @@ func TestDoctorNamesSettingsNotYetInEffect(t *testing.T) {
 		"model.default", "hooks.disabled", "cli.mode_cycle", "commands.dirs", "rules.dirs"}
 	if printNotInEffect(&b, cfg) || b.Len() != 0 {
 		t.Fatalf("a setting in effect was reported:\n%s", b.String())
+	}
+}
+
+// doctorWith runs the doctor on a workspace configured with extra keys and a
+// stub endpoint that passes every model check.
+func doctorWith(t *testing.T, extra string) (string, int) {
+	t.Helper()
+	srv := doctorEndpoint(t)
+	t.Setenv("HOME", t.TempDir())
+	ws := t.TempDir()
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	cfg := `{` + extra + `"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1") // the test wrote this configuration
+	t.Setenv("ABHED_DATABASE_URL", "")
+	return stdoutOf(t, func() int { return newApp().doctor(ws) })
+}
+
+// An event store doctor cannot open, as before `abhed migrate`, is not ready.
+func TestDoctorIsNotReadyWithoutTheEventStore(t *testing.T) {
+	out, code := doctorWith(t, `"storage":{"driver":"postgres","dsn":"postgres://abhed@127.0.0.1:1/abhed?sslmode=disable&connect_timeout=2"},`)
+	if code != 1 || strings.Contains(out, "Ready.") || !strings.Contains(out, "the event store") || !strings.Contains(out, "abhed migrate") {
+		t.Fatalf("doctor with no event store (%d):\n%s", code, out)
+	}
+	var b strings.Builder
+	if code := doctorVerdict(&b, configCheck{storeDown: true}); code != 1 || strings.Contains(b.String(), "Ready.") {
+		t.Fatalf("verdict %d: %s", code, b.String())
+	}
+}
+
+// Memory storage is named as serve uses it, beside the command line's record.
+func TestDoctorNamesMemoryStorage(t *testing.T) {
+	out, code := doctorWith(t, `"storage":{"driver":"memory"},`)
+	if code != 0 || !strings.Contains(out, "storage     memory (sessions do not survive restart) for serve") || !strings.Contains(out, "for the command line") {
+		t.Fatalf("doctor with memory storage (%d):\n%s", code, out)
+	}
+}
+
+// A workspace whose model settings wait for trust is not probed at the
+// default endpoint in their place, which is not what it would use.
+func TestDoctorDoesNotProbeTheDefaultForAnUntrustedModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(config.TrustEnv, "")
+	t.Setenv("ABHED_BASE_URL", "")
+	t.Setenv("ABHED_DATABASE_URL", "")
+	ws := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+	cfgText := `{"model":{"default":"w","providers":{"w":{"type":"openai-compatible","base_url":"http://127.0.0.1:1","model":"m"}}}}`
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfgText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadWith(ws, config.LoadOptions{Quiet: true})
+	if err != nil || cfg.Workspace.Trusted || !modelAwaitsTrust(cfg) {
+		t.Fatalf("an untrusted model was not seen as waiting: trusted %v, %v", cfg.Workspace.Trusted, err)
+	}
+	out, code := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	if code != 1 || !strings.Contains(out, "not probed") || strings.Contains(out, "checking endpoint") {
+		t.Fatalf("doctor (%d):\n%s", code, out)
+	}
+	// Trusted, the workspace's own endpoint is the one probed.
+	t.Setenv(config.TrustEnv, "1")
+	if cfg, _ = config.LoadWith(ws, config.LoadOptions{Quiet: true}); modelAwaitsTrust(cfg) {
+		t.Fatal("a trusted model was taken as waiting")
+	}
+}
+
+// The doctor and its JSON name the managed file in force, so an operator
+// knows where a locked setting comes from.
+func TestDoctorNamesTheManagedFile(t *testing.T) {
+	srv := doctorEndpoint(t)
+	managedConfig(t, `{"permissions":{"mode":"default"}}`)
+	ws := t.TempDir()
+	cfg := `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + srv.URL + `","model":"m","context_window":8192}}}}`
+	_ = os.MkdirAll(filepath.Join(ws, ".abhed"), 0o755)
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.TrustEnv, "1")
+	out, _ := stdoutOf(t, func() int { return newApp().doctor(ws) })
+	if !strings.Contains(out, "managed     "+managed.ConfigFile+" (sets 1 setting(s))") {
+		t.Fatalf("the doctor does not name the managed file:\n%s", out)
+	}
+	var b strings.Builder
+	_ = newApp().doctorJSON(&b, ws)
+	if !strings.Contains(b.String(), "in force from "+managed.ConfigFile) {
+		t.Fatalf("doctor --json does not name it:\n%s", b.String())
 	}
 }

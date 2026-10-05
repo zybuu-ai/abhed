@@ -270,6 +270,18 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 		}
 	})
 
+	t.Run("a file repeating a default", func(t *testing.T) {
+		withManaged(t, `{"permissions":{"mode":"default"}}`)
+		_, ws := trustHome(t, `{"permissions":{"allow":["bash(ls*)"," bash(pwd) ","bash(rm*)"]}}`, "")
+		cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(cfg.Permissions.Allow, Default().Permissions.Allow) {
+			t.Fatalf("allow %v; want exactly the built-in rules, once each", cfg.Permissions.Allow)
+		}
+	})
+
 	t.Run("managed allow list", func(t *testing.T) {
 		withManaged(t, `{"permissions":{"deny":["bash(curl*)"],"allow":["bash(go test*)"]}}`)
 		_, ws := trustHome(t, `{"permissions":{"allow":["bash(rm*)"]}}`, `{"permissions":{"allow":["bash(*)"]}}`)
@@ -295,4 +307,39 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 			t.Fatalf("allow %v, aside %v; want the files' rules unchanged", cfg.Permissions.Allow, cfg.SetAside)
 		}
 	})
+}
+
+// Under a managed lock on allow rules, the trust prompt does not show a
+// workspace's allow rules as what trust would add.
+func TestInspectNotesAllowRulesALockDrops(t *testing.T) {
+	_, ws := trustHome(t, "", `{"permissions":{"allow":["bash(make *)"]}}`)
+	note := func() string {
+		st, err := InspectWorkspace(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range st.Ignored {
+			if k.Key == "permissions.allow" {
+				return k.Reason
+			}
+		}
+		t.Fatalf("the allow rule is not listed: %+v", st.Ignored)
+		return ""
+	}
+	if r := note(); r != "" {
+		t.Fatalf("unmanaged, the rule carries a reason: %q", r)
+	}
+	withManaged(t, `{"permissions":{"deny":["bash(rm *)"]}}`)
+	if r := note(); !strings.Contains(r, "locks allow rules") {
+		t.Fatalf("under the lock: %q", r)
+	}
+}
+
+// dedupe keeps the first of each rule, in order, and takes a rule with
+// spaces around it for the same rule, as the rule layers do.
+func TestDedupeKeepsFirstTrimmed(t *testing.T) {
+	got := dedupe([]string{"bash(ls*)", "read(*)", " bash(ls*) ", "read(*)", "bash(pwd)"})
+	if want := []string{"bash(ls*)", "read(*)", "bash(pwd)"}; !slices.Equal(got, want) {
+		t.Fatalf("dedupe = %q, want %q", got, want)
+	}
 }

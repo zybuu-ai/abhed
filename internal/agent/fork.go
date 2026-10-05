@@ -223,6 +223,18 @@ func Live(events []Event) []Event {
 	return out
 }
 
+// refuseForkWhileTasksRun names the background tasks still running, which
+// would go on writing into the conversation a fork leaves and act on what it
+// resets. Refused rather than cancelled: a fork does not silently end work.
+// Called under the run lock, which every spawn is made under.
+func (l *Loop) refuseForkWhileTasksRun() error {
+	if running := l.Background.running(); len(running) > 0 {
+		return fmt.Errorf("background tasks are still running: %s; wait for them to finish or cancel them, then fork",
+			strings.Join(running, ", "))
+	}
+	return nil
+}
+
 // ForkTo rebuilds the conversation up to step seq, records that what came after
 // was abandoned, and returns how many messages were kept.
 func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
@@ -230,23 +242,15 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	if seq <= 0 && len(live) > 0 {
 		seq = live[len(live)-1].Seq // 0 keeps the whole conversation
 	}
-	if !slices.ContainsFunc(live, func(e Event) bool { return e.Seq == seq }) {
-		return 0, fmt.Errorf("step %d is not in the conversation as it stands; an earlier fork abandoned it, or there is no such step", seq)
-	}
-	msgs, err := Fork(live, seq)
+	msgs, err := forkPoint(live, seq)
 	if err != nil {
 		return 0, err
 	}
 	l.StopSuggestion() // it was made for the conversation being cut
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
-	// A task still running would go on writing into the conversation the fork
-	// leaves, and act on what the fork resets. Refused rather than cancelled:
-	// a fork does not silently end work. Checked under the run lock, which
-	// every spawn is made under.
-	if running := l.Background.running(); len(running) > 0 {
-		return 0, fmt.Errorf("background tasks are still running: %s; wait for them to finish or cancel them, then fork",
-			strings.Join(running, ", "))
+	if err := l.refuseForkWhileTasksRun(); err != nil {
+		return 0, err
 	}
 	if _, err := l.Recorder.Record(EvForked, ActorUser, Trusted, Forked{ThroughSeq: seq}); err != nil {
 		return 0, err
@@ -256,6 +260,24 @@ func (l *Loop) ForkTo(events []Event, seq int64) (int, error) {
 	l.Session.ResetScoped()
 	l.messages = msgs
 	return len(msgs), nil
+}
+
+// CheckForkPoint is ForkTo's refusal of a step, without recording anything,
+// so a caller can refuse a bad step before it claims the session to write.
+func CheckForkPoint(events []Event, seq int64) error {
+	live := Live(events)
+	if seq <= 0 {
+		return nil
+	}
+	_, err := forkPoint(live, seq)
+	return err
+}
+
+func forkPoint(live []Event, seq int64) ([]model.Message, error) {
+	if !slices.ContainsFunc(live, func(e Event) bool { return e.Seq == seq }) {
+		return nil, fmt.Errorf("step %d is not in the conversation as it stands; an earlier fork abandoned it, or there is no such step", seq)
+	}
+	return Fork(live, seq)
 }
 
 // Restore seeds a loop with a reconstructed conversation, for resuming or

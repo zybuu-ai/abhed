@@ -1,12 +1,17 @@
 package app
 
 import (
+	"encoding/json"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	root "github.com/zybuu-ai/abhed"
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 func TestReleaseNotes(t *testing.T) {
@@ -72,5 +77,46 @@ func TestBugReportRedactsTheProviderKey(t *testing.T) {
 	title, body := bugReport(st, "saw inline-canary-key-7")
 	if strings.Contains(title+body, "inline-canary-key-7") || !strings.Contains(body, "[redacted key]") {
 		t.Fatalf("%s\n%s", title, body)
+	}
+}
+
+// A wait for drawing returns at once when drawing has caught up, follows it
+// while it moves, and gives up soon after it stops: a stalled backlog cost
+// every queued command a whole second.
+func TestWaitRenderedFollowsDrawing(t *testing.T) {
+	var c cliState
+	c.rendered.Store(5)
+	start := time.Now()
+	c.waitRendered(5)
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Fatalf("waited %v for drawing already done", d)
+	}
+	start = time.Now()
+	c.waitRendered(9) // nothing draws
+	if d := time.Since(start); d > renderWait/2 {
+		t.Fatalf("waited %v on drawing that had stopped", d)
+	}
+	go func() {
+		for i := int64(6); i <= 9; i++ {
+			time.Sleep(20 * time.Millisecond)
+			c.rendered.Store(i)
+		}
+	}()
+	c.waitRendered(9)
+	if got := c.rendered.Load(); got != 9 {
+		t.Fatalf("returned at %d while drawing still moved", got)
+	}
+}
+
+// /fork's list names a pipeline's step as the pipeline's, since forking there
+// forks before the skill call that ran it.
+func TestForkPointsNameAPipelineStep(t *testing.T) {
+	step, _ := json.Marshal(agent.ActionRequested{CallID: "step_1", Tool: "bash", Args: json.RawMessage(`{"command":"ls"}`), Via: "skill research pipeline"})
+	out, _ := stdoutOf(t, func() int {
+		forkPoints(ui.NewRenderer(io.Discard, false), []agent.Event{{Seq: 3, Type: agent.EvActionRequested, Payload: step}})
+		return 0
+	})
+	if !strings.Contains(out, `bash {"command":"ls"} (skill research pipeline)`) {
+		t.Fatalf("listed:\n%s", out)
 	}
 }

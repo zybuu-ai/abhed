@@ -96,7 +96,7 @@ func (l *LineReader) Panel(ctx context.Context, p PanelSpec) error {
 	if d.pager != nil {
 		d.closePager()
 	}
-	d.pager = &pager{rows: rows, title: p.Title, done: done}
+	d.pager = &pager{rows: rows, title: p.Title, done: done, shownAt: d.now()}
 	d.scr.raw("\x1b[?1049h\x1b[?25l")
 	d.drawPager()
 	d.mu.Unlock()

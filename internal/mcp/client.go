@@ -97,6 +97,9 @@ type Client struct {
 	closed  bool
 
 	tools []ToolDef
+	// refused are the names of the tools left out for their names.
+	refused []string
+	prompts []PromptDef
 }
 
 func NewClient(name string, t Transport) *Client {
@@ -114,13 +117,28 @@ func (c *Client) Initialize(ctx context.Context) error {
 		"capabilities":    map[string]any{"tools": map[string]any{}},
 		"clientInfo":      map[string]any{"name": "abhed", "version": mcpClientVersion},
 	})
-	if _, err := c.call(ctx, "initialize", params); err != nil {
+	raw, err := c.call(ctx, "initialize", params)
+	if err != nil {
 		return fmt.Errorf("initialize %s: %w", c.name, err)
 	}
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
-	return c.refreshTools(ctx)
+	if err := c.refreshTools(ctx); err != nil {
+		return err
+	}
+	var init struct {
+		Capabilities struct {
+			Prompts json.RawMessage `json:"prompts"`
+		} `json:"capabilities"`
+	}
+	// A server's prompts are optional: one that cannot list them still offers its tools.
+	if json.Unmarshal(raw, &init) == nil && len(init.Capabilities.Prompts) > 0 && string(init.Capabilities.Prompts) != "null" {
+		if err := c.refreshPrompts(ctx); err != nil {
+			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q: %v\n", c.name, err)
+		}
+	}
+	return nil
 }
 
 func (c *Client) refreshTools(ctx context.Context) error {
@@ -132,7 +150,7 @@ func (c *Client) refreshTools(ctx context.Context) error {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("parse tools/list from %s: %w", c.name, err)
 	}
-	c.tools = keepNamed(c.name, res.Tools)
+	c.tools, c.refused = keepNamed(c.name, res.Tools)
 	return nil
 }
 
@@ -150,14 +168,15 @@ var (
 )
 
 // keepNamed drops the tools whose names fail validToolName, warning once per
-// server and name.
-func keepNamed(server string, defs []ToolDef) []ToolDef {
-	kept := defs[:0:0]
+// server and name, and returns the names it dropped.
+func keepNamed(server string, defs []ToolDef) (kept []ToolDef, refused []string) {
+	kept = defs[:0:0]
 	for _, d := range defs {
 		if validToolName.MatchString(d.Name) {
 			kept = append(kept, d)
 			continue
 		}
+		refused = append(refused, d.Name)
 		warnedMu.Lock()
 		if id := server + "\x00" + d.Name; !warned[id] {
 			warned[id] = true
@@ -166,10 +185,128 @@ func keepNamed(server string, defs []ToolDef) []ToolDef {
 		}
 		warnedMu.Unlock()
 	}
-	return kept
+	return kept, refused
 }
 
+// Refused are the names of the tools the server offers that were left out
+// for their names, as the server sent them: untrusted text.
+func (c *Client) Refused() []string { return c.refused }
+
 func (c *Client) Tools() []ToolDef { return c.tools }
+
+// PromptDef is a prompt as a server advertises it. Its name and its
+// arguments' names have passed validToolName; the descriptions are untrusted.
+type PromptDef struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Arguments   []PromptArg `json:"arguments"`
+}
+
+// PromptArg is one argument a prompt takes.
+type PromptArg struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+// Limits on what a server's prompts may add to the session.
+const (
+	maxPrompts     = 200
+	maxPromptPages = 10
+	maxPromptArgs  = 16
+	// MaxPromptText bounds a prompt's text, as a tool's result is bounded.
+	MaxPromptText = 30000
+)
+
+// refreshPrompts caches the server's prompts, leaving out any whose name or
+// argument names fail validToolName, with a warning.
+func (c *Client) refreshPrompts(ctx context.Context) error {
+	var all []PromptDef
+	cursor := ""
+	for page := 0; page < maxPromptPages && len(all) < maxPrompts; page++ {
+		var params json.RawMessage
+		if cursor != "" {
+			params, _ = json.Marshal(map[string]string{"cursor": cursor})
+		}
+		raw, err := c.call(ctx, "prompts/list", params)
+		if err != nil {
+			return fmt.Errorf("prompts/list: %w", err)
+		}
+		var res struct {
+			Prompts    []PromptDef `json:"prompts"`
+			NextCursor string      `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return fmt.Errorf("parse prompts/list: %w", err)
+		}
+		all = append(all, res.Prompts...)
+		if cursor = res.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if len(all) > maxPrompts {
+		all = all[:maxPrompts]
+	}
+	kept := all[:0:0]
+	for _, p := range all {
+		ok := validToolName.MatchString(p.Name) && len(p.Arguments) <= maxPromptArgs
+		for _, a := range p.Arguments {
+			ok = ok && validToolName.MatchString(a.Name)
+		}
+		if ok {
+			kept = append(kept, p)
+			continue
+		}
+		warnedMu.Lock()
+		if id := c.name + "\x00prompt\x00" + p.Name; !warned[id] {
+			warned[id] = true
+			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q offers a prompt named %+q whose name or arguments are not plain, "+
+				"so it is not offered: names may hold only letters, digits, _ . and -, up to 64\n", c.name, p.Name)
+		}
+		warnedMu.Unlock()
+	}
+	c.prompts = kept
+	return nil
+}
+
+// Prompts are the server's prompts that passed the name checks.
+func (c *Client) Prompts() []PromptDef { return c.prompts }
+
+// GetPrompt fetches a prompt's messages with args and returns the text of
+// its messages, joined and capped. The text is UNTRUSTED: a third party wrote it.
+func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]string) (string, error) {
+	if args == nil {
+		args = map[string]string{}
+	}
+	params, err := json.Marshal(map[string]any{"name": name, "arguments": args})
+	if err != nil {
+		return "", err
+	}
+	raw, err := c.call(ctx, "prompts/get", params)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Messages []struct {
+			Role    string       `json:"role"`
+			Content contentBlock `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", fmt.Errorf("parse prompts/get result: %w", err)
+	}
+	var parts []string
+	for _, m := range res.Messages {
+		if m.Content.Type == "text" && m.Content.Text != "" {
+			parts = append(parts, m.Content.Text)
+		}
+	}
+	text := strings.Join(parts, "\n\n")
+	if len(text) > MaxPromptText {
+		text = strings.ToValidUTF8(text[:MaxPromptText], "") + "\n\n[truncated]"
+	}
+	return text, nil
+}
 
 // Call invokes a tool. The returned content is UNTRUSTED: it is data written by
 // a third-party server, never instructions.
@@ -295,7 +432,8 @@ type StdioTransport struct {
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Env = env
+	// Never nil, which would inherit Abhed's whole environment and its keys.
+	cmd.Env = append([]string{}, env...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

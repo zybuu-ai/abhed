@@ -36,6 +36,7 @@ func DeferMCP(reg *tools.Registry, threshold int) bool {
 	if len(mcp) <= threshold {
 		return false
 	}
+	mcp = keepSmallServers(mcp)
 	search := &ToolSearch{}
 	for _, t := range mcp {
 		d := &deferredTool{Tool: t}
@@ -45,6 +46,50 @@ func DeferMCP(reg *tools.Registry, threshold int) bool {
 	search.index = nameIndex(search.tools, indexBudget)
 	reg.Add(search)
 	return true
+}
+
+// A server of at most smallServer tools stays offered in full, up to
+// smallServersMax tools in all: behind tool_search, a one-tool live-data
+// server was passed over for the web, and its question went unanswered.
+const (
+	smallServer     = 3
+	smallServersMax = 12
+)
+
+// keepSmallServers is mcp without the tools of the small servers that stay
+// offered in full, smallest first, then by name.
+func keepSmallServers(mcp []tools.Tool) []tools.Tool {
+	byServer := map[string][]tools.Tool{}
+	for _, t := range mcp {
+		server, _ := splitMCP(t)
+		byServer[server] = append(byServer[server], t)
+	}
+	var small []string
+	for server, ts := range byServer {
+		if len(ts) <= smallServer {
+			small = append(small, server)
+		}
+	}
+	sort.Slice(small, func(i, j int) bool {
+		if a, b := len(byServer[small[i]]), len(byServer[small[j]]); a != b {
+			return a < b
+		}
+		return small[i] < small[j]
+	})
+	kept, n := map[string]bool{}, 0
+	for _, server := range small {
+		if n+len(byServer[server]) > smallServersMax {
+			break
+		}
+		kept[server], n = true, n+len(byServer[server])
+	}
+	var deferred []tools.Tool
+	for _, t := range mcp {
+		if server, _ := splitMCP(t); !kept[server] {
+			deferred = append(deferred, t)
+		}
+	}
+	return deferred
 }
 
 // safeName is what a server or tool name must look like to be listed: the
@@ -120,6 +165,13 @@ type deferredTool struct {
 }
 
 func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
+
+// ServerName is the wrapped tool's server, so a role narrowed to some MCP
+// servers can tell a deferred tool's apart from a server whose name holds "__".
+func (d *deferredTool) ServerName() string {
+	server, _ := splitMCP(d.Tool)
+	return server
+}
 
 // ToolSearch finds deferred tools by words in their names and descriptions
 // and loads the ones it returns, so the model can call them from its next

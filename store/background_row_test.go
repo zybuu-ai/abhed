@@ -113,7 +113,13 @@ func TestClaimOrphan(t *testing.T) {
 	if err := p.Append(old); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := p.ClaimOrphan(ctx, quiet, "instance-y", 2*time.Minute); !ok {
+	// Its writer's clock says ten minutes ago; the database stored it just
+	// now, and only the database's clock decides.
+	if ok, _ := p.ClaimOrphan(ctx, quiet, "instance-y", 2*time.Minute); ok {
+		t.Fatal("a row was taken on its writer's clock, though the database stored its event just now")
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if ok, _ := p.ClaimOrphan(ctx, quiet, "instance-y", time.Second); !ok {
 		t.Fatal("an open row with no holder and a stale record was not taken")
 	}
 	// An ended row is not an orphan.
@@ -200,6 +206,31 @@ func TestClaimOrphanOwnHolder(t *testing.T) {
 	}
 	if ok, _ := p.ReclaimOwn(ctx, id, "node-a"); !ok {
 		t.Fatal("a node could not take back its own session at start")
+	}
+	// Incarnations of one node id hold apart: a restarted one takes back the
+	// session under its own token, and the earlier one's appends are fenced.
+	inc := testID(t, "sess-inc-")
+	newSession(t, p, inc, "t-own")
+	if err := p.ClaimNode(ctx, inc, "node-a#one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.HeldBy("node-a#one", nil).Append(ev(inc, 1, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "go"})); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := p.ReclaimOwn(ctx, inc, "node-b#x"); ok {
+		t.Fatal("another node reclaimed it")
+	}
+	if ok, _ := p.ReclaimOwn(ctx, inc, "node-a#two"); !ok {
+		t.Fatal("the restarted incarnation could not take back its node's session")
+	}
+	if err := p.HeldBy("node-a#one", nil).Append(ev(inc, 2, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "late"})); !errors.Is(err, ErrNotHolder) {
+		t.Fatalf("the earlier incarnation still wrote: %v", err)
+	}
+	if err := p.HeldBy("node-a#two", nil).Append(ev(inc, 2, agent.EvUserMessage, agent.Trusted, agent.Message{Text: "now"})); err != nil {
+		t.Fatal(err)
+	}
+	if node, err := p.NodeFor(ctx, inc, HolderStale); err != nil || node != "node-a" {
+		t.Fatalf("routing reads %q %v, want the node id", node, err)
 	}
 }
 

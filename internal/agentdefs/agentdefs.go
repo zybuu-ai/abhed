@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +56,10 @@ type Options struct {
 	// Models are the provider names a definition may choose. A definition
 	// naming any other is refused.
 	Models []string
+	// Session are definitions given for this run (-agents), already parsed.
+	// They win a name over the workspace's and the operator's, never over
+	// the organisation's, and none loads when only managed ones may.
+	Session []*agent.Definition
 }
 
 // Load reads every definition. A file that does not load is reported and
@@ -135,6 +140,27 @@ func Load(o Options) ([]*agent.Definition, []error) {
 			byName[def.Name] = def
 			out = append(out, def)
 		}
+	}
+	for _, def := range o.Session {
+		switch owner, claimed := managedClaim[def.Name]; {
+		case claimed:
+			errs = append(errs, fmt.Errorf("-agents %s refused: the name belongs to the organisation's %s", def.Name, config.Printable(owner)))
+			continue
+		case o.Disabled:
+			errs = append(errs, fmt.Errorf("-agents %s refused: only the organisation's definitions load here", def.Name))
+			continue
+		}
+		if prev, taken := byName[def.Name]; taken {
+			errs = append(errs, fmt.Errorf("agent definition %s (%s) is shadowed by -agents %s", config.Printable(prev.Path), prev.Source, def.Name))
+			for i := range out {
+				if out[i] == prev {
+					out = append(out[:i], out[i+1:]...)
+					break
+				}
+			}
+		}
+		byName[def.Name] = def
+		out = append(out, def)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, errs
@@ -385,10 +411,20 @@ func keyOf(k string) string {
 
 // honoured are the keys a definition may set, folded.
 var honoured = map[string]bool{"name": true, "description": true, "tools": true, "disallowedtools": true,
-	"model": true, "maxturns": true, "isolation": true, "permissionmode": true}
+	"model": true, "maxturns": true, "isolation": true, "permissionmode": true,
+	"effort": true, "skills": true, "mcpservers": true, "background": true, "color": true, "colour": true}
 
 // cosmetic keys change nothing Abhed enforces, so they are ignored with a warning.
-var cosmetic = map[string]bool{"color": true, "colour": true, "icon": true, "emoji": true}
+var cosmetic = map[string]bool{"icon": true, "emoji": true}
+
+// Colors are the values color may take.
+var Colors = []string{"red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"}
+
+// skillRE and serverRE are the names skills and mcp_servers may list.
+var (
+	skillRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
+	serverRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
 
 // refusedKey says why a key refuses the definition: it would concern
 // authority, and Abhed does not honour it.
@@ -398,8 +434,6 @@ func refusedKey(k string) string {
 		return ""
 	case k == "hooks":
 		return "hooks are configured by the operator, not by a definition"
-	case k == "mcpservers":
-		return "MCP servers are configured by the operator, not by a definition"
 	case k == "permissions":
 		return "permission rules are configured by the operator, not by a definition"
 	case strings.Contains(k, "allow"), strings.Contains(k, "deny"):
@@ -413,7 +447,7 @@ func refusedKey(k string) string {
 	if !honoured[k] {
 		for _, like := range []string{"tool", "mode", "model", "turn", "permission", "exclude", "block", "restrict"} {
 			if strings.Contains(k, like) {
-				return "it reads like a restriction, and only tools, disallowed_tools, model, max_turns and permission_mode are honoured"
+				return "it reads like a restriction, and only tools, disallowed_tools, model, max_turns, permission_mode, effort, skills, mcp_servers and background are honoured"
 			}
 		}
 	}
@@ -431,7 +465,13 @@ func Parse(path string, data []byte, source string, models []string) (*agent.Def
 		return nil, nil, err
 	}
 	sum := sha256.Sum256(data)
-	def := &agent.Definition{Source: source, Path: path, SHA256: hex.EncodeToString(sum[:])}
+	return parseDoc(doc, path, hex.EncodeToString(sum[:]), source, models)
+}
+
+// parseDoc checks a definition's fields and body, however they were written.
+func parseDoc(doc *frontmatter.Document, path, sum, source string, models []string) (*agent.Definition, []string, error) {
+	var err error
+	def := &agent.Definition{Source: source, Path: path, SHA256: sum}
 	var warns []string
 	// A key nested under another is checked as a top-level one is: a
 	// restriction inside a settings: block must not pass as ignored.
@@ -458,13 +498,18 @@ func Parse(path string, data []byte, source string, models []string) (*agent.Def
 			return nil, warns, fmt.Errorf("%q is not honoured: %s. A definition that expected it would run looser than its author meant", config.Printable(f.Key), why)
 		}
 		switch k {
-		case "name", "description", "model", "maxturns", "isolation", "permissionmode":
+		case "name", "description", "model", "maxturns", "isolation", "permissionmode", "effort", "background", "color", "colour":
 			if f.Kind != frontmatter.Scalar {
 				return nil, warns, fmt.Errorf("%q must be a single value", f.Key)
 			}
-		case "tools", "disallowedtools":
+		case "tools", "disallowedtools", "skills":
 			if f.Kind == frontmatter.Map {
-				return nil, warns, fmt.Errorf("%q must be a list of tool names", f.Key)
+				return nil, warns, fmt.Errorf("%q must be a list of names", f.Key)
+			}
+		case "mcpservers":
+			if f.Kind == frontmatter.Map {
+				// An inline server would start a process the operator never configured.
+				return nil, warns, fmt.Errorf("%q may only list the names of the session's MCP servers; a definition cannot add one", f.Key)
 			}
 		}
 		switch k {
@@ -507,6 +552,32 @@ func Parse(path string, data []byte, source string, models []string) (*agent.Def
 				// session may have; say so rather than run it as default.
 				return nil, warns, fmt.Errorf("%s may only be plan or default, not %q", f.Key, config.Printable(f.Value))
 			}
+		case "effort":
+			switch f.Value {
+			case "low", "medium", "high":
+				def.Effort = f.Value
+			default:
+				return nil, warns, fmt.Errorf("%s must be low, medium or high, not %q", f.Key, config.Printable(f.Value))
+			}
+		case "skills":
+			if def.Skills, err = nameList(f, skillRE, "skill"); err != nil {
+				return nil, warns, fmt.Errorf("%s: %w", f.Key, err)
+			}
+		case "mcpservers":
+			if def.MCPServers, err = nameList(f, serverRE, "MCP server"); err != nil {
+				return nil, warns, fmt.Errorf("%s: %w", f.Key, err)
+			}
+		case "background":
+			b, err := strconv.ParseBool(f.Value)
+			if err != nil || (f.Value != "true" && f.Value != "false") {
+				return nil, warns, fmt.Errorf("%s must be true or false", f.Key)
+			}
+			def.Background = &b
+		case "color", "colour":
+			if !slices.Contains(Colors, f.Value) {
+				return nil, warns, fmt.Errorf("%s must be one of %s", f.Key, strings.Join(Colors, ", "))
+			}
+			def.Color = f.Value
 		default:
 			if cosmetic[k] {
 				warns = append(warns, fmt.Sprintf("%q is ignored", config.Printable(f.Key)))
@@ -559,6 +630,26 @@ func toolList(f frontmatter.Field) ([]string, error) {
 		}
 		if !toolRE.MatchString(it) {
 			return nil, fmt.Errorf("%q is not a tool name; the only wildcard is mcp__<server>__*", config.Printable(it))
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// nameList reads a list of names, each matching re; an empty list is kept
+// as empty, not nil, since it narrows to none.
+func nameList(f frontmatter.Field, re *regexp.Regexp, what string) ([]string, error) {
+	items := f.List
+	if f.Kind == frontmatter.Scalar {
+		items = strings.Split(f.Value, ",")
+	}
+	out := []string{}
+	for _, it := range items {
+		if it = strings.TrimSpace(it); it == "" {
+			continue
+		}
+		if !re.MatchString(it) {
+			return nil, fmt.Errorf("%q is not a %s name", config.Printable(it), what)
 		}
 		out = append(out, it)
 	}

@@ -13,7 +13,9 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
 
 // permEnv is recordedEnv with a session overlay on the engine.
@@ -256,5 +258,37 @@ func TestClearedRuleIsNotRecordedInTheNextConversation(t *testing.T) {
 	}
 	if got := modeChanges(t, events()); !slices.Equal(got, []string{"default>plan/carried"}) {
 		t.Fatalf("the mode, which /clear keeps, was not recorded once: %v", got)
+	}
+}
+
+// A host web_fetch's own list refuses is shown as refused, not as the allow
+// policy alone would give.
+func TestPermissionsExplainShowsWebFetchHostRefusal(t *testing.T) {
+	env, surface, _ := permEnv(t, config.Default())
+	env.pol.Mode = policy.ModeBypass
+	env.st.loop.Tools = tools.NewRegistry(&webfetch.Tool{AllowedHosts: []string{"docs.example.com"}})
+	for _, u := range []string{"https://evil.example.net/x", "https://docs.example.com/x"} {
+		if _, err := slashPermissions(context.Background(), env, []string{"explain", "web_fetch", u}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(surface.text()), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "refused · by the web_fetch tool") || !strings.HasPrefix(lines[1], "allow") {
+		t.Fatalf("explain said:\n%s", surface.text())
+	}
+}
+
+// A relative path is read from the session's folder, as the file tools read
+// it, and the line names the path it explained; it used to be refused as not
+// absolute.
+func TestPermissionsExplainResolvesARelativePath(t *testing.T) {
+	env, surface, _ := permEnv(t, config.Default())
+	env.pol.Mode = policy.ModeBypass
+	if _, err := slashPermissions(context.Background(), env, []string{"explain", "write", "sub/fine.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(env.sess.Cwd, "sub", "fine.txt") + ": allow · step mode"
+	if out := strings.TrimSpace(surface.text()); !strings.HasPrefix(out, want) {
+		t.Fatalf("explain said:\n%s\nwant prefix %s", out, want)
 	}
 }

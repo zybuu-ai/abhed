@@ -74,12 +74,17 @@ func TestToolSearchListsNames(t *testing.T) {
 	}
 	reg.Add(fakeMCP{"mcp__tickets__ticket_lookup", "looks up a ticket"})
 	reg.Add(fakeMCP{"mcp__billing__invoice_status", "invoice state"})
+	// Servers too large to stay offered in full.
+	for _, n := range []string{"a", "b", "c"} {
+		reg.Add(fakeMCP{"mcp__tickets__ticket_" + n, "x"})
+		reg.Add(fakeMCP{"mcp__billing__invoice_" + n, "x"})
+	}
 	if !DeferMCP(reg, DeferThreshold) {
 		t.Fatal("not deferred")
 	}
 	search, _ := reg.Get("tool_search")
 	d := search.Description()
-	for _, want := range []string{"- tickets: ticket_lookup", "- billing: invoice_status", "fleet: op_00, op_01", "op_44",
+	for _, want := range []string{"- tickets: ticket_a, ticket_b, ticket_c, ticket_lookup", "- billing: invoice_a, invoice_b, invoice_c, invoice_status", "fleet: op_00, op_01", "op_44",
 		"call tool_search with a name or keyword to load a tool's schema"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("description lacks %q:\n%s", want, d)
@@ -138,5 +143,38 @@ func TestToolSearchIndexSanitized(t *testing.T) {
 	fmt.Sscanf(idx[strings.LastIndex(idx, "- and ")+len("- and "):], "%d", &more)
 	if shown+more != 400 {
 		t.Fatalf("shown %d + more %d != 400", shown, more)
+	}
+}
+
+// Past the threshold, a server of a few tools stays offered in full, up to a
+// bound in all, smallest first: behind tool_search a one-tool live-data
+// server was passed over for the web.
+func TestSmallServersStayOffered(t *testing.T) {
+	reg := tools.NewRegistry(tools.Read{})
+	for i := range 45 {
+		reg.Add(fakeMCP{fmt.Sprintf("mcp__fleet__op_%02d", i), "x"})
+	}
+	reg.Add(fakeMCP{"mcp__weather__current", "the weather now"})
+	for i := range 5 { // five servers of three: only three fit beside weather
+		for j := range 3 {
+			reg.Add(fakeMCP{fmt.Sprintf("mcp__s%d__t%d", i, j), "x"})
+		}
+	}
+	if !DeferMCP(reg, DeferThreshold) {
+		t.Fatal("not deferred")
+	}
+	direct := map[string]bool{}
+	for _, d := range reg.Definitions() {
+		direct[d.Name] = true
+	}
+	for name, want := range map[string]bool{"mcp__weather__current": true, "mcp__s0__t0": true, "mcp__s2__t2": true,
+		"mcp__s3__t0": false, "mcp__s4__t0": false, "mcp__fleet__op_00": false, "tool_search": true} {
+		if direct[name] != want {
+			t.Errorf("%s offered directly %v, want %v", name, direct[name], want)
+		}
+	}
+	search, _ := reg.Get("tool_search")
+	if d := search.Description(); strings.Contains(d, "weather") || !strings.Contains(d, "- s3: t0, t1, t2") || !strings.Contains(d, "- s4: t0, t1, t2") {
+		t.Errorf("the index:\n%s", d)
 	}
 }

@@ -35,7 +35,7 @@ var (
 	reID     = regexp.MustCompile(`\bs-[0-9a-f]{24}\b`)
 	reSpin   = regexp.MustCompile(`[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]`)
 	// The banner's tier depends on whether the sandbox was chosen by then.
-	reTier = regexp.MustCompile(`(sandbox +)(process or stronger \(checking\)|(process|container|vm|none)\b)`)
+	reTier = regexp.MustCompile(`(sandbox +)((?:process|none) or stronger \(checking\)|(process|container|vm|none)\b)`)
 )
 
 // Normalize makes text stable across runs: the run's directories, times,

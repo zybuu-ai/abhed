@@ -39,7 +39,10 @@ the Shift-Tab cycle, the turn limit and, in auto mode, what auto approves.
 Every change is recorded as `mode.changed`, with the mode it came from, the
 mode it went to and how: `flag`, `slash`, `shift-tab` or `plan-exit`. A mode
 chosen before the first message is recorded when the conversation opens,
-ahead of that message.
+ahead of that message. A continued session (`-c`, `-r`) that starts in
+another mode than its record ended in records the change as `flag` when
+`-mode` chose it, `carried` when it was changed before the first message, and
+`config` when it is simply the configured mode.
 
 **Auto mode is rules, not a judgment.** It approves read-only tools, and
 `edit` and `write` inside the workspace, without asking; a command (`bash`)
@@ -93,7 +96,9 @@ permissions without its own `permissions.allow`.
   `permissions` setting. A "Yes, and don't ask again" answer to a prompt is
   not a rule: it covers only the scope the prompt names (for `bash`, one of
   the short list below; for a file, that one path; for `web_fetch`, the site;
-  for another tool, every call to that tool) for the rest of the session, and
+  for another tool, that call's subject, such as an MCP tool's `path`, `url`
+  or `command`, or every call to the tool when the call has none) for the
+  rest of the session, and
   still applies under a managed configuration.
 - Session rules are evaluated after the configured ones in each list, so a
   session allow approves only what would otherwise ask: it cannot lift a deny
@@ -306,21 +311,90 @@ Deny and ask rules match the whole command or any command inside it: split on
 those operators, taken out of substitutions and subshells, and past leading
 `VAR=value` assignments, redirections and wrappers such as `sudo`, `env`,
 `nice`, `nohup`, `timeout`, `xargs`, `exec` and `command`, and the command
-after `find`'s `-exec`, `-execdir`, `-ok` or `-okdir`. The split does not
-parse the shell's quoting, so it can only add a denial or a prompt; the
-sandbox, not the pattern, is the boundary. A command too long or complex to
-split in full (over 64 KiB, over 1,024 parts, or a wrapper with too many
-readings) is always asked about while any deny or ask rule for `bash` has a
-pattern, in every mode.
+after `find`'s `-exec`, `-execdir`, `-ok` or `-okdir`. That split does not
+parse the shell's quoting, so it can only add a denial or a prompt.
 
-A deny pattern matches the words as written, so it is easy to step around.
+The rules also read each command a parser for **bash** finds, with its
+quoting undone and `$'…'` decoded as bash decodes it (a NUL ends it): in
+function bodies and subshells, in an alias's value, and in literal text given
+to `eval`, `trap`, a shell's `-c` (or `su`, `flock` or `script -c`), or a
+shell's here-string or heredoc. A command the parser cannot read, such as one
+with an unclosed quote, is refused while any deny rule for `bash` has a
+pattern, and asks while an ask rule does. So is one that runs text no rule
+can read: a shell reading its commands from a pipe or a file
+(`… | bash`, `bash < f`, `exec < f; bash`, `source /dev/stdin`), `hash -p`,
+`enable -f`, or an alias whose value is built from an expansion. A shell's
+input is its last redirect of fd 0, as bash applies them left to right; a
+here-string on another fd is not its input. The parser reads bash. The
+container tier runs a command with `/bin/sh`, which on its Debian image is
+dash; where dash reads a command differently, the text checks beside the
+parser still apply, but the reading is bash's. The sandbox, not the pattern,
+is the boundary. A command too long or complex to split in full (over
+64 KiB, over 1,024 parts, or a wrapper with too many readings) is always
+asked about while any deny or ask rule for `bash` has a pattern, in every
+mode.
+
+A deny pattern matches the words, so it is easy to step around.
 `bash(curl *)` does not catch any of these, and every one of them runs curl:
 
 - an absolute or relative path to the program: `/usr/bin/curl x`
-- a command handed to another shell: `bash -c 'curl x'`, `sh -c "curl x"`
-- a quoted or escaped name: `'curl' x`, `"cu"rl x`, `\curl x`, `c\url x`
+- a command in a file the shell reads: `bash ./script.sh`, `source ./f`
+- a command given to `su` on its input, or to another program that runs a
+  command it is not told to on its line, such as one git runs from its
+  configuration (`git -c core.pager='curl x' log`, `GIT_SSH_COMMAND`,
+  `core.sshCommand`, `git clone -u`, or an `ext::` remote taken from the
+  configuration)
+- a shell another program starts with its input: `… | xargs bash -c`,
+  `… | xargs -I{} bash -c {}`, a pipe into a function that runs a shell
+  (`f() { bash; }; cat f | f`), or a process substitution written to
+  (`echo 'curl x' > >(bash)`, `tee >(bash)`)
 - flags in another place or split up: `bash(rm -rf *)` does not match
   `rm x -rf` or `rm -r -f x`
+
+A quoted or escaped name (`'curl' x`, `c\url x`) is read as the program,
+and literal text another command runs is read as the commands it is:
+`bash -c 'curl x'`, `eval 'curl x'`, `trap 'curl x' EXIT`,
+`bash <<< 'curl x'`, `su --command`, `flock`, `env -S 'curl x'`,
+`watch 'curl x'`, a command under `find -exec`, `chrt`, `taskset`, `chroot`,
+`unshare` or `timeout inf`, and the value of git's `--exec`,
+`--upload-pack` and `--receive-pack` and the command of an `ext::` URL on
+git's line, which also confirm as destructive.
+Such text built from an expansion is refused while a deny rule for `bash`
+has a pattern. So is any git argument built from an expansion once the line
+enables the ext protocol (`protocol.ext.allow` or `protocol.allow` in `-c`,
+or `GIT_ALLOW_PROTOCOL`). An `ext::` in the text of `git commit`, `grep`,
+`log`, `show`, `shortlog`, `tag` or `notes` is not read as a URL.
+
+Words the shell builds are read as it would build them: line continuations
+are joined, and `$IFS`, `${IFS}`, tabs, `$'…'` and brace lists such as
+`{curl,x}` are read as the words they make, so `c${IFS}url` is matched as
+`curl`. A command that sets `IFS` to a separator other than blanks is also read
+split on it, so `IFS=_; curl_x` is matched as `curl x`. Where such a command,
+or one that sets `IFS` in a way the text does not show (`IFS=$v`, `read IFS`,
+`${IFS:=_}`), then expands anything (`IFS=_; c=curl_x; $c`), the words that
+run cannot be read, and it is refused while any deny rule for `bash` has a
+pattern, in every mode. `IFS` is found however it is spelled or set: through
+quotes, backslashes and `$'…'` (`eval I""FS=_`), in arithmetic
+(`(( IFS = 1 ))`, `$[ IFS = 1 ]`), named to a command that sets a variable
+(`read IFS`, `printf -vIFS`, `for IFS in`), and named by a word built from an
+expansion where it could become `IFS`: given to `eval` or a shell's `-c`,
+or as the name a setter is given (`read ${v}FS`, `printf -v "$v"`). A prefix
+to `read` (`IFS=, read -r a b`), `IFS` set only to blanks (`IFS=$'\n'`) and
+`IFS` as another command's argument (`grep IFS f`) are not refused. Some
+commands that set nothing are refused with an expansion after them, because
+the text cannot tell them apart: a setter's name in quoted text
+(`echo "read IFS"`), any `x=IFS`, `IFS` beside a blank and `=` (`[ IFS = x ]`),
+and `eval` or `-c` text with an expansion in it.
+
+The program is found past assignments, wrappers, option values, durations
+and redirections (`2>/dev/null`, `<<< x`, `>| f`), so `2>/dev/null curl x`
+and `nice -n 1 c\url x` are matched as `curl x`, and in function bodies and
+`eval`, `trap` and `-c` text. A program named by an expansion that edits its
+value, such as `${x%/}`, `${x//_/ }`, `${x:-curl}` or `${!v}`, cannot be
+read at all: `x=curl_x; ${x//_/ }` runs `curl x`. It is refused while any
+deny rule for `bash` has a pattern, in every mode. Any other expansion in
+the program's word, and an unquoted glob (`cur? x`, `c*l x`), confirms; see
+[the destructive step](#the-order).
 
 Deny rules guard against mistakes, not against a command written to get past
 them. What a command can reach is decided by the sandbox, and that is the
@@ -361,21 +435,53 @@ Every call goes through the same steps, and the order is the design:
    `git worktree remove -f`, `git clean` other than a dry run,
    `git reset --hard`, `git push` with `-f`, `--force`, `--delete`, `--mirror`
    or a `+` or `:` refspec, `git read-tree -u`, `git checkout-index -f`,
-   any `git update-ref`, and `--output` on any git command, such as
-   `git diff`, `log`, `show`, `stash show` or `stash list`. Where the check
-   cannot tell what will run, it takes the command as destructive: a git
-   subcommand git does not have, which is an alias or an extension (`git wipe`,
-   whether the alias is in the repository's config or set with
-   `-c alias.wipe=…`), any `-c` or `--config-env` that sets an alias or an
-   include, and a git whose name comes from a substitution that names git
+   any `git update-ref`, `git archive -o`, and `--output` on any git
+   command, such as `git diff`, `log`, `show`, `stash show` or
+   `stash list`. Where the check
+   cannot tell what will run, it takes the command as destructive. A git
+   command with an argument made when it runs (`git reset "$1"`,
+   `git reset $x`, `git reset "$@"`, `git reset --h*`) is one, for a
+   subcommand with a form that discards work, as is one that writes
+   `--output` with an argument an expansion or glob could make an option
+   (`git diff $x`). A quoted pattern (`git tag -l 'v*'`) and an expansion
+   after a literal `--name=` (`git log --since="$d"`) are not; but an
+   option's separate value and a revision named by one still are, so
+   `git log -n "$N"`, `git diff "$base"`, `git show "$sha"`,
+   `git checkout -b "$b"` and
+   `git push origin "$(git branch --show-current)"` confirm. Write the
+   value as `--name=value`, or the
+   revision out, to run them without a question. A program
+   named by an expansion is one: `$x`, `$(which tool)`, and an unquoted one
+   in a path, `$HOME/bin/tool` or `$(pwd)/run.sh`, since its value may split
+   into a program and its arguments (`$(printf 'curl x ')/` runs `curl`).
+   These confirm in every mode, `bypass` included, and are refused in
+   headless `-p`. To run a tool by such a path without a prompt, quote the
+   directory, `"$HOME"/bin/tool`, `"$(pwd)"/run.sh` or `"$GOPATH/bin/x"`, or
+   write the path out: a plain expansion inside double quotes and followed by
+   a `/` can only be a directory. That holds for one word only: `"$@"/x`,
+   `"$*"/x` and `"${a[@]}"/x` still confirm, as `"$@"` is a word per
+   parameter. So are a git subcommand git does not have, which is an alias
+   or an extension (`git wipe`, whether the alias is in the repository's
+   config or set with `-c alias.wipe=…`), any `-c` or `--config-env` that
+   sets an alias or an include, and a git whose name comes from a
+   substitution that names git
    where it is the program (`$(which git) reset --hard`,
    `` `which git` checkout -- . ``), read with the words that follow it. The
    program is found past shell keywords (`then`, `!`, `{`, `while`), `eval`,
    and runners such as `sudo -u bob`. A false match only asks, but no allow
    rule, scope or mode approves it: an extension such as `git lfs` or
    `git flow`, or your own alias such as `git st`, asks every time, and is
-   refused in headless `-p`. Run it by its full subcommand, or outside Abhed. Long options are
-   recognised shortened, as git accepts them (`--del`, `--har`), and a later
+   refused in headless `-p`. Run it by its full subcommand, or outside
+   Abhed, or name an extension you trust in `permissions.git_extensions`
+   (`["lfs"]`) in your own configuration, a `-settings` file or the managed
+   one: it then runs without this question. Deny and ask rules still hold
+   for it, and every other part of the command is still checked. The name
+   runs whatever `git-<name>` is installed, or, where none is, an alias of
+   that name a repository's configuration defines, so opt in only to an
+   extension installed on the machine. A workspace's untrusted
+   configuration cannot opt one in, and when the managed file sets the
+   permissions without naming its own, yours are set aside with a warning.
+   Long options are recognised shortened, as git accepts them (`--del`, `--har`), and a later
    `--no-dry-run` or `--no-staged` takes back the flag that made a command
    safe. They are found wherever git takes options, among the operands too, in
    any part of a chain, after git's own options such as `-C dir`, and behind a
@@ -383,11 +489,9 @@ Every call goes through the same steps, and the order is the design:
    destructive. The list is best effort, like the rest of this step, and the
    sandbox is the boundary. It misses, among others: `git checkout FILE` with a
    single word, which git reads as a branch first and otherwise as a path;
-   an alias run through a git whose name comes from a substitution; a git
-   named by a variable (`$G reset --hard`) or by a substitution that does not
-   spell git (`$(echo … | base64 -d)`);
-   `git commit --amend`, which the reflog can undo; and a command that
-   sets `IFS` itself and then builds its words with it
+   and `git commit --amend`, which the reflog can undo. A command that sets
+   `IFS` to a separator, or in a way the text does not show, and then
+   expands anything is taken as destructive
    - no scope is offered for a destructive command, and none remembered
      satisfies it
    - a command too long or complex to split into its parts asks while a patterned
@@ -409,8 +513,11 @@ an extension could remove would not be a guarantee.
 
 ## What the agent may touch
 
-Writes are scoped to the workspace it was started in. `additional_dirs` extends
-that, and is set by the operator — never by the model.
+The file tools write only inside the workspace it was started in.
+`additional_dirs` extends that, and is set by the operator — never by the
+model. A shell command is bounded by the sandbox instead, which on the process
+tier also lets it write temp folders and, on macOS, toolchain caches
+([Sandbox](02-configuration.md#sandbox)).
 
 `.abhed/` — the configuration, the users file and the keys, in the workspace
 and in the home directory — is out of the agent's reach in every mode. The file
@@ -423,6 +530,17 @@ no prompt can talk the agent into dropping a deny rule or adding a user for
 the next start. It is a boundary rather than a rule, because a rule lives in
 the file it would be protecting. A hardlink to another file in a state
 directory is recognised for the first 4,096 files and folders there.
+
+The `write` and `edit` tools also refuse anything inside a `.git` folder, and
+a `.git` file, in any case and through a link, in every mode: a hook or a
+config line written there runs a program at the next git command, Abhed's
+own or yours. Git commands still change the repository. Commands are not
+held to this by the file tools. Abhed Studio's sessions also keep every
+`.git/config` and `.git/hooks` out of their commands' reach: on macOS by
+pattern, at any depth and for repositories made later; under bubblewrap and
+in a container by binding read-only those found when each command starts,
+an empty hooks folder or config file made first where a repository has none,
+down to six folders, past `node_modules` and `.abhed`.
 
 The command sandbox guards `.abhed/` by path, not by file: a hardlink to a
 state file elsewhere in the workspace is an ordinary path to it, which a
@@ -447,8 +565,9 @@ directories, temp folders and toolchain caches — or under the workspace's or
 the home directory's `.abhed/` (a real folder, not a link elsewhere): Abhed
 refuses to start otherwise, because a command could move a folder above it.
 
-On the container tier, commands can read and write `.abhed/` and a configured
-state file inside the mount unless it is mounted read-only or left out.
+On the container and VM tiers, an empty folder is mounted over the
+workspace's `.abhed/` and a configured state path inside a mount, and
+`/dev/null` over a state file, so commands can neither read nor write them.
 
 The operator edits these files by hand; the one exception is
 `~/.abhed/skills`, which commands may read, since a skill can ship a script.
@@ -525,12 +644,18 @@ session; see [Sessions and the local record](12-records.md).
 
 ## The monitor
 
-Between the deny rules and the ask rules sits an optional judge: given the
-session's remit, the agent's most recent stated reasoning, the proposed call
-and where every host and path in it was first seen, it returns allow, ask or
-deny with a reason. It runs on calls policy would ask about, on any mutation
-a mode waved through, and on any call naming a host or path the user never
-mentioned; a read the user asked for, allowed by rule, never reaches it.
+**Not turned on in this release.** The engine has a place for a judge between
+the deny rules and the ask rules, and the `monitor` package holds its rules,
+but no command, configuration key or SDK option sets one. So no call is
+reviewed by a monitor today, and no `monitor.verdict` is written. There is no
+date for it: it will be turned on once it has been measured, not before.
+
+What follows is how the judge works once one is set. Given the session's
+remit, the agent's most recent stated reasoning, the proposed call and where
+every host and path in it was first seen, it returns allow, ask or deny with a
+reason. It runs on calls policy would ask about, on any mutation a mode waved
+through, and on any call naming a host or path the user never mentioned; a
+read the user asked for, allowed by rule, never reaches it.
 
 Two rules make it safe to let it read the reasoning:
 
@@ -542,11 +667,9 @@ Two rules make it safe to let it read the reasoning:
   incoherent raises the call to ask — or to deny in a headless run, where
   nobody can answer.
 
-Every consultation is in the record as `monitor.verdict`, with the decision
-before and after, the code, the rationale and the judge's version, and a
-denial it caused says so at step `monitor`. The judge is any implementation
-of `monitor.Monitor`; the local-model judge and its configuration follow in
-the next release.
+Each consultation would be in the record as `monitor.verdict`, with the
+decision before and after, the code, the rationale and the judge's version,
+and a denial it caused would say so at step `monitor`.
 
 ## Secrets
 

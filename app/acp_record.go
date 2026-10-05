@@ -471,8 +471,7 @@ func (c *acpConn) compactSession(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "a compaction focus is not supported by this engine yet"))
 		return
 	}
-	s.record(agent.EvCompactStarted, map[string]any{"trigger": "manual", "by": agent.ByUser})
-	info, err := parts.Loop.Compact(c.root())
+	info, err := compactRecorded(c.root(), s, parts.Loop)
 	if err != nil {
 		c.reply(msg.ID, nil, refusal(errRefused, "the conversation could not be compacted: %v", err))
 		return

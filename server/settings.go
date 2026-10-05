@@ -214,7 +214,7 @@ func (s *Server) reloadSkills(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reloadAgents(w http.ResponseWriter, r *http.Request) {
 	_, _, cfg := s.state.snapshot()
 	var msgs []string
-	defs := toolset.LoadAgents(cfg, config.RefreshAgents(cfg.Workspace), func(format string, args ...any) {
+	defs := toolset.LoadAgents(cfg, config.RefreshAgents(cfg.Workspace), nil, func(format string, args ...any) {
 		msgs = append(msgs, fmt.Sprintf(format, args...))
 	})
 	s.state.mu.Lock()

@@ -24,9 +24,10 @@ turns; the status bar names the model the last call went to
 
 | Where | What it shows |
 |---|---|
-| **Explorer** | the session's workspace; click a file to open it in the editor. New file, new folder, rename (F2) and delete are on its toolbar and right-click menu |
+| **Explorer** | the session's workspace; click a file to open it in the editor. New file, new folder, rename (F2), delete, download and upload are on its toolbar and right-click menu, and files dropped on a folder go into it |
 | **Search** | text or a regular expression across the workspace, with match case and whole word; results grouped by file, a click opens the line |
 | **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change |
+| **Files** | the documents, images, spreadsheets and archives at the top of the workspace, each a click from downloading ([files in and out](#files-in-and-out)) |
 | **Tools** | every tool the agent has, whether it asks before running, and the permission rules in force |
 | **Extensions** | configured extensions and the events they hook, connected MCP servers, loaded skills |
 | **HawkEYE** | the session's totals and [findings](15-hawkeye.md), live |
@@ -39,14 +40,20 @@ stops and asks: **Allow once**, **Always allow** the narrow rule the policy
 suggests, when one is offered, or **Deny**. A call that matched an ask rule,
 such as the console's `web_search`, or a destructive command, such as
 `git restore .`, offers no **Always allow** and asks every time, whatever was
-allowed before ([which scopes are offered](04-permissions.md)). The chat line
+allowed before ([which scopes are offered](04-permissions.md)); a card with
+no **Always allow** says so, and a background start's card says the command
+keeps running after the turn. The chat line
 under an approved call names who approved it and any scope they chose. The
 agent can delegate with `task` and `tasks` as it does in the terminal; a call a
 subagent needs approved is asked here, labelled with the subagent, and
 answered the same way ([Parallel subagents](14-parallel-subagents.md)). The
 plan the agent keeps is drawn as a checklist. `/` in the composer opens
 commands — `/changes`, `/tools`, `/hawkeye`, `/stop` and the rest — and the
-permission mode is chosen beside it.
+permission mode is chosen beside it. `/tasks`, or a click on the background
+count in the status bar, lists the session's background shells and tasks
+with how each ended, and **Cancel** stops one still running
+(`POST /v1/sessions/{id}/tasks/{task}/cancel`), which ends it as
+`user_interrupt`.
 
 | Key | |
 |---|---|
@@ -109,7 +116,8 @@ Until then it has two actions:
 When the agent reads it, the bubble joins the conversation at that point. A
 message still queued when a run stops is read with your next one. Esc stops a
 run only when pressed twice, so a stray key never costs work; the **Stop**
-button stops it at once.
+button stops it at once. Stop also stops the session's background shells and
+tasks, so it stays on screen while any of them runs, between turns too.
 
 While the server is shutting down, Send now leaves the message queued and
 says so, since the server would refuse the fresh turn. The page asks
@@ -122,7 +130,9 @@ then reads *Not delivered*, with the reason, and its text goes back in the
 message box if the box is empty.
 
 If the connection drops, the page reconnects and asks only for what it has
-not drawn yet, rather than replaying the session. The status bar shows
+not drawn yet, rather than replaying the session. A session another server is
+still starting can answer `404` for a moment: the page asks again three times
+over about three seconds, then says so; open it again to retry. The status bar shows
 *reconnecting…* while it finds out whether the server is there, and
 *offline* until it answers again. A page with nothing running asks the
 server every few seconds while it is visible, so it shows *offline* soon
@@ -147,11 +157,87 @@ a session running on another node. Streamed reasoning is recorded as
 `agent.reasoning.delta` events; `agent.reasoning` still follows with the whole
 text, so a reader that ignores the parts is unaffected.
 
+**Edit and resend.** Between runs, your last message carries *Edit and
+resend*. It puts the message back in the box, with any files it named; change
+it and send, and the conversation goes on from just before it, as `/fork`
+does in the terminal. The fork is recorded as `conversation.forked`, the
+abandoned steps stay in the record and above it in the chat, and files the
+agent changed are not put back. Esc in the box cancels the edit. It is refused
+while a run, a queued message or a background task is still going.
+`POST /v1/sessions/{id}/fork` with `{"before_seq": <the message's step>}` is the
+same for any client.
+
 `@path` in the composer attaches that file's content to the message, with
 completion from the workspace tree as you type. Select code in the editor and
 press ⌘L to ask about exactly those lines.
 
 Panels resize by dragging the edges, and the layout is remembered per browser.
+
+## Files in and out
+
+**Attaching.** The paperclip beside the permission mode, a file dropped on the
+agent panel, or an image pasted into the message box attaches it to the next
+message. Nothing is uploaded until you send; × takes a file off. On send each
+file goes through the same upload route as the console's (`POST
+/v1/sessions/{id}/upload`, 32 MiB a file, refused before upload when larger),
+into the session's own folder under `uploads/`, and the message names its path
+for the agent to open with `read`, under the read rules every workspace file
+meets. An image is recognised by its bytes, not its name, and a model that can
+see reads it as an image. A file the server refuses keeps the message unsent
+and stays attached, with the reason.
+
+**Into a folder.** A file dropped on a folder in the Explorer, or on a file
+in it, or chosen with *Upload files here…* from the right-click menu, goes
+into that folder under its own name, through the same route with the
+folder named. It is your write: the folder and the new name meet the view's
+rules, and the write rules on the path as named, through a link to a folder
+included, and with its links followed, as a save does, and
+the record holds it as your `write` call (`via: upload`, its size and
+SHA-256) and its result. A name already in the folder is refused and nothing
+is replaced, and a server whose sessions have no `write` tool takes none.
+
+**Downloading.** *Download* on a file's right-click menu, or a row in the
+**Files** view, saves the file through `GET /v1/sessions/{id}/download`. That
+route serves a file only to the session's owner, only as an attachment, and
+only where a read rule would let the agent read it; Abhed's own state is never
+served. The page asks the route first, so a refused file is named in the page
+rather than saved as an error.
+
+## Sessions
+
+The **Sessions** view lists your sessions by title, or by the first line of
+the opening prompt until one is given. Rename one with the pencil beside its
+title in the agent panel, a double-click on the title, F2 on its row, or its
+right-click menu.
+The rename is recorded as `session.renamed` with the title, the one before it
+and who set it, and the list shows it on any node and after a restart; the
+opening prompt is never changed. A title is up to 120 characters on one line,
+an empty one clears it, and a session in the middle of a turn is renamed once
+the turn has finished. `POST /v1/sessions/{id}/title` with `{"title": ...}`
+is the same for any client.
+
+*Delete…* on a row's right-click menu, or Delete on the row, asks first and
+then removes the session as the console's delete does: what that means depends
+on the store ([Deleting a chat](11-sessions.md#deleting-a-chat)).
+
+**Continue in a terminal.** The terminal icon beside the title, or the row's
+menu, copies `abhed -r <id>`. Run it where the command line uses this
+server's database, and the session goes on there from its record.
+
+**Export.** The download icon beside the title, or a row's menu, saves the
+session's transcript as a self-contained HTML page, the one `/export` writes
+in the terminal, or its record as recorded, one event as JSON per line. Both
+come from `GET /v1/sessions/{id}/export?format=html|jsonl`, for the session's
+owner only, as attachments. The record is what this server's store holds: a
+Postgres record has no hash chain, so its lines carry none to verify; the
+chained, offline-verifiable export is the command line's, from the local
+record ([Sessions and the local record](12-records.md)).
+
+**Notifications.** *notifications off* in the status bar turns on desktop
+notifications for this browser, once it allows them. While the page is in
+the background it then says *An approval is waiting in Abhed.* or *A run has
+finished in Abhed.*, and nothing else: no tool, file, title or model text
+leaves the page. Click it again to turn them off.
 
 ## The editor
 
@@ -195,6 +281,10 @@ save shows up under **Changes** with a diff like any other edit. The chat shows
 the conversation with the agent only: your own saves, commands, shells and
 Explorer operations are in **Events** and the record, not in the chat.
 
+A save is judged by the write rules on the path as you named it and with its
+links followed, so `write(**/vault/**)` also refuses a save to
+`vault/notes.md` when `vault` is a link to another folder.
+
 A save is refused if the file changed since you opened it, so you cannot write
 over an edit the agent made in the meantime; reload and try again.
 
@@ -209,6 +299,16 @@ acceptance is recorded as `change.accepted`. The baseline only moves to text on
 disk, so accepting in a tab with unsaved edits saves them first. Rejecting
 everything in a file the session created deletes the file, as the Explorer
 does.
+
+**Comments on the changes.** A click in the diff's gutter, beside a line of
+the changed file, or *Comment on this line* from its right-click menu, opens a
+box for a note on that line. *Add to next message* (or Enter) holds it above
+the composer, where × takes it off, and marks the line. Your next message
+carries every held note after what you typed, under "Review comments on the
+changes", each with its file, line number and that line's text; Send with
+nothing typed sends the notes alone. A send that fails puts them back. The
+notes are part of your message and nothing else: they are not saved on the
+server or kept when you open another session.
 
 **Explorer.** A new file is a save of an empty file, refused if the name is
 taken. New folder, rename and delete are each an action of their own —
@@ -320,15 +420,25 @@ What a shell changes about the checks, stated plainly:
   from the keys it passes on and, before the Enter reaches the shell, puts it to
   the policy. A line a deny rule matches is refused, recorded as a denied `bash`
   call, and discarded. That stops a denied command typed or pasted at the
-  prompt. It does not screen lines typed ahead while a command still runs:
+  prompt. Each line is judged on its own, so one the shell finishes with
+  later lines (`for f in *; do`, `if …; then`, `cat <<EOF`, an open quote, a
+  trailing `|` or `&&`) or that closes such a construct (`done`, `fi`) is not
+  refused for being incomplete, as a whole command from the agent is: it is
+  left to the shell, and each later line is screened as it is entered. Of
+  such a line, the commands that parse before the point where it stops, and
+  after a keyword that goes on from an earlier line (`do c\url x`), are read
+  as a whole command's are; the rest of it gets only the text checks, which
+  do not read a quoted name, `eval` or `-c` text, or a function body, and a
+  line that only asks, such as a program named by `$x`, is not refused here
+  at all. It does not screen lines typed ahead while a command still runs:
   they go to the terminal while that command has it, and the shell reads them
   after. Such a line is not recorded while another program has the terminal,
   and is recorded without its text while the shell itself is busy (the
   terminal is then in the mode a password is read in). Nor does it see what
   the shell makes of a line: history recall (the arrow keys, `!!`, Ctrl-R,
-  Ctrl-O), tab completion, variables and other expansions (`$CMD`), a line continued with `\` onto the
-  next, an alias, a function, a script, or anything typed into another program,
-  including a nested shell.
+  Ctrl-O), tab completion, variables and other expansions (`$CMD`), a line
+  continued with `\` onto the next, an alias, a function, a script, or
+  anything typed into another program, including a nested shell.
 - **Lines are recorded as typed, best effort.** Each line is recorded as
   `terminal.input`, marked `edited` when it used keys the server cannot follow
   (Tab, the arrow keys), since the shell may then have run something else. When
@@ -347,7 +457,11 @@ What a shell changes about the checks, stated plainly:
   text was edited as it was typed (Backspace, Ctrl-U, the arrow keys), the
   terminal showed something other than its text, so none of the output is
   kept, only a note that it was withheld; an edited command typed at the
-  shell's prompt, not ahead of it, does not count. A line typed while another
+  shell's prompt, not ahead of it, does not count. The same holds once more
+  than 256 lines in one terminal were recorded without their text: the
+  earliest are no longer kept to look for, so none of the output is. So is
+  none of it kept when more text was withheld than the search is bounded to
+  (65,536 distinct four-character pieces). A line typed while another
   program has the terminal is not recorded at all; when that program left the
   terminal reading lines (`sleep`, `make`, `ssh` before its prompt, a script's
   `read`), the line may be a password typed ahead of a later prompt, so it is
@@ -429,6 +543,11 @@ as `vim.tiny`, which then reads none. On Linux the sandbox shows no home
 directory, so vim there runs with its defaults. Neovim gets the same
 treatment for its history file, untested. The setting is part of every
 process-tier command's environment, so the agent's commands have it too.
+A character you type that draws nothing or changes the text's direction
+(a zero-width space, a bidi control) is shown in the line as one
+reverse-video `?`, so `cd d`, U+202E, `rlo` does not read as `cd drlo`; the line still
+holds and runs the character itself. What your programs print is drawn as
+the terminal draws it.
 While you edit a line, Tab completes the last word, or the part after an
 `=`, against the files and folders in the terminal's directory, from the
 workspace listing the explorer uses, so completing runs nothing: one match is

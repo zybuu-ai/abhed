@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/store/local"
 )
@@ -104,7 +105,7 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 		add("index", "Code index", "ok", "off")
 	}
 	if cfg.Managed {
-		add("managed", "Managed policy", "ok", fmt.Sprintf("in force; it sets %d setting(s)", len(cfg.ManagedKeys)))
+		add("managed", "Managed policy", "ok", fmt.Sprintf("in force from %s; it sets %d setting(s)", managed.ConfigFile, len(cfg.ManagedKeys)))
 	} else {
 		add("managed", "Managed policy", "ok", "none")
 	}
@@ -148,7 +149,7 @@ func (c *acpConn) doctorACP(msg rpcMessage) {
 	if p.Cwd == "" {
 		p.Cwd = c.base
 	}
-	cfg, err := config.LoadWith(p.Cwd, config.LoadOptions{Trust: c.trust})
+	cfg, err := config.LoadWith(p.Cwd, config.LoadOptions{Trust: config.GrantFor(c.trust, c.base, p.Cwd)})
 	var verify func() error
 	if c.durable() {
 		verify = func() error {

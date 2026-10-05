@@ -3,7 +3,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -99,4 +102,22 @@ func TestADrainIgnoresASecondSignal(t *testing.T) {
 	}
 	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 	time.Sleep(200 * time.Millisecond) // this process is still here to finish the test
+}
+
+// A run a signal stopped ends with the signal named in its detail, as Esc and
+// Ctrl-C name theirs; all three are user_interrupt by reason.
+func TestStopSignalIsTheEndsDetail(t *testing.T) {
+	var in agent.Interrupt
+	if !errors.As(error(stoppedBy{syscall.SIGTERM}), &in) || in.Detail != "stopped by "+syscall.SIGTERM.String() {
+		t.Fatalf("detail %q", in.Detail)
+	}
+	if code, ok := stopCode(contextStoppedBy(syscall.SIGTERM)); !ok || code != 143 {
+		t.Fatalf("exit %d %v", code, ok)
+	}
+}
+
+func contextStoppedBy(sig os.Signal) context.Context {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(stoppedBy{sig})
+	return ctx
 }

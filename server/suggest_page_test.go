@@ -25,7 +25,7 @@ const newCid = () => 'c' + (++cid);
 globalThis.__connected = []; let signInGone = false, leaving = false;
 const drawQueued = () => {}, withMentions = async s => s, nearBottom = () => true, follow = () => {}, connect = id => { __connected.push(id); };
 const waiting = () => {}, flushStream = () => {}, flushSoon = () => {}, endThinking = () => {}, logEvent = () => {};
-const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {};
+const loadSessions = () => {}, loadChanges = () => {}, loadHawkeye = () => {}, hawkSoon = () => {}, treeSoon = () => {}, changesSoon = () => {}, loadDownloads = () => {};
 const fillCall = () => {}, drawPlan = () => {}, logTerminal = () => {}, subjectOf = (tool, a) => (a && (a.command || a.path)) || '';
 const requestAnimationFrame = f => f(), idleTurns = new Map();
 // api answers the session list from __sessions, after the next of __delays;

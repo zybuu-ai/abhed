@@ -178,6 +178,17 @@ func CanonicalArgs(t Tool, raw json.RawMessage) (canon json.RawMessage, dropped 
 			return nil, nil, fmt.Errorf("%w: %q is not an argument of %s (arguments: %s)", ErrMalformedArgs, clipKey(k), t.Name(), list)
 		}
 	}
+	// Rules read the first subject argument as text; one given as a number or
+	// a list would pass them by, so it must be a string unless the schema says not.
+	for _, k := range SubjectKeys {
+		v, ok := m[k]
+		if !ok || v == nil {
+			continue
+		}
+		if _, isStr := v.(string); !isStr && schemaType(t.Schema(), k) == "string" {
+			return nil, nil, fmt.Errorf("%w: %q must be a string", ErrMalformedArgs, k)
+		}
+	}
 	sort.Strings(dropped)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -206,6 +217,25 @@ func foldsToAny(fk string, names []string) bool {
 }
 
 // schemaProps reads a schema's top-level property names, and whether it refuses others.
+// schemaType is the type the schema gives property key: "string" where it
+// names none, or gives no schema for it, since rules read it as text.
+func schemaType(schema json.RawMessage, key string) string {
+	var s struct {
+		Properties map[string]struct {
+			Type json.RawMessage `json:"type"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schema, &s) != nil {
+		return "string"
+	}
+	p, ok := s.Properties[key]
+	var typ string
+	if !ok || len(p.Type) == 0 || json.Unmarshal(p.Type, &typ) != nil || typ == "" {
+		return "string"
+	}
+	return typ
+}
+
 func schemaProps(schema json.RawMessage) (map[string]bool, bool) {
 	var s struct {
 		Properties           map[string]json.RawMessage `json:"properties"`

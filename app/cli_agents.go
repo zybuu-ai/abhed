@@ -102,9 +102,23 @@ func slashMCP(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	}
 	body := []ui.Block{{Kind: ui.BlockTable, Rows: rows},
 		{Kind: ui.BlockNotice, Text: "every MCP call goes through policy and asks unless a rule allows it; its output is treated as untrusted"}}
+	// Tools left out for their names were said only on stderr, which a
+	// terminal session does not show; the names are the server's, escaped.
+	for _, s := range servers {
+		if len(s.Refused) == 0 {
+			continue
+		}
+		names := make([]string, len(s.Refused))
+		for i, n := range s.Refused {
+			names[i] = ui.VisibleLine(n)
+		}
+		body = append(body, ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf(
+			"%s offers %d tool(s) not registered for their names (letters, digits, _ . and -, up to 64): %s",
+			ui.VisibleLine(s.Name), len(names), oneLine(strings.Join(names, ", "), 200))})
+	}
 	if st.registry != nil {
 		if _, ok := st.registry.Get("tool_search"); ok {
-			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("more than %d MCP tools: they are offered through tool_search and loaded when asked for", toolset.DeferThreshold)})
+			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("more than %d MCP tools: those of all but the smallest servers are offered through tool_search and loaded when asked for", toolset.DeferThreshold)})
 		}
 	}
 	return false, e.ui.Panel(ctx, ui.PanelSpec{Title: "MCP", Body: body})

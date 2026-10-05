@@ -246,28 +246,40 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 	if err := e.AddDeny("bash(curl*)", "bash(rm -rf /*)", "bash(*mkfs*)"); err != nil {
 		t.Fatal(err)
 	}
-	var many strings.Builder
-	for i := 0; i < 2000; i++ {
-		fmt.Fprintf(&many, "ls %d;", i)
+	segments := func(n int) string {
+		var many strings.Builder
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&many, "ls %d;", i)
+		}
+		return many.String()
 	}
 	for _, c := range []struct {
-		name, command string
-		bounded       bool
+		name    string
+		command func(n int) string
+		n       int
+		bounded bool
 	}{
-		{"over the byte bound", strings.Repeat("timeout -k -k ", 100<<10/14) + "ls", true},
-		{"many wrapper readings", strings.Repeat("timeout -k -k ", 4000) + "ls", true},
-		{"many segments", many.String(), true},
-		{"many assignments", strings.Repeat("A=1 ", 15000) + "ls", false},
-		{"many options", "sudo " + strings.Repeat("-x ", 20000) + "ls", false},
+		{"over the byte bound", func(n int) string { return strings.Repeat("timeout -k -k ", n) + "ls" }, 100 << 10 / 14, true},
+		{"many wrapper readings", func(n int) string { return strings.Repeat("timeout -k -k ", n) + "ls" }, 4000, true},
+		{"many segments", segments, 2000, true},
+		{"many assignments", func(n int) string { return strings.Repeat("A=1 ", n) + "ls" }, 15000, false},
+		{"many options", func(n int) string { return "sudo " + strings.Repeat("-x ", n) + "ls" }, 20000, false},
+		{"a run of option values", func(n int) string { return strings.Repeat("nice -n 1 ", n) + "ls" }, 6000, false},
 	} {
-		start := time.Now()
-		res := e.Evaluate("bash", true, args(map[string]string{"command": c.command}))
-		// Linear work is tens of milliseconds here; the quadratic split took 40 s.
-		if took := time.Since(start); took > slowdown*250*time.Millisecond {
-			t.Errorf("%s (%d bytes): took %v", c.name, len(c.command), took)
+		// Linear: the whole costs no more than about four times a quarter of it.
+		// The quadratic split took 40 s here.
+		command := c.command(c.n)
+		small, large := fastestEvaluate(e, c.command(c.n/4)), fastestEvaluate(e, command)
+		if large > 10*small+slowdown*50*time.Millisecond {
+			t.Errorf("%s (%d bytes): took %v against %v for a quarter", c.name, len(command), large, small)
 		}
+		// And a ceiling: linear work on 64 KiB is tens of milliseconds.
+		if large > slowdown*time.Second {
+			t.Errorf("%s (%d bytes): took %v", c.name, len(command), large)
+		}
+		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
 		if c.bounded && (res.Decision != Ask || res.Step != "screen") {
-			t.Errorf("%s (%d bytes): %s at %s (%s), want ask at screen", c.name, len(c.command), res.Decision, res.Step, res.Reason)
+			t.Errorf("%s (%d bytes): %s at %s (%s), want ask at screen", c.name, len(command), res.Decision, res.Step, res.Reason)
 		}
 	}
 	// Without a rule that could match a part, a long command is judged as before.
@@ -278,6 +290,48 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 	// A deny rule still matches the whole of a command past the bound.
 	if res := e.Evaluate("bash", true, args(map[string]string{"command": strings.Repeat("x", 70<<10) + " curl a"})); res.Decision != Deny && res.Decision != Ask {
 		t.Errorf("past the bound: %s", res.Decision)
+	}
+}
+
+// fastestEvaluate is the best of three times for one decision on command.
+func fastestEvaluate(e *Engine, command string) time.Duration {
+	best := time.Duration(1 << 62)
+	for range 3 {
+		start := time.Now()
+		e.Evaluate("bash", true, args(map[string]string{"command": command}))
+		if took := time.Since(start); took < best {
+			best = took
+		}
+	}
+	return best
+}
+
+// Nested substitutions, and many IFS in arithmetic, cost linear time: the
+// parser's words and the IFS scan do not read what is nested again at each
+// level. Each size stays under the 64 KiB bound.
+func TestNestingIsLinear(t *testing.T) {
+	e := New(ModeBypass)
+	if err := e.AddDeny("bash(curl*)"); err != nil {
+		t.Fatal(err)
+	}
+	nest := func(open, close string) func(n int) string {
+		return func(n int) string { return strings.Repeat(open, n) + "x" + strings.Repeat(close, n) }
+	}
+	for name, shape := range map[string]func(n int) string{
+		"$(":              nest("$(", ")"),
+		"echo $(":         nest("echo $(", ")"),
+		"echo \"$(":       nest("echo \"$(", ")\""),
+		"cat <(":          nest("cat <(", ")"),
+		"$( unclosed":     func(n int) string { return strings.Repeat("$(", n) },
+		"arithmetic IFS":  func(n int) string { return "(( " + strings.Repeat("IFS+", n) + "1 ))" },
+		"IFS as argument": func(n int) string { return "grep " + strings.Repeat("IFS ", n) + "f" },
+		"$( in a value":   func(n int) string { return "x='" + strings.Repeat("$(", n) + "'; echo $((x))" },
+		"$() in a value":  func(n int) string { return "x='" + strings.Repeat("$(a)", n) + " \"'; echo $((x))" },
+	} {
+		small, large := fastestEvaluate(e, shape(1000)), fastestEvaluate(e, shape(4000))
+		if large > 10*small+slowdown*50*time.Millisecond {
+			t.Errorf("%s: 4x the input took %s against %s: not linear", name, large, small)
+		}
 	}
 }
 

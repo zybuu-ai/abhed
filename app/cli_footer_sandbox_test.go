@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -86,5 +87,46 @@ func TestStatusLineRefusedShowsTheNotice(t *testing.T) {
 	f.mu.Unlock()
 	if running || !strings.Contains(line, "process sandbox") {
 		t.Fatalf("running %v, line %q", running, line)
+	}
+}
+
+// A refresh within a second of the last run, as Shift-Tab makes, runs again
+// once the second is up, so the line does not stay on the old mode.
+func TestStatusLineRunsAgainAfterAQuickChange(t *testing.T) {
+	sb := &recordingSandbox{tier: sandbox.TierProcess}
+	f := &footer{editor: ui.NewLineReader(""), r: ui.NewRenderer(io.Discard, false), root: t.TempDir(),
+		ready: func() (sandbox.Sandbox, string, string) { return sb, `grep -o '"mode":"[a-z]*"'`, "" }}
+	f.base.Mode = "default"
+	f.runStatusLine()
+	if line := waitLine(t, f); !strings.Contains(line, `"default"`) {
+		t.Fatalf("first line %q", line)
+	}
+	f.mu.Lock()
+	f.base.Mode = "plan"
+	f.mu.Unlock()
+	f.runStatusLine()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		f.mu.Lock()
+		line := f.line
+		f.mu.Unlock()
+		if strings.Contains(line, `"plan"`) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the line stayed %q after the mode changed", line)
+		}
+	}
+}
+
+// A first run that runs out of time is not named as failing: the sandbox
+// and the script's interpreter start cold. A second one is.
+func TestStatusLineFirstSlowRunIsNotSaid(t *testing.T) {
+	st := &cliState{}
+	slow := fmt.Errorf("%w 300 ms", errStatuslineSlow)
+	if got := st.statuslineFailed(slow); got != "" {
+		t.Fatalf("the first slow run said %q", got)
+	}
+	if got := st.statuslineFailed(slow); !strings.Contains(got, "took longer than 300 ms") {
+		t.Fatalf("the second slow run said %q", got)
 	}
 }

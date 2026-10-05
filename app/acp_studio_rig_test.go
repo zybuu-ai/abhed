@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/store/local"
 )
@@ -40,12 +41,15 @@ type studioClient struct {
 	answer   func(method string, params json.RawMessage) any
 }
 
-func newStudioClient(t *testing.T, ws string, durable bool) *studioClient {
+func newStudioClient(t *testing.T, ws string, durable bool, trust ...config.TrustChoice) *studioClient {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	c := &acpConn{out: outW, version: "test", build: acpBuild{Version: "1.2.3", Edition: "ce", Commit: "abc"}, base: ws,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	if len(trust) > 0 {
+		c.trust = trust[0]
+	}
 	if durable {
 		c.useRecord(ws, "")
 	}

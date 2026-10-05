@@ -13,11 +13,10 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
 // A workspace's own .abhed/config.json arrives with the repository, so it is
@@ -43,6 +42,11 @@ type LoadOptions struct {
 	Trust TrustChoice
 	// Quiet leaves the untrusted warning to the caller, which may prompt instead.
 	Quiet bool
+	// Settings is a file the person named for this run (-settings), merged
+	// over their own file as one of their own: managed-only keys are set
+	// aside, and the managed file still binds. SettingsName says where it came from.
+	Settings     []byte
+	SettingsName string
 }
 
 // WorkspaceTrust is what loading decided about the workspace's config file.
@@ -165,9 +169,19 @@ func (w WorkspaceTrust) Warning() string {
 		what, why, strings.Join(ignored, ", "), tighten)
 }
 
+// warnUntrusted warns once per process: a command that loads the workspace
+// twice (resolve, then its agent; ACP, per session) used to say it twice.
 func warnUntrusted(w WorkspaceTrust) {
-	if s := w.Warning(); s != "" {
-		fmt.Fprintf(os.Stderr, "abhed: warning: %s\n", s)
+	s := w.Warning()
+	if s == "" {
+		return
+	}
+	warnedMu.Lock()
+	first := !warned["untrusted\x00"+s]
+	warned["untrusted\x00"+s] = true
+	warnedMu.Unlock()
+	if first {
+		fmt.Fprintf(warnOut, "abhed: warning: %s\n", s)
 	}
 }
 
@@ -181,6 +195,16 @@ func canonical(dir string) string {
 		return real
 	}
 	return abs
+}
+
+// GrantFor is choice for the workspace dir, where choice was given for the
+// workspace base: -trust-workspace trusts the workspace it names, not every
+// other one a client later opens, which keep their recorded decision.
+func GrantFor(choice TrustChoice, base, dir string) TrustChoice {
+	if choice == TrustGranted && canonical(dir) != canonical(base) {
+		return TrustAsStored
+	}
+	return choice
 }
 
 // HashOf is the content hash trust is keyed by.
@@ -224,18 +248,24 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	}
 	st.Trusted, st.Reason = decide(st, o)
 	if st.Trusted {
-		auto := cfg.Memory.Auto
+		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
 		// Trust does not reach these: a workspace never makes a managed-only
-		// setting, and may only turn auto memory off.
-		setAside(cfg, path)
+		// setting, may only turn auto memory off, and may only import less deep.
+		setAside(cfg, path, LayerWorkspace)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
-			cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Key: "memory.auto",
+			cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Layer: LayerWorkspace, Key: "memory.auto",
 				Reason: "a workspace may only turn auto memory off"})
+		}
+		if cfg.MemoryImportDepth() > depthKey {
+			cfg.Memory.ImportDepth = depth
+			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.import_depth" })
+			cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Layer: LayerWorkspace, Key: "memory.import_depth",
+				Reason: "a workspace may only make imports shallower"})
 		}
 		return st, nil
 	}
@@ -465,27 +495,16 @@ func shortJSON(v any) string {
 	return string(s[:77]) + "..."
 }
 
-// Printable escapes what a terminal would act on, newlines and tabs too, so
-// text from the file cannot draw lines of its own in the prompt.
-func Printable(s string) string { return printable(s, false) }
+// Printable escapes what a terminal would act on, and what draws nothing,
+// newlines too, so text from the file cannot draw lines of its own in the
+// prompt. It is internal/visible's escaper, as every surface uses.
+func Printable(s string) string { return visible.Text(s, false, true) }
 
 // PrintableURL is Printable with a password or secret query value hidden.
 func PrintableURL(s string) string { return Printable(redactURL(s)) }
 
-// PrintableText is Printable keeping newlines and tabs, for a framed body.
-func PrintableText(s string) string { return printable(s, true) }
-
-func printable(s string, lines bool) string {
-	var b strings.Builder
-	for _, r := range s {
-		if (lines && (r == '\n' || r == '\t')) || (r != '\r' && unicode.IsPrint(r) && r != utf8.RuneError) {
-			b.WriteRune(r)
-			continue
-		}
-		fmt.Fprintf(&b, "\\u%04x", r)
-	}
-	return b.String()
-}
+// PrintableText is Printable keeping newlines, for a framed body.
+func PrintableText(s string) string { return visible.Text(s, true, true) }
 
 // InspectWorkspace reports the workspace file's recorded decision and what
 // it would change once trusted, without applying it.
@@ -509,6 +528,16 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 		return st, nil
 	}
 	st.Trusted, st.Reason = decide(st, LoadOptions{})
+	// Under a managed lock on allow rules, the workspace's would be dropped
+	// even once trusted, so the prompt must not show them as gained.
+	locked := Default()
+	if mergeManaged(&locked) == nil && locked.AllowLocked() && !locked.ManagedSets("permissions.allow") {
+		for i, k := range st.Ignored {
+			if k.Key == "permissions.allow" && k.Reason == "" {
+				st.Ignored[i].Reason = "the managed configuration locks allow rules, so trust would not add these"
+			}
+		}
+	}
 	return st, nil
 }
 
@@ -539,10 +568,11 @@ func ruleFor(key string) fieldRule {
 // workspaceRules is the classification in workspace-trust.md. Every setting
 // must resolve to an entry here; TestEveryConfigFieldIsClassified holds that.
 var workspaceRules = map[string]fieldRule{
-	"permissions.deny":  {union(func(c *Config) *[]string { return &c.Permissions.Deny }), "added to the deny rules"},
-	"permissions.ask":   {union(func(c *Config) *[]string { return &c.Permissions.Ask }), "added to the ask rules"},
-	"permissions.mode":  {narrowMode, "only plan or default, and only narrower than the current mode"},
-	"permissions.allow": {nil, "an allow rule widens what runs unasked"},
+	"permissions.deny":           {union(func(c *Config) *[]string { return &c.Permissions.Deny }), "added to the deny rules"},
+	"permissions.ask":            {union(func(c *Config) *[]string { return &c.Permissions.Ask }), "added to the ask rules"},
+	"permissions.mode":           {narrowMode, "only plan or default, and only narrower than the current mode"},
+	"permissions.allow":          {nil, "an allow rule widens what runs unasked"},
+	"permissions.git_extensions": {nil, "a git extension opted in runs unasked"},
 
 	"sandbox.min_tier":              {raiseTier, "only a stronger tier"},
 	"sandbox.allow_network":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
@@ -576,6 +606,7 @@ var workspaceRules = map[string]fieldRule{
 	"k8s":                {nil, "names which cluster and credentials the agent reaches"},
 	"ssh.enabled":        {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
 	"ssh.hosts":          {nil, "names machines and keys the agent reaches"},
+	"ssh.connect_hosts":  {nil, "names machines ssh_connect may reach"},
 	"skills.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":        {nil, "a skill is instructions to the agent"},
 	"agents.disabled":    {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},

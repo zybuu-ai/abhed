@@ -26,4 +26,9 @@ check('another session\'s pill is left alone', other.className === 'pill running
 const badges = listBadges({background:2, pending_ask:{tool:'bash', subagent:'scan'}}).map(b => b.textContent);
 check('a row names its background tasks and a waiting approval', badges.join('|') === 'background 2|approval waiting');
 check('a quiet row has no badges', listBadges({state:'done'}).length === 0);
+// A session started from the terminal has no message yet: it is named as a workbench session.
+check('a session with no message is named as a workbench session', sessionName({prompt:''}) === 'Workbench session' && sessionName({}) === 'Workbench session');
+check('a session is named by its first message', sessionName({prompt:'fix the build'}) === 'fix the build');
+check('and by its title once it has one', sessionName({prompt:'fix the build', title:'CI repair'}) === 'CI repair');
+check('a name is drawn with its hidden characters revealed', sessionName({prompt:'a\u202eb'}) === 'a⟨U+202E⟩b' && sessionName({title:'t\u200bx'}) === 't⟨U+200B⟩x');
 if(!ok) process.exit(1);

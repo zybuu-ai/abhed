@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,5 +73,29 @@ func TestPrecheckDoesNotMaskADeny(t *testing.T) {
 	evs, _ := store.Events("sess1")
 	if !hasEvent(evs, EvActionDenied) {
 		t.Fatal("plan mode must still record the write as denied")
+	}
+}
+
+// In accept-edits a write is allowed without asking; one the tool would refuse,
+// into Abhed's own state, is refused before it is recorded as approved.
+func TestAllowedDoomedWriteIsNotRecordedApproved(t *testing.T) {
+	dir := tempDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".abhed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, store := harnessIn(t, dir, []scriptedTurn{
+		{calls: []model.ToolCall{call("write", map[string]string{"path": filepath.Join(dir, ".abhed", "config.json"), "content": "{}"})}},
+		{text: "ok"},
+	}, policy.ModeAcceptEdits, true)
+	l.Run(context.Background(), "write the config")
+	evs, _ := store.Events("sess1")
+	for _, e := range evs {
+		if e.Type == EvActionApproved {
+			t.Fatalf("recorded approved: %s", e.Payload)
+		}
+	}
+	denied := payloads[map[string]string](evs, EvActionDenied)
+	if len(denied) != 1 || denied[0]["step"] != "precheck" || !strings.Contains(denied[0]["reason"], "Abhed's own state") {
+		t.Fatalf("denied: %+v", denied)
 	}
 }

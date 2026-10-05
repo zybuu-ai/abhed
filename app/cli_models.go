@@ -61,6 +61,9 @@ func hostedLabel(base string) string {
 // slashModel is /model: a pick of the configured models, or a switch by name.
 func slashModel(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	st := e.st
+	if err := st.commandSetup("switch the model"); err != nil {
+		return false, err
+	}
 	name := ""
 	if len(args) > 0 {
 		name = args[0]

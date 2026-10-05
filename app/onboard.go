@@ -42,10 +42,9 @@ type lazySandbox struct {
 	floor sandbox.Tier
 }
 
-// startSandbox begins choosing the sandbox. It returns at once when the
-// answer cannot fail, and otherwise waits for it, so a configuration no
-// backend meets still refuses to start.
-func startSandbox(cfg config.Config, workspace string) (*lazySandbox, error) {
+// startSandbox begins choosing the sandbox, waiting only when the answer can
+// fail, or for a headless run with no tier required so its warning prints.
+func startSandbox(cfg config.Config, workspace string, terminal bool) (*lazySandbox, error) {
 	p, err := sandboxconfig.Policy(cfg, workspace)
 	if err != nil {
 		return nil, err
@@ -60,6 +59,12 @@ func startSandbox(cfg config.Config, workspace string) (*lazySandbox, error) {
 			l.floor = sandbox.TierProcess
 			return l, nil
 		}
+	}
+	// Where bwrap is installed but cannot make namespaces (Ubuntu's
+	// AppArmor default), waiting here meant `docker info` before the prompt.
+	if terminal && p.MinTier.Strength() <= sandbox.TierNone.Strength() {
+		l.floor = sandbox.TierNone
+		return l, nil
 	}
 	<-l.done
 	return l, l.err

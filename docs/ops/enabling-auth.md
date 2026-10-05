@@ -60,6 +60,7 @@ Create the first account from the CLI:
 
 ```bash
 abhed -C /srv/abhed user add alice -email alice@corp.internal -name "Alice"
+# created alice (tenant default)
 # generated password: 7Kq2mVx9pLd4  (change it after first sign-in)
 ```
 
@@ -77,6 +78,14 @@ Then open the server in a browser and sign in with it.
 With `storage.driver: postgres`, accounts are a table in the same database as
 the event store, which is what a multi-node deployment needs. Without it, they
 go to `<workspace>/.abhed/users.json`, mode `0600`, written atomically.
+
+Every change to that file is made under an exclusive lock on
+`users.json.lock` beside it, so two `abhed user` commands, or a command and a
+running server, cannot drop each other's change. A change waits up to five
+seconds for the lock and otherwise fails with "held by another abhed",
+changing nothing. The lock is released when its holder exits, so a crash
+leaves nothing to clean up; the empty `users.json.lock` file stays and is safe
+to leave.
 
 The file store exists because the alternative was silently broken: an in-memory
 store meant `abhed user add` created an account inside a CLI process that then
@@ -292,7 +301,10 @@ still works without script.
 
 Only members of the group may use the server. The check runs once someone is
 signed in, so the sign-in page, sign-in itself, sign-out, `/v1/whoami` and
-`/v1/health` answer everyone. A signed-in person outside the group is signed
+`/v1/health` answer everyone. `/v1/whoami` answers `200` to every caller:
+with no sign-in, or a cookie whose sign-in has ended or expired, it reads
+`"authenticated": false`, while every other API route answers `401`. A
+signed-in person outside the group is signed
 out and told why: a browser lands on the front page with the reason, and an
 API client gets `403` with it, marked `"refused": true`. The workbench shows
 the reason and its signed-out state on that `403`, and for ten minutes a
@@ -315,6 +327,10 @@ On every route, `Origin: null` is accepted only when the browser also sends
 `Sec-Fetch-Site: same-origin`, which is how Chrome posts this server's own
 forms under its `no-referrer` policy; a missing, `same-site`, `cross-site` or
 `none` value is refused.
+
+Each refusal is logged at warn level as `request refused` with
+`reason=cross-origin`, the method, path, `Origin` and remote address. It is
+logged before sign-in is checked, so it names no user.
 
 ## When authentication is off
 

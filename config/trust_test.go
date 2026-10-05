@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -405,8 +406,15 @@ func TestIgnoredTextCannotForgeLines(t *testing.T) {
 	if strings.ContainsAny(cfg.Workspace.Warning(), "\n\r\t") {
 		t.Fatalf("a line break reached the warning: %q", cfg.Workspace.Warning())
 	}
-	if !strings.Contains(PrintableText("a\nb\tc\rd\x1b"), "a\nb\tc") || strings.ContainsAny(PrintableText("\r\x1b"), "\r\x1b") {
-		t.Fatal("PrintableText keeps newlines and tabs and nothing else")
+	if !strings.Contains(PrintableText("a\nb\tc\rd\x1b"), "a\nb    c") || strings.ContainsAny(PrintableText("\r\x1b\t"), "\r\x1b\t") {
+		t.Fatal("PrintableText keeps newlines, widens tabs and keeps nothing else")
+	}
+	// The escaper every surface uses: what draws nothing, and a run of blanks
+	// that would push the rest out of view, are marked too.
+	for in, want := range map[string]string{"a\u3164b": "⟨U+3164⟩", "a\u2800b": "⟨U+2800⟩", "x" + strings.Repeat(" ", 40) + "y": "⟨40 spaces⟩", "\u202e": "⟨U+202E⟩"} {
+		if got := Printable(in); !strings.Contains(got, want) {
+			t.Errorf("Printable(%q) = %q, want %s in it", in, got, want)
+		}
 	}
 	if got := PrintableURL("http://bob:hunter2@h/v1?api_key=SEKRET&x=1"); strings.Contains(got, "hunter2") || strings.Contains(got, "SEKRET") || !strings.Contains(got, "x=1") {
 		t.Fatalf("PrintableURL kept a credential: %q", got)
@@ -600,5 +608,46 @@ func TestRedactArgsQueriesAndMaps(t *testing.T) {
 		if !strings.Contains(string(out), kept) {
 			t.Errorf("%s was lost: %s", kept, out)
 		}
+	}
+}
+
+// A memory file is read by every later session as instructions, so writing
+// one asks even where the mode approves edits.
+func TestDefaultAsksBeforeWritingAMemoryFile(t *testing.T) {
+	ws := t.TempDir()
+	for _, mode := range []policy.Mode{policy.ModeAcceptEdits, policy.ModeAuto} {
+		pol := policy.New(mode)
+		pol.Roots = func() []string { return []string{ws} }
+		if err := pol.AddAsk(Default().Permissions.Ask...); err != nil {
+			t.Fatal(err)
+		}
+		for path, want := range map[string]policy.Decision{
+			"ABHED.md": policy.Ask, "./AGENTS.md": policy.Ask, filepath.Join(ws, "ABHED.local.md"): policy.Ask,
+			filepath.Join(ws, "sub", "..", "AGENTS.md"): policy.Ask,
+			"README.md": policy.Allow, "docs/ABHED.md.bak": policy.Allow,
+		} {
+			for _, tool := range []string{"write", "edit"} {
+				raw, _ := json.Marshal(map[string]string{"path": path})
+				if got := pol.Evaluate(tool, true, raw).Decision; got != want {
+					t.Errorf("%s %s %s: %v, want %v", mode, tool, path, got, want)
+				}
+			}
+		}
+	}
+}
+
+// A process that loads an untrusted workspace twice warns once.
+func TestUntrustedWarningIsSaidOnce(t *testing.T) {
+	_, ws := trustHome(t, "", `{"permissions":{"mode":"bypass"}}`)
+	var out bytes.Buffer
+	warnOut = &out
+	t.Cleanup(func() { warnOut = os.Stderr })
+	for range 2 {
+		if _, err := LoadWith(ws, LoadOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(out.String(), "is not trusted"); n != 1 {
+		t.Fatalf("warned %d times:\n%s", n, out.String())
 	}
 }

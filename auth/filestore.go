@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/filelock"
 )
 
 // FileUserStore keeps accounts in a JSON file next to the workspace config.
@@ -88,13 +91,72 @@ func (f *FileUserStore) save(users map[string]*User) error {
 		return err
 	}
 	f.gen.Add(1)
-	tmp := f.path + ".tmp"
-	// 0600: the file holds password hashes. Group- or world-readable is a
-	// standing offer to run bcrypt offline.
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
+	// A temp file of its own, so two writers never write one; CreateTemp
+	// makes it 0600: the file holds password hashes.
+	tmp, err := os.CreateTemp(filepath.Dir(f.path), filepath.Base(f.path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", f.path, err)
 	}
-	return os.Rename(tmp, f.path)
+	name, done := tmp.Name(), false
+	defer func() {
+		if !done {
+			_ = os.Remove(name)
+		}
+	}()
+	_, werr := tmp.Write(data)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return fmt.Errorf("write %s: %w", name, werr)
+	}
+	if err := os.Rename(name, f.path); err != nil {
+		return err
+	}
+	done = true
+	return nil
+}
+
+// change runs a read, change and write of the file under a lock that other
+// processes take too: two `abhed user` commands at once otherwise each wrote
+// what it read, and the last one dropped the other's change.
+func (f *FileUserStore) change(do func(users map[string]*User) error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	unlock, err := filelock.Lock(f.path+".lock", 5*time.Second, "%s is held by another abhed (waited %s); nothing was changed")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	users, err := f.load()
+	if err != nil {
+		return err
+	}
+	if err := do(users); err != nil {
+		return err
+	}
+	return f.save(users)
+}
+
+// Create adds u unless its username or email is taken, judged under the lock
+// other processes take, so two creating one name cannot both succeed.
+func (f *FileUserStore) Create(_ context.Context, u *User) error {
+	return f.change(func(users map[string]*User) error {
+		key := strings.ToLower(u.Username)
+		if _, taken := users[key]; taken {
+			return ErrUserExists
+		}
+		if email := strings.TrimSpace(u.Email); email != "" {
+			for _, other := range users {
+				if strings.EqualFold(strings.TrimSpace(other.Email), email) {
+					return ErrEmailTaken
+				}
+			}
+		}
+		copy := *u
+		users[key] = &copy
+		return nil
+	})
 }
 
 func (f *FileUserStore) Get(_ context.Context, username string) (*User, error) {
@@ -112,19 +174,15 @@ func (f *FileUserStore) Get(_ context.Context, username string) (*User, error) {
 }
 
 func (f *FileUserStore) Put(_ context.Context, u *User) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	users, err := f.load()
-	if err != nil {
-		return err
-	}
-	copy := *u
-	key := strings.ToLower(u.Username)
-	if old, ok := users[key]; ok {
-		copy.Revocations = max(copy.Revocations, old.Revocations)
-	}
-	users[key] = &copy
-	return f.save(users)
+	return f.change(func(users map[string]*User) error {
+		copy := *u
+		key := strings.ToLower(u.Username)
+		if old, ok := users[key]; ok {
+			copy.Revocations = max(copy.Revocations, old.Revocations)
+		}
+		users[key] = &copy
+		return nil
+	})
 }
 
 func (f *FileUserStore) List(_ context.Context) ([]*User, error) {
@@ -142,34 +200,29 @@ func (f *FileUserStore) List(_ context.Context) ([]*User, error) {
 }
 
 func (f *FileUserStore) Delete(_ context.Context, username string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	users, err := f.load()
-	if err != nil {
-		return err
-	}
-	key := strings.ToLower(username)
-	if _, found := users[key]; !found {
-		return ErrNoSuchUser
-	}
-	delete(users, key)
-	return f.save(users)
+	return f.change(func(users map[string]*User) error {
+		key := strings.ToLower(username)
+		if _, found := users[key]; !found {
+			return ErrNoSuchUser
+		}
+		delete(users, key)
+		return nil
+	})
 }
 
 // AddRevocation raises the account's revocation count and returns it.
 func (f *FileUserStore) AddRevocation(_ context.Context, username string) (int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	users, err := f.load()
-	if err != nil {
-		return 0, err
-	}
-	u, found := users[strings.ToLower(username)]
-	if !found {
-		return 0, ErrNoSuchUser
-	}
-	u.Revocations++
-	return u.Revocations, f.save(users)
+	var n int64
+	err := f.change(func(users map[string]*User) error {
+		u, found := users[strings.ToLower(username)]
+		if !found {
+			return ErrNoSuchUser
+		}
+		u.Revocations++
+		n = u.Revocations
+		return nil
+	})
+	return n, err
 }
 
 // Version changes whenever the file does, whichever process wrote it: its

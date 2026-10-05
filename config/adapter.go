@@ -1,6 +1,8 @@
 package config
 
 import (
+	"time"
+
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
@@ -42,7 +44,11 @@ func (p ProviderConfig) Spec() model.Spec {
 		Region:          p.Region,
 		Project:         p.ProjectID,
 		Params:          p.Params.Model(p.Think),
-		Extra:           extra,
+		Timeouts: model.Timeouts{
+			Call:  time.Duration(p.CallTimeoutSeconds) * time.Second,
+			Stall: time.Duration(p.StallTimeoutSeconds) * time.Second,
+		},
+		Extra: extra,
 	}
 }
 
@@ -84,7 +90,8 @@ func (p ProviderConfig) Adapter() (model.Adapter, error) {
 // With hooks.disabled, which only the managed configuration sets, an
 // extension keeps only the tools it provides: it is sent list_tools and
 // invoke_tool and no hook event, and one that provides no tools is not
-// started at all.
+// started at all. With hooks.managed_only, the same holds for every extension
+// the managed file did not configure.
 func (c Config) ExtensionSpecs() []extension.Config {
 	out := make([]extension.Config, 0, len(c.Extensions))
 	for _, e := range c.Extensions {
@@ -92,7 +99,7 @@ func (c Config) ExtensionSpecs() []extension.Config {
 		for _, ev := range e.Events {
 			events = append(events, extension.Event(ev))
 		}
-		if c.Hooks.Disabled {
+		if c.Hooks.Disabled || c.Hooks.ManagedOnly && c.ExtensionLayer(e.Name) != LayerManaged {
 			if events = toolEventsOnly(events); len(events) == 0 {
 				continue
 			}
@@ -102,6 +109,21 @@ func (c Config) ExtensionSpecs() []extension.Config {
 			Events: events, TimeoutMS: e.TimeoutMS, Env: e.Env,
 			Match: e.Match, Async: e.Async,
 		})
+	}
+	return out
+}
+
+// NarrowHooks applies hooks.disabled and hooks.managed_only to extensions a
+// caller supplies beside the configuration's, which are never the managed file's.
+func (c Config) NarrowHooks(specs []extension.Config) []extension.Config {
+	if !c.Hooks.Disabled && !c.Hooks.ManagedOnly {
+		return specs
+	}
+	out := make([]extension.Config, 0, len(specs))
+	for _, s := range specs {
+		if s.Events = toolEventsOnly(s.Events); len(s.Events) > 0 {
+			out = append(out, s)
+		}
 	}
 	return out
 }

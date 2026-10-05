@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Anthropic speaks the Messages API.
@@ -83,7 +82,7 @@ func NewAnthropic(baseURL, apiKey, model string, p Profile) *Anthropic {
 		APIKey:  apiKey,
 		Model:   model,
 		Version: defaultAnthropicVersion,
-		HTTP:    &http.Client{Timeout: 10 * time.Minute},
+		HTTP:    timeoutClient(DefaultTimeouts()),
 		Retry:   DefaultRetry(),
 		profile: p,
 	}

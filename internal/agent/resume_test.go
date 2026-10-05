@@ -185,7 +185,9 @@ func TestResumeRunningChildRefused(t *testing.T) {
 	r := newResumeRig(t, "")
 	gate := make(chan struct{})
 	defer close(gate)
-	r.f.Adapter = gated{r.m, gate}
+	// A child runs on its parent's model, so the parent's is the one gated; the
+	// factory's alone left the child free to finish before the resume.
+	r.l.Adapter = gated{r.m, gate}
 	id, err := r.f.SpawnBackground(r.ctx(), SubagentRequest{Prompt: "work", Description: "d"})
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +314,7 @@ func TestResumeUsesCurrentNarrowTools(t *testing.T) {
 			resumed = s
 		}
 	}
-	if resumed["definition_changed"] != true || len(resumed["tools"].([]any)) != 1 { // read only
+	if resumed["definition_changed"] != true || len(resumed["tools"].([]any)) != 2 { // read, and recall
 		t.Fatalf("resumed with %v", resumed)
 	}
 	r.f.Definitions = WithDefinitions()

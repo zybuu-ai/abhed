@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Gemini speaks Google's generateContent API.
@@ -54,7 +53,7 @@ func NewGemini(baseURL, apiKey, model string, p Profile) *Gemini {
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
 		APIKey:  apiKey,
 		Model:   model,
-		HTTP:    &http.Client{Timeout: 10 * time.Minute},
+		HTTP:    timeoutClient(DefaultTimeouts()),
 		Retry:   DefaultRetry(),
 		profile: p,
 	}

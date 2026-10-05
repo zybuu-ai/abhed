@@ -65,6 +65,8 @@ type ptyRun struct {
 	command string
 	cmd     *exec.Cmd
 	tty     *os.File
+	// input, when set, takes the keys in place of tty: a test's terminal.
+	input   io.Writer
 	cancel  context.CancelFunc
 	started time.Time
 	// capture is set for an interactive shell; inputMu keeps its keys in order.
@@ -152,7 +154,7 @@ func (s *Server) startPTY(w http.ResponseWriter, r *http.Request) {
 	capBody(w, r)
 	var req ptyStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (!req.Interactive && strings.TrimSpace(req.Command) == "") {
-		WriteError(w, http.StatusBadRequest, "command is required")
+		badBody(w, err, "command is required")
 		return
 	}
 	if req.Confirmed && req.Declined {
@@ -412,24 +414,7 @@ func (p *ptyRun) pump() {
 		n, err := p.tty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
-			if p.capture != nil {
-				p.capture.Output(chunk)
-				// The first output is the shell's prompt, and the foreground
-				// group then is the shell's own.
-				if p.local && p.shellPgrp.Load() == 0 {
-					if fg, _, ok := ttyNow(p.tty); ok {
-						p.shellPgrp.Store(int64(fg))
-					}
-				}
-				switch {
-				case p.prompt == nil:
-				case p.local:
-					fg, canonical, ok := ttyNow(p.tty)
-					p.prompt.Output(chunk, ok && !p.isProgram(fg), canonical)
-				default:
-					p.prompt.OutputUnasked(chunk)
-				}
-			}
+			p.follow(chunk)
 			p.mu.Lock()
 			switch {
 			case p.capture != nil:
@@ -554,9 +539,11 @@ loop:
 	if run.capture != nil {
 		text = run.capture.Scrub(text)
 		how = "interactive terminal"
-		if by := run.endedBy.Load(); by != nil {
-			how += ", " + *by
-		}
+	}
+	if by := run.endedBy.Load(); by != nil {
+		how += ", " + *by
+	}
+	if run.capture != nil {
 		how += "; the latest output follows"
 	}
 	// A shell's end is the person's doing, whatever its status; only a
@@ -730,7 +717,7 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err != nil {
-		WriteError(w, http.StatusBadRequest, "input is too large")
+		badBody(w, err, "the input could not be read")
 		return
 	}
 	select {
@@ -744,7 +731,7 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 	// should not. A shell's lines are, by the capture.
 	if run.capture == nil {
 		run.holdTyped(live, data)
-		if _, err := run.tty.Write(data); err != nil {
+		if _, err := run.send(data); err != nil {
 			WriteError(w, http.StatusGone, "the command has ended")
 			return
 		}
@@ -761,6 +748,12 @@ func (s *Server) writePTY(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// sendWrite is a write of data to the shell through run.send, for
+// Capture.Send, which follows the line before the shell has it.
+func sendWrite(run *ptyRun, data []byte) func() error {
+	return func() error { _, err := run.send(data); return err }
+}
+
 // shellInput forwards keys to a shell. Each line is put to the deny rules at
 // its Enter, as typed; a refused line never reaches the shell, which is sent
 // Ctrl-C instead to discard it.
@@ -773,8 +766,11 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 	}
 	// Keys a program reads are not the start of the shell's next line.
 	defer func() {
-		if run.programHasTerminal() {
+		switch run.programTook(data) {
+		case termline.TookKeys:
 			run.capture.Abandon()
+		case termline.TookLine:
+			run.capture.Yield()
 		}
 	}()
 	for _, k := range keys {
@@ -786,12 +782,7 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			if e != nil && !e.Program {
 				run.gave()
 			}
-			// Followed before the shell has it: a pasted line's echo can
-			// come back before Write returns, and a line missed it.
-			if e != nil {
-				run.capture.Entered(e)
-			}
-			if _, err := run.tty.Write(k.Data); err != nil {
+			if err := run.capture.Send(e, sendWrite(run, k.Data)); err != nil {
 				return err
 			}
 			continue
@@ -802,8 +793,7 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 		}
 		if refused == nil {
 			run.gave()
-			run.capture.Entered(e)
-			if _, err := run.tty.Write(k.Data); err != nil {
+			if err := run.capture.Send(e, sendWrite(run, k.Data)); err != nil {
 				return err
 			}
 			continue
@@ -816,11 +806,42 @@ func (s *Server) shellInput(live *liveSession, run *ptyRun, data []byte) error {
 			discard = []byte{0x03}
 		}
 		run.gave()
-		if _, err := run.tty.Write(discard); err != nil {
+		if _, err := run.send(discard); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// follow notes a shell's output in its line capture and its prompt.
+func (p *ptyRun) follow(chunk []byte) {
+	if p.capture == nil {
+		return
+	}
+	p.capture.Output(chunk)
+	// The first output is the shell's prompt, and the foreground
+	// group then is the shell's own.
+	if p.local && p.shellPgrp.Load() == 0 {
+		if fg, _, ok := ttyNow(p.tty); ok {
+			p.shellPgrp.Store(int64(fg))
+		}
+	}
+	switch {
+	case p.prompt == nil:
+	case p.local:
+		fg, canonical, ok := ttyNow(p.tty)
+		p.prompt.Output(chunk, ok && !p.isProgram(fg), canonical)
+	default:
+		p.prompt.OutputUnasked(chunk)
+	}
+}
+
+// send writes keys to the terminal; input, when set, stands in for it.
+func (p *ptyRun) send(b []byte) (int, error) {
+	if p.input != nil {
+		return p.input.Write(b)
+	}
+	return p.tty.Write(b)
 }
 
 // ask fills in what the terminal says at a line's Enter. On the process and
@@ -892,14 +913,17 @@ func (p *ptyRun) isProgram(fg int) bool {
 	return shell != 0 && fg != shell
 }
 
-// programHasTerminal reports, where the terminal can be asked, whether a
-// program other than the shell is reading the keys.
-func (p *ptyRun) programHasTerminal() bool {
+// programTook says, where the terminal can be asked, what a program other
+// than the shell took of keys just sent: raw keys, or a line it ended.
+func (p *ptyRun) programTook(data []byte) termline.Took {
 	if !p.local {
-		return false
+		return termline.TookNothing
 	}
-	fg, _, ok := ttyNow(p.tty)
-	return ok && p.isProgram(fg)
+	fg, canonical, ok := ttyNow(p.tty)
+	if !ok || !p.isProgram(fg) {
+		return termline.TookNothing
+	}
+	return termline.ProgramTook(canonical, data)
 }
 
 // resizePTY tells the command its terminal changed size.
@@ -914,7 +938,7 @@ func (s *Server) resizePTY(w http.ResponseWriter, r *http.Request) {
 		Rows uint16 `json:"rows"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&size); err != nil || size.Cols == 0 || size.Rows == 0 {
-		WriteError(w, http.StatusBadRequest, "cols and rows are required")
+		badBody(w, err, "cols and rows are required")
 		return
 	}
 	_ = pty.Setsize(run.tty, &pty.Winsize{Cols: size.Cols, Rows: size.Rows})
@@ -931,20 +955,29 @@ func (s *Server) killPTY(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// closedWithSession is the record's reason for a terminal ended by its session closing.
+const closedWithSession = "closed with the session"
+
 // stop ends the run, noting why for its record unless a reason is already set.
 func (p *ptyRun) stop(why string) {
 	p.endedBy.CompareAndSwap(nil, &why)
 	p.cancel()
 }
 
-// closeTerminals ends every shell and command the session has on a terminal.
-// Each returned channel closes once that run's result is on the record.
-func (l *liveSession) closeTerminals() []<-chan struct{} {
+// closeTerminals ends every shell and command the session has on a terminal,
+// recording why. Each returned channel closes once that run's result is on the record.
+// A run that already ended and lingers for a late reader is not stopped or returned.
+func (l *liveSession) closeTerminals(why string) []<-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var done []<-chan struct{}
 	for _, r := range l.ptys {
-		r.stop("closed with the session")
+		select {
+		case <-r.done:
+			continue
+		default:
+		}
+		r.stop(why)
 		done = append(done, r.done)
 	}
 	return done

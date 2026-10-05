@@ -76,6 +76,13 @@ const (
 	// into the parent's record, so the person asked sees it where they are
 	// watching; see SubagentAsk. Its answer follows as subagent.action.
 	EvSubagentAsk EventType = "subagent.ask"
+	// EvSubagentMessage copies into the parent's record a message the person
+	// sent a running subagent: session, text, by.
+	EvSubagentMessage EventType = "subagent.message"
+	// EvSubagentBackgrounded is a foreground subagent the person moved to the
+	// background while it ran (Ctrl-B): session, task_id, description, by.
+	// Its return then carries background and task_id, as a background one's does.
+	EvSubagentBackgrounded EventType = "subagent.backgrounded"
 	// EvSubagentNotice is a background child's result entering the
 	// conversation, recorded before it is applied; see Notice. Fork rebuilds
 	// it as a task_status call and its result.
@@ -85,6 +92,9 @@ const (
 	EvSessionWoken EventType = "session.woken"
 	// EvWakeSet records a change of the session's wake mode; see WakeSet.
 	EvWakeSet EventType = "session.wake_set"
+	// EvSessionRenamed records a person giving the session a title; see
+	// SessionRenamed. The opening prompt stays the record's own.
+	EvSessionRenamed EventType = "session.renamed"
 )
 
 type Actor string
@@ -282,6 +292,9 @@ type ModelCall struct {
 	// still writing when the limit ended it, so what it said is not an answer.
 	CutOff bool   `json:"cut_off,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Retryable marks an Error from a call or stall timeout: nothing was wrong
+	// with the request, so the same call may be sent again.
+	Retryable bool `json:"retryable,omitempty"`
 	// Purpose names a call outside the conversation, as "suggestion"; empty
 	// is a turn of the conversation itself.
 	Purpose string `json:"purpose,omitempty"`
@@ -293,6 +306,25 @@ type ModelSwitched struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	From     string `json:"from,omitempty"`
+}
+
+// SessionRenamed is a session's new title, the one before it, and who set it.
+type SessionRenamed struct {
+	Title string `json:"title"`
+	From  string `json:"from,omitempty"`
+	By    string `json:"by,omitempty"`
+}
+
+// TitleOf is the title the record last gave the session, "" for none.
+func TitleOf(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EvSessionRenamed {
+			var p SessionRenamed
+			_ = json.Unmarshal(events[i].Payload, &p)
+			return p.Title
+		}
+	}
+	return ""
 }
 
 // ProviderOf is the configured provider the record last put the session on:
@@ -560,6 +592,16 @@ type Recorder struct {
 	// Gate, when set, runs before each write, which it refuses by returning an
 	// error; a server uses it to claim a session before anything extends it.
 	Gate func() error
+	// endSealed drops any later session.ended: see SealEnd.
+	endSealed bool
+}
+
+// SealEnd makes every later session.ended a no-op. A CLI exiting on a second
+// Ctrl-C records the end itself, while the stopping turn may still record its own.
+func (r *Recorder) SealEnd() {
+	r.mu.Lock()
+	r.endSealed = true
+	r.mu.Unlock()
 }
 
 // Redactor rewrites a JSON payload before it is recorded. Span is the byte
@@ -634,6 +676,11 @@ func (r *Recorder) Record(t EventType, actor Actor, trust Trust, payload any) (E
 	}
 	r.writeMu.Lock()
 	r.mu.Lock()
+	if t == EvSessionEnded && r.endSealed {
+		r.mu.Unlock()
+		r.writeMu.Unlock()
+		return Event{}, nil
+	}
 	r.seq++
 	ev := Event{
 		ID:        newID(),

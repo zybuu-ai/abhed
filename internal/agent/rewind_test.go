@@ -286,3 +286,21 @@ func TestRestoreIsThePersonsRecordedAction(t *testing.T) {
 		t.Fatalf("recorded %v, want %s", types, want)
 	}
 }
+
+// A branch does not carry its source's name: with it, `-r NAME` matched both.
+func TestBranchCopyLeavesTheName(t *testing.T) {
+	orig := []Event{
+		ev(1, EvUserMessage, Message{Text: "one"}),
+		ev(2, EvSessionNamed, SessionNamed{Name: "login-fix"}),
+		ev(3, EvAgentMessage, Message{Text: "done"}),
+	}
+	got := BranchCopy(orig, 0, "b", 2)
+	if len(got) != 2 {
+		t.Fatalf("copied %d events, want the 2 that are not the name", len(got))
+	}
+	for _, e := range got {
+		if e.Type == EvSessionNamed {
+			t.Fatal("the branch carries the source's name")
+		}
+	}
+}

@@ -23,7 +23,8 @@ func TestContinuationsAndSplittingDoNotHideCommands(t *testing.T) {
 		{"rm\t-rf scratch", Ask, "destructive"},
 		{"rm$'\\x20'-rf$'\\x20'scratch", Ask, "destructive"},
 		{"{rm,-rf,scratch}", Ask, "destructive"},
-		{"IFS=,; x=rm,-rf,scratch; $x", Ask, "destructive"},
+		// A changed IFS hides words from the deny rule, which must still hold.
+		{"IFS=,; x=rm,-rf,scratch; $x", Deny, "screen"},
 		{"git \\\nstash", Ask, "ask"},
 		{"git${IFS}stash", Ask, "ask"},
 		{"{git,stash}", Ask, "ask"},

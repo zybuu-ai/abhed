@@ -279,3 +279,16 @@ func TestLineDialogCannotBeSpoofed(t *testing.T) {
 		t.Errorf("single line = %q", got)
 	}
 }
+
+// The default is named by its number, never by its label, which is the
+// caller's text and may read like another choice.
+func TestLineDialogNamesTheDefaultByNumber(t *testing.T) {
+	l, out := lineSurface("")
+	spec := DialogSpec{Kind: DialogChoice, Choices: []Choice{{ID: "a", Label: "Keep"}, {ID: "b", Label: "No 3. Yes, always"}}, Default: "b"}
+	if got, err := l.Dialog(context.Background(), spec); err != nil || got != "b" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if s := out.String(); !strings.Contains(s, "or enter for 2:") || strings.Contains(s, "enter for No 3") {
+		t.Fatalf("prompt:\n%s", s)
+	}
+}

@@ -172,6 +172,12 @@ func TestBashOnTheHostGivesNoSandboxHint(t *testing.T) {
 		!strings.Contains(res.Content, "the sandbox denied") {
 		t.Fatalf("sandboxed result: %+v", res)
 	}
+	// Started before the sandbox was chosen, which then turned out to be none.
+	late := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, RanUnder: func() string { return "none" }}
+	if res := run(t, late, s, bashArgs{Command: `echo "x: Operation not permitted"`, Description: "print"}); res.Tier != "none" ||
+		strings.Contains(res.Content, "the sandbox denied") {
+		t.Fatalf("result once chosen as none: %+v", res)
+	}
 }
 
 // A command stopped by the run's own deadline says so, rather than advising a
@@ -316,5 +322,117 @@ func TestBashDescriptionSaysWhetherTheNetworkIsReachable(t *testing.T) {
 	}
 	if d := (Bash{}).Description(); strings.Contains(d, "no network") {
 		t.Errorf("on the host: %s", d)
+	}
+}
+
+// daemonEnv makes this test binary a daemon: run with it set to "start" it
+// starts itself again in a session of its own and exits at once; that copy
+// writes its pid to the file the variable ABHED_TEST_DAEMON_PID names and sleeps.
+const daemonEnv = "ABHED_TEST_DAEMON"
+
+func init() {
+	switch os.Getenv(daemonEnv) {
+	case "start":
+		cmd := exec.Command(os.Args[0], "-test.run=^$") // #nosec G204 -- the test binary itself
+		cmd.Env = append(os.Environ(), daemonEnv+"=run")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if cmd.Start() != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "run":
+		_ = os.WriteFile(os.Getenv("ABHED_TEST_DAEMON_PID"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+}
+
+// A daemon, whose parent has exited and which left the command's session,
+// is still ended with the command at its timeout: it carries the command's
+// marker in its environment, whoever its parent is now.
+func TestBashTimeoutEndsADaemon(t *testing.T) {
+	for _, tier := range []string{"host", "none", "process"} {
+		t.Run(tier, func(t *testing.T) {
+			s, dir := setup(t)
+			b := Bash{}
+			switch tier {
+			case "none":
+				b.Sandbox = sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command
+			case "process":
+				// bubblewrap's pid namespace ends everything, and its pids are not the host's.
+				if runtime.GOOS == "linux" {
+					t.Skip("bubblewrap ends its namespace whole")
+				}
+				box := sandbox.NewProcess(sandbox.DefaultPolicy(dir))
+				_, why := box.Available()
+				if why := runsHere(box, dir, why); why != "" {
+					t.Skipf("process sandbox unavailable: %s", why)
+				}
+				b.Sandbox = box.Command
+			}
+			pidFile := filepath.Join(dir, "daemon.pid")
+			self, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			args, _ := json.Marshal(bashArgs{
+				Command:     daemonEnv + `=start ABHED_TEST_DAEMON_PID=` + pidFile + ` '` + self + `' </dev/null >/dev/null 2>&1; sleep 30`,
+				Description: "a command that starts a daemon", TimeoutMS: 1500,
+			})
+			done := make(chan Result, 1)
+			go func() { done <- b.Run(context.Background(), s, args) }()
+			pid := waitForPid(t, pidFile, done)
+			t.Cleanup(func() {
+				if alive(pid) {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+			if sid, err := unix.Getsid(pid); err != nil || sid != pid {
+				t.Fatalf("the daemon did not start a session of its own: sid %d, %v", sid, err)
+			}
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the command held the call past its timeout")
+			}
+			for deadline := time.Now().Add(2 * time.Second); alive(pid); time.Sleep(20 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the daemon %d outlived the timeout", pid)
+				}
+			}
+		})
+	}
+}
+
+type recordingHost struct{ started chan ShellRequest }
+
+func (h recordingHost) StartShell(_ context.Context, req ShellRequest) (string, error) {
+	h.started <- req
+	return "bg-1", nil
+}
+
+// A Ctrl-B that lands after the timeout has ended the command does not move
+// it: the timeout owns it, and the call reports the timeout.
+func TestCtrlBAfterTheTimeoutDoesNotMoveTheCommand(t *testing.T) {
+	s, _ := setup(t)
+	d := NewDetach()
+	host := recordingHost{started: make(chan ShellRequest, 1)}
+	b := Bash{Sandbox: func(ctx context.Context, cwd, _ string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "sleep", "30")
+		cmd.Dir = cwd
+		// Runs after the kill and holds Wait, so only the move can be seen meanwhile.
+		cmd.Cancel = func() error { d.Ask(); time.Sleep(500 * time.Millisecond); return nil }
+		return cmd
+	}}
+	args, _ := json.Marshal(bashArgs{Command: "sleep 30", Description: "sleeps", TimeoutMS: 300})
+	ctx := WithShellHost(WithDetach(context.Background(), d), host)
+	res := b.Run(ctx, s, args)
+	select {
+	case req := <-host.started:
+		t.Fatalf("a command the timeout ended was moved to the background: %+v; result %q", req.Command, res.Content)
+	default:
+	}
+	if !strings.Contains(res.Content, "timed out") {
+		t.Errorf("result: %q", res.Content)
 	}
 }

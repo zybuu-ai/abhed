@@ -106,11 +106,9 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 		}
 		_ = fs.Parse(rest) // the set exits on a bad flag; nothing is left to check
 
-		password := *pass
-		if password == "" {
+		password, generated := *pass, *pass == ""
+		if generated {
 			password = generatePassword()
-			fmt.Printf("generated password: %s\n", password)
-			fmt.Println("  (change it after first sign-in)")
 		}
 
 		// A password an administrator chose or was shown is temporary: the
@@ -141,6 +139,10 @@ func userCmd(workspace string, args []string, trust config.TrustChoice) int {
 			return 1
 		}
 		fmt.Printf("created %s (tenant %s)\n", username, u.Tenant)
+		// Shown only once the account exists: a refused add never prints a password.
+		if generated {
+			fmt.Printf("generated password: %s\n", password)
+		}
 		fmt.Println("  must set a new password at first sign-in")
 		if *admin {
 			fmt.Println("  administrator — can manage settings and users")

@@ -1,6 +1,9 @@
 package termline
 
 import (
+	"errors"
+	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"testing"
@@ -173,6 +176,11 @@ func TestScrubFailsClosed(t *testing.T) {
 	if got := c.Scrub("hunter55\n"); got != unscrubbable {
 		t.Fatalf("a line cut with Ctrl-U left the output: %q", got)
 	}
+	// Cut to nothing, then Enter: the line is empty, the echo is not.
+	c = entered("hunter55\x15\n", true, true, true)
+	if got := c.Scrub("hunter55\n"); got != unscrubbable {
+		t.Fatalf("a line cut to nothing left the output: %q", got)
+	}
 	// Split by other output, or cut where the kept output begins: any line
 	// holding four of its characters in a row goes.
 	c = entered("correcthorse\n", true, true, true)
@@ -210,5 +218,95 @@ func TestScrubFailsClosed(t *testing.T) {
 	c.Entered(e)
 	if got := c.Scrub(">>> print(1)\n1\n"); got != ">>> print(1)\n1\n" {
 		t.Fatalf("a REPL's input was scrubbed: %q", got)
+	}
+}
+
+// Past maxHeld withheld lines, the earliest is let go; it may still be in the
+// recorded tail, so the whole output is withheld instead of showing it.
+func TestScrubFailsClosedPastTheHeldBound(t *testing.T) {
+	c := NewCapture("u1", func(agent.TerminalInput) {})
+	for i := 0; i <= maxHeld; i++ {
+		line := fmt.Sprintf("line%04d\r", i)
+		if i == 0 {
+			line = "zqxw9876\r"
+		}
+		chunks := c.Keys([]byte(line))
+		e := chunks[len(chunks)-1].Enter
+		e.Known, e.Secret = true, true
+		c.Entered(e)
+	}
+	c.Flush()
+	if got := c.Scrub("early zqxw9876 echoed\n"); got != tooManyHeld {
+		t.Fatalf("the evicted line left the output: %q", got)
+	}
+}
+
+// A pasted line whose write to the shell failed is not recorded as entered:
+// the shell never got it. One written is.
+func TestSendWithdrawsALineTheShellNeverGot(t *testing.T) {
+	for _, fail := range []bool{true, false} {
+		var mu sync.Mutex
+		var got []agent.TerminalInput
+		c := NewCapture("u1", func(in agent.TerminalInput) { mu.Lock(); got = append(got, in); mu.Unlock() })
+		chunks := c.Keys([]byte("\x1b[200~git status\x1b[201~\r"))
+		k := chunks[len(chunks)-1]
+		err := c.Send(k.Enter, func() error {
+			c.Output([]byte("git status\r\n"))
+			if fail {
+				return errors.New("the terminal has ended")
+			}
+			return nil
+		})
+		if (err != nil) != fail {
+			t.Fatalf("fail %v: %v", fail, err)
+		}
+		c.Flush()
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if want := map[bool]int{true: 0, false: 1}[fail]; n != want {
+			t.Fatalf("write failed %v: %d lines recorded, want %d", fail, n, want)
+		}
+	}
+}
+
+// Scrub's search is bounded: past it, the whole output is withheld rather
+// than searched, so a shell's many long withheld lines cannot take hundreds
+// of megabytes at its end.
+func TestScrubIsBounded(t *testing.T) {
+	c := NewCapture("u1", nil)
+	r := rand.New(rand.NewPCG(1, 2))
+	for range maxHeld {
+		line := make([]byte, MaxLine)
+		for j := range line {
+			line[j] = byte('!' + r.IntN(90))
+		}
+		c.Hold(&Entered{Line: string(line), Secret: true})
+	}
+	if got := c.Scrub("ordinary output\n"); got != unsearchable {
+		t.Fatalf("scrubbed to %q", got)
+	}
+	small := NewCapture("u1", nil)
+	small.Hold(&Entered{Line: "hunter22", Secret: true})
+	if got := small.Scrub("ok\nhunter22\n"); got != "ok\n"+scrubbed+"\n" {
+		t.Fatalf("scrubbed to %q", got)
+	}
+}
+
+// A line a program in canonical mode ended with ^D is held for the scrub; an
+// empty one holds nothing, so the output stays.
+func TestYieldHoldsALineAProgramTook(t *testing.T) {
+	if ProgramTook(false, []byte("a")) != TookKeys || ProgramTook(true, []byte("a")) != TookNothing || ProgramTook(true, []byte("a\x04")) != TookLine {
+		t.Fatal("ProgramTook")
+	}
+	c := NewCapture("c", nil)
+	c.Yield()
+	if got := c.Scrub("BUSY\nlate\n"); got != "BUSY\nlate\n" {
+		t.Fatalf("an empty line changed the output: %q", got)
+	}
+	c.Keys([]byte("hunter77\x04"))
+	c.Yield()
+	if got := c.Scrub("BUSY\nhunter77\nlate\n"); strings.Contains(got, "hunter77") {
+		t.Fatalf("a line a program took stayed: %q", got)
 	}
 }

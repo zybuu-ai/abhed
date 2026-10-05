@@ -104,7 +104,7 @@ func TestPromptUnchangedWithoutDeferredTools(t *testing.T) {
 		{[]string{"web_fetch"}, fetch},
 		{[]string{"read"}, noWeb},
 	} {
-		want := strings.NewReplacer("{{current}}", current, "{{web}}", tc.web).Replace(CorePrompt)
+		want := strings.NewReplacer("{{current}}", current, "{{web}}", tc.web, "{{tools}}", "").Replace(CorePrompt)
 		p := BuildSystemPrompt(BuildOptions{Profile: "main", Workspace: ws, Tools: tc.tools})
 		if !strings.HasPrefix(p, want) {
 			t.Errorf("%v: the prompt changed without deferred tools", tc.tools)

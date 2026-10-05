@@ -124,7 +124,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	if err != nil {
 		return fail(err)
 	}
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
+	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: true})
 	if err != nil {
 		return fail(err)
 	}
@@ -215,6 +215,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	_ = pol.AddDeny(cfg.Permissions.Deny...)
 	_ = pol.AddAsk(cfg.Permissions.Ask...)
 	_ = pol.AddAllow(cfg.Permissions.Allow...)
+	_ = pol.AllowGitExtensions(cfg.Permissions.GitExtensions...)
 	subject, _ := json.Marshal(map[string]string{"resource": ref.Owner + "/" + ref.Repo})
 	verdict := pol.Evaluate("forge_pr", true, subject)
 	switch {

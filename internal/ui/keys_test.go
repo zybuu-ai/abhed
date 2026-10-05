@@ -300,3 +300,24 @@ func TestUnterminatedReplyIsGivenBack(t *testing.T) {
 		t.Fatalf("given back %d runes, want %d", len(got), len(long))
 	}
 }
+
+// Typing that keeps arriving in short gaps after an assumed reply's start is
+// not held past replyTotal: it is given back as typing, none of it lost.
+func TestAssumedReplyIsBoundedInTime(t *testing.T) {
+	c := &chunked{parts: []string{"\x1b]", "1;", "a", "b", "c", "d", "e", "f", "\x07"}}
+	kr := newKeyReader(bufio.NewReader(c))
+	kr.ready = scripted(c)
+	at := time.Now()
+	kr.now = func() time.Time { at = at.Add(replyWait / 2); return at } // each piece comes well within a gap
+	ks := drain(kr)
+	if len(ks) == 0 || ks[0].code == kReply || ks[0].r != ']' || !ks[0].alt {
+		t.Fatalf("first key: %+v", ks[:min(3, len(ks))])
+	}
+	var b strings.Builder
+	for _, k := range ks[1:] {
+		b.WriteRune(k.r)
+	}
+	if b.String() != "1;abcdef\x07" {
+		t.Fatalf("given back %q", b.String())
+	}
+}

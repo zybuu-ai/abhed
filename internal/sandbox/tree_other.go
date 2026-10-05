@@ -15,3 +15,7 @@ type treeMember struct{}
 func stopMember(int, map[int]bool) (treeMember, bool) { return treeMember{}, false }
 
 func (treeMember) kill() {}
+
+func ancestorNames() []string { return nil }
+
+func marked(string) []int { return nil }

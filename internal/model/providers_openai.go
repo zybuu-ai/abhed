@@ -16,12 +16,12 @@ import (
 // wonder why the setting had no effect.
 func init() {
 	Register("openai", "OpenAI (api.openai.com) or any drop-in replacement",
-		openAIStyle("https://api.openai.com/v1", SamplingOpenAI()))
+		parallelCalls(openAIStyle("https://api.openai.com/v1", SamplingOpenAI())))
 
 	// The local servers accept the OpenAI body plus top_k, min_p and
 	// repetition_penalty, which hosted APIs do not define.
 	Register("vllm", "vLLM server (OpenAI-compatible, /v1)",
-		openAIStyle("http://127.0.0.1:8000/v1", SamplingLocal()))
+		parallelCalls(openAIStyle("http://127.0.0.1:8000/v1", SamplingLocal())))
 	Register("ollama", "Ollama (OpenAI-compatible endpoint, /v1)",
 		openAIStyle("http://127.0.0.1:11434/v1", SamplingLocal()))
 	Register("llamacpp", "llama.cpp server (OpenAI-compatible, /v1)",
@@ -48,7 +48,7 @@ func init() {
 	// The original name, kept so existing configs keep working. It assumes the
 	// permissive local sampling set because that is what it was used for.
 	Register("openai-compatible", "any OpenAI-compatible endpoint (generic)",
-		openAIStyle("", SamplingLocal()))
+		parallelCalls(openAIStyle("", SamplingLocal())))
 }
 
 func openAIStyle(defaultURL string, sampling Sampling) Factory {
@@ -87,10 +87,23 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 		a.Defaults = s.Params
 		a.Think = s.Params.Think
 		a.User = s.Get("user")
+		a.ParallelToolCalls = s.Get("parallel_tool_calls") == "true"
 		if len(s.ReasoningTags) == 2 {
 			a.ReasoningTags = [2]string{s.ReasoningTags[0], s.ReasoningTags[1]}
 		}
 		return a, nil
+	}
+}
+
+// parallelCalls is f for a server known to take "parallel_tool_calls": it is
+// sent unless the provider's extra.parallel_tool_calls is "false".
+func parallelCalls(f Factory) Factory {
+	return func(s Spec) (Adapter, error) {
+		a, err := f(s)
+		if c, ok := a.(*OpenAICompatible); ok && err == nil && s.Get("parallel_tool_calls") != "false" {
+			c.ParallelToolCalls = true
+		}
+		return a, err
 	}
 }
 

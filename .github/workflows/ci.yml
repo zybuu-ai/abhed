@@ -57,6 +57,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The tests build for the other platforms too; a unix-only call in an
+      # untagged test file broke `GOOS=windows go vet` unnoticed.
+      - name: go vet for macOS and Windows
+        run: GOOS=darwin go vet ./... && GOOS=windows go vet ./...
+
       - name: golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
 
@@ -142,7 +147,7 @@ jobs:
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log
@@ -215,6 +220,15 @@ jobs:
           for t in TestRunStatusline TestTUIStatusLineCommand TestTUIStatusLineIsSanitized TestStatuslineFromUserConfig; do
             grep -q -- "--- PASS: $t " status.log || { echo "$t did not run and pass:"; grep -- "$t" status.log || true; exit 1; }
           done
+      # rpc and acp, stopped by SIGTERM, end the command they were running:
+      # here it runs under bubblewrap, where the hosted runner would skip it.
+      - name: rpc and acp stop their sandboxed command on SIGTERM
+        run: |
+          set -euo pipefail
+          go test ./app/ -run 'TestRPCExitsOnSIGTERMAndEndsItsCommand$|TestACPExitsOnSIGTERMAfterTheStopReason$' -count=1 -v > stop.log 2>&1 || { cat stop.log; exit 1; }
+          for t in TestRPCExitsOnSIGTERMAndEndsItsCommand TestACPExitsOnSIGTERMAfterTheStopReason; do
+            grep -q -- "--- PASS: $t " stop.log || { echo "$t did not run and pass:"; grep -- "$t" stop.log || true; exit 1; }
+          done
       # The kernel does not bound root's processes, and this job runs as root,
       # so the process limit is checked as an unprivileged user.
       - name: The process limit binds an unprivileged user's commands
@@ -273,15 +287,48 @@ jobs:
           done
           echo "$(grep -c -- "--- PASS" case.log) tests passed; every case-folding test ran"
 
+      # The Seatbelt profile is only exercised on macOS: every process-sandbox
+      # boundary test must run here, none skipped.
+      - name: Every process-sandbox boundary runs under Seatbelt
+        run: |
+          set -euo pipefail
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          if grep -q -- "--- SKIP" seatbelt.log; then
+            echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
+          fi
+          for t in TestProcessSandboxRefusesANewGitFile TestProcessSandboxProtectsNestedRepositories \
+                   TestProcessSandboxDeniesHomeSecretsThroughALink; do
+            grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
+          done
+          echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"
+
+  # The container tier on a real engine: the hosted runner has Docker, so
+  # the flags are checked by what they do, not only by what is passed.
+  container-tier:
+    name: Container tier on Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: Pull the sandbox image
+        run: docker pull docker.io/library/debian:bookworm-slim
+      - name: The container tier's boundaries hold on Docker
+        run: |
+          set -euo pipefail
+          ABHED_REQUIRE_CONTAINER=1 go test ./internal/sandbox/ -run 'TestContainerTierOnARealEngine$' -count=1 -v > engine.log 2>&1 || { cat engine.log; exit 1; }
+          grep -q -- "--- PASS: TestContainerTierOnARealEngine " engine.log || { echo "the engine test did not run and pass:"; cat engine.log; exit 1; }
+
   container:
     name: Container image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build the image
-        run: docker build -t abhed:ci -f Dockerfile .
+        run: docker build --build-arg VERSION=v0.0.0-ci -t abhed:ci -f Dockerfile .
       - name: The image runs and reports its version
-        run: docker run --rm --entrypoint /usr/local/bin/abhed abhed:ci -version
+        run: docker run --rm --entrypoint /usr/local/bin/abhed abhed:ci -version | grep -F v0.0.0-ci
 
   security:
     name: CVE scans and report

@@ -72,7 +72,7 @@ func NewWatsonX(cfg WatsonXConfig) *WatsonX {
 		IAMURL:    cfg.IAMURL,
 		profile:   cfg.Profile,
 		Defaults:  cfg.Defaults,
-		client:    &http.Client{Timeout: 10 * time.Minute},
+		client:    timeoutClient(DefaultTimeouts()),
 	}
 }
 

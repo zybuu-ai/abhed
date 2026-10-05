@@ -942,3 +942,58 @@ func TestUnrecordedSubagentAskIsNeverPut(t *testing.T) {
 		})
 	}
 }
+
+// A subagent's memory is loaded as its parent's: the configured rule folders
+// as well as ABHED.md, and its record says which files its prompt carries.
+func TestSubagentMemoryFollowsTheParentsOptions(t *testing.T) {
+	a := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "look", "description": "look"})}},
+		{text: "child done"},
+		{text: "done"},
+	}}
+	store := NewMemStore()
+	l, dir, f := taskTree(t, a, AutoApprove{Yes: true}, store, store, false)
+	if err := os.MkdirAll(filepath.Join(dir, "team-rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "team-rules", "style.md"), []byte("RULE-ZEBRA-7"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.Memory = func(ws string) MemoryOptions {
+		return MemoryOptions{Workspace: ws, Home: tempDir(t), RuleDirs: []string{"team-rules"}}
+	}
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if child := a.gotRequests[1]; !strings.Contains(child.System, "RULE-ZEBRA-7") {
+		t.Fatal("the subagent's prompt left out the configured rule folder")
+	}
+	var spawned spawnPayload
+	evs, _ := store.Events("parent")
+	for _, s := range payloads[spawnPayload](evs, EvSubagentSpawned) {
+		spawned = s
+	}
+	kid, _ := store.Events(spawned.Session)
+	if loaded := payloads[MemoryLoaded](kid, EvMemoryLoaded); len(loaded) != 1 || len(loaded[0].Files) != 1 {
+		t.Fatalf("memory.loaded in the child's record: %+v", loaded)
+	}
+}
+
+// A message the person sends a running subagent is copied into the parent's
+// record as theirs, the record audit reads; the subagent's prompt is not.
+func TestPersonsMessageToASubagentReachesTheParent(t *testing.T) {
+	store := NewMemStore()
+	mirror := mirrorInto(&parentLink{rec: NewRecorder(store, "parent", "")}, "s-kid")
+	prompt, _ := json.Marshal(Message{Text: "do the subtask"})
+	steer, _ := json.Marshal(Message{Text: "only the api folder", QueueID: "q_1"})
+	mirror(Event{SessionID: "s-kid", Seq: 1, Type: EvUserMessage, Actor: ActorUser, Payload: prompt})
+	mirror(Event{SessionID: "s-kid", Seq: 2, Type: EvUserMessage, Actor: ActorUser, Payload: steer})
+	evs, _ := store.Events("parent")
+	got := payloads[map[string]string](evs, EvSubagentMessage)
+	if len(got) != 1 || got[0]["session"] != "s-kid" || got[0]["text"] != "only the api folder" || got[0]["by"] != ByUser {
+		t.Fatalf("subagent.message in the parent: %+v", got)
+	}
+	if evs[0].Actor != ActorUser {
+		t.Fatalf("recorded as %s", evs[0].Actor)
+	}
+}

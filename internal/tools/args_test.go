@@ -79,6 +79,12 @@ func TestCanonicalArgsForFixedAndOpenTools(t *testing.T) {
 		{openTool{`{"properties":{"path":{}}}`}, `{"path":"/a","command":"rm"}`, "", ""},
 		{openTool{`{"properties":{"path":{}},"additionalProperties":false}`}, `{"path":"/a","other":1}`, "", ""},
 		{openTool{`{}`}, `{"command":"x","anything":1}`, `{"anything":1,"command":"x"}`, ""},
+		// A subject argument rules read as text must be text, unless the schema says otherwise.
+		{Bash{}, `{"command":5,"description":"d"}`, "", ""},
+		{openTool{`{"properties":{"command":{"type":"string"},"path":{}}}`}, `{"command":["rm","-rf"],"path":"x"}`, "", ""},
+		{openTool{`{}`}, `{"command":{"run":"rm"}}`, "", ""},
+		{openTool{`{"properties":{"name":{"type":"object"}}}`}, `{"name":{"first":"a"}}`, `{"name":{"first":"a"}}`, ""},
+		{openTool{`{"properties":{"path":{}}}`}, `{"path":null}`, `{"path":null}`, ""},
 	} {
 		got, dropped, err := CanonicalArgs(c.tool, json.RawMessage(c.raw))
 		switch {

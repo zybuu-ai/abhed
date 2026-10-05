@@ -152,4 +152,15 @@ check('a 409 after the run retires the card', !lateCard.isConnected);
   check('characters that draw nothing are shown: ' + fill, fill.includes('\u27e8U+3164\u27e9\u27e8U+2800\u27e9') && fill.includes('a\u27e8U+FE0F\u27e9') && fill.includes('\u2764\ufe0f'));
 }
 
+// A non-ASCII space reads as a space: it is written out and warned, and
+// ordinary spaces are left as they are.
+{
+  render({seq:74, id:'ev74', type:'action.requested', payload:{call_id:'w74', tool:'bash', requires_approval:true, args:{command:'rm\u00a0-rf /tmp/x'}}});
+  const card = approvals.get('w74'), t = card ? card.textContent : '';
+  check('a no-break space is shown and warned: ' + t, t.includes('rm\u27e8U+00A0\u27e9-rf /tmp/x') && !t.includes('\u00a0') && t.includes('hidden or control characters'));
+  render({seq:75, id:'ev75', type:'action.requested', payload:{call_id:'w75', tool:'bash', requires_approval:true, args:{command:'echo a b c'}}});
+  const p = approvals.get('w75') ? approvals.get('w75').textContent : '';
+  check('ordinary spaces are untouched and not warned', p.includes('echo a b c') && !p.includes('U+0020') && !p.includes('hidden or control characters'));
+}
+
 if(!ok) process.exit(1);

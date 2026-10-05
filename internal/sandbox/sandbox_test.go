@@ -2,12 +2,14 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -376,5 +378,52 @@ func TestBoundedProcessesUnderTheSandbox(t *testing.T) {
 	n, why := forksUnder(t, s.Command(ctx, ws, "perl -e '"+forkScript+"'"))
 	if n >= 300 || !strings.Contains(why, "Resource temporarily unavailable") {
 		t.Fatalf("max_procs 40 let the sandboxed command start %d processes (stopped by %q)", n, why)
+	}
+}
+
+// An installed bwrap that cannot make a command's namespaces is said at
+// start-up, with its reason, instead of failing every command; probed once.
+func TestProcessAvailableProbesBwrapNamespaces(t *testing.T) {
+	was := bwrapRun
+	t.Cleanup(func() { bwrapRun = was })
+	calls := 0
+	var asked []string
+	bwrapRun = func(_ context.Context, args ...string) ([]byte, error) {
+		calls++
+		asked = args
+		return []byte("bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces\n"), errors.New("exit status 1")
+	}
+	s := &Process{backend: "bwrap", policy: Policy{Workspace: t.TempDir()}}
+	for range 2 {
+		ok, why := s.Available()
+		if ok || !strings.Contains(why, "cannot create a sandbox's namespaces here: bwrap: No permissions to create new namespace") {
+			t.Fatalf("available %v: %s", ok, why)
+		}
+	}
+	if calls != 1 || !slices.Contains(asked, "--unshare-pid") {
+		t.Fatalf("probed %d times with %v", calls, asked)
+	}
+	bwrapRun = func(context.Context, ...string) ([]byte, error) { return nil, nil }
+	if ok, why := (&Process{backend: "bwrap", policy: Policy{AllowNetwork: true}}).Available(); !ok {
+		t.Fatalf("a working bwrap: %s", why)
+	}
+}
+
+// The process tier names a process bound only when it sets one: with no count
+// of the user's processes it sets none, though max_procs asked for one.
+func TestProcessDescribesTheBoundItSets(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root is not bounded")
+	}
+	was := countUserProcesses
+	t.Cleanup(func() { countUserProcesses = was })
+	s := &Process{backend: "bwrap", policy: Policy{MaxProcs: 64}}
+	countUserProcesses = func() (int, bool) { return 10, true }
+	if d := s.Describe(); !strings.Contains(d, "at most 64 more processes") || !strings.Contains(d, "memory, CPU and disk not bounded") {
+		t.Fatalf("with a count: %s", d)
+	}
+	countUserProcesses = func() (int, bool) { return 0, false }
+	if d := s.Describe(); !strings.Contains(d, "processes not bounded") {
+		t.Fatalf("with no count: %s", d)
 	}
 }

@@ -110,6 +110,9 @@ func TestNoticesBeforeSteeringAtABoundary(t *testing.T) {
 	if _, err := r.l.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
 	}
+	// The child's own model call must be counted before the snapshot, or it
+	// passes for the slow turn and the message is queued before that run starts.
+	waitFor(t, "the child's call", func() bool { return r.m.childrenInCall() == 1 })
 	calls := r.m.calls.Load()
 	done := make(chan struct{})
 	go func() { _, _ = r.l.Run(context.Background(), "slow"); close(done) }()

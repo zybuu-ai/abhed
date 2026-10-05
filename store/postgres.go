@@ -334,7 +334,9 @@ type SessionRecord struct {
 	Mode           string
 	// Prompt is the opening request, kept so a session list is readable. It is
 	// truncated on write: the list needs a label, not a transcript.
-	Prompt    string
+	Prompt string
+	// Title is the latest name a person gave the session, "" for none.
+	Title     string
 	ParentID  string
 	StartedAt time.Time
 	// Holder, when set, is written with the row as the process holding it,
@@ -501,6 +503,26 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 			}
 		}
 	}
+	// A session opened with no prompt, as the workbench opens one, is labelled
+	// by its first message, so the list still names it after a restart.
+	if ev.Type == agent.EvUserMessage && ev.ParentID == "" {
+		var m agent.Message
+		if jsonUnmarshal(ev.Payload, &m) == nil && strings.TrimSpace(m.Text) != "" {
+			if _, err := p.pool.Exec(ctx, `UPDATE sessions SET prompt = $2 WHERE id = $1 AND prompt = ''`,
+				ev.SessionID, truncatePrompt(m.Text)); err != nil {
+				slog.Warn("session row not labelled by its first message", "session", ev.SessionID, "error", err)
+			}
+		}
+	}
+	// The row carries the title the record last gave the session, for the list.
+	if ev.Type == agent.EvSessionRenamed {
+		var rn agent.SessionRenamed
+		if jsonUnmarshal(ev.Payload, &rn) == nil {
+			if _, err := p.pool.Exec(ctx, `UPDATE sessions SET title = $2 WHERE id = $1`, ev.SessionID, truncatePrompt(rn.Title)); err != nil {
+				slog.Warn("session row not updated after a rename", "session", ev.SessionID, "error", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -606,7 +628,7 @@ func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([
 		limit = 50
 	}
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''),
+		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''), COALESCE(title,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
 		       context_tokens, context_window, COALESCE(parent_id,'')
@@ -621,7 +643,7 @@ func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([
 	var out []SessionRecord
 	for rows.Next() {
 		var s SessionRecord
-		if err := rows.Scan(&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt,
+		if err := rows.Scan(&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt, &s.Title,
 			&s.StartedAt, &s.EndedAt, &s.TerminalReason,
 			&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
 			&s.ContextTokens, &s.ContextWindow, &s.ParentID); err != nil {
@@ -635,12 +657,12 @@ func (p *Postgres) listSessions(ctx context.Context, owner string, limit int) ([
 func (p *Postgres) GetSession(ctx context.Context, id string) (SessionRecord, error) {
 	var s SessionRecord
 	err := p.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''),
+		SELECT id, tenant_id, user_id, workspace, model, mode, COALESCE(prompt,''), COALESCE(title,''),
 		       started_at, ended_at, COALESCE(terminal_reason,''),
 		       turns, tokens_in, tokens_out, tokens_cached, compactions,
 		       context_tokens, context_window, COALESCE(parent_id,'')
 		FROM sessions WHERE id = $1 AND deleted_at IS NULL`, id).Scan(
-		&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt,
+		&s.ID, &s.Tenant, &s.User, &s.Workspace, &s.Model, &s.Mode, &s.Prompt, &s.Title,
 		&s.StartedAt, &s.EndedAt, &s.TerminalReason,
 		&s.Turns, &s.TokensIn, &s.TokensOut, &s.TokensCached, &s.Compactions,
 		&s.ContextTokens, &s.ContextWindow, &s.ParentID)
@@ -692,20 +714,30 @@ func (h *Held) ClaimResume(ctx context.Context, sessionID string) (bool, error) 
 // fresh its heartbeat: for a node restarted with the same node id, before it
 // serves anything, when no session it holds can be running in it.
 func (p *Postgres) ReclaimOwn(ctx context.Context, sessionID, holder string) (bool, error) {
+	// Held under this node's id by any incarnation, or by an older release
+	// that kept no incarnation; taken under this one's, which fences the rest.
 	tag, err := p.pool.Exec(ctx, `
-		UPDATE sessions SET node_seen_at = now()
-		WHERE id = $1 AND node_id = $2 AND ended_at IS NULL AND deleted_at IS NULL`, sessionID, holder)
+		UPDATE sessions SET node_id = $2, node_seen_at = now()
+		WHERE id = $1 AND split_part(node_id, '#', 1) = split_part($2, '#', 1)
+		  AND ended_at IS NULL AND deleted_at IS NULL`, sessionID, holder)
 	if err != nil {
 		return false, fmt.Errorf("reclaim session %s: %w", sessionID, err)
 	}
 	return tag.RowsAffected() == 1, nil
 }
 
+// HolderNode is the node id in a holder: what comes before its '#', or all
+// of it for a holder an older release wrote, which carried no incarnation.
+func HolderNode(holder string) string {
+	node, _, _ := strings.Cut(holder, "#")
+	return node
+}
+
 // ClaimOrphan takes over a session a crashed process left open: its row is
 // still open, and its holder's heartbeat is older than stale. A row with no
 // holder (written by an older release, which kept none) is an orphan only
-// once its last event is older than stale too, compared on the database's
-// clock. The update writes holder as the new holder and tests the same
+// once its last event was stored longer ago than stale, by the database's
+// clock (inserted_at), never the writer's (created_at). The update writes holder as the new holder and tests the same
 // columns, so of two processes claiming at once exactly one wins.
 func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, stale time.Duration) (bool, error) {
 	if holder == "" {
@@ -716,7 +748,7 @@ func (p *Postgres) ClaimOrphan(ctx context.Context, sessionID, holder string, st
 		WHERE id = $1 AND ended_at IS NULL AND deleted_at IS NULL
 		  AND ((node_seen_at IS NOT NULL AND node_seen_at <= now() - $3::interval)
 		    OR (node_seen_at IS NULL AND COALESCE(
-		          (SELECT max(created_at) FROM events WHERE session_id = $1), started_at) <= now() - $3::interval))`,
+		          (SELECT max(inserted_at) FROM events WHERE session_id = $1), started_at) <= now() - $3::interval))`,
 		sessionID, holder, stale.String())
 	if err != nil {
 		return false, fmt.Errorf("claim orphaned session %s: %w", sessionID, err)
@@ -943,7 +975,7 @@ func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Dur
 	// property worth having in a routing decision.
 	var node *string
 	err := p.pool.QueryRow(ctx, `
-		SELECT node_id FROM sessions
+		SELECT split_part(node_id, '#', 1) FROM sessions
 		WHERE id = $1 AND deleted_at IS NULL
 		  AND node_seen_at IS NOT NULL
 		  AND node_seen_at > now() - $2::interval`,

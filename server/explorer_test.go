@@ -761,3 +761,46 @@ func TestExplorerOnTheServerNotHoldingTheSessionIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A write rule written against a link to a folder holds for what is saved,
+// uploaded or changed through the link, not only for the folder it leads to.
+func TestWriteRuleOnALinkedFolderHoldsThroughIt(t *testing.T) {
+	wb := manualBench(t, func(c *config.Config) {
+		c.Permissions.Deny = append(c.Permissions.Deny, "write(**/a/**)")
+	})
+	wb.write("open/keep.txt", "keep\n")
+	wb.write("free.txt", "y")
+	if err := os.Symlink(filepath.Join(wb.workspace, "open"), filepath.Join(wb.workspace, "a")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	keep := contentHash([]byte("keep\n"))
+	for name, c := range map[string]struct {
+		method, endpoint string
+		body             any
+	}{
+		"save through the link":   {"PUT", "file", saveRequest{Path: "a/keep.txt", Content: "changed\n", Base: keep}},
+		"new file through it":     {"PUT", "file", saveRequest{Path: "a/new.txt", Content: "new\n"}},
+		"delete through the link": {"POST", "delete", folderRequest{Path: "a/keep.txt"}},
+		"rename into it":          {"POST", "rename", renameRequest{From: "free.txt", To: "a/free.txt"}},
+		"new folder in it":        {"POST", "folder", folderRequest{Path: "a/sub"}},
+	} {
+		if rec := wb.send("acme", c.method, c.endpoint, c.body); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if rec := wb.dropFile("acme", ptr("a"), "up.txt", []byte("up\n")); rec.Code != http.StatusForbidden {
+		t.Errorf("upload into the link: %d %s", rec.Code, rec.Body)
+	}
+	if got, _ := os.ReadFile(filepath.Join(wb.workspace, "open/keep.txt")); string(got) != "keep\n" {
+		t.Fatalf("a file was changed through a write-denied link: %q", got)
+	}
+	for _, p := range []string{"open/new.txt", "open/free.txt", "open/sub", "open/up.txt"} {
+		if _, err := os.Lstat(filepath.Join(wb.workspace, p)); err == nil {
+			t.Errorf("%s was made through a write-denied link", p)
+		}
+	}
+	// The folder's own spelling is still open.
+	if rec := wb.send("acme", "PUT", "file", saveRequest{Path: "open/keep.txt", Content: "ok\n", Base: keep}); rec.Code != http.StatusOK {
+		t.Fatalf("a save to the folder itself: %d %s", rec.Code, rec.Body)
+	}
+}

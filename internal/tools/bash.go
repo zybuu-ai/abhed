@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -196,20 +197,66 @@ var destructivePatterns = []struct {
 // IsDestructive reports whether a command needs confirmation regardless of
 // permission mode. Exported so the policy engine can consult it.
 func IsDestructive(command string) (string, bool) {
+	return CanonicalCommand(command).Destructive()
+}
+
+// Destructive is IsDestructive for a command already canonicalised, so one
+// policy decision parses it once.
+func (c Canonical) Destructive() (string, bool) {
+	return c.DestructiveWith(nil)
+}
+
+// DestructiveWith is Destructive with the git extensions the person opted in
+// to (permissions.git_extensions) not taken as unreadable subcommands.
+func (c Canonical) DestructiveWith(gitExtensions map[string]bool) (string, bool) {
+	// Read for the whole command, as each part read alone may not show it.
+	if len(gitExtensions) > 0 && aliasCapable(c.command) {
+		gitExtensions = nil
+	}
 	// The command is read as written and as canonicalised; each only adds a match.
-	canon := CanonicalCommand(command).Text
-	if what, ok := destructiveText(command); ok {
+	command, canon := c.command, c.Text
+	if what, ok := destructiveText(command, gitExtensions); ok {
 		return what, true
 	}
 	if canon != command {
-		if what, ok := destructiveText(canon); ok {
+		if what, ok := destructiveText(canon, gitExtensions); ok {
 			return what, true
 		}
 	}
-	return hiddenWords(command, canon)
+	if c.IFS != "" {
+		if what, ok := destructiveText(IFSSplitText(canon, c.IFS), gitExtensions); ok {
+			return what, true
+		}
+	}
+	if c.IFSSplit {
+		return "words split by a changed IFS", true
+	}
+	// The program is read in the text as written and as canonicalised, and by the parser.
+	if what, ok := hiddenWords(command, canon); ok {
+		return what, true
+	}
+	if what, ok := hiddenWords(command, command); ok {
+		return what, true
+	}
+	if c.shell.edited || c.shell.expands {
+		return "program named by an expansion", true
+	}
+	if c.shell.opaque != "" {
+		return c.shell.opaque, true
+	}
+	if c.shell.gitBuilt != "" {
+		return c.shell.gitBuilt, true
+	}
+	// The commands the parser found, in function bodies and eval, trap and -c text.
+	for _, cmd := range c.shell.commands {
+		if what, ok := destructiveText(cmd, gitExtensions); ok {
+			return what, true
+		}
+	}
+	return "", false
 }
 
-func destructiveText(command string) (string, bool) {
+func destructiveText(command string, gitExtensions map[string]bool) (string, bool) {
 	// Where case is ignored, the program names are lowered too; that only adds a match.
 	folded := foldProgramNames(command)
 	for _, d := range destructivePatterns {
@@ -220,7 +267,7 @@ func destructiveText(command string) (string, bool) {
 	if rmForced(command) {
 		return "recursive/forced delete", true
 	}
-	return gitDestructive(command)
+	return gitDestructive(command, gitExtensions)
 }
 
 // rmForced finds rm's recursive or force flags anywhere among its words, as
@@ -275,11 +322,16 @@ func rmArgForces(a string) bool {
 
 func (b Bash) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	res := b.run(ctx, s, raw)
-	res.Tier = b.tier()
-	if b.Sandbox != nil && b.RanUnder != nil {
-		res.Tier = b.RanUnder()
-	}
+	res.Tier = b.ranTier()
 	return res
+}
+
+// ranTier is the tier a command ran under, known once the sandbox is chosen.
+func (b Bash) ranTier() string {
+	if b.Sandbox != nil && b.RanUnder != nil {
+		return b.RanUnder()
+	}
+	return b.tier()
 }
 
 // tier is the sandbox tier commands run under, "none" without one, and ""
@@ -330,30 +382,60 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd, err := b.command(runCtx, s.Cwd, a)
+	// The command lives on procCtx, which ends with the call unless the
+	// person moves the command to the background first.
+	detach, host := DetachOf(ctx), ShellHostOf(ctx)
+	if host == nil {
+		detach = nil
+	}
+	procCtx, endProc := context.WithCancel(context.WithoutCancel(ctx))
+	// One swap decides who owns the command: the timeout ends it, or Ctrl-B moves it.
+	const ownedByTimeout, ownedByMove = 1, 2
+	var owner atomic.Int32
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		<-runCtx.Done()
+		if owner.CompareAndSwap(0, ownedByTimeout) {
+			endProc()
+		}
+	}()
+	var move <-chan struct{}
+	var started func()
+	if detach != nil {
+		moved := make(chan struct{})
+		move = moved
+		go func() {
+			select {
+			case <-detach.Move:
+				if owner.CompareAndSwap(0, ownedByMove) {
+					close(moved)
+				}
+			case <-finished:
+			}
+		}()
+		started = func() { detach.running.Store(true) }
+		defer detach.running.Store(false)
+	}
+
+	cmd, err := b.command(procCtx, s.Cwd, a)
 	if err != nil {
+		endProc()
 		return errf("%v", err)
 	}
 
 	output, err := newBashOutput(cmd)
 	if err != nil {
+		endProc()
 		return errf("Failed to run command: %v", err)
 	}
 	start := time.Now()
-	content, held, err := output.run(cmd, bashOutputWait)
+	content, truncated, held, detached, err := output.run(cmd, bashOutputWait, started, move)
 	elapsed := time.Since(start)
-
-	full := len(content)
-	truncated := false
-	if len(content) > maxOutputChars {
-		// Keep head and tail: the command's intent is at the start, the error
-		// is almost always at the end.
-		head := content[:maxOutputChars/2]
-		tail := content[len(content)-maxOutputChars/2:]
-		content = fmt.Sprintf("%s\n\n[... %d characters truncated ...]\n\n%s",
-			head, full-maxOutputChars, tail)
-		truncated = true
+	if detached {
+		return b.moveToBackground(ctx, host, output, cmd, endProc, a, start)
 	}
+	endProc()
 
 	// The run's own limit, not this call's: raising timeout_ms would not help.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -409,7 +491,7 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
 		content += "\n\n" + networkHint
-	} else if hint := sandboxHint(content); hint != "" && b.tier() != "none" {
+	} else if hint := sandboxHint(content); hint != "" && b.ranTier() != "none" {
 		content += "\n\n" + hint
 	}
 	return Result{
@@ -452,6 +534,30 @@ func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, e
 	return cmd, nil
 }
 
+// moveToBackground hands a running foreground command to the session's host
+// as a background shell, as the person asked with Ctrl-B, and returns what it
+// wrote so far. Refused, the command is ended, as the call ends.
+func (b Bash) moveToBackground(ctx context.Context, host ShellHost, o *bashOutput, cmd *exec.Cmd, end context.CancelFunc, a bashArgs, start time.Time) Result {
+	proc, out, truncated := o.adopt(cmd, end, 0)
+	tier := b.tier()
+	if b.Sandbox != nil && b.RanUnder != nil {
+		tier = b.RanUnder()
+	}
+	id, err := host.StartShell(ctx, ShellRequest{Command: a.Command, Description: a.Description, Secrets: a.Secrets,
+		Tier: tier, Proc: proc, Started: start})
+	if err != nil {
+		proc.Stop()
+		<-proc.Done()
+		return errf("Could not move the command to the background, so it was stopped: %v\n%s", err, out)
+	}
+	if out == "" {
+		out = "[no output yet]"
+	}
+	return Result{Content: BackgroundStarted(id, a.Description) + "\nThe user moved this command to the background while it ran (Ctrl-B); " +
+		"it goes on. Its output so far:\n" + out + "\n\nRead its later output with shell_output, stop it with shell_kill. " +
+		"You are told when it ends; do not poll in a loop.", Truncated: truncated, Tier: tier}
+}
+
 // background starts the command on the session's host and returns its id at
 // once. Policy, approval and the sandbox are the same as in the foreground.
 func (b Bash) background(ctx context.Context, s *Session, a bashArgs) Result {
@@ -463,13 +569,13 @@ func (b Bash) background(ctx context.Context, s *Session, a bashArgs) Result {
 	if a.TimeoutMS > 0 {
 		timeout = time.Duration(a.TimeoutMS) * time.Millisecond
 	}
-	tier := b.tier()
-	if b.Sandbox != nil && b.RanUnder != nil {
-		tier = b.RanUnder()
+	var ranUnder func() string
+	if b.Sandbox != nil {
+		ranUnder = b.RanUnder // read after Build: before it, the tier may not be chosen yet
 	}
 	cwd := s.Cwd
 	id, err := host.StartShell(ctx, ShellRequest{
-		Command: a.Command, Description: a.Description, Secrets: a.Secrets, Timeout: timeout, Tier: tier,
+		Command: a.Command, Description: a.Description, Secrets: a.Secrets, Timeout: timeout, Tier: b.tier(), RanUnder: ranUnder,
 		Build: func(sctx context.Context) (*exec.Cmd, error) { return b.command(sctx, cwd, a) },
 	})
 	if err != nil {
@@ -545,6 +651,10 @@ var networkClients = regexp.MustCompile(`(?:^|[;|&(]|\$\()\s*(?:sudo\s+|env\s+|c
 	`go\s+(?:get|install|mod)|cargo|gem|bundle|composer|apt(?:-get)?|apk|brew|ssh|scp|sftp|rsync|nc|ncat|` +
 	`ping|dig|nslookup|host|http|node|deno|bun|docker|podman|helm|kubectl|aws|gcloud|az)\b`)
 
+// versionOnly is a command word followed only by a version or help option,
+// up to the end of its command.
+var versionOnly = regexp.MustCompile(`\b[\w.-]+\s+(?:--version|-V|--help|-h|version)\s*(?:$|[;|&)\n])`)
+
 // networkFailed reports whether a command failed for want of the network. A
 // command that succeeded counts only when a network client ran and the failure
 // is in its last lines: a log being read can mention a network error.
@@ -552,7 +662,9 @@ func networkFailed(command, output string, exitCode int) bool {
 	if exitCode != 0 {
 		return networkFailure(output)
 	}
-	if !networkClients.MatchString(command) {
+	// A client asked only for its version or help reaches nothing: with it
+	// last, `cat log; curl --version` put the log's lines among its last.
+	if !networkClients.MatchString(versionOnly.ReplaceAllString(command, ";")) {
 		return false
 	}
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")

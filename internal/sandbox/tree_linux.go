@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"bufio"
+	"bytes"
 	"os"
 	"strconv"
 	"strings"
@@ -105,4 +106,46 @@ func stopMember(pid int, tree map[int]bool) (treeMember, bool) {
 func (m treeMember) kill() {
 	_ = unix.PidfdSendSignal(m.fd, killSignal, nil, 0)
 	_ = unix.Close(m.fd)
+}
+
+// ancestorNames lists the command names of this process's ancestors, nearest
+// first, as the kernel keeps them (at most 15 bytes).
+func ancestorNames() []string {
+	var out []string
+	pid := os.Getppid()
+	for i := 0; pid > 1 && i < maxAncestors; i++ {
+		comm, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm") // #nosec G304 -- a numbered /proc entry
+		f := procStat(pid)
+		if err != nil || len(f) < 2 {
+			break
+		}
+		out = append(out, strings.TrimSuffix(string(comm), "\n"))
+		if pid, err = strconv.Atoi(f[1]); err != nil {
+			break
+		}
+	}
+	return out
+}
+
+// marked lists this user's processes, other than this one, whose environment
+// holds marker followed by its terminating NUL.
+func marked(marker string) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	want := []byte(marker + "\x00")
+	var out []int
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 1 || pid == os.Getpid() {
+			continue
+		}
+		// Another user's environment is not readable, so only this user's are matched.
+		env, err := os.ReadFile("/proc/" + e.Name() + "/environ") // #nosec G304 -- a numbered /proc entry
+		if err == nil && bytes.Contains(env, want) {
+			out = append(out, pid)
+		}
+	}
+	return out
 }

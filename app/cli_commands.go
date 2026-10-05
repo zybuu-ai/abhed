@@ -144,6 +144,8 @@ func (g *slashRegistry) register(c slashCmd) {
 // that claims to be built in is refused. When the name is a run-time command
 // that was refused, the reason is returned instead.
 func (g *slashRegistry) lookup(name string, dynamic []slashSource) (slashCmd, string, bool) {
+	// Built-ins first, though admitted already leaves out a run-time command
+	// that claims a built-in name: two layers, kept so neither alone decides.
 	g.mu.RLock()
 	c, ok := g.byName[name]
 	g.mu.RUnlock()

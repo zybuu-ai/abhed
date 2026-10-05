@@ -77,6 +77,17 @@ func TestToolCallVerdictsAreReported(t *testing.T) {
 	}
 }
 
+// A tool_call hook that only logs is recorded as annotating, and changes nothing.
+func TestToolCallLogIsAnnotate(t *testing.T) {
+	h, fired := hostOf(t, Config{Name: "logger.sh", Events: []Event{EvToolCall}})
+	if d := h.OnToolCall(context.Background(), "s", "bash", []byte(`{"command":"ls"}`)); d.Block || d.Ask || d.Args != nil {
+		t.Fatalf("a hook that only logs changed the call: %+v", d)
+	}
+	if len(*fired) != 1 || (*fired)[0].Verdict != VerdictAnnotate || (*fired)[0].Event != EvToolCall || (*fired)[0].Reason != "saw a tool call" {
+		t.Fatalf("fired %+v", *fired)
+	}
+}
+
 // A matcher narrows the tool events an extension is asked about.
 func TestMatchNarrowsToolEvents(t *testing.T) {
 	h, _ := hostOf(t, Config{Name: "blocker.sh", Match: []string{"bash(git *)"}})

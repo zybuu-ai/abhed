@@ -6,6 +6,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -88,8 +90,16 @@ type Config struct {
 	// SetAside are settings a file made that its layer may not make, such
 	// as a managed-only key in the user's file; each was left out.
 	SetAside []SetAsideKey `json:"-"`
+	// Settings is the -settings file this run merged, if any.
+	Settings SettingsSource `json:"-"`
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+}
+
+// SettingsSource names a -settings file and the hash of what was merged.
+type SettingsSource struct {
+	Name   string
+	SHA256 string
 }
 
 // CLIConfig tunes the interactive command line.
@@ -98,6 +108,15 @@ type CLIConfig struct {
 	// accept-edits and plan. Managed only, and it can only remove modes:
 	// auto and bypass are never in the cycle.
 	ModeCycle []string `json:"mode_cycle,omitempty"`
+	// Title sets the terminal's title to the session's state (ready,
+	// working, approval needed). On by default.
+	Title bool `json:"title"`
+	// Notify is how an unfocused terminal is told an approval waits or a
+	// turn ended: auto (the default), bel, osc9 or off.
+	Notify string `json:"notify,omitempty"`
+	// Copy lets /copy put the last reply on the clipboard through the
+	// terminal (OSC 52). On by default.
+	Copy bool `json:"copy"`
 }
 
 // CommandsConfig lists directories of custom slash commands.
@@ -161,12 +180,19 @@ type StudioConfig struct {
 type HooksConfig struct {
 	// Disabled switches every hook off. Managed only; only true means anything.
 	Disabled bool `json:"disabled,omitempty"`
+	// ManagedOnly sends hook events only to the managed file's extensions;
+	// every other keeps only the tools it provides. Managed only.
+	ManagedOnly bool `json:"managed_only,omitempty"`
 }
 
 // SetAsideKey is a setting a file made that was left out, and why.
 type SetAsideKey struct {
 	File string
-	Key  string
+	// Layer is the layer the file was read as (user, settings or workspace),
+	// where it is known: the user's file and a home-folder workspace's are
+	// the same path.
+	Layer string
+	Key   string
 	// Value is the entry left out of a list, such as one allow rule; empty
 	// when the whole setting was.
 	Value  string
@@ -187,6 +213,7 @@ var managedOnly = map[string]string{
 	"record.dir":                   "only the managed configuration moves the record",
 	"record.retention_days":        "only the managed configuration sets how long the record is kept",
 	"hooks.disabled":               "only the managed configuration switches hooks off, since that removes their vetoes",
+	"hooks.managed_only":           "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal": "only the managed configuration removes Studio's host terminal",
 }
 
@@ -208,6 +235,8 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.RetentionDays = 0
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
+	case "hooks.managed_only":
+		c.Hooks.ManagedOnly = false
 	case "studio.disable_host_terminal":
 		c.Studio.DisableHostTerminal = false
 	}
@@ -216,12 +245,12 @@ func clearManagedOnly(c *Config, key string) {
 // setAside leaves out the managed-only settings the files merged so far
 // made, crediting them to file. It runs before the managed file is merged,
 // so every managed-only value present came from a lower layer.
-func setAside(c *Config, file string) {
+func setAside(c *Config, file, layer string) {
 	kept := c.SetKeys[:0:0]
 	for _, k := range c.SetKeys {
 		if why, ok := managedOnly[k]; ok {
 			clearManagedOnly(c, k)
-			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: k, Reason: why})
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Layer: layer, Key: k, Reason: why})
 			continue
 		}
 		kept = append(kept, k)
@@ -318,6 +347,12 @@ type ProviderConfig struct {
 	// alone rather than substituting a number Abhed invented.
 	Params ParamsConfig `json:"params,omitempty"`
 
+	// CallTimeoutSeconds bounds one request to the model, from sending it to
+	// the last byte; StallTimeoutSeconds bounds a wait with no byte. 0 keeps
+	// the defaults, 600 and 300.
+	CallTimeoutSeconds  int `json:"call_timeout_seconds,omitempty"`
+	StallTimeoutSeconds int `json:"stall_timeout_seconds,omitempty"`
+
 	// Extra passes provider-specific settings through without this struct
 	// growing a field per vendor.
 	Extra map[string]string `json:"extra,omitempty"`
@@ -376,6 +411,11 @@ type PermissionsConfig struct {
 	Deny  []string `json:"deny"`
 	Ask   []string `json:"ask"`
 	Allow []string `json:"allow"`
+	// GitExtensions names git subcommands outside git itself, such as lfs,
+	// that may run without the destructive step taking them as an alias or
+	// extension it cannot read. Not from an untrusted workspace, and set
+	// aside when the managed configuration sets the permissions without it.
+	GitExtensions []string `json:"git_extensions,omitempty"`
 }
 
 type ContextConfig struct {
@@ -671,6 +711,9 @@ type K8sClusterConfig struct {
 type SSHConfig struct {
 	Enabled bool            `json:"enabled"`
 	Hosts   []SSHHostConfig `json:"hosts,omitempty"`
+	// ConnectHosts, when set, are the only addresses ssh_connect may reach:
+	// "10.0.0.5", "*.lab.example" or "vm.example:2222", matched without case.
+	ConnectHosts []string `json:"connect_hosts,omitempty"`
 }
 
 type SSHHostConfig struct {
@@ -841,8 +884,11 @@ func Default() Config {
 				"bash(ls*)", "bash(pwd)", "bash(cat *)",
 			},
 			// A command that trusts a workspace for a nested run is the
-			// person's decision, not the agent's.
-			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)"},
+			// person's decision, not the agent's. So is a memory file, which
+			// every later session reads as instructions.
+			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
+				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
+				"write(AGENTS.md)", "edit(AGENTS.md)"},
 		},
 		Context: ContextConfig{
 			CompactAt:   0.90,
@@ -870,6 +916,7 @@ func Default() Config {
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
 		Suggest:   SuggestConfig{Enabled: true},
+		CLI:       CLIConfig{Title: true, Copy: true, Notify: "auto"},
 	}
 }
 
@@ -890,8 +937,17 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		if err := mergeFile(&cfg, userFile); err != nil {
 			return cfg, err
 		}
-		setAside(&cfg, userFile)
+		setAside(&cfg, userFile, LayerUser)
 		cfg.noteRuleLayer(LayerUser)
+	}
+	if o.SettingsName != "" {
+		if _, err := mergeData(&cfg, o.SettingsName, o.Settings); err != nil {
+			return cfg, err
+		}
+		setAside(&cfg, o.SettingsName, LayerSettings)
+		cfg.noteRuleLayer(LayerSettings)
+		sum := sha256.Sum256(o.Settings)
+		cfg.Settings = SettingsSource{Name: o.SettingsName, SHA256: hex.EncodeToString(sum[:])}
 	}
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
 	cfg.Workspace = st
@@ -905,7 +961,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
-	dropLockedAllow(&cfg, userFile, cfg.Workspace.File)
+	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
 
 	applyEnv(&cfg)
 	warnUnknown(cfg.Unknown)
@@ -1065,6 +1121,11 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("subagents.wake is %q; use off, notify or auto", c.Subagents.Wake)
 	}
+	switch c.CLI.Notify {
+	case "", "auto", "bel", "osc9", "off":
+	default:
+		return fmt.Errorf("cli.notify is %q; use auto, bel, osc9 or off", c.CLI.Notify)
+	}
 	for _, m := range c.CLI.ModeCycle {
 		if !slices.Contains(DefaultModeCycle, m) {
 			return fmt.Errorf("cli.mode_cycle may only leave modes out of %s; %q is not one of them",
@@ -1116,6 +1177,9 @@ func (c Config) Validate() error {
 				return fmt.Errorf("permissions.%s: %w", l.name, err)
 			}
 		}
+	}
+	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
+		return fmt.Errorf("permissions.git_extensions: %w", err)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

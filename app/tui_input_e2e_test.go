@@ -3,6 +3,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,4 +160,31 @@ func TestTUIEscAndCtrlCSayWhatTheyLeft(t *testing.T) {
 		r.waitFor("the turn to stop", false, func(s string) bool { return !strings.Contains(s, "esc to interrupt") })
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// Ctrl-B on an empty line during a turn moves the running command to the
+// background, and the turn goes on; with something typed it is still the
+// cursor key.
+func TestTUICtrlBMovesACommandToTheBackground(t *testing.T) {
+	stub, ws := tuiWorkspace(t, `,"permissions":{"allow":["bash(*)"]}`)
+	r := startTUI(t, stub, ws, 120, 30)
+	r.send("please sleep\r")
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(ws, "started.txt")); err == nil {
+			break // the command has started
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the command never started:\n%s", r.term.All())
+		}
+	}
+	r.send("ab\x02c") // typed: Ctrl-B moves the cursor
+	r.waitFor("the cursor move", false, func(s string) bool { return strings.Contains(s, "acb") })
+	r.send("\x05\x15") // to the end, then clear the line
+	time.Sleep(100 * time.Millisecond)
+	r.send("\x02")
+	// The call's line says the command went on in the background.
+	r.waitFor("the call to say it moved", true, func(s string) bool {
+		return strings.Contains(strings.ToLower(s), "started in background: sh_")
+	})
+	r.waitFor("the turn to end", false, func(s string) bool { return !strings.Contains(s, "esc to interrupt") })
 }

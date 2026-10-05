@@ -6,6 +6,800 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-10-05
+
+### Security
+
+- Renaming a file in the `/ide` Explorer put its raw name in the box, where
+  bidi and zero-width characters do not show. For a name holding one, the
+  box now starts empty and its hint shows the name with those characters
+  written out.
+- The console and `/ide` approval cards read JSON held in a string three
+  levels deep for hidden characters, one fewer than the server's escaper,
+  so a control character four levels down was escaped but drew no warning.
+  The pages now read as deep as the server.
+- A write rule naming a link to a folder did not hold for a workbench save
+  or upload through that link: with `write(**/vault/**)` and `vault` a link
+  to `notes/`, saving `vault/a.md` or dropping a file on `vault` wrote into
+  `notes/`. Both now put the path as named to the write rules too, as the
+  Explorer's new folder, rename and delete already did.
+- A workbench terminal stopped because its owner's access was revoked was
+  recorded as `exit 137 · on a terminal`, with no reason, while the shells,
+  tasks and run stopped with it say `owner_revoked`. Its observation now
+  ends `on a terminal, owner_revoked`, and a command terminal closed from
+  the workbench or with its session now says so too, as a shell already did.
+- A state-changing request refused for its `Origin` left no line in the
+  server log, because the check runs before the request logger. It now logs
+  `request refused` at warn level with `reason=cross-origin`, the method,
+  path, `Origin` and remote address.
+- Text Studio attached to a prompt (a selection, a symbol, a problem) went
+  to the model inside a plain code fence with no note, so attached text
+  holding a fence could close it and go on as the person's words, and a
+  secret in it reached the model. It is now redacted, capped at 256 KiB,
+  fenced under a tag with a random suffix after the note that says
+  attached blocks are data, not instructions, and recorded as
+  `input.mention`, as an `@` mention in the terminal is. With a built-in
+  slash command it is not used, not recorded and not taken as arguments.
+- A command that set `IFS` to a separator could build words no deny rule
+  read, so `IFS=_; c=git_reset_--hard; $c` asked under a
+  `bash(git reset --hard*)` deny rule instead of being refused, in every
+  mode including `bypass`, and an approval let it run. Deny and ask rules now
+  also read the command split on the separators an `IFS` assignment sets, so
+  `IFS=_; git_reset_--hard` is refused by the rule. A command that changes
+  `IFS`, or sets it in a way the text does not show (`IFS=$v`, `read IFS`,
+  `${IFS:=_}`, inside `eval`), and then expands anything is refused at step
+  `screen` while any deny rule for `bash` has a pattern, and is taken as
+  destructive otherwise. `IFS` is also read with quotes, backslashes and
+  `$'...'` undone (`eval I""FS=_`), in arithmetic (`(( IFS = 1 ))`,
+  `$[ IFS = 1 ]`), glued to a setter's option (`printf -vIFS`), and a word
+  built from an expansion given to `eval`, a shell's `-c` or a command that
+  sets a variable by name (`read ${v}FS`, `printf -v"$v"`) counts as setting
+  it, including inside the text `eval` or `-c` runs. A prefix to `read`, an
+  `IFS` of blanks only, and `IFS` as another command's argument
+  (`grep IFS f`) are unchanged.
+- A deny rule could be passed in every mode by naming the program with an
+  expansion that edits its value: under `bash(git reset --hard*)`,
+  `x=git; ${x%/} reset --hard` and `x=git_reset_--hard; ${x//_/ }` were
+  allowed. 1.2.2 and 1.2.3 are affected. A `/` inside the expansion hid it
+  from the check; the whole word is read now, and a program named by an
+  expansion with an operator (`${x%/}`, `${x//_/ }`, `${x:-git}`, `${!v}`)
+  is refused at step `screen` while any deny rule for `bash` has a
+  pattern. Any other expansion in the program's word now confirms as `$x`
+  does, in every mode: an unquoted one may split into the program and its
+  arguments, so `$(printf 'curl x ')/` runs `curl`. This includes
+  `$HOME/bin/tool` and `$(pwd)/run.sh`, which now ask in `bypass` and are
+  refused by `-p`. Quote the directory (`"$HOME"/bin/tool`,
+  `"$(pwd)"/run.sh`, `"$GOPATH/bin/x"`) or write the path out to run them
+  without a prompt: a plain expansion inside double quotes and followed by
+  a `/` can only be a directory; `"$@"/x` is a word per parameter and
+  still confirms.
+- A redirection before the program hid it from the program checks, so a
+  deny rule could be passed in every mode: under `bash(git reset --hard*)`,
+  `x=git_reset_--hard; >/dev/null ${x//_/ }` and
+  `x=git; 2>/dev/null ${x%/} reset --hard` were allowed, and
+  `2>/dev/null $x …` or `2>/dev/null $(echo git) reset --hard` did not
+  confirm. 1.2.2 and 1.2.3 are affected. The program is now found past any
+  redirection (`2>/dev/null`, `</dev/null`, `<<< x`, `&>f`, `>| f`, `3< f`)
+  and the target it is given, as it already was past assignments and
+  wrappers.
+- A command in a function body (`function f { curl x; }; f`) or in `trap`
+  text (`trap 'curl x' EXIT`) was not read by the deny rules or the
+  program checks, so it passed a deny rule in every mode. 1.2.2 and 1.2.3
+  are affected. Commands are now also read with a bash parser
+  (`mvdan.cc/sh/v3`), beside the text checks: every simple command it
+  finds, in function bodies, subshells and literal `eval`, `trap` and `-c`
+  text, with quoting undone, is held to the deny and ask rules, so
+  `'curl' x`, `c\url x` and `bash -c 'curl x'` are matched as `curl x`
+  too. The program and `IFS` checks read what it finds as well, so text
+  that puts a hand-written split out of step with the shell
+  (`echo $'\x27'; …`) no longer hides a command. A command the parser
+  cannot read, such as one with an unclosed quote, is refused while any
+  deny rule for `bash` has a pattern; a line typed at the workbench's
+  terminal that the shell finishes with later lines (`for f in *; do`,
+  `cat <<EOF`) is left to the shell.
+- `$'…'` was decoded unlike bash: a NUL from `\0`, `\x00` or `\c@` ends
+  the string in bash and was kept, so `$'\0'curl x` passed `bash(curl*)` and
+  `git reset -$'\0'-hard` passed the hard-reset check, in every mode. 1.2.2
+  and 1.2.3 are affected. A NUL now ends the decoded string, and `\cX` is
+  control-X.
+- Text run another way passed a deny rule in every mode, in 1.2.2 and 1.2.3
+  too: an alias's value, a shell fed a here-string, heredoc, pipe or file
+  (also with `-s` and operands, an option's value, or inside a piped
+  subshell or group), `su`, `flock` or `script -c` and `--command`,
+  `env -S`, `watch`, a quoted name under `find -exec`, the command after
+  `chrt`, `taskset`, `chroot`, `unshare`, `flock` or `timeout inf`, git's
+  `--exec`, `--upload-pack` and `--receive-pack`, a script from `<(…)`, a
+  substitution in a value arithmetic expands
+  (`x='a[$(curl x)]'; echo $((x))`), `hash -p` and `enable -f`.
+  Literal text there is now read as the commands it runs; the rest is
+  refused while a deny rule for `bash` has a pattern. An unquoted glob as
+  the program (`cur? x`) confirms, and a run of runners, option values and
+  durations before the program (`nice -n 1 …`) no longer stops the
+  reading.
+- A git command whose arguments are made when it runs (`git reset "$1"`,
+  `git reset --h*`) was not taken as destructive; it now confirms, though a
+  quoted pattern and a value after `--name=` do not. So does `IFS=_ read`
+  where a function or alias named `read`, or POSIX mode, would keep the
+  assignment. An opted-in git extension still confirms in a command that
+  could make its name an alias (`GIT_CONFIG_*`, `alias.`, `--exec-path`).
+- An agent's own command could administer Abhed: `abhed record prune -yes`
+  removed sessions from the record, and `trust grant`,
+  `user add|passwd|remove|rm|import`, `secret set|rm|remove` and
+  `mcp remove|rm` changed the harness, wherever the sandbox did not deny
+  `~/.abhed` (tier `none`). These, `mcp add`, `init`, `migrate`,
+  and a nested session's `-trust-workspace`, `-dangerously-skip-permissions`
+  or `-mode bypass`, are now refused inside an agent's command, which is
+  told by `ABHED_SANDBOX` or by an `abhed` process above it. Commands that
+  only read, such as `user list` and `secret list`, still run. Only `mcp add`
+  was refused before, and only by the variable. So is a nested session whose
+  `-settings`, `-agents`, `-mcp-config` or `-allowedTools` would add bypass
+  mode, an allow rule or a git extension to its configuration, or remove a
+  deny or ask rule it already holds (`{"permissions":{"deny":[]}}`).
+- In `accept-edits` and `auto`, the agent could write `ABHED.md`,
+  `ABHED.local.md` or `AGENTS.md` without asking, and every later session
+  read the text as instructions. The default `permissions.ask` now asks
+  before a write or edit of any of them at the workspace root, in every
+  mode. On a disk that ignores case, a file spelled otherwise, such as
+  `agents.md`, is no longer read as a memory file.
+- An MCP server whose configured name failed validation was still kept as a
+  failed server, so its name, bidirectional controls included, reached `/mcp`
+  unescaped; Studio's settings views listed such names too. It is now refused
+  before anything keeps it, with the name escaped in the error. Tool and
+  prompt names were already checked on every path that lists them.
+- A stdio MCP server configured with no `env` inherited Abhed's whole
+  environment, model provider keys and `ABHED_*` settings included, and one
+  configured with `env` got no `PATH`. Every stdio server now gets `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR` and `TZ`
+  from Abhed's environment (and what Windows needs to start a program), then
+  its configured `env`. Nothing else reaches it. A bare `KEY` in `env`, or
+  `abhed mcp add -env KEY`, passes your own value of `KEY`.
+- After injected text, the suggested next prompt could be "Remove the old
+  build", "reset it", "Approve all", "Push to main" or, after an `rm -rf`
+  confirmation, "yes". The filter now fails closed: a suggestion is not
+  offered when it consents, names a destructive or outward action (remove,
+  reset, revert, force, push, merge, deploy, publish, install, …), holds a
+  character a shell reads specially, or names a secret-like variable. Some
+  ordinary suggestions are dropped with them.
+- A suggestion call cancelled by closing the session recorded no
+  `model.call`, so a request to `suggest.model` went out unrecorded. It is
+  now recorded; the suggestion is still not offered.
+- On the container and VM tiers, a command could read and write the
+  workspace's `.abhed/` (its configuration, agent definitions and any
+  accounts kept there) and a configured state file inside a mount. They are
+  now hidden as on the process tier: an empty folder over `.abhed/` and a
+  state folder, `/dev/null` over a state file, and every case spelling of
+  `.abhed` where the workspace's disk ignores case.
+- On macOS, the process tier let a command read credentials in the home
+  directory other than five paths: `~/.netrc`, `~/.git-credentials`,
+  `~/.config/gh`, `~/.npmrc`, registry, database and model tokens, shell
+  history and browser profiles among them. Seatbelt now denies reads of a
+  list of these (`HomeSecrets`). The deny on `~/.abhed` and on the
+  credential paths also names home with its links resolved; before, a home
+  reached through a link left `~/.abhed` readable.
+- A terminal kept the last 256 lines recorded without their text to take
+  out of the recorded output, and forgot the earliest after that, though the
+  output the record keeps (its last 64 KB) could still show it. Past 256,
+  none of that terminal's output is recorded now, only a note saying why.
+- The workspace-trust prompt, `abhed mcp`, `abhed trust` and the other
+  messages that quote configuration escaped text with a second escaper of
+  their own, which left characters that draw nothing (U+3164, U+2800) and
+  long runs of blanks as they were. They now use the one the approvals and
+  the transcript use (`internal/visible`): such text shows as `⟨U+3164⟩` or
+  `⟨40 spaces⟩`, and a control character as `⟨\e⟩` or `⟨U+202E⟩` rather
+  than `\u001b`.
+- The tools guide now says that a process a background shell left running
+  after its own command ended (`server &`) is not stopped by `shell_kill`,
+  the session closing, a stop, Abhed exiting or an Enterprise revocation,
+  except under bubblewrap on Linux.
+- In a terminal, a password typed ahead of its prompt, then cleared with
+  Ctrl-U, then Enter, left its echo in the recorded output: the line was
+  empty, so it was not followed. Such a line now withholds the output, as an
+  edited one does.
+- In the `/ide` and Studio terminals, a password typed ahead while another
+  program held the terminal (`sleep 2; read -s pw`) stayed in the recorded
+  output, plain or edited: a browser sends each key on its own, and each key
+  cleared the line being followed. A line a program reads in canonical mode
+  is now followed to its Enter and held.
+- A trusted workspace file could raise `memory.import_depth` above the
+  person's own setting, up to 10, so memory files it brought pulled in more
+  files. Trusted or not, a workspace may now only make imports shallower;
+  a higher value is set aside and named.
+- `abhed user add` without `-password` printed the password it generated
+  before creating the account, so adding a name already taken showed a
+  password nobody could use, then refused. It is now printed only after
+  the account is created.
+- The `write` and `edit` tools could write `.git/hooks/*` or
+  `.git/config`, so text the agent read could plant a hook or a
+  `core.hooksPath` that ran at the next git command, the person's own
+  included. They now refuse any path inside a `.git` folder, and a `.git`
+  file, in any case and through a link, in every mode.
+- A non-breaking space, or another space than ASCII's, in a command or a
+  path put to approval showed as an ordinary space, though the shell does
+  not split words on it (`rm` NBSP `-rf`). Approvals and one-line fields now
+  show each as `⟨U+00A0⟩`, and count it as hidden text.
+- The CLI recorded a session as `$USER` as it was, so a `$USER` such as
+  `unclaimed:bob`, `nobody:x`, `github:alice` or `agent` wrote rows under an
+  owner the store gives a meaning (an `unclaimed:` or `nobody:` one marks the
+  session as no one's), and on a shared database could resume another
+  identity's sessions. Such a name, and any with a `:`, is now recorded as
+  `local`, as an empty one is.
+- A call whose `command`, `path` or other argument rules read was a number,
+  a list or an object, such as `{"command":["rm","-rf"],"path":"x"}` to an MCP
+  tool, was judged on the next such argument or on nothing, so a rule written
+  for the first passed it by. Such a call is now refused as malformed unless
+  the tool's schema gives that argument another type.
+- `abhed -trust-workspace acp` trusted the configuration of every folder the
+  editor opened for the life of the process, and `abhed -trust-workspace rpc`
+  that of any workspace a `start` named. The flag now trusts only the
+  workspace the command was started in; any other keeps its recorded
+  decision. `abhed resolve` no longer warns twice about an untrusted
+  workspace.
+- `/permissions explain web_fetch <url>` said "allow" for a host outside
+  `web_fetch.allowed_hosts`, which the tool refuses. Explain now runs the
+  tool's own check for every tool that has one and shows such a call as
+  refused.
+- `abhed doctor` in an untrusted workspace that names its own model probed
+  the default endpoint (`127.0.0.1:11434`) in its place, which that
+  workspace would not use. It now says the model waits for trust and probes
+  nothing.
+- `/copy` left hidden and control characters out of the copied reply
+  without saying so. It now warns when it did.
+- An MCP prompt typed as `/mcp__server__prompt` was sent as your message the
+  moment it was fetched, though the server wrote its text. It is now shown
+  first, and sent only when you answer yes.
+- Under a managed configuration that locks `permissions` without listing
+  allow rules, the workspace-trust prompt listed the workspace's allow rules
+  as what trust would add, though they are dropped either way. They are now
+  marked as such.
+- A kubeconfig whose context in use sets `insecure-skip-tls-verify` was
+  named only by `abhed doctor`. Every session that enables `k8s` now warns
+  about it at start, as it does for an insecure `k8s.clusters` entry.
+- Two `abhed user` commands at once against a users file (or one beside
+  the server) each wrote back what it had read, so one's change was lost,
+  and both could create the same account. Changes to the file now hold a
+  lock the other processes take (`users.json.lock` beside it), an account
+  whose name or email another holds is refused under it, and each writer
+  uses a temporary file of its own.
+- `ssh_connect` could reach any address the agent named with a key file,
+  with nothing but the approval between it and the machine. A new
+  `ssh.connect_hosts` lists the addresses it may reach (`*` wildcards,
+  `host:port`); an address outside the list is refused before any
+  connection. Unset, any approved address is reached, as before.
+- Abhed Studio's protection of `.git/config` and `.git/hooks` from the
+  agent's commands held on macOS only. Under bubblewrap and on the container
+  tier, each git folder found when a command starts now has its config and
+  hooks bound read-only, as does each `.git` file.
+- Abhed's own git commands ran whichever `git` came first on `PATH`, one the
+  agent had written into the repository or a temp folder included, on the
+  host. Such a `git` is now refused, and the command fails saying why.
+- A server's lease on a session was its `node_id` alone, so a node restarted
+  with the same id, or a second process given it, could still write into a
+  session the other had taken, and a session with no holder was judged
+  crashed by its writer's clock. A lease now carries a token of the process
+  that holds it, so only the current one's appends pass, and the no-holder
+  case reads when the database stored the last event (`events.inserted_at`,
+  schema version 6).
+- A command past its timeout left running a daemon it had started, one
+  that forked twice and left its session, on the none tier and the macOS
+  process tier. Each command's processes now carry an unguessable
+  `ABHED_COMMAND_ID`, and a timeout ends every process of the user that has
+  it. A process that clears its environment, or on macOS one running a
+  program Apple ships in the system, is still not found.
+- The container image's pypdf, which reads PDFs given to the agent, is
+  6.19.0, fixing three denial-of-service issues with crafted PDFs
+  (CVE-2026-102998, CVE-2026-102999, CVE-2026-103000).
+
+### Added
+
+- `permissions.git_extensions` opts named git extensions in, such as
+  `["lfs"]`, so `git lfs pull` runs without the destructive step's question
+  about an alias or extension it cannot read, in `-p` too. Deny and ask
+  rules still hold for them. It is read from your own file, a `-settings`
+  file or the managed one, never from an untrusted workspace, and is set
+  aside when the managed file sets the permissions without naming its own.
+- `/ide` review comments: a click in the diff's gutter, or *Comment on this
+  line*, writes a note on a line of the changed file, held above the
+  composer and sent with the next message with its file, line and that
+  line's text.
+- `/ide` lists a session's background shells and tasks, from `/tasks` in
+  the composer or a click on the background count in the status bar, with
+  how each one ended and a **Cancel** for each one still running, as `/tasks`
+  does in the CLI.
+- The terminal draws what the harness does on its own as dim lines in the
+  transcript: the agent's todo list under the call that wrote it (`☒` done,
+  `◼` in progress, `☐` to do), a subagent starting and returning as a tree
+  under its `task` call, compaction starting, ending or failing, a mode
+  change, a session rule added or removed, a hook's verdict, and
+  `✓ auto: <rule>` under a call a configured allow rule approved. They come
+  from the record, so a resumed session and the line mode show them too, and
+  every name, rule and message in them is shown as text, never obeyed.
+- While any todo item is open, one line above the input says how far the
+  agent has got; Ctrl-T lists every item there, and `/todos` draws the list
+  into the transcript.
+- The terminal's title says whether the session is ready, working or waiting
+  for an approval, and the title it had is put back on exit (`cli.title`).
+- When the terminal reports that it is not focused, an approval starting to
+  wait and a turn ending ring the bell or send an OSC 9 notification, with
+  fixed words only (`cli.notify`: `auto`, `bel`, `osc9` or `off`).
+- `/copy` puts the last reply on the clipboard through the terminal (OSC 52),
+  only when typed, up to 64 KB (`cli.copy`).
+
+- `/review` and `/security-review` are built in. Each reads the current
+  diff as your own policed, recorded shell command, then sends a prompt
+  built into the binary with the diff, marked as data, as your next turn in
+  plan mode; the earlier mode comes back when the turn ends. A custom
+  command of the same name is left out with a notice.
+- `abhed mcp add|list|remove` changes the MCP servers in your own
+  `~/.abhed/config.json`. `add` shows the server escaped and adds it,
+  enabled, only on a yes typed at a terminal; each change is appended to
+  `~/.abhed/config-changes.jsonl` without its values. A managed file that
+  sets the `mcp` section forbids both.
+- An MCP server's prompts are slash commands, `/mcp__<server>__<prompt>`.
+  A prompt is fetched only when you type its command, shown with hidden and
+  control characters escaped, recorded with source `mcp`, and sent as your
+  message exactly as shown. Built-in and custom commands keep their names.
+- Agent definitions take `effort`, `skills`, `mcp_servers`, `background`
+  and `color`. Each only narrows: `effort` never goes above the session's,
+  `skills` and `mcp_servers` cut the session's own and refuse a name it
+  lacks, an inline MCP server is refused, and `background` holds a role to
+  the background or out of it. A value outside a key's set refuses the
+  definition; `color` is no longer ignored with a warning.
+- `-settings`, `-mcp-config` with `-strict-mcp-config`, `-agents` and
+  `-agent` set up one run. A settings file merges as part of your own
+  configuration, so the managed file still wins and the allow lock drops its
+  allow rules; MCP servers named on the command line are refused when the
+  managed file sets the servers; `-agents` definitions are checked as files
+  are and never take a managed name; `-agent` runs the session with a
+  role's instructions and only its tools, narrowing mode, effort, turns and
+  model. The session's start records each source by SHA-256. A file these
+  flags name inside the workspace is read only with workspace trust.
+- `hooks.managed_only`, set only by the managed configuration, sends hook
+  events only to the managed file's own extensions. Every other extension,
+  from the user's file, a trusted workspace or an SDK program, keeps only
+  the tools it provides; `/hooks` says so.
+
+- `/ide` attaches files to a message: the paperclip, a file dropped on the
+  agent panel, or an image pasted into the message box. They are uploaded
+  when the message is sent, through the console's upload route and its 32 MiB
+  limit, and named in the prompt for the agent to read; an image is read as
+  an image by a model that can see.
+- A file dropped on an Explorer folder, or chosen with *Upload files here…*,
+  goes into that folder under its own name. It is the person's recorded
+  `write`, held to the view's and the write rules as a save is, and never
+  replaces a file already there. The upload route takes the folder as a
+  `dir` form field.
+- `/ide` downloads: *Download* on a file in the Explorer, and a **Files**
+  view of the documents, images and archives at the top of the workspace,
+  through the existing download route and its read rules.
+- Sessions have titles. `POST /v1/sessions/{id}/title` records
+  `session.renamed` (`title`, `from`, `by`) between turns, the session list
+  shows the title, and Postgres keeps it in a new `sessions.title` column.
+  A single-role install adds it on start; a two-role install must run
+  `abhed migrate` as the owner first, and the runtime role refuses to start
+  until it has. `/ide` renames a session from its header or its row, and
+  deletes one from the Sessions view.
+- *Edit and resend* on `/ide`'s last message, between runs: the conversation
+  forks to just before it, recorded as `conversation.forked`, and the edited
+  message is sent. `POST /v1/sessions/{id}/fork` with `before_seq` is the
+  engine's fork for any client, refused mid-turn, with messages queued, while
+  background tasks run, or before a step that is not the person's message.
+- `/ide` exports a session: its transcript as the self-contained HTML page
+  `/export` writes, or its record, one event as JSON per line, from
+  `GET /v1/sessions/{id}/export?format=html|jsonl`, the owner's only, as
+  attachments. A Postgres record has no hash chain, so this export carries
+  none; the verifiable export is still the command line's.
+- `/ide` copies `abhed -r <id>` to continue a session in a terminal.
+- `/ide` desktop notifications, off until turned on in the status bar, for an
+  approval waiting or a run finished while the tab is in the background. Their
+  text is fixed and carries nothing from the record.
+- Studio can restart an MCP server: `_abhed/mcp/restart {sessionId, name}`
+  reconnects one configured, enabled server, answers `{status, error?}`, and
+  is recorded as `mcp.status` by the person. It is refused while a prompt,
+  a woken turn or another restart runs, and a prompt waits for it in turn.
+  `features` lists `mcp.restart`.
+- A denied call's `tool_call_update` carries `_meta["zybuu.ai/abhed"].denied`
+  with the policy step, the rule and who settled it, as an ask carries them.
+- `_abhed/capabilities` reports each MCP server's connection error, redacted,
+  and the tool names it offered that were not registered for their name
+  (`refusedTools`), so Studio can say why a tool is missing.
+- A message you send a running subagent from the terminal's work panel
+  (`Message @<agent>`) is now also recorded in the session's own record, as
+  `subagent.message` with the subagent's session, the text and `by: user`;
+  before, only the subagent's record held it.
+- In the terminal, Ctrl-B on an empty line during a turn moves the `bash`
+  command or `task` subagent running now to the background: the call
+  returns at once, the agent goes on, and the command or subagent keeps
+  running, listed in `/tasks`, its result delivered when it ends. The record
+  says so: `shell.started` with `from_foreground`, or
+  `subagent.backgrounded` by the user. Elsewhere Ctrl-B is still
+  cursor-left.
+
+### Changed
+
+- In the `/ide` line-by-line terminal, a typed character that draws nothing
+  or changes the text's direction is echoed as one reverse-video `?`, so a
+  bidi control or zero-width space in what you type shows. The line runs as
+  typed.
+- An `/ide` approval card for a background start says the command keeps
+  running after the turn, and a card that offers no **Always allow** says
+  which calls never get one (an ask rule, a destructive or chained command,
+  a program off the short list), so `date -u` asking every time no longer
+  reads as a fault.
+- The wake and accounts guides now say that Sign out everywhere, or removing
+  administrator rights, ends sign-ins and not work: a background shell or
+  task already running still delivers its result and starts a woken run.
+
+- `/mode`, an accepted plan and `/permissions` no longer print their own
+  "mode: …" and "rule added" notices once a conversation is open: the
+  record's line says it, once.
+
+- A new dependency, `mvdan.cc/sh/v3` (BSD-3-Clause), for its bash parser;
+  it needs nothing past the standard library.
+- With tools offered, the `openai`, `vllm` and `openai-compatible` providers
+  now send `"parallel_tool_calls": true`, so a model may ask for several
+  calls in one turn. A provider's `extra.parallel_tool_calls` set to
+  `"false"` turns it off, and `"true"` sends it for another OpenAI-shaped type.
+- `shell_output` on a background shell still running now ends with how to
+  stop it (`shell_kill` and its id): models left servers they had started
+  running after the work was done.
+- A compaction's summary now keeps the person's first message word for word
+  beside it, up to 4,000 characters, through later compactions too. A
+  summariser had restated the request, or given its own plan in its place,
+  and lost what the person asked to be kept.
+- A next-prompt suggestion whose reasoning used the whole output allowance
+  and wrote no line is now asked once more without the reasoning settings,
+  as one refused for them already was. Both calls count in the session's
+  totals.
+- With more than 40 MCP tools, a server of three tools or fewer is now
+  still offered to the model in full, smallest first, up to twelve such
+  tools in all; the rest stay behind `tool_search`. Behind it, a one-tool
+  live-data server was passed over for the web search.
+- The system prompt now names the project's own test command where a file
+  at the workspace's root says it (`go.mod`, `Cargo.toml`, a `package.json`
+  test script, pytest in `pytest.ini` or `pyproject.toml`, a Makefile's
+  `test` target), and, where the session has them, says to choose with
+  `ask_user` rather than asking in prose, and to hand broad work to a
+  subagent with `task`. Models had run pytest in a Go module, asked in
+  prose, and done broad searches alone.
+- The `skill` tool's description now asks for it to be called first, before
+  reading files or searching, when a request matches a listed skill.
+- CI runs the container tier on Docker in a job of its own: a workspace
+  write reaches the host, the root filesystem is read-only, the network is
+  off, the pids, memory and swap bounds are what the policy says, and the
+  hostname and PID 1 are the container's.
+- In the terminal, a message typed during a run after a queued command
+  (`/model`, `/mode`) no longer steers the run ahead of that command: it
+  waits behind it and is sent as the next prompt once the command has run,
+  in the order typed. A message with no command queued before it still
+  steers the run.
+
+### Fixed
+
+- An edition's own subcommand could not take flags: `abhed identities
+  forget -email x` failed with "flag provided but not defined", because the
+  flags after it went to the global flag set. It now parses its own.
+- A restarted stdio MCP server (`/mcp restart` too) kept the life of the
+  request that restarted it, and two restarts at once could leave one
+  server running unowned. The server now lives as long as the session, and
+  restarts take turns.
+- With a durable store, a session's row was listed while the server was
+  still starting it, so a page opening the newest session at that moment,
+  such as a second `/ide` tab, got `404` for its events, queue and terminal
+  for a few seconds. The list now leaves out a session this server has not
+  finished starting. For one still starting on another server, `/ide` asks
+  its events, queue and terminal again after 0.5, 1 and 1.5 seconds, then
+  says the session is still starting and stops.
+- HawkEYE reported a session only people worked in, at the workbench's
+  terminal or editor with no agent run, as outcome `running`. Its outcome is
+  now `no agent run`.
+- `abhed serve` kept a full copy of a file for every edit made to it in a
+  session, for as long as the session was held, though only the copy from
+  before the first edit is ever read (the changes view's baseline). It now
+  keeps that one copy per changed file.
+- An event whose payload was withheld because redaction could not run was
+  drawn in `/ide` and the console with "undefined" in place of its fields
+  (a call's tool, a fork's step, compaction and offload counts, the turns
+  at an end, the model in `/ide`'s status bar). They now say the payload was
+  withheld, or leave the field out.
+- A session's event stream could close at the settled end that follows
+  background work before the next-prompt suggestion announced by the run's
+  end arrived, so the console never offered it. The stream now waits for
+  that suggestion across the settled end.
+- The console's session list showed a session opened in the workbench with
+  no message as "(no prompt recorded)", and ignored a session's title. It now
+  shows the title, else the first message, else "Workbench session", as
+  `/ide` does.
+- Withdrawing an owner's access counted, among the work it stopped, their
+  workbench terminals that had already ended and were kept a minute for a
+  late reader, so the count logged (and the admin audit's "background
+  item(s) stopped") was too high. Only terminals still running are stopped
+  and counted.
+- After `/review` or `/security-review`, the terminal's footer still said
+  plan mode though the session was back in its earlier mode, as the record
+  and `/status` said. The footer is now drawn again once a command's turn
+  has put back what it changed.
+- On Postgres, a session opened in the workbench was listed as "Workbench
+  session" after the server restarted, because its first message never
+  reached the session's row. The row now takes the first message when the
+  session was opened with none.
+- A new `/ide` session showed the last session's next-prompt suggestion in
+  its message box; it now starts with none.
+- The console drew a woken turn's reply above the background result it
+  answers, named a background shell by its id in "continuing with results
+  from …", and did not show background shells at all. The reply now follows
+  the result, the shell is named by its description, and a background
+  shell's start and end are drawn in the conversation.
+- `/ide` hid **Stop** once a turn ended, though background shells or tasks
+  were still running and Stop would end them; it now stays while any runs.
+- `/ide` showed a background task as running after it had ended when its
+  notice was not yet recorded, as after a server restart. The task now
+  leaves the status bar when the record says it returned, or when the
+  session's end says no background work is owed.
+- After a sign-out or a revoke, `/ide` kept reopening a session's event
+  stream about once a second while it had background work, each attempt
+  answered `401`, and still listed the stopped shell; the Explorer showed a
+  bare `unauthorized`. A dropped stream is now reopened only after a
+  request shows the person is still signed in, the page stops listing
+  background work once the sign-in has ended, and a `401` reads "your
+  sign-in ended; sign in again" wherever an error is shown.
+- A model call could wait with nothing shown for as long as the endpoint
+  held it open. Each request to the model now has a call timeout (600
+  seconds) and a stall timeout for a reply that sends no bytes (300
+  seconds), set per provider with `call_timeout_seconds` and
+  `stall_timeout_seconds`. A timeout ends the turn with a model error the
+  record marks `"retryable": true`, and is not retried on its own or asked
+  again as a malformed reply.
+- After a revoke and then a restore, the owner's open session stayed without
+  wakes and suggestions until a background result was next delivered while
+  it was idle. The owner's own next message now brings them back.
+- The workbench's `/exec`, `/pty`, terminal input and resize endpoints
+  answered an oversized body with 400. They now answer 413, as the rest of
+  the server API does.
+- `abhed doctor` said "Ready." and exited 0 while the event store or sign-in
+  could not be opened, as before `abhed migrate`. It now says "Not ready",
+  names them, points at `abhed migrate` and exits 1. With memory storage it
+  named only the command line's local record; it now says that `serve` keeps
+  sessions in memory, and names the local record as the command line's.
+- A `tool_call` hook that answered only with a `log` or a `reason` was not
+  recorded. It is now recorded as `hook.fired` with verdict `annotate`, as
+  the extensions guide says.
+- Studio's reject or undo of a change to an editor file (`.vscode/**`,
+  `.git/config` and the rest) was refused with "the agent may not change
+  it", though the person asked. It now says Abhed does not write that file
+  for a reject or an undo either, and to change it in the editor.
+- Studio's policy view named a rule's layer by guessing from the files, so a
+  built-in allow rule the managed lock restored showed as `workspace`, and
+  with the home folder as the workspace a set-aside user rule showed as
+  `workspace`. It now names the layer loading credited, as `/permissions`
+  does (`default` for a built-in rule, where it said `builtin`), lists the
+  session's own and pinned rules as `session`, and names a set-aside rule's
+  file by the layer it was read as.
+- `abhed hawkeye` on a stream-json capture excused a gap before any
+  `model.call` as omitted deltas, even one whose turn streamed nothing. It now
+  excuses it only when that call's turn recorded a reply or reasoning, or the
+  call failed part way, so a message or retried call lost before a
+  tool-only turn is reported as `record-gap`.
+- `abhed index -h` built the index and `abhed init -h` wrote a config.
+  `-h` after a command that reads no flags of its own (`init`, `trust`,
+  `doctor`, `providers`, `user`, `acp`, `rpc`, `index`) now prints that
+  command's usage and exits 0.
+- `abhed record verify` said "head seq 0" for the index, which is numbered
+  by line and has no seq. It now says "head line N".
+- The `bash` tool held a foreground command's whole output in memory before
+  cutting it to its first and last 15,000 characters, so a command printing
+  without end grew the process until it timed out. Output is now cut while
+  it is read; what the model sees is unchanged.
+- `/permissions explain write src/x.go` said the path must be absolute. A
+  relative path is now read from the session's folder, as the file tools
+  read it, and the answer names the path it explained.
+- The container image's `abhed version` said `dev`: the image build did not
+  stamp the version as the release binaries do. It now takes a `VERSION`
+  build argument, which the release workflow sets to the tag.
+- A compaction asked for over ACP (Studio's Compact, or `/compact` typed in
+  an editor) that failed, or found nothing to summarise, left
+  `compaction.started` in the record with no end. Its failure is now
+  recorded as `compaction.completed` with the error, as an automatic one's is.
+- `/fork` to a step the conversation does not have, after `/resume` of a
+  session kept in Postgres, claimed the session and then released it with a
+  second `session.ended`. The step is now checked before the claim.
+- A second Ctrl-C exits after waiting 1.5 seconds for the turn to stop, and
+  records the end itself when it has not. A turn that stopped after that
+  wait, before the process had exited, could record a second
+  `session.ended`. It no longer can.
+- `abhed resolve` and `abhed acp` printed the warning about an untrusted
+  workspace configuration twice, or once per session, because they load the
+  workspace more than once. Each warning is now printed once per process.
+- With input piped in as lines, `y`, `yes` or `a` typed while an approval
+  waited was sent to the agent as steering (or as a prompt) as well as
+  asking again. Such a line is now only asked again for the number.
+- The work panel dropped a task title's hidden characters (`U+202E`,
+  `U+200D`) without a trace, while `/tasks` showed them as escapes. The
+  panel now shows them as `/tasks` does.
+- A session continued with `-c` or `-r` and no `-mode`, in a mode other than
+  the one its record ended in, recorded the change as made `via` `flag`. It
+  is now recorded as `config`; `flag` is kept for a `-mode` given.
+- `-fork-session` (and a fork from Studio) copied the source's name into the
+  new session, so `-r NAME` matched both and the terminal started an empty
+  session. A branch no longer takes its source's name; give it one with `-n`.
+- A `-p` run continuing a session (`-c`, `-r`, `-fork-session`) that was
+  stopped before it answered gave the session's earlier answer as `result`
+  in its json and stream-json result line. It now gives an empty `result`.
+- The statusline said "took longer than 300 ms" when its first run, which
+  starts the sandbox and the script's interpreter cold, ran out of time. A
+  first run that runs out of time is no longer named; a later one is. The
+  statusline also stayed on the old mode after Shift-Tab pressed within a
+  second of its last run; it now runs again once that second is up.
+- The full-screen view that `/permissions`, `/status` and `/commands` open
+  took keys typed ahead of it: a `q` closed it and other letters were lost.
+  Letters arriving in the first 300 ms after it opens now go to the prompt,
+  as typed.
+- `subagent.spawned` listed the tools a subagent was given without `recall`,
+  which every subagent has unless its definition disallows it. The list is
+  now the subagent's own tools, `recall` included.
+- The record gave "read-only tool" as the reason a `task` call (which may
+  start a subagent in the background) and a `shell_output` or `task_status`
+  call were allowed. They now read "subagent tool (each call the subagent
+  makes is decided on its own)" and "session tool (reads this session's own
+  background work)".
+- A subagent's `bash` call with `run_in_background` asked the person for
+  approval and was then refused, since a subagent cannot start a background
+  command. It is now refused before anyone is asked, recorded as
+  `action.denied` at step `precheck` with the same reason.
+- In accept-edits and auto, a `write` or `edit` the tool refuses, such as
+  one into `.abhed`, was recorded `action.approved` by the mode and then
+  refused by the tool. A call allowed without asking is now checked as an
+  asked one is: one that cannot succeed is recorded `action.denied` at step
+  `precheck`, never approved.
+- A `compact_at` below 0.25 compacted on every turn, however little history
+  there was: the room kept for the coming turn, a quarter of the window,
+  passed the threshold on its own. That room is now at most half of
+  `compact_at`'s share of the window.
+- A run stopped by a signal to the process (SIGTERM, SIGINT, SIGHUP) ended
+  `user_interrupt` with no `detail`, unlike Esc and Ctrl-C, whose `detail`
+  says which. Its `session.ended` now says `stopped by terminated` (or
+  `interrupt`, `hangup`).
+- `abhed doctor` and the `abhed serve` banner did not say which managed
+  file was in force. Both now name it and how many settings it sets, and
+  `abhed doctor --json`'s managed check names it too.
+- HawkEYE's token totals left out the model calls made for next-prompt
+  suggestions, so they read lower than the session's own totals. They now
+  include them; the Turns table still lists turns only.
+- `abhed rpc` wrote what the tool set skipped to whatever `os.Stderr` was
+  when the warning came, read from the tool set's goroutines, rather than to
+  the stderr it started with as its other messages do.
+- Commands queued while a turn ran each waited up to a second for the
+  turn's output to be drawn, even when drawing had stopped, so a backlog of
+  them ran a second apart. The wait now ends once drawing has made no
+  progress for 100 ms.
+- A line pasted into the workbench shell or Studio's interactive terminal
+  was recorded as `terminal.input` even when writing it to the shell failed
+  because the terminal had ended. It is now withdrawn unrecorded. A typed
+  line is still recorded as its Enter is read.
+- Taking withheld lines out of a shell's recorded output searched for every
+  four-character piece of every withheld line, which at the extreme (many
+  long withheld lines) took hundreds of megabytes. The search is now bounded;
+  past it, the output is withheld whole with a note saying why.
+- Under a managed file that locks the allow rules, a user's or workspace's
+  file repeating a built-in rule with spaces around it (`" bash(pwd) "`)
+  left that rule in the list twice. Rules are now compared trimmed.
+- An MCP tool left out for its name was named only in a warning on stderr,
+  which a terminal session does not show. `/mcp` now lists such tools under
+  their server, with hidden characters shown as escapes.
+- Keys typed after Esc that began like a terminal's reply (`]11;`) were held
+  unshown for as long as typing kept coming in gaps under 150 ms. A reply is
+  now given 300 ms in all; past that, what came is typing, shown as typed.
+- A `/model` queued behind a custom command whose turn had not run yet was
+  undone when the command switched its own model back, and a queued `!` ran
+  on the command's narrowed tools. Both are now refused until that turn has
+  run, with a note to run them after it.
+- A subagent started from the command line read its memory files without
+  the session's `memory.import_depth` or `rules.dirs`, and its record had no
+  `memory.loaded`. It now loads memory as the session does, auto memory
+  aside, and records which files its prompt carries.
+- `/fork`'s list of steps showed a skill pipeline's steps as if they were the
+  agent's own calls. Each now names its pipeline; forking at one forks
+  before the skill call that ran it.
+- A background command's `shell.started` named the sandbox tier read before
+  the command was built, which for a session's first command, when the
+  sandbox is chosen as that command is built, was not the tier it ran under.
+  The tier is now read once the command is built.
+- Container tier:
+  - Podman named otherwise (`podman-remote`, or the podman-docker wrapper
+    named `docker`) was taken for Docker, so PID and UTS were not pinned
+    private. Podman is now known by what `--version` says it is.
+  - `sandbox.max_memory_mb` left swap at the engine's default, as much again
+    as the memory, so a command could use twice the bound. Swap is now set
+    to the same.
+  - A process limit (`--ulimit nproc`) was set beside `--pids-limit`, and
+    under rootful Docker it counts every process of the same uid on the host.
+    It is now set only when `sandbox.max_procs` is 0.
+- On Linux the process tier counted as available whenever `bwrap` was
+  installed, so where it cannot create namespaces (no unprivileged user
+  namespaces) every command failed instead. Abhed now asks `bwrap` once,
+  at start-up, and treats the tier as unavailable, with `bwrap`'s reason,
+  when it cannot.
+- The process tier's description (`abhed doctor`, the banner) said "at most N
+  more processes per command" where it could not count the user's processes
+  and so set no limit. It now says the processes are not bounded there, and
+  names memory, CPU and disk as not bounded on this tier.
+- With the network off, `cat build.log; curl --version` was followed by the
+  note that the sandbox has no network when the log's last lines named a
+  network error. A network client asked only for its version or help no
+  longer counts toward that note.
+- A password change submitted twice at once could end the session that
+  made it: each request stamped the session with its own new hash, and the
+  one stored last did not match. Changes now run one at a time in a
+  process, so the second finds the password already changed.
+
+### Documentation
+
+- Corrected claims the code did not back:
+  - The process tier was said to use seccomp and Landlock on Linux. It runs
+    bubblewrap with neither, and the docs now say so.
+  - MCP servers were said to run in the gVisor tier with declared egress
+    only. A stdio server runs on the host, outside the sandbox, with your
+    user's access and network; `digest` is not checked.
+  - The monitor was said to come in the next release. Nothing turns it on
+    yet, and the guide no longer gives a date.
+  - Sandboxed writes were said to be scoped to the workspace. On the
+    process tier a command may also write temp folders and, on macOS,
+    toolchain caches; the configuration guide lists them.
+- The MCP guide's example now loads: `env` is a list of entries, and a
+  server needs `"enabled": true`.
+- The README no longer shows an egress broker or an MCP registry, and the
+  security doc marks anomaly detection as not built.
+- Guides now say: `memory_write` is offered only in an interactive session;
+  a destructive `!` line asks once; "Yes, and don't ask again" covers a
+  call's subject; what a managed file's dropped allow rules do at run time;
+  a revoke refuses a waiting call at step `ask`; HawkEYE's token totals
+  leave out suggestion calls.
+
+### Upgrading
+
+- **`abhed migrate` before starting a two-role Postgres install.** 1.2.4
+  adds `sessions.title` and `events.inserted_at` (schema version 6). A
+  server whose runtime role cannot add them refuses to start and names the
+  column; run `abhed migrate` with the owner connection first. A single-role
+  install adds them at start. The same step adds a trigger that sets
+  `events.inserted_at` to the database's clock, whatever a writer sends, and
+  an edition's provisioning may no longer change the grant on a core table.
+- **Servers sharing one Postgres: stop every 1.2.3 node before starting a
+  1.2.4 one.** A 1.2.4 lease carries a process token that a 1.2.3 node
+  neither writes nor checks, so running both releases on the same sessions
+  at once is not supported.
+- **A stdio MCP server no longer inherits your environment.** A server that
+  read a token or setting from a variable it inherited, such as
+  `GITHUB_TOKEN` or `HTTPS_PROXY`, now needs it listed in its `env`: as
+  `"KEY"` to pass your own value, or `"KEY=VALUE"`. `abhed mcp add -env KEY`
+  does the same.
+
+### Go API
+
+All additive; the `sdk` package is unchanged.
+
+- `app`: `InAgentCommand`, which says why the process runs inside an
+  agent's command, so an edition's own subcommand that changes state can
+  refuse it as the built-in ones do.
+- `auth`: `FileUserStore.Create`, which adds an account under the users
+  file's lock and refuses a name or email another holds.
+- `config`: `LoadOptions.Settings` and `LoadOptions.SettingsName`, the
+  `SettingsSource` type and `Config.Settings`, the `LayerSettings` rule
+  layer, `SetAsideKey.Layer`, `Config.NarrowHooks`, `GrantFor`,
+  `CLIConfig.Title`, `CLIConfig.Notify` and `CLIConfig.Copy`,
+  `HooksConfig.ManagedOnly`, `ProviderConfig.CallTimeoutSeconds` and
+  `StallTimeoutSeconds`, `PermissionsConfig.GitExtensions` and
+  `SSHConfig.ConnectHosts`. `Printable` and `PrintableText` now escape as
+  `internal/visible` does.
+- `server`: `InviteEmailChecker`, an `InviteRedeemer` whose codes may be
+  made out to one address; signup asks it before the code is spent, so a
+  refusal keeps the code. Routes: `POST /v1/sessions/{id}/title`,
+  `POST /v1/sessions/{id}/fork` and `GET /v1/sessions/{id}/export`, and a
+  `dir` form field on the upload route.
+- `store`: `SessionRecord.Title` and `HolderNode`. A provisioning
+  extension's grant may name columns after `SELECT`, `INSERT` or `UPDATE`
+  (`"SELECT, INSERT, UPDATE (seen_at)"`), which replaces a table-wide grant
+  an earlier migrate gave.
+
 ## [1.2.3] - 2026-10-02
 
 ### Security

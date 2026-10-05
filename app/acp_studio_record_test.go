@@ -310,3 +310,18 @@ func TestRuleAlwaysIsRecordedAndRestored(t *testing.T) {
 		t.Fatalf("the restored scope was asked again: %d asks", asks)
 	}
 }
+
+// A manual compaction that fails records its end with the error, so the
+// record holds no compaction.started left open.
+func TestStudioFailedCompactIsClosed(t *testing.T) {
+	r := newStudioRig(t, "", say("one"))
+	id := r.open()
+	r.prompt(id, "first")
+	// One exchange: nothing older to summarise.
+	r.cl.refused(errRefused, "_abhed/session/compact", map[string]any{"sessionId": id})
+	started, _ := r.recorded(id, agent.EvCompactStarted)
+	done, actors := r.recorded(id, agent.EvCompactDone)
+	if len(started) != 1 || len(done) != 1 || done[0]["error"] == nil || actors[0] != agent.ActorSystem {
+		t.Fatalf("started %v, completed %v %v", started, done, actors)
+	}
+}

@@ -35,6 +35,9 @@ type Container struct {
 	once      sync.Once
 	available bool
 	reason    string
+	// podman is set when the runtime is Podman by what it says it is, as the
+	// podman-docker wrapper named docker is; see engine.
+	podman bool
 }
 
 func NewContainer(p Policy) *Container {
@@ -81,6 +84,7 @@ func (c *Container) Available() (bool, string) {
 				continue
 			}
 			c.runtime = path
+			c.podman = saysPodman(path)
 			c.available = true
 			c.reason = ""
 			return
@@ -122,9 +126,21 @@ func (c *Container) Describe() string {
 	return fmt.Sprintf("OCI container via %s · shared kernel · %s · image %s", engine, net, Image)
 }
 
-// engine is the runtime's program name, such as docker or podman.
+// engine is the runtime's program name, such as docker or podman: podman
+// for Podman under any name (podman-remote, or the podman-docker wrapper
+// named docker), which reads PID and UTS from its own configuration.
 func (c *Container) engine() string {
-	return filepath.Base(c.runtime)
+	base := filepath.Base(c.runtime)
+	if c.podman || strings.HasPrefix(base, "podman") {
+		return "podman"
+	}
+	return base
+}
+
+// saysPodman reports whether the runtime at path calls itself Podman.
+func saysPodman(path string) bool {
+	out, err := exec.Command(path, "--version").Output() // #nosec G204 -- the container runtime found on PATH
+	return err == nil && strings.Contains(strings.ToLower(string(out)), "podman")
 }
 
 // runArgs is everything up to the image: the confinement both a command and
@@ -156,9 +172,13 @@ func (c *Container) runArgs(cwd string) []string {
 	)
 
 	// Fork bombs and disk-fill are denial of service against the host, which
-	// the memory and pid caps below do not cover on their own.
+	// the memory and pid caps below do not cover on their own. Processes are
+	// bounded by --pids-limit when there is one: an nproc limit counts every
+	// process of the same uid on the host under rootful Docker.
+	if c.policy.MaxProcs <= 0 {
+		args = append(args, "--ulimit", "nproc=256:256")
+	}
 	args = append(args,
-		"--ulimit", "nproc=256:256",
 		"--ulimit", "nofile=1024:1024",
 		"--ulimit", "fsize=536870912:536870912", // 512 MB per file
 		"--ulimit", "core=0:0",
@@ -181,7 +201,10 @@ func (c *Container) runArgs(cwd string) []string {
 		args = append(args, "--network", "none")
 	}
 	if c.policy.MaxMemoryMB > 0 {
-		args = append(args, "--memory", strconv.Itoa(c.policy.MaxMemoryMB)+"m")
+		// Swap set to the same: by default the engine allows as much swap
+		// again, so the bound was twice what it said.
+		m := strconv.Itoa(c.policy.MaxMemoryMB) + "m"
+		args = append(args, "--memory", m, "--memory-swap", m)
 	}
 	if c.policy.MaxProcs > 0 {
 		args = append(args, "--pids-limit", strconv.Itoa(c.policy.MaxProcs))
@@ -202,6 +225,10 @@ func (c *Container) runArgs(cwd string) []string {
 			protected = append(protected, p)
 		}
 	}
+	// The git folders found now, as on bubblewrap.
+	if c.policy.ProtectGit {
+		protected = append(protected, GitProtected(c.policy.Workspace)...)
+	}
 	for _, p := range holders(ws, protected) {
 		if info, err := os.Lstat(p); err == nil && info.IsDir() {
 			args = append(args, "-v", p+":"+p)
@@ -214,6 +241,7 @@ func (c *Container) runArgs(cwd string) []string {
 			args = append(args, "-v", p+":"+p+":ro")
 		}
 	}
+	args = append(args, c.stateMounts()...)
 
 	workdir := cwd
 	if workdir == "" {
@@ -352,4 +380,61 @@ func ForwardEnv(cmd *exec.Cmd, names []string) {
 	}
 	args := append(append(append([]string{}, cmd.Args[:at]...), extra...), cmd.Args[at:]...)
 	cmd.Args = args
+}
+
+// stateMounts hide Abhed's own state that the mounts above would show: an
+// empty throwaway folder over the workspace's .abhed, as the process tier
+// mounts, and the same over a state folder, /dev/null over a state file.
+func (c *Container) stateMounts() []string {
+	ws := c.policy.Workspace
+	dir := filepath.Join(ws, stateDir)
+	// Made here as the person, or the engine would make it as root.
+	_ = os.Mkdir(dir, 0o700)
+	var args []string
+	tmpfs := func(p string) {
+		args = append(args, "--tmpfs", p+":rw,noexec,nosuid,nodev,size=16m,mode=0700")
+	}
+	// On a disk that ignores case, .ABHED reaches the same folder by another
+	// name the engine's own kernel keeps apart, so each spelling is covered.
+	for _, name := range caseSpellings(ws, stateDir) {
+		tmpfs(filepath.Join(ws, name))
+	}
+	visible := append(PathForms(ws), formsOf(c.policy.ReadOnlyPaths)...)
+	for _, p := range formsOf(c.policy.StatePaths) {
+		if !insideAny(p, visible) {
+			continue
+		}
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			tmpfs(p)
+		} else if err == nil {
+			args = append(args, "-v", "/dev/null:"+p+":ro")
+		}
+	}
+	return args
+}
+
+// caseSpellings is name, and on a disk where dir folds case, every spelling
+// of it in upper and lower case.
+func caseSpellings(dir, name string) []string {
+	upper := filepath.Join(dir, strings.ToUpper(name))
+	if _, err := os.Lstat(upper); err != nil || strings.ToUpper(name) == name {
+		return []string{name}
+	}
+	var letters []int
+	for i, r := range name {
+		if strings.ToUpper(string(r)) != strings.ToLower(string(r)) {
+			letters = append(letters, i)
+		}
+	}
+	out := make([]string, 0, 1<<len(letters))
+	for mask := 0; mask < 1<<len(letters); mask++ {
+		b := []byte(strings.ToLower(name))
+		for bit, i := range letters {
+			if mask&(1<<bit) != 0 {
+				b[i] = strings.ToUpper(string(b[i]))[0]
+			}
+		}
+		out = append(out, string(b))
+	}
+	return out
 }

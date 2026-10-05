@@ -191,7 +191,7 @@ func TestContinuedRunRecordsItsModeAndPrompt(t *testing.T) {
 	if len(s) != 3 || s[1]["mode"] != "bypass" || s[1]["system_prompt_appended_sha256"] == nil || s[2]["mode"] != "default" {
 		t.Fatalf("starts: %v", s)
 	}
-	if got := strings.Join(modeChangesIn(evs), " "); got != "accept-edits>bypass/flag bypass>default/flag" {
+	if got := strings.Join(modeChangesIn(evs), " "); got != "accept-edits>bypass/flag bypass>default/config" {
 		t.Fatalf("mode changes: %s", got)
 	}
 	// Each change follows the start of the run that made it.

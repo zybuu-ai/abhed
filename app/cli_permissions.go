@@ -78,7 +78,7 @@ func permissionsView(cfg config.Config, pol *policy.Engine) []ui.Block {
 			rules = cfg.Permissions.Allow
 		}
 		sorted := slices.Clone(rules)
-		rank := map[string]int{"managed (locked)": 0, config.LayerUser: 1, config.LayerWorkspace: 2, config.LayerFlag: 3, config.LayerDefault: 4}
+		rank := map[string]int{"managed (locked)": 0, config.LayerUser: 1, config.LayerSettings: 2, config.LayerWorkspace: 3, config.LayerFlag: 4, config.LayerDefault: 5}
 		slices.SortStableFunc(sorted, func(a, b string) int {
 			return rank[configured(list)(a)] - rank[configured(list)(b)]
 		})
@@ -158,7 +158,9 @@ func addSessionRule(ctx context.Context, e *cmdEnv, list, rule string) error {
 	e.st.recordCLI(agent.EvPermissionChanged, agent.PermissionChanged{
 		Op: "add", List: list, Rule: rule, Scope: "session", By: agent.ByUser,
 	})
-	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("session %s rule added: %s (until /clear)", list, rule)})
+	if !e.st.recordsLive() {
+		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("session %s rule added: %s (until /clear)", list, rule)})
+	}
 	return nil
 }
 
@@ -173,7 +175,9 @@ func removeSessionRule(e *cmdEnv, rule string) error {
 			e.st.recordCLI(agent.EvPermissionChanged, agent.PermissionChanged{
 				Op: "remove", List: list, Rule: rule, Scope: "session", By: agent.ByUser,
 			})
-			e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("session %s rule removed: %s", list, rule)})
+			if !e.st.recordsLive() {
+				e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: fmt.Sprintf("session %s rule removed: %s", list, rule)})
+			}
 			return nil
 		}
 	}
@@ -212,6 +216,13 @@ func explainDecision(e *cmdEnv, tool, what string) string {
 	case "web_search":
 		key = "query"
 	}
+	// A relative path is read from where the session is, as the tools read
+	// it; it used to reach the file tools as is and come back "must be absolute".
+	resolved := ""
+	if key == "path" && what != "" && !filepath.IsAbs(what) && e.sess != nil {
+		what = filepath.Join(e.sess.Cwd, what)
+		resolved = what + ": "
+	}
 	args, _ := json.Marshal(map[string]string{key: what})
 	dry := *e.pol
 	dry.Hooks, dry.EngineHooks = nil, nil
@@ -221,16 +232,30 @@ func explainDecision(e *cmdEnv, tool, what string) string {
 		rule = "no rule"
 	}
 	line := fmt.Sprintf("%s · step %s · %s · %s (mode %s; hooks not consulted)", res.Decision, res.Step, rule, res.Reason, e.pol.Mode)
-	if why := toolRefusal(e, tool, what); why != "" {
-		return fmt.Sprintf("refused · by the %s tool · %s; policy alone: %s", tool, why, line)
+	if why := toolRefusal(e, tool, what, args); why != "" {
+		return fmt.Sprintf("%srefused · by the %s tool · %s; policy alone: %s", resolved, tool, why, line)
 	}
-	return line
+	return resolved + line
 }
 
-// toolRefusal is why a file tool would itself refuse the path, whatever
-// policy decides: one outside the reachable folders, or one its guard keeps.
-func toolRefusal(e *cmdEnv, tool, path string) string {
-	if e.sess == nil || (tool != "read" && tool != "write" && tool != "edit") {
+// toolRefusal is why the tool would itself refuse the call, whatever policy
+// decides: a file tool's path outside the reachable folders or kept by its
+// guard, or what another tool's own check refuses, as web_fetch's host list.
+func toolRefusal(e *cmdEnv, tool, path string, args json.RawMessage) string {
+	if e.sess == nil {
+		return ""
+	}
+	if tool != "read" && tool != "write" && tool != "edit" {
+		if e.st == nil || e.st.loop == nil || e.st.loop.Tools == nil {
+			return ""
+		}
+		if t, ok := e.st.loop.Tools.Get(tool); ok {
+			if pc, ok := t.(tools.Prechecker); ok {
+				if err := pc.Precheck(e.sess, args); err != nil {
+					return err.Error()
+				}
+			}
+		}
 		return ""
 	}
 	p, err := e.sess.Resolve(path)

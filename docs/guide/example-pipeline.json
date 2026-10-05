@@ -7,7 +7,7 @@
         {
           "kind": "model",
           "output": "class",
-          "prompt": "Classify this question.\n\nQuestion: {{input}}\n\ncomplexity: \"complex\" if it asks two or more distinct things, compares, or wants a specific command, parameter or value; otherwise \"simple\". When in doubt, complex.\nscope: \"ibm_z\" for IBM Z, z/OS, CICS, IMS, Db2 for z/OS, RACF, JCL, COBOL, LinuxONE and related; \"adjacent_tech\" for other technical topics; \"general\" for non-technical.\nlanguage: the English name of the language the question is written in.",
+          "prompt": "Classify this question.\n\nQuestion: {{input}}\n\ncomplexity: \"complex\" if it asks two or more distinct things, compares, or wants a specific command, parameter or value; otherwise \"simple\". When in doubt, complex.\nscope: \"in_scope\" for this team's own services, runbooks and APIs; \"adjacent_tech\" for other technical topics; \"general\" for non-technical.\nlanguage: the English name of the language the question is written in.",
           "schema": {
             "type": "object",
             "properties": {
@@ -21,7 +21,7 @@
               "scope": {
                 "type": "string",
                 "enum": [
-                  "ibm_z",
+                  "in_scope",
                   "adjacent_tech",
                   "general"
                 ]
@@ -101,7 +101,7 @@
           "required": true,
           "timeout_ms": 60000,
           "args": {
-            "command": "bash ~/.abhed/skills-active/zrag/scripts/run.sh retrieve --query {{item}} --profile-json '{}'",
+            "command": "bash scripts/kb-search.sh --query {{item}}",
             "description": "Retrieving from the knowledge base."
           }
         },

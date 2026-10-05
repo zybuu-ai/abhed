@@ -91,6 +91,10 @@ func TestTerminalSurfacePick(t *testing.T) {
 // A panel is the full-screen view; it returns when closed.
 func TestTerminalSurfacePanel(t *testing.T) {
 	g := newRig(t, 60, 16)
+	clock := newFakeClock()
+	g.lr.d.mu.Lock()
+	g.lr.d.now = clock.Now
+	g.lr.d.mu.Unlock()
 	done := make(chan error, 1)
 	go func() {
 		done <- g.lr.Panel(context.Background(), PanelSpec{Title: "Status", Body: []Block{{Kind: BlockNotice, Text: "model stub-1"}}})
@@ -99,6 +103,17 @@ func TestTerminalSurfacePanel(t *testing.T) {
 	if !g.term.Mode("?1049") {
 		t.Fatal("the panel is not on the alternate screen")
 	}
+	// Typed as the panel opened: kept for the prompt, and it does not close it.
+	g.keys("quick")
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		g.lr.d.mu.Lock()
+		typed := g.lr.d.buf.String()
+		g.lr.d.mu.Unlock()
+		if len(typed) == 5 || time.Now().After(deadline) {
+			break
+		}
+	}
+	clock.advance(approvalGuard)
 	g.keys("q")
 	select {
 	case err := <-done:
@@ -107,6 +122,12 @@ func TestTerminalSurfacePanel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the panel did not close")
+	}
+	g.lr.d.mu.Lock()
+	typed := g.lr.d.buf.String()
+	g.lr.d.mu.Unlock()
+	if typed != "quick" {
+		t.Fatalf("the input line holds %q, want the keys typed ahead", typed)
 	}
 }
 
@@ -118,5 +139,20 @@ func TestNormalizedRefusesAnUnknownKind(t *testing.T) {
 		if err == nil {
 			t.Errorf("kind %q was accepted", kind)
 		}
+	}
+}
+
+// A yes is never the default, whatever kind the dialog says it is.
+func TestNormalizedRefusesAYesDefaultInAnyKind(t *testing.T) {
+	for _, kind := range []DialogKind{DialogChoice, DialogApproval, DialogConfirm} {
+		for _, id := range []string{ChoiceYes, "always"} {
+			_, err := DialogSpec{Kind: kind, Choices: []Choice{{ID: id, Label: "Yes"}, {ID: ChoiceNo, Label: "No"}}, Default: id}.Normalized()
+			if err == nil {
+				t.Errorf("%s dialog took %q as its default", kind, id)
+			}
+		}
+	}
+	if _, err := (DialogSpec{Kind: DialogChoice, Choices: []Choice{{ID: "keep"}, {ID: "cancel"}}, Default: "cancel"}).Normalized(); err != nil {
+		t.Errorf("an ordinary default was refused: %v", err)
 	}
 }

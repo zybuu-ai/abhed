@@ -86,6 +86,11 @@ func (s *tuiStub) plan(user string, results int, last string) stubStep {
 			return stubStep{tool: "bash", args: map[string]any{"command": "ls /definitely/not/here", "description": "list a missing dir"}}
 		}
 		return done
+	case strings.Contains(u, "please sleep"):
+		if results == 0 {
+			return stubStep{tool: "bash", args: map[string]any{"command": "touch started.txt; sleep 20", "description": "wait a while"}}
+		}
+		return done
 	case strings.Contains(u, "please big"):
 		if results == 0 {
 			return stubStep{tool: "bash", args: map[string]any{"command": "seq 1 3000", "description": "print many lines"}}
@@ -113,6 +118,25 @@ func (s *tuiStub) plan(user string, results int, last string) stubStep {
 	case strings.Contains(u, "please rm"):
 		if results == 0 {
 			return stubStep{tool: "bash", args: map[string]any{"command": "rm -rf build", "description": "remove build dir"}}
+		}
+		return done
+	case strings.Contains(u, "please todo"):
+		if results == 0 {
+			return stubStep{tool: "todo", args: map[string]any{"items": []map[string]string{
+				{"id": "1", "text": "read the file", "status": "done"},
+				{"id": "2", "text": "change the greeting", "status": "in_progress"},
+				{"id": "3", "text": "run the tests", "status": "pending"},
+			}}}
+		}
+		return done
+	case strings.Contains(u, "please allowed"):
+		if results == 0 {
+			return stubStep{tool: "bash", args: map[string]any{"command": "echo allowed-by-rule", "description": "echo"}}
+		}
+		return done
+	case strings.Contains(u, "please delegate"):
+		if results == 0 {
+			return stubStep{tool: "task", args: map[string]any{"description": "look around", "prompt": "say hi from the child"}}
 		}
 		return done
 	case strings.Contains(u, "please read"):

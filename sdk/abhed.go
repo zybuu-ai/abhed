@@ -314,6 +314,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AddAllow(cfg.Permissions.Allow...); err != nil {
 		return nil, fmt.Errorf("abhed: allow rule: %w", err)
 	}
+	if err := pol.AllowGitExtensions(cfg.Permissions.GitExtensions...); err != nil {
+		return nil, fmt.Errorf("abhed: permissions.git_extensions: %w", err)
+	}
 
 	// A managed sandbox setting binds here too; otherwise bash is unsandboxed
 	// unless the caller asked for the configured sandbox.

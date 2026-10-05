@@ -291,6 +291,10 @@ func (t Task) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) to
 		MaxTurns:    a.MaxTurns,
 		Model:       a.Model,
 	}
+	// A background-only role goes to the background where this agent runs any.
+	if def.Background != nil && *def.Background && t.Background != nil {
+		a.Background = true
+	}
 	if a.Background {
 		if t.Background == nil {
 			return tools.Result{Content: "this agent runs no background tasks; call task without background.", IsError: true}
@@ -372,6 +376,11 @@ func runInWorktree(ctx context.Context, spawn func(context.Context, SubagentRequ
 // SubagentFactory builds and runs subagents. A subagent answers to the approver
 // of the loop that spawned it; Approver serves a spawn with no loop, nil refuses.
 type SubagentFactory struct {
+	// Memory, when set, is how a subagent's memory is loaded for its
+	// workspace, as its parent's is: imports to the configured depth and the
+	// rule folders. Nil reads the memory files alone.
+	Memory func(workspace string) MemoryOptions
+
 	Adapter   model.Adapter
 	Tools     *tools.Registry
 	Policy    *policy.Engine
@@ -432,6 +441,10 @@ func (f *SubagentFactory) Spawn(ctx context.Context, req SubagentRequest) (strin
 	if err != nil {
 		return "", err
 	}
+	if d := tools.DetachOf(ctx); d != nil && c.settle == nil && c.parent != nil && c.parent.depth == 0 &&
+		c.parent.loop != nil && c.parent.loop.Background != nil {
+		return c.runMovable(ctx, d)
+	}
 	if c.release != nil {
 		defer c.release()
 	}
@@ -464,6 +477,9 @@ type child struct {
 	// before is how many messages the conversation held before this run: a
 	// resumed run's answer is only one it gives itself.
 	before int
+	// extraMu guards extra, which a move to the background (Ctrl-B) adds to
+	// while the child runs.
+	extraMu sync.Mutex
 }
 
 // prepare settles everything a spawn needs and records it. reserve runs just
@@ -487,6 +503,13 @@ func (f *SubagentFactory) prepare(ctx context.Context, req SubagentRequest, extr
 	def, found := f.Definitions.Get(req.AgentType)
 	if !found {
 		return nil, fmt.Errorf("unknown agent type %q; available: %s", req.AgentType, strings.Join(f.Definitions.Names(), ", "))
+	}
+	// A role that runs only in the background, or never there, is held to it.
+	if bg, _ := extra["background"].(bool); def.Background != nil && *def.Background != bg {
+		if bg {
+			return nil, fmt.Errorf("agent type %s does not run in the background; call it without background", def.Name)
+		}
+		return nil, fmt.Errorf("agent type %s runs only in the background; call it with background", def.Name)
 	}
 	registry, err := childTools(f.Tools, def)
 	if err != nil {
@@ -655,6 +678,10 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 
 	// Fresh context: the subagent gets its own system prompt and memory file,
 	// and none of the parent's turns.
+	var mem *Memory
+	if f.Memory != nil {
+		mem = LoadMemory(f.Memory(workspace))
+	}
 	sysPrompt := BuildSystemPrompt(BuildOptions{
 		Profile:       profile,
 		Role:          role,
@@ -663,12 +690,14 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		ContextWindow: adapter.Profile().ContextWindow,
 		MemoryFiles:   DiscoverMemoryFiles(workspace),
 		MemoryAllow:   ReadAllowed(f.Policy),
+		Memory:        mem,
 		Tools:         promptTools.Names(),
 	})
 
 	cfg := f.Config
 	cfg.SystemPrompt = sysPrompt
 	cfg.MaxTurns = turns
+	cfg.Effort = childEffort(cfg.Effort, def.Effort)
 
 	sub := NewLoop(adapter, registry, narrowMode(childPolicy(f.Policy, session), def.PermissionMode), approver, session, rec, cfg)
 	// recall is added by NewLoop to every loop; a role that disallows it
@@ -678,6 +707,12 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	}
 	sub.depth = depth + 1
 	sub.Work = work
+	// Its record says which memory its prompt carries, as the parent's does.
+	if mem != nil {
+		if files := mem.Files(); len(files) > 0 {
+			_, _ = rec.Record(EvMemoryLoaded, ActorSystem, Trusted, MemoryLoaded{Files: files})
+		}
+	}
 	sub.Provider = provider
 	// A subagent's calls reach the same person, so the same hooks screen them.
 	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
@@ -690,8 +725,9 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	// large a task, and silently compacting hides that from the operator.
 
 	// The parent records the spawn and the return in its own log, which is
-	// what the audit relies on; the child's copy is for its own replay.
-	effective := registry.Names()
+	// what the audit relies on; the child's copy is for its own replay. The
+	// loop's own tools, so recall, which NewLoop adds, is listed too.
+	effective := sub.Tools.Names()
 	sort.Strings(effective)
 	spawned := map[string]any{
 		"description":       req.Description,
@@ -739,9 +775,11 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 	if c.provider != "" {
 		returned["provider"] = c.provider
 	}
+	c.extraMu.Lock()
 	for k, v := range c.extra {
 		returned[k] = v
 	}
+	c.extraMu.Unlock()
 
 	if err != nil {
 		returned["reason"] = string(TermError)
@@ -800,7 +838,111 @@ func childTools(parent *tools.Registry, def *Definition) (*tools.Registry, error
 	if len(def.DisallowedTools) > 0 {
 		reg = reg.Without(def.DisallowedTools)
 	}
+	var err error
+	if def.MCPServers != nil {
+		if reg, err = onlyServers(reg, def); err != nil {
+			return nil, err
+		}
+	}
+	if def.Skills != nil {
+		if reg, err = onlySkills(reg, def); err != nil {
+			return nil, err
+		}
+	}
 	return reg, nil
+}
+
+// SkillNarrower is a skill tool that can be cut to some of its skills,
+// returning the names it does not have.
+type SkillNarrower interface {
+	NarrowSkills(names []string) (tools.Tool, []string)
+}
+
+// mcpServerOf is the MCP server a tool belongs to, or "" for one that is not
+// an MCP tool. A tool that knows its server says; the name is read otherwise.
+func mcpServerOf(t tools.Tool) string {
+	if n, ok := t.(interface{ ServerName() string }); ok {
+		return n.ServerName()
+	}
+	if rest, ok := strings.CutPrefix(t.Name(), "mcp__"); ok {
+		server, _, _ := strings.Cut(rest, "__")
+		return server
+	}
+	return ""
+}
+
+// onlyServers drops the MCP tools of every server the definition does not
+// list. A listed server the session has no tools from refuses the spawn.
+func onlyServers(reg *tools.Registry, def *Definition) (*tools.Registry, error) {
+	keep := map[string]bool{}
+	for _, s := range def.MCPServers {
+		keep[s] = true
+	}
+	have := map[string]bool{}
+	var drop []string
+	for _, t := range reg.All() {
+		server := mcpServerOf(t)
+		if server == "" {
+			continue
+		}
+		have[server] = true
+		if !keep[server] {
+			drop = append(drop, t.Name())
+		}
+	}
+	var missing []string
+	for _, s := range def.MCPServers {
+		if !have[s] {
+			missing = append(missing, s)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("definition %s names MCP servers this session has no tools from: %s. Use another agent type, or do the work directly",
+			def.Name, strings.Join(missing, ", "))
+	}
+	if len(drop) == 0 {
+		return reg, nil
+	}
+	return reg.Without(drop), nil
+}
+
+// onlySkills cuts the skill tool to the definition's skills; an empty list
+// takes it away. A listed skill the session lacks refuses the spawn.
+func onlySkills(reg *tools.Registry, def *Definition) (*tools.Registry, error) {
+	t, ok := reg.Get("skill")
+	if len(def.Skills) == 0 {
+		if ok {
+			return reg.Without([]string{"skill"}), nil
+		}
+		return reg, nil
+	}
+	n, narrows := t.(SkillNarrower)
+	if !ok || !narrows {
+		return nil, fmt.Errorf("definition %s names skills, and this session has none: %s", def.Name, strings.Join(def.Skills, ", "))
+	}
+	cut, missing := n.NarrowSkills(def.Skills)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("definition %s names skills this session does not have: %s", def.Name, strings.Join(missing, ", "))
+	}
+	out := reg.Clone()
+	out.Add(cut)
+	return out, nil
+}
+
+// effortRank orders the effort levels; none is the provider's own default.
+var effortRank = map[model.EffortLevel]int{model.EffortLow: 1, model.EffortMedium: 2, model.EffortHigh: 3}
+
+// childEffort is a role's effort, never above the session's when the
+// session sets one.
+func childEffort(session model.EffortLevel, role string) model.EffortLevel {
+	want := model.EffortLevel(role)
+	if _, ok := effortRank[want]; !ok {
+		return session
+	}
+	if r, set := effortRank[session]; set && effortRank[want] > r {
+		return session
+	}
+	return want
 }
 
 // childModel is the model a child is asked to run on: the call's, else the
@@ -1076,6 +1218,13 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 				return
 			}
 			parent.record(ev.Type, ev.Actor, ev.Payload)
+		case EvUserMessage:
+			// A message the person sent it while it ran (queued, so it has a
+			// QueueID; its prompt has none) is the person's, in the record audit reads.
+			var m Message
+			if json.Unmarshal(ev.Payload, &m) == nil && m.QueueID != "" && ev.Actor == ActorUser {
+				parent.record(EvSubagentMessage, ActorUser, map[string]string{"session": child, "text": m.Text, "by": ByUser})
+			}
 		case EvActionRequested:
 			var a ActionRequested
 			if json.Unmarshal(ev.Payload, &a) == nil {
@@ -1143,7 +1292,9 @@ func (c *child) track() {
 	if c.parent != nil && c.parent.rec != nil {
 		parent = c.parent.rec.sessionID
 	}
+	c.extraMu.Lock()
 	bg, _ := c.extra["background"].(bool)
+	c.extraMu.Unlock()
 	c.sub.Work.start(WorkItem{ID: c.sessionID, Parent: parent, Kind: WorkAgent, AgentType: c.req.AgentType,
 		Title: c.req.Description, Background: bg, Started: time.Now()}, c.sub)
 }

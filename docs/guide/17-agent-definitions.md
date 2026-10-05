@@ -37,6 +37,11 @@ named and nothing else, and runs in plan mode.
 | `max_turns` | `maxTurns` | the role's turn cap, 1 to 100 |
 | `isolation` | | `worktree`: the role always works in its own git worktree |
 | `permission_mode` | `permissionMode` | `plan` or `default`, applied only where it narrows the session's mode |
+| `effort` | | `low`, `medium` or `high`: the role's reasoning effort, never above the session's when the session sets one |
+| `skills` | a comma string or a list | the only skills the role may load; `[]` gives it none. Omitted: the session's skills |
+| `mcp_servers` | `mcpServers` | names of the session's MCP servers whose tools the role keeps; `[]` keeps none. Omitted: all of them |
+| `background` | | `true`: the role runs only as a background task; `false`: never as one |
+| `color` | `colour` | how `/agents` shows the role: red, blue, green, yellow, purple, orange, pink or cyan |
 
 `recall`, which reads the subagent's own record, is always given unless
 `disallowed_tools` names it. A name in `disallowed_tools` that could mean two
@@ -78,17 +83,30 @@ A definition can make a subagent do less than its parent, never more:
   and plan mode refuses it.
 - **Budget.** Every subagent draws on the session's one token budget and
   counts against `limits.max_subagents`.
+- **Skills and MCP servers.** `skills` and `mcp_servers` only cut the
+  session's own: a name the session does not have refuses the start, naming
+  it. `mcp_servers` takes names only; a definition that writes a server
+  inline (a command or a URL) is refused when it loads, since it would start
+  something the operator never configured.
+- **Effort and background.** `effort` can lower the role's reasoning effort,
+  not raise it above the session's. A `background: true` role that is called
+  in the foreground runs in the background when the session offers
+  background tasks, and is refused otherwise; a `background: false` role is
+  refused as a background task. Either way it counts against the session's
+  limits as any subagent does.
 
 A key Abhed does not honour and that would concern authority refuses the whole
-definition, with a warning: `hooks`, `mcpServers`, `permissions`, any key
+definition, with a warning: `hooks`, `permissions`, an inline `mcp_servers`, any key
 naming `allow` or `deny` other than `disallowed_tools`, sandbox or network
 settings, and any other key that reads like one of the honoured ones (naming a
 tool, a mode, a model, turns or permission, such as `denied_tools`). A key is
 the same key quoted or not, and one nested under another key is checked too:
 `settings:` holding `disallowedTools` refuses the definition rather than
 passing unread. An author who wrote one expected a restriction, and must not get a
-looser agent without being told. Cosmetic keys such as `color` are ignored
-with a warning, and so is any other key Abhed does not know.
+looser agent without being told. Cosmetic keys such as `icon` are ignored
+with a warning, and so is any other key Abhed does not know. A value outside
+a key's set, such as `effort: max` or `background: yes`, refuses the
+definition.
 
 A definition's tool list is a list of capabilities, not a risk class. A tool
 that only reads, such as a web fetch, can still carry data out, and it is
@@ -150,6 +168,12 @@ Highest first:
    content (below).
 3. **Yours:** `agents.dirs`, by default `~/.abhed/agents`. With several
    directories, a later one wins a name.
+
+For one run, `-agents JSON` gives definitions on the command line, checked
+exactly as files are, and `-agent NAME` runs the whole session as one role;
+see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
+They take a name over the workspace's and yours, never over the
+organisation's, and none loads under `agents.disabled`.
 
 When two files define one name, the higher one wins and a warning names the
 file it shadowed. The built-in names `main`, `general`, `explore`, `test` and

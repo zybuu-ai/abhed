@@ -115,7 +115,17 @@ func (s *Server) saveFile(w http.ResponseWriter, r *http.Request) {
 	live.manualMu.Lock()
 	defer live.manualMu.Unlock()
 	args, _ := json.Marshal(map[string]string{"path": abs, "content": req.Content})
-	res, err := live.Loop.Manual(r.Context(), sess, "write", "u"+newSessionID(), args)
+	callID := "u" + newSessionID()
+	// The write tool judges the path links followed; a rule on the folder link it was named through holds too.
+	if d := writeDenial(live.Loop.Policy, v.typed(req.Path)); d != nil {
+		if err := live.Loop.ManualRefused("write", callID, args, *d); err != nil {
+			writeUnrecorded(w, err, "the save could not be recorded, so it was not made")
+			return
+		}
+		WriteError(w, http.StatusForbidden, "Denied: "+d.Reason)
+		return
+	}
+	res, err := live.Loop.Manual(r.Context(), sess, "write", callID, args)
 	if err != nil {
 		writeUnrecorded(w, err, "the save could not be recorded, so it was not made")
 		return
@@ -150,7 +160,7 @@ func (s *Server) execCommand(w http.ResponseWriter, r *http.Request) {
 	capBody(w, r)
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Command) == "" {
-		WriteError(w, http.StatusBadRequest, "command is required")
+		badBody(w, err, "command is required")
 		return
 	}
 	if len(req.Command) > maxManualCommand {

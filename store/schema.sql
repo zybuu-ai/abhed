@@ -251,3 +251,28 @@ CREATE INDEX IF NOT EXISTS sessions_live_idx ON sessions (tenant_id, started_at 
   WHERE deleted_at IS NULL;
 
 INSERT INTO schema_version (version) VALUES (3) ON CONFLICT DO NOTHING;
+
+-- A title a person gave the session, copied from its latest session.renamed
+-- event so the list can show it; the event is the record of the rename.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';
+
+-- Schema version 6: when the database stored each event, on its own clock.
+-- created_at is the writer's; a session with no holder is an orphan only
+-- once its last event is old on the database's clock, which a writer whose
+-- clock runs fast cannot make look stale. Rows already there read the time
+-- the column was added, which makes them younger, never older.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- The writer may insert every column, so the database sets this one itself.
+CREATE OR REPLACE FUNCTION abhed_events_inserted_at() RETURNS trigger AS $$
+BEGIN
+  NEW.inserted_at := now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS events_inserted_at ON events;
+CREATE TRIGGER events_inserted_at BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_inserted_at();
+
+INSERT INTO schema_version (version) VALUES (6) ON CONFLICT DO NOTHING;

@@ -221,6 +221,7 @@ func workLine(s Style, r WorkRow, selected bool, kindW, w int) string {
 	return left + strings.Repeat(" ", w-displayWidth(left)-rw) + right
 }
 
-// oneLine is text from a model or a command as one row: no escapes, and
-// its line breaks and runs of space as single spaces.
-func oneLine(s string) string { return strings.Join(strings.Fields(sanitize(s, false)), " ") }
+// oneLine is text from a model or a command as one row: its line breaks and
+// runs of space as single spaces, and hidden characters as escapes, as /tasks
+// writes them; dropping them made the two disagree.
+func oneLine(s string) string { return VisibleLine(strings.Join(strings.Fields(s), " ")) }

@@ -41,8 +41,10 @@ recorded as `input.mention` with the SHA-256 of what was attached.
 
 The line runs through the bash tool as your call: in the sandbox, under your
 deny rules, and refused in plan mode. A destructive command such as
-`rm -rf build` asks first, and no answer refuses it. The call is recorded as
-yours (`by: user`) with its output.
+`rm -rf build` asks once, `1. Yes, run it` or `2. No`, with No selected, and
+anything but Yes refuses it. It is one question, not the second confirm an
+agent's destructive call gets, because you typed the command yourself. The
+call is recorded as yours (`by: user`) with its output.
 
 The output is shown, 40 lines at most, and all of it (up to 30,000
 characters, redacted) joins your next message, so the agent sees what you
@@ -91,6 +93,15 @@ order:
 `/import <path>`: it shows the file and appends it to `ABHED.md` only if you
 confirm.
 
+Every later session reads these files as instructions, so the default
+configuration asks before the agent writes or edits `ABHED.md`,
+`ABHED.local.md` or `AGENTS.md` at the workspace root, in every mode,
+`accept-edits` and `auto` included (`write(ABHED.md)`, `edit(ABHED.md)` and
+the same for the other two, in `permissions.ask`). A configuration that
+replaces `permissions.ask` drops these defaults. A file is read as one of
+these only where the disk spells its name exactly so: on a disk that ignores
+case, `agents.md` is not `AGENTS.md`.
+
 A workspace memory file came with the repository, so it is read as the file
 tools read: never through a link out of the workspace or into Abhed's state,
 and not where a read deny rule forbids it. A file over 4 MiB is skipped.
@@ -105,9 +116,10 @@ See @docs/conventions.md for style.
 
 The path is relative to the file that names it. Imports are followed only
 where there are read rules to put them to: the interactive CLI and its
-subagents. The server, the SDK and eval read the memory files but follow no
-import. Imports are followed
-`memory.import_depth` levels deep (5 by default, 10 at most), and a file
+subagents, which load memory as the session does (`memory.import_depth`,
+`rules.dirs`; not auto memory) and record their own `memory.loaded`. The
+server, the SDK and eval read the memory files but follow no import. Imports
+are followed `memory.import_depth` levels deep (5 by default, 10 at most), and a file
 already loaded is not loaded again, so a cycle ends. An import from a
 workspace file must stay in the workspace; one from your own or the
 organisation's file may also reach `/etc/abhed`. Abhed's own state
@@ -172,6 +184,10 @@ Text the agent reads could try to make it save something, so:
   block labelled as the agent's notes, not your instructions; no line in a
   note can start a heading.
 
+Only an interactive `abhed` session offers `memory_write`, since each save
+is shown there as it happens. `abhed -p` loads the notes but cannot add to
+them, and `abhed serve`, `rpc`, `acp` and the SDK do not offer the tool.
+
 `MEMORY.md` is yours to edit or delete.
 
 ## Custom commands
@@ -188,7 +204,7 @@ Review @$1 for correctness bugs. Report each with file:line.
 Current status: !`git status --short`
 ```
 
-Saved as `~/.abhed/commands/review.md`, it runs as `/review src/app.go`.
+Saved as `~/.abhed/commands/check.md`, it runs as `/check src/app.go`.
 A file in a subdirectory, `frontend/test.md`, is `/frontend:test`.
 
 | Header key | |
@@ -209,7 +225,9 @@ such line asks first, since you typed the command's name, not the line, and
 the policy decides as for `!`.
 
 The text runs as your next turn. The record holds `command.invoked` with the
-name, source, the file's SHA-256 and your arguments, redacted.
+name, source, the file's SHA-256 and your arguments, redacted. Until that
+turn has run, `/model` and `!` are refused, since the command's own model and
+tools are in place; run them after it.
 
 ### Where commands come from
 
@@ -230,8 +248,10 @@ trust variable set, trusts them for that run; a workspace started untrusted
 never runs them.
 
 Built-in commands always win: a custom command cannot use a built-in's name,
-or one that looks like it. A workspace command cannot take a name your own
-or the organisation's commands use. `/commands` lists them all;
+or one that looks like it, and the session says which command was left out
+and why. A workspace command cannot take a name your own
+or the organisation's commands use, and an MCP server's prompt
+(`/mcp__server__prompt`, see the MCP guide) cannot take a custom command's. `/commands` lists them all;
 `/commands show <name>` prints one.
 
 ## /init

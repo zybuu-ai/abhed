@@ -298,3 +298,24 @@ func TestRelativeCommandsDirAtHomeNeedsTrust(t *testing.T) {
 		}
 	}
 }
+
+// While a custom command's turn waits with its own model and tools, a queued
+// /model or ! is refused: the turn's restore undid the one, and the other
+// ran on the command's narrowed tools.
+func TestQueuedModelAndBangWaitForACommandsTurn(t *testing.T) {
+	st, _, sf := customRig(t)
+	st.input.turn = &commandTurn{after: func() {}}
+	printed, _ := stdoutOf(t, func() int {
+		typeLine(t, st, "/model other")
+		typeLine(t, st, "!echo hi")
+		return 0
+	})
+	if out := printed + sf.shown(); !strings.Contains(out, "own settings; switch the model after it") ||
+		!strings.Contains(out, "own settings; run ! commands after it") {
+		t.Fatalf("shown:\n%s", out)
+	}
+	st.input.turn = nil
+	if err := st.commandSetup("x"); err != nil {
+		t.Fatal(err)
+	}
+}

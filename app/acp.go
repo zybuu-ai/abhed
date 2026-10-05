@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +22,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	abhed "github.com/zybuu-ai/abhed/sdk"
@@ -111,7 +117,10 @@ type acpSession struct {
 	// readOnly says why the session takes no prompt: its record failed verification.
 	readOnly string
 	cancel   context.CancelFunc
-	mu       sync.Mutex
+	// mcpRestart is set while the person's MCP restart runs: no prompt or
+	// other restart starts until it ends, since they share the connection.
+	mcpRestart bool
+	mu         sync.Mutex
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
 	always map[string]bool
@@ -180,7 +189,7 @@ func (s *acpSession) claimTurn(ctx context.Context, cancel context.CancelFunc) (
 	switch {
 	case s.woken != nil:
 		return s.woken, false
-	case s.cancel != nil:
+	case s.cancel != nil, s.mcpRestart:
 		return nil, true
 	}
 	s.beginTurnLocked(ctx, cancel)
@@ -432,6 +441,9 @@ func idle(s *acpSession) *rpcError {
 	if s.cancel != nil {
 		return refusal(errBusy, "a prompt is running in this session; try again when it ends")
 	}
+	if s.mcpRestart {
+		return refusal(errBusy, "an MCP server of this session is restarting; try again when it is done")
+	}
 	return nil
 }
 
@@ -642,7 +654,7 @@ func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
 // buildAgent makes s's agent and wires its undo log and guard.
 func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	opts := abhed.Options{
-		Workspace: o.cwd, ConfigDir: o.cwd, Sandbox: true, WorkspaceTrust: o.trust, AllowDefaultModel: true,
+		Workspace: o.cwd, ConfigDir: o.cwd, Sandbox: true, WorkspaceTrust: config.GrantFor(o.trust, c.base, o.cwd), AllowDefaultModel: true,
 		// The agent the terminal runs, subagents and configured tools included.
 		ConfiguredTools: true,
 		// The configuration's turn limit binds, as it does from the terminal.
@@ -717,10 +729,12 @@ func (c *acpConn) sessionResult(s *acpSession) map[string]any {
 	return res
 }
 
-// promptText flattens the prompt's content blocks. Text is taken as it is;
-// embedded resources become a labelled block the model can read.
-func promptText(blocks []json.RawMessage) string {
+// promptText splits the prompt into the person's words and what they attached,
+// redacted, capped and fenced as data; each attachment is an input.mention.
+func promptText(blocks []json.RawMessage) (said, attachedText string, mentions []agent.InputMention) {
 	var b strings.Builder
+	var attached []string
+	room := mentionMaxBytes
 	for _, raw := range blocks {
 		var blk struct {
 			Type     string `json:"type"`
@@ -739,13 +753,93 @@ func promptText(blocks []json.RawMessage) string {
 		case "text":
 			b.WriteString(blk.Text)
 		case "resource":
-			fmt.Fprintf(&b, "\n\nAttached %s:\n```\n%s\n```", blk.Resource.URI, blk.Resource.Text)
+			block, m := attachedResource(blk.Resource.URI, blk.Resource.Text, room)
+			room = max(0, room-int(m.Bytes))
+			attached = append(attached, block)
+			mentions = append(mentions, m)
 		case "resource_link":
 			fmt.Fprintf(&b, "\n\n(See %s%s)", blk.Name, map[bool]string{true: " at " + blk.URI, false: ""}[blk.URI != ""])
 		}
 	}
-	return strings.TrimSpace(b.String())
+	if len(attached) > 0 {
+		attachedText = "\n\nWhat the person attached in the editor, not read through the session's policy. " + untrustedNote + "\n" + strings.Join(attached, "\n")
+	}
+	return strings.TrimSpace(b.String()), attachedText, mentions
 }
+
+// attachedResource is one embedded resource as the model reads it, and its
+// record: the path and line range its URI names, and the hash and size of
+// the text the model was given.
+// room is what the prompt's earlier attachments left of the cap.
+func attachedResource(uri, text string, room int) (string, agent.InputMention) {
+	content, truncated := capText(redacted(text), room)
+	note := ""
+	if truncated {
+		note = fmt.Sprintf("\n[attached %d KB of it; the prompt's attachments are capped at %d KB in all]", len(content)>>10, mentionMaxBytes>>10)
+	}
+	path, lines := uri, ""
+	if u, err := url.Parse(uri); err == nil && u.Scheme == "file" {
+		path = u.Path
+		if m := lineFragment.FindStringSubmatch(u.Fragment); m != nil {
+			lines = m[1] + "-" + m[2]
+		}
+	}
+	sum := sha256.Sum256([]byte(content))
+	m := agent.InputMention{Path: redacted(path), Range: lines, SHA256: hex.EncodeToString(sum[:]),
+		Bytes: int64(len(content)), Truncated: truncated}
+	attrs := fmt.Sprintf("from=%q", redacted(uri))
+	return fenced("attachment", attrs, content+note), m
+}
+
+// attachmentRefusal puts each file: attachment to the read rules and the state
+// check, as an @ mention is, and says why one may not be attached.
+func attachmentRefusal(s *acpSession, blocks []json.RawMessage) (string, error) {
+	loop := s.parts.Loop
+	if !s.inner || loop == nil || loop.Policy == nil || s.parts.Session == nil {
+		return "", nil
+	}
+	for _, raw := range blocks {
+		var blk struct {
+			Type     string `json:"type"`
+			Resource struct {
+				URI string `json:"uri"`
+			} `json:"resource"`
+		}
+		if json.Unmarshal(raw, &blk) != nil || blk.Type != "resource" {
+			continue
+		}
+		u, err := url.Parse(blk.Resource.URI)
+		if err != nil || u.Scheme != "file" {
+			continue
+		}
+		path := filepath.FromSlash(u.Path)
+		if runtime.GOOS == "windows" && len(u.Path) > 2 && u.Path[0] == '/' && u.Path[2] == ':' {
+			path = filepath.FromSlash(u.Path[1:])
+		}
+		args := argsJSON(map[string]string{"path": path})
+		var d policy.Result
+		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
+			// Read as a UNC path on Windows; the rules cannot judge another host's files.
+			args = argsJSON(map[string]string{"path": "//" + u.Host + u.Path})
+			d = policy.Result{Decision: policy.Deny, Reason: "the file is on another host", Step: "attachment"}
+		} else {
+			d = loop.Policy.Evaluate("read", false, args)
+		}
+		if d.Decision != policy.Deny && tools.IsState(path, s.parts.Session.PolicyRoots()...) {
+			d = policy.Result{Decision: policy.Deny, Reason: "the path is Abhed's own state", Step: "state"}
+		}
+		if d.Decision == policy.Deny {
+			if err := loop.ManualRefused("read", personCallID("attachment"), args, d); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("the attachment %s may not be read: %s", ui.VisibleLine(redacted(blk.Resource.URI)), d.Reason), nil
+		}
+	}
+	return "", nil
+}
+
+// lineFragment is the line range Studio puts on a selection's URI: #L3-L9.
+var lineFragment = regexp.MustCompile(`^L(\d+)-L(\d+)$`)
 
 func (c *acpConn) prompt(msg rpcMessage) {
 	var p struct {
@@ -784,18 +878,33 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	end := func() { endOnce.Do(func() { cancel(); s.endTurn() }) }
 	defer end()
 
-	text := promptText(p.Prompt)
+	text, attached, mentions := promptText(p.Prompt)
 	// The workspace file changed since the session opened: it restarts under
 	// the decision about the new bytes before this prompt runs (§5.6).
 	if c.checkTrust(s) {
 		c.restartForTrust(s)
 	}
+	why, err := attachmentRefusal(s, p.Prompt)
+	if err != nil || why != "" {
+		if err != nil {
+			why = err.Error()
+		}
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", why))
+		return
+	}
+	// What the person attached is recorded where it reaches the model.
+	withAttached := func(prompt string) string {
+		for _, m := range mentions {
+			s.record(agent.EvInputMention, m)
+		}
+		return prompt + attached
+	}
 	s.undo.BeginTurn()
-	var err error
-	if cmdErr, handled := c.slashCommand(ctx, s, text); handled {
+	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {
-		_, err = s.agent.Run(ctx, text)
+		_, err = s.agent.Run(ctx, withAttached(text))
 	}
 	// Every session/update of the run goes out before the reply that ends it.
 	flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)

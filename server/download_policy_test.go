@@ -95,3 +95,23 @@ func TestDownloadJudgesASymlinkByItsTarget(t *testing.T) {
 		t.Fatalf("a link to the password file downloaded it: %d", rec.Code)
 	}
 }
+
+// The workbench asks with HEAD before it saves a file, so HEAD must answer as
+// GET does: the file's headers for one that may be served, 404 for the rest,
+// and no body either way.
+func TestDownloadHeadAnswersAsGet(t *testing.T) {
+	h, id, _ := downloadServer(t)
+	head := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("HEAD", "/v1/sessions/"+id+"/download?path="+path, nil))
+		return rec
+	}
+	if rec := head("report.txt"); rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Disposition"), "attachment") || rec.Body.Len() != 0 {
+		t.Fatalf("HEAD of a servable file: %d %q, %d body bytes", rec.Code, rec.Header().Get("Content-Disposition"), rec.Body.Len())
+	}
+	for _, p := range []string{".env", "secrets/key.pem", ".abhed/users.json", "../etc/passwd"} {
+		if rec := head(p); rec.Code != http.StatusNotFound {
+			t.Errorf("HEAD of %s: %d, want 404", p, rec.Code)
+		}
+	}
+}

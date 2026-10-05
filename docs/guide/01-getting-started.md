@@ -91,7 +91,10 @@ While it works, **you can keep typing.** The input box stays at the bottom of
 the screen. A message sent mid-run steers it at the next step rather than
 interrupting, so the files it has already read and the results it has already
 gathered are kept; it shows under the reply as queued until the agent takes
-it. A slash command typed mid-run is queued and runs when the turn finishes.
+it. A slash command typed mid-run is queued and runs when the turn finishes,
+and a message typed after a queued command waits behind it, in the order
+typed, and is sent as your next prompt once the command has run: a message
+after `/model` goes to the new model.
 Esc stops the turn and keeps the session.
 
 The reply streams as it is written, formatted as it arrives. Tool calls show
@@ -128,6 +131,9 @@ is one of the numbers offered answers a waiting approval. Any other
 line is never taken as the answer because of where it falls: during a run it
 steers the run, and with no run live (a background task's ask) it is sent to
 the model as a prompt. Either way a note says the approval is still waiting.
+A line that is only an attempt at an answer (`y`, `yes`, `a`, `no`, `ok`
+and the like) is neither: the approval asks for its number again, and the
+line is not sent on.
 Every answer prints which ask it answered (`accepted: bash touch made.txt
 (subagent scan logs)`), so a key sent by position shows what it approved.
 

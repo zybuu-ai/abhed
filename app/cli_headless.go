@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -413,7 +414,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	recordStart(rec, resumedStart(o.start, resumedAfter))
 	if mode, _ := o.start["mode"].(string); resumedAfter > 0 {
-		recordResumedMode(rec, before, mode, agent.ViaFlag)
+		recordResumedMode(rec, before, mode, resumedVia(mode, appCfg))
 	}
 	if startFlags.Name != "" {
 		_, _ = loop.Recorder.Record(agent.EvSessionNamed, agent.ActorUser, agent.Trusted, agent.SessionNamed{Name: startFlags.Name})
@@ -484,7 +485,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	switch {
 	case streaming:
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
-			Result: lastAssistantText(loop.Messages()), Structured: structured,
+			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
 			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}}
 		if res.Subtype == "" {
@@ -515,6 +516,19 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 }
 
 // lastAssistantText is the model's last non-empty reply.
+// runAnswer is this run's last answer: a continued session's earlier answer
+// is not, though its conversation holds it, so a run stopped before answering
+// says nothing rather than repeat the last run's.
+func runAnswer(msgs []model.Message, es server.EventStore, id string, after int64) string {
+	if after > 0 {
+		evs, err := es.Events(id)
+		if err != nil || !slices.ContainsFunc(evs, func(e agent.Event) bool { return e.Seq > after && e.Type == agent.EvAgentMessage }) {
+			return ""
+		}
+	}
+	return lastAssistantText(msgs)
+}
+
 func lastAssistantText(msgs []model.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == model.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {

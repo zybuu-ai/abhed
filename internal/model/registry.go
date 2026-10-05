@@ -20,6 +20,8 @@ type Spec struct {
 	ToolCallFormat  string
 	ReasoningTags   []string
 	Params          Params
+	// Timeouts bound each request; a zero field keeps its default.
+	Timeouts Timeouts
 
 	// Region and Project scope a cloud-hosted deployment: an AWS region, a
 	// Google project, an Azure resource. Which of them a provider needs is the
@@ -59,6 +61,9 @@ func Register(name, summary string, build Factory) {
 // New builds the adapter for a spec, validating its parameters against what the
 // provider actually honours.
 func New(s Spec) (Adapter, error) {
+	if s.Timeouts.Call < 0 || s.Timeouts.Stall < 0 {
+		return nil, fmt.Errorf("call_timeout_seconds and stall_timeout_seconds may not be negative")
+	}
 	p, ok := providers[s.Type]
 	if !ok {
 		return nil, fmt.Errorf("unknown provider type %q; known types are %s",
@@ -67,6 +72,9 @@ func New(s Spec) (Adapter, error) {
 	a, err := p.build(s)
 	if err != nil {
 		return nil, err
+	}
+	if t, ok := a.(interface{ SetTimeouts(Timeouts) }); ok && s.Timeouts != (Timeouts{}) {
+		t.SetTimeouts(s.Timeouts)
 	}
 	if err := s.Params.Validate(s.Type, a.Profile().Sampling); err != nil {
 		return nil, err

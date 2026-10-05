@@ -21,9 +21,9 @@ func TestGitBranch(t *testing.T) {
 	wt := t.TempDir()
 	gitdir := filepath.Join(repo, ".git", "worktrees", "wt")
 	must(os.MkdirAll(gitdir, 0o700))
-	must(os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/next123/cli-core\n"), 0o600))
+	must(os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/feature/x\n"), 0o600))
 	must(os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+gitdir+"\n"), 0o600))
-	if got := gitBranch(wt); got != "next123/cli-core" {
+	if got := gitBranch(wt); got != "feature/x" {
 		t.Errorf("worktree: %q", got)
 	}
 

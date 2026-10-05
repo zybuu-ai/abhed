@@ -951,7 +951,7 @@ async function refresh(){
     // and rebuilding the rail on every tick tore down whatever the person
     // was doing in it — a hover, a focused row, an open delete confirmation.
     list.forEach(s => { s.shown = shownState(s); });
-    const sig = q + '|' + current + '|' + list.map(s => s.id + ':' + s.shown + ':' + (s.prompt || '')).join('\n');
+    const sig = q + '|' + current + '|' + list.map(s => s.id + ':' + s.shown + ':' + (s.title || '') + ':' + (s.prompt || '')).join('\n');
     if(el.dataset.sig === sig) return;
     if(el.querySelector('.item.confirm')) return;   // never yank a question mid-answer
     el.dataset.sig = sig;
@@ -983,6 +983,12 @@ function dayGroup(iso){
 }
 if($('search')) $('search').addEventListener('input', () => refresh());
 
+// sessionName is what the rail calls a session: its title, else its first
+// message, else what a session opened in the workbench with no message is.
+function sessionName(s){
+  return s.title ? reveal(s.title) : s.prompt && s.prompt.trim() ? reveal(s.prompt) : 'Workbench session';
+}
+
 // sessionRow builds one entry in the rail. It is a div acting as a button
 // rather than a <button>, because the delete control inside it is itself a
 // button and buttons cannot nest.
@@ -996,7 +1002,7 @@ function sessionRow(s){
 
   const q = document.createElement('div');
   q.className = 'q';
-  q.textContent = s.prompt ? reveal(s.prompt) : '(no prompt recorded)';
+  q.textContent = sessionName(s);
 
   const m = document.createElement('div');
   m.className = 'm';
@@ -1301,8 +1307,9 @@ function render(ev){
       const wrap = node('call');
       const hdr = node('hdr');
       const caret = node('caret', '\u25be');
-      const tool = node('tool', visible(p.tool));
-      const arg = node('arg', visible(summarize(p.tool, p.args)));
+      // A payload redaction could not run on is withheld whole: say so rather than draw "undefined".
+      const tool = node('tool', visible(p.tool || 'call'));
+      const arg = node('arg', visible(p.withheld || summarize(p.tool, p.args)));
       const peek = node('peek');   // one-line result, shown only when collapsed
       hdr.append(caret, tool, arg, peek);
       wrap.appendChild(hdr);
@@ -1381,6 +1388,11 @@ function render(ev){
     case 'subagent.spawned': (turnEl || newTurn()).appendChild(node('note', 'subagent started: ' + visible(p.description || '')));
       if(p.background && p.task_id) bgNames.set(p.task_id, p.description || p.task_id); break;
     case 'subagent.returned': (turnEl || newTurn()).appendChild(node('note', 'subagent finished: ' + visible(p.reason || ''))); break;
+    // A background shell: named for the wake that may follow, and its start and end drawn in the turn.
+    case 'shell.started': if(p.shell_id) bgNames.set(p.shell_id, p.description || p.command || p.shell_id);
+      (turnEl || newTurn()).appendChild(node('note', 'background shell started: ' + visible(p.description || p.command || p.shell_id || ''))); break;
+    case 'shell.ended': (live && turnEl || tx).appendChild(node('note', 'background shell ' + visible(bgNames.get(p.shell_id) || p.shell_id || '') + ' ' +
+      visible((p.state || 'ended') + (p.exit_code != null ? ' ' + p.exit_code : '') + (p.reason ? ' · ' + p.reason : '')))); break;
     // A background task's result entering the conversation. What it says is
     // the subagent's own summary, shown as that and never as the person's.
     case 'subagent.notice': if(p.task_id && p.description) bgNames.set(p.task_id, p.description); tx.appendChild(noticeCard(p)); break;
@@ -1389,7 +1401,8 @@ function render(ev){
       const names = (p.task_ids || []).map(id => bgNames.get(id) || id);
       tx.appendChild(node('note woke', p.by === 'caller' ? 'continuing with background results, as asked'
         : 'continuing with results from ' + (names.length ? names.map(n => visible(n)).join(', ') : 'background tasks')));
-      live = true; $('stop').hidden = false; newTurn(); showThinking('continuing');
+      // The reply belongs below the notice that follows, so its turn starts on its first event.
+      live = true; $('stop').hidden = false; turnEl = null; showThinking('continuing');
       break;
     }
 
@@ -1416,7 +1429,7 @@ function render(ev){
     }
 
     case 'conversation.forked': {
-      tx.appendChild(node('note', 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
+      tx.appendChild(node('note', p.withheld ? 'forked · ' + visible(p.withheld) : 'forked at step ' + p.through_seq + ' · the steps after it, above, were abandoned'));
       turnEl = null;
       break;
     }
@@ -1436,7 +1449,7 @@ function render(ev){
     case 'compaction.completed': {
       stats.compactions++;
       tx.appendChild(node('note',
-        'context compacted · ' + p.before_tokens + ' → ' + p.after_tokens + ' tokens'));
+        p.withheld ? 'context compacted · ' + visible(p.withheld) : 'context compacted · ' + p.before_tokens + ' → ' + p.after_tokens + ' tokens'));
       turnEl = null;
       break;
     }
@@ -1463,7 +1476,7 @@ function render(ev){
       stats.ctxWindow = p.context_window || stats.ctxWindow;
 
       const n = node('note');
-      n.append(kv('ended', visible(p.reason || '')), kv('turns', p.turns));
+      n.append(kv('ended', visible(p.reason || p.withheld || '')), kv('turns', p.turns || 0));
 
       // Context first, because it is the number that answers "how much room is
       // left". tokens_in beside it is a running total across every turn, so it
@@ -1504,7 +1517,7 @@ function visible(s, lines){
 // reveal is visible without the spacing rule, for text whose layout is its own: replies,
 // reasoning, a call's output, files and diffs. Tool output is untrusted, so all of it is drawn this way.
 function reveal(s, lines){
-  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
+  return String(s).replace(/[\p{Cc}\p{Cf}\u2028\u2029\u034f\u115f\u1160\u2800\u3164\uffa0]|(?! )\p{Zs}|(?<![\p{So}\p{Sm}0-9#*\u203c\u2049\u2139])\ufe0f/gu, c => c === '\t' || (lines && c === '\n') ? c
     : '\u27e8U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '\u27e9');
 }
 // argsJSON draws a call's arguments with every key and string made visible first,
@@ -1520,7 +1533,8 @@ function hasHidden(v, depth = 0){
   if(typeof v !== 'string') return false;
   if(visible(v, true) !== v) return true;
   const t = v.trim();
-  if(depth < 3 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
+  // As deep as ui.ArgsHidden reads, so nothing the record escapes goes without a warning.
+  if(depth < 4 && (t[0] === '{' || t[0] === '[')){ try{ return hasHidden(JSON.parse(t), depth + 1); }catch{} }
   return false;
 }
 

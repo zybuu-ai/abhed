@@ -436,9 +436,9 @@ Abhed in that directory (abhed -C <dir>) or grant it with --add-dir <dir>
 | Tier | Mechanism | Use |
 |---|---|---|
 | `none` | Direct execution | Never for untrusted code |
-| `process` | Seatbelt (macOS) / bubblewrap (Linux) | Default; trusted repos |
+| `process` | Seatbelt (macOS) / bubblewrap (Linux); no syscall filter | Default; trusted repos |
 | `container` | OCI, all capabilities dropped | Untrusted repos |
-| `vm` | gVisor / microVM | Hostile code |
+| `vm` | gVisor (`runsc`); no microVM backend yet | Hostile code |
 
 ```json
 { "sandbox": { "min_tier": "container", "allow_network": false } }

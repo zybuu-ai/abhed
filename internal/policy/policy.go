@@ -196,11 +196,14 @@ func foldName(command string) string {
 // rulesSeeParts reports whether a deny or ask rule with a pattern applies to tool.
 func (e *Engine) rulesSeeParts(tool string) bool {
 	deny, ask, _ := e.rules()
-	for _, rules := range [][]Rule{deny, ask} {
-		for _, r := range rules {
-			if (r.tool == tool || r.tool == "*") && r.pattern != nil {
-				return true
-			}
+	return patterned(deny, tool) || patterned(ask, tool)
+}
+
+// patterned reports whether any of rules has a pattern for tool.
+func patterned(rules []Rule, tool string) bool {
+	for _, r := range rules {
+		if (r.tool == tool || r.tool == "*") && r.pattern != nil {
+			return true
 		}
 	}
 	return false
@@ -302,9 +305,30 @@ type Engine struct {
 	// them and bypass mode runs them. It is for a tool whose reads can carry
 	// data out, such as web_fetch.
 	AskReadOnly map[string]func(subject string) string
+
+	// GitExtensions are git subcommands outside git itself, such as lfs, the
+	// person opted in to (permissions.git_extensions): the destructive step
+	// does not take them as an alias or extension it cannot read. Deny and
+	// ask rules still hold for them.
+	GitExtensions map[string]bool
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
+
+// AllowGitExtensions opts the named git extensions in; a name that is not a
+// plain subcommand, or is one of git's own, is refused.
+func (e *Engine) AllowGitExtensions(names ...string) error {
+	for _, name := range names {
+		if err := tools.GitExtensionError(name); err != nil {
+			return err
+		}
+		if e.GitExtensions == nil {
+			e.GitExtensions = map[string]bool{}
+		}
+		e.GitExtensions[name] = true
+	}
+	return nil
+}
 
 func (e *Engine) AddDeny(patterns ...string) error  { return addAll(&e.Deny, patterns) }
 func (e *Engine) AddAsk(patterns ...string) error   { return addAll(&e.Ask, patterns) }
@@ -516,16 +540,30 @@ func (e *Engine) pathRules(tool string) bool {
 // Evaluate applies the ordered decision flow. A prompt shows the command as
 // written; its reason notes continuations the checks joined.
 func (e *Engine) Evaluate(tool string, mutates bool, args json.RawMessage) Result {
-	res := e.evaluate(tool, mutates, args)
+	return e.evaluateAs(tool, mutates, args, false)
+}
+
+// EvaluateLine judges one line typed at an interactive terminal. The shell
+// may hold lines before it and finish it with lines after, so a line a bash
+// parser cannot read on its own (for f in *; do, done, an open quote) is
+// judged by the text checks alone, not refused for that; every other step
+// is Evaluate's.
+func (e *Engine) EvaluateLine(tool string, mutates bool, args json.RawMessage) Result {
+	return e.evaluateAs(tool, mutates, args, true)
+}
+
+func (e *Engine) evaluateAs(tool string, mutates bool, args json.RawMessage, line bool) Result {
+	res := e.evaluate(tool, mutates, args, line)
 	if res.Decision == Ask && tool == "bash" {
-		if _, subject, err := subjectOf(args); err == nil && tools.CanonicalCommand(subject).Joined {
+		// Only a backslash before a newline can be joined; the rest is not parsed again.
+		if _, subject, err := subjectOf(args); err == nil && strings.Contains(subject, "\\\n") && tools.CanonicalCommand(subject).Joined {
 			res.Reason += " (the command continues lines with backslash-newline; it was checked joined)"
 		}
 	}
 	return res
 }
 
-func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Result {
+func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage, line bool) Result {
 	key, subject, err := subjectOf(args)
 	if err != nil {
 		return Result{Decision: Deny, Reason: err.Error(), Scope: "", Step: "args"}
@@ -540,12 +578,23 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 		// Every step sees the command as written and as the shell splits it,
 		// continuations joined; an allow rule sees no more than the joined form.
 		canon = tools.CanonicalCommand(subject)
+		if line {
+			canon = canon.AsTerminalLine()
+		}
 		subjects, complete = commandSegments(subject)
 		narrowAllows = !hasShellControl(subject)
 		if canon.Text != subject {
 			more, whole := commandSegments(canon.Text)
 			subjects, complete = append(subjects, more...), complete && whole
 		}
+		// Under a changed IFS, deny and ask rules also read the words it splits.
+		if canon.IFS != "" {
+			more, whole := commandSegments(tools.IFSSplitText(canon.Text, canon.IFS))
+			subjects, complete = append(subjects, more...), complete && whole
+		}
+		// And the commands a bash parser finds, in function bodies and in the
+		// text eval, trap and -c run, read whole: their quoting is undone.
+		subjects = append(subjects, canon.Commands()...)
 		if canon.Joined && !canon.Reworded {
 			allowSubjects, narrowAllows = []string{canon.Text}, !hasShellControl(canon.Text)
 		}
@@ -614,22 +663,42 @@ func (e *Engine) evaluate(tool string, mutates bool, args json.RawMessage) Resul
 			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw}
 		}
 	}
+	// A program named by an expansion with an operator, ${x%/} or ${x//_/ },
+	// is edited at run time where no deny rule can read it, so it is refused.
+	if canon.ProgramHidden() && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the program is named by an expansion that edits its value, so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
+	if why := canon.Opaque(); why != "" && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the command runs text no rule can read (" + why + "), so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
+	if canon.Incomplete() && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the command is not complete (an open quote, block or heredoc, or a trailing | or &&), so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
+	if canon.Unparsed() && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the command cannot be parsed as the shell reads it, so it cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
 
-	// 2a. Plan mode changes nothing, so a mutating call is refused before
+	// 2a. Under a changed IFS an expansion's value splits into words no rule
+	// can read; a deny rule must hold in every mode, so this refuses, not asks.
+	if canon.IFSSplit && patterned(denyRules, tool) {
+		return Result{Decision: Deny, Reason: "the command changes IFS and then expands words, so they cannot be checked against the deny rules", Scope: "", Step: "screen"}
+	}
+
+	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
 	if e.Mode == ModePlan && mutates {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 	}
 
-	// 2b. Destructive commands always confirm, in every mode. There is no
+	// 2c. Destructive commands always confirm, in every mode. There is no
 	// undo for these, so no mode auto-approves them (docs P7, §06).
 	if tool == "bash" {
-		if what, destructive := tools.IsDestructive(subject); destructive {
+		if what, destructive := canon.DestructiveWith(e.GitExtensions); destructive {
 			return Result{Decision: Ask, Reason: fmt.Sprintf("%s — always requires confirmation", what), Scope: "", Step: "destructive"}
 		}
 	}
 
-	// 2c. A command too long or tangled to split in full may hide a part a
+	// 2d. A command too long or tangled to split in full may hide a part a
 	// deny or ask rule would match, so no mode or allow rule approves it.
 	if !complete && e.rulesSeeParts(tool) {
 		return Result{Decision: Ask, Reason: "the command is too long or complex to check each part against the rules", Scope: "", Step: "screen"}
@@ -709,8 +778,14 @@ var sessionControl = map[string]bool{"shell_kill": true, "task_cancel": true}
 
 // readOnlyReason is why a call that changes nothing outside the session is allowed.
 func readOnlyReason(tool string) string {
-	if sessionControl[tool] {
+	switch {
+	case sessionControl[tool]:
 		return "session control tool (stops this session's own background work)"
+	case tool == "task":
+		// It starts work, maybe in the background: "read-only" misdescribed it.
+		return "subagent tool (each call the subagent makes is decided on its own)"
+	case tool == "shell_output" || tool == "task_status":
+		return "session tool (reads this session's own background work)"
 	}
 	return "read-only tool"
 }

@@ -162,6 +162,9 @@ func (h *Host) onToolCall(ctx context.Context, sessionID, tool string, args json
 				out.Reason = why
 			}
 			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictAsk, Reason: why})
+		} else if reply.Reason != "" || reply.Log != "" {
+			// A hook that only explains itself is on the record, as for every other event.
+			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
 		}
 		if len(reply.Args) > 0 {
 			// A later extension sees the rewritten arguments, so a chain

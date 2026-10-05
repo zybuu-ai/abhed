@@ -232,6 +232,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	fmt.Printf("  workspace %s\n  model     %s\n  sandbox   %s\n  storage   %s\n",
 		workspace, provider.Model, sb.Tier(), serveStorageLabel(cfg))
 	fmt.Printf("  auth      %s\n", authLabel(cfg, authMW))
+	if line := managedLine(cfg); line != "" {
+		fmt.Printf("  managed   %s\n", line)
+	}
 	switch {
 	case docsite.Available():
 		fmt.Printf("  docs      %s/docs\n", browsableURL(addr))

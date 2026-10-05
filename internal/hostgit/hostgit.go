@@ -20,11 +20,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
 // safety switches off every setting known to name a program git would run
@@ -82,8 +86,55 @@ func (r *Repo) CommandWith(ctx context.Context, config [][2]string, env []string
 	}
 	all := append(append(append([][2]string(nil), safety...), r.drivers...), config...)
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", r.Dir}, args...)...) // #nosec G204 -- fixed binary, arguments from Abhed
+	place(cmd, r.Dir)
 	cmd.Env = append(append(Env(), configEnv(all)...), env...)
 	return cmd
+}
+
+// GitPath is the git that runs for dir: the one on PATH, with its links
+// followed. One inside dir, or in a folder sandboxed commands may write, is
+// refused: the agent could have put it there, and it would run on the host.
+func GitPath(dir string) (string, error) {
+	p, err := exec.LookPath("git")
+	if err != nil {
+		return "", err
+	}
+	real := sandbox.RealPath(p)
+	areas := append([]string{dir, repoRoot(dir)}, sandbox.WritableAreas()...)
+	for _, area := range areas {
+		if area == "" {
+			continue
+		}
+		for _, a := range sandbox.PathForms(area) {
+			if _, in := sandbox.Within(real, a); in {
+				return "", fmt.Errorf("the git on PATH (%s) is inside %s, which the agent's commands can write; "+
+					"Abhed runs no git from there. Put a system git first on PATH", real, a)
+			}
+		}
+	}
+	return p, nil
+}
+
+// repoRoot is the nearest folder at or above dir that holds a .git, or "".
+func repoRoot(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
+// place points cmd at GitPath(dir), or makes it fail to start with why.
+func place(cmd *exec.Cmd, dir string) {
+	p, err := GitPath(dir)
+	if err != nil {
+		cmd.Err = err
+		return
+	}
+	cmd.Path = p
 }
 
 // Command is New(ctx, dir).Command, for a single command.
@@ -120,6 +171,7 @@ func Env() []string {
 // repository's configuration names.
 func drivers(ctx context.Context, dir string) [][2]string {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "config", "--includes", "--name-only", "-z", "--get-regexp", `^(filter|merge)\.`) // #nosec G204 -- fixed arguments
+	place(cmd, dir)
 	cmd.Env = Env()
 	out, err := cmd.Output()
 	if err != nil {

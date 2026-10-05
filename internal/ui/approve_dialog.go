@@ -41,7 +41,10 @@ func (a *DialogApprover) Approve(ctx context.Context, tool string, args json.Raw
 	}
 
 	spec := a.spec(ctx, tool, args, res, header)
+	prev := a.Reader.attending()
+	a.Reader.Attend(AttnApproval)
 	id, err := a.Reader.Dialog(ctx, spec)
+	a.Reader.Attend(prev)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, ctx.Err()

@@ -176,12 +176,14 @@ func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 // LoadAgents loads the subagent definitions with the built-in roles: the
 // managed ones, the workspace's when ws says they are trusted, and the
 // operator's. One that does not load is reported, not fatal.
-func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, warn func(string, ...any)) *agent.Definitions {
+// session are definitions given for this run, already parsed.
+func LoadAgents(cfg config.Config, ws config.WorkspaceTrust, session []*agent.Definition, warn func(string, ...any)) *agent.Definitions {
 	o := agentdefs.Options{
 		ManagedDir: managed.AgentsDir,
 		Dirs:       AgentRoots(cfg),
 		Disabled:   cfg.Agents.Disabled,
 		Models:     OfferedModels(cfg),
+		Session:    session,
 	}
 	if ws.AgentsTrusted {
 		o.Workspace = ws.AgentFiles()
@@ -224,6 +226,11 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 					"a token k8s_login sends to it can be read by anyone in the path", c.Name)
 			}
 		}
+		// The kubeconfig's own setting, which doctor alone used to name.
+		if name, insecure := k8s.InsecureContext(k8s.Config{Kubeconfig: cfg.K8s.Kubeconfig, Context: cfg.K8s.Context}); insecure {
+			warn("the kubeconfig skips TLS verification for context %q — "+
+				"its credentials can be read by anyone in the path", name)
+		}
 		out = append(out, k8s.GetTool{M: mgr},
 			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames})
 		if cfg.K8s.AllowWrites {
@@ -251,7 +258,7 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg, Secret: secret})
+		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
 	}
 	return out
 }

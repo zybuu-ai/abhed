@@ -23,6 +23,9 @@ func TestPanicHelper(t *testing.T) {
 	if !l.Raw() {
 		os.Exit(3)
 	}
+	if os.Getenv("ABHED_UI_PANIC_HELPER") == "title" {
+		l.SetAttention(Attention{Title: true})
+	}
 	if os.Getenv("ABHED_UI_PANIC_HELPER") == "key" {
 		// The panic happens on the dock's own key reader, in a hotkey.
 		l.Hotkey("ctrl+t", func() { panic("boom from a goroutine") })
@@ -38,7 +41,7 @@ func TestPanicHelper(t *testing.T) {
 // A panic on any goroutine puts the terminal back before the program ends:
 // the modes it turned on are turned off.
 func TestPanicRestoresTheTerminal(t *testing.T) {
-	for _, mode := range []string{"goroutine", "key"} {
+	for _, mode := range []string{"goroutine", "key", "title"} {
 		t.Run(mode, func(t *testing.T) { panicRestores(t, mode) })
 	}
 }
@@ -71,6 +74,9 @@ func panicRestores(t *testing.T, mode string) {
 	on, off := strings.Index(got, modesOn), strings.LastIndex(got, modesOff)
 	if on < 0 || off < on {
 		t.Fatalf("the terminal was not restored after the panic:\n%q", got)
+	}
+	if mode == "title" && !strings.Contains(got[off:], "\x1b[23;0t") {
+		t.Fatalf("the title pushed was not popped after the panic:\n%q", got)
 	}
 	if !strings.Contains(got, "boom from a goroutine") {
 		t.Fatalf("the panic was swallowed:\n%q", got)

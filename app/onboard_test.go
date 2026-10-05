@@ -207,7 +207,7 @@ func TestEndpointModelNamesAreEscaped(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, out := endpointWith(t, srv.URL+"\n\ngood\n")
-	if strings.ContainsAny(out, "\x1b\x07\u202e") || !strings.Contains(out, `evil\u001b`) {
+	if strings.ContainsAny(out, "\x1b\x07\u202e") || !strings.Contains(out, "evil⟨\\e⟩") {
 		t.Fatalf("%q", out)
 	}
 }

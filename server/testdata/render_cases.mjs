@@ -50,6 +50,20 @@ const bgOk = bgText.includes('scan logs finished (completed, 3 turns)') && bgTex
   bgText.includes('background work finished') && tx.querySelectorAll('.said.user').length === 0;
 console.log((bgOk ? 'PASS' : 'FAIL') + '  a background result, a wake and the closing end are drawn as such');
 ok = bgOk && ok;
+// A woken turn's reply is drawn below the notice it answers, which the record puts first.
+tx.childNodes.length = 0; turnEl = null; live = false;
+render({seq:133, type:'shell.started', payload:{shell_id:'sh_7', description:'watch the build', command:'make watch'}});
+render({seq:134, type:'shell.ended', payload:{shell_id:'sh_7', state:'exited', exit_code:0}});
+render({seq:135, type:'session.woken', payload:{by:'policy', task_ids:['sh_7']}});
+render({seq:136, type:'subagent.notice', payload:{task_id:'sh_7', description:'watch the build', status:'completed', content:'built'}});
+render({seq:137, type:'agent.message', payload:{text:'The build passed.'}});
+const order = tx.textContent, at = s => order.indexOf(s);
+const wokeOk = at('continuing with results from watch the build') >= 0 && at('built') > at('continuing with results') && at('The build passed.') > at('built');
+console.log((wokeOk ? 'PASS' : 'FAIL') + '  a woken turn names the shell, and its reply follows the notice');
+ok = wokeOk && ok;
+const shellOk = order.includes('background shell started: watch the build') && order.includes('background shell watch the build exited 0');
+console.log((shellOk ? 'PASS' : 'FAIL') + '  a background shell\'s start and end are drawn');
+ok = shellOk && ok;
 // Background text is the model's or a command's: bidi and zero-width characters are written out.
 const RLO = String.fromCharCode(0x202e), ZW = String.fromCharCode(0x200b);
 tx.childNodes.length = 0; turnEl = null;

@@ -229,6 +229,9 @@ func TestCLIIdleLineIsAPromptUnlessADecision(t *testing.T) {
 	}
 	_, _ = io.WriteString(in, "go\n")
 	waitOut("answer 1-")
+	// "yes" alone is an attempt at the answer: asked again, and not sent on.
+	_, _ = io.WriteString(in, "yes\n")
+	waitOut(`"yes" was not sent to the agent`)
 	_, _ = io.WriteString(in, "yes please, and check the logs\n")
 	waitOut("an approval is still waiting")
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
@@ -241,6 +244,9 @@ func TestCLIIdleLineIsAPromptUnlessADecision(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "made-by-child.txt")); err == nil {
 		t.Fatal("a line that is not a decision key answered the ask")
+	}
+	if _, ok := m.prompted.Load("yes"); ok {
+		t.Fatal(`"yes" was sent to the model as a prompt`)
 	}
 	_, _ = io.WriteString(in, "1\n")
 	_ = in.Close()
@@ -343,5 +349,63 @@ func TestTurnRunsOnForAQueuedSteer(t *testing.T) {
 		if got := runsOnFor(c.ctx, c.o, c.queued); got != c.want {
 			t.Errorf("%s: runs on %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// A message typed during a run after a queued command is not steering that
+// jumps the command: it waits, and is sent as the next prompt once the
+// command has run, in the order typed.
+func TestCLIMessageAfterAQueuedCommandWaitsForIt(t *testing.T) {
+	m := &bgModelServer{parentCommand: "touch made-by-parent.txt"}
+	ws := bgWorkspace(t, m.start(t), "")
+	cmd := mainHelper([]string{"-C", ws})
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out syncBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	waitOut := func(what string) {
+		t.Helper()
+		for deadline := time.Now().Add(20 * time.Second); !strings.Contains(out.String(), what); time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("never saw %q:\n%s", what, out.String())
+			}
+		}
+	}
+	_, _ = io.WriteString(in, "run it\n")
+	waitOut("answer 1-")
+	_, _ = io.WriteString(in, "/mode plan\n")
+	waitOut("queued /mode plan")
+	_, _ = io.WriteString(in, "now keep it short\n")
+	waitOut("queued after /mode plan")
+	if strings.Contains(out.String(), "it steers the run") {
+		t.Fatalf("the message steered the run:\n%s", out.String())
+	}
+	_, _ = io.WriteString(in, "1\n")
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok := m.prompted.Load("now keep it short"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the held message was never sent:\n%s", out.String())
+		}
+	}
+	_ = in.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("never exited:\n%s", out.String())
+	}
+	o := out.String()
+	mode, msg := strings.LastIndex(o, "/mode plan\n"), strings.LastIndex(o, "now keep it short\n")
+	if mode < 0 || msg < 0 || mode > msg {
+		t.Fatalf("the command did not run before the message:\n%s", o)
 	}
 }

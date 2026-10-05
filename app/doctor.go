@@ -49,6 +49,9 @@ func (a *App) doctor(workspace string) int {
 	fmt.Printf("endpoint    %s\n", provider.BaseURL)
 	fmt.Printf("model       %s\n", provider.Model)
 	fmt.Printf("mode        %s\n", orDefault(cfg.Permissions.Mode, "default"))
+	if line := managedLine(cfg); line != "" {
+		fmt.Printf("managed     %s\n", line)
+	}
 	printDoctorTrust(os.Stdout, cfg.Workspace)
 	// A managed definition named with another case is silently not read.
 	for _, w := range agentdefs.ManagedCaseWarnings(managed.AgentsDir) {
@@ -72,6 +75,7 @@ func (a *App) doctor(workspace string) int {
 	}
 	if mw, err := a.buildAuth(context.Background(), cfg, workspace); err != nil {
 		fmt.Printf("auth        %s\n            UNAVAILABLE — %v\n", authLabel(cfg, nil), err)
+		findings.authDown = true
 	} else {
 		fmt.Printf("auth        %s\n", authLabel(cfg, mw))
 		// A provider that can prove itself does so here, so a misconfigured
@@ -137,17 +141,21 @@ func (a *App) doctor(workspace string) int {
 			fmt.Printf("rag corpus  %s → %s\n", c.Name, c.URL)
 		}
 	}
-	fmt.Printf("storage     %s\n", storageLabel(cfg))
 	if cfg.Storage.Driver == "postgres" {
+		fmt.Printf("storage     %s\n", storageLabel(cfg))
 		st, closeFn, err := openStore(context.Background(), cfg)
 		if err != nil {
 			fmt.Printf("            UNAVAILABLE — %v\n", err)
+			findings.storeDown = true
 		} else {
 			if pg, ok := st.(*store.Postgres); ok {
 				printStoreStatus(pg)
 			}
 			closeFn()
 		}
+	} else {
+		// serve keeps sessions in memory; the command line keeps its own record.
+		fmt.Printf("storage     %s for serve\n            %s for the command line\n", serveStorageLabel(cfg), storageLabel(cfg))
 	}
 	if cfg.Retrieval.Enabled {
 		if ix, err := toolset.OpenIndex(context.Background(), cfg, workspace); err == nil {
@@ -170,6 +178,13 @@ func (a *App) doctor(workspace string) int {
 	}
 	fmt.Println()
 
+	// The workspace named a model that waits for trust: the default in its
+	// place is not what this workspace would use, so it is not probed.
+	if modelAwaitsTrust(cfg) {
+		fmt.Println("endpoint    not probed: this workspace's model settings wait for trust, and the default in their place is not what it would use")
+		fmt.Println("\nReview the workspace configuration with `abhed trust`, then run `abhed doctor` again.")
+		return 1
+	}
 	adapter := buildAdapter(provider)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -296,6 +311,9 @@ type configCheck struct {
 	// unknown is a key nothing reads; notInEffect a key this version reads
 	// but does not act on yet.
 	unknown, notInEffect bool
+	// storeDown and authDown report an event store or sign-in doctor could
+	// not open, as before `abhed migrate`.
+	storeDown, authDown bool
 }
 
 // configFindings lists both kinds of key and reports which there were.
@@ -308,11 +326,22 @@ func configFindings(w io.Writer, cfg config.Config) configCheck {
 // configuration has keys nothing reads, or keys this version does not act
 // on yet. Each is said as what it is.
 func doctorVerdict(w io.Writer, f configCheck) int {
-	if !f.unknown && !f.notInEffect {
+	if f == (configCheck{}) {
 		fmt.Fprintln(w, "\nReady.")
 		return 0
 	}
 	fmt.Fprintln(w)
+	var down []string
+	if f.storeDown {
+		down = append(down, "the event store")
+	}
+	if f.authDown {
+		down = append(down, "sign-in")
+	}
+	if len(down) > 0 {
+		fmt.Fprintf(w, "Not ready: %s could not be opened (see above). If the database has no Abhed schema yet, run `abhed migrate`.\n",
+			strings.Join(down, " and "))
+	}
 	if f.unknown {
 		fmt.Fprintln(w, "Not ready: the configuration has keys nothing reads (listed above). Correct or remove them.")
 	}
@@ -347,4 +376,28 @@ func printUnknown(w io.Writer, cfg config.Config) bool {
 		fmt.Fprintf(w, "%s%s  ⚠\n", label, u)
 	}
 	return len(cfg.Unknown) > 0
+}
+
+// modelAwaitsTrust reports an untrusted workspace that sets the model while
+// no trusted file or ABHED_BASE_URL does.
+func modelAwaitsTrust(cfg config.Config) bool {
+	if cfg.Sets("model") || os.Getenv("ABHED_BASE_URL") != "" {
+		return false
+	}
+	for _, k := range cfg.Workspace.Ignored {
+		if k.Key == "model" || strings.HasPrefix(k.Key, "model.") {
+			return true
+		}
+	}
+	return false
+}
+
+// managedLine names the managed file in force and how much it sets, for the
+// doctor and the serve banner, so an operator knows where a locked setting
+// comes from; "" with none.
+func managedLine(cfg config.Config) string {
+	if !cfg.Managed {
+		return ""
+	}
+	return fmt.Sprintf("%s (sets %d setting(s))", config.Printable(managed.ConfigFile), len(cfg.ManagedKeys))
 }

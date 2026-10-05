@@ -570,3 +570,28 @@ func apiMessage(data []byte) string {
 	}
 	return s
 }
+
+// InsecureContext reports whether the kubeconfig the config names skips TLS
+// verification for the cluster of the context in use, and names that
+// context. It only reads the file: nothing is run and nothing is reached.
+func InsecureContext(cfg Config) (string, bool) {
+	kc, _, err := loadKubeconfig(cfg)
+	if err != nil {
+		return "", false
+	}
+	ctxName := cfg.Context
+	if ctxName == "" {
+		ctxName = kc.CurrentContext
+	}
+	for _, c := range kc.Contexts {
+		if c.Name != ctxName {
+			continue
+		}
+		for _, cl := range kc.Clusters {
+			if cl.Name == c.Cluster {
+				return ctxName, cl.InsecureSkipTLSVerify
+			}
+		}
+	}
+	return ctxName, false
+}

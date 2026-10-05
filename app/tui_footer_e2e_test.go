@@ -4,6 +4,7 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,4 +114,70 @@ func TestTUIStatusLineIsSanitized(t *testing.T) {
 	if !strings.Contains(wire, "32mok") {
 		t.Fatalf("the status line's colour was lost")
 	}
+}
+
+// /review runs its turn in plan mode and puts the earlier mode back when the
+// turn ends; the footer shows the mode put back, as the record and /status do.
+func TestTUIFooterAfterReviewShowsTheModePutBack(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	stub, ws := tuiWorkspace(t, "")
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"commit", "-q", "-m", "one"}} {
+		cmd := exec.Command("git", append([]string{"-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = ws
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "hello.txt"), []byte("hello world\nREVIEW-MARK\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// /review runs git where commands run, and the container image has none,
+	// so the session gets a PATH, inside the sandbox's view, with no engine.
+	t.Setenv("PATH", pathWithout(t, ws, "docker", "podman", "nerdctl"))
+	r := startTUI(t, stub, ws, 120, 30)
+	r.waitFor("the footer", false, func(s string) bool { return strings.Contains(s, "● default mode") })
+	r.send("!git --version\r")
+	r.waitFor("whether the session has git", true, func(s string) bool {
+		return strings.Contains(s, "git version") || strings.Contains(s, "Exit 127")
+	})
+	if !strings.Contains(r.term.All(), "git version") {
+		t.Fatalf("git does not run where the session runs commands, so /review cannot:\n%s", r.term.All())
+	}
+	r.send("/review\r")
+	r.waitFor("the mode put back", true, func(s string) bool { return strings.Contains(s, "mode: plan → default") })
+	r.drawn(200 * time.Millisecond)
+	r.waitFor("default mode in the footer", false, func(string) bool {
+		f := footerRows(r)
+		return strings.Contains(f, "● default mode") && !strings.Contains(f, "plan mode")
+	})
+}
+
+// pathWithout is a PATH of links, in the git workspace ws, to every program
+// on PATH but the named ones.
+func pathWithout(t *testing.T, ws string, names ...string) string {
+	t.Helper()
+	skip := map[string]bool{}
+	for _, n := range names {
+		skip[n] = true
+	}
+	dir := filepath.Join(ws, ".bin")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".git", "info", "exclude"), []byte(".bin/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, _ := os.ReadDir(d)
+		for _, e := range entries {
+			if skip[e.Name()] {
+				continue
+			}
+			// The first program of a name on PATH wins, as a lookup would.
+			_ = os.Symlink(filepath.Join(d, e.Name()), filepath.Join(dir, e.Name()))
+		}
+	}
+	return dir
 }
