@@ -17,6 +17,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/server"
 )
@@ -125,6 +126,17 @@ func (s *Scripted) Calls() int {
 // agent starts commands and changes files.
 func WithShellAndWrite(o *server.Options) {
 	o.Registry = tools.NewRegistry(tools.Read{}, tools.Glob{}, tools.Bash{}, tools.Write{})
+}
+
+// WithSecrets gives the tools and the record the secrets store at path, as a
+// served deployment's are: bash offers its names and reads its values, and
+// the record is redacted with it. It follows WithShellAndWrite.
+func WithSecrets(path string) func(*server.Options) {
+	return func(o *server.Options) {
+		v := secrets.Open(path)
+		o.Registry = tools.BindStores(o.Registry, v)
+		o.Redact = v.Live()
+	}
 }
 
 // Event is one event a session recorded, as Events keeps it.

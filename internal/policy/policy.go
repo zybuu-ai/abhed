@@ -264,6 +264,9 @@ func hasNonASCII(s string) bool {
 
 func (r Rule) String() string { return r.raw }
 
+// Tool is the tool name the rule is for, "*" for any.
+func (r Rule) Tool() string { return r.tool }
+
 // named is how a reason names the rule: a session rule says so.
 func (r Rule) named() string {
 	if r.session {

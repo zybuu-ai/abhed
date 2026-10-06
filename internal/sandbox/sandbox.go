@@ -36,8 +36,8 @@ const (
 	// TierContainer runs in an OCI container: namespace isolation, shared
 	// kernel. Not sufficient for genuinely hostile code.
 	TierContainer Tier = "container"
-	// TierVM runs in a microVM (Firecracker/Kata) or gVisor's userspace kernel:
-	// a hardware or syscall-interception boundary. Abhed's production default.
+	// TierVM runs in a container under gVisor (runsc), a user-space kernel that
+	// intercepts system calls. Not a microVM; the name is kept for compatibility.
 	TierVM Tier = "vm"
 )
 

@@ -226,11 +226,11 @@ func TestSelectRefusesToDowngrade(t *testing.T) {
 
 	s, err := Select(p)
 	if err == nil {
-		// Only acceptable if a genuine VM-tier backend exists here.
+		// Only acceptable if a vm-tier (gVisor) backend exists here.
 		if s.Tier().Strength() < TierVM.Strength() {
 			t.Fatalf("Select returned %s below required %s", s.Tier(), TierVM)
 		}
-		t.Logf("VM-tier backend available: %s", s.Describe())
+		t.Logf("vm-tier backend available: %s", s.Describe())
 		return
 	}
 	if !strings.Contains(err.Error(), "min_tier") {

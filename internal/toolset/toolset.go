@@ -396,10 +396,4 @@ func SkillTool(reg *skills.Registry) skills.Tool {
 
 // VaultNames lists what the model may ask for. An unreadable store lists
 // nothing: the failure surfaces when a secret is used, with its reason.
-func VaultNames(v *secrets.Store) []string {
-	names, err := v.Names()
-	if err != nil {
-		return nil
-	}
-	return names
-}
+func VaultNames(v *secrets.Store) []string { return v.Offered() }

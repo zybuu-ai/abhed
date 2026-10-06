@@ -30,10 +30,23 @@ var validName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 // ValidName reports whether name is one a secret can be stored under.
 func ValidName(name string) bool { return validName.MatchString(name) }
 
-// Store is a file of named values, readable by its owner only.
+// Store is a file of named values, readable by its owner only. Every Store
+// opened on one path in this process shares one lock, so a server that opens
+// a store per request cannot lose one write to another.
 type Store struct {
 	path string
-	mu   sync.Mutex
+	mu   *sync.Mutex
+}
+
+var pathLocks sync.Map // cleaned absolute path -> *sync.Mutex
+
+func lockFor(path string) *sync.Mutex {
+	key := filepath.Clean(path)
+	if abs, err := filepath.Abs(path); err == nil {
+		key = abs
+	}
+	mu, _ := pathLocks.LoadOrStore(key, new(sync.Mutex))
+	return mu.(*sync.Mutex)
 }
 
 // DefaultPath is $ABHED_SECRETS_FILE, else ~/.abhed/secrets.json: outside any
@@ -49,7 +62,24 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".abhed", "secrets.json"), nil
 }
 
-func Open(path string) *Store { return &Store{path: path} }
+func Open(path string) *Store { return &Store{path: path, mu: lockFor(path)} }
+
+// EnvAccountsDir names the environment variable that overrides AccountsDir.
+const EnvAccountsDir = "ABHED_ACCOUNT_SECRETS_DIR"
+
+// AccountsDir is where a server that keeps a store per account keeps them:
+// $ABHED_ACCOUNT_SECRETS_DIR, else beside the operator's store, as secrets.d.
+// It is state, refused to the agent's tools and sandbox like the store itself.
+func AccountsDir() (string, error) {
+	if p := os.Getenv(EnvAccountsDir); p != "" {
+		return p, nil
+	}
+	p, err := DefaultPath()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(p, filepath.Ext(p)) + ".d", nil
+}
 
 // Default opens the store at DefaultPath, the one the CLI uses. A path that
 // cannot be worked out names a file that never exists, so the store is empty.
@@ -127,8 +157,19 @@ func (s *Store) save(m map[string]string) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	// A temporary name of its own (CreateTemp makes it 0600), so no other
+	// writer can truncate it.
+	f, err := os.CreateTemp(filepath.Dir(s.path), "."+filepath.Base(s.path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }() // gone after the rename; left by a failure
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path)
@@ -178,6 +219,16 @@ func (s *Store) Names() ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// Offered lists what is stored, or nothing when the store cannot be read: a
+// use of a name then reports why.
+func (s *Store) Offered() []string {
+	names, err := s.Names()
+	if err != nil {
+		return nil
+	}
+	return names
 }
 
 // Env returns NAME=value pairs for the named secrets, for one command's
@@ -371,6 +422,47 @@ func (f *Fresh) FindSent(text string) (string, bool) { return f.Current().FindSe
 
 // FindInPath is Current().FindInPath.
 func (f *Fresh) FindInPath(path string) (string, bool) { return f.Current().FindInPath(path) }
+
+// Current is r itself, so a fixed reading can be joined with Fresh ones.
+func (r *Redactor) Current() *Redactor { return r }
+
+// Joined redacts with the values of all its parts as one redactor, each read
+// as it is at the call; any part that cannot be loaded withholds every payload.
+type Joined []interface{ Current() *Redactor }
+
+// Current is the union of every part's values now.
+func (j Joined) Current() *Redactor {
+	r := &Redactor{}
+	for _, p := range j {
+		c := p.Current()
+		if c == nil || c.broken {
+			return Withholding()
+		}
+		r = c.union(r)
+	}
+	return r
+}
+
+// Redact is Current().Redact.
+func (j Joined) Redact(b []byte) []byte { return j.Current().Redact(b) }
+
+// Span is Current().Span.
+func (j Joined) Span() int { return j.Current().Span() }
+
+// Names is Current().Names.
+func (j Joined) Names() []string { return j.Current().Names() }
+
+// Pending is Current().Pending.
+func (j Joined) Pending(s string) int { return j.Current().Pending(s) }
+
+// Partial is Current().Partial.
+func (j Joined) Partial(s string) int { return j.Current().Partial(s) }
+
+// FindSent is Current().FindSent.
+func (j Joined) FindSent(text string) (string, bool) { return j.Current().FindSent(text) }
+
+// FindInPath is Current().FindInPath.
+func (j Joined) FindInPath(path string) (string, bool) { return j.Current().FindInPath(path) }
 
 // Withholding returns a redactor that withholds every payload.
 func Withholding() *Redactor { return &Redactor{broken: true} }

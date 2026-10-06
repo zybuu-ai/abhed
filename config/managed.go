@@ -325,6 +325,7 @@ const (
 	LayerWorkspace = "workspace"
 	LayerManaged   = "managed"
 	LayerFlag      = "flag"
+	LayerEnv       = "env" // an ABHED_* variable
 )
 
 // noteRuleLayer credits the permission rules and extensions not yet

@@ -433,7 +433,7 @@ send SIGKILL, and accept that turns still running then record no end.
 
 With `auth.mode` set to `local` and no database, accounts live in a file:
 `<workspace>/.abhed/users.json` by default, or wherever `auth.users_file`
-points (`ABHED_USERS_FILE` overrides it). A server deployment sets it to a
+points (`ABHED_USERS_FILE` overrides it unless the managed file sets it). A server deployment sets it to a
 directory outside every workspace, so accounts never sit in a tree an agent
 is pointed at. With Postgres, accounts are rows and the file is not used.
 `abhed user add`, `passwd` and `import` refuse a `users_file` that `serve`
@@ -493,7 +493,7 @@ Later sources win, except that an org-managed file cannot be overridden:
 1. built-in defaults
 2. `~/.abhed/config.json`
 3. `.abhed/config.json` in the workspace
-4. environment (`ABHED_DATABASE_URL` and similar)
+4. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
 5. command-line flags
 6. **managed settings**, which nothing below can loosen
 
@@ -556,10 +556,29 @@ A managed file that exists but cannot be read, including one in a directory
 that cannot be searched, or a link at the managed path that points nowhere,
 is an error: Abhed stops rather than run unmanaged.
 
-The environment variables in step 4 still apply over the managed file: they
-name a deployment's endpoint and credentials, which whoever runs the process
-controls. Nor is the model: `-model` and the console's picker choose among the
-providers any file defines, and the SDK's `Provider` names any endpoint.
+The environment variables in step 4 never change a setting the managed file
+makes. Each one is ignored where the managed file sets its key, and Abhed
+warns at startup naming the key, without the value:
+
+| Variable | Setting it changes |
+|---|---|
+| `ABHED_BASE_URL` | `model.providers.<default>.base_url` |
+| `ABHED_MODEL` | `model.providers.<default>.model` |
+| `ABHED_API_KEY` | `model.providers.<default>.api_key` |
+| `ABHED_DATABASE_URL` | `storage.dsn`, and `storage.driver` to `postgres` when it is `memory` |
+| `ABHED_MIGRATE_DATABASE_URL` | `storage.migrate_dsn` |
+| `ABHED_USERS_FILE` | `auth.users_file` |
+
+A managed provider entry under `model.providers` binds every field of it,
+those it leaves out included, since the entry is one setting. Where the
+managed file does not set the key, the variable applies as before, over the
+user's and workspace's files. An administrator who means to pin the endpoint
+sets the provider in the managed file; one who sets only `model.default` leaves
+that provider's endpoint to the lower files and the environment.
+
+The model is not pinned by the managed file alone: `-model` and the console's
+picker choose among the providers any file defines, and the SDK's `Provider`
+names any endpoint.
 An editor over `abhed acp` and the SDK's `SwitchModelNamed` are the
 exception: a managed `model.default` pins them to that model.
 

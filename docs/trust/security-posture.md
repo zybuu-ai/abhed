@@ -16,7 +16,7 @@ whose strength is explicit and self-reporting (`internal/sandbox/sandbox.go`):
 | `none` | Runs directly on the host | Suitable only for a trusted single-user local run |
 | `process` | Process-level confinement: macOS `sandbox-exec`; on Linux, bubblewrap with its own PID, IPC, UTS and (with no network) network namespaces and a read-only view of the system. No seccomp filter or Landlock ruleset is applied | The minimum to set on any shared server: `sandbox.min_tier: "process"` |
 | `container` | OCI container: namespace isolation, shared kernel | |
-| `vm` | microVM or gVisor userspace kernel | Strongest tier implemented |
+| `vm` | gVisor (`runsc`): a user-space kernel that intercepts system calls, run as a container runtime. Not a microVM; the name is kept for compatibility | Strongest tier implemented |
 
 `Select` (`internal/sandbox/sandbox.go`) picks the strongest backend
 available that meets the configured `MinTier`, and **refuses to start** if
@@ -169,7 +169,7 @@ a writable folder, which the operator writes; and on the `none` tier, or in a
 container that mounts the home directory, the run can write the global
 configuration and `~/.abhed/push`, and the push is not refused.
 
-The container and VM tiers mount an empty, throwaway folder over the
+The `container` and `vm` tiers mount an empty, throwaway folder over the
 workspace's `.abhed/`, as bubblewrap does, and hide a configured state path
 that the workspace or a read-only directory would show: a folder behind an
 empty one, a file behind `/dev/null`. Where the workspace's disk ignores

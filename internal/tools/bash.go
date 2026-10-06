@@ -35,12 +35,12 @@ const (
 
 // Bash runs a shell command in the session workspace.
 //
-// In production this executes inside the session microVM (docs §03-security).
+// It executes inside the configured sandbox tier (docs §03-security).
 // The guards here are defense in depth, not the boundary: they catch the
 // obvious footguns early and give the model a useful message, but isolation is
 // what actually contains a hostile command.
 type Bash struct {
-	// Sandbox, when set, wraps the command (e.g. a microVM or container exec).
+	// Sandbox, when set, wraps the command (e.g. a bubblewrap, container or gVisor exec).
 	// Nil means direct execution, which is only appropriate for local dev.
 	Sandbox func(ctx context.Context, cwd, command string) *exec.Cmd
 	// Secrets resolves names the model asked for into NAME=value pairs for

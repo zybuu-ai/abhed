@@ -267,7 +267,7 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
 ```
 
 **Semantics**
-- Runs inside the session microVM (§03-security I3). Never on the host.
+- Runs inside the configured sandbox tier (§03-security); on `vm` that is gVisor (I2), not a microVM.
 - **Only a call that is just `cd <folder>` carries its directory to the next call**;
   a cd inside a longer command, and shell state (env vars, functions), do **not** — each
   call is a fresh shell. Document this explicitly: models assume otherwise and it causes

@@ -6,6 +6,69 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- The `ABHED_BASE_URL`, `ABHED_MODEL`, `ABHED_API_KEY`, `ABHED_DATABASE_URL`,
+  `ABHED_MIGRATE_DATABASE_URL` and `ABHED_USERS_FILE` variables were applied
+  after the managed `/etc/abhed/config.json`, so anyone who could set the
+  process's environment could move a managed model endpoint, model name, key,
+  database or users file. A setting the managed file makes now wins: the
+  variable is ignored and Abhed warns at startup naming the setting. The
+  variables still apply to settings the managed file leaves alone. This
+  covers the CLI, `-p`, `abhed serve`, `abhed acp` and an SDK agent built
+  with `ConfigDir`.
+
+### Upgrading
+
+- A managed deployment that relied on one of those `ABHED_*` variables to
+  change a setting its managed `/etc/abhed/config.json` also makes now gets
+  the managed value, with a startup warning naming the setting. Move the
+  value into the managed file, or remove that key from the managed file so
+  the variable applies again.
+
+### Go API
+
+All additive; the `sdk` package is unchanged.
+
+- `config`: `LayerEnv`, and `Config.SetAside` gains an entry for each
+  variable left out this way, with `Layer` set to `LayerEnv` and `File` set
+  to the variable's name rather than a path.
+
+### Added
+
+- `server.Options.SecretsFor` gives each session the secrets store of the
+  account it runs as: bash, `k8s_login`, `ssh_connect`, `web_fetch` and
+  `web_search` read that store alone, and the session's record is redacted
+  with it and with the operator's store, so operator values stay redacted as
+  before. An account whose store cannot be loaded starts no session. Nil
+  keeps one store for every session, as before. The `secretstore` package
+  opens a store from outside this module, and `servertest.WithSecrets` builds
+  a test server whose tools read one.
+- Per-account stores have a guarded home, `~/.abhed/secrets.d`
+  (`ABHED_ACCOUNT_SECRETS_DIR` overrides), refused to the agent's tools and
+  sandbox as the operator's store is.
+- `abhed serve` with local, proxy or OIDC authentication and one store for
+  every account warns at startup when an allow rule lets a session name a
+  secret (`secret(...)`, `secret` or `*`), naming the rules: every account
+  can use, and by transforming the value read, each secret they name.
+
+### Fixed
+
+- Two writes to one secrets store at the same time shared a temporary file,
+  so one could be lost or leave the store unreadable. Each write now has a
+  temporary file of its own, and writes to one store in a process take turns.
+
+### Documentation
+
+- The `vm` sandbox tier was described as a microVM in code comments and
+  docs. It is gVisor (`runsc`): a user-space kernel that intercepts system
+  calls, run as a container runtime. The tier name and its config values are
+  unchanged.
+- The permissions guide says plainly that on a Community server several
+  accounts sign in to, any account can use, and by transforming the value
+  read, every secret an allow rule names; a person who must not see
+  another's secrets needs a server of their own.
+
 ## [1.2.4] - 2026-10-05
 
 ### Security

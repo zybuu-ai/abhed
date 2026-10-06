@@ -96,6 +96,13 @@ func (*Tool) Mutates() bool { return false }
 // FixedArgs: the arguments are exactly the schema's properties.
 func (*Tool) FixedArgs() {}
 
+// BindStore is a copy refusing URLs that hold a value stored in v instead.
+func (t *Tool) BindStore(v *secrets.Store) tools.Tool {
+	// Every field but the call count, which is the copy's own.
+	return &Tool{AllowedHosts: t.AllowedHosts, Secrets: v.LoadRedactor, MaxBytes: t.MaxBytes,
+		MaxChars: t.MaxChars, Timeout: t.Timeout, lookup: t.lookup, permit: t.permit}
+}
+
 func (t *Tool) Description() string {
 	d := "Read a web page: fetches one http(s) URL through Abhed, not the shell, and " +
 		"returns its text. Use it for a URL the user gives, a search result whose " +

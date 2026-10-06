@@ -965,6 +965,12 @@ type LoginTool struct {
 
 func (LoginTool) Name() string { return "k8s_login" }
 
+// BindStore is the tool reading tokens from v instead.
+func (t LoginTool) BindStore(v *secrets.Store) tools.Tool {
+	t.Secret, t.SecretNames = v.Value, v.Offered()
+	return t
+}
+
 // Mutates is true. Nothing in the cluster changes, but the agent's authority
 // does: this is the call that decides which cluster it can reach and as whom.
 // That deserves the same confirmation as a write.

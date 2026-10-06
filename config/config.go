@@ -190,7 +190,7 @@ type SetAsideKey struct {
 	File string
 	// Layer is the layer the file was read as (user, settings or workspace),
 	// where it is known: the user's file and a home-folder workspace's are
-	// the same path.
+	// the same path. For env, File is the variable's name.
 	Layer string
 	Key   string
 	// Value is the entry left out of a list, such as one allow rule; empty
@@ -448,7 +448,7 @@ type AuthConfig struct {
 	// UsersFile is where local accounts are kept when there is no database.
 	// Empty means <workspace>/.abhed/users.json; a deployment sets it to a
 	// path outside every workspace, such as its state directory.
-	// ABHED_USERS_FILE overrides it.
+	// ABHED_USERS_FILE overrides it, unless the managed file sets it.
 	UsersFile   string `json:"users_file,omitempty"`
 	Issuer      string `json:"issuer,omitempty"`
 	Audience    string `json:"audience,omitempty"`
@@ -1012,36 +1012,50 @@ func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 }
 
 // applyEnv lets a deployment override the endpoint without editing files,
-// which is what container and CI environments need.
+// which is what container and CI environments need. It runs after the
+// managed file, so it never changes a setting that file makes: the value is
+// ignored and the warning names the setting.
 func applyEnv(cfg *Config) {
 	name := cfg.Model.Default
-	p, found := cfg.Model.Providers[name]
-	if !found {
-		return
+	if p, found := cfg.Model.Providers[name]; found {
+		key := "model.providers." + name
+		envSet(cfg, "ABHED_BASE_URL", key+".base_url", &p.BaseURL)
+		envSet(cfg, "ABHED_MODEL", key+".model", &p.Model)
+		envSet(cfg, "ABHED_API_KEY", key+".api_key", &p.APIKey)
+		cfg.Model.Providers[name] = p
 	}
-	if v := os.Getenv("ABHED_BASE_URL"); v != "" {
-		p.BaseURL = v
-	}
-	if v := os.Getenv("ABHED_MODEL"); v != "" {
-		p.Model = v
-	}
-	if v := os.Getenv("ABHED_API_KEY"); v != "" {
-		p.APIKey = v
-	}
-	cfg.Model.Providers[name] = p
-
-	if v := os.Getenv("ABHED_MIGRATE_DATABASE_URL"); v != "" {
-		cfg.Storage.MigrateDSN = v
-	}
-	if v := os.Getenv("ABHED_USERS_FILE"); v != "" {
-		cfg.Auth.UsersFile = v
-	}
-	if v := os.Getenv("ABHED_DATABASE_URL"); v != "" {
-		cfg.Storage.DSN = v
-		if cfg.Storage.Driver == "" || cfg.Storage.Driver == "memory" {
+	envSet(cfg, "ABHED_MIGRATE_DATABASE_URL", "storage.migrate_dsn", &cfg.Storage.MigrateDSN)
+	envSet(cfg, "ABHED_USERS_FILE", "auth.users_file", &cfg.Auth.UsersFile)
+	if envSet(cfg, "ABHED_DATABASE_URL", "storage.dsn", &cfg.Storage.DSN) &&
+		(cfg.Storage.Driver == "" || cfg.Storage.Driver == "memory") {
+		if cfg.ManagedSets("storage.driver") {
+			envRefused(cfg, "ABHED_DATABASE_URL", "storage.driver")
+		} else {
 			cfg.Storage.Driver = "postgres"
 		}
 	}
+}
+
+// envSet sets *dst from the variable env unless the managed configuration
+// makes key, and reports whether it did.
+func envSet(cfg *Config, env, key string, dst *string) bool {
+	v := os.Getenv(env)
+	if v == "" {
+		return false
+	}
+	if cfg.ManagedSets(key) {
+		envRefused(cfg, env, key)
+		return false
+	}
+	*dst = v
+	return true
+}
+
+// envRefused notes a variable left out because the managed file makes key.
+// The value is not kept: it may be a key or a password.
+func envRefused(cfg *Config, env, key string) {
+	cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: env, Layer: LayerEnv, Key: key,
+		Reason: "the managed configuration sets it, and the environment may not change it"})
 }
 
 // Provider returns the active provider with its API key resolved.

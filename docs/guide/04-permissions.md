@@ -565,7 +565,7 @@ directories, temp folders and toolchain caches — or under the workspace's or
 the home directory's `.abhed/` (a real folder, not a link elsewhere): Abhed
 refuses to start otherwise, because a command could move a folder above it.
 
-On the container and VM tiers, an empty folder is mounted over the
+On the container and vm tiers, an empty folder is mounted over the
 workspace's `.abhed/` and a configured state path inside a mount, and
 `/dev/null` over a state file, so commands can neither read nor write them.
 
@@ -700,6 +700,20 @@ password as `password_secret`, and use it for that session's login only.
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.
+
+On a Community server that several accounts sign in to (local, proxy or OIDC
+authentication), every account shares the operator's one store. Any account
+can then use every secret an allow rule names, and can read it too: redaction
+hides the stored value, not a command that prints it reversed, encoded or
+split. The server logs a warning at startup when it finds such a rule. Give
+each person who must not see another's secrets their own server.
+
+A server embedding Abhed for several accounts can instead give each account
+its own store, through `server.Options.SecretsFor`: a session's commands,
+logins and fetches then read only its owner's store, and its record is
+redacted with it. Such stores belong in `~/.abhed/secrets.d`
+(`ABHED_ACCOUNT_SECRETS_DIR` overrides), which the tools and sandbox refuse
+as they refuse the operator's store.
 
 ```json
 "allow": ["secret(GITHUB_TOKEN)"],
