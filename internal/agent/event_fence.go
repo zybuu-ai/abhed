@@ -21,6 +21,10 @@ const (
 	// workspace: where it was moved, and that the session's fence runs no
 	// further command.
 	EvFenceStatePlanted EventType = sandbox.EvFenceStatePlanted
+	// EvEgressDecision is one decision of the egress proxy under
+	// sandbox.network allowlist: the call, host, port, address, method and
+	// path for plain HTTP, the decision, the rule, and the bytes each way.
+	EvEgressDecision EventType = sandbox.EvEgressDecision
 )
 
 // SandboxRecord is rec as a sandbox writes to it: system events, trusted.

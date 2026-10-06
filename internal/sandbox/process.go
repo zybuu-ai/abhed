@@ -37,6 +37,9 @@ type Process struct {
 	// refusing unshare) failed every command instead of the start-up check.
 	nsOnce sync.Once
 	nsErr  string
+
+	// egress is the session's proxy under sandbox.network allowlist.
+	egress egressState
 }
 
 // bwrapRun runs bwrap with args, for the start-up probe; a test replaces it.
@@ -77,6 +80,9 @@ func (s *Process) Available() (bool, string) {
 			return false, why
 		}
 	}
+	if why := s.egressAvailable(); why != "" {
+		return false, why
+	}
 	return true, ""
 }
 
@@ -102,7 +108,10 @@ func (s *Process) bwrapNamespaces() string {
 
 func (s *Process) Describe() string {
 	net := "no network"
-	if s.policy.AllowNetwork {
+	switch {
+	case s.policy.Egress != nil:
+		net = egressText(s.policy)
+	case s.policy.AllowNetwork:
 		net = "network allowed"
 	}
 	// Said only when one is set: with no count of the user's processes there
@@ -238,9 +247,14 @@ func (s *Process) seatbeltProfile() string {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
 	}
 
-	if !s.policy.AllowNetwork {
+	if !s.policy.AllowNetwork || s.policy.Egress != nil {
 		b.WriteString("\n;; Egress denied: a successful injection has no channel out.\n")
 		b.WriteString("(deny network*)\n")
+		// Under the allowlist, the one way out is the session's proxy on
+		// loopback, which holds the port; "localhost" is 127.0.0.1 and ::1.
+		if port := s.egressPort(); s.policy.Egress != nil && port != 0 {
+			fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", port)
+		}
 		// Nor a view of the host's network: its interfaces, addresses and
 		// routes, as bwrap's --unshare-net gives on Linux.
 		b.WriteString("(deny sysctl-read (sysctl-name-prefix \"net.route\"))\n")
@@ -331,13 +345,35 @@ func (s *Process) bwrapFreshOK() bool {
 }
 
 func (s *Process) Command(ctx context.Context, cwd, command string) *exec.Cmd {
-	return s.wrap(ctx, cwd, s.env(), "/bin/bash", "-c", command)
+	env, err := s.commandEnv(ctx)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	return s.wrap(ctx, cwd, env, "/bin/bash", "-c", command)
+}
+
+// commandEnv is env, with the egress proxy's variables under the allowlist.
+// A proxy that cannot start refuses the command: never the open network.
+func (s *Process) commandEnv(ctx context.Context) ([]string, error) {
+	env := s.env()
+	if s.policy.Egress == nil {
+		return env, nil
+	}
+	pe, err := s.egressEnv(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: the command was not run: the egress proxy is not available: %w", err)
+	}
+	return append(env, pe...), nil
 }
 
 // Shell starts a long-lived interactive bash under the same confinement as
 // Command, for a person at a terminal.
 func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
-	return hangUp(s.wrap(ctx, cwd, append(s.env(), shellEnv(s.Tier())...), shellArgv...))
+	env, err := s.commandEnv(ctx)
+	if err != nil {
+		return &exec.Cmd{Err: err}
+	}
+	return hangUp(s.wrap(ctx, cwd, append(env, shellEnv(s.Tier())...), shellArgv...))
 }
 
 // Backend names the mechanism: sandbox-exec or bwrap.
@@ -390,8 +426,19 @@ func (s *Process) wrap(ctx context.Context, cwd string, env []string, argv ...st
 			"--tmpfs", filepath.Join(s.policy.Workspace, stateDir),
 			"--chdir", cwd,
 		)
-		if !s.policy.AllowNetwork {
+		if !s.policy.AllowNetwork || s.policy.Egress != nil {
 			args = append(args, "--unshare-net")
+		}
+		// Under the allowlist the sandbox has its own network namespace, with
+		// loopback only: a relay inside it, listening where the proxy
+		// variables point, joins each connection to the proxy's socket.
+		if s.policy.Egress != nil {
+			if s.egressPort() == 0 {
+				return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
+			}
+			binds, wrapped := s.relayArgs(argv)
+			args = append(args, binds...)
+			argv = wrapped
 		}
 		// A folder holding a protected path is bound onto itself first: a
 		// mount point cannot be renamed or removed, and stays writable. A
@@ -559,7 +606,14 @@ func NewNone(p Policy) *None { return &None{policy: p} }
 
 func (n *None) Tier() Tier { return TierNone }
 
-func (n *None) Available() (bool, string) { return true, "" }
+// Available refuses the allowlist: on the host nothing stops a command
+// going around the proxy.
+func (n *None) Available() (bool, string) {
+	if n.policy.Egress != nil {
+		return false, egressRefusal(TierNone)
+	}
+	return true, ""
+}
 
 func (n *None) Describe() string {
 	return "NO ISOLATION — commands run directly on the host. Trusted repositories only."

@@ -71,6 +71,11 @@ func (c *Container) Tier() Tier {
 }
 
 func (c *Container) Available() (bool, string) {
+	// The proxy listens on the host's loopback, which the container's
+	// network cannot reach without opening more than the proxy.
+	if c.policy.Egress != nil {
+		return false, egressRefusal(c.Tier())
+	}
 	c.once.Do(func() {
 		for _, rt := range []string{"docker", "podman", "nerdctl"} {
 			path, err := exec.LookPath(rt)

@@ -223,6 +223,12 @@ policy-checked command of its own instead of an interactive shell; the
 `"terminal_idle_minutes"` is how long a workbench shell nobody is watching
 stays open; unset means 30.
 
+`"network": "allowlist"`, set only in the managed configuration, sends
+commands' traffic through a per-session proxy that reaches only what the
+`egress` rules allow, and records each decision; it takes the place of
+`allow_network`. Only the process tier enforces it. See
+[Network policy](21-network-policy.md).
+
 With `allow_network` false, the `bash` tool's description tells the model
 that commands cannot reach the network, and a command that fails for that
 reason (a name that does not resolve, no route to a host) ends with a note

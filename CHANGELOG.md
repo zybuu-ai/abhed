@@ -6,6 +6,28 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- An egress allowlist for the agent's shell commands, between the network
+  off and the network open. With `sandbox.network: "allowlist"` in the
+  managed configuration, each session gets a proxy on loopback that commands
+  reach through `HTTP_PROXY` and `HTTPS_PROXY`, with a per-session token. The
+  `egress` rules (host, exact or `*.example.com`; ports; methods and paths for
+  plain HTTP; allow or deny, deny winning) decide each CONNECT by host and
+  port and each plain request by method and path too; the default is deny,
+  and `mode: "audit"` lets denials through and records them as would_deny.
+  The proxy resolves names itself, refuses loopback, private, link-local,
+  metadata and multicast addresses unless a rule names them in `allow_ips`,
+  and dials the address it checked. Every decision is recorded as an
+  `egress.decision` event with the call id, host, port, address, method and
+  path, the rule, and bytes each way; never bodies or credentials. The
+  process tier enforces it: on Linux the command keeps its own network
+  namespace and reaches the proxy through a relay over a unix socket, and on
+  macOS Seatbelt allows only the proxy's loopback port. The fence, container,
+  vm and none tiers refuse the setting rather than open the network.
+  `abhed doctor` shows the egress state. See
+  [Network policy](docs/guide/21-network-policy.md).
+
 ## [1.2.6] - 2026-10-06
 
 **Before you upgrade.** Web search and web fetch turned on in
