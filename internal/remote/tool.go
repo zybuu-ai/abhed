@@ -366,6 +366,12 @@ func addrAllowed(patterns []string, addr string) bool {
 
 func (ConnectTool) Name() string { return "ssh_connect" }
 
+// BindStore is the tool reading passwords from v instead.
+func (t ConnectTool) BindStore(v *secrets.Store) tools.Tool {
+	t.Secret = v.Value
+	return t
+}
+
 // Mutates is true: this decides which machines the agent can reach and as
 // whom, which deserves the same confirmation as a write.
 func (ConnectTool) Mutates() bool { return true }

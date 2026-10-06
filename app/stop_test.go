@@ -307,7 +307,7 @@ func stopsBeating(beat string) bool {
 }
 
 // requireHostTier skips where rpc and acp would run the command somewhere
-// stopping it works otherwise: a container or a VM, or a sandbox this machine
+// stopping it works otherwise: the container or vm tier, or a sandbox this machine
 // cannot start.
 func requireHostTier(t *testing.T, ws string) {
 	t.Helper()

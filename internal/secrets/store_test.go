@@ -314,3 +314,73 @@ func TestFindSentDecodesLeniently(t *testing.T) {
 		t.Error("ordinary text was taken for the value")
 	}
 }
+
+// The per-account stores sit beside the operator's unless placed elsewhere.
+func TestAccountsDir(t *testing.T) {
+	t.Setenv(EnvFile, "/srv/abhed/secrets.json")
+	t.Setenv(EnvAccountsDir, "")
+	if got, _ := AccountsDir(); got != "/srv/abhed/secrets.d" {
+		t.Errorf("beside the store: %q", got)
+	}
+	t.Setenv(EnvAccountsDir, "/srv/accounts")
+	if got, _ := AccountsDir(); got != "/srv/accounts" {
+		t.Errorf("overridden: %q", got)
+	}
+}
+
+// A server opens a store per request: writes through separate Stores on one
+// path must neither lose one another nor leave a torn file.
+func TestConcurrentWritersOnOnePathKeepEveryValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.json")
+	const n = 24
+	errs := make(chan error, n)
+	for i := range n {
+		go func() {
+			errs <- Open(path).Set(fmt.Sprintf("KEY_%02d", i), fmt.Sprintf("value-%02d-abcdef", i))
+		}()
+	}
+	for range n {
+		if err := <-errs; err != nil {
+			t.Error(err)
+		}
+	}
+	names, err := Open(path).Names()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != n {
+		t.Errorf("%d of %d values survived: %v", len(names), n, names)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "*tmp*"))
+	if len(left) != 0 {
+		t.Errorf("temporary files left behind: %v", left)
+	}
+}
+
+// A joined redactor redacts every part's values, the longest first, and
+// withholds everything while any part cannot be loaded.
+func TestJoinedRedactsEveryPartAndFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	own, op := Open(filepath.Join(dir, "own.json")), Open(filepath.Join(dir, "op.json"))
+	if err := own.Set("OWN", "own-value-123"); err != nil {
+		t.Fatal(err)
+	}
+	if err := op.Set("OP", "own-value-123-and-more"); err != nil {
+		t.Fatal(err)
+	}
+	j := Joined{own.Session(), op.Session()}
+	got := string(j.Redact([]byte(`"own-value-123 own-value-123-and-more"`)))
+	if got != `"[secret:OWN] [secret:OP]"` {
+		t.Errorf("joined redaction: %s", got)
+	}
+	if names := strings.Join(j.Names(), ","); !strings.Contains(names, "OWN") || !strings.Contains(names, "OP") {
+		t.Errorf("names: %s", names)
+	}
+	if err := os.WriteFile(op.Path(), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(j.Redact([]byte(`"own-value-123"`))); strings.Contains(got, "own-value") {
+		t.Errorf("a part that cannot be loaded did not withhold: %s", got)
+	}
+}

@@ -142,7 +142,7 @@ would hurt Abhed.
 | Service | Replicas | CPU | RAM |
 |---|---:|---:|---:|
 | Control plane (orchestrator) | 3 | 8 | 16 GB |
-| Execution pool (microVMs) | 20–50 | 4 | 8 GB |
+| Execution pool (sandbox hosts) | 20–50 | 4 | 8 GB |
 | Postgres (HA) | 3 | 16 | 64 GB |
 | OpenSearch / vector | 3 | 16 | 64 GB |
 | Registry + object store | 2 | 8 | 32 GB |

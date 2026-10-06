@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -294,5 +296,13 @@ func TestStateOfTheRepositoryAroundAWorktreeIsHidden(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(cfgFile); string(got) != `{"secret":"repo-config"}` {
 		t.Fatalf("the run changed the repository's configuration: %q", got)
+	}
+}
+
+// The per-account secrets directory is state, refused to commands like the store.
+func TestStatePathsHoldTheAccountStores(t *testing.T) {
+	t.Setenv(secrets.EnvAccountsDir, "/srv/abhed/accounts")
+	if !slices.Contains(StatePaths(config.Default(), t.TempDir()), "/srv/abhed/accounts") {
+		t.Error("the per-account stores are not among the state paths")
 	}
 }

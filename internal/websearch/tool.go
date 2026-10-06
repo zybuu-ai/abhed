@@ -34,6 +34,12 @@ type Tool struct {
 func (*Tool) Name() string  { return "web_search" }
 func (*Tool) Mutates() bool { return false }
 
+// BindStore is a copy refusing queries that hold a value stored in v instead.
+func (t *Tool) BindStore(v *secrets.Store) tools.Tool {
+	// Every field but the call count, which is the copy's own.
+	return &Tool{Provider: t.Provider, Limit: t.Limit, Fetch: t.Fetch, Secrets: v.LoadRedactor}
+}
+
 func (t *Tool) Description() string {
 	d := "Search the public web for current information. Use for anything outside " +
 		"this codebase and beyond your training data: recent releases, current " +

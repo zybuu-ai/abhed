@@ -227,6 +227,12 @@ type Options struct {
 	// means registration is open only when allow_signup says so; the
 	// landing page offers a code field only when this is set.
 	Invites InviteRedeemer
+	// SecretsFor, when set, is the secrets store of the account a session runs
+	// as, by the tenant and user it was started for: its commands, logins and
+	// fetches read that store alone, and its record is redacted with it. Nil
+	// gives every session the operator's store, which suits one person; a
+	// server shared by several accounts sets it. An error refuses the session.
+	SecretsFor func(tenant, user string) (*secrets.Store, error)
 	// Tenant decides which tenant a request acts in. Nil means the default
 	// rule: the configured storage tenant when authentication is off, the
 	// identity's tenant otherwise.
@@ -424,6 +430,69 @@ func (s *Server) sessionRedactor() agent.Redactor {
 	return red
 }
 
+// sharedSecretRules are the allow rules that let a session name a secret, on
+// a server several accounts sign in to that gives them all the operator's store.
+func sharedSecretRules(opts Options) []string {
+	if opts.SecretsFor != nil || opts.Config.Auth.Mode == "" || opts.Config.Auth.Mode == "none" {
+		return nil
+	}
+	var rules []string
+	for _, raw := range opts.Config.Permissions.Allow {
+		if r, err := policy.ParseRule(raw); err == nil && (r.Tool() == "secret" || r.Tool() == "*") {
+			rules = append(rules, r.String())
+		}
+	}
+	return rules
+}
+
+// sessionSecrets is the store a session's tools are bound to and the redactor
+// its record is written with: the owner's own store when SecretsFor is set,
+// else nil and the operator's redactor. With SecretsFor the record is redacted
+// with the owner's store and the operator's both, so operator values stay
+// redacted. An owner's store that cannot be loaded refuses the session, since
+// its values could not be redacted.
+func (s *Server) sessionSecrets(spec StartSpec) (*secrets.Store, agent.Redactor, error) {
+	if s.opts.SecretsFor == nil {
+		return nil, s.sessionRedactor(), nil
+	}
+	v, err := s.opts.SecretsFor(spec.Tenant, spec.User)
+	if err == nil && v == nil {
+		err = errors.New("no store was given")
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("the account's secrets store: %w", err)
+	}
+	red, err := v.LoadRedactor()
+	if err != nil {
+		return nil, nil, err
+	}
+	own := v.Fresh(red)
+	operator := s.sessionRedactor()
+	if cur, ok := operator.(interface{ Current() *secrets.Redactor }); ok {
+		return v, secrets.Joined{own, cur}, nil
+	}
+	return v, chained{own, operator}, nil
+}
+
+// chained redacts with each redactor in turn, for an operator redactor that
+// cannot be joined value by value.
+type chained []agent.Redactor
+
+func (c chained) Redact(b []byte) []byte {
+	for _, r := range c {
+		b = r.Redact(b)
+	}
+	return b
+}
+
+func (c chained) Span() int {
+	n := 0
+	for _, r := range c {
+		n = max(n, r.Span())
+	}
+	return n
+}
+
 func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -436,6 +505,11 @@ func New(opts Options) *Server {
 	if strings.Contains(opts.NodeID, "#") {
 		opts.Logger.Warn("the node id holds '#', which separates a lease's incarnation; it is used with '_' in its place", "node_id", opts.NodeID)
 		opts.NodeID = strings.ReplaceAll(opts.NodeID, "#", "_")
+	}
+	if rules := sharedSecretRules(opts); len(rules) > 0 {
+		opts.Logger.Warn("every account on this server shares one secrets store: any account can use, "+
+			"and by transforming the value read, every secret these allow rules name; run a server per person "+
+			"who must not see another's secrets", "auth_mode", opts.Config.Auth.Mode, "rules", rules)
 	}
 	holder := holderID(opts.NodeID)
 	// On Postgres every append is fenced on this process's lease, in the
@@ -1107,9 +1181,14 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		return "", err
 	}
 
+	vault, red, err := s.sessionSecrets(spec)
+	if err != nil {
+		s.forgetUnstarted(sessionID)
+		return "", err
+	}
 	rec := agent.NewRecorder(s.store, sessionID, "")
-	rec.Redact = s.sessionRedactor()
-	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
+	rec.Redact = red
+	live, loop, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, vault, rec)
 	if err != nil {
 		return "", err
 	}
@@ -1226,10 +1305,14 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	}
 	sessionID := newSessionID()
 	defer s.startingDone(s.startingNow(sessionID))
+	vault, red, err := s.sessionSecrets(spec)
+	if err != nil {
+		return "", err
+	}
 	rec := agent.NewRecorder(s.store, sessionID, "")
-	rec.Redact = s.sessionRedactor()
+	rec.Redact = red
 	// Built before the row is written, so a failure leaves no empty session listed.
-	live, _, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, rec)
+	live, _, err := s.buildLive(sessionID, spec, mode, adapter, registry, skillReg, vault, rec)
 	if err != nil {
 		return "", err
 	}
@@ -1304,7 +1387,7 @@ func (s *Server) newPolicy(mode policy.Mode) *policy.Engine {
 // function for both a new session and a continued one, so the two cannot
 // drift in what they permit.
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
-	registry *tools.Registry, skillReg *skills.Registry, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
+	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
 
 	sess, err := tools.NewSession(s.opts.Workspace)
 	if err != nil {
@@ -1367,6 +1450,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		approver = agent.AutoApprove{Yes: false}
 	}
 	budget := toolset.Budget(s.opts.Config)
+	if vault != nil && registry != nil {
+		registry = tools.BindStores(registry, vault)
+	}
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
 	cfg.SystemPrompt = toolset.SystemPrompt(s.opts.Workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
@@ -1554,6 +1640,11 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	if s.sessions != nil && !ownsSession(rec.Tenant, rec.User, tenant, user) {
 		return nil, errNoSession
 	}
+	// Before the claim, so a refusal leaves the session for its owner to retry.
+	vault, red, err := s.sessionSecrets(StartSpec{User: user, Tenant: tenant})
+	if err != nil {
+		return nil, err
+	}
 
 	// Exactly one continuer. A durable store arbitrates; without one there
 	// is only this process, and the live map is the arbiter.
@@ -1590,7 +1681,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	registry, skillReg, _ := s.state.snapshot()
 	recorder := agent.NewRecorder(s.store, id, "")
-	recorder.Redact = s.sessionRedactor()
+	recorder.Redact = red
 	recorder.Advance(events[len(events)-1].Seq)
 
 	spec := StartSpec{Prompt: rec.Prompt, Mode: mode, User: user, Tenant: tenant}
@@ -1599,7 +1690,7 @@ func (s *Server) resumeSession(ctx context.Context, id string, prompt, user, ten
 	}
 	adapter, provider, lost := s.recordedProvider(id, events, rec.Model)
 	spec.Provider = provider
-	live, loop, err := s.buildLive(id, spec, mode, adapter, registry, skillReg, recorder)
+	live, loop, err := s.buildLive(id, spec, mode, adapter, registry, skillReg, vault, recorder)
 	if err != nil {
 		return nil, err
 	}
